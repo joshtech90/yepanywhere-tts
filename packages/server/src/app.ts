@@ -77,6 +77,8 @@ import { createLocalFileRoutes } from "./routes/local-file.js";
 import { createLocalImageRoutes } from "./routes/local-image.js";
 import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
 import { createSpeechRoutes } from "./routes/speech.js";
+import { createTtsRoutes } from "./routes/tts.js";
+import type { TtsService } from "./services/TtsService.js";
 import { createVersionRoutes } from "./routes/version.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import type {
@@ -210,6 +212,8 @@ export interface AppOptions {
   speechBackendRegistry?: SpeechBackendRegistry;
   /** Allowed directory prefixes for serving local images. Default: ["/tmp"] */
   allowedImagePaths?: string[];
+  /** Text-to-speech service (Google Cloud). Enables the /api/tts routes. */
+  ttsService?: TtsService;
 }
 
 export interface AppResult {
@@ -1126,6 +1130,14 @@ export function createApp(options: AppOptions): AppResult {
         dataDir: options.dataDir,
         serverSettingsService: options.serverSettingsService,
       }),
+    );
+  }
+
+  // Text-to-speech (read-aloud) route, mounted independently of STT speech.
+  if (options.ttsService) {
+    app.route(
+      "/api/tts",
+      createTtsRoutes({ ttsService: options.ttsService }),
     );
   }
 
