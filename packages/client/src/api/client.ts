@@ -381,13 +381,19 @@ export const api = {
   getVersion: (options?: GetVersionOptions) =>
     fetchJSON<VersionInfo>(options?.fresh ? "/version?fresh=1" : "/version"),
 
-  // Text-to-speech (read aloud). Returns a base64 MP3 data URL so it travels
+  // Text-to-speech (read aloud). Audio is returned as base64 so it travels
   // through the same (possibly encrypted relay) JSON channel as everything else.
   ttsStatus: () => fetchJSON<{ enabled: boolean; error?: string }>("/tts/status"),
-  ttsSynthesize: (text: string) =>
+  // Split a message into ordered chunks for fast-start playback.
+  ttsPlan: (text: string) =>
+    fetchJSON<{ chunks: string[] }>("/tts/plan", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  ttsSynthesize: (text: string, preCleaned = false) =>
     fetchJSON<{ audioBase64: string }>("/tts/synthesize", {
       method: "POST",
-      body: JSON.stringify({ text, format: "base64" }),
+      body: JSON.stringify({ text, format: "base64", preCleaned }),
     }),
 
   // Server info API (host/port binding for Local Access settings)

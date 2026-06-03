@@ -104,10 +104,14 @@ export const TextBlock = memo(function TextBlock({
   );
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  // Bumped on every start/stop so stale async work from a previous run aborts.
+  const speakSessionRef = useRef(0);
 
   const stopSpeaking = useCallback(() => {
+    speakSessionRef.current++;
     if (audioRef.current) {
       audioRef.current.pause();
+      audioRef.current.src = "";
       audioRef.current = null;
     }
     if (audioUrlRef.current) {
@@ -123,24 +127,61 @@ export const TextBlock = memo(function TextBlock({
       return;
     }
     setSpeakState("loading");
-    try {
-      const { audioBase64 } = await api.ttsSynthesize(text);
+
+    // Reuse one audio element for the whole message so mobile keeps the
+    // playback tied to this tap (iOS autoplay rules). Unlocked synchronously.
+    const audio = new Audio();
+    audioRef.current = audio;
+    const session = ++speakSessionRef.current;
+    const alive = () =>
+      speakSessionRef.current === session && audioRef.current === audio;
+
+    const base64ToUrl = (audioBase64: string): string => {
       const bytes = Uint8Array.from(atob(audioBase64), (ch) =>
         ch.charCodeAt(0),
       );
-      const url = URL.createObjectURL(
-        new Blob([bytes], { type: "audio/mpeg" }),
+      return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+    };
+
+    const playUrl = (url: string): Promise<void> =>
+      new Promise((resolve, reject) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => reject(new Error("audio playback failed"));
+        audio.src = url;
+        audioUrlRef.current = url;
+        audio.play().catch(reject);
+      });
+
+    try {
+      const { chunks } = await api.ttsPlan(text);
+      if (!alive() || chunks.length === 0) {
+        if (alive()) stopSpeaking();
+        return;
+      }
+
+      // Fetch chunk i; prefetch i+1 in parallel so playback stays seamless.
+      let pending: Promise<{ audioBase64: string }> | null = api.ttsSynthesize(
+        chunks[0] as string,
+        true,
       );
-      audioUrlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = stopSpeaking;
-      audio.onerror = stopSpeaking;
-      await audio.play();
-      setSpeakState("playing");
+      for (let i = 0; i < chunks.length; i++) {
+        const current = pending;
+        const next = chunks[i + 1];
+        pending = next ? api.ttsSynthesize(next, true) : null;
+        if (!current) break;
+        const { audioBase64 } = await current;
+        if (!alive()) return;
+        const url = base64ToUrl(audioBase64);
+        if (i === 0) setSpeakState("playing");
+        const prevUrl = audioUrlRef.current;
+        await playUrl(url);
+        if (prevUrl && prevUrl !== url) URL.revokeObjectURL(prevUrl);
+        if (!alive()) return;
+      }
+      if (alive()) stopSpeaking();
     } catch (err) {
       console.error("Read aloud failed:", err);
-      stopSpeaking();
+      if (alive()) stopSpeaking();
     }
   }, [speakState, stopSpeaking, text]);
 
