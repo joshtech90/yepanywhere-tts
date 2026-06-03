@@ -66,6 +66,7 @@ import {
   RelayClientService,
   ServerSettingsService,
   SharingService,
+  TtsService,
 } from "./services/index.js";
 import { initSpeechBackendRegistry } from "./services/voice/registry.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
@@ -372,6 +373,9 @@ const connectedBrowsersService = new ConnectedBrowsersService(eventBus);
 const serverSettingsService = new ServerSettingsService({
   dataDir: config.dataDir,
 });
+const ttsService = new TtsService({
+  dataDir: config.dataDir,
+});
 const sharingService = new SharingService({
   dataDir: config.dataDir,
 });
@@ -445,6 +449,8 @@ async function startServer() {
   markStartup("remoteAccessService initialized");
   await serverSettingsService.initialize();
   markStartup("serverSettingsService initialized");
+  await ttsService.initialize();
+  markStartup("ttsService initialized");
   await sharingService.initialize();
   markStartup("sharingService initialized");
   await publicShareService.initialize();
@@ -603,6 +609,7 @@ async function startServer() {
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
     serverSettingsService,
+    ttsService,
     sharingService,
     publicShareService,
     deviceBridgeService,

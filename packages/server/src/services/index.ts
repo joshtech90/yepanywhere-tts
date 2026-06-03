@@ -38,6 +38,12 @@ export {
 } from "./ServerSettingsService.js";
 
 export {
+  TtsService,
+  type TtsServiceOptions,
+  type TtsStatus,
+} from "./TtsService.js";
+
+export {
   SharingService,
   type SharingConfig,
   type SharingServiceOptions,

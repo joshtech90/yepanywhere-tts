@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../../api/client";
 import { useRenderModeToggle } from "../../contexts/RenderModeContext";
 import { useStreamingMarkdownContext } from "../../contexts/StreamingMarkdownContext";
 import { useStreamingMarkdown } from "../../hooks/useStreamingMarkdown";
@@ -99,6 +100,55 @@ export const TextBlock = memo(function TextBlock({
     }
   }, [text]);
 
+  // --- Read aloud (text-to-speech) ---
+  const [speakState, setSpeakState] = useState<"idle" | "loading" | "playing">(
+    "idle",
+  );
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+
+  const stopSpeaking = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+    setSpeakState("idle");
+  }, []);
+
+  const handleSpeak = useCallback(async () => {
+    if (speakState === "playing" || speakState === "loading") {
+      stopSpeaking();
+      return;
+    }
+    setSpeakState("loading");
+    try {
+      const { audioBase64 } = await api.ttsSynthesize(text);
+      const bytes = Uint8Array.from(atob(audioBase64), (ch) =>
+        ch.charCodeAt(0),
+      );
+      const url = URL.createObjectURL(
+        new Blob([bytes], { type: "audio/mpeg" }),
+      );
+      audioUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = stopSpeaking;
+      audio.onerror = stopSpeaking;
+      await audio.play();
+      setSpeakState("playing");
+    } catch (err) {
+      console.error("Read aloud failed:", err);
+      stopSpeaking();
+    }
+  }, [speakState, stopSpeaking, text]);
+
+  // Clean up audio if the component unmounts mid-playback.
+  useEffect(() => stopSpeaking, [stopSpeaking]);
+
   useEffect(() => {
     const element = copySourceRef.current;
     if (!element) {
@@ -162,6 +212,22 @@ export const TextBlock = memo(function TextBlock({
           aria-label={copied ? "Copied!" : "Copy markdown"}
         >
           {copied ? <CheckIcon /> : <CopyIcon />}
+        </button>
+        <button
+          type="button"
+          className={`text-block-speak ${speakState !== "idle" ? "active" : ""}`}
+          onClick={handleSpeak}
+          disabled={speakState === "loading"}
+          title={speakState === "idle" ? "Vorlesen" : "Stopp"}
+          aria-label={speakState === "idle" ? "Vorlesen" : "Stopp"}
+        >
+          {speakState === "playing" ? (
+            <StopIcon />
+          ) : speakState === "loading" ? (
+            <SpinnerIcon />
+          ) : (
+            <SpeakIcon />
+          )}
         </button>
       </div>
 
@@ -271,6 +337,58 @@ function CheckIcon() {
       aria-hidden="true"
     >
       <path d="M3 8.5L6.5 12L13 4" />
+    </svg>
+  );
+}
+
+function SpeakIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 6v4h2.5L8 13V3L4.5 6H2z" />
+      <path d="M11 5.5a3 3 0 0 1 0 5" />
+      <path d="M12.5 3.5a5.5 5.5 0 0 1 0 9" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" />
+    </svg>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden="true"
+      className="text-block-speak-spinner"
+    >
+      <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
     </svg>
   );
 }
