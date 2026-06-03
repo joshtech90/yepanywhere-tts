@@ -2,6 +2,10 @@ import { readFile, access } from "node:fs/promises";
 import * as path from "node:path";
 import type { TextToSpeechClient } from "@google-cloud/text-to-speech";
 import { getLogger } from "../logging/logger.js";
+import {
+  CHUNKING_MIN_TOTAL_CHARS,
+  splitIntoChunks,
+} from "./ttsChunking.js";
 
 const logger = getLogger();
 
@@ -92,12 +96,19 @@ export class TtsService {
     return { enabled: false, error: this.initError ?? "Not initialized" };
   }
 
-  /** Synthesize text to an MP3 buffer. Throws on error. */
-  async synthesize(text: string): Promise<Buffer> {
+  /**
+   * Synthesize text to an MP3 buffer. Throws on error.
+   *
+   * @param preCleaned set when the caller already cleaned/chunked the text
+   *   (e.g. a single chunk from planChunks) so we don't strip markdown twice.
+   */
+  async synthesize(text: string, preCleaned = false): Promise<Buffer> {
     if (!this.client) {
       throw new Error(this.initError ?? "TTS not configured");
     }
-    const cleaned = stripForTts(text).slice(0, MAX_TEXT_LENGTH);
+    const cleaned = preCleaned
+      ? text.slice(0, MAX_TEXT_LENGTH)
+      : stripForTts(text).slice(0, MAX_TEXT_LENGTH);
     if (!cleaned) {
       throw new Error("Nothing to read aloud after cleaning the text");
     }
@@ -118,6 +129,19 @@ export class TtsService {
     return typeof audio === "string"
       ? Buffer.from(audio, "base64")
       : Buffer.from(audio);
+  }
+
+  /**
+   * Clean and split text into ordered chunks for fast-start playback. The
+   * first chunk is short so the client can start speaking almost immediately;
+   * remaining chunks are balanced. Returns [] if there is nothing to read.
+   */
+  planChunks(text: string): string[] {
+    const cleaned = stripForTts(text).slice(0, MAX_TEXT_LENGTH);
+    if (!cleaned) return [];
+    if (cleaned.length < CHUNKING_MIN_TOTAL_CHARS) return [cleaned];
+    const chunks = splitIntoChunks(cleaned);
+    return chunks.length ? chunks : [cleaned];
   }
 
   private async findCredentialsPath(): Promise<string | null> {

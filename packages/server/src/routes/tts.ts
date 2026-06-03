@@ -21,6 +21,24 @@ export function createTtsRoutes(deps: TtsDeps): Hono {
     return c.json(ttsService.getStatus());
   });
 
+  // Plan endpoint: returns the ordered chunk texts for a message. The client
+  // requests /synthesize for each chunk (with preCleaned=true), playing the
+  // first as soon as it arrives — fast-start, like PocketClaude.
+  routes.post("/plan", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const text = obj.text;
+    if (typeof text !== "string" || text.trim().length === 0) {
+      return c.json({ error: "text is required" }, 400);
+    }
+    return c.json({ chunks: ttsService.planChunks(text) });
+  });
+
   routes.post("/synthesize", async (c) => {
     let body: unknown;
     try {
@@ -31,12 +49,13 @@ export function createTtsRoutes(deps: TtsDeps): Hono {
     const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const text = obj.text;
     const wantsBase64 = obj.format === "base64";
+    const preCleaned = obj.preCleaned === true;
     if (typeof text !== "string" || text.trim().length === 0) {
       return c.json({ error: "text is required" }, 400);
     }
 
     try {
-      const audio = await ttsService.synthesize(text);
+      const audio = await ttsService.synthesize(text, preCleaned);
       // base64 JSON variant: survives the encrypted relay channel used by
       // remote (phone) clients, which only carries JSON.
       if (wantsBase64) {
