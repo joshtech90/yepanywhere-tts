@@ -532,6 +532,17 @@
   background: color-mix(in srgb, var(--app-yep-green) 14%, var(--bg-secondary, #252525));
 }
 
+/* Touch devices (phones/tablets) have no hover -> always show the action
+   buttons, otherwise they'd be invisible and untappable on mobile. */
+@media (hover: none) {
+  .text-block-copy,
+  .text-block-toggle,
+  .text-block-speak {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .text-block-source {
   margin: 0;
   white-space: pre-wrap;
