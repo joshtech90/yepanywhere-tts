@@ -159,6 +159,11 @@ export interface Config {
   openBrowser: boolean;
   /** Enable HTTPS with an auto-generated self-signed certificate. */
   httpsSelfSigned: boolean;
+  /** Path to a TLS certificate (PEM). When set with tlsKeyPath, serves HTTPS
+   * with this cert instead of self-signed (e.g. a Tailscale-provisioned cert). */
+  tlsCertPath?: string;
+  /** Path to the TLS private key (PEM) paired with tlsCertPath. */
+  tlsKeyPath?: string;
   /** Desktop auth token for Tauri app. Requests with matching X-Desktop-Token header bypass auth. */
   desktopAuthToken?: string;
 }
@@ -346,6 +351,8 @@ export function loadConfig(): Config {
     cliHostOverride: process.env.CLI_HOST_OVERRIDE === "true",
     openBrowser: process.env.OPEN_BROWSER === "true",
     httpsSelfSigned: process.env.HTTPS_SELF_SIGNED === "true",
+    tlsCertPath: process.env.TLS_CERT_PATH || undefined,
+    tlsKeyPath: process.env.TLS_KEY_PATH || undefined,
     desktopAuthToken: process.env.DESKTOP_AUTH_TOKEN || undefined,
   };
 }
