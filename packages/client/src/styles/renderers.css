@@ -504,6 +504,33 @@
   background: color-mix(in srgb, var(--app-yep-green) 14%, var(--bg-secondary, #252525));
 }
 
+/* Auto-read toggle in the session header */
+.auto-read-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.auto-read-toggle:hover {
+  color: var(--text-primary, #ccc);
+  background: var(--bg-secondary, #252525);
+}
+
+.auto-read-toggle.active {
+  color: var(--text-primary, #ccc);
+  border-color: color-mix(in srgb, var(--app-yep-green) 50%, transparent);
+  background: color-mix(in srgb, var(--app-yep-green) 16%, transparent);
+}
+
 /* Touch devices (phones/tablets) have no hover -> always show the action
    buttons, otherwise they'd be invisible and untappable on mobile. */
 @media (hover: none) {
