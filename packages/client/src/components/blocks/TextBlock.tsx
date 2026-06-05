@@ -1,6 +1,26 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../../api/client";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useRenderModeToggle } from "../../contexts/RenderModeContext";
+import {
+  getReadAloudState,
+  getReadAloudToken,
+  playReadAloud,
+  type ReadAloudState,
+  stopReadAloud,
+  subscribeReadAloud,
+} from "../../lib/readAloud";
+
+/** Re-renders the component whenever the shared read-aloud state changes. */
+function useReadAloudSubscription(): ReadAloudState {
+  return useSyncExternalStore(subscribeReadAloud, getReadAloudState);
+}
 import { useStreamingMarkdownContext } from "../../contexts/StreamingMarkdownContext";
 import { useStreamingMarkdown } from "../../hooks/useStreamingMarkdown";
 import { registerMarkdownCopySource } from "../../lib/markdownSelectionCopy";
@@ -101,94 +121,25 @@ export const TextBlock = memo(function TextBlock({
   }, [text]);
 
   // --- Read aloud (text-to-speech) ---
-  const [speakState, setSpeakState] = useState<"idle" | "loading" | "playing">(
-    "idle",
-  );
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
-  // Bumped on every start/stop so stale async work from a previous run aborts.
-  const speakSessionRef = useRef(0);
+  // Stable per-block id so the shared controller can tell which block is playing.
+  const speakIdRef = useRef<string>(`tb-${Math.random().toString(36).slice(2)}`);
+  // Subscribe to the global read-aloud controller; derive this block's state.
+  const readAloudTick = useReadAloudSubscription();
+  const isThisPlaying =
+    getReadAloudToken() === speakIdRef.current &&
+    getReadAloudState() !== "idle";
+  const speakState: "idle" | "loading" | "playing" = isThisPlaying
+    ? getReadAloudState()
+    : "idle";
+  void readAloudTick; // re-render trigger
 
-  const stopSpeaking = useCallback(() => {
-    speakSessionRef.current++;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      audioRef.current = null;
+  const handleSpeak = useCallback(() => {
+    if (isThisPlaying) {
+      stopReadAloud();
+    } else {
+      void playReadAloud(text, speakIdRef.current);
     }
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
-    setSpeakState("idle");
-  }, []);
-
-  const handleSpeak = useCallback(async () => {
-    if (speakState === "playing" || speakState === "loading") {
-      stopSpeaking();
-      return;
-    }
-    setSpeakState("loading");
-
-    // Reuse one audio element for the whole message so mobile keeps the
-    // playback tied to this tap (iOS autoplay rules). Unlocked synchronously.
-    const audio = new Audio();
-    audioRef.current = audio;
-    const session = ++speakSessionRef.current;
-    const alive = () =>
-      speakSessionRef.current === session && audioRef.current === audio;
-
-    const base64ToUrl = (audioBase64: string): string => {
-      const bytes = Uint8Array.from(atob(audioBase64), (ch) =>
-        ch.charCodeAt(0),
-      );
-      return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
-    };
-
-    const playUrl = (url: string): Promise<void> =>
-      new Promise((resolve, reject) => {
-        audio.onended = () => resolve();
-        audio.onerror = () => reject(new Error("audio playback failed"));
-        audio.src = url;
-        audioUrlRef.current = url;
-        audio.play().catch(reject);
-      });
-
-    try {
-      const { chunks } = await api.ttsPlan(text);
-      if (!alive() || chunks.length === 0) {
-        if (alive()) stopSpeaking();
-        return;
-      }
-
-      // Fetch chunk i; prefetch i+1 in parallel so playback stays seamless.
-      let pending: Promise<{ audioBase64: string }> | null = api.ttsSynthesize(
-        chunks[0] as string,
-        true,
-      );
-      for (let i = 0; i < chunks.length; i++) {
-        const current = pending;
-        const next = chunks[i + 1];
-        pending = next ? api.ttsSynthesize(next, true) : null;
-        if (!current) break;
-        const { audioBase64 } = await current;
-        if (!alive()) return;
-        const url = base64ToUrl(audioBase64);
-        if (i === 0) setSpeakState("playing");
-        const prevUrl = audioUrlRef.current;
-        await playUrl(url);
-        if (prevUrl && prevUrl !== url) URL.revokeObjectURL(prevUrl);
-        if (!alive()) return;
-      }
-      if (alive()) stopSpeaking();
-    } catch (err) {
-      console.error("Read aloud failed:", err);
-      if (alive()) stopSpeaking();
-    }
-  }, [speakState, stopSpeaking, text]);
-
-  // Clean up audio if the component unmounts mid-playback.
-  useEffect(() => stopSpeaking, [stopSpeaking]);
+  }, [isThisPlaying, text]);
 
   useEffect(() => {
     const element = copySourceRef.current;

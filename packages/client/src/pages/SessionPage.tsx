@@ -59,6 +59,7 @@ import {
 } from "../hooks/useAttachmentUploadQuality";
 import { useConnection } from "../hooks/useConnection";
 import { useDeveloperMode } from "../hooks/useDeveloperMode";
+import { useAutoReadAloud } from "../hooks/useAutoReadAloud";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import type { DraftControls } from "../hooks/useDraftPersistence";
 import { useEngagementTracking } from "../hooks/useEngagementTracking";
@@ -726,6 +727,21 @@ function SessionPageContent({
     initialStatus,
     streamingMarkdownCallbacks,
     clientTailParams,
+  );
+
+  // Auto read-aloud: speak the last assistant message when a turn finishes.
+  const { enabled: autoReadEnabled, toggle: toggleAutoRead } = useAutoReadAloud(
+    processState,
+    useCallback(() => {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const m = messages[i];
+        if (isAssistantRole(m)) {
+          const text = getMessagePlainText(m);
+          if (text.trim()) return text;
+        }
+      }
+      return null;
+    }, [messages]),
   );
 
   // Developer mode settings
@@ -3638,6 +3654,34 @@ function SessionPageContent({
             </div>
           </div>
           <div className="session-header-right">
+            <button
+              type="button"
+              className={`auto-read-toggle ${autoReadEnabled ? "active" : ""}`}
+              onClick={toggleAutoRead}
+              title={
+                autoReadEnabled
+                  ? "Auto-Vorlesen an (antippen zum Ausschalten)"
+                  : "Auto-Vorlesen aus (antippen zum Einschalten)"
+              }
+              aria-label="Auto-Vorlesen umschalten"
+              aria-pressed={autoReadEnabled}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 6v4h2.5L8 13V3L4.5 6H2z" />
+                <path d="M11 5.5a3 3 0 0 1 0 5" />
+                <path d="M12.5 3.5a5.5 5.5 0 0 1 0 9" />
+              </svg>
+            </button>
             <ClientLogRecordingBadge inline />
             {showPublicShareControls && (
               <ViewerCountIndicator
