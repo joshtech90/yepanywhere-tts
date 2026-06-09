@@ -249,6 +249,30 @@ function balancedDpChunks(input: string): string[] {
 }
 
 /**
+ * Find how many characters of `text` are consumed by `clauses` (each a trimmed
+ * substring of `text`, in order). Walks a monotonic cursor and matches each
+ * clause as a contiguous substring, returning the offset just past the last
+ * match — i.e. the real prefix length accounting for whatever separators
+ * (single/multiple spaces, newlines, tabs) sit between clauses in the original.
+ * Returns null if any clause can't be matched contiguously, signalling the
+ * caller to fall back to its previous length-based slice.
+ */
+function consumedPrefixLength(
+  text: string,
+  clauses: string[],
+): number | null {
+  let cursor = 0;
+  let end = 0;
+  for (const clause of clauses) {
+    const idx = text.indexOf(clause, cursor);
+    if (idx === -1) return null;
+    end = idx + clause.length;
+    cursor = end;
+  }
+  return end;
+}
+
+/**
  * Split text into TTS chunks. The first chunk is kept short (fast-start) so the
  * client can begin playback almost immediately.
  */
@@ -269,19 +293,32 @@ export function splitIntoChunks(input: string, fastStart = true): string[] {
       } else {
         const subs = firstAtom.split(CLAUSE_BOUNDARY_RE);
         let subBuf = "";
+        const keptClauses: string[] = [];
         for (const rawSub of subs) {
           const sub = rawSub?.trim();
           if (!sub) continue;
           const candidate = subBuf ? `${subBuf} ${sub}`.trim() : sub;
           if (candidate.length <= FIRST_CHUNK_FAST_START_CHARS) {
             subBuf = candidate;
+            keptClauses.push(sub);
           } else {
             break;
           }
         }
         if (subBuf && subBuf.length >= 20) {
           firstChunk = subBuf;
-          remainder = text.slice(subBuf.length).replace(/^\s+/, "");
+          // `subBuf` rejoins trimmed clauses with single spaces, so its length
+          // can be shorter than the original prefix when the source used
+          // multi-space or newline separators between clauses. Locate where the
+          // last kept clause ends in the ORIGINAL text and slice from there, so
+          // no separator chars leak into (or get dropped from) the remainder.
+          // Falls back to `subBuf.length` if a clause isn't found contiguously
+          // (e.g. a word-wrapped atom whose internal whitespace was collapsed),
+          // which preserves the previous behavior for that edge case.
+          const consumed = consumedPrefixLength(text, keptClauses);
+          remainder = text
+            .slice(consumed ?? subBuf.length)
+            .replace(/^\s+/, "");
         }
       }
     }
