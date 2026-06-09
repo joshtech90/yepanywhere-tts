@@ -72,3 +72,7 @@ packages/server/bundled/
 references/
 start.sh
 scripts/reyep-detached.sh
+
+# Local launcher scripts (machine-specific, not part of the repo)
+Start Yep (mit Vorlesen).command
+yep.sh
