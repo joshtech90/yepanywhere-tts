@@ -67,3 +67,7 @@ packages/server/bundled/
 # Reference repos (cloned for source reading)
 references/
 start.sh
+
+# Local launcher scripts (machine-specific, not part of the repo)
+Start Yep (mit Vorlesen).command
+yep.sh

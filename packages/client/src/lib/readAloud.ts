@@ -40,6 +40,12 @@ export function stopReadAloud(): void {
   sessionId++;
   if (audioEl) {
     audioEl.pause();
+    // Detach handlers before clearing src: assigning src = "" fires an
+    // `error` event that would otherwise reject the in-flight playUrl and log
+    // a spurious "Read aloud failed". Session tracking (alive()) is the real
+    // stop signal, so dropping these handlers is safe.
+    audioEl.onended = null;
+    audioEl.onerror = null;
     audioEl.src = "";
     audioEl = null;
   }
@@ -101,15 +107,24 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       const current = pending;
       const next = chunks[i + 1];
       pending = next ? api.ttsSynthesize(next, true) : null;
-      if (!current) break;
+      if (!current) {
+        pending?.catch(() => {});
+        break;
+      }
       const { audioBase64 } = await current;
-      if (!alive()) return;
+      if (!alive()) {
+        pending?.catch(() => {});
+        return;
+      }
       if (i === 0) {
         state = "playing";
         emit();
       }
       await playUrl(base64ToObjectUrl(audioBase64));
-      if (!alive()) return;
+      if (!alive()) {
+        pending?.catch(() => {});
+        return;
+      }
     }
     if (alive()) stopReadAloud();
   } catch (err) {
