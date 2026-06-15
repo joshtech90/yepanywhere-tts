@@ -376,8 +376,6 @@ export function NewSessionForm({
     setEffortLevel,
     thinkingMode,
     setThinkingMode,
-    showThinking,
-    setShowThinking,
     voiceInputEnabled,
     speechMethod,
     hasStoredSpeechMethod,
@@ -887,12 +885,16 @@ export function NewSessionForm({
   );
   const showSpeechMethodSelector =
     voiceInputEnabled && speechMethodOptions.length > 1;
-  const supportsSelectedSpeechSmartTurn =
+  const selectedSpeechBackendCapabilities =
+    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod];
+  const selectedSpeechCanStream =
     selectedSpeechMethod !== "browser-native" &&
     (selectedSpeechMethod !== "ya-grok" ||
       grokSpeechAudioSettings.uplinkMode === "pcm16") &&
-    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod]?.smartTurn ===
-      true;
+    selectedSpeechBackendCapabilities?.streaming === true;
+  const supportsSelectedSpeechSmartTurn =
+    selectedSpeechCanStream &&
+    selectedSpeechBackendCapabilities?.smartTurn === true;
   const activeSpeechSmartTurnSettings: SpeechSmartTurnSettings | undefined =
     supportsSelectedSpeechSmartTurn ? speechSmartTurnSettings : undefined;
   const showGrokSpeechAudioControls = selectedSpeechMethod === "ya-grok";
@@ -1068,9 +1070,8 @@ export function NewSessionForm({
 
       // Get model and thinking settings
       const thinking = toThinkingOption(effectiveThinkingMode, effectiveEffortLevel);
-      // "Show thinking" preference (default/on/off). Sent for all providers;
-      // the server maps it to a request knob where the provider supports one,
-      // and the client render gate honors it regardless.
+      // Display preference for thinking rows; sent for compatibility while the
+      // server requests provider summaries independently.
       const showThinking = getShowThinkingSetting();
       const sessionOptions = {
         mode: sessionMode,
@@ -1529,6 +1530,7 @@ export function NewSessionForm({
                 ? setGrokSpeechAudioSettings
                 : undefined
             }
+            onPointerNearTrigger={() => voiceButtonRef.current?.prewarm?.()}
             trigger={
               <VoiceInputButton
                 ref={voiceButtonRef}
@@ -1630,9 +1632,7 @@ export function NewSessionForm({
           level={effectiveEffortLevel}
           effortOptions={effortOptions}
           onSetEffort={setEffortLevel}
-          showThinking={showThinking}
-          onSetShowThinking={setShowThinking}
-          provider={selectedProvider}
+          showThinkingControl={false}
           t={t}
           className="thinking-controls-panel--inline new-session-thinking-controls"
         />

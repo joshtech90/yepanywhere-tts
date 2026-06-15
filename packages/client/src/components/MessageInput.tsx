@@ -12,6 +12,7 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,6 +30,7 @@ import type {
   SpeechTranscriptionResultMetadata,
 } from "../lib/speechProviders/SpeechProvider";
 import { appendSpeechTranscript } from "../lib/speechRecognition";
+import { getSlashCommandMenuParts } from "../lib/slashCommands";
 import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
 import type { ContextUsage, PermissionMode } from "../types";
 import { AttachmentChip } from "./AttachmentChip";
@@ -89,6 +91,11 @@ function createClientSpeechTurnId(): string {
   );
 }
 
+function getLeadingSlashQuery(text: string): string | null {
+  const match = text.match(/^\/([^\s/]*)$/);
+  return match ? (match[1] ?? "").toLowerCase() : null;
+}
+
 interface Props {
   onSend: (text: string, metadata?: MessageSubmissionMetadata) => void;
   /** Queue a deferred message (sent when agent's turn ends). Only provided when agent is running. */
@@ -109,13 +116,6 @@ interface Props {
   onDraftControlsReady?: (controls: DraftControls) => void;
   /** Context usage for displaying usage indicator */
   contextUsage?: ContextUsage;
-  /**
-   * Make the context-usage indicator clickable: sends /compact through the
-   * normal send path, with any drafted composer text as the compact
-   * instructions (the draft is consumed). Only set when the provider
-   * advertises a compact command.
-   */
-  supportsCompactOnUsageClick?: boolean;
   /** Last session activity timestamp for stale composer liveness display. */
   lastActivityAt?: string | null;
   /** Server-derived provider/session liveness evidence. */
@@ -194,7 +194,6 @@ export function MessageInput({
   collapsed: externalCollapsed,
   onDraftControlsReady,
   contextUsage,
-  supportsCompactOnUsageClick = false,
   lastActivityAt,
   sessionLiveness,
   projectId,
@@ -239,6 +238,10 @@ export function MessageInput({
   // User-controlled collapse state (independent of external collapse from approval panel)
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
+  const [dismissedSlashQuery, setDismissedSlashQuery] = useState<string | null>(
+    null,
+  );
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
 
   // Combined display text: committed text + interim transcript
   const displayText = interimTranscript
@@ -258,7 +261,25 @@ export function MessageInput({
 
   // Panel is collapsed if user collapsed it OR if externally collapsed (approval panel showing)
   const collapsed = userCollapsed || externalCollapsed;
+  const slashQuery = getLeadingSlashQuery(text);
+  const matchingSlashCommands = useMemo(() => {
+    if (slashQuery === null) return [];
+    return slashCommands.filter((command) =>
+      command.toLowerCase().startsWith(slashQuery),
+    );
+  }, [slashCommands, slashQuery]);
+  const showSlashSuggestions =
+    !collapsed &&
+    !disabled &&
+    slashQuery !== null &&
+    dismissedSlashQuery !== slashQuery &&
+    matchingSlashCommands.length > 0;
   const canSubmit = !!(text.trim() || attachments.length > 0);
+
+  useEffect(() => {
+    setSelectedSlashIndex(0);
+  }, [slashQuery, matchingSlashCommands.length]);
+
   const basePrimaryActionKind =
     primaryActionKind ??
     (supportsSteering && onQueue ? "steer" : onQueue ? "queue" : "send");
@@ -499,13 +520,6 @@ export function MessageInput({
     handleSubmit(undefined, "steer");
   }, [handleSubmit]);
 
-  // Context-usage click: request compaction through the normal send path,
-  // consuming any drafted text as the compact focus instructions.
-  const handleCompactUsageClick = useCallback(() => {
-    const draft = controls.getDraft().trim();
-    handleSubmit(draft ? `/compact ${draft}` : "/compact", "send");
-  }, [controls, handleSubmit]);
-
   const handleQueue = useCallback(() => {
     const queueHandler =
       onQueue ?? (effectivePrimaryActionKind === "queue" ? onSend : undefined);
@@ -586,7 +600,63 @@ export function MessageInput({
     ],
   );
 
+  // Handle slash command selection - run active client commands or insert text.
+  const handleSlashCommand = useCallback(
+    (command: string) => {
+      if (!command) return;
+      const normalizedCommand = command.startsWith("/") ? command : `/${command}`;
+      const bare = normalizedCommand.slice(1);
+      if (onCustomCommand?.(bare)) {
+        return;
+      }
+
+      const slashDraft = getLeadingSlashQuery(text) !== null;
+      const trimmed = text.trimEnd();
+      const nextText = slashDraft
+        ? `${normalizedCommand} `
+        : trimmed
+          ? `${trimmed} ${normalizedCommand} `
+          : `${normalizedCommand} `;
+      noteComposerEdit(nextText);
+      setText(nextText);
+      setDismissedSlashQuery(null);
+      textareaRef.current?.focus();
+    },
+    [text, setText, onCustomCommand, noteComposerEdit],
+  );
+
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (showSlashSuggestions) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissedSlashQuery(slashQuery);
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedSlashIndex((current) => {
+          const delta = e.key === "ArrowDown" ? 1 : -1;
+          return (
+            (current + delta + matchingSlashCommands.length) %
+            matchingSlashCommands.length
+          );
+        });
+        return;
+      }
+      if (
+        e.key === "Tab" ||
+        (e.key === "Enter" &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.shiftKey &&
+          !e.altKey)
+      ) {
+        e.preventDefault();
+        handleSlashCommand(matchingSlashCommands[selectedSlashIndex] ?? "");
+        return;
+      }
+    }
+
     if (
       e.key === "Escape" &&
       !e.ctrlKey &&
@@ -830,32 +900,6 @@ export function MessageInput({
     [],
   );
 
-  // Handle slash command selection - insert command into text
-  const handleSlashCommand = useCallback(
-    (command: string) => {
-      // Check if this is a custom client-side command (strip leading "/")
-      const bare = command.startsWith("/") ? command.slice(1) : command;
-      if (onCustomCommand?.(bare)) {
-        return; // Custom command handled, don't insert text
-      }
-      // If text is empty or ends with whitespace, just append the command
-      // Otherwise, add a space before it
-      const trimmed = text.trimEnd();
-      if (trimmed) {
-        const nextText = `${trimmed} ${command} `;
-        noteComposerEdit(nextText);
-        setText(nextText);
-      } else {
-        const nextText = `${command} `;
-        noteComposerEdit(nextText);
-        setText(nextText);
-      }
-      // Focus the textarea so user can continue typing
-      textareaRef.current?.focus();
-    },
-    [text, setText, onCustomCommand, noteComposerEdit],
-  );
-
   return (
     <div
       className="message-input-wrapper"
@@ -897,9 +941,14 @@ export function MessageInput({
           onChange={(e) => {
             // If user edits while recording, only update committed text
             // This clears interim since they're now typing
+            const nextText = e.target.value;
             setInterimTranscript("");
-            noteComposerEdit(e.target.value);
-            setText(e.target.value);
+            noteComposerEdit(nextText);
+            setText(nextText);
+            const nextSlashQuery = getLeadingSlashQuery(nextText);
+            if (nextSlashQuery !== dismissedSlashQuery) {
+              setDismissedSlashQuery(null);
+            }
           }}
           onBlur={controls.flushDraft}
           onKeyDown={handleKeyDown}
@@ -911,6 +960,36 @@ export function MessageInput({
           disabled={disabled}
           rows={collapsed ? 1 : 3}
         />
+
+        {showSlashSuggestions && (
+          <div
+            className="slash-command-menu composer-slash-command-menu"
+            role="menu"
+          >
+            {matchingSlashCommands.map((command, index) => {
+              const parts = getSlashCommandMenuParts(command);
+              return (
+                <button
+                  key={command}
+                  type="button"
+                  className={`slash-command-item${index === selectedSlashIndex ? " active" : ""}`}
+                  onMouseEnter={() => setSelectedSlashIndex(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSlashCommand(command)}
+                  role="menuitem"
+                  aria-label={parts.label}
+                >
+                  {parts.shortcut && (
+                    <strong className="slash-command-shortcut">
+                      {parts.shortcut}
+                    </strong>
+                  )}
+                  <span>{parts.rest}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {collapsed && (
           <div className="message-input-collapsed-actions">
@@ -1050,9 +1129,6 @@ export function MessageInput({
             onToggleHeartbeat={onToggleHeartbeat}
             onConfigureHeartbeat={onConfigureHeartbeat}
             contextUsage={contextUsage}
-            onCompactClick={
-              supportsCompactOnUsageClick ? handleCompactUsageClick : undefined
-            }
             lastActivityAt={lastActivityAt}
             sessionLiveness={sessionLiveness}
             showPatientQueueMode={showPatientQueueMode}

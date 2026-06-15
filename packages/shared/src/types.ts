@@ -123,6 +123,31 @@ export type RecapMode = (typeof RECAP_MODES)[number];
 export const PROMPT_SUGGESTION_MODES = ["off", "native"] as const;
 export type PromptSuggestionMode = (typeof PROMPT_SUGGESTION_MODES)[number];
 
+export const PROMPT_CACHE_KEEPALIVE_MODES = ["auto", "off"] as const;
+export type PromptCacheKeepaliveMode =
+  (typeof PROMPT_CACHE_KEEPALIVE_MODES)[number];
+export const DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES = 40;
+
+export interface PromptCacheKeepaliveProviderInfo {
+  /** Whether this provider can refresh/cache-touch without polluting session context. */
+  supportsNoContextPollutionNudge: boolean;
+  /** Default mode for capable providers when no server setting is saved. */
+  defaultMode: PromptCacheKeepaliveMode;
+  /** Default idle cadence in minutes when no server setting overrides it. */
+  defaultInactivityMinutes: number;
+}
+
+export interface PromptCacheKeepaliveProviderSetting {
+  mode?: PromptCacheKeepaliveMode;
+  inactivityMinutes?: number;
+}
+
+export interface PromptCacheKeepaliveSettings {
+  providers?: Partial<
+    Record<ProviderName, PromptCacheKeepaliveProviderSetting>
+  >;
+}
+
 export const HELPER_SIDE_MODEL_SAME_AS_MAIN = "same-as-main" as const;
 export const HELPER_SIDE_MODEL_CHEAPEST = "cheapest" as const;
 export const HELPER_SIDE_MODEL_TARGET_PREFIX = "helper-target:" as const;
@@ -209,6 +234,8 @@ export interface ProviderInfo {
   supportsNativeRecaps?: boolean;
   /** Whether this provider emits prompt suggestions in its ordinary protocol. */
   supportsNativePromptSuggestions?: boolean;
+  /** Prompt-cache keepalive capability exposed for provider-economics UI. */
+  promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo;
   /**
    * Whether this provider has a real transcript-fork primitive (new
    * resumable session from a prefix of an existing one). Default: false;
@@ -371,18 +398,19 @@ export type ThinkingOption = "off" | "auto" | `on:${EffortLevel}` | EffortLevel;
 /**
  * Whether the model is asked to return summarized thinking text.
  * - "summarized": emit a human-readable reasoning summary (Opus 4.7/4.8).
- * - "omitted" (default when unset): redacted thinking, no summary text.
+ * - "omitted": explicitly request redacted thinking with no summary text.
  */
 export type ThinkingDisplay = "summarized" | "omitted";
 
 /**
- * User-facing "Show thinking" preference. Provider-agnostic: drives the
- * client render gate (default show/hide of thought blocks) for every
- * provider, and the request side (summarized thinking) where the provider
- * supports an explicit request.
- * - "default": provider-native behavior (least disruptive).
- * - "on": show thoughts; request summaries where supported.
- * - "off": hide thoughts; suppress the request where supported.
+ * User-facing "Show thinking" display preference. Provider-agnostic: drives
+ * the client render gate (default show/hide of thought blocks) for every
+ * provider. Servers may still receive this for wire compatibility, but
+ * provider summary requests are independent and default-on when thinking is
+ * enabled.
+ * - "default": YA/provider default render behavior.
+ * - "on": show thoughts.
+ * - "off": hide thoughts.
  */
 export type ShowThinking = "default" | "on" | "off";
 
@@ -399,15 +427,14 @@ export type ThinkingConfig =
  * On Opus 4.6+, "enabled" type is for older models and crashes the CLI.
  * Instead, "on" mode uses adaptive + explicit effort level.
  *
- * `showThinking` is the request-side mapping of the user preference: "on"
- * asks the model to return summarized thinking text (`display:
- * 'summarized'`), "off" explicitly omits it, and "default" leaves the
- * provider-native behavior (no `display` field). Only meaningful for
- * adaptive thinking; ignored when thinking is disabled.
+ * YA always requests summarized thinking text when thinking is enabled; the
+ * client display toggle decides whether produced thinking rows are shown.
+ * `showThinking` is retained for backwards-compatible callers but no longer
+ * controls the provider request.
  */
 export function thinkingOptionToConfig(
   option: ThinkingOption,
-  showThinking: ShowThinking = "default",
+  _showThinking: ShowThinking = "default",
 ): {
   thinking: ThinkingConfig;
   effort?: EffortLevel;
@@ -415,16 +442,10 @@ export function thinkingOptionToConfig(
   if (option === "off") {
     return { thinking: { type: "disabled" } };
   }
-  const display: ThinkingDisplay | undefined =
-    showThinking === "on"
-      ? "summarized"
-      : showThinking === "off"
-        ? "omitted"
-        : undefined;
-  const adaptiveThinking = (): ThinkingConfig =>
-    display === undefined
-      ? { type: "adaptive" }
-      : { type: "adaptive", display };
+  const adaptiveThinking = (): ThinkingConfig => ({
+    type: "adaptive",
+    display: "summarized",
+  });
   if (option === "auto") {
     return { thinking: adaptiveThinking() };
   }

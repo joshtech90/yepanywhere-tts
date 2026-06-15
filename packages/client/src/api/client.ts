@@ -1,5 +1,6 @@
 import type {
   AgentActivity,
+  AgentContextHints,
   BrowserProfilesResponse,
   ClientDefaults,
   ConnectionsResponse,
@@ -15,6 +16,7 @@ import type {
   NewSessionDefaults,
   PendingInputType,
   PromptSuggestionMode,
+  PromptCacheKeepaliveSettings,
   ProviderInfo,
   ProviderName,
   RecapMode,
@@ -158,7 +160,7 @@ export interface SessionOptions {
   /** Provider-visible service tier. Omit for provider/default behavior. */
   serviceTier?: string;
   thinking?: ThinkingOption;
-  /** Request-side "Show thinking" preference (default/on/off). */
+  /** Display preference for thinking rows (default/on/off). */
   showThinking?: ShowThinking;
   provider?: ProviderName;
   /** SSH host alias for remote execution (undefined = local) */
@@ -1050,6 +1052,7 @@ export const api = {
         createdAt: string;
         deviceName?: string;
         endpointDomain: string;
+        deviceType: "android" | "ios" | "mobile" | "desktop" | "unknown";
       }>;
     }>("/push/subscriptions"),
 
@@ -1057,10 +1060,16 @@ export const api = {
     browserProfileId: string,
     message?: string,
     urgency?: "normal" | "persistent" | "silent",
+    deliveryUrgency?: "very-low" | "low" | "normal" | "high",
   ) =>
     fetchJSON<{ success: boolean }>("/push/test", {
       method: "POST",
-      body: JSON.stringify({ browserProfileId, message, urgency }),
+      body: JSON.stringify({
+        browserProfileId,
+        message,
+        urgency,
+        deliveryUrgency,
+      }),
     }),
 
   deletePushSubscription: (browserProfileId: string) =>
@@ -1493,6 +1502,8 @@ export interface ServerSettings {
   allowedHosts?: string;
   /** Free-form instructions appended to the system prompt for all sessions */
   globalInstructions?: string;
+  /** Optional additive context hints composed with global instructions */
+  agentContextHints?: AgentContextHints;
   /** Default idle minutes before an opted-in session queues a heartbeat turn */
   heartbeatTurnsAfterMinutes?: number;
   /** Default text queued as the synthetic heartbeat user turn */
@@ -1509,6 +1520,8 @@ export interface ServerSettings {
   deviceBridgeEnabled?: boolean;
   /** Defaults applied when opening the new session form */
   newSessionDefaults?: NewSessionDefaults;
+  /** Provider-scoped prompt-cache keepalive settings */
+  promptCacheKeepalive?: PromptCacheKeepaliveSettings;
   /** Browser-client defaults used when local storage has no explicit value */
   clientDefaults?: ClientDefaults;
   /** Server-routed speech audio retention policy */

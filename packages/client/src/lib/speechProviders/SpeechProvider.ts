@@ -11,6 +11,8 @@
  * against this contract; no consumer-side plumbing changes per provider.
  */
 
+import type { ConnectionSpeechSocket } from "../connection/types";
+
 /** Granular status of a speech recognition session. */
 export type SpeechProviderStatus =
   | "idle"
@@ -101,6 +103,12 @@ export interface SpeechProviderOptions extends SpeechProviderEvents {
   serverStreaming?: boolean;
   /** Smart Turn settings for streaming backends that support it. */
   smartTurn?: SpeechSmartTurnSettings;
+  /** Keep the mic device warm between dictations (skips getUserMedia cold-open). */
+  keepMicWarm?: boolean;
+  /** Browser-local microphone device id for YA-server capture. */
+  micDeviceId?: string | null;
+  /** Open a dedicated relayed speech socket when YA is reached through relay. */
+  openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
 }
 
 /** Subscriber callback receiving the latest state snapshot. */
@@ -134,6 +142,9 @@ export interface SpeechProvider {
 
   /** End the current session. No-op if not listening. */
   stop(): void;
+
+  /** Speculatively acquire reusable resources before the user clicks. */
+  prewarm?(): void;
 
   /** Release all resources. Provider must not be used after dispose(). */
   dispose(): void;

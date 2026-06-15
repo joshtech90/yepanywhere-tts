@@ -26,6 +26,7 @@ const {
   mockSetSpeechSmartTurnSettings,
   mockSetGrokSpeechAudioSettings,
   mockVoiceToggle,
+  remoteBasePathState,
 } = vi.hoisted(() => ({
   versionState: {
     version: {
@@ -58,6 +59,9 @@ const {
   mockSetSpeechSmartTurnSettings: vi.fn(),
   mockSetGrokSpeechAudioSettings: vi.fn(),
   mockVoiceToggle: vi.fn(),
+  remoteBasePathState: {
+    basePath: "",
+  },
 }));
 
 vi.mock("../../hooks/useDraftPersistence", () => ({
@@ -144,6 +148,10 @@ vi.mock("../../hooks/useVersion", () => ({
     refetch: vi.fn(),
     refetchFresh: vi.fn(),
   }),
+}));
+
+vi.mock("../../hooks/useRemoteBasePath", () => ({
+  useRemoteBasePath: () => remoteBasePathState.basePath,
 }));
 
 vi.mock("../../i18n", () => ({
@@ -405,6 +413,7 @@ describe("MessageInput", () => {
     modelSettingsState.grokSpeechAudioSettings = {
       uplinkMode: "pcm16",
     };
+    remoteBasePathState.basePath = "";
     mockSetSpeechMethod.mockReset();
     mockSetThinkingMode.mockReset();
     mockSetEffortLevel.mockReset();
@@ -516,7 +525,11 @@ describe("MessageInput", () => {
     ).toBe("ya-grok");
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
-    expect(screen.getByRole("radio", { name: /Grok STT/ })).toBeDefined();
+    expect(
+      screen.getByRole("radio", {
+        name: /^Grok STT xAI speech-to-text through YA\.$/,
+      }),
+    ).toBeDefined();
     fireEvent.click(screen.getByRole("radio", { name: /Deepgram STT/ }));
 
     expect(mockSetSpeechMethod).toHaveBeenCalledWith("ya-deepgram");
@@ -558,7 +571,7 @@ describe("MessageInput", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
     expect(screen.getByText("Grok STT audio")).toBeDefined();
     expect(
-      (screen.getByLabelText("Compressed") as HTMLInputElement).checked,
+      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
     ).toBe(true);
     expect(screen.queryByText("Smart Turn")).toBeNull();
 
@@ -566,6 +579,31 @@ describe("MessageInput", () => {
     expect(mockSetGrokSpeechAudioSettings).toHaveBeenCalledWith({
       uplinkMode: "pcm16",
     });
+  });
+
+  it("keeps Grok audio controls visible in relay mode", () => {
+    remoteBasePathState.basePath = "/ygraehl";
+    versionState.version = {
+      ...versionState.version,
+      voiceBackends: ["ya-grok"],
+      voiceBackendCapabilities: {
+        "ya-grok": { streaming: true, smartTurn: true },
+      },
+    };
+    modelSettingsState.speechMethod = "ya-grok";
+    modelSettingsState.hasStoredSpeechMethod = true;
+    modelSettingsState.grokSpeechAudioSettings = {
+      uplinkMode: "browser-compressed",
+    };
+
+    renderMessageInput();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
+
+    expect(screen.getByText("Grok STT audio")).toBeDefined();
+    expect(
+      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
   it("keeps Up as native navigation when the composer has text", () => {
@@ -586,6 +624,30 @@ describe("MessageInput", () => {
     fireEvent.keyDown(textarea, { key: "p", ctrlKey: true });
 
     expect(onRecallLastSubmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows slash suggestions from a leading slash token", () => {
+    const textarea = renderMessageInput(vi.fn(() => true), {
+      slashCommands: ["compact", "goal"],
+      onCustomCommand: vi.fn(() => false),
+    });
+
+    fireEvent.change(textarea, { target: { value: "/co" } });
+
+    expect(screen.getByRole("menuitem", { name: "/compact" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "/goal" })).toBeNull();
+  });
+
+  it("accepts a typed slash suggestion into the composer", () => {
+    const textarea = renderMessageInput(vi.fn(() => true), {
+      slashCommands: ["compact", "goal"],
+      onCustomCommand: vi.fn(() => false),
+    }) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "/co" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(textarea.value).toBe("/compact ");
   });
 
   it("shows the isearch key guide on shortcut help hover while search is active", async () => {
@@ -670,7 +732,7 @@ describe("MessageInput", () => {
     expect(keys).toEqual(["Ctrl", "Alt", "S"]);
   });
 
-  it("keeps stop available while a running composer has queued text", () => {
+  it("hides stop while a running composer has queued text", () => {
     const onStop = vi.fn();
     const textarea = renderMessageInput(
       vi.fn(() => true),
@@ -684,10 +746,9 @@ describe("MessageInput", () => {
 
     fireEvent.change(textarea, { target: { value: "still editable" } });
 
-    fireEvent.click(screen.getByLabelText("toolbarStop"));
-
     expect(screen.getByLabelText("toolbarQueueLabel")).toBeTruthy();
-    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("toolbarStop")).toBeNull();
+    expect(onStop).not.toHaveBeenCalled();
   });
 
   it("stops the current turn with Escape from the composer", () => {
@@ -1191,7 +1252,7 @@ describe("MessageInput", () => {
     );
 
     const primaryButton = screen.getByLabelText("toolbarQueueLabel");
-    expect(primaryButton.getAttribute("title")).toContain(
+    expect(primaryButton.getAttribute("data-tooltip")).toContain(
       "toolbarQueueTooltip",
     );
 
@@ -1403,6 +1464,78 @@ describe("MessageInput", () => {
       null,
     );
     expect(screen.getByLabelText("Queue message")).toBeTruthy();
+  });
+
+  it("renders context usage as passive status chrome", () => {
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{ ...toolbarVisibility, contextUsage: true }}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          contextUsage: {
+            inputTokens: 42_000,
+            percentage: 42,
+            contextWindow: 100_000,
+          },
+        }}
+      />,
+    );
+
+    const indicator = container.querySelector(".context-usage-indicator");
+    expect(indicator).toBeTruthy();
+    expect(indicator?.closest("button")).toBe(null);
+  });
+
+  it("uses only the custom tooltip on the primary send action", () => {
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "steer",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "steer",
+            primaryActionLabel: "Steer current turn",
+            tooltip: "Steer current turn\nEnter",
+            icon: "↗",
+          },
+        }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Steer current turn" });
+    expect(button.getAttribute("data-tooltip")).toBe("Steer current turn\nEnter");
+    expect(button.getAttribute("title")).toBe(null);
+    expect(container.querySelector(".send-button-with-help")).toBe(button);
   });
 
   it("opens a bottom-row overflow strip for lower-priority controls", () => {

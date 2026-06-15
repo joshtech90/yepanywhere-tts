@@ -1,15 +1,14 @@
+import type { SessionLivenessSnapshot } from "@yep-anywhere/shared";
 import type { RenderItem } from "../types/renderItems";
 
 export type SessionActivityOwner = "self" | "external" | "none";
-export type SessionActivityProcessState =
-  | "idle"
-  | "in-turn"
-  | "waiting-input";
+export type SessionActivityProcessState = "idle" | "in-turn" | "waiting-input";
 
 interface SessionActivityUiInput {
   owner: SessionActivityOwner;
   processState: SessionActivityProcessState;
   items: RenderItem[];
+  sessionLiveness?: SessionLivenessSnapshot | null;
   hasSessionUpdateStream?: boolean;
   sessionUpdatesConnected?: boolean;
 }
@@ -17,6 +16,12 @@ interface SessionActivityUiInput {
 export interface SessionActivityUiState {
   hasPendingToolCalls: boolean;
   hasPendingToolCallsInLatestTurn: boolean;
+  /** Tip-most pending tool_use in the latest turn (id, name, input), if any. */
+  pendingToolCallInLatestTurn: {
+    id: string;
+    toolName: string;
+    toolInput: unknown;
+  } | null;
   latestTurnSettled: boolean;
   canStopOwnedProcess: boolean;
   shouldDeferMessages: boolean;
@@ -65,6 +70,7 @@ export function getSessionActivityUiState({
   owner,
   processState,
   items,
+  sessionLiveness = null,
   hasSessionUpdateStream = false,
   sessionUpdatesConnected = true,
 }: SessionActivityUiInput): SessionActivityUiState {
@@ -77,14 +83,32 @@ export function getSessionActivityUiState({
   const hasPendingToolCallsInLatestTurn = latestTurnItems.some(
     (item) => item.type === "tool_call" && item.status === "pending",
   );
+  // The dangling tool call the "waiting elsewhere" banner is about: the
+  // tip-most pending tool_use in the latest turn. Used to name the tool and to
+  // re-arm a per-tool dismissal when a *different* call goes pending.
+  let pendingToolCallInLatestTurn: SessionActivityUiState["pendingToolCallInLatestTurn"] =
+    null;
+  for (let index = latestTurnItems.length - 1; index >= 0; index -= 1) {
+    const item = latestTurnItems[index];
+    if (item?.type === "tool_call" && item.status === "pending") {
+      pendingToolCallInLatestTurn = {
+        id: item.id,
+        toolName: item.toolName,
+        toolInput: item.toolInput,
+      };
+      break;
+    }
+  }
   const latestTurnSettled = isTerminalAssistantItem(
     latestSubstantiveItem(latestTurnItems),
   );
 
   const ownsTurn = owner === "self";
+  const providerRetained =
+    sessionLiveness?.derivedStatus === "verified-waiting-provider";
   const staleStreamMayHideCurrentTurn =
     hasSessionUpdateStream && !sessionUpdatesConnected;
-  const processStateIsActive = processState !== "idle";
+  const processStateIsActive = processState !== "idle" || providerRetained;
   const latestTurnFallbackActive =
     !latestTurnSettled &&
     (hasPendingToolCallsInLatestTurn || staleStreamMayHideCurrentTurn);
@@ -93,11 +117,13 @@ export function getSessionActivityUiState({
   const canStopOwnedProcess =
     ownsTurn &&
     (processState === "in-turn" ||
+      providerRetained ||
       (!latestTurnSettled && hasPendingToolCallsInLatestTurn));
 
   return {
     hasPendingToolCalls,
     hasPendingToolCallsInLatestTurn,
+    pendingToolCallInLatestTurn,
     latestTurnSettled,
     canStopOwnedProcess,
     shouldDeferMessages: latestTurnMayStillBeActive,
@@ -106,6 +132,7 @@ export function getSessionActivityUiState({
       latestTurnMayStillBeActive &&
       (processState === "in-turn" ||
         processState === "waiting-input" ||
+        providerRetained ||
         latestTurnFallbackActive),
   };
 }

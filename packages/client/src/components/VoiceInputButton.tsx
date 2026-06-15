@@ -8,10 +8,12 @@ import {
 } from "react";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
 import {
   SPEECH_STATUS_LABELS,
   useSpeechRecognition,
 } from "../hooks/useSpeechRecognition";
+import { useConnection } from "../hooks/useConnection";
 import { useVersion } from "../hooks/useVersion";
 import { useViewportWidth } from "../hooks/useViewportWidth";
 import { useI18n } from "../i18n";
@@ -33,6 +35,8 @@ export interface VoiceInputButtonRef {
   stopAndFinalize: () => string;
   /** Toggle listening on/off */
   toggle: () => void;
+  /** Speculatively warm capture resources before the first click. */
+  prewarm: () => void;
   /** Whether currently listening */
   isListening: boolean;
   /** Whether voice input is available (supported and enabled) */
@@ -91,7 +95,9 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     grokSpeechAudioSettings: storedGrokSpeechAudioSettings,
   } = useModelSettings();
   const { version: versionInfo } = useVersion();
+  const connection = useConnection();
   const basePath = useRemoteBasePath();
+  const { keepMicWarm, micDeviceId } = useSpeechCaptureSettings();
   const serverVoiceEnabled =
     versionInfo?.capabilities?.includes("voiceInput") ?? true;
   const speechMethod = useMemo(
@@ -116,9 +122,15 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   const grokPcmUplink =
     speechMethod !== "ya-grok" ||
     grokSpeechAudioSettings.uplinkMode === "pcm16";
+  const relayTransport = basePath !== "";
+  const openRelayedSpeechSocket =
+    relayTransport && connection.openSpeechSocket
+      ? connection.openSpeechSocket.bind(connection)
+      : undefined;
   const serverStreaming =
     speechMethod !== "browser-native" &&
     grokPcmUplink &&
+    (!relayTransport || openRelayedSpeechSocket !== undefined) &&
     versionInfo?.voiceBackendCapabilities?.[speechMethod]?.streaming === true;
   const viewportWidth = useViewportWidth();
 
@@ -146,6 +158,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     status,
     toggleListening,
     stopListening,
+    prewarm,
     error,
     interimTranscript,
   } = useSpeechRecognition({
@@ -154,6 +167,9 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     getTranscriptionContext,
     serverStreaming,
     smartTurn: serverStreaming ? smartTurn : undefined,
+    keepMicWarm,
+    micDeviceId,
+    openRelayedSpeechSocket,
     onResult: handleResult,
     onInterimResult: handleInterim,
   });
@@ -177,6 +193,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
         return pending;
       },
       toggle: toggleListening,
+      prewarm,
       isListening: isActive,
       isAvailable,
     }),
@@ -185,6 +202,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       isListening,
       isStarting,
       isActive,
+      prewarm,
       stopListening,
       toggleListening,
       isAvailable,
@@ -230,7 +248,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   const button = (
     <button
       type="button"
-      className={`voice-input-button ${isActive ? "listening" : ""} ${className}`}
+      className={`voice-input-button ${isListening ? "listening" : ""} ${isStarting ? "connecting" : ""} ${className}`}
       onClick={handleClick}
       disabled={disabled}
       title={
@@ -247,8 +265,10 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       }
       aria-pressed={isActive}
     >
-      {isActive ? (
-        // Recording indicator - animated bars
+      {isListening ? (
+        // Recording indicator - animated bars (only once audio is actually
+        // flowing; during "starting" we show the mic so the button does not
+        // look like it is capturing before the pipeline is live).
         <svg
           width="16"
           height="16"
@@ -297,8 +317,13 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     </button>
   );
 
-  // If showing status text, wrap in container; otherwise just return the button
-  if (showStatusText && isListening) {
+  // If showing status text, wrap in container; otherwise just return the button.
+  // Show during "starting" too so the user sees "Connecting..." instead of a
+  // button that looks live before capture has actually begun. Errors break
+  // through the desktop-only gate: on a phone (coarse pointer / narrow) the
+  // status text is normally hidden, which left mic failures with no feedback
+  // at all — the original complaint. An error must always be visible.
+  if ((showStatusText && isActive) || error) {
     return (
       <div
         className={`voice-input-container ${isListening ? "listening" : ""} ${statusClass}`}

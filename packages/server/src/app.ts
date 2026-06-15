@@ -5,6 +5,7 @@ import type {
   AppSession,
   UrlProjectId,
 } from "@yep-anywhere/shared";
+import { DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { join } from "node:path";
 import type { AuthService } from "./auth/AuthService.js";
@@ -81,7 +82,7 @@ import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
 import { createVersionRoutes } from "./routes/version.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
-import { configureProviderRuntime } from "./sdk/providers/index.js";
+import { configureProviderRuntime, getProvider } from "./sdk/providers/index.js";
 import type {
   ClaudeSDK,
   PermissionMode,
@@ -213,6 +214,10 @@ export interface AppOptions {
   voiceInputEnabled?: boolean;
   /** Validated server-routed speech backends for capability advertisement. */
   speechBackendRegistry?: SpeechBackendRegistry;
+  /** xAI STT key that direct browser STT clients may borrow when enabled. */
+  xaiSttApiKey?: string;
+  /** Whether authenticated clients may borrow the server's xAI STT key. */
+  shareXaiSttApiKeyWithClients?: boolean;
   /** Allowed directory prefixes for serving local images. Default: ["/tmp"] */
   allowedImagePaths?: string[];
   /** Text-to-speech service (Google Cloud). Enables the /api/tts routes. */
@@ -575,6 +580,28 @@ export function createApp(options: AppOptions): AppResult {
     getHeartbeatTurnCandidates: options.sessionMetadataService
       ? getHeartbeatTurnCandidates
       : undefined,
+    getPromptCacheKeepaliveSettings: (providerName) => {
+      const capability = getProvider(providerName)?.promptCacheKeepalive;
+      if (!capability?.supportsNoContextPollutionNudge) {
+        return {
+          enabled: false,
+          inactivityMinutes: DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+        };
+      }
+
+      const saved =
+        options.serverSettingsService?.getSetting("promptCacheKeepalive")
+          ?.providers?.[providerName];
+      const mode = saved?.mode ?? capability.defaultMode;
+      const inactivityMinutes =
+        saved?.inactivityMinutes ??
+        capability.defaultInactivityMinutes ??
+        DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES;
+      return {
+        enabled: mode === "auto",
+        inactivityMinutes,
+      };
+    },
   });
 
   // Create external session tracker if eventBus is available
@@ -1155,6 +1182,8 @@ export function createApp(options: AppOptions): AppResult {
         upgradeWebSocket: options.upgradeWebSocket,
         dataDir: options.dataDir,
         serverSettingsService: options.serverSettingsService,
+        xaiSttApiKey: options.xaiSttApiKey,
+        shareXaiSttApiKeyWithClients: options.shareXaiSttApiKeyWithClients,
       }),
     );
   }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   type EffortLevel,
   type PermissionRules,
   type PromptSuggestionMode,
@@ -68,6 +69,41 @@ const LIVENESS_PROBE_CHECK_INTERVAL_MS = 30 * 1000;
 const LIVENESS_PROBE_REFRESH_MS = 60 * 1000;
 const DEFAULT_HEARTBEAT_TURN_TEXT = "continue";
 const DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES = 5;
+
+function thinkingConfigsEqual(
+  current?: ThinkingConfig,
+  next?: ThinkingConfig,
+): boolean {
+  if (current?.type !== next?.type) return false;
+  if (!current || !next) return true;
+  if (current.type === "adaptive" && next.type === "adaptive") {
+    return current.display === next.display;
+  }
+  if (current.type === "enabled" && next.type === "enabled") {
+    return (
+      current.budgetTokens === next.budgetTokens &&
+      current.display === next.display
+    );
+  }
+  return true;
+}
+
+function isDynamicThinkingModeConfig(thinking?: ThinkingConfig): boolean {
+  return (
+    !thinking ||
+    thinking.type === "disabled" ||
+    (thinking.type === "adaptive" && thinking.display === undefined)
+  );
+}
+
+function canApplyThinkingConfigDynamically(
+  current?: ThinkingConfig,
+  next?: ThinkingConfig,
+): boolean {
+  if (!isDynamicThinkingModeConfig(current)) return false;
+  if (!isDynamicThinkingModeConfig(next)) return false;
+  return current?.type !== next?.type;
+}
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 2000;
 const FORCED_HEARTBEAT_INTERRUPT_PREAMBLE =
   "interrupted for heartbeat; resume interrupted command after responding:";
@@ -317,6 +353,11 @@ export interface HeartbeatTurnCandidate {
   hasPendingToolCall: boolean;
 }
 
+export interface PromptCacheKeepaliveSettings {
+  enabled: boolean;
+  inactivityMinutes: number;
+}
+
 /** Optional callback to persist executor when session ID is received */
 export type OnSessionExecutorCallback = (
   sessionId: string,
@@ -362,6 +403,10 @@ export interface SupervisorOptions {
   getHeartbeatTurnCandidates?: () =>
     | Promise<HeartbeatTurnCandidate[]>
     | HeartbeatTurnCandidate[];
+  /** Callback to read the current provider-scoped prompt-cache keepalive setting. */
+  getPromptCacheKeepaliveSettings?: (
+    provider: ProviderName,
+  ) => PromptCacheKeepaliveSettings | undefined;
   /** Maximum time to wait for a graceful provider interrupt before hard abort. */
   interruptTimeoutMs?: number;
 }
@@ -390,6 +435,9 @@ export class Supervisor {
   private getHeartbeatTurnCandidates?: () =>
     | Promise<HeartbeatTurnCandidate[]>
     | HeartbeatTurnCandidate[];
+  private getPromptCacheKeepaliveSettings?: (
+    provider: ProviderName,
+  ) => PromptCacheKeepaliveSettings | undefined;
   private heartbeatTurnInFlight = false;
   private heartbeatTurnTimer: ReturnType<typeof setInterval>;
   private livenessProbeTimer: ReturnType<typeof setInterval>;
@@ -397,10 +445,7 @@ export class Supervisor {
    * One-shot patient-queue re-checks keyed by process id. Bounded: armed only
    * while a process holds patient deferred entries; cleared on unregister.
    */
-  private patientCheckTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
+  private patientCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private interruptTimeoutMs: number;
 
   constructor(options: SupervisorOptions) {
@@ -421,6 +466,8 @@ export class Supervisor {
     this.onSessionSummary = options.onSessionSummary;
     this.getHeartbeatTurnSettings = options.getHeartbeatTurnSettings;
     this.getHeartbeatTurnCandidates = options.getHeartbeatTurnCandidates;
+    this.getPromptCacheKeepaliveSettings =
+      options.getPromptCacheKeepaliveSettings;
     this.interruptTimeoutMs =
       options.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
     this.staleCheckTimer = setInterval(
@@ -470,6 +517,29 @@ export class Supervisor {
       return "native";
     }
     return "off";
+  }
+
+  registerPromptCacheKeepaliveViewer(process: Process): () => void {
+    if (!process.supportsPromptCacheKeepalive()) {
+      return () => {};
+    }
+
+    return process.registerPromptCacheKeepaliveLease({
+      getInactivityMs: () => {
+        const setting = this.getPromptCacheKeepaliveSettings?.(
+          process.provider,
+        );
+        if (!setting?.enabled) {
+          return null;
+        }
+        const inactivityMinutes =
+          Number.isFinite(setting.inactivityMinutes) &&
+          setting.inactivityMinutes > 0
+            ? setting.inactivityMinutes
+            : DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES;
+        return inactivityMinutes * 60_000;
+      },
+    });
   }
 
   async startSession(
@@ -648,6 +718,8 @@ export class Supervisor {
       clientName: modelSettings?.clientName,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      onProviderRetentionChange: () =>
+        this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
         if (!processHolder.process) {
           return { behavior: "deny", message: "Process not ready" };
@@ -663,6 +735,7 @@ export class Supervisor {
       isProcessAlive,
       probeLiveness,
       getProviderActivity,
+      getProviderRetention,
       setMaxThinkingTokens,
       interrupt,
       supportedModels,
@@ -684,6 +757,7 @@ export class Supervisor {
         this.shouldRetainIdleProcess(sessionId),
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
+      getProviderRetentionFn: getProviderRetention,
       pid: () => {
         const p = result.pid;
         return typeof p === "function" ? p() : p;
@@ -912,9 +986,13 @@ export class Supervisor {
       });
     }
 
-    const queued = await this.queueProcessMessage(params.process, params.message, {
-      allowSteer: false,
-    });
+    const queued = await this.queueProcessMessage(
+      params.process,
+      params.message,
+      {
+        allowSteer: false,
+      },
+    );
     if (!queued.success) {
       throw new Error(queued.error ?? "Failed to queue message after compact");
     }
@@ -1025,6 +1103,8 @@ export class Supervisor {
       remoteEnv: modelSettings?.remoteEnv,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      onProviderRetentionChange: () =>
+        this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
         // Delegate to the process's handleToolApproval
         if (!processHolder.process) {
@@ -1041,6 +1121,7 @@ export class Supervisor {
       isProcessAlive,
       probeLiveness,
       getProviderActivity,
+      getProviderRetention,
       setMaxThinkingTokens,
       interrupt,
       supportedModels,
@@ -1061,6 +1142,7 @@ export class Supervisor {
         this.shouldRetainIdleProcess(sessionId),
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
+      getProviderRetentionFn: getProviderRetention,
       pid: () => {
         const p = result.pid;
         return typeof p === "function" ? p() : p;
@@ -1148,6 +1230,8 @@ export class Supervisor {
       promptSuggestions: promptSuggestionMode === "native",
       shouldEmitLiveDeltas: () =>
         processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+      onProviderRetentionChange: () =>
+        this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
         if (!processHolder.process) {
           return { behavior: "deny", message: "Process not ready" };
@@ -1163,6 +1247,7 @@ export class Supervisor {
       isProcessAlive,
       probeLiveness,
       getProviderActivity,
+      getProviderRetention,
       setMaxThinkingTokens,
       interrupt,
       steer,
@@ -1185,6 +1270,8 @@ export class Supervisor {
         this.shouldRetainIdleProcess(sessionId),
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
+      getProviderRetentionFn: getProviderRetention,
+      refreshPromptCacheFn: result.refreshPromptCache,
       pid: () => {
         const p = result.pid;
         return typeof p === "function" ? p() : p;
@@ -1268,6 +1355,8 @@ export class Supervisor {
       promptSuggestions: promptSuggestionMode === "native",
       shouldEmitLiveDeltas: () =>
         processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+      onProviderRetentionChange: () =>
+        this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
         if (!processHolder.process) {
           return { behavior: "deny", message: "Process not ready" };
@@ -1283,6 +1372,7 @@ export class Supervisor {
       isProcessAlive,
       probeLiveness,
       getProviderActivity,
+      getProviderRetention,
       setMaxThinkingTokens,
       interrupt,
       steer,
@@ -1305,6 +1395,8 @@ export class Supervisor {
         this.shouldRetainIdleProcess(sessionId),
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
+      getProviderRetentionFn: getProviderRetention,
+      refreshPromptCacheFn: result.refreshPromptCache,
       pid: () => {
         const p = result.pid;
         return typeof p === "function" ? p() : p;
@@ -1410,10 +1502,12 @@ export class Supervisor {
         if (existingProcess.isTerminated) {
           this.unregisterProcess(existingProcess);
         } else {
+          let restartExistingProcess = false;
           // Check if thinking/effort settings changed
-          const thinkingChanged =
-            existingProcess.thinking?.type !==
-            (modelSettings?.thinking?.type ?? undefined);
+          const thinkingChanged = !thinkingConfigsEqual(
+            existingProcess.thinking,
+            modelSettings?.thinking,
+          );
           const effortChanged =
             existingProcess.effort !== modelSettings?.effort;
 
@@ -1421,6 +1515,10 @@ export class Supervisor {
             if (
               thinkingChanged &&
               !effortChanged &&
+              canApplyThinkingConfigDynamically(
+                existingProcess.thinking,
+                modelSettings?.thinking,
+              ) &&
               existingProcess.supportsThinkingModeChange
             ) {
               // Toggle adaptive/disabled dynamically via deprecated API
@@ -1454,23 +1552,34 @@ export class Supervisor {
                   sessionId,
                   processId: existingProcess.id,
                   oldThinking: existingProcess.thinking?.type,
+                  oldThinkingDisplay:
+                    existingProcess.thinking?.type === "adaptive" ||
+                    existingProcess.thinking?.type === "enabled"
+                      ? existingProcess.thinking.display
+                      : undefined,
                   oldEffort: existingProcess.effort,
                   newThinking: modelSettings?.thinking?.type,
+                  newThinkingDisplay:
+                    modelSettings?.thinking?.type === "adaptive" ||
+                    modelSettings?.thinking?.type === "enabled"
+                      ? modelSettings.thinking.display
+                      : undefined,
                   newEffort: modelSettings?.effort,
                 },
                 "Thinking/effort changed, restarting process",
               );
               await existingProcess.abort();
               this.unregisterProcess(existingProcess);
+              restartExistingProcess = true;
               // Fall through to start a new session with the updated settings
             }
           }
           // Update permission mode if specified
-          if (permissionMode) {
+          if (!restartExistingProcess && permissionMode) {
             existingProcess.setPermissionMode(permissionMode);
           }
           // Queue message to existing process (if we didn't fall through to restart)
-          if (!existingProcess.isTerminated) {
+          if (!restartExistingProcess && !existingProcess.isTerminated) {
             if (modelSettings?.resumeMode === "compact-first") {
               await this.queueAfterResumeCompaction({
                 process: existingProcess,
@@ -1676,7 +1785,10 @@ export class Supervisor {
 
     const modelChanged = nextModel !== process.resolvedModel;
     const serviceTierChanged = nextServiceTier !== process.serviceTier;
-    const thinkingChanged = nextThinking?.type !== process.thinking?.type;
+    const thinkingChanged = !thinkingConfigsEqual(
+      process.thinking,
+      nextThinking,
+    );
     const effortChanged = nextEffort !== process.effort;
 
     if (
@@ -1793,8 +1905,10 @@ export class Supervisor {
     // Service tier is cost-affecting, so changes require an explicit restart
     // rather than being inferred from a normal prompt.
     const serviceTierChanged = process.serviceTier !== requestedServiceTier;
-    const thinkingChanged =
-      process.thinking?.type !== (requestedThinking?.type ?? undefined);
+    const thinkingChanged = !thinkingConfigsEqual(
+      process.thinking,
+      requestedThinking,
+    );
     const effortChanged = process.effort !== requestedEffort;
 
     if (serviceTierChanged || thinkingChanged || effortChanged) {
@@ -1802,6 +1916,10 @@ export class Supervisor {
         !serviceTierChanged &&
         thinkingChanged &&
         !effortChanged &&
+        canApplyThinkingConfigDynamically(
+          process.thinking,
+          requestedThinking,
+        ) &&
         process.supportsThinkingModeChange
       ) {
         // Toggle thinking dynamically via deprecated API (works for auto↔off)
@@ -3066,6 +3184,26 @@ export class Supervisor {
     this.eventBus.emit(event);
   }
 
+  private handleProviderRetentionChanged(processHolder: {
+    process: Process | null;
+  }): void {
+    processHolder.process?.handleProviderRetentionChanged();
+    this.emitWorkerActivity();
+  }
+
+  private processHasActiveWork(process: Process): boolean {
+    if (
+      process.state.type === "in-turn" ||
+      process.state.type === "waiting-input"
+    ) {
+      return true;
+    }
+    return (
+      process.getLivenessSnapshot().derivedStatus ===
+      "verified-waiting-provider"
+    );
+  }
+
   /**
    * Emit worker activity event for safe restart indicator.
    * Called when workers are added, removed, or change state.
@@ -3073,8 +3211,8 @@ export class Supervisor {
   private emitWorkerActivity(): void {
     if (!this.eventBus) return;
 
-    const hasActiveWork = Array.from(this.processes.values()).some(
-      (p) => p.state.type === "in-turn" || p.state.type === "waiting-input",
+    const hasActiveWork = Array.from(this.processes.values()).some((p) =>
+      this.processHasActiveWork(p),
     );
 
     const event: WorkerActivityEvent = {
@@ -3353,8 +3491,8 @@ export class Supervisor {
     queueLength: number;
     hasActiveWork: boolean;
   } {
-    const hasActiveWork = Array.from(this.processes.values()).some(
-      (p) => p.state.type === "in-turn" || p.state.type === "waiting-input",
+    const hasActiveWork = Array.from(this.processes.values()).some((p) =>
+      this.processHasActiveWork(p),
     );
     return {
       activeWorkers: this.processes.size,

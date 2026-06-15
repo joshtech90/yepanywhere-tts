@@ -222,12 +222,6 @@ export interface MessageInputToolbarProps {
 
   // Context usage
   contextUsage?: ContextUsage;
-  /**
-   * Make the context-usage indicator a "compact now" button (provider
-   * advertises a compact command; drafted composer text becomes the
-   * compact instructions).
-   */
-  onCompactClick?: () => void;
   /** Last session activity timestamp for stale composer liveness display. */
   lastActivityAt?: string | null;
   /** Server-derived provider/session liveness evidence. */
@@ -581,7 +575,6 @@ interface ToolbarActionsControl {
   disabled?: boolean;
   voiceDisabled?: boolean;
   contextUsage?: ContextUsage;
-  compact?: { onClick: () => void; title: string } | null;
   btw?: ToolbarBtwControl | null;
   stop?: ToolbarStopControl | null;
   send?: ToolbarSendControl | null;
@@ -1236,6 +1229,11 @@ export function MessageInputToolbarView({
               onGrokAudioSettingsChange={
                 speechControl.onGrokAudioSettingsChange
               }
+              onPointerNearTrigger={() =>
+                speechControl.voiceButton?.kind === "live"
+                  ? speechControl.voiceButton.ref?.current?.prewarm?.()
+                  : undefined
+              }
               trigger={
                 <VoiceInputButton
                   ref={speechControl.voiceButton.ref}
@@ -1764,27 +1762,12 @@ export function MessageInputToolbarView({
             )}
           </div>
         )}
-        {visibility.contextUsage &&
-          (actionsControl.compact ? (
-            <button
-              type="button"
-              className="context-usage-compact-button"
-              onClick={actionsControl.compact.onClick}
-              disabled={actionsControl.disabled}
-              title={actionsControl.compact.title}
-              aria-label={actionsControl.compact.title}
-            >
-              <ContextUsageIndicator
-                usage={actionsControl.contextUsage}
-                size={16}
-              />
-            </button>
-          ) : (
-            <ContextUsageIndicator
-              usage={actionsControl.contextUsage}
-              size={16}
-            />
-          ))}
+        {visibility.contextUsage && (
+          <ContextUsageIndicator
+            usage={actionsControl.contextUsage}
+            size={16}
+          />
+        )}
         {visibility.btw && actionsControl.btw && (
           <button
             type="button"
@@ -1963,7 +1946,6 @@ export function MessageInputToolbarView({
                   : ""
               }`}
               aria-label={actionsControl.send.primaryActionLabel}
-              title={actionsControl.send.tooltip}
               data-tooltip={actionsControl.send.tooltip}
             >
               <span className="send-icon">{actionsControl.send.icon}</span>
@@ -2008,7 +1990,6 @@ export function MessageInputToolbar({
   onToggleHeartbeat,
   onConfigureHeartbeat,
   contextUsage,
-  onCompactClick,
   lastActivityAt,
   sessionLiveness,
   showPatientQueueMode = false,
@@ -2237,7 +2218,7 @@ export function MessageInputToolbar({
             : t("toolbarQueueLabel")
         : t("toolbarSend");
   const stopTitle = `${t("toolbarStop")} (Esc)`;
-  const showStopButton = !!(isRunning && onStop && isThinking);
+  const showStopButton = !!(isRunning && onStop && isThinking && !canSend);
   const showPatientQueueToggle = canShowPatientQueueToggle;
   const showSendButton = !!(
     onSend &&
@@ -2276,12 +2257,17 @@ export function MessageInputToolbar({
     voiceInputEnabled &&
     serverVoiceEnabled &&
     speechMethodOptions.length > 1;
-  const supportsSelectedSpeechSmartTurn =
+  const selectedSpeechBackendCapabilities =
+    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod];
+  const selectedSpeechCanStream =
     selectedSpeechMethod !== "browser-native" &&
     (selectedSpeechMethod !== "ya-grok" ||
       grokSpeechAudioSettings.uplinkMode === "pcm16") &&
-    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod]?.smartTurn ===
-      true;
+    selectedSpeechBackendCapabilities?.streaming === true;
+  const supportsSelectedSpeechSmartTurn =
+    selectedSpeechCanStream &&
+    selectedSpeechBackendCapabilities?.smartTurn === true;
+  const showGrokSpeechAudioControls = selectedSpeechMethod === "ya-grok";
   const activeSpeechSmartTurnSettings: SpeechSmartTurnSettings | undefined =
     supportsSelectedSpeechSmartTurn ? speechSmartTurnSettings : undefined;
   const showLastActivityChip =
@@ -2530,11 +2516,11 @@ export function MessageInputToolbar({
           : undefined,
         smartTurnDisabled: voiceDisabled,
         grokAudioSettings:
-          selectedSpeechMethod === "ya-grok"
+          showGrokSpeechAudioControls
             ? grokSpeechAudioSettings
             : undefined,
         onGrokAudioSettingsChange:
-          selectedSpeechMethod === "ya-grok"
+          showGrokSpeechAudioControls
             ? setGrokSpeechAudioSettings
             : undefined,
         voiceButton:
@@ -2584,12 +2570,6 @@ export function MessageInputToolbar({
         disabled,
         voiceDisabled,
         contextUsage,
-        compact: onCompactClick
-          ? {
-              onClick: onCompactClick,
-              title: t("contextUsageCompactTitle"),
-            }
-          : null,
         btw: onBtwClick
           ? {
               onClick: onBtwClick,

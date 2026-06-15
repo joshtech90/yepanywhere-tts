@@ -22,7 +22,7 @@ Nothing semantically owned by the conversation is discarded by
 inactivity; what dies is the *process* and the *cache warmth*.
 
 - YA reaps an idle provider process after `IDLE_TIMEOUT` seconds
-  (default 5 minutes, `DEFAULT_IDLE_TIMEOUT_MS` in
+  (default 20 minutes, `DEFAULT_IDLE_TIMEOUT_MS` in
   `packages/server/src/supervisor/types.ts`, env parsing in
   `config.ts`). The supervisor `Process` tracks this as an intentional
   idle reap, distinct from a crash.
@@ -200,3 +200,9 @@ Open questions: where fork's "choose a point" lives in the transcript
 UI; whether clear should offer "keep a recap" (see
 [recaps](recaps.md)); whether compact-now belongs in the same menu or
 near the context-usage indicator.
+
+Decision (2026-06-12): do not make the context-usage indicator itself
+send `/compact`. Accidental clicks can mutate an existing session, and
+the indicator is expected to be passive status chrome. Keep compaction
+behind explicit slash-command/session-menu paths unless a future design
+adds a clearly named, deliberate control.

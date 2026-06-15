@@ -22,6 +22,10 @@ import type {
 async function createSpeechApp(
   dataDir?: string,
   speechBackendRegistry?: SpeechBackendRegistry,
+  options?: {
+    xaiSttApiKey?: string;
+    shareXaiSttApiKeyWithClients?: boolean;
+  },
 ) {
   const app = new Hono();
   const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
@@ -37,6 +41,8 @@ async function createSpeechApp(
       speechBackendRegistry: registry,
       upgradeWebSocket,
       dataDir,
+      xaiSttApiKey: options?.xaiSttApiKey,
+      shareXaiSttApiKeyWithClients: options?.shareXaiSttApiKeyWithClients,
     }),
   );
   return { app, wss };
@@ -101,6 +107,37 @@ describe("speech routes", () => {
     await Promise.all(
       tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
     );
+  });
+
+  it("does not expose the xAI STT key without explicit sharing opt-in", async () => {
+    const { app } = await createSpeechApp(undefined, undefined, {
+      xaiSttApiKey: "server-xai-key",
+    });
+
+    const res = await app.request("/api/speech/xai-client-key", {
+      headers: { "X-Yep-Anywhere": "true" },
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(json).toEqual({
+      error: "Server xAI STT key borrowing is disabled",
+    });
+  });
+
+  it("exposes the xAI STT key when client borrowing is enabled", async () => {
+    const { app } = await createSpeechApp(undefined, undefined, {
+      xaiSttApiKey: "server-xai-key",
+      shareXaiSttApiKeyWithClients: true,
+    });
+
+    const res = await app.request("/api/speech/xai-client-key", {
+      headers: { "X-Yep-Anywhere": "true" },
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ apiKey: "server-xai-key" });
   });
 
   it("transcribes batch audio through the HTTP endpoint", async () => {
@@ -243,9 +280,9 @@ describe("speech routes", () => {
         JSON.stringify({
           type: "start",
           backendId: backend.id,
-          mimeType: "audio/pcm;rate=24000;encoding=s16le",
+          mimeType: "audio/pcm;rate=16000;encoding=s16le",
           streaming: true,
-          sampleRate: 24000,
+          sampleRate: 16000,
           encoding: "pcm",
           smartTurn: {
             enabled: true,
@@ -283,7 +320,7 @@ describe("speech routes", () => {
         text: "hello world",
         transcriptionId: expect.any(String),
       });
-      expect(backend.options?.sampleRate).toBe(24000);
+      expect(backend.options?.sampleRate).toBe(16000);
       expect(backend.options?.smartTurnThreshold).toBe(0.7);
       expect(backend.options?.smartTurnTimeoutMs).toBe(3000);
       const metadataPath = await findRetainedMetadata(

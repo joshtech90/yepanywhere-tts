@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { SPEECH_RELAY_CHANNEL } from "@yep-anywhere/shared";
 import { createApp } from "./app.js";
 import { AuthService } from "./auth/AuthService.js";
 import {
@@ -363,6 +364,7 @@ const installService = new InstallService({
   dataDir: config.dataDir,
 });
 const relayClientService = new RelayClientService();
+const relaySpeechClientService = new RelayClientService();
 const networkBindingService = new NetworkBindingService({
   dataDir: config.dataDir,
   cliPortOverride: config.cliPortOverride ? config.port : undefined,
@@ -626,6 +628,8 @@ async function startServer() {
     codexCliPath: config.codexCliPath,
     voiceInputEnabled: config.voiceInputEnabled,
     speechBackendRegistry,
+    xaiSttApiKey: config.xaiSttApiKey,
+    shareXaiSttApiKeyWithClients: config.shareXaiSttApiKeyWithClients,
     allowedImagePaths: config.allowedImagePaths,
   });
   markStartup("app created");
@@ -679,6 +683,8 @@ async function startServer() {
       upgradeWebSocket,
       dataDir: config.dataDir,
       serverSettingsService,
+      xaiSttApiKey: config.xaiSttApiKey,
+      shareXaiSttApiKeyWithClients: config.shareXaiSttApiKeyWithClients,
     }),
   );
   markStartup("speech routes mounted");
@@ -702,6 +708,9 @@ async function startServer() {
     browserProfileService,
     focusedSessionWatchManager,
     deviceBridgeService,
+    speechBackendRegistry,
+    dataDir: config.dataDir,
+    serverSettingsService,
   });
   app.get("/api/ws", wsRelayHandler);
 
@@ -719,6 +728,9 @@ async function startServer() {
     browserProfileService,
     focusedSessionWatchManager,
     deviceBridgeService,
+    speechBackendRegistry,
+    dataDir: config.dataDir,
+    serverSettingsService,
   });
   markStartup("relay accept handler configured");
 
@@ -747,8 +759,27 @@ async function startServer() {
           console.log(`[Relay] Status: ${status}`);
         },
       });
+      if (speechBackendRegistry.enabledIds().length > 0) {
+        relaySpeechClientService.start({
+          relayUrl: relayConfig.url,
+          username: relayConfig.username,
+          installId: installService.getInstallId(),
+          channel: SPEECH_RELAY_CHANNEL,
+          appVersion: compatibility.appVersion,
+          resumeProtocolVersion: compatibility.resumeProtocolVersion,
+          renderProtocolVersion: compatibility.renderProtocolVersion,
+          capabilities: compatibility.capabilities,
+          onRelayConnection: acceptRelayConnection,
+          onStatusChange: (status) => {
+            console.log(`[Relay speech] Status: ${status}`);
+          },
+        });
+      } else {
+        relaySpeechClientService.stop();
+      }
     } else {
       relayClientService.stop();
+      relaySpeechClientService.stop();
     }
   }
 

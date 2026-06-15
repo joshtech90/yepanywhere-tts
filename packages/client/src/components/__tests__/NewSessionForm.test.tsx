@@ -34,6 +34,7 @@ const {
   providersState,
   serverSettingsState,
   versionState,
+  remoteBasePathState,
   filterDropdownState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
@@ -107,6 +108,9 @@ const {
         { streaming?: boolean; smartTurn?: boolean }
       >;
     } | null,
+  },
+  remoteBasePathState: {
+    basePath: "",
   },
   filterDropdownState: {
     selected: [] as string[],
@@ -227,7 +231,7 @@ vi.mock("../../hooks/useProviders", () => ({
 }));
 
 vi.mock("../../hooks/useRemoteBasePath", () => ({
-  useRemoteBasePath: () => "",
+  useRemoteBasePath: () => remoteBasePathState.basePath,
 }));
 
 vi.mock("../../hooks/useRemoteExecutors", () => ({
@@ -406,6 +410,7 @@ describe("NewSessionForm", () => {
     mockSetGrokSpeechAudioSettings.mockReset();
     mockVoiceToggle.mockReset();
     draftKeys.length = 0;
+    remoteBasePathState.basePath = "";
     versionState.version = null;
     modelSettingsState.voiceInputEnabled = true;
     modelSettingsState.speechMethod = "browser-native";
@@ -579,6 +584,21 @@ describe("NewSessionForm", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Low" }));
 
     expect(mockSetEffortLevel).toHaveBeenCalledWith("low");
+  });
+
+  it("does not show the display-only thinking preference in session setup", () => {
+    modelSettingsState.thinkingMode = "on";
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(screen.getByText("modelSettingsThinkingTitle")).toBeDefined();
+    expect(screen.queryByText("showThinkingTitle")).toBeNull();
   });
 
   it("shows detached and recent project choices in the default launcher", () => {
@@ -894,7 +914,7 @@ describe("NewSessionForm", () => {
     fireEvent.contextMenu(screen.getByText("voice"));
     expect(screen.getByText("Grok STT audio")).toBeDefined();
     expect(
-      (screen.getByLabelText("Compressed") as HTMLInputElement).checked,
+      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
     ).toBe(true);
     expect(screen.queryByText("Smart Turn")).toBeNull();
 
@@ -902,6 +922,36 @@ describe("NewSessionForm", () => {
     expect(mockSetGrokSpeechAudioSettings).toHaveBeenCalledWith({
       uplinkMode: "pcm16",
     });
+  });
+
+  it("keeps Grok audio controls visible in relay mode", () => {
+    remoteBasePathState.basePath = "/ygraehl";
+    versionState.version = {
+      voiceBackends: ["ya-grok"],
+      voiceBackendCapabilities: {
+        "ya-grok": { streaming: true, smartTurn: true },
+      },
+    };
+    modelSettingsState.speechMethod = "browser-native";
+    modelSettingsState.hasStoredSpeechMethod = false;
+    modelSettingsState.grokSpeechAudioSettings = {
+      uplinkMode: "browser-compressed",
+    };
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByText("voice"));
+
+    expect(screen.getByText("Grok STT audio")).toBeDefined();
+    expect(
+      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
   it("defaults prompt suggestions off when the provider lacks native support", async () => {

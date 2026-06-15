@@ -19,12 +19,12 @@ const UPLINK_OPTIONS: Array<{
   {
     value: "pcm16",
     label: "PCM16",
-    description: "Send raw 24 kHz PCM16 from browser to YA.",
+    description: "Send raw 16 kHz PCM16 from browser to YA.",
   },
   {
     value: "browser-compressed",
-    label: "Compressed",
-    description: "Use the browser's compressed MediaRecorder upload.",
+    label: "Batch",
+    description: "Use the browser's compressed non-streaming upload.",
   },
 ];
 
@@ -71,7 +71,7 @@ export function SpeechGrokAudioControls({
       <p className="speech-smart-turn-caption">
         {clean.uplinkMode === "pcm16"
           ? "Lossless browser-to-YA uplink. Enables Grok streaming and Smart Turn."
-          : "Compressed browser-to-YA upload for batch Grok transcription."}
+          : "Compressed browser-to-YA upload for non-streaming Grok batch transcription."}
       </p>
     </div>
   );

@@ -6,6 +6,12 @@ export {
   getFilename,
 } from "./ideMetadata.js";
 
+export type { AgentContextHints } from "./agent-context.js";
+export {
+  buildEffectiveAgentContext,
+  LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
+} from "./agent-context.js";
+
 // File path detection (shared between server and client)
 export type { DetectedFilePath, TextSegment } from "./filePathDetection.js";
 export {
@@ -39,6 +45,10 @@ export type {
   ProviderImageSizing,
   ModelInfo,
   RecapMode,
+  PromptCacheKeepaliveMode,
+  PromptCacheKeepaliveProviderInfo,
+  PromptCacheKeepaliveProviderSetting,
+  PromptCacheKeepaliveSettings,
   PromptSuggestionMode,
   HelperTargetConfig,
   SlashCommand,
@@ -69,6 +79,8 @@ export {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   HELPER_SIDE_MODEL_TARGET_PREFIX,
+  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  PROMPT_CACHE_KEEPALIVE_MODES,
   PROMPT_SUGGESTION_MODES,
   RECAP_MODES,
   thinkingOptionToConfig,
@@ -84,6 +96,9 @@ export type {
   SessionLivenessDerivedStatus,
   SessionLivenessProbeStatus,
   SessionLivenessSnapshot,
+  SessionProviderRetentionSnapshot,
+  SessionWakeReason,
+  SessionWakeReasonSnapshot,
 } from "./session-liveness.js";
 
 export type {
@@ -413,6 +428,8 @@ export type {
   RelayUploadProgress,
   RelayUploadComplete,
   RelayUploadError,
+  RelaySpeechControl,
+  RelaySpeechEvent,
   RemoteClientMessage,
   YepMessage,
   RelayMessage,
@@ -523,12 +540,16 @@ export {
 
 // Relay server routing protocol (for relay server <-> yepanywhere/phone)
 export type {
+  RelayChannel,
+  RelayNonDefaultChannel,
   RelayServerCompatibilityMetadata,
   RelayServerRegister,
+  RelayServerChannelRegister,
   RelayServerRegistered,
   RelayServerRejectedReason,
   RelayServerRejected,
   RelayClientConnect,
+  RelayClientChannelConnect,
   RelayClientConnected,
   RelayClientErrorReason,
   RelayClientError,
@@ -540,10 +561,14 @@ export type {
 } from "./relay-protocol.js";
 
 export {
+  DEFAULT_RELAY_CHANNEL,
+  SPEECH_RELAY_CHANNEL,
   isRelayServerRegister,
+  isRelayServerChannelRegister,
   isRelayServerRegistered,
   isRelayServerRejected,
   isRelayClientConnect,
+  isRelayClientChannelConnect,
   isRelayClientConnected,
   isRelayClientError,
   USERNAME_REGEX,

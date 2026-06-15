@@ -6,6 +6,10 @@
 
 Topic: pluggable-speech-recognition
 
+See also: [direct-xai-speech.md](direct-xai-speech.md) for the hosted Grok
+plan where the browser sends audio directly to xAI and YA only brokers
+explicit credential/config material.
+
 ## Contract
 
 - `VOICE_INPUT=false` is the master kill switch. When it is false, YA does
@@ -57,7 +61,10 @@ speech-appropriate compressed audio with `MediaRecorder`, buffers until stop,
 then sends the complete utterance through YA's ordinary API transport so local,
 hosted, and relay clients share the same request path. Streaming transcription
 captures Web Audio samples, converts them to raw PCM16 little-endian at a
-backend-supported sample rate, and sends binary frames to `/api/speech/ws`.
+backend-supported sample rate, and sends binary frames to the direct
+`/api/speech/ws` route locally or to a dedicated secure relay `speech` channel
+remotely. The relayed channel is a second WebSocket/TCP stream for speech, not
+PCM multiplexed through the app/control relay socket.
 
 Backends should implement a common `SpeechBackend` contract:
 
@@ -81,7 +88,7 @@ Backends should implement a common `SpeechBackend` contract:
   same transport as ordinary YA API calls.
 - When the selected server backend advertises `streaming: true`,
   `YaServerProvider` captures microphone audio through Web Audio, downsamples it
-  to 24 kHz signed PCM16 little-endian, and sends binary frames to
+  to 16 kHz signed PCM16 little-endian, and sends binary frames to
   `/api/speech/ws`. Interim and chunk-final events update the composer
   preview; only utterance-final streaming partials commit transcript deltas.
   Clicking stop commits the currently visible preview before ignoring
@@ -96,7 +103,7 @@ Backends should implement a common `SpeechBackend` contract:
   `smart_turn` threshold and `smart_turn_timeout` parameters. The client shows
   Smart Turn controls only when the selected backend advertises that capability.
 - Grok STT has an explicit browser-to-YA audio uplink setting. The default
-  PCM16 mode captures Web Audio in the browser and sends raw 24 kHz PCM16
+  PCM16 mode captures Web Audio in the browser and sends raw 16 kHz PCM16
   frames to YA for streaming recognition. The comparative browser-compressed
   mode uses the browser's MediaRecorder output and the batch transcription
   route; compressed MediaRecorder audio may be equivalent in practice, but YA
@@ -147,6 +154,12 @@ Backends should implement a common `SpeechBackend` contract:
   accepts JSON control frames even when the unified Node WS path presents text
   frames as `Buffer`s. Streaming metadata includes the ordered transcript trace
   as one recognizer event per line.
+- Hosted/relay clients can stream to server STT through a dedicated secure
+  relay `speech` channel. The server registers that channel separately from the
+  app channel under the same relay username/install id, the browser opens a
+  second relayed WebSocket, resumes the same YA remote-access session on it,
+  sends speech controls as encrypted JSON, and sends PCM frames as encrypted
+  binary speech-audio frames.
 - Tests cover registry defaults, explicit backend advertisement, disabled
   voice input, `/api/version.voiceBackends`, HTTP batch transcription, and the
   dummy backend through the mounted WebSocket route.
@@ -164,9 +177,9 @@ client through `fetchJSON("/speech/transcribe", ...)`.
   `voiceInput` but `voiceBackends: []`, causing the UI to expose only
   browser-native recognition. Seeing device-native speech on mobile is
   therefore expected in that bare runtime.
-- The `/api/speech/ws` route is still a direct WebSocket endpoint for local
-  use and Grok streaming. It is not itself multiplexed through the secure
-  remote transport; the batch POST path remains the remote-compatible path.
+- `/api/speech/ws` remains the direct/local streaming endpoint. Relay streaming
+  uses the dedicated secure relay `speech` channel instead of trying to route a
+  raw browser WebSocket through the hosted app origin.
 - Previously selected server methods are reconciled against current
   `voiceBackends` before the mic button is used. If an explicit server backend
   disappears, the current resolver falls back to browser-native rather than
@@ -214,12 +227,67 @@ client through `fetchJSON("/speech/transcribe", ...)`.
 5. Add backend-specific streaming partials beyond Grok where the backend
    supports them. Deepgram is the next candidate; local Whisper needs chunking
    or VAD and should remain a follow-up.
-6. Decide whether future streaming audio should use the existing direct
-   `/api/speech/ws` endpoint only for local clients or gain an explicit secure
-   remote substream.
-7. Re-check current provider audio-input support before implementing
+6. Re-check current provider audio-input support before implementing
    audio-as-modality. Providers that accept audio should get the original
    audio content, while text-only providers keep the transcript-first path.
+
+## Server-Local STT Deployment Plan
+
+Server-local STT is still a first-class reason to keep the YA-mediated speech
+flow. The hosted Grok path should prefer browser-to-xAI when browser-safe auth
+is acceptable, but a local recognizer is different: the model and its warm
+state live on the YA host, so browser audio must go to YA.
+
+Deploy it in stages:
+
+1. **Batch first, streaming later.** Make `ya-whisper` reliable for
+   press-to-talk batch transcription through `POST /api/speech/transcribe`
+   before attempting local streaming partials. A complete utterance is enough
+   for local Whisper's natural operating mode; local streaming requires VAD or
+   chunk-stitching and should not block the first usable server-local release.
+2. **Use the existing warm worker as the first runtime.** Start with the
+   current `faster-whisper` subprocess (`whisper_worker.py`) because it already
+   matches YA's backend contract and keeps the model loaded. Treat
+   `whisper.cpp` or another runtime as a swappable backend implementation only
+   if deployment friction, CPU performance, or packaging makes
+   `faster-whisper` the wrong choice.
+3. **Ship explicit operator configuration.** The opt-in is
+   `YA_VOICE_BACKENDS=ya-whisper`. Model/runtime knobs stay server-local:
+   `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE`. The default
+   should remain CPU-safe (`device=cpu`, `compute_type=int8`) and the model
+   should be chosen for the host class rather than silently downloading a
+   multi-GB model on first use without a clear operator decision.
+4. **Add a readiness surface before advertising.** Startup validation should
+   confirm Python exists, `faster_whisper` imports, the configured model can
+   load, and a tiny known audio sample transcribes within an acceptable
+   timeout. Only then should `/api/version.voiceBackends` advertise
+   `ya-whisper`. Failures should be actionable in logs: missing package,
+   missing model/cache, unsupported device/compute type, or model-load timeout.
+5. **Make model warm-up observable.** The first utterance may legitimately pay
+   model-load cost, but the UI and logs should distinguish "loading local STT
+   model" from ordinary recognition. Record model name, device, compute type,
+   cold-load duration, and per-utterance real-time factor in server logs and
+   retained metadata.
+6. **Keep audio retention useful for tuning.** Retained audio plus sidecar
+   transcript metadata is especially valuable for local STT. The sidecar
+   should include model/runtime settings and biasing prompt/keyterms so bad
+   transcriptions can be reproduced after changing model size or prompt
+   construction.
+7. **Add biasing before optimizing streaming.** Local Whisper's biggest YA
+   advantage is project/session context. Implement `buildBiasingContext()` and
+   feed its prompt into Whisper before spending effort on local streaming
+   partials.
+8. **Verify with a fixed audio fixture and one live mic pass.** The deployment
+   smoke should cover a generated/checked-in short utterance, an empty/silence
+   file, and one browser capture. Acceptance is: backend advertised only when
+   ready, first request may be cold but succeeds or reports a clear error,
+   subsequent requests reuse the worker, and transcription metadata records the
+   runtime settings.
+
+Hosted relay support for server-local STT is a product choice, not a technical
+requirement. If the operator wants phone-to-local-Whisper dictation through
+YA, the existing batch YA API path is the safer first target; relayed streaming
+to a local model remains a later optimization after local batch is solid.
 
 ## Verification Checklist
 
@@ -256,7 +324,7 @@ client through `fetchJSON("/speech/transcribe", ...)`.
   `send`.
 - With Grok STT selected, the audio uplink setting defaults to PCM16 and the
   WebSocket start frame advertises `mimeType:
-  "audio/pcm;rate=24000;encoding=s16le"`, `sampleRate: 24000`, and
+  "audio/pcm;rate=16000;encoding=s16le"`, `sampleRate: 16000`, and
   `encoding: "pcm"`. Switching to browser-compressed mode uses the
   MediaRecorder batch path and hides Smart Turn because that path has no
   streaming `speech_final` events.

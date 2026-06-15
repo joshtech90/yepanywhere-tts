@@ -623,6 +623,45 @@ function isNearScrollBottom(container: HTMLElement): boolean {
   );
 }
 
+// Tolerance for "the last line is in view" — sub-pixel / zoom / high-DPI
+// rounding only, not a behavioural band.
+const FOLLOW_BOTTOM_TOLERANCE_PX = 4;
+
+// "At bottom" for follow purposes = the last rendered line is in view (its
+// bottom edge at or above the viewport bottom), not that scrollTop reached the
+// literal pixel-bottom. So trailing padding below the processing indicator
+// needn't be scrolled past ("as soon as the fun-text line shows, we're
+// following"), and the indicator being absent is handled for free —
+// lastElementChild is then the last message row. The generous isNearScrollBottom
+// stays only for *continuing* an already-on follow through fast-streaming gaps;
+// re-acquiring follow is governed here.
+//
+// Deliberately position-only, with no scroll-direction inference. Momentum
+// scrolling fires scroll events after the finger has lifted, and iOS rubber-band
+// bounce briefly overshoots the bottom then springs back — both corrupt any
+// velocity/direction reading. "Is the bottom line visible right now" stays
+// consistent through momentum and bounce (during a bottom bounce the last line
+// is *more* in view, which correctly reads as at-bottom), so it needs no
+// direction tracking and no settle timer. Exit-follow stays sensitive via the
+// directional wheel/touch/key handlers, which fire on intent during the touch,
+// before momentum begins.
+function isAtScrollBottom(
+  viewport: HTMLElement,
+  content: HTMLElement,
+): boolean {
+  const lastLine = content.lastElementChild;
+  if (!lastLine) {
+    return (
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <=
+      FOLLOW_BOTTOM_TOLERANCE_PX
+    );
+  }
+  return (
+    lastLine.getBoundingClientRect().bottom <=
+    viewport.getBoundingClientRect().bottom + FOLLOW_BOTTOM_TOLERANCE_PX
+  );
+}
+
 function eventTargetIsInside(
   target: EventTarget | null,
   container: HTMLElement,
@@ -653,6 +692,33 @@ function saveSessionThinkingVisible(visible: boolean) {
     globalThis.localStorage?.setItem(
       UI_KEYS.sessionThinkingVisible,
       visible ? "true" : "false",
+    );
+  } catch {
+    // localStorage is only a display preference; in-memory state still applies.
+  }
+}
+
+// Auto-expand policy for thinking blocks. Off (default): every newly-arriving
+// block stays expanded ("all-new"). On: only the most-recent block is
+// auto-open; it auto-collapses once a newer block appears ("latest-only").
+// Manual per-block toggles win over either policy. See
+// topics/thinking-expand-latest-only.md.
+function loadSessionThinkingLatestOnly(): boolean {
+  try {
+    return (
+      globalThis.localStorage?.getItem(UI_KEYS.sessionThinkingLatestOnly) ===
+      "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function saveSessionThinkingLatestOnly(latestOnly: boolean) {
+  try {
+    globalThis.localStorage?.setItem(
+      UI_KEYS.sessionThinkingLatestOnly,
+      latestOnly ? "true" : "false",
     );
   } catch {
     // localStorage is only a display preference; in-memory state still applies.
@@ -1144,6 +1210,9 @@ export const MessageList = memo(function MessageList({
   const [thinkingExpansionOverrides, setThinkingExpansionOverrides] = useState<
     Record<string, boolean>
   >({});
+  const [thinkingLatestOnly, setThinkingLatestOnly] = useState(
+    loadSessionThinkingLatestOnly,
+  );
   const [autoExpandedThinkingItemIds, setAutoExpandedThinkingItemIds] =
     useState<ReadonlySet<string>>(() => new Set());
   const [navMotionCue, setNavMotionCue] = useState<UserTurnNavMotionCue | null>(
@@ -1409,6 +1478,36 @@ export const MessageList = memo(function MessageList({
     (itemId: string) => autoExpandedThinkingItemIds.has(itemId),
     [autoExpandedThinkingItemIds],
   );
+  // Most-recent thinking item; only meaningful in latest-only mode, where its
+  // auto-openness is recomputed each render rather than stored, so the prior
+  // block collapses with no mutation as soon as a newer one arrives.
+  const lastThinkingItemId = useMemo(() => {
+    for (let i = renderItems.length - 1; i >= 0; i -= 1) {
+      const item = renderItems[i];
+      if (item?.type === "thinking") return item.id;
+    }
+    return null;
+  }, [renderItems]);
+  // Single source of truth for "is this thinking block expanded": an explicit
+  // user toggle (tri-state: open / collapsed / absent) always wins; otherwise
+  // the active auto policy decides. A manual expand is a permanent pin — the
+  // override is never cleared — so it never auto-hides. See
+  // topics/thinking-expand-latest-only.md.
+  const resolveThinkingItemExpanded = useCallback(
+    (itemId: string) => {
+      const override = thinkingExpansionOverrides[itemId];
+      if (override !== undefined) return override;
+      return thinkingLatestOnly
+        ? itemId === lastThinkingItemId
+        : isThinkingItemAutoExpanded(itemId);
+    },
+    [
+      isThinkingItemAutoExpanded,
+      lastThinkingItemId,
+      thinkingExpansionOverrides,
+      thinkingLatestOnly,
+    ],
+  );
   const displayRenderItems = useMemo(
     () =>
       thinkingItemsVisible
@@ -1432,9 +1531,7 @@ export const MessageList = memo(function MessageList({
         continue;
       }
 
-      const isExpanded =
-        thinkingExpansionOverrides[item.id] ??
-        isThinkingItemAutoExpanded(item.id);
+      const isExpanded = resolveThinkingItemExpanded(item.id);
       const previousLength = previousThinkingTextLengths.get(item.id) ?? 0;
       if (isExpanded && nextLength > previousLength) {
         visibleThinkingDelta = true;
@@ -1447,10 +1544,9 @@ export const MessageList = memo(function MessageList({
       stopFollowingForUserScroll(containerRef.current?.parentElement);
     }
   }, [
-    isThinkingItemAutoExpanded,
     renderItems,
+    resolveThinkingItemExpanded,
     stopFollowingForUserScroll,
-    thinkingExpansionOverrides,
     thinkingItemsVisible,
   ]);
   useLayoutEffect(() => {
@@ -1931,10 +2027,8 @@ export const MessageList = memo(function MessageList({
 
   const getThinkingItemExpanded = useCallback(
     (item: RenderItem) =>
-      item.type === "thinking" &&
-      (thinkingExpansionOverrides[item.id] ??
-        isThinkingItemAutoExpanded(item.id)),
-    [isThinkingItemAutoExpanded, thinkingExpansionOverrides],
+      item.type === "thinking" && resolveThinkingItemExpanded(item.id),
+    [resolveThinkingItemExpanded],
   );
 
   const toggleThinkingItemExpanded = useCallback(
@@ -1942,13 +2036,15 @@ export const MessageList = memo(function MessageList({
       if (item.type !== "thinking") {
         return;
       }
-      setThinkingExpansionOverrides((previous) => {
-        const current =
-          previous[item.id] ?? isThinkingItemAutoExpanded(item.id);
-        return { ...previous, [item.id]: !current };
-      });
+      // Absolute write against the currently-resolved state, never cleared:
+      // toggling open from the auto state pins it open permanently.
+      const next = !resolveThinkingItemExpanded(item.id);
+      setThinkingExpansionOverrides((previous) => ({
+        ...previous,
+        [item.id]: next,
+      }));
     },
-    [isThinkingItemAutoExpanded],
+    [resolveThinkingItemExpanded],
   );
 
   const noopToggleThinkingExpanded = useCallback(() => {}, []);
@@ -2023,6 +2119,16 @@ export const MessageList = memo(function MessageList({
       setThinkingItemsVisible((previous) => {
         const next = !previous;
         saveSessionThinkingVisible(next);
+        return next;
+      });
+    });
+  }, [preserveScrollAfterTranscriptHeightChange]);
+
+  const toggleThinkingLatestOnly = useCallback(() => {
+    preserveScrollAfterTranscriptHeightChange(() => {
+      setThinkingLatestOnly((previous) => {
+        const next = !previous;
+        saveSessionThinkingLatestOnly(next);
         return next;
       });
     });
@@ -2459,10 +2565,11 @@ export const MessageList = memo(function MessageList({
   const handleScroll = useCallback(() => {
     if (isProgrammaticScrollRef.current) return;
 
-    const container = containerRef.current?.parentElement;
-    if (!container) return;
+    const content = containerRef.current;
+    const container = content?.parentElement;
+    if (!content || !container) return;
 
-    const atBottom = isNearScrollBottom(container);
+    const atBottom = isAtScrollBottom(container, content);
     shouldAutoScrollRef.current = atBottom;
     thinkingDeltaFollowAllowedRef.current = atBottom;
     if (!atBottom) {
@@ -2600,11 +2707,9 @@ export const MessageList = memo(function MessageList({
       if (heightIncreased && shouldAutoScrollRef.current) {
         scrollToBottom(scrollContainer);
       } else {
-        if (isNearScrollBottom(scrollContainer)) {
-          shouldAutoScrollRef.current = true;
-          setIsScrolledToBottom(true);
-        }
-        // Update height tracking even when not scrolling
+        // A size change must never *start* following — only continue it (the
+        // branch above). Re-arming here from proximity is what trapped the
+        // reading area near the bottom. Just track the new height.
         lastHeightRef.current = newHeight;
       }
     });
@@ -3334,6 +3439,8 @@ export const MessageList = memo(function MessageList({
           thinkingItemsVisible={thinkingItemsVisible}
           hasThinkingItems={hasThinkingItems}
           onToggleThinkingItemsVisible={toggleThinkingItemsVisible}
+          thinkingLatestOnly={thinkingLatestOnly}
+          onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
         />
       </div>
     </>

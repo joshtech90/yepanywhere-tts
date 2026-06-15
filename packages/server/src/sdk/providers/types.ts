@@ -2,6 +2,7 @@
 import type {
   ModelInfo,
   PermissionMode,
+  PromptCacheKeepaliveProviderInfo,
   SlashCommand,
 } from "@yep-anywhere/shared";
 import type { MessageQueue } from "../messageQueue.js";
@@ -9,6 +10,7 @@ import type {
   CanUseTool,
   ProviderActivitySnapshot,
   ProviderLivenessProbeResult,
+  ProviderRetentionSnapshot,
   SDKMessage,
   UserMessage,
 } from "../types.js";
@@ -96,6 +98,8 @@ export interface StartSessionOptions {
    * undefined as true for compatibility.
    */
   shouldEmitLiveDeltas?: () => boolean;
+  /** Called when provider-owned retention evidence changes. */
+  onProviderRetentionChange?: () => void;
 }
 
 /**
@@ -117,6 +121,15 @@ export interface AgentSession {
   probeLiveness?: () => Promise<ProviderLivenessProbeResult>;
   /** Passive raw provider/app-server event cadence, when available. */
   getProviderActivity?: () => ProviderActivitySnapshot;
+  /** Provider-owned work that should retain an otherwise idle process. */
+  getProviderRetention?: () => ProviderRetentionSnapshot;
+  /**
+   * Refresh provider prompt-cache warmth without adding a visible or
+   * future-context-visible message to this session.
+   */
+  refreshPromptCache?: (options: {
+    sessionId: string;
+  }) => Promise<PromptCacheRefreshResult>;
   /** Session ID if available immediately (some providers provide later via messages) */
   sessionId?: string;
   /**
@@ -197,6 +210,11 @@ export interface AgentProvider {
    * feature and must not be implied by this flag.
    */
   readonly supportsNativePromptSuggestions?: boolean;
+  /**
+   * Prompt-cache keepalive capability. Absence means YA must not show or
+   * schedule keepalive for this provider.
+   */
+  readonly promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo;
 
   /**
    * Check if this provider is installed and available.
@@ -264,4 +282,19 @@ export interface AgentProvider {
     /** Title for the forked session. */
     title?: string;
   }) => Promise<{ sessionId: string }>;
+}
+
+export interface PromptCacheRefreshResult {
+  /** Provider-specific cache-touch path that ran. */
+  mode: "no-context-pollution-nudge";
+  /** Whether the cache-touch request completed successfully. */
+  refreshed: boolean;
+  /** Human/debug description; do not include prompt or transcript content. */
+  detail?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 }

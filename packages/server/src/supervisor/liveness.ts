@@ -4,7 +4,10 @@ import type {
   SessionLivenessDerivedStatus,
   SessionLivenessProbeStatus,
   SessionLivenessSnapshot,
+  SessionProviderRetentionSnapshot,
+  SessionWakeReasonSnapshot,
 } from "@yep-anywhere/shared";
+import type { ProviderRetentionSnapshot } from "../sdk/types.js";
 
 export type LivenessProcessState =
   | { type: "in-turn" }
@@ -22,6 +25,8 @@ export interface BuildSessionLivenessSnapshotInput {
   lastRawProviderEventSource?: string | null;
   lastLivenessProbe: LivenessProbeResult | null;
   processAlive?: boolean;
+  providerRetention?: ProviderRetentionSnapshot;
+  lastWakeReason?: SessionWakeReasonSnapshot | null;
   queueDepth: number;
   deferredQueueDepth: number;
   now?: Date;
@@ -45,6 +50,30 @@ function elapsedMs(now: Date, then: Date | null | undefined): number | null {
   return then ? Math.max(0, now.getTime() - then.getTime()) : null;
 }
 
+function serializeProviderRetention(
+  snapshot: ProviderRetentionSnapshot | undefined,
+): SessionProviderRetentionSnapshot | undefined {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    retained: snapshot.retained,
+    reasons: snapshot.reasons,
+    ...(snapshot.backgroundTaskCount !== undefined
+      ? { backgroundTaskCount: snapshot.backgroundTaskCount }
+      : {}),
+    ...(snapshot.sessionCronCount !== undefined
+      ? { sessionCronCount: snapshot.sessionCronCount }
+      : {}),
+    ...(snapshot.liveTaskCount !== undefined
+      ? { liveTaskCount: snapshot.liveTaskCount }
+      : {}),
+    ...(snapshot.lastUpdatedAt !== undefined
+      ? { lastUpdatedAt: isoOrNull(snapshot.lastUpdatedAt) }
+      : {}),
+  };
+}
+
 export function buildSessionLivenessSnapshot({
   provider,
   state,
@@ -55,12 +84,16 @@ export function buildSessionLivenessSnapshot({
   lastRawProviderEventSource = null,
   lastLivenessProbe,
   processAlive,
+  providerRetention,
+  lastWakeReason = null,
   queueDepth,
   deferredQueueDepth,
   now = new Date(),
   longSilenceThresholdMs = DEFAULT_LONG_SILENCE_THRESHOLD_MS,
 }: BuildSessionLivenessSnapshotInput): SessionLivenessSnapshot {
   const evidence = [`state:${state.type}`, `provider:${provider}`];
+  const serializedProviderRetention =
+    serializeProviderRetention(providerRetention);
   const silenceMs = elapsedMs(now, lastProviderMessageAt);
   const activeSilenceAnchor = lastProviderMessageAt ?? lastStateChangeAt ?? startedAt;
   const activeSilenceMs = elapsedMs(now, activeSilenceAnchor) ?? 0;
@@ -81,6 +114,12 @@ export function buildSessionLivenessSnapshot({
   if (processAlive !== undefined) {
     evidence.push(processAlive ? "process:alive" : "process:dead");
   }
+  if (providerRetention?.retained) {
+    evidence.push("provider-retained");
+    for (const reason of providerRetention.reasons) {
+      evidence.push(`provider-retention:${reason}`);
+    }
+  }
   if (lastLivenessProbe) {
     evidence.push(`probe:${lastLivenessProbe.status}`);
     evidence.push(`probe-source:${lastLivenessProbe.source}`);
@@ -100,7 +139,12 @@ export function buildSessionLivenessSnapshot({
 
   switch (state.type) {
     case "idle":
-      if (
+      if (providerRetention?.retained) {
+        derivedStatus = "verified-waiting-provider";
+        activeWorkKind = "agent-turn";
+        lastVerifiedProgressAt =
+          providerRetention.lastUpdatedAt ?? lastProviderMessageAt;
+      } else if (
         probeAppliesToCurrentState &&
         probeIsRecent &&
         lastLivenessProbe?.status === "active"
@@ -218,6 +262,10 @@ export function buildSessionLivenessSnapshot({
     silenceMs,
     longSilenceThresholdMs,
     ...(processAlive !== undefined ? { processAlive } : {}),
+    ...(serializedProviderRetention
+      ? { providerRetention: serializedProviderRetention }
+      : {}),
+    ...(lastWakeReason ? { lastWakeReason } : {}),
     queueDepth,
     deferredQueueDepth,
   };
