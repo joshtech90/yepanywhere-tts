@@ -535,18 +535,17 @@ describe("createSessionSubscription", () => {
     expect(events.length).toBe(countAfterCleanup);
   });
 
-  it("cleanup clears streaming text if active", () => {
+  it("cleanup does NOT clear shared streaming text (owned by Process)", () => {
     const { process } = createMockProcess();
     const { emit } = collectEmit();
 
-    // We need to trigger a message with a streaming ID to set currentStreamingMessageId
-    // But since we can't easily do that without async augmenter, test that clearStreamingText
-    // is called on cleanup after a message event triggers accumulation
+    // Streaming text is accumulated once inside the Process at the emission
+    // point, not per-subscriber. A single subscriber disconnecting must not
+    // wipe the shared catch-up buffer that other live subscribers still need.
     const { cleanup } = createSessionSubscription(process, emit);
     cleanup();
 
-    // clearStreamingText is not called if no streaming was active (currentStreamingMessageId is null)
-    // This is correct behavior - it only clears if there was active streaming
+    expect(process.clearStreamingText).not.toHaveBeenCalled();
   });
 
   it("calls onError when emit throws in event handler", async () => {

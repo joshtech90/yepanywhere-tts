@@ -8,11 +8,6 @@
 import {
   type StreamAugmenter,
   createStreamAugmenter,
-  extractIdFromAssistant,
-  extractMessageIdFromStart,
-  extractTextDelta,
-  extractTextFromAssistant,
-  isStreamingComplete,
   markSubagent,
 } from "./augments/index.js";
 import { getLogger } from "./logging/logger.js";
@@ -91,7 +86,6 @@ export function createSessionSubscription(
   options?: SubscriptionOptions,
 ): { cleanup: () => void } {
   let completed = false;
-  let currentStreamingMessageId: string | null = null;
   const wantsLiveDeltas = options?.wantsLiveDeltas !== false;
   const unregisterLiveDeltaSubscriber = wantsLiveDeltas
     ? process.registerLiveDeltaSubscriber()
@@ -157,21 +151,10 @@ export function createSessionSubscription(
             await aug.processMessage(message);
           };
 
-          const startMessageId =
-            extractMessageIdFromStart(message) ??
-            extractIdFromAssistant(message);
-          if (startMessageId) {
-            currentStreamingMessageId = startMessageId;
-          }
-
-          const textDelta =
-            extractTextDelta(message) ?? extractTextFromAssistant(message);
-          if (textDelta && currentStreamingMessageId) {
-            process.accumulateStreamingText(
-              currentStreamingMessageId,
-              textDelta,
-            );
-          }
+          // NOTE: streaming-text accumulation now happens ONCE inside the
+          // Process at the emission point (Process.accumulateStreamingFromMessage),
+          // not per-subscriber — otherwise N live-delta subscribers would each
+          // append the same delta, corrupting the shared catch-up buffer.
 
           if (isStreamEvent || isPlainUserEcho(message)) {
             // User echoes reconcile optimistic/deferred queue state; do not let
@@ -183,11 +166,6 @@ export function createSessionSubscription(
           } else {
             await processAugments();
             emit("message", markSubagent(message));
-          }
-
-          if (isStreamingComplete(message)) {
-            currentStreamingMessageId = null;
-            process.clearStreamingText();
           }
           break;
         }
@@ -309,10 +287,9 @@ export function createSessionSubscription(
       clearInterval(heartbeatInterval);
       unsubscribe();
       unregisterLiveDeltaSubscriber?.();
-      if (currentStreamingMessageId) {
-        process.clearStreamingText();
-        currentStreamingMessageId = null;
-      }
+      // Streaming text is owned by the Process (accumulated once at the
+      // emission point), so a single subscriber disconnect must NOT clear the
+      // shared buffer — other live subscribers still need it for catch-up.
     },
   };
 }

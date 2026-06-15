@@ -45,7 +45,7 @@ export async function readFirstLine(
 
     const stripped = stripBom(content);
     const nl = stripped.indexOf("\n");
-    const line = (nl > 0 ? stripped.slice(0, nl) : stripped).trim();
+    const line = (nl >= 0 ? stripped.slice(0, nl) : stripped).trim();
     return line || null;
   } catch {
     return null;

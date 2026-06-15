@@ -82,7 +82,8 @@ export function createWsHandler(
         // Ignore ping errors
       }
 
-      // Set pong timeout
+      // Set pong timeout (clear any pending one first to avoid orphaned timers)
+      if (state.pongTimeout) clearTimeout(state.pongTimeout);
       state.pongTimeout = setTimeout(() => {
         logger.debug(
           { username: state.username },

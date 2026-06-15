@@ -19,6 +19,13 @@ import {
   clampPatientPatienceSeconds,
   stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
+import {
+  extractIdFromAssistant,
+  extractMessageIdFromStart,
+  extractTextDelta,
+  extractTextFromAssistant,
+  isStreamingComplete,
+} from "../augments/index.js";
 import { getLogger } from "../logging/logger.js";
 import { getProjectName } from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
@@ -334,6 +341,14 @@ export class Process {
   private _streamingText = "";
   /** Message ID for current streaming response */
   private _streamingMessageId: string | null = null;
+  /**
+   * Tracks the in-flight streaming message id across deltas. message_start /
+   * assistant messages carry the id; subsequent text_delta events do not, so
+   * we remember it here. Accumulation runs ONCE per message here (before
+   * fan-out to subscribers) — never per-subscriber — to keep the shared
+   * streaming-text catch-up buffer correct for multi-client sessions.
+   */
+  private _activeStreamingMessageId: string | null = null;
 
   /**
    * Rolling buffer of recent assistant text turns used as context for
@@ -1132,6 +1147,35 @@ export class Process {
   clearStreamingText(): void {
     this._streamingText = "";
     this._streamingMessageId = null;
+    this._activeStreamingMessageId = null;
+  }
+
+  /**
+   * Accumulate streaming text from a single provider message into the shared
+   * catch-up buffer. Runs exactly ONCE per message at the emission point,
+   * before fan-out — previously each subscriber did this independently, so the
+   * shared buffer was appended N times (one per live-delta subscriber) and any
+   * single disconnect cleared it for everyone. Keeping it here makes the
+   * late-joiner catch-up snapshot correct regardless of subscriber count.
+   */
+  private accumulateStreamingFromMessage(message: SDKMessage): void {
+    const record = message as unknown as Record<string, unknown>;
+
+    const startMessageId =
+      extractMessageIdFromStart(record) ?? extractIdFromAssistant(record);
+    if (startMessageId) {
+      this._activeStreamingMessageId = startMessageId;
+    }
+
+    const textDelta =
+      extractTextDelta(record) ?? extractTextFromAssistant(record);
+    if (textDelta && this._activeStreamingMessageId) {
+      this.accumulateStreamingText(this._activeStreamingMessageId, textDelta);
+    }
+
+    if (isStreamingComplete(record)) {
+      this.clearStreamingText();
+    }
   }
 
   /**
@@ -2497,6 +2541,9 @@ export class Process {
         // Emit to SSE subscribers
         // See shouldEmitMessage() for why we never filter messages
         if (shouldEmitMessage(message)) {
+          // Accumulate streaming text ONCE here (before fan-out) so the shared
+          // catch-up buffer stays correct for multi-client sessions.
+          this.accumulateStreamingFromMessage(message);
           this.emit({ type: "message", message });
         }
 
