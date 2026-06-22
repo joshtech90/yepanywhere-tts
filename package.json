@@ -49,11 +49,6 @@
   "engines": {
     "node": ">=20"
   },
-  "pnpm": {
-    "overrides": {
-      "bn.js": "5.2.3"
-    }
-  },
   "yepAnywhere": {
     "codexCli": {
       "expectedVersion": "0.139.0"

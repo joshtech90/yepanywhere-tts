@@ -1,2 +1,7 @@
 packages:
   - "packages/*"
+
+overrides:
+  # Keep bn.js patched (web-push -> asn1.js -> bn.js chain) until web-push
+  # ships an upstream fix. See CLAUDE.md "Dependency Security Maintenance".
+  bn.js: 5.2.3
