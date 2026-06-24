@@ -1762,9 +1762,11 @@ a.sidebar-nav-item {
 .session-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-gutter: stable;
   padding: 1rem;
   min-height: 0;
+  min-width: 0;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -2533,6 +2535,7 @@ a.sidebar-nav-item {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .session-btw-pane {
@@ -2784,6 +2787,7 @@ a.sidebar-nav-item {
   width: 100%;
   max-width: var(--content-max-width);
   margin: 0 auto;
+  min-width: 0;
 }
 
 /* Mobile-specific adjustments */
