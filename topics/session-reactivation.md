@@ -1,0 +1,152 @@
+# Session Reactivation (message-less resume)
+
+> Reactivation is a planned server primitive that spawns a live harness process
+> for an existing session id **without delivering a user turn**, flipping the
+> session back to owned/`self` and idle so the client can read live process
+> state (model options, config) before any message is sent.
+
+Topic: session-reactivation
+
+Status: **implemented** (2026-06-17, after the kzahel merge). The message-less
+spawn primitive already existed in the supervisor; this work exposed it as a
+public `Supervisor.reactivateSession`, a `POST …/reactivate` route, and a
+client Activate button. See *As built* below.
+
+Naming: the user-facing button label is **"Activate"** (from the client's point
+of view a reaped session simply isn't active). The server primitive / this
+topic is **reactivate**. Avoid "reattach" — there is no live process to attach
+to; reactivation spawns a *fresh* harness process bound to the session id and
+replays its history. "Revive" is an acceptable synonym. Candidate glossary row.
+<!-- unconfirmed: 2026-06-16 -->
+
+## Motivation
+
+A YA-launched session whose harness process was reaped reports as not-owned
+(ownership is purely "is there a live process right now":
+`getProcessForSession` → `self`, else `external`/`none`,
+`routes/sessions.ts:1965-1980`). On such a session the model panel can only
+show **"No active process"**, because the full model options come from
+`getProcessModels(processId)` — a *process*-level call (`client.ts:865`); there
+is no provider-level model list. So today the only way to make a reaped session
+configurable again is to **send a turn**, which is the wrong gesture when the
+user just wants to change the model.
+
+We want a button that brings the process live with no turn, then reveals the
+full options once the process exists. The UI it plugs into is the unified model
+panel in `ModelSwitchModal` (Model/Info tabs).
+
+## What already existed (the plan overstated the server work)
+
+The message-less spawn primitive was **already present**, just not exposed for
+resume:
+
+- `Supervisor.createSession` spawns a process that idles on the queue with **no
+  initial message** (the two-phase "create then send" flow), and the private
+  `createProviderSession`/`createRealSession` it calls already accept a
+  `resumeSessionId` and start with no message
+  (`Supervisor.ts:1313-1337, 727-748`), registering it as owned
+  (`registerProcess(process, !resumeSessionId)`). So it is **provider-agnostic** —
+  Claude and Codex reactivate with no synthetic turn; no empty-turn fallback was
+  needed.
+- What was missing was only a **public** entry point combining the two (resume
+  an existing session id, no message) and a route. `POST …/resume` mandates a
+  message (`routes/sessions.ts:2890`), but that requirement lives in the route,
+  not the supervisor.
+- Still true: **no provider-level model list** — only
+  `getProcessModels(processId)` — so a live process is genuinely required to show
+  options; reactivate is the right primitive, not a client-only shortcut.
+
+## As built
+
+- **`Supervisor.reactivateSession(projectPath, resumeSessionId, mode?, settings?)`**
+  — idempotent (returns the existing live process if already owned); preempts an
+  idle worker at capacity, else throws; otherwise calls
+  `createProviderSession`/`createRealSession` with the `resumeSessionId` and no
+  message.
+- **`POST /api/projects/:projectId/sessions/:sessionId/reactivate`** — resolves
+  provider/model/executor from the persisted YA launch record
+  (`SessionMetadata.requestedModel`/`provider`, populated by `persistLaunchMetadata`),
+  returns `{ processId, permissionMode, modeVersion }`.
+- **Client:** `api.reactivateSession`; `ModelSwitchModal`'s "No active process"
+  note becomes an Activate button (`onActivate`); `SessionPage` calls reactivate
+  and flips `status` to `{ owner: "self", processId }`, after which the existing
+  `processId`-keyed effect loads models and the full options replace the note.
+- Coverage: `supervisor.test.ts` asserts message-less resume + ownership +
+  idempotency.
+
+## The plan
+
+### Server primitive
+
+Expose a message-less reactivate. Two shapes considered; pick at implementation:
+
+- **`POST …/reactivate`** (new route), or
+- **`warmOnly: true` flag on the existing resume route** that skips the
+  `UserMessage` requirement and the turn delivery.
+
+Behavior:
+
+1. Start the harness process for the session id (provider resolved as resume
+   does: metadata provider → reader), load history, **deliver no user turn**.
+2. Leave it in the post-turn **idle** state; subject it to the **same reaping /
+   idle-lifecycle** as any other idle owned process (don't leak an immortal
+   idle process).
+3. Return `{ processId }`; ownership for the session becomes
+   `{ owner: "self", processId }`.
+
+Server files this touches: `supervisor/Process.ts`, `supervisor/types.ts`, and a
+route in `routes/sessions.ts` or `routes/processes.ts`.
+
+### Client integration (the planned UI half)
+
+In `ModelSwitchModal`, the `!processId` Model-tab branch becomes an **Activate**
+button (replacing the static "No active process" note) with an in-flight
+"Activating…" state; the modal stays open. `SessionPage` supplies an
+`onActivate` that calls the reactivate endpoint and, on success, flips
+`status` to `{ owner: "self", processId }`.
+
+No extra client reveal logic is needed: `ModelSwitchModal`'s existing
+`processId`-keyed `useEffect` fires when `processId` appears, fetches models, and
+the full options replace the spinner. (Minor: set `loading = true` at the start
+of that fetch so the transition shows a spinner rather than a flash.)
+
+## Cost surfacing
+
+[[provider-context-economics]] requires that **no session action hide a
+full-replay price**. Clarify before shipping: a message-less reactivate spawns
+the process but likely incurs **no provider billing until the first real turn**
+(stateless providers replay+bill per turn; idling the process invokes no model).
+If that holds, reactivation's marginal cost over "just send your next message"
+is ~zero on the provider side (local process resources only). Confirm this
+against the provider's resume/load path; if reactivation itself triggers any
+billed provider call, the button must surface it per the economics rule.
+
+## Open questions
+
+- Endpoint shape: new `reactivate` route vs `warmOnly` flag on resume.
+- Should reactivate optionally **apply pending config** (the model the user just
+  picked) at spawn, or strictly spawn-then-configure via the normal model-switch
+  path?
+- Idle-process lifecycle: reaping timer parity with post-turn idle processes;
+  what happens if the user reactivates then walks away.
+- Sibling concern (task029): requested-model persistence may let a model choice
+  take effect on the *next* natural turn without reactivating at all —
+  reactivation is for users who want the process live *now*. Keep both; they
+  serve different intents.
+
+## Coordination (resolved)
+
+Built after task029 landed and the kzahel merge settled, so the supervisor was
+stable and uncontended. The implementation did not need `Process.ts` changes —
+it reused the existing `createProviderSession` resume path — so the earlier
+concern about editing under task029 did not materialize.
+
+## See also
+
+- [[session-context-actions]] — the recovery/fork/handoff action family
+  reactivation belongs to.
+- [[session-ownership]] — why a reaped session reports not-owned; reactivation
+  flips it back to `self`.
+- [[provider-context-economics]] — the full-replay-price disclosure rule.
+- [[resume-compaction]] — compact-before-resume; reactivation should respect the
+  same resume-mode considerations.

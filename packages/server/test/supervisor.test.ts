@@ -369,6 +369,156 @@ describe("Supervisor", () => {
     });
   });
 
+  describe("reactivateSession", () => {
+    it("spawns a live owned process for an existing session with no user turn", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const sdkMessage of queue) {
+              void sdkMessage; // idle until a message is pushed
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => queue.push({ text: "__abort__" }),
+            supportedCommands: async () => [],
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisor = new Supervisor({ provider, idleTimeoutMs: 60000 });
+
+      const process = await supervisor.reactivateSession(
+        "/tmp/test",
+        "claude-old",
+        undefined,
+        { providerName: "claude" },
+      );
+
+      // Resumed the existing session with no synthetic user turn.
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ resumeSessionId: "claude-old" }),
+      );
+      expect(startSession.mock.calls[0]?.[0].initialMessage).toBeUndefined();
+      // Now owned by this live process.
+      expect(supervisor.getProcessForSession("claude-old")).toBe(process);
+
+      // Idempotent: a second call returns the existing process, no re-spawn.
+      const again = await supervisor.reactivateSession(
+        "/tmp/test",
+        "claude-old",
+        undefined,
+        { providerName: "claude" },
+      );
+      expect(again).toBe(process);
+      expect(startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("queues a concurrent resume through an in-flight reactivation", async () => {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const delivered: string[] = [];
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          await startGate;
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const sdkMessage of queue) {
+              if (aborted) {
+                return;
+              }
+              const content = sdkMessage.message.content;
+              delivered.push(typeof content === "string" ? content : "");
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+            supportedCommands: async () => [],
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "codex",
+        displayName: "Codex",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisor = new Supervisor({ provider, idleTimeoutMs: 60000 });
+
+      const reactivation = supervisor.reactivateSession(
+        "/tmp/test",
+        "codex-old",
+        undefined,
+        { providerName: "codex" },
+      );
+      await vi.waitFor(() => {
+        expect(startSession).toHaveBeenCalledTimes(1);
+      });
+
+      const resumed = supervisor.resumeSession("codex-old", "/tmp/test", {
+        text: "next turn",
+      });
+      releaseStart();
+
+      const process = await reactivation;
+      await expect(resumed).resolves.toBe(process);
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(supervisor.getProcessForSession("codex-old")).toBe(process);
+      await vi.waitFor(() => {
+        expect(delivered).toEqual(["next turn"]);
+      });
+
+      await supervisor.abortProcess(process.id);
+    });
+  });
+
   describe("getProcess", () => {
     it("returns process by id", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Hello!"));
@@ -1387,17 +1537,113 @@ describe("Supervisor", () => {
           },
         ]);
 
-        await vi.advanceTimersByTimeAsync(29_000);
+        // Still inside the (default 2s) quiet window: not yet promoted.
+        await vi.advanceTimersByTimeAsync(1_000);
         expect(started.state.type).toBe("idle");
         expect(started.queueDepth).toBe(0);
         expect(started.getDeferredQueueSummary()).toHaveLength(1);
 
-        await vi.advanceTimersByTimeAsync(1_000);
+        // Past the quiet window: promoted.
+        await vi.advanceTimersByTimeAsync(1_500);
         expect(started.state.type).toBe("in-turn");
         expect(started.queueDepth).toBe(1);
         expect(started.getDeferredQueueSummary()).toEqual([]);
 
         const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
+        await vi.advanceTimersByTimeAsync(5000);
+        await expect(abortPromise).resolves.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("treats a patient message as plain deferred on non-Claude providers", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
+      let aborted = false;
+
+      try {
+        const startSession = vi.fn(async () => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "codex-patient-session",
+            };
+            await queue[Symbol.asyncIterator]().next();
+            yield { type: "result", session_id: "codex-patient-session" };
+
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+            isProcessAlive: () => !aborted,
+          };
+        });
+        const provider: AgentProvider = {
+          name: "codex",
+          displayName: "Codex",
+          supportsPermissionMode: true,
+          supportsThinkingToggle: true,
+          supportsSlashCommands: false,
+          isInstalled: async () => true,
+          isAuthenticated: async () => true,
+          getAuthStatus: async () => ({
+            installed: true,
+            authenticated: true,
+            enabled: true,
+          }),
+          startSession,
+          getAvailableModels: async () => [],
+        };
+
+        const supervisorWithProvider = new Supervisor({
+          provider,
+          idleTimeoutMs: 100,
+        });
+
+        const started = await supervisorWithProvider.startSession("/tmp/test", {
+          text: "start",
+        });
+        if (!("id" in started)) {
+          throw new Error("expected process");
+        }
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(started.state.type).toBe("idle");
+
+        // On Claude this exact call defers and waits the verified-idle quiet
+        // window (see "promotes patient deferred messages after verified
+        // quiet"). On a non-Claude provider there is no background-work
+        // retention to wait for, so the patient tag is downgraded to a plain
+        // deferred turn that promotes immediately — no timers advanced.
+        const result = started.deferMessage(
+          {
+            text: "patient follow-up",
+            tempId: "temp-patient-codex",
+            metadata: { deliveryIntent: "patient" },
+          },
+          { promoteIfReady: true },
+        );
+        expect(result).toMatchObject({
+          success: true,
+          deferred: false,
+          promoted: true,
+        });
+        expect(started.hasPatientDeferredMessages()).toBe(false);
+        expect(started.getDeferredQueueSummary()).toEqual([]);
+        expect(started.queueDepth).toBe(1);
+        expect(started.state.type).toBe("in-turn");
+
+        const abortPromise = supervisorWithProvider.abortProcess(started.id);
         await vi.advanceTimersByTimeAsync(5000);
         await expect(abortPromise).resolves.toBe(true);
       } finally {

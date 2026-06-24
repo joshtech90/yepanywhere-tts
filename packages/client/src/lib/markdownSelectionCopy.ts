@@ -34,6 +34,14 @@ interface RangeTextWithinElement {
   selectedText: string;
   textBefore: string;
   preferExactSource: boolean;
+  range: Range;
+}
+
+export interface MarkdownSelectionSnippet {
+  markdown: string;
+  selectedText: string;
+  sourceElement: HTMLElement;
+  range: Range;
 }
 
 const markdownCopySources = new WeakMap<HTMLElement, string>();
@@ -59,12 +67,28 @@ export function copyMarkdownSelectionToClipboard(
     return false;
   }
 
-  const selection = root.ownerDocument.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+  const snippets = extractMarkdownSnippetsFromSelection(root);
+  if (snippets.length === 0) {
     return false;
   }
 
-  const snippets: string[] = [];
+  event.clipboardData.setData(
+    "text/plain",
+    snippets.map((snippet) => snippet.markdown).join("\n\n"),
+  );
+  event.preventDefault();
+  return true;
+}
+
+export function extractMarkdownSnippetsFromSelection(
+  root: HTMLElement,
+): MarkdownSelectionSnippet[] {
+  const selection = root.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return [];
+  }
+
+  const snippets: MarkdownSelectionSnippet[] = [];
   const selectedTextParts: string[] = [];
   const coveredTextParts: string[] = [];
   const sourceElements = Array.from(
@@ -105,24 +129,83 @@ export function copyMarkdownSelectionToClipboard(
         }) ?? rangeText.selectedText;
       const normalized = trimBoundaryNewlines(markdown);
       if (normalized.trim()) {
-        snippets.push(normalized);
+        snippets.push({
+          markdown: normalized,
+          selectedText: rangeText.selectedText,
+          sourceElement: element,
+          range: rangeText.range,
+        });
       }
     }
   }
 
-  if (snippets.length === 0) {
-    return false;
-  }
   if (
     normalizeSelectedTextForCoverage(selectedTextParts.join("\n")) !==
     normalizeSelectedTextForCoverage(coveredTextParts.join("\n"))
   ) {
-    return false;
+    return [];
   }
 
-  event.clipboardData.setData("text/plain", snippets.join("\n\n"));
-  event.preventDefault();
-  return true;
+  return snippets;
+}
+
+export function getMarkdownSnippetForElement(
+  element: HTMLElement,
+): MarkdownSelectionSnippet | null {
+  const source = markdownCopySources.get(element);
+  if (!source?.trim()) {
+    return null;
+  }
+  const range = element.ownerDocument.createRange();
+  range.selectNodeContents(element);
+  return {
+    markdown: trimBoundaryNewlines(source),
+    selectedText: element.innerText || element.textContent || source,
+    sourceElement: element,
+    range,
+  };
+}
+
+/**
+ * Recover the markdown for one rendered block (paragraph/list/heading) nested
+ * inside a registered copy-source element, so a per-paragraph quote circle can
+ * quote just that block. Maps the block's visible text back to its source span
+ * via the same visible-source map the copy/selection path uses.
+ */
+export function getMarkdownSnippetForSubElement(
+  sourceElement: HTMLElement,
+  blockElement: HTMLElement,
+): MarkdownSelectionSnippet | null {
+  const source = markdownCopySources.get(sourceElement);
+  if (!source?.trim()) {
+    return null;
+  }
+  const selectedText = blockElement.innerText || blockElement.textContent || "";
+  if (!selectedText.trim()) {
+    return null;
+  }
+  const doc = blockElement.ownerDocument;
+  const range = doc.createRange();
+  range.selectNodeContents(blockElement);
+
+  const beforeRange = doc.createRange();
+  beforeRange.selectNodeContents(sourceElement);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+  const textBefore = beforeRange.toString();
+
+  const markdown =
+    getMarkdownForVisibleSelection(source, selectedText, { textBefore }) ??
+    selectedText;
+  const normalized = trimBoundaryNewlines(markdown);
+  if (!normalized.trim()) {
+    return null;
+  }
+  return {
+    markdown: normalized,
+    selectedText,
+    sourceElement,
+    range,
+  };
 }
 
 export function getMarkdownForVisibleSelection(
@@ -281,6 +364,7 @@ function getRangeTextWithinElement(
     preferExactSource: sourceModeElements.some((sourceElement) =>
       rangeIntersectsNode(clippedRange, sourceElement),
     ),
+    range: clippedRange,
   };
 }
 

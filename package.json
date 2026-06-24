@@ -5,6 +5,7 @@
   "scripts": {
     "setup:core": "pnpm --filter yep-anywhere --filter @yep-anywhere/server... --filter @yep-anywhere/client... install",
     "setup-vapid": "tsx scripts/setup-vapid.ts",
+    "clone-references": "node scripts/clone-references.mjs",
     "codex:protocol:update": "node scripts/update-codex-protocol.mjs",
     "codex:protocol:check": "node scripts/update-codex-protocol.mjs --check",
     "i18n:check": "node scripts/prune-i18n-placeholders.mjs --check",
@@ -51,7 +52,7 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.139.0"
+      "expectedVersion": "0.140.0"
     }
   },
   "dependencies": {

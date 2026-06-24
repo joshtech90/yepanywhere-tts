@@ -19,7 +19,6 @@ import {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   clampPatientPatienceSeconds,
-  stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
 import {
   extractIdFromAssistant,
@@ -28,6 +27,7 @@ import {
   extractTextFromAssistant,
   isStreamingComplete,
 } from "../augments/index.js";
+import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { getLogger } from "../logging/logger.js";
 import { getProjectName } from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
@@ -48,6 +48,7 @@ import {
 import type {
   PermissionMode,
   ProviderActivitySnapshot,
+  ProviderCommandResult,
   ProviderLivenessProbeResult,
   ProviderRetentionSnapshot,
   SDKMessage,
@@ -68,26 +69,9 @@ import type {
   ProcessOptions,
   ProcessState,
 } from "./types.js";
-import { DEFAULT_IDLE_TIMEOUT_MS } from "./types.js";
 
 type Listener = (event: ProcessEvent) => void | Promise<void>;
 type ClaudeSessionState = "idle" | "running" | "requires_action";
-
-export interface DeferredMessagePlacement {
-  afterTempId?: string;
-  beforeTempId?: string;
-  replaceTempId?: string;
-}
-
-export interface TakenDeferredMessage {
-  message: UserMessage;
-  placement: DeferredMessagePlacement;
-}
-
-export interface SteeredDeferredMessage {
-  message: UserMessage;
-  position?: number;
-}
 
 type DeferredQueueEntry = { message: UserMessage; timestamp: string };
 type RecentAssistantRecapEntry = {
@@ -102,8 +86,23 @@ type PromptCacheKeepaliveLease = {
   getInactivityMs: () => number | null;
 };
 
-function isPatientDeferredEntry(entry: DeferredQueueEntry): boolean {
-  return entry.message.metadata?.deliveryIntent === "patient";
+/**
+ * Whether a queued entry should ride the verified-idle "patient" path instead
+ * of the plain turn-end deferred path. Patient delivery only differs from
+ * deferred on Claude — the only provider that reports background-work retention
+ * (session crons, background/live tasks), which is what lets YA wait for
+ * genuine completion. On other providers it would add nothing but a brief
+ * sleep, so a "patient"-tagged entry is treated as an ordinary deferred one: it
+ * promotes at turn end and never engages the patient machinery.
+ */
+function isPatientDeferredEntry(
+  entry: DeferredQueueEntry,
+  provider: ProviderName,
+): boolean {
+  return (
+    entry.message.metadata?.deliveryIntent === "patient" &&
+    isClaudeSdkProvider(provider)
+  );
 }
 
 /** Quiet milliseconds this patient entry waits for after verified idle. */
@@ -186,6 +185,21 @@ export function shouldEmitMessage(_message: SDKMessage): boolean {
   return true;
 }
 
+/**
+ * Single decision point for whether a queued user message is hidden from the
+ * transcript UI. Currently true only for YA-injected control commands — the
+ * `/compact` YA queues for compaction, which native auto-compaction shows no
+ * user turn for. This is deliberately NOT folded into `shouldEmitMessage`
+ * (which must stay an unconditional `return true` for provider-stream
+ * messages); it gates only the optimistic user echo at queue time. Routing
+ * every hide through this one predicate lets a future "show hidden" UI render
+ * these consistently (e.g. hyper-collapsed) instead of each call site
+ * suppressing ad hoc. See topics/injected-message-visibility.md.
+ */
+export function isHiddenInjectedMessage(message: UserMessage): boolean {
+  return message.metadata?.hidden === true;
+}
+
 function isClaudeSdkProvider(provider: ProviderName): boolean {
   return provider === "claude" || provider === "claude-ollama";
 }
@@ -220,18 +234,53 @@ function getSdkMessageSubtype(message: SDKMessage): string | undefined {
   return typeof message.subtype === "string" ? message.subtype : undefined;
 }
 
+// Top-level SDK message types that represent real turn content. Each one is part
+// of a model/tool turn that is guaranteed to eventually reach a `result`, so
+// waking on them can never pin the process `in-turn` forever.
+const WAKE_WORK_MESSAGE_TYPES = new Set<string>([
+  "assistant",
+  "user",
+  "stream_event",
+]);
+
+// `system` message subtypes that represent live Claude-owned background work
+// which can wake the session later. Mirrors the task lifecycle tracked for
+// reap-retention in ClaudeProviderRetentionTracker.observeMessage.
+const WAKE_WORK_SYSTEM_SUBTYPES = new Set<string>([
+  "task_started",
+  "task_progress",
+  "task_updated",
+  "task_notification",
+]);
+
+/**
+ * Decide whether a post-idle provider message should promote a coarse-idle owned
+ * process back to `in-turn` (see promoteIdleForProviderWork and doc
+ * tactical/015-claude-background-task-idle-reap.md).
+ *
+ * This is an allowlist (default-deny) on purpose. The original blacklist ("wake
+ * on everything except result / session_state_changed / init") woke the process
+ * on any message the SDK introduced that we did not model. That included
+ * `prompt_suggestion` — a post-turn, predicted-next-prompt message that is never
+ * followed by a `result` — so finished sessions got pinned as "thinking" forever
+ * and were never idle-reaped. To add a wake trigger, name it here.
+ *
+ * Reap-safety is owned separately by ClaudeProviderRetentionTracker; this
+ * predicate only governs the cosmetic `in-turn` activity flip. So an unmodeled
+ * future message type degrades safely to "no wake" rather than "stuck", and a
+ * genuine background task still shows as live via the retention overlay
+ * (verified-waiting-provider) regardless of this flip.
+ */
 function isProviderWorkWakeMessage(message: SDKMessage): boolean {
-  const claudeState = getClaudeSessionStateChange(message);
-  if (claudeState !== null) {
+  // session_state_changed drives the state machine directly; it is not a wake.
+  if (getClaudeSessionStateChange(message) !== null) {
     return false;
   }
-  if (message.type === "result") {
-    return false;
+  if (message.type === "system") {
+    const subtype = getSdkMessageSubtype(message);
+    return subtype !== undefined && WAKE_WORK_SYSTEM_SUBTYPES.has(subtype);
   }
-  if (message.type === "system" && message.subtype === "init") {
-    return false;
-  }
-  return true;
+  return WAKE_WORK_MESSAGE_TYPES.has(message.type);
 }
 
 function extractMessageText(message: SDKMessage): string | undefined {
@@ -322,6 +371,15 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   /** Function to change model mid-session (SDK 0.2.7+) */
   setModelFn?: (model?: string) => Promise<void>;
   /**
+   * Dispatch a provider-native slash command out-of-band (e.g. Codex
+   * `/compact` → `thread/compact/start`). Returns `{ handled: false }` when the
+   * command should fall back to normal turn delivery.
+   */
+  runProviderCommandFn?: (
+    command: string,
+    argument?: string,
+  ) => Promise<ProviderCommandResult>;
+  /**
    * Publish the provider's real session id to environment bridges that affect
    * future tool shells spawned by the provider child process.
    */
@@ -353,10 +411,6 @@ export class Process {
   private legacyQueue: UserMessage[] = [];
   private messageQueue: MessageQueue | null;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
-  private deferredEditBarrier: {
-    originalTempId: string;
-    index: number;
-  } | null = null;
   private abortFn: (() => void) | null;
   private _state: ProcessState = { type: "in-turn" };
   private listeners: Set<Listener> = new Set();
@@ -451,6 +505,10 @@ export class Process {
 
   /** Function to change model mid-session (SDK 0.2.7+) */
   private setModelFn: ((model?: string) => Promise<void>) | null;
+  /** Function to dispatch a provider-native slash command out-of-band. */
+  private runProviderCommandFn:
+    | ((command: string, argument?: string) => Promise<ProviderCommandResult>)
+    | null;
   private publishAgentctlSessionIdFn:
     | ((sessionId: string) => void | Promise<void>)
     | null;
@@ -495,6 +553,12 @@ export class Process {
 
   /** Resolved model name from the first assistant message (e.g., "claude-sonnet-4-5-20250929") */
   private _resolvedModel: string | undefined;
+  /**
+   * Current requested YA model id (launch alias, e.g. "opus"). Starts at the
+   * launch `model` and follows mid-session model switches (which leave the
+   * readonly `model` at its original value). Keys per-model settings.
+   */
+  private _requestedModel: string | undefined;
   /** Context window size reported by SDK in result messages' modelUsage */
   private _contextWindow: number | undefined;
 
@@ -526,6 +590,7 @@ export class Process {
     this._permissions = options.permissions;
     this.provider = options.provider;
     this.model = options.model;
+    this._requestedModel = options.model;
     this.serviceTier = options.serviceTier;
     this.executor = options.executor;
     this._thinking = options.thinking;
@@ -537,6 +602,7 @@ export class Process {
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
     this._pidResolver = options.pid;
     this.setModelFn = options.setModelFn ?? null;
+    this.runProviderCommandFn = options.runProviderCommandFn ?? null;
     this.publishAgentctlSessionIdFn =
       options.publishAgentctlSessionIdFn ?? null;
     this._isProcessAlive = options.isProcessAlive ?? null;
@@ -597,6 +663,14 @@ export class Process {
    */
   get resolvedModel(): string | undefined {
     return this._resolvedModel ?? this.model;
+  }
+
+  /**
+   * Current requested YA model id (launch alias, following model switches),
+   * the key for per-model settings. Distinct from `resolvedModel` (reported).
+   */
+  get requestedModel(): string | undefined {
+    return this._requestedModel ?? this.model;
   }
 
   /** Context window size reported by SDK (from result message modelUsage) */
@@ -682,7 +756,9 @@ export class Process {
   }
 
   hasPatientDeferredMessages(): boolean {
-    return this.deferredQueue.some(isPatientDeferredEntry);
+    return this.deferredQueue.some((entry) =>
+      isPatientDeferredEntry(entry, this.provider),
+    );
   }
 
   getLivenessSnapshot(now = new Date()): SessionLivenessSnapshot {
@@ -1083,7 +1159,6 @@ export class Process {
       const directDrained = this.messageQueue.drain();
       const deferredDrained = this.deferredQueue.map((e) => e.message);
       this.deferredQueue = [];
-      this.deferredEditBarrier = null;
       this.emitDeferredQueueChange("promoted");
 
       const all = [
@@ -1147,6 +1222,23 @@ export class Process {
    */
   get supportsDynamicCommands(): boolean {
     return this.supportedCommandsFn !== null;
+  }
+
+  /**
+   * Dispatch a provider-native slash command out-of-band (e.g. Codex `/compact`
+   * → `thread/compact/start`) instead of delivering it as a user turn. Returns
+   * `{ handled: false }` when the provider does not own the command — including
+   * every provider that does not implement native dispatch (Claude, etc.) — so
+   * the caller can fall back to normal message delivery.
+   */
+  async runProviderCommand(
+    command: string,
+    argument?: string,
+  ): Promise<ProviderCommandResult> {
+    if (!this.runProviderCommandFn) {
+      return { handled: false };
+    }
+    return this.runProviderCommandFn(command, argument);
   }
 
   /**
@@ -1240,6 +1332,9 @@ export class Process {
     // Update resolved model so subsequent API responses reflect the switch
     if (model) {
       this._resolvedModel = model;
+      // Follow the switch for per-model-settings keying (readonly `model` stays
+      // at the original launch alias). See topics/provider-abstraction.md.
+      this._requestedModel = model;
     }
     return true;
   }
@@ -1375,6 +1470,10 @@ export class Process {
       queueDepth: this.queueDepth,
       provider: this.provider,
       model: this._resolvedModel ?? this.model,
+      // The requested YA launch alias (e.g. "opus"), distinct from the reported
+      // model above. Keys per-model settings; the route enrichment fills the
+      // persisted/helper fallback when this is absent (non-YA-started sessions).
+      requestedModel: this.requestedModel,
       serviceTier: this.serviceTier,
       thinking: this._thinking,
       effort: this._effort,
@@ -1538,7 +1637,14 @@ export class Process {
   async requestRecap(
     provider: AgentProvider,
     options?: { sinceMs?: number | null },
-  ): Promise<{ supported: boolean; emitted: boolean; reason?: string }> {
+  ): Promise<{
+    supported: boolean;
+    emitted: boolean;
+    reason?: string;
+    /** The recap text, when one was emitted — newer than any prior turn, so
+     *  callers may surface it as the session's current agent line. */
+    text?: string;
+  }> {
     if (this._recapMode === "off") {
       return {
         supported: true,
@@ -1560,7 +1666,7 @@ export class Process {
         reason: "native recaps are provider-owned",
       };
     }
-    if (!provider.supportsRecaps || !provider.generateRecap) {
+    if (!provider.supportsRecaps || !provider.generateSummary) {
       return {
         supported: false,
         emitted: false,
@@ -1590,8 +1696,13 @@ export class Process {
   private async generateAndEmitRecap(
     provider: AgentProvider,
     sinceMs: number | null,
-  ): Promise<{ supported: boolean; emitted: boolean; reason?: string }> {
-    if (!provider.supportsRecaps || !provider.generateRecap) {
+  ): Promise<{
+    supported: boolean;
+    emitted: boolean;
+    reason?: string;
+    text?: string;
+  }> {
+    if (!provider.supportsRecaps || !provider.generateSummary) {
       return {
         supported: false,
         emitted: false,
@@ -1611,10 +1722,13 @@ export class Process {
     this.recapInFlight = true;
     try {
       const text = (
-        await provider.generateRecap(recent, {
+        await provider.generateSummary({
+          purpose: "recap",
+          strategy: "side-session",
+          recentAssistantText: recent,
           model: this.resolveHelperSideModel(),
         })
-      ).trim();
+      ).text.trim();
       if (!text) {
         return {
           supported: true,
@@ -1623,7 +1737,7 @@ export class Process {
         };
       }
       this.emitSyntheticSystemMessage("away_summary", text);
-      return { supported: true, emitted: true };
+      return { supported: true, emitted: true, text };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const log = getLogger();
@@ -1767,7 +1881,7 @@ export class Process {
    * `(45s ago)`). Applied after slash-command expansion so a queued `/command`
    * is still detected; the anchor rides ahead of the expanded provider text and
    * the matching echo. No-op when `anchor` is absent — including always, by
-   * default, since anchors are opt-in (YA_COMPOSE_ANCHORS=1).
+   * default, since anchors are opt-in (YEP_COMPOSE_ANCHORS=1).
    */
   private applyComposeAnchor(
     message: UserMessage,
@@ -1858,12 +1972,16 @@ export class Process {
       message: { role: "user", content },
     } as SDKMessage);
 
+    // YA-injected control messages (e.g. the `/compact` we queue for
+    // compaction) carry no user echo — native auto-compaction shows none.
+    const hidden = isHiddenInjectedMessage(providerMessage);
+
     // Add to history for SSE replay to late-joining clients.
     // The client-side deduplication (mergeSSEMessage, mergeJSONLMessages) handles
     // any duplicates when JSONL is later fetched. This is especially important
     // for the two-phase flow (createSession + queueMessage) where the client
     // may connect before the JSONL is written.
-    if (shouldEmitMessage(sdkMessage)) {
+    if (!hidden && shouldEmitMessage(sdkMessage)) {
       // Check for duplicates in both buckets before adding
       // This prevents duplicates if the provider echoes the message back with the same UUID
       const isDuplicate =
@@ -1878,7 +1996,7 @@ export class Process {
     // Include the session ID so client can associate it correctly
     // The provider will echo this message back, but if we ensure UUIDs match,
     // the client will merge them.
-    if (shouldEmitMessage(sdkMessage)) {
+    if (!hidden && shouldEmitMessage(sdkMessage)) {
       this.emit({
         type: "message",
         message: { ...sdkMessage, session_id: this._sessionId },
@@ -1970,7 +2088,6 @@ export class Process {
     message: UserMessage,
     options?: {
       promoteIfReady?: boolean;
-      placement?: DeferredMessagePlacement;
     },
   ): {
     success: boolean;
@@ -1979,31 +2096,19 @@ export class Process {
     position?: number;
     error?: string;
   } {
-    const replaceTempId = options?.placement?.replaceTempId;
-    const replacesDeferredEdit =
-      !!replaceTempId &&
-      this.deferredEditBarrier?.originalTempId === replaceTempId;
-    if (replaceTempId && !replacesDeferredEdit) {
-      return {
-        success: false,
-        deferred: true,
-        error: "Deferred edit barrier does not match replacement message",
-      };
-    }
-    const deferredEditInsertionIndex = replacesDeferredEdit
-      ? Math.min(
-          this.deferredEditBarrier?.index ?? 0,
-          this.deferredQueue.length,
-        )
-      : null;
-
     const canPromoteIfReady = !!(
       options?.promoteIfReady &&
       this.messageQueue &&
-      message.metadata?.deliveryIntent !== "patient" &&
+      // Only a "real" patient entry (Claude) waits for the verified-idle path;
+      // elsewhere a patient-tagged message is an ordinary deferred one and
+      // promotes immediately like any other deferred turn.
+      !isPatientDeferredEntry(
+        { message, timestamp: new Date().toISOString() },
+        this.provider,
+      ) &&
       this._state.type === "idle"
     );
-    if (canPromoteIfReady && !options?.placement) {
+    if (canPromoteIfReady) {
       const result = this.queueMessage(message);
       if (!result.success) {
         return {
@@ -2021,59 +2126,12 @@ export class Process {
       };
     }
 
-    const entry = {
+    this.deferredQueue.push({
       message,
       timestamp: new Date().toISOString(),
-    };
-    const insertionIndex = replacesDeferredEdit
-      ? (deferredEditInsertionIndex as number)
-      : this.getDeferredInsertionIndex(options?.placement);
-    this.deferredQueue.splice(insertionIndex, 0, entry);
-    if (replacesDeferredEdit) {
-      this.deferredEditBarrier = null;
-    }
+    });
     this.emitDeferredQueueChange("queued", message.tempId);
-    if (canPromoteIfReady && this.promoteEligibleDeferredAfterTurn()) {
-      return {
-        success: true,
-        deferred: false,
-        promoted: true,
-      };
-    }
     return { success: true, deferred: true };
-  }
-
-  private getDeferredPlacement(index: number): DeferredMessagePlacement {
-    const afterTempId = this.deferredQueue[index - 1]?.message.tempId;
-    const beforeTempId = this.deferredQueue[index + 1]?.message.tempId;
-    return {
-      ...(afterTempId ? { afterTempId } : {}),
-      ...(beforeTempId ? { beforeTempId } : {}),
-    };
-  }
-
-  private getDeferredInsertionIndex(
-    placement?: DeferredMessagePlacement,
-  ): number {
-    if (placement?.beforeTempId) {
-      const beforeIndex = this.deferredQueue.findIndex(
-        (entry) => entry.message.tempId === placement.beforeTempId,
-      );
-      if (beforeIndex !== -1) {
-        return beforeIndex;
-      }
-    }
-
-    if (placement?.afterTempId) {
-      const afterIndex = this.deferredQueue.findIndex(
-        (entry) => entry.message.tempId === placement.afterTempId,
-      );
-      if (afterIndex !== -1) {
-        return afterIndex + 1;
-      }
-    }
-
-    return this.deferredQueue.length;
   }
 
   /**
@@ -2085,107 +2143,7 @@ export class Process {
     );
     if (index === -1) return false;
     this.deferredQueue.splice(index, 1);
-    if (this.deferredEditBarrier) {
-      if (index < this.deferredEditBarrier.index) {
-        this.deferredEditBarrier.index--;
-      } else if (this.deferredQueue.length <= this.deferredEditBarrier.index) {
-        this.deferredEditBarrier.index = this.deferredQueue.length;
-      }
-    }
     this.emitDeferredQueueChange("cancelled", tempId);
-    return true;
-  }
-
-  updateDeferredMessage(tempId: string, text: string): UserMessage | null {
-    const index = this.deferredQueue.findIndex(
-      (entry) => entry.message.tempId === tempId,
-    );
-    const entry = this.deferredQueue[index];
-    if (index === -1 || !entry) return null;
-
-    const updatedMessage = { ...entry.message, text };
-    this.deferredQueue[index] = { ...entry, message: updatedMessage };
-    this.emitDeferredQueueChange("edited", tempId);
-    return updatedMessage;
-  }
-
-  steerDeferredMessage(tempId: string): SteeredDeferredMessage | null {
-    const index = this.deferredQueue.findIndex(
-      (entry) => entry.message.tempId === tempId,
-    );
-    if (index === -1) return null;
-
-    const previousDeferredEditBarrier = this.deferredEditBarrier
-      ? { ...this.deferredEditBarrier }
-      : null;
-    const [entry] = this.deferredQueue.splice(index, 1);
-    if (!entry) return null;
-
-    const steeredMessage: UserMessage = {
-      ...entry.message,
-      text: stripPatientQueuePrefix(entry.message.text),
-      metadata: {
-        ...entry.message.metadata,
-        deliveryIntent: "steer",
-      },
-    };
-    const strippedEntry: DeferredQueueEntry = {
-      ...entry,
-      message: steeredMessage,
-    };
-
-    if (this.deferredEditBarrier) {
-      if (index < this.deferredEditBarrier.index) {
-        this.deferredEditBarrier.index--;
-      } else if (this.deferredQueue.length <= this.deferredEditBarrier.index) {
-        this.deferredEditBarrier.index = this.deferredQueue.length;
-      }
-    }
-
-    const result = this.queueMessage(steeredMessage, { allowSteer: true });
-    if (!result.success) {
-      this.deferredQueue.splice(index, 0, strippedEntry);
-      this.deferredEditBarrier = previousDeferredEditBarrier;
-      this.emitDeferredQueueChange("queued", tempId);
-      return null;
-    }
-
-    this.emitDeferredQueueChange("promoted", tempId);
-    return { message: steeredMessage, position: result.position };
-  }
-
-  /**
-   * Remove and return a deferred message so a client can edit it safely.
-   */
-  takeDeferredMessage(tempId: string): TakenDeferredMessage | null {
-    const index = this.deferredQueue.findIndex(
-      (entry) => entry.message.tempId === tempId,
-    );
-    if (index === -1) return null;
-    const placement = this.getDeferredPlacement(index);
-    const [entry] = this.deferredQueue.splice(index, 1);
-    this.deferredEditBarrier = { originalTempId: tempId, index };
-    this.emitDeferredQueueChange("edited", tempId);
-    if (!entry) return null;
-    return { message: entry.message, placement };
-  }
-
-  releaseDeferredEditBarrier(originalTempId?: string): boolean {
-    if (!this.deferredEditBarrier) return false;
-    if (
-      originalTempId &&
-      this.deferredEditBarrier.originalTempId !== originalTempId
-    ) {
-      return false;
-    }
-    this.deferredEditBarrier = null;
-    if (this._state.type === "idle") {
-      const promotion = this.promoteNextDeferredMessage({ allowSteer: false });
-      if (promotion === "promoted" || promotion === "failed") {
-        return true;
-      }
-    }
-    this.emitDeferredQueueChange("edited", originalTempId);
     return true;
   }
 
@@ -2199,9 +2157,8 @@ export class Process {
     attachments?: UserMessage["attachments"];
     attachmentCount?: number;
     metadata?: UserMessage["metadata"];
-    blockedByEdit?: boolean;
   }[] {
-    return this.deferredQueue.map((entry, index) => {
+    return this.deferredQueue.map((entry) => {
       const attachmentCount =
         (entry.message.attachments?.length ?? 0) +
         (entry.message.images?.length ?? 0) +
@@ -2216,9 +2173,6 @@ export class Process {
           ? { attachments: entry.message.attachments }
           : {}),
         ...(attachmentCount > 0 ? { attachmentCount } : {}),
-        ...(this.deferredEditBarrier && index >= this.deferredEditBarrier.index
-          ? { blockedByEdit: true }
-          : {}),
       };
     });
   }
@@ -2231,14 +2185,12 @@ export class Process {
     reason: "cancelled" | "promoted" = "promoted",
   ): UserMessage[] {
     if (this.deferredQueue.length === 0) {
-      this.deferredEditBarrier = null;
       return [];
     }
 
     const drained = this.deferredQueue.map((entry) => entry.message);
     const firstTempId = drained[0]?.tempId;
     this.deferredQueue = [];
-    this.deferredEditBarrier = null;
     this.emitDeferredQueueChange(reason, firstTempId);
     return drained;
   }
@@ -2259,7 +2211,7 @@ export class Process {
    * Emit a deferred-queue event with the current queue state.
    */
   private emitDeferredQueueChange(
-    reason?: "queued" | "cancelled" | "edited" | "promoted",
+    reason?: "queued" | "cancelled" | "promoted",
     tempId?: string,
   ): void {
     this.emit({
@@ -2858,20 +2810,31 @@ export class Process {
           // Legacy mock SDK behavior - handle input_request message
           this.handleInputRequest(message);
         } else if (message.type === "result") {
-          // Capture context window from modelUsage in result messages.
-          // Keys may include suffixes like "[1m]" (e.g. "claude-opus-4-6[1m]"),
-          // so we take the max contextWindow across all model entries.
+          // Capture context window from modelUsage in result messages. This is
+          // the authoritative observation point (the only place the real,
+          // account-resolved window exists); we emit a per-model observation
+          // for each entry so it can be durably recorded regardless of whether
+          // any client fetches this session's detail, and keep the max across
+          // entries as this process's live-override window. The model id is
+          // recorded exactly as the SDK reports it in modelUsage (no munging) —
+          // observations should reflect what was actually observed.
           if (message.modelUsage) {
             const mu = message.modelUsage as Record<
               string,
               { contextWindow?: number }
             >;
-            for (const entry of Object.values(mu)) {
+            for (const [model, entry] of Object.entries(mu)) {
               if (entry.contextWindow && entry.contextWindow > 0) {
                 this._contextWindow = Math.max(
                   this._contextWindow ?? 0,
                   entry.contextWindow,
                 );
+                this.emit({
+                  type: "context-window-observed",
+                  model,
+                  contextWindow: entry.contextWindow,
+                  provider: this.provider,
+                });
               }
             }
           }
@@ -3092,7 +3055,7 @@ export class Process {
    * Compose-time anchor string per deferred entry, computed at delivery (now).
    * Parallel to `entries`; each element is the `(Ns ago)` / `(Ms later)` prefix
    * or null when below threshold — or always null when anchors are off
-   * (the default; YA_COMPOSE_ANCHORS=1 opts in). See
+   * (the default; YEP_COMPOSE_ANCHORS=1 opts in). See
    * topics/compose-time-context-anchors.md.
    */
   private deferredComposeAnchors(
@@ -3117,16 +3080,12 @@ export class Process {
    * consecutively-composed turns into one `--------`-separated provider turn.
    */
   private promoteEligibleDeferredAfterTurn(): boolean {
-    if (
-      this.deferredQueue.length === 0 ||
-      !this.messageQueue ||
-      this.deferredEditBarrier
-    ) {
+    if (this.deferredQueue.length === 0 || !this.messageQueue) {
       return false;
     }
 
     const eligible = this.deferredQueue.filter(
-      (entry) => !isPatientDeferredEntry(entry),
+      (entry) => !isPatientDeferredEntry(entry, this.provider),
     );
     if (eligible.length === 0) {
       return false;
@@ -3162,50 +3121,6 @@ export class Process {
     return true;
   }
 
-  private promoteNextDeferredMessage(options: {
-    allowSteer: boolean;
-    includePatient?: boolean;
-  }): "empty" | "blocked" | "promoted" | "failed" {
-    const nextIndex = this.deferredQueue.findIndex(
-      (entry) => options.includePatient || !isPatientDeferredEntry(entry),
-    );
-    if (nextIndex === -1) {
-      return "empty";
-    }
-    if (
-      this.deferredEditBarrier &&
-      nextIndex >= this.deferredEditBarrier.index
-    ) {
-      return "blocked";
-    }
-    const [next] = this.deferredQueue.splice(nextIndex, 1);
-    if (!next) {
-      return "empty";
-    }
-    const shiftedBeforeBarrier =
-      !!this.deferredEditBarrier && nextIndex < this.deferredEditBarrier.index;
-    if (this.deferredEditBarrier) {
-      this.deferredEditBarrier.index--;
-    }
-
-    const [composeAnchor] = this.deferredComposeAnchors([next]);
-    const result = this.queueMessage(next.message, {
-      allowSteer: options.allowSteer,
-      composeAnchor,
-    });
-    if (!result.success) {
-      this.deferredQueue.splice(nextIndex, 0, next);
-      if (shiftedBeforeBarrier && this.deferredEditBarrier) {
-        this.deferredEditBarrier.index++;
-      }
-      this.emitDeferredQueueChange("queued", next.message.tempId);
-      return "failed";
-    }
-
-    this.emitDeferredQueueChange("promoted", next.message.tempId);
-    return "promoted";
-  }
-
   /**
    * Promote patient deferred entries whose own patience window has elapsed
    * since the session became verifiably quiet. Entries still waiting report
@@ -3220,13 +3135,14 @@ export class Process {
     if (
       this.deferredQueue.length === 0 ||
       !this.messageQueue ||
-      this.deferredEditBarrier ||
       this._state.type !== "idle"
     ) {
       return { promoted: false, nextPatienceMsRemaining: null };
     }
 
-    const patientEntries = this.deferredQueue.filter(isPatientDeferredEntry);
+    const patientEntries = this.deferredQueue.filter((entry) =>
+      isPatientDeferredEntry(entry, this.provider),
+    );
     if (patientEntries.length === 0) {
       return { promoted: false, nextPatienceMsRemaining: null };
     }

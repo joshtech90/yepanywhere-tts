@@ -30,16 +30,17 @@ never reach the Grok child process.
 Two complementary layers enforce this — one for YA's own keys, one for
 vendor-named keys that may be in the env for other reasons.
 
-**Layer 1 — `YA_<module>__<NAME>` consume-and-strip (the primary guard for
+**Layer 1 — `YEP_<MODULE>_<NAME>` consume-and-strip (the primary guard for
 YA-owned keys).** A secret YA needs for a subsystem is provided under a
-`YA_<module>__<NAME>` name (e.g. `YA_stt__XAI_API_KEY`,
-`YA_stt__DEEPGRAM_API_KEY`). On server load, `harvestYaModuleEnv`
+registered module prefix (e.g. `YEP_STT_XAI_API_KEY`,
+`YEP_STT_DEEPGRAM_API_KEY`). On server load, `harvestYaModuleEnv`
 (`packages/server/src/yaModuleEnv.ts`) moves every such var into a private
 in-process store and **deletes it from `process.env`**, so it can never ride
 the ambient environment into *any* spawned child — no per-provider masking
 required. The subsystem reads it via `getModuleEnv("stt")[NAME]`, never
-`process.env`. The `YA_` prefix means "consume and strip"; module and name
-split on the **first** `__`, so the name half may itself contain `__`.
+`process.env`. Private prefixes such as `YEP_STT_` are registered explicitly;
+ordinary `YEP_*` toggles are not consumed merely because they contain an
+underscore.
 
 **Layer 2 — startup scrub plus per-provider `excludeEnv` for vendor-named
 keys.** A literal `XAI_API_KEY` may be set because xAI's public docs use that
@@ -53,7 +54,7 @@ provider passes `GROK_BILLING_ENV_DENYLIST =
 ["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]` (local to `grok-acp.ts`) unless the
 user has enabled the Grok Build provider option to pass the scrubbed
 `XAI_API_KEY`; that opt-in injects only the ambient `XAI_API_KEY`, not
-`YA_stt__XAI_API_KEY`. It is
+`YEP_STT_XAI_API_KEY`. It is
 scoped to that one provider on purpose: the shared
 `filterEnvForChildProcess` allowlist is **not** widened to drop vendor API
 keys, because that would change the child env of established providers that
@@ -69,6 +70,44 @@ provider relies on ambiently (e.g. a future non-provider use of
 strip — gate it: mask `X` from provider P's child **only when** YA has
 itself configured a competing value for `X` this run ("requested creds").
 
+### The `ant` CLI — metered API, never a subscription path
+
+`ant` is Anthropic's official CLI (`github.com/anthropics/anthropic-cli`;
+install via `brew install anthropics/tap/ant`, a GitHub release binary, or
+`go install github.com/anthropics/anthropic-cli/cmd/ant@latest`). It maps
+every Claude API resource to a subcommand (`ant messages create`, `ant
+models list`, `ant beta:agents …`), builds request bodies from typed flags
+or piped YAML, inlines files into any string field with `@path`, and pulls
+response fields out with `--transform` — a typed alternative to hand-written
+`curl` or an SDK.
+
+**YA does not use it, and as of this writing it is not installed here** (no
+references in the tree; `command -v ant` is empty). The live question was
+whether it *could* fit; the answer turns entirely on billing, and lands on
+the wrong side of the rule above.
+
+**It is a metered Claude API client with no subscription path.** Both auth
+options bill per-token API usage: an `ANTHROPIC_API_KEY`, or `ant auth
+login`, which runs a browser OAuth flow **against the Claude Console** (the
+API platform) and caches credentials locally — convenience over managing a
+raw key, not a different billing surface. The documented auth choices are
+API keys, workspaces, named profiles, and Workload Identity Federation: all
+Console/API constructs, none a claude.ai Pro/Max subscription. The Messages
+quickstart's own sample response carries `usage.input_tokens` /
+`output_tokens`. So `ant` sits squarely on the metered side of the
+subscription-vs-metered split this topic governs — unlike Claude Code, whose
+intended-default path is subscription auth.
+
+That is why we do not adopt it for the core coding flow: `ant` is precisely
+the "vendor CLI that honors an ambient `ANTHROPIC_API_KEY`" footgun named
+above, keyed on the same `ANTHROPIC_API_KEY` the forward-looking note (a
+non-provider consumer wanting a name Claude relies on ambiently) already
+anticipates. It would earn a place only for a *deliberately* metered,
+separate task — the way `ya-deepgram` / `ya-grok` STT are deliberate — and
+no such need exists today. If one ever arises, it takes the same guard:
+gate `ANTHROPIC_API_KEY` so wiring in `ant` for a YA-owned purpose never
+silently flips a subscription Claude Code child to metered billing.
+
 ## Speech transcription cost
 
 Server-routed speech backends (see
@@ -77,7 +116,7 @@ free-local and metered-cloud options. Local Whisper is free CPU/GPU time;
 Deepgram (`ya-deepgram`) and xAI STT (`ya-grok`) are metered. Cloud
 backends **auto-enable when their key is present** — a single-user
 operator providing the key is itself the opt-in signal — while local/test
-backends (`ya-whisper`, `ya-dummy`) stay explicit via `YA_VOICE_BACKENDS`
+backends (`ya-whisper`, `ya-dummy`) stay explicit via `YEP_VOICE_BACKENDS`
 (see [ya-env-vars.md](ya-env-vars.md)). xAI STT batch is ~$0.10/hr,
 realtime ~$0.20/hr — cheap, but still a metered path, never a silent
 default for a user who has not provisioned a key.

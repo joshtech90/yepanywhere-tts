@@ -11,6 +11,10 @@ export class CodexProvider implements Provider {
   readonly capabilities: ProviderCapabilities = {
     supportsDag: false, // Linear history
     supportsCloning: true,
+    needsApproxMessageDedup: true,
+    // Tool calls/results dedup deterministically by call_id; keep the backstop
+    // only for the residual non-tool messages. See tasks/032.
+    approxDedupExcludesTools: true,
   };
 
   readonly metadata: ProviderMetadata = {
@@ -32,6 +36,10 @@ export class CodexOssProvider implements Provider {
   readonly capabilities: ProviderCapabilities = {
     supportsDag: false, // Linear history
     supportsCloning: true,
+    needsApproxMessageDedup: true,
+    // Tool calls/results dedup deterministically by call_id; keep the backstop
+    // only for the residual non-tool messages. See tasks/032.
+    approxDedupExcludesTools: true,
   };
 
   readonly metadata: ProviderMetadata = {

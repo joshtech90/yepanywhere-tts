@@ -28,6 +28,7 @@ import type {
   ShowThinking,
   SlashCommand,
   ThinkingOption,
+  TranscriptDisplayObject,
   UploadedFile,
   UserQuestionAnswers,
   UserMessageMetadata,
@@ -91,6 +92,8 @@ export interface GlobalSessionItem {
   updatedAt: string;
   messageCount: number;
   provider: ProviderName;
+  /** Last active model for this session (from JSONL), for list/badge display. */
+  model?: string;
   projectId: string;
   projectName: string;
   ownership: SessionStatus;
@@ -106,6 +109,8 @@ export interface GlobalSessionItem {
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
+  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  lastAgentText?: string;
 }
 
 /** Stats about all sessions (computed during full scan on server) */
@@ -126,13 +131,6 @@ export interface DeferredQueueMessage {
   timestamp: string;
   metadata?: UserMessageMetadata;
   attachmentCount?: number;
-  blockedByEdit?: boolean;
-}
-
-export interface DeferredMessagePlacement {
-  beforeTempId?: string;
-  afterTempId?: string;
-  replaceTempId?: string;
 }
 
 /** Minimal project info for filter dropdowns */
@@ -313,6 +311,15 @@ export interface VersionInfo {
   capabilities?: string[];
   /** Server-routed speech backend ids validated by the server. */
   voiceBackends?: string[];
+  /** Configured server-routed speech backends, including validation state. */
+  voiceBackendStatuses?: Array<{
+    id: string;
+    label: string;
+    enabled: boolean;
+    validationStatus: "pending" | "enabled" | "disabled";
+    capabilities?: { streaming?: boolean; smartTurn?: boolean };
+    disabledReason?: string;
+  }>;
   /** Capability map keyed by server-routed speech backend id. */
   voiceBackendCapabilities?: Record<
     string,
@@ -341,6 +348,25 @@ export interface ServerInfo {
   boundToAllInterfaces: boolean;
   /** Whether the server is localhost-only */
   localhostOnly: boolean;
+}
+
+/**
+ * One documented startup env var. For set secrets, `value` is a redacted
+ * preview produced server-side; the raw secret is never sent to the client.
+ */
+export interface EnvSettingEntry {
+  name: string;
+  group: string;
+  description: string;
+  secret: boolean;
+  set: boolean;
+  value?: string;
+  /** Dynamic, runtime-computed caption (e.g. HOST's active listen addresses). */
+  note?: string;
+}
+
+export interface EnvSettingsReport {
+  entries: EnvSettingEntry[];
 }
 
 export interface NetworkInterface {
@@ -409,6 +435,9 @@ export const api = {
 
   // Server info API (host/port binding for Local Access settings)
   getServerInfo: () => fetchJSON<ServerInfo>("/server-info"),
+
+  // Documented startup env vars (read-only; secrets redacted server-side)
+  getEnvSettings: () => fetchJSON<EnvSettingsReport>("/env-settings"),
 
   // Network binding API (runtime port/interface configuration)
   getNetworkBinding: () => fetchJSON<NetworkBindingState>("/network-binding"),
@@ -501,6 +530,17 @@ export const api = {
   getSessionMetadata: (projectId: string, sessionId: string) =>
     fetchJSON<SessionMetadataResponse>(
       `/projects/${projectId}/sessions/${sessionId}/metadata`,
+    ),
+
+  /**
+   * Recompute the hover-card recent-activity excerpt for a non-running session
+   * and push it to lists/hovers via a session-updated event. Fire-and-update:
+   * the refreshed value arrives through the activity stream, not this response.
+   */
+  refreshSessionPreview: (projectId: string, sessionId: string) =>
+    fetchJSON<{ lastAgentText: string | null }>(
+      `/projects/${projectId}/sessions/${sessionId}/refresh-preview`,
+      { method: "POST" },
     ),
 
   /**
@@ -687,6 +727,37 @@ export const api = {
       }),
     }),
 
+  /**
+   * Bring a reaped session's process back live WITHOUT sending a turn, so the
+   * client can read live process state (model options) before messaging.
+   * With no options the server resumes using the session's persisted
+   * provider/model. Idempotent if the session is already owned.
+   */
+  reactivateSession: (
+    projectId: string,
+    sessionId: string,
+    options?: {
+      mode?: PermissionMode;
+      model?: string;
+      provider?: ProviderName;
+      executor?: string;
+    },
+  ) =>
+    fetchJSON<{
+      processId: string;
+      permissionMode: PermissionMode;
+      modeVersion: number;
+      serverTimestamp: number;
+    }>(`/projects/${projectId}/sessions/${sessionId}/reactivate`, {
+      method: "POST",
+      body: JSON.stringify({
+        mode: options?.mode,
+        model: options?.model,
+        provider: options?.provider,
+        executor: options?.executor,
+      }),
+    }),
+
   restartSession: (
     projectId: string,
     sessionId: string,
@@ -753,6 +824,76 @@ export const api = {
       body: JSON.stringify({ upToMessageId: options?.upToMessageId }),
     }),
 
+  forkSessionWithSummary: (
+    projectId: string,
+    sessionId: string,
+    options: {
+      sourceMessageId: string;
+      instructions?: string;
+      mode?: PermissionMode;
+      autoOpenWhenReady?: boolean;
+    },
+  ) =>
+    fetchJSON<{
+      displayObject: TranscriptDisplayObject;
+    }>(`/projects/${projectId}/sessions/${sessionId}/fork-summary`, {
+      method: "POST",
+      body: JSON.stringify({
+        sourceMessageId: options.sourceMessageId,
+        instructions: options.instructions,
+        mode: options.mode,
+        autoOpenWhenReady: options.autoOpenWhenReady,
+      }),
+    }),
+
+  proposeSessionRetitle: (
+    projectId: string,
+    sessionId: string,
+    options?: { currentTitle?: string; lengthTarget?: number },
+  ) =>
+    fetchJSON<{ title: string; generatorSessionId: string }>(
+      `/projects/${projectId}/sessions/${sessionId}/retitle`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          currentTitle: options?.currentTitle,
+          lengthTarget: options?.lengthTarget,
+        }),
+      },
+    ),
+
+  cancelForkSessionWithSummary: (
+    projectId: string,
+    sessionId: string,
+    objectId: string,
+  ) =>
+    fetchJSON<{
+      transcriptDisplayObjects: TranscriptDisplayObject[];
+    }>(
+      `/projects/${projectId}/sessions/${sessionId}/fork-summary/${objectId}/cancel`,
+      { method: "POST" },
+    ),
+
+  updateForkSummaryDisplayObject: (
+    projectId: string,
+    sessionId: string,
+    objectId: string,
+    updates: {
+      autoOpenWhenReady?: boolean;
+      action?: "opened" | "clicked";
+    },
+  ) =>
+    fetchJSON<{
+      displayObject: TranscriptDisplayObject;
+      transcriptDisplayObjects: TranscriptDisplayObject[];
+    }>(
+      `/projects/${projectId}/sessions/${sessionId}/fork-summary/${objectId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(updates),
+      },
+    ),
+
   queueMessage: (
     sessionId: string,
     message: string,
@@ -761,7 +902,6 @@ export const api = {
     tempId?: string,
     thinking?: ThinkingOption,
     deferred?: boolean,
-    placement?: DeferredMessagePlacement,
     clientTimestamp?: number,
     messageMetadata?: UserMessageMetadata,
     serviceTier?: string,
@@ -788,9 +928,6 @@ export const api = {
         showThinking,
         serviceTier,
         deferred,
-        insertBeforeTempId: placement?.beforeTempId,
-        insertAfterTempId: placement?.afterTempId,
-        replaceDeferredTempId: placement?.replaceTempId,
         clientTimestamp,
         messageMetadata,
       }),
@@ -800,45 +937,6 @@ export const api = {
     fetchJSON<{ cancelled: boolean }>(
       `/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}`,
       { method: "DELETE" },
-    ),
-
-  updateDeferredMessage: (sessionId: string, tempId: string, message: string) =>
-    fetchJSON<{
-      updated: boolean;
-      tempId?: string;
-      message: string;
-      deferredMessages?: DeferredQueueMessage[];
-    }>(`/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}`, {
-      method: "PUT",
-      body: JSON.stringify({ message }),
-    }),
-
-  editDeferredMessage: (sessionId: string, tempId: string) =>
-    fetchJSON<{
-      message: string;
-      tempId?: string;
-      mode?: PermissionMode;
-      attachments?: UploadedFile[];
-      placement?: DeferredMessagePlacement;
-    }>(`/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}/edit`, {
-      method: "POST",
-    }),
-
-  steerDeferredMessage: (sessionId: string, tempId: string) =>
-    fetchJSON<{
-      steered: boolean;
-      tempId?: string;
-      message: string;
-      position?: number;
-      deferredMessages?: DeferredQueueMessage[];
-    }>(`/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}/steer`, {
-      method: "POST",
-    }),
-
-  releaseDeferredEditBarrier: (sessionId: string, tempId: string) =>
-    fetchJSON<{ released: boolean; deferredMessages?: DeferredQueueMessage[] }>(
-      `/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}/edit/release`,
-      { method: "POST" },
     ),
 
   abortProcess: (processId: string) =>
@@ -952,6 +1050,8 @@ export const api = {
         thinking?: { type: string };
         effort?: string;
         model?: string;
+        /** YA model id (launch alias) for keying per-model settings. */
+        requestedModel?: string;
         liveness?: SessionLivenessSnapshot;
         recapMode?: RecapMode;
         promptSuggestionMode?: PromptSuggestionMode;
@@ -990,6 +1090,7 @@ export const api = {
       heartbeatTurnsAfterMinutes?: number | null;
       heartbeatTurnText?: string | null;
       heartbeatForceAfterMinutes?: number | null;
+      promptSuggestionMode?: PromptSuggestionMode | null;
     },
   ) =>
     fetchJSON<{ updated: boolean }>(`/sessions/${sessionId}/metadata`, {
@@ -1327,6 +1428,9 @@ export const api = {
       ),
     }),
 
+  // Read-only file-access info (env-pin state + resolved hint paths)
+  getFileAccessInfo: () => fetchJSON<FileAccessInfo>("/settings/file-access"),
+
   discoverHelperTargetModels: (baseUrl: string) =>
     fetchJSON<{ baseUrl: string; models: ModelInfo[] }>(
       "/settings/helper-targets/models",
@@ -1480,6 +1584,46 @@ export interface RemoteExecutorTestResult {
   claudeVersion?: string;
 }
 
+/**
+ * Which local path prefixes the HTTP file doors (media + project-files routes)
+ * may read. See docs/tactical/018-file-access-scoping.md.
+ */
+export interface FileAccessSettings {
+  /** All scanned project paths. */
+  projects: boolean;
+  /** The managed uploads directory. */
+  uploads: boolean;
+  /** Per-OS temp prefixes. */
+  temp: boolean;
+  /** The home directory. */
+  home: boolean;
+  /** Literal absolute prefixes, one per entry (`~` expanded server-side). */
+  custom: string[];
+}
+
+/** Read-only file-access info from the server (for UI hints + env-pin state). */
+export interface FileAccessInfo {
+  /** True when ALLOWED_FILE_PATHS/ALLOWED_IMAGE_PATHS pins the set (UI read-only). */
+  envPinned: boolean;
+  /** The env-pinned prefixes (only meaningful when envPinned). */
+  envPaths: string[];
+  /** Resolved temp prefixes the "Temp folders" toggle expands to. */
+  tempPaths: string[];
+  /** Managed uploads directory. */
+  uploadsDir: string;
+  /** Home directory. */
+  homeDir: string;
+}
+
+/** Default file-access settings (secure-by-default; mirrors the server). */
+export const DEFAULT_FILE_ACCESS: FileAccessSettings = {
+  projects: true,
+  uploads: true,
+  temp: true,
+  home: false,
+  custom: [],
+};
+
 /** Server-wide settings that persist across restarts */
 export interface ServerSettings {
   /** Whether clients should register the service worker */
@@ -1500,6 +1644,8 @@ export interface ServerSettings {
   chromeOsHosts?: string[];
   /** Allowed hostnames for host/origin validation. "*" = allow all, comma-separated = specific hosts. */
   allowedHosts?: string;
+  /** Which local path prefixes the HTTP file doors may read. Undefined = secure defaults. */
+  fileAccess?: FileAccessSettings;
   /** Free-form instructions appended to the system prompt for all sessions */
   globalInstructions?: string;
   /** Optional additive context hints composed with global instructions */

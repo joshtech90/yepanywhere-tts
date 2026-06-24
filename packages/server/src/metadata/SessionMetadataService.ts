@@ -7,7 +7,12 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { type ProviderName, sanitizeSessionTitle } from "@yep-anywhere/shared";
+import {
+  type ProviderName,
+  type PromptSuggestionMode,
+  type TranscriptDisplayObject,
+  sanitizeSessionTitle,
+} from "@yep-anywhere/shared";
 
 export interface SessionMetadata {
   /** Custom title that overrides auto-generated title */
@@ -18,8 +23,15 @@ export interface SessionMetadata {
   isStarred?: boolean;
   /** Parent session when this session is a YA-owned fork/aside. */
   parentSessionId?: string;
-  /** Model used for this session (resolved, not "default") */
-  model?: string;
+  /** Saved viewer-only objects placed in the transcript. */
+  transcriptDisplayObjects?: TranscriptDisplayObject[];
+  /**
+   * YA model id (launch alias, e.g. "opus"/"default") chosen when YA started
+   * this session. Persisted so per-model settings still key by the requested
+   * YA id after a server restart, instead of falling back to the reported model.
+   * Absent for sessions YA didn't start. See topics/provider-abstraction.md.
+   */
+  requestedModel?: string;
   /** Provider used for this session (for backward compatibility with sessions that don't have provider in JSONL) */
   provider?: ProviderName;
   /** SSH host alias for remote execution (undefined = local) */
@@ -34,6 +46,8 @@ export interface SessionMetadata {
   heartbeatTurnText?: string;
   /** Per-session grace minutes before forcing output; null = off */
   heartbeatForceAfterMinutes?: number | null;
+  /** Per-session prompt-suggestion preference (off | native) */
+  promptSuggestionMode?: PromptSuggestionMode;
 }
 
 export interface SessionMetadataState {
@@ -43,7 +57,7 @@ export interface SessionMetadataState {
   version: number;
 }
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 export interface SessionMetadataServiceOptions {
   /** Directory to store metadata state (defaults to ~/.yep-anywhere) */
@@ -85,15 +99,36 @@ export class SessionMetadataService {
         `[SessionMetadataService] Loaded ${Object.keys(parsed.sessions).length} sessions from disk`,
       );
 
-      // Validate and migrate if needed
-      if (parsed.version === CURRENT_VERSION) {
-        this.state = parsed;
-      } else {
-        // Future: handle migrations here
-        this.state = {
-          sessions: parsed.sessions ?? {},
-          version: CURRENT_VERSION,
-        };
+      this.state = {
+        sessions: parsed.sessions ?? {},
+        version: CURRENT_VERSION,
+      };
+
+      let changed = parsed.version !== CURRENT_VERSION;
+      for (const metadata of Object.values(this.state.sessions)) {
+        if (!metadata.transcriptDisplayObjects) {
+          continue;
+        }
+        const recovered = metadata.transcriptDisplayObjects.map((object) =>
+          object.status === "generating"
+            ? {
+                ...object,
+                status: "error" as const,
+                error: "Fork summary interrupted by server restart",
+              }
+            : object,
+        );
+        if (
+          recovered.some(
+            (object, index) =>
+              object !== metadata.transcriptDisplayObjects?.[index],
+          )
+        ) {
+          metadata.transcriptDisplayObjects = recovered;
+          changed = true;
+        }
+      }
+      if (changed) {
         await this.save();
       }
     } catch (error) {
@@ -120,6 +155,75 @@ export class SessionMetadataService {
    */
   getAllMetadata(): Record<string, SessionMetadata> {
     return { ...this.state.sessions };
+  }
+
+  getTranscriptDisplayObjects(sessionId: string): TranscriptDisplayObject[] {
+    return [
+      ...(this.state.sessions[sessionId]?.transcriptDisplayObjects ?? []),
+    ];
+  }
+
+  async addTranscriptDisplayObject(
+    sessionId: string,
+    object: TranscriptDisplayObject,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      transcriptDisplayObjects: [
+        ...(metadata.transcriptDisplayObjects ?? []),
+        object,
+      ],
+    }));
+    await this.save();
+  }
+
+  async updateTranscriptDisplayObject(
+    sessionId: string,
+    objectId: string,
+    updater: (object: TranscriptDisplayObject) => TranscriptDisplayObject,
+  ): Promise<TranscriptDisplayObject | undefined> {
+    let updatedObject: TranscriptDisplayObject | undefined;
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      transcriptDisplayObjects: metadata.transcriptDisplayObjects?.map(
+        (object) => {
+          if (object.id !== objectId) {
+            return object;
+          }
+          updatedObject = updater(object);
+          return updatedObject;
+        },
+      ),
+    }));
+    if (!updatedObject) {
+      return undefined;
+    }
+    await this.save();
+    return updatedObject;
+  }
+
+  async removeTranscriptDisplayObject(
+    sessionId: string,
+    objectId: string,
+  ): Promise<boolean> {
+    let removed = false;
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      transcriptDisplayObjects: metadata.transcriptDisplayObjects?.filter(
+        (object) => {
+          if (object.id !== objectId) {
+            return true;
+          }
+          removed = true;
+          return false;
+        },
+      ),
+    }));
+    if (!removed) {
+      return false;
+    }
+    await this.save();
+    return true;
   }
 
   /**
@@ -190,6 +294,22 @@ export class SessionMetadataService {
   }
 
   /**
+   * Set the YA model id (launch alias) chosen when YA started this session.
+   * Persisted so per-model settings still key by the requested YA id after a
+   * server restart. See topics/provider-abstraction.md § Per-model settings keying.
+   */
+  async setRequestedModel(
+    sessionId: string,
+    requestedModel: string | undefined,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      requestedModel: requestedModel || undefined,
+    }));
+    await this.save();
+  }
+
+  /**
    * Get the provider for a session.
    * Returns undefined if the provider was never explicitly saved.
    */
@@ -198,11 +318,27 @@ export class SessionMetadataService {
   }
 
   /**
+   * Get the requested YA model id for a session.
+   * Returns undefined for sessions YA didn't start (no requested id was stored).
+   */
+  getRequestedModel(sessionId: string): string | undefined {
+    return this.state.sessions[sessionId]?.requestedModel;
+  }
+
+  /**
    * Get the executor for a session.
    * Returns undefined if the session ran locally or executor is unknown.
    */
   getExecutor(sessionId: string): string | undefined {
     return this.state.sessions[sessionId]?.executor;
+  }
+
+  /**
+   * Get the persisted prompt-suggestion preference for a session.
+   * Returns undefined if it was never explicitly saved (use provider default).
+   */
+  getPromptSuggestionMode(sessionId: string): PromptSuggestionMode | undefined {
+    return this.state.sessions[sessionId]?.promptSuggestionMode;
   }
 
   /**
@@ -236,6 +372,7 @@ export class SessionMetadataService {
       heartbeatTurnsAfterMinutes?: number | null;
       heartbeatTurnText?: string | null;
       heartbeatForceAfterMinutes?: number | null;
+      promptSuggestionMode?: PromptSuggestionMode | null;
     },
   ): Promise<void> {
     this.updateSessionMetadata(sessionId, (metadata) => {
@@ -258,12 +395,12 @@ export class SessionMetadataService {
       }
 
       if (updates.parentSessionId !== undefined) {
-        result.parentSessionId =
-          updates.parentSessionId?.trim() || undefined;
+        result.parentSessionId = updates.parentSessionId?.trim() || undefined;
       }
 
       if (updates.heartbeatTurnsEnabled !== undefined) {
-        result.heartbeatTurnsEnabled = updates.heartbeatTurnsEnabled || undefined;
+        result.heartbeatTurnsEnabled =
+          updates.heartbeatTurnsEnabled || undefined;
       }
 
       if (updates.heartbeatTurnsAfterMinutes !== undefined) {
@@ -272,11 +409,19 @@ export class SessionMetadataService {
       }
 
       if (updates.heartbeatTurnText !== undefined) {
-        result.heartbeatTurnText = updates.heartbeatTurnText?.trim() || undefined;
+        result.heartbeatTurnText =
+          updates.heartbeatTurnText?.trim() || undefined;
       }
 
       if (updates.heartbeatForceAfterMinutes !== undefined) {
         result.heartbeatForceAfterMinutes = updates.heartbeatForceAfterMinutes;
+      }
+
+      // null clears the preference (revert to default); "off"/"native" store
+      // as-is. "off" is a meaningful stored value — it must override the
+      // provider's native default on resume — so it is not collapsed away.
+      if (updates.promptSuggestionMode !== undefined) {
+        result.promptSuggestionMode = updates.promptSuggestionMode ?? undefined;
       }
 
       return result;
@@ -299,8 +444,12 @@ export class SessionMetadataService {
     if (updated.customTitle) cleaned.customTitle = updated.customTitle;
     if (updated.isArchived) cleaned.isArchived = updated.isArchived;
     if (updated.isStarred) cleaned.isStarred = updated.isStarred;
-    if (updated.parentSessionId) cleaned.parentSessionId = updated.parentSessionId;
-    if (updated.model) cleaned.model = updated.model;
+    if (updated.parentSessionId)
+      cleaned.parentSessionId = updated.parentSessionId;
+    if (updated.transcriptDisplayObjects?.length) {
+      cleaned.transcriptDisplayObjects = updated.transcriptDisplayObjects;
+    }
+    if (updated.requestedModel) cleaned.requestedModel = updated.requestedModel;
     if (updated.provider) cleaned.provider = updated.provider;
     if (updated.executor) cleaned.executor = updated.executor;
     if (updated.initialPrompt) cleaned.initialPrompt = updated.initialPrompt;
@@ -315,6 +464,9 @@ export class SessionMetadataService {
     }
     if (updated.heartbeatForceAfterMinutes !== undefined) {
       cleaned.heartbeatForceAfterMinutes = updated.heartbeatForceAfterMinutes;
+    }
+    if (updated.promptSuggestionMode) {
+      cleaned.promptSuggestionMode = updated.promptSuggestionMode;
     }
 
     if (Object.keys(cleaned).length === 0) {

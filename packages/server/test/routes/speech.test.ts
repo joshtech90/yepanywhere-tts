@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { attachUnifiedUpgradeHandler } from "../../src/frontend/index.js";
 import { createSpeechRoutes } from "../../src/routes/speech.js";
@@ -12,6 +12,7 @@ import { DUMMY_TRANSCRIPT } from "../../src/services/voice/dummyBackend.js";
 import { initSpeechBackendRegistry } from "../../src/services/voice/registry.js";
 import { SpeechBackendRegistry } from "../../src/services/voice/registry.js";
 import type {
+  SpeechBackend,
   SpeechStreamHandlers,
   SpeechStreamOptions,
   SpeechStreamSession,
@@ -97,6 +98,49 @@ class StreamingTestBackend implements StreamingSpeechBackend {
   }
 }
 
+class RecordingBatchBackend implements SpeechBackend {
+  readonly id = "ya-recording";
+  readonly label = "Recording test";
+  lastOptions: TranscribeOptions | null = null;
+
+  async validate(): Promise<{ ok: true }> {
+    return { ok: true };
+  }
+
+  async transcribe(
+    _audio: Buffer,
+    options: TranscribeOptions = {},
+  ): Promise<string> {
+    this.lastOptions = options;
+    return "recorded";
+  }
+}
+
+class PrewarmRecordingBackend implements SpeechBackend {
+  readonly id = "ya-prewarm";
+  readonly label = "Prewarm test";
+  lastOptions: TranscribeOptions | null = null;
+  resolvePrewarm: (() => void) | null = null;
+
+  async validate(): Promise<{ ok: true }> {
+    return { ok: true };
+  }
+
+  async transcribe(
+    _audio: Buffer,
+    _options?: TranscribeOptions,
+  ): Promise<string> {
+    throw new Error("transcription should not be used");
+  }
+
+  async prewarm(options: TranscribeOptions = {}): Promise<void> {
+    this.lastOptions = options;
+    await new Promise<void>((resolve) => {
+      this.resolvePrewarm = resolve;
+    });
+  }
+}
+
 describe("speech routes", () => {
   let server: ReturnType<typeof serve> | null = null;
   const tempDirs: string[] = [];
@@ -104,8 +148,11 @@ describe("speech routes", () => {
   afterEach(async () => {
     server?.close();
     server = null;
+    vi.unstubAllGlobals();
     await Promise.all(
-      tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+      tempDirs
+        .splice(0)
+        .map((dir) => fs.rm(dir, { recursive: true, force: true })),
     );
   });
 
@@ -115,6 +162,7 @@ describe("speech routes", () => {
     });
 
     const res = await app.request("/api/speech/xai-client-key", {
+      method: "POST",
       headers: { "X-Yep-Anywhere": "true" },
     });
     const json = await res.json();
@@ -132,12 +180,69 @@ describe("speech routes", () => {
     });
 
     const res = await app.request("/api/speech/xai-client-key", {
+      method: "POST",
       headers: { "X-Yep-Anywhere": "true" },
     });
     const json = await res.json();
 
     expect(res.status).toBe(200);
     expect(json).toEqual({ apiKey: "server-xai-key" });
+  });
+
+  it("mints an xAI client secret without exposing the server key", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.headers).toMatchObject({
+          Authorization: "Bearer server-xai-key",
+          "Content-Type": "application/json",
+        });
+        return new Response(
+          JSON.stringify({
+            value: "xai-realtime-client-secret-test",
+            expires_at: "2026-06-15T01:00:00Z",
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { app } = await createSpeechApp(undefined, undefined, {
+      xaiSttApiKey: "server-xai-key",
+      shareXaiSttApiKeyWithClients: false,
+    });
+
+    const res = await app.request("/api/speech/xai-client-secret", {
+      method: "POST",
+      headers: { "X-Yep-Anywhere": "true" },
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      clientSecret: "xai-realtime-client-secret-test",
+      expiresAt: "2026-06-15T01:00:00Z",
+    });
+  });
+
+  it("does not mint an xAI client secret through GET", async () => {
+    const { app } = await createSpeechApp(undefined, undefined, {
+      xaiSttApiKey: "server-xai-key",
+    });
+
+    const res = await app.request("/api/speech/xai-client-secret", {
+      headers: { "X-Yep-Anywhere": "true" },
+    });
+
+    const json = await res.json();
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("Allow")).toBe("POST");
+    expect(json).toEqual({
+      error: "Use POST for speech credential broker routes",
+    });
   });
 
   it("transcribes batch audio through the HTTP endpoint", async () => {
@@ -158,6 +263,54 @@ describe("speech routes", () => {
       text: DUMMY_TRANSCRIPT,
       transcriptionId: expect.any(String),
     });
+  });
+
+  it("passes a requested local model to the selected batch backend", async () => {
+    const backend = new RecordingBatchBackend();
+    const registry = new SpeechBackendRegistry();
+    await registry.register(backend);
+    const { app } = await createSpeechApp(undefined, registry);
+
+    const res = await app.request("/api/speech/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        backendId: "ya-recording",
+        model: "nvidia/parakeet-ctc-1.1b",
+        mimeType: "audio/webm",
+        audioBase64: Buffer.from("audio").toString("base64"),
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ text: "recorded" });
+    expect(backend.lastOptions).toMatchObject({
+      mimeType: "audio/webm",
+      model: "nvidia/parakeet-ctc-1.1b",
+    });
+  });
+
+  it("starts backend prewarm without waiting for model load", async () => {
+    const backend = new PrewarmRecordingBackend();
+    const registry = new SpeechBackendRegistry();
+    await registry.register(backend);
+    const { app } = await createSpeechApp(undefined, registry);
+
+    const res = await app.request("/api/speech/prewarm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        backendId: "ya-prewarm",
+        model: "nvidia/parakeet-ctc-1.1b",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(backend.lastOptions).toMatchObject({
+      model: "nvidia/parakeet-ctc-1.1b",
+    });
+    backend.resolvePrewarm?.();
   });
 
   it("retains batch audio with transcript and session context metadata", async () => {
@@ -287,7 +440,7 @@ describe("speech routes", () => {
           smartTurn: {
             enabled: true,
             threshold: 0.7,
-            timeoutMs: 3000,
+            timeoutMs: 10000,
           },
         }),
       );
@@ -322,7 +475,7 @@ describe("speech routes", () => {
       });
       expect(backend.options?.sampleRate).toBe(16000);
       expect(backend.options?.smartTurnThreshold).toBe(0.7);
-      expect(backend.options?.smartTurnTimeoutMs).toBe(3000);
+      expect(backend.options?.smartTurnTimeoutMs).toBe(10000);
       const metadataPath = await findRetainedMetadata(
         dataDir,
         final.transcriptionId,
@@ -331,6 +484,7 @@ describe("speech routes", () => {
         transcript?: string;
         streamingTranscriptTrace?: string[];
         streamingTranscriptTraceText?: string;
+        streamingTranscriptEvents?: unknown[];
       };
       expect(metadata.transcript).toBe("hello world");
       expect(metadata.streamingTranscriptTrace).toEqual([
@@ -342,6 +496,32 @@ describe("speech routes", () => {
       expect(metadata.streamingTranscriptTraceText).toBe(
         "update\thel\nfinal\thello\nspeech-final\thello world\ndone\t",
       );
+      expect(metadata.streamingTranscriptEvents).toEqual([
+        {
+          kind: "update",
+          text: "hel",
+          isFinal: false,
+        },
+        {
+          kind: "final",
+          text: "hello",
+          isFinal: true,
+        },
+        {
+          kind: "speech-final",
+          text: "hello world",
+          isFinal: true,
+          speechFinal: true,
+          words: [
+            { word: "hello", start: 0, duration: 0.2 },
+            { word: "world", start: 0.3, duration: 0.2 },
+          ],
+        },
+        {
+          kind: "done",
+          text: "",
+        },
+      ]);
     } finally {
       ws.close();
     }

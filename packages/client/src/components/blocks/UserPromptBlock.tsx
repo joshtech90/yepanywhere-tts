@@ -1,4 +1,5 @@
 import { memo, type ReactNode, useState } from "react";
+import { useI18n } from "../../i18n";
 import {
   type UploadedFileInfo,
   getFilename,
@@ -10,6 +11,7 @@ import { CopyTextButton } from "../ui/CopyTextButton";
 
 const MAX_LINES = 12;
 const MAX_CHARS = MAX_LINES * 100;
+const STACK_ACTIONS_MIN_CHARS = 80;
 
 interface Props {
   content: string | ContentBlock[];
@@ -68,6 +70,13 @@ function getUserPromptCopyText(text: string): string {
   return correction.change
     ? `${correction.correctedText}\n\nChange: ${correction.change}`
     : correction.correctedText;
+}
+
+function shouldStackUserPromptActions(text: string): boolean {
+  return (
+    text.length >= STACK_ACTIONS_MIN_CHARS ||
+    text.split(/\r\n|\r|\n/).length > 1
+  );
 }
 
 /**
@@ -322,6 +331,8 @@ function UserPromptActionButtons({
   copyText?: string;
   extraActions?: ReactNode;
 }) {
+  const { t } = useI18n();
+
   if (
     !onCorrect &&
     !onTrimBefore &&
@@ -336,17 +347,42 @@ function UserPromptActionButtons({
       {copyText && (
         <CopyTextButton
           text={copyText}
-          label="Copy message text"
+          label={t("userPromptCopyAction")}
           className="user-prompt-action user-prompt-action-copy"
         />
+      )}
+      {onCorrect && (
+        <button
+          type="button"
+          className="user-prompt-action user-prompt-action-edit"
+          onClick={onCorrect}
+          aria-label={t("userPromptEditAction")}
+          title={t("userPromptEditAction")}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
+          <span className="user-prompt-correct-label">Edit</span>
+        </button>
       )}
       {onForkBefore && (
         <button
           type="button"
-          className="user-prompt-action"
+          className="user-prompt-action user-prompt-action-fork-before"
           onClick={onForkBefore}
-          aria-label="Fork session from before this turn"
-          title="Fork session from before this turn (re-reads context at standard price if the session has been idle past the cache window)"
+          aria-label={t("forkBeforeTurnLabel")}
+          title={t("forkBeforeTurnTooltip")}
         >
           <svg
             width="14"
@@ -370,10 +406,10 @@ function UserPromptActionButtons({
       {onTrimBefore && (
         <button
           type="button"
-          className="user-prompt-action"
+          className="user-prompt-action user-prompt-action-show-starting"
           onClick={onTrimBefore}
-          aria-label="Load client transcript from this turn"
-          title="Load client transcript from this turn"
+          aria-label={t("userPromptShowStartingHere")}
+          title={t("userPromptShowStartingHere")}
         >
           <svg
             width="14"
@@ -392,31 +428,6 @@ function UserPromptActionButtons({
             <path d="m15 16 3 3 3-3" />
             <path d="M18 5v14" />
           </svg>
-        </button>
-      )}
-      {onCorrect && (
-        <button
-          type="button"
-          className="user-prompt-action"
-          onClick={onCorrect}
-          aria-label="Edit latest message"
-          title="Edit latest message"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-          </svg>
-          <span className="user-prompt-correct-label">Edit</span>
         </button>
       )}
       {extraActions}
@@ -465,7 +476,9 @@ export const UserPromptBlock = memo(function UserPromptBlock({
     }
 
     return (
-      <div className="user-prompt-container">
+      <div
+        className={`user-prompt-container ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
+      >
         <div
           className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}`}
         >
@@ -518,7 +531,9 @@ export const UserPromptBlock = memo(function UserPromptBlock({
   }
 
   return (
-    <div className="user-prompt-container">
+    <div
+      className={`user-prompt-container ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
+    >
       <div
         className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}`}
       >

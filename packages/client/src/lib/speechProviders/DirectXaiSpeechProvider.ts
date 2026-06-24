@@ -4,17 +4,37 @@ import {
   type SpeechProviderOptions,
   type SpeechProviderState,
   type SpeechProviderSubscriber,
+  type SpeechTranscriptionContext,
+  type SpeechTranscriptionResultMetadata,
+  type SpeechTranscriptionSettlementStatus,
 } from "./SpeechProvider";
+import {
+  getSpeechMicStream,
+  isSharedSpeechMicStream,
+  startSpeechWaveformMonitor,
+  stopSpeechStreamTracks,
+} from "./sharedMicCapture";
 import {
   getXaiSttCredential,
   type XaiSttCredential,
 } from "./xaiCredentials";
+import { decideBatchSpeechCommand } from "./speechCommands";
 
 const XAI_STT_URL = "https://api.x.ai/v1/stt";
 const DIRECT_STT_TIMEOUT_MS = 30_000;
 
 interface XaiSttResponse {
   text?: string;
+}
+
+interface DirectBatchRecording {
+  token: number;
+  chunks: Blob[];
+  context?: SpeechTranscriptionContext;
+  credential: XaiSttCredential;
+  mimeType: string;
+  stream: MediaStream;
+  submitOnStop: boolean;
 }
 
 function preferredMimeType(): string {
@@ -32,20 +52,6 @@ function preferredMimeType(): string {
     }
   }
   return "audio/webm";
-}
-
-function selectedMicDeviceConstraint(
-  micDeviceId: string | null | undefined,
-): Pick<MediaTrackConstraints, "deviceId"> {
-  return micDeviceId ? { deviceId: { exact: micDeviceId } } : {};
-}
-
-function batchMicConstraints(
-  micDeviceId: string | null | undefined,
-): MediaStreamConstraints {
-  return micDeviceId
-    ? { audio: selectedMicDeviceConstraint(micDeviceId) }
-    : { audio: true };
 }
 
 async function readErrorBody(response: Response): Promise<string> {
@@ -101,6 +107,20 @@ async function postDirectXaiStt(
   return data.text ?? "";
 }
 
+function releaseSpeechStream(stream: MediaStream | null): void {
+  if (stream && !isSharedSpeechMicStream(stream)) {
+    stopSpeechStreamTracks(stream);
+  }
+}
+
+function withSpeechContextMetadata(
+  metadata: SpeechTranscriptionResultMetadata | undefined,
+  context: SpeechTranscriptionContext | undefined,
+): SpeechTranscriptionResultMetadata | undefined {
+  if (!context?.speechTargetId) return metadata;
+  return { ...metadata, speechTargetId: context.speechTargetId };
+}
+
 /**
  * Browser-to-xAI batch speech provider.
  *
@@ -119,14 +139,20 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
 
   private recorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
-  private warmStream: MediaStream | null = null;
-  private warmStreamRequest: Promise<MediaStream> | null = null;
   private prewarmRequest: Promise<void> | null = null;
-  private chunks: Blob[] = [];
+  private stopWaveformMonitor: (() => void) | null = null;
+  private batchRecording: DirectBatchRecording | null = null;
   private mimeType = "audio/webm";
-  private submitOnStop = false;
-  private credential: XaiSttCredential | null = null;
   private startToken = 0;
+  // See YaServerProvider: cancel() marks only the in-flight batch token so its
+  // late result is discarded, without affecting an overlapping recording's
+  // result delivery (every start() bumps startToken).
+  private processingBatchToken: number | null = null;
+  private cancelledBatchTokens = new Set<number>();
+  private pendingBatchContexts = new Map<
+    number,
+    SpeechTranscriptionContext | undefined
+  >();
   private disposed = false;
 
   constructor(options: SpeechProviderOptions = {}) {
@@ -152,71 +178,18 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
     for (const sub of this.subscribers) sub(this.state);
   }
 
-  private hasLiveTracks(stream: MediaStream | null): stream is MediaStream {
-    return stream?.getTracks().some((track) => track.readyState !== "ended") ===
-      true;
-  }
-
-  private stopStreamTracks(stream: MediaStream): void {
-    stream.getTracks().forEach((track) => {
-      track.stop();
-    });
-  }
-
   private releaseActiveStream(): void {
-    if (this.stream && this.stream !== this.warmStream) {
-      this.stopStreamTracks(this.stream);
+    if (this.stream && !isSharedSpeechMicStream(this.stream)) {
+      stopSpeechStreamTracks(this.stream);
     }
     this.stream = null;
   }
 
-  private releaseWarmStream(): void {
-    if (this.warmStream) {
-      this.stopStreamTracks(this.warmStream);
-      this.warmStream = null;
-    }
-    this.warmStreamRequest = null;
-  }
-
-  private getCaptureConstraints(): MediaStreamConstraints {
-    return batchMicConstraints(this.options.micDeviceId);
-  }
-
   private getMicStream(): Promise<MediaStream> {
-    const constraints = this.getCaptureConstraints();
-    if (
-      this.options.keepMicWarm === true &&
-      this.hasLiveTracks(this.warmStream)
-    ) {
-      return Promise.resolve(this.warmStream);
-    }
-    if (
-      this.options.keepMicWarm === true &&
-      this.warmStreamRequest !== null
-    ) {
-      return this.warmStreamRequest;
-    }
-
-    const request = navigator.mediaDevices.getUserMedia(constraints);
-    if (this.options.keepMicWarm !== true) {
-      return request;
-    }
-
-    this.warmStreamRequest = request;
-    return request
-      .then((stream) => {
-        if (!this.disposed && this.warmStreamRequest === request) {
-          this.warmStream = stream;
-        } else if (this.hasLiveTracks(stream)) {
-          this.stopStreamTracks(stream);
-        }
-        return stream;
-      })
-      .finally(() => {
-        if (this.warmStreamRequest === request) {
-          this.warmStreamRequest = null;
-        }
-      });
+    return getSpeechMicStream({
+      keepWarm: this.options.keepMicWarm === true,
+      micDeviceId: this.options.micDeviceId,
+    });
   }
 
   prewarm(): void {
@@ -224,7 +197,7 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
     if (
       this.state.isListening ||
       this.state.status === "starting" ||
-      this.state.status === "receiving"
+      (this.state.status === "receiving" && this.state.isListening)
     ) {
       return;
     }
@@ -254,7 +227,7 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
     if (
       this.state.isListening ||
       this.state.status === "starting" ||
-      this.state.status === "receiving"
+      (this.state.status === "receiving" && this.state.isListening)
     ) {
       return;
     }
@@ -274,36 +247,53 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
     if (this.disposed || token !== this.startToken) return;
     const stream = await this.getMicStream();
     if (this.disposed || token !== this.startToken) {
-      if (stream !== this.warmStream && this.hasLiveTracks(stream)) {
-        this.stopStreamTracks(stream);
+      if (!isSharedSpeechMicStream(stream)) {
+        stopSpeechStreamTracks(stream);
       }
       return;
     }
 
-    this.credential = credential;
     this.stream = stream;
-    this.mimeType = preferredMimeType();
-    this.chunks = [];
-    this.submitOnStop = true;
+    this.stopWaveformMonitor?.();
+    this.stopWaveformMonitor = startSpeechWaveformMonitor(
+      stream,
+      this.options.onAudioSamples,
+    );
+    const mimeType = preferredMimeType();
+    this.mimeType = mimeType;
+    const recording: DirectBatchRecording = {
+      token,
+      chunks: [],
+      context: this.options.getTranscriptionContext?.(),
+      credential,
+      mimeType,
+      stream,
+      submitOnStop: true,
+    };
+    this.batchRecording = recording;
+    this.pendingBatchContexts.set(recording.token, recording.context);
 
     const recorder = new MediaRecorder(stream, {
-      mimeType: this.mimeType,
+      mimeType,
       audioBitsPerSecond: 32_000,
     });
     this.recorder = recorder;
 
     recorder.ondataavailable = (event: BlobEvent) => {
       if (
-        token === this.startToken &&
-        this.submitOnStop &&
+        !this.disposed &&
+        recording.submitOnStop &&
         event.data.size > 0
       ) {
-        this.chunks.push(event.data);
+        recording.chunks.push(event.data);
       }
     };
     recorder.onstop = () => {
-      if (token === this.startToken && this.submitOnStop) {
-        void this.transcribeRecording();
+      if (this.batchRecording === recording) {
+        this.batchRecording = null;
+      }
+      if (recording.submitOnStop) {
+        void this.transcribeRecording(recording);
       }
     };
 
@@ -326,71 +316,163 @@ export class DirectXaiSpeechProvider implements SpeechProvider {
       return;
     }
     if (!this.state.isListening) return;
-    this.setState({ status: "receiving", isListening: false });
+    this.setState({ status: "processing", isListening: false });
+    this.stopWaveformMonitor?.();
+    this.stopWaveformMonitor = null;
 
-    if (this.recorder?.state !== "inactive") {
-      this.recorder?.stop();
+    const recorder = this.recorder;
+    const recording = this.batchRecording;
+    this.processingBatchToken = recording?.token ?? null;
+    this.recorder = null;
+    this.batchRecording = null;
+    this.stream = null;
+    if (recorder?.state !== "inactive") {
+      recorder?.stop();
     } else {
-      void this.transcribeRecording();
+      if (recording) void this.transcribeRecording(recording);
     }
   }
 
-  private async transcribeRecording(): Promise<void> {
-    this.submitOnStop = false;
-    const audio = new Blob(this.chunks, { type: this.mimeType });
-    this.chunks = [];
-    this.releaseActiveStream();
+  cancel(): void {
+    if (this.disposed) return;
+    if (this.state.status !== "processing") return;
+    // Mark the in-flight transcription so its late result is discarded; the
+    // backend request may still complete but stays inert.
+    if (this.processingBatchToken !== null) {
+      const token = this.processingBatchToken;
+      this.cancelledBatchTokens.add(token);
+      this.processingBatchToken = null;
+      this.settleBatchTranscription(token, "cancelled");
+    }
+    this.setState({
+      status: "idle",
+      isListening: false,
+      interimTranscript: "",
+      error: null,
+    });
+    this.options.onEnd?.();
+  }
 
+  private async transcribeRecording(
+    recording: DirectBatchRecording,
+  ): Promise<void> {
+    recording.submitOnStop = false;
+    const audio = new Blob(recording.chunks, { type: recording.mimeType });
+    recording.chunks = [];
+    releaseSpeechStream(recording.stream);
+
+    let settlementStatus: SpeechTranscriptionSettlementStatus = "cancelled";
     try {
       const text =
-        audio.size > 0 && this.credential
-          ? await postDirectXaiStt(audio, this.credential)
+        audio.size > 0
+          ? await postDirectXaiStt(audio, recording.credential)
           : "";
       if (this.disposed) return;
-      this.setState({
-        status: "idle",
-        isListening: false,
-        interimTranscript: "",
-        error: null,
-      });
+      // A cancelled pending transcription must be a no-op even though the
+      // backend request still completed.
+      if (this.cancelledBatchTokens.delete(recording.token)) return;
       if (text) {
-        this.options.onResult?.(text);
+        const decision = decideBatchSpeechCommand(text);
+        this.options.onResult?.(
+          decision.transcript,
+          withSpeechContextMetadata(
+            decision.recognizedCommand
+              ? { smartTurnCommand: decision.command }
+              : undefined,
+            recording.context,
+          ),
+        );
+      } else {
+        const metadata = withSpeechContextMetadata(undefined, recording.context);
+        if (metadata) this.options.onResult?.("", metadata);
       }
-      this.options.onEnd?.();
+      settlementStatus = "completed";
+      if (
+        recording.token === this.startToken &&
+        !this.state.isListening &&
+        this.state.status === "processing"
+      ) {
+        this.setState({
+          status: "idle",
+          isListening: false,
+          interimTranscript: "",
+          error: null,
+        });
+        this.options.onEnd?.();
+      }
     } catch (err: unknown) {
       if (this.disposed) return;
+      // A cancelled pending transcription is a no-op even when it fails: the
+      // user already abandoned it, so do not surface its error.
+      if (this.cancelledBatchTokens.delete(recording.token)) return;
       const message = err instanceof Error ? err.message : String(err);
-      this.setState({
-        status: "error",
-        isListening: false,
-        interimTranscript: "",
-        error: message,
-      });
+      settlementStatus = "error";
       this.options.onError?.(message);
-      this.options.onEnd?.();
+      if (
+        recording.token === this.startToken &&
+        !this.state.isListening &&
+        this.state.status === "processing"
+      ) {
+        this.setState({
+          status: "error",
+          isListening: false,
+          interimTranscript: "",
+          error: message,
+        });
+        this.options.onEnd?.();
+      }
     } finally {
-      this.credential = null;
+      if (this.processingBatchToken === recording.token) {
+        this.processingBatchToken = null;
+      }
+      this.settleBatchTranscription(recording.token, settlementStatus);
     }
+  }
+
+  private settleBatchTranscription(
+    token: number,
+    status: SpeechTranscriptionSettlementStatus,
+  ): void {
+    const context = this.pendingBatchContexts.get(token);
+    if (!this.pendingBatchContexts.delete(token)) return;
+    this.options.onTranscriptionSettled?.({
+      speechTargetId: context?.speechTargetId,
+      status,
+    });
   }
 
   private cleanupMedia(submitOnStop: boolean): void {
-    this.submitOnStop = submitOnStop;
-    if (this.recorder && this.recorder.state !== "inactive") {
-      this.recorder.stop();
-    }
+    this.stopWaveformMonitor?.();
+    this.stopWaveformMonitor = null;
+    const recorder = this.recorder;
+    const recording = this.batchRecording;
     this.recorder = null;
+    this.batchRecording = null;
+    if (recording) {
+      recording.submitOnStop = submitOnStop;
+    }
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
     if (!submitOnStop) {
-      this.chunks = [];
-      this.credential = null;
       this.releaseActiveStream();
+      if (recording) {
+        recording.chunks = [];
+        releaseSpeechStream(recording.stream);
+        this.settleBatchTranscription(recording.token, "cancelled");
+      }
     }
   }
 
   dispose(): void {
     this.disposed = true;
     this.startToken += 1;
+    for (const token of this.pendingBatchContexts.keys()) {
+      this.settleBatchTranscription(token, "cancelled");
+    }
+    this.processingBatchToken = null;
+    this.cancelledBatchTokens.clear();
     this.cleanupMedia(false);
-    this.releaseWarmStream();
     this.setState({ ...INITIAL_SPEECH_STATE });
     this.subscribers.clear();
   }

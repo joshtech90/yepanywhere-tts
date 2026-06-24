@@ -199,10 +199,10 @@ describe("OpenCodeProvider.startSession — blocking session ID", () => {
     const { OpenCodeProvider } = await import(
       "../../../src/sdk/providers/opencode.js"
     );
-    // Short timeout so the test doesn't actually wait 10 seconds
+    // waitForServer is overridden below with a short timeout so the test
+    // doesn't actually wait 10 seconds.
     const provider = new OpenCodeProvider({
       opencodePath: "/fake/opencode",
-      timeout: 100,
     });
 
     // Override waitForServer by giving a minimal timeout via a subclass
@@ -444,6 +444,314 @@ describe("OpenCodeProvider.startSession — blocking session ID", () => {
       .filter((message) => message.type === "assistant")
       .map((message) => message.message?.content);
     expect(assistantTexts).toEqual(["assistant reply"]);
+
+    session.abort();
+  });
+
+  it("renders a unified type:'tool' part as one tool_use plus a tool_result", async () => {
+    const sessionId = "ses_unified_tool";
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            {
+              type: "message.updated",
+              properties: {
+                info: {
+                  id: "msg_a",
+                  sessionID: sessionId,
+                  role: "assistant",
+                },
+              },
+            },
+            // Same part streamed twice: running (input present) then completed.
+            {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "prt_tool",
+                  sessionID: sessionId,
+                  messageID: "msg_a",
+                  type: "tool",
+                  tool: "bash",
+                  callID: "call_1",
+                  state: {
+                    status: "running",
+                    input: { command: "echo hi" },
+                  },
+                },
+              },
+            },
+            {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "prt_tool",
+                  sessionID: sessionId,
+                  messageID: "msg_a",
+                  type: "tool",
+                  tool: "bash",
+                  callID: "call_1",
+                  state: {
+                    status: "completed",
+                    input: { command: "echo hi" },
+                    output: "hi\n",
+                  },
+                },
+              },
+            },
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "run echo" },
+    });
+
+    const messages = [];
+    for (let i = 0; i < 10; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done) break;
+      messages.push(next.value);
+      if (next.value.type === "result") break;
+    }
+
+    const toolUses = messages.flatMap((m) =>
+      Array.isArray(m.message?.content)
+        ? m.message.content.filter((b: { type?: string }) => b.type === "tool_use")
+        : [],
+    );
+    const toolResults = messages.flatMap((m) =>
+      Array.isArray(m.message?.content)
+        ? m.message.content.filter(
+            (b: { type?: string }) => b.type === "tool_result",
+          )
+        : [],
+    );
+
+    // Streamed across two updates but deduped to exactly one of each.
+    expect(toolUses).toHaveLength(1);
+    expect(toolUses[0]).toMatchObject({
+      type: "tool_use",
+      id: "call_1",
+      name: "Bash", // normalized from opencode "bash"
+      input: { command: "echo hi" },
+    });
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "call_1",
+      content: "hi\n",
+    });
+
+    session.abort();
+  });
+
+  it("routes a permission.asked event to onToolApproval and replies once on allow", async () => {
+    const sessionId = "ses_perm_bridge";
+    const onToolApproval = vi.fn().mockResolvedValue({ behavior: "allow" });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            {
+              type: "permission.asked",
+              properties: {
+                id: "per_1",
+                sessionID: sessionId,
+                permission: "bash",
+                patterns: ["echo hi"],
+                metadata: { command: "echo hi", description: "say hi" },
+                always: ["echo *"],
+                tool: { messageID: "msg_a", callID: "call_1" },
+              },
+            },
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (url.includes("/permission/per_1/reply")) {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "run echo" },
+      onToolApproval,
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done || next.value.type === "result") break;
+    }
+    // Let the fire-and-forget approval handler settle.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(onToolApproval).toHaveBeenCalledWith(
+      "Bash",
+      { command: "echo hi", description: "say hi" },
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+    const replyCall = fetchMock.mock.calls.find((c: unknown[]) =>
+      String(c[0]).includes("/permission/per_1/reply"),
+    );
+    expect(replyCall).toBeDefined();
+    expect(
+      JSON.parse(String((replyCall?.[1] as RequestInit)?.body)),
+    ).toEqual({ reply: "once" });
+
+    session.abort();
+  });
+
+  it("sends the YA effort as an OpenCode model variant", async () => {
+    const sessionId = "ses_effort";
+    let messageBody: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        messageBody = JSON.parse(String(init?.body));
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "hi" },
+      model: "github-copilot/claude-opus-4.8",
+      effort: "high",
+    });
+    for (let i = 0; i < 6; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done || next.value.type === "result") break;
+    }
+    expect(messageBody).toMatchObject({
+      model: { providerID: "github-copilot", modelID: "claude-opus-4.8" },
+      variant: "high",
+    });
+    session.abort();
+  });
+
+  it("sends image content blocks as OpenCode file parts (data URLs)", async () => {
+    const sessionId = "ses_image";
+    // 1x1 PNG (magic bytes detected as image/png by the queue)
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    let messageBody: { parts?: Array<Record<string, unknown>> } | null = null;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        messageBody = JSON.parse(String(init?.body));
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "what is this?", images: [pngBase64] },
+    });
+    for (let i = 0; i < 6; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done || next.value.type === "result") break;
+    }
+    const parts = messageBody?.parts ?? [];
+    expect(parts).toContainEqual({ type: "text", text: "what is this?" });
+    const filePart = parts.find((p) => p.type === "file");
+    expect(filePart).toMatchObject({
+      type: "file",
+      mime: "image/png",
+      url: `data:image/png;base64,${pngBase64}`,
+    });
+
+    session.abort();
+  });
+
+  it("interrupt() posts to the OpenCode session abort endpoint", async () => {
+    const sessionId = "ses_interrupt";
+    let abortCalled = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/abort`) && init?.method === "POST") {
+        abortCalled = true;
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({ cwd: "/tmp/test" });
+
+    const result = await session.interrupt?.();
+    expect(result).toBe(true);
+    expect(abortCalled).toBe(true);
 
     session.abort();
   });
@@ -738,3 +1046,4 @@ describe("OpenCodeProvider.startSession — blocking session ID", () => {
     session.abort();
   });
 });
+

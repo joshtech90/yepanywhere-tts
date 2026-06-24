@@ -7,8 +7,15 @@ export type UserMessageDeliveryIntent =
 /**
  * Default quiet period a patient queued message waits for after the session
  * reaches verified idle, when the item carries no explicit patienceSeconds.
+ *
+ * Kept short on purpose: the window only needs to outlast the race between an
+ * idle-looking edge (e.g. a background task's completion clearing retention)
+ * and the follow-up turn or next task that edge can trigger registering as
+ * in-turn. Any provider event in the window restarts the count, so a couple of
+ * seconds covers the race without adding perceptible delay once the agent is
+ * genuinely done.
  */
-export const DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS = 30;
+export const DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS = 2;
 
 export const MAX_PATIENT_QUEUE_PATIENCE_SECONDS = 24 * 60 * 60;
 
@@ -110,4 +117,14 @@ export interface UserMessageMetadata {
   clientTimestamp?: number;
   /** Server receive time for the REST request that accepted this user turn. */
   serverReceivedAt?: string;
+  /**
+   * Hidden from the transcript UI as a YA-injected control message — currently
+   * the `/compact` command YA queues for a threshold-triggered or resume-time
+   * compaction, which native auto-compaction shows no user turn for. This is
+   * the single signal the echo/render path checks (see Process
+   * `isHiddenInjectedMessage`), so a future "show hidden" UI can reveal these
+   * consistently rather than each call site deciding ad hoc.
+   * See topics/injected-message-visibility.md.
+   */
+  hidden?: boolean;
 }

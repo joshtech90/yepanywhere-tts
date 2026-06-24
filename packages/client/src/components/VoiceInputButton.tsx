@@ -5,7 +5,9 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
 } from "react";
+import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
@@ -19,22 +21,39 @@ import { useViewportWidth } from "../hooks/useViewportWidth";
 import { useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import {
+  DEFAULT_SPEECH_METHOD,
+  canSpeechMethodStream,
+  isServerRoutedSpeechMethod,
   resolveSpeechMethod,
   type SpeechMethodId,
 } from "../lib/speechProviders/methods";
+import { reconcileParakeetBackendForModel } from "../lib/speechProviders/parakeetModels";
 import {
-  DEFAULT_GROK_SPEECH_AUDIO_SETTINGS,
-  type GrokSpeechAudioSettings,
-  type SpeechSmartTurnSettings,
-  type SpeechTranscriptionContext,
-  type SpeechTranscriptionResultMetadata,
+  clearSpeechWaveform,
+  publishSpeechWaveformSamples,
+} from "../lib/speechWaveform";
+import type {
+  SpeechSmartTurnSettings,
+  SpeechTranscriptionContext,
+  SpeechTranscriptionResultMetadata,
+  SpeechTranscriptionSettlement,
 } from "../lib/speechProviders/SpeechProvider";
+
+/**
+ * A cancellable in-progress speech state the composer surfaces as a chip:
+ * `listening` during active capture, `transcribing` for a batch wait,
+ * `finalizing` for a streaming flush. The chip's ✕ cancels the non-final
+ * portion in every case; already-committed finals stay in the draft.
+ */
+export type SpeechPendingKind = "listening" | "transcribing" | "finalizing";
 
 export interface VoiceInputButtonRef {
   /** Stop listening and return any pending interim text */
   stopAndFinalize: () => string;
   /** Toggle listening on/off */
   toggle: () => void;
+  /** Abandon an in-flight post-capture transcription; late result is discarded. */
+  cancelProcessing: () => void;
   /** Speculatively warm capture resources before the first click. */
   prewarm: () => void;
   /** Whether currently listening */
@@ -53,6 +72,12 @@ interface VoiceInputButtonProps {
   onInterimTranscript?: (text: string) => void;
   /** Callback when listening starts - useful for focusing input */
   onListeningStart?: () => void;
+  /** Callback when the user explicitly stops active capture. */
+  onListeningStop?: () => void;
+  /** Callback when a post-capture pending state (transcribing/finalizing) starts or ends. */
+  onPendingSpeechChange?: (kind: SpeechPendingKind | null) => void;
+  /** Callback when one batch transcription target reaches a terminal state. */
+  onTranscriptionSettled?: (settlement: SpeechTranscriptionSettlement) => void;
   /** Whether the button should be disabled */
   disabled?: boolean;
   /** Additional class name */
@@ -63,8 +88,8 @@ interface VoiceInputButtonProps {
   getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
   /** Smart Turn settings for streaming STT backends that support it. */
   smartTurn?: SpeechSmartTurnSettings;
-  /** Grok STT browser-to-YA audio format preference. */
-  grokSpeechAudioSettings?: GrokSpeechAudioSettings;
+  /** Publish real mic samples for the enclosing session-toolbar waveform. */
+  showWaveform?: boolean;
 }
 
 /**
@@ -78,12 +103,15 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     onTranscript,
     onInterimTranscript,
     onListeningStart,
+    onListeningStop,
+    onPendingSpeechChange,
+    onTranscriptionSettled,
     disabled,
     className = "",
     speechMethod: selectedSpeechMethod,
     getTranscriptionContext,
     smartTurn,
-    grokSpeechAudioSettings: selectedGrokSpeechAudioSettings,
+    showWaveform = false,
   }: VoiceInputButtonProps,
   ref: ForwardedRef<VoiceInputButtonRef>,
 ) {
@@ -92,46 +120,55 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     voiceInputEnabled,
     speechMethod: storedSpeechMethod,
     hasStoredSpeechMethod,
-    grokSpeechAudioSettings: storedGrokSpeechAudioSettings,
+    speechSmartTurnSettings,
+    parakeetSpeechModel,
   } = useModelSettings();
   const { version: versionInfo } = useVersion();
+  const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
   const connection = useConnection();
   const basePath = useRemoteBasePath();
   const { keepMicWarm, micDeviceId } = useSpeechCaptureSettings();
   const serverVoiceEnabled =
     versionInfo?.capabilities?.includes("voiceInput") ?? true;
-  const speechMethod = useMemo(
-    () =>
+  const speechMethod = useMemo(() => {
+    const resolved =
       selectedSpeechMethod ??
       resolveSpeechMethod(
         storedSpeechMethod,
         versionInfo?.voiceBackends,
         hasStoredSpeechMethod,
-      ),
-    [
-      selectedSpeechMethod,
-      storedSpeechMethod,
-      versionInfo?.voiceBackends,
-      hasStoredSpeechMethod,
-    ],
-  );
-  const grokSpeechAudioSettings =
-    selectedGrokSpeechAudioSettings ??
-    storedGrokSpeechAudioSettings ??
-    DEFAULT_GROK_SPEECH_AUDIO_SETTINGS;
-  const grokPcmUplink =
-    speechMethod !== "ya-grok" ||
-    grokSpeechAudioSettings.uplinkMode === "pcm16";
+        { directXaiAvailable: hasBrowserXaiSttApiKey },
+      );
+    // Never pair a Parakeet model with a backend that can't run it: a NeMo-only
+    // model (rnnt-1.1b) routes to ya-nemo, not ya-parakeet — even if a backend
+    // flap left the selection on ya-parakeet. Keeps the chosen model.
+    return reconcileParakeetBackendForModel(
+      resolved,
+      parakeetSpeechModel,
+      versionInfo?.voiceBackends ?? [],
+    ) as SpeechMethodId;
+  }, [
+    selectedSpeechMethod,
+    storedSpeechMethod,
+    versionInfo?.voiceBackends,
+    hasStoredSpeechMethod,
+    hasBrowserXaiSttApiKey,
+    parakeetSpeechModel,
+  ]);
   const relayTransport = basePath !== "";
-  const openRelayedSpeechSocket =
-    relayTransport && connection.openSpeechSocket
-      ? connection.openSpeechSocket.bind(connection)
-      : undefined;
-  const serverStreaming =
-    speechMethod !== "browser-native" &&
-    grokPcmUplink &&
-    (!relayTransport || openRelayedSpeechSocket !== undefined) &&
-    versionInfo?.voiceBackendCapabilities?.[speechMethod]?.streaming === true;
+  const openRelayedSpeechSocket = useMemo(() => {
+    const openSpeechSocket = connection.openSpeechSocket;
+    if (!relayTransport || !openSpeechSocket) return undefined;
+    return () => openSpeechSocket.call(connection);
+  }, [connection, relayTransport]);
+  const speechMethodServerRouted = isServerRoutedSpeechMethod(speechMethod);
+  const serverStreaming = canSpeechMethodStream({
+    methodId: speechMethod,
+    serverCapabilities: versionInfo?.voiceBackendCapabilities,
+    relayTransport,
+    relayedServerSpeechAvailable:
+      !speechMethodServerRouted || openRelayedSpeechSocket !== undefined,
+  });
   const viewportWidth = useViewportWidth();
 
   // Show status text on desktop with sufficient width
@@ -158,6 +195,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     status,
     toggleListening,
     stopListening,
+    cancelProcessing,
     prewarm,
     error,
     interimTranscript,
@@ -166,15 +204,42 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     basePath,
     getTranscriptionContext,
     serverStreaming,
-    smartTurn: serverStreaming ? smartTurn : undefined,
+    smartTurn: serverStreaming
+      ? (smartTurn ?? speechSmartTurnSettings)
+      : undefined,
     keepMicWarm,
     micDeviceId,
+    onAudioSamples: showWaveform ? publishSpeechWaveformSamples : undefined,
+    parakeetModel: parakeetSpeechModel,
     openRelayedSpeechSocket,
     onResult: handleResult,
     onInterimResult: handleInterim,
+    onTranscriptionSettled,
   });
   const isStarting = status === "starting";
-  const isActive = isListening || isStarting;
+  const isCapturing =
+    isListening ||
+    status === "listening" ||
+    (status === "receiving" && isListening);
+  const isFinalizing = status === "finalizing";
+  const isBusy = isStarting || isFinalizing || status === "reconnecting";
+  const isActive = isCapturing || isBusy;
+  const isPressed = isCapturing || isStarting || status === "reconnecting";
+  const isProcessing = status === "processing";
+  const wasCapturingRef = useRef(false);
+  const waveformVisible =
+    showWaveform && speechMethod !== DEFAULT_SPEECH_METHOD && isCapturing;
+  // A cancellable in-progress speech state the composer surfaces as a chip.
+  // Active capture is "listening"; the batch wait is "transcribing"; the
+  // streaming flush is "finalizing". The chip's ✕ routes to the unified
+  // cancel() (drops the non-final portion, keeps committed finals) in all three.
+  const pendingKind: SpeechPendingKind | null = isProcessing
+    ? "transcribing"
+    : isFinalizing
+      ? "finalizing"
+      : isCapturing
+        ? "listening"
+        : null;
 
   const isAvailable = isSupported && voiceInputEnabled && serverVoiceEnabled;
 
@@ -187,21 +252,21 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     () => ({
       stopAndFinalize: () => {
         const pending = interimTranscript;
-        if (isListening || isStarting) {
+        if (isActive) {
           stopListening();
         }
         return pending;
       },
       toggle: toggleListening,
+      cancelProcessing,
       prewarm,
       isListening: isActive,
       isAvailable,
     }),
     [
       interimTranscript,
-      isListening,
-      isStarting,
       isActive,
+      cancelProcessing,
       prewarm,
       stopListening,
       toggleListening,
@@ -211,20 +276,39 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
 
   // Clear interim when listening stops
   useEffect(() => {
-    if (!isListening && interimTranscript) {
+    if (!isCapturing && interimTranscript) {
       onInterimTranscript?.("");
     }
-  }, [isListening, interimTranscript, onInterimTranscript]);
+  }, [isCapturing, interimTranscript, onInterimTranscript]);
+
+  useEffect(() => {
+    if (wasCapturingRef.current && !isCapturing) {
+      clearSpeechWaveform();
+    }
+    wasCapturingRef.current = isCapturing;
+    return () => {
+      if (isCapturing) clearSpeechWaveform();
+    };
+  }, [isCapturing]);
+
+  useEffect(() => {
+    onPendingSpeechChange?.(pendingKind);
+    return () => {
+      if (pendingKind) onPendingSpeechChange?.(null);
+    };
+  }, [pendingKind, onPendingSpeechChange]);
 
   // Handle click - toggle listening and notify when starting
   const handleClick = useCallback(() => {
     const wasActive = isActive;
-    toggleListening();
-    // If we weren't listening, we're now starting - notify parent
-    if (!wasActive) {
-      onListeningStart?.();
+    if (wasActive) {
+      onListeningStop?.();
+      toggleListening();
+      return;
     }
-  }, [isActive, toggleListening, onListeningStart]);
+    onListeningStart?.();
+    toggleListening();
+  }, [isActive, toggleListening, onListeningStart, onListeningStop]);
 
   // Don't render if not supported or disabled in settings
   if (!isAvailable) {
@@ -237,35 +321,43 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       ? "status-error"
       : status === "reconnecting"
         ? "status-reconnecting"
-        : status === "starting"
-          ? "status-starting"
-          : status === "receiving"
-            ? "status-receiving"
-            : status === "listening"
-              ? "status-listening"
-              : "";
+        : status === "finalizing"
+          ? "status-finalizing"
+          : status === "processing"
+            ? "status-processing"
+            : status === "starting"
+              ? "status-starting"
+              : status === "receiving"
+                ? "status-receiving"
+                : status === "listening"
+                  ? "status-listening"
+                  : "";
 
   const button = (
     <button
       type="button"
-      className={`voice-input-button ${isListening ? "listening" : ""} ${isStarting ? "connecting" : ""} ${className}`}
+      className={`voice-input-button ${isCapturing ? "listening" : ""} ${isStarting ? "connecting" : ""} ${className}`}
       onClick={handleClick}
       disabled={disabled}
       title={
         error
           ? error
-          : isActive
-            ? t("voiceInputStop" as never)
-            : t("voiceInputStart" as never)
+          : isFinalizing
+            ? statusLabel
+            : isActive
+              ? t("voiceInputStop" as never)
+              : t("voiceInputStart" as never)
       }
       aria-label={
-        isActive
-          ? t("voiceInputStopLabel" as never)
-          : t("voiceInputStartLabel" as never)
+        isFinalizing
+          ? statusLabel
+          : isActive
+            ? t("voiceInputStopLabel" as never)
+            : t("voiceInputStartLabel" as never)
       }
-      aria-pressed={isActive}
+      aria-pressed={isPressed}
     >
-      {isListening ? (
+      {isCapturing ? (
         // Recording indicator - animated bars (only once audio is actually
         // flowing; during "starting" we show the mic so the button does not
         // look like it is capturing before the pipeline is live).
@@ -323,10 +415,10 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   // through the desktop-only gate: on a phone (coarse pointer / narrow) the
   // status text is normally hidden, which left mic failures with no feedback
   // at all — the original complaint. An error must always be visible.
-  if ((showStatusText && isActive) || error) {
+  if ((showStatusText && isActive && !waveformVisible) || error) {
     return (
       <div
-        className={`voice-input-container ${isListening ? "listening" : ""} ${statusClass}`}
+        className={`voice-input-container ${isCapturing ? "listening" : ""} ${statusClass}`}
       >
         {button}
         <span className="voice-input-status">{statusLabel}</span>

@@ -71,6 +71,9 @@ export const UI_KEYS = {
   floatingActionButtonEnabled: "yep-anywhere-floating-action-button-enabled",
   developerMode: "yep-anywhere-developer-mode",
   sessionToolbarVisibility: "yep-anywhere-session-toolbar-visibility",
+  sessionHoverCardShowDelayMs: "yep-anywhere-session-hover-card-show-delay-ms",
+  sessionHoverCardMaxHeightPx: "yep-anywhere-session-hover-card-max-height-px",
+  alwaysShowQuoteCircles: "yep-anywhere-always-show-quote-circles",
   sessionThinkingVisible: "yep-anywhere-session-thinking-visible",
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",
   stableToolPreviewRendering:
@@ -84,6 +87,9 @@ export const UI_KEYS = {
   emulatorAdaptiveFps: "yep-anywhere-emulator-adaptive-fps",
   attachmentUploadQuality: "yep-anywhere-attachment-upload-quality",
   tabTitleActivityEnabled: "yep-anywhere-tab-title-activity-enabled",
+  settingsIconStyle: "yep-anywhere-settings-icon-style",
+  // Legacy key from the first checkbox version of this client-local setting.
+  flatSettingsIcons: "yep-anywhere-flat-settings-icons-enabled",
 } as const;
 
 // ============================================================================
@@ -97,10 +103,12 @@ export const SERVER_SCOPED_KEYS = {
   thinkingEnabled: "thinking-enabled",
   thinkingMode: "thinking-mode",
   showThinking: "show-thinking",
+  forkSummaryAutoOpen: "fork-summary-auto-open",
   voiceInputEnabled: "voice-input-enabled",
   speechMethod: "speech-method",
   speechSmartTurn: "speech-smart-turn",
   grokSpeechAudio: "grok-speech-audio",
+  parakeetSpeechModel: "parakeet-speech-model",
   xaiSttApiKey: "xai-stt-api-key",
   browserProfileId: "browser-profile-id",
   notifyInApp: "notify-in-app",
@@ -237,6 +245,7 @@ export const LEGACY_KEYS = {
   speechMethod: "yep-anywhere-speech-method",
   speechSmartTurn: "yep-anywhere-speech-smart-turn",
   grokSpeechAudio: "yep-anywhere-grok-speech-audio",
+  parakeetSpeechModel: "yep-anywhere-parakeet-speech-model",
   xaiSttApiKey: "yep-anywhere-xai-stt-api-key",
   browserProfileId: "yep-anywhere-device-id",
   notifyInApp: "yep-anywhere-notify-in-app",
@@ -276,6 +285,10 @@ export function migrateLegacySettings(installId: string): boolean {
     { legacy: LEGACY_KEYS.voiceInputEnabled, scoped: "voiceInputEnabled" },
     { legacy: LEGACY_KEYS.speechMethod, scoped: "speechMethod" },
     { legacy: LEGACY_KEYS.speechSmartTurn, scoped: "speechSmartTurn" },
+    {
+      legacy: LEGACY_KEYS.parakeetSpeechModel,
+      scoped: "parakeetSpeechModel",
+    },
     { legacy: LEGACY_KEYS.xaiSttApiKey, scoped: "xaiSttApiKey" },
     { legacy: LEGACY_KEYS.browserProfileId, scoped: "browserProfileId" },
     { legacy: LEGACY_KEYS.notifyInApp, scoped: "notifyInApp" },

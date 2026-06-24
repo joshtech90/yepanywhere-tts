@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
+import { formatBriefAge } from "../lib/sessionAge";
 import {
   buildBtwAsideParentHref,
   getBtwAsideSessionDisplayTitle,
@@ -16,10 +17,18 @@ import type {
   SessionStatus,
 } from "../types";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { ProviderBadge } from "./ProviderBadge";
+import { SessionHoverCard } from "./SessionHoverCard";
 import { SessionMenu } from "./SessionMenu";
 import { SessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
 import { ThinkingIndicator } from "./ThinkingIndicator";
+import {
+  announceActiveSessionHoverCard,
+  createSessionHoverCardId,
+  subscribeActiveSessionHoverCard,
+} from "./sessionHoverCardRegistry";
+import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
 
 interface SessionListItemProps {
   // Core (required)
@@ -30,6 +39,8 @@ interface SessionListItemProps {
   // Optional display data
   fullTitle?: string | null;
   initialPrompt?: string | null;
+  /** Capped excerpt of the most recent regular agent turn, for the hover card. */
+  lastAgentText?: string | null;
   projectName?: string;
   updatedAt?: string;
   hasUnread?: boolean;
@@ -38,6 +49,8 @@ interface SessionListItemProps {
   contextUsage?: ContextUsage;
   status?: SessionStatus;
   provider?: ProviderName;
+  /** Last active model, shown as a provider+model badge (card mode / hover). */
+  model?: string;
   /** SSH host for remote execution (undefined = local) */
   executor?: string;
   /** Parent session when this item is a YA-owned /btw aside. */
@@ -125,6 +138,7 @@ export function SessionListItem({
   // Optional display data
   fullTitle,
   initialPrompt,
+  lastAgentText,
   projectName,
   updatedAt,
   hasUnread: hasUnreadProp,
@@ -133,6 +147,7 @@ export function SessionListItem({
   contextUsage,
   status,
   provider,
+  model,
   executor,
   parentSessionId,
   // Feature toggles
@@ -184,6 +199,35 @@ export function SessionListItem({
   const [localTitle, setLocalTitle] = useState<string | undefined>(undefined);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const isSavingRef = useRef(false);
+
+  // Hover card for every list surface (sidebar compact + all-sessions / search
+  // cards): a rich hover panel (full first user turn, status line, and the most
+  // recent agent turn). The panel (SessionHoverCard) self-positions from this
+  // row geometry + cursor x — below the row and right of the cursor, flipping
+  // above when it would not fit below.
+  const {
+    showDelayMs: hoverCardShowDelayMs,
+    maxHeightPx: hoverCardMaxHeightPx,
+  } = useHoverCardSettings();
+  const liRef = useRef<HTMLLIElement>(null);
+  const hoverCardIdRef = useRef<string | null>(null);
+  if (!hoverCardIdRef.current) {
+    hoverCardIdRef.current = createSessionHoverCardId();
+  }
+  const [previewPos, setPreviewPos] = useState<{
+    rowTop: number;
+    rowBottom: number;
+    cursorX: number;
+  } | null>(null);
+  const previewShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewCursorX = useRef(0);
+  // Idle (non-running) sessions get no live session-updated events, so their
+  // recent-activity preview can be stale. After the delayed hover opens, we
+  // recompute it once on the server; the pushed session-updated refreshes the
+  // row in place. Owned/external sessions already update live.
+  const previewRefreshInFlight = useRef(false);
+  // True while this row's ... menu is open; suppresses new card shows.
+  const menuOpenRef = useRef(false);
 
   // Computed values with optimistic fallback
   const isStarred = localIsStarred ?? isStarredProp;
@@ -361,18 +405,156 @@ export function SessionListItem({
     return new Date(timestamp).toLocaleDateString();
   };
 
-  // Brief age since creation for detailed (card) lists: d / h / m
-  // (separate from the activity-based "Any age" filter which uses updatedAt)
-  const formatBriefAge = (timestamp: string): string => {
-    const diffMs = Date.now() - new Date(timestamp).getTime();
-    if (diffMs < 0) return "0m";
-    const mins = Math.floor(diffMs / 60000);
-    if (mins < 60) return `${mins}m`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h`;
-    const days = Math.floor(hours / 24);
-    return `${days}d`;
-  };
+  // Brief age since creation for detailed (card) lists and the compact hover
+  // card. `formatBriefAge` returns null for unknown/default (epoch) timestamps,
+  // so a missing creation time renders nothing rather than "Created 20625d ago".
+  const briefAge = formatBriefAge(createdAt);
+
+  // Hover tooltip age shows both: time since last activity (primary) with the
+  // creation time as an "established" aside — "5m ago (est. 2d)". Either half
+  // drops out when its timestamp is unknown/default.
+  const hoverActivityAge = formatBriefAge(updatedAt);
+  const hoverAgeLabel = hoverActivityAge
+    ? `${hoverActivityAge} ago${briefAge ? ` (est. ${briefAge})` : ""}`
+    : briefAge
+      ? `est. ${briefAge}`
+      : null;
+
+  // Hover card fires on every list surface (sidebar compact + all-sessions /
+  // search cards); it only needs a provider to badge.
+  const showHoverCard = !!provider;
+
+  // The full first user turn (body) and the most recent agent turn (reply)
+  // shown in the replacement tooltip.
+  const hoverPrompt = (initialPrompt || fullTitle || displayTitle || "").trim();
+  const hoverLastAgent = lastAgentText?.trim() || undefined;
+
+  // Recompute an idle session's stale preview once on the server; the result
+  // arrives via the session-updated activity event (not this call), updating
+  // the row in place. Owned/external sessions are tracked live, so skip them.
+  const refreshIdlePreview = useCallback(() => {
+    if (status?.owner === "self" || status?.owner === "external") return;
+    // Already have the excerpt — nothing to refresh. (Crucially this re-fires
+    // after a list refetch clears it, unlike a sticky once-per-session guard,
+    // which left re-hover blocked while only click repopulated.)
+    if (hoverLastAgent) return;
+    if (previewRefreshInFlight.current) return; // dedup concurrent hovers
+    previewRefreshInFlight.current = true;
+    void api.refreshSessionPreview(projectId, sessionId).finally(() => {
+      previewRefreshInFlight.current = false;
+    });
+  }, [status?.owner, projectId, sessionId, hoverLastAgent]);
+
+  const clearPreviewTimers = useCallback(() => {
+    if (previewShowTimer.current) {
+      clearTimeout(previewShowTimer.current);
+      previewShowTimer.current = null;
+    }
+  }, []);
+
+  const clearPreview = useCallback(() => {
+    clearPreviewTimers();
+    setPreviewPos(null);
+  }, [clearPreviewTimers]);
+
+  const schedulePreviewShow = useCallback(() => {
+    if (!showHoverCard || menuOpenRef.current) return;
+    clearPreviewTimers();
+    // Fetch the updated last-output immediately on hover; only the card's
+    // appearance waits for the show delay.
+    refreshIdlePreview();
+    previewShowTimer.current = setTimeout(() => {
+      const rect = liRef.current?.getBoundingClientRect();
+      const hoverCardId = hoverCardIdRef.current;
+      if (!rect || !hoverCardId) return;
+      announceActiveSessionHoverCard(hoverCardId);
+      setPreviewPos({
+        rowTop: rect.top,
+        rowBottom: rect.bottom,
+        cursorX: previewCursorX.current,
+      });
+      previewShowTimer.current = null;
+    }, hoverCardShowDelayMs);
+  }, [
+    showHoverCard,
+    clearPreviewTimers,
+    refreshIdlePreview,
+    hoverCardShowDelayMs,
+  ]);
+
+  const handlePreviewEnter = useCallback(
+    (e: React.MouseEvent) => {
+      if (!showHoverCard) return;
+      previewCursorX.current = e.clientX;
+      schedulePreviewShow();
+    },
+    [showHoverCard, schedulePreviewShow],
+  );
+
+  const handlePreviewMove = useCallback((e: React.MouseEvent) => {
+    previewCursorX.current = e.clientX;
+  }, []);
+
+  // Only one session hovercard may be visible or pending across list surfaces.
+  useEffect(() => {
+    if (!showHoverCard) return;
+    return subscribeActiveSessionHoverCard((activeId) => {
+      if (activeId !== hoverCardIdRef.current) {
+        clearPreview();
+      }
+    });
+  }, [showHoverCard, clearPreview]);
+
+  // Clear pending timers if the row unmounts mid-hover.
+  useEffect(() => {
+    return () => {
+      clearPreviewTimers();
+    };
+  }, [clearPreviewTimers]);
+
+  // A fixed card would drift if the sidebar scrolls under it; clear only when
+  // the row's own scroll ancestors move. Transcript autoscroll elsewhere should
+  // not dismiss a sidebar preview.
+  useEffect(() => {
+    if (!previewPos) return;
+    const handleScroll = (event: Event) => {
+      const row = liRef.current;
+      const target = event.target;
+      if (!row || target === window || !(target instanceof Node)) {
+        clearPreview();
+        return;
+      }
+      if (target.contains(row)) {
+        clearPreview();
+      }
+    };
+    const handleResize = () => clearPreview();
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [previewPos, clearPreview]);
+
+  const handlePreviewCancel = useCallback(() => {
+    const hoverCardId = hoverCardIdRef.current;
+    if (hoverCardId) {
+      announceActiveSessionHoverCard(hoverCardId);
+    }
+    clearPreview();
+  }, [clearPreview]);
+
+  // The ... menu opening dismisses the card and, while open, suppresses new
+  // shows so cursor moves over the row/menu do not pop cards. Hovering the
+  // trigger itself no longer cancels — the card sits under the menu anyway.
+  const handleMenuOpenChange = useCallback(
+    (open: boolean) => {
+      menuOpenRef.current = open;
+      if (open) clearPreview();
+    },
+    [clearPreview],
+  );
 
   // Build CSS classes
   const liClasses = [
@@ -485,7 +667,14 @@ export function SessionListItem({
   );
 
   return (
-    <li className={liClasses}>
+    <li
+      ref={liRef}
+      className={liClasses}
+      onMouseEnter={showHoverCard ? handlePreviewEnter : undefined}
+      onMouseMove={showHoverCard ? handlePreviewMove : undefined}
+      onMouseLeave={showHoverCard ? handlePreviewCancel : undefined}
+      onWheel={showHoverCard ? handlePreviewCancel : undefined}
+    >
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
       {onSelect && (
         <input
@@ -515,7 +704,7 @@ export function SessionListItem({
           onClick={handleSessionClick}
           onMouseDown={handleSessionMouseDown}
           onAuxClick={handleSessionAuxClick}
-          title={fullTitle || displayTitle}
+          title={showHoverCard ? undefined : fullTitle || displayTitle}
           className="session-list-item__link"
         >
           {mode === "card" ? (
@@ -548,18 +737,25 @@ export function SessionListItem({
                 )}
               </strong>
               <span className="session-list-item__meta">
+                {provider && (
+                  <ProviderBadge
+                    provider={provider}
+                    model={model}
+                    className="session-list-item__provider-badge"
+                  />
+                )}
                 {showProjectName && projectName && (
                   <span className="session-list-item__project">
                     {projectName}
                   </span>
                 )}
                 {showTimestamp && updatedAt && formatRelativeTime(updatedAt)}
-                {createdAt && (
+                {briefAge && (
                   <span
                     className="session-list-item__age"
                     title={t("sessionListAgeTitle")}
                   >
-                    Created {formatBriefAge(createdAt)} ago
+                    Created {briefAge} ago
                   </span>
                 )}
                 {(userTurnCount != null || systemTurnCount != null) && (
@@ -652,11 +848,6 @@ export function SessionListItem({
             setIsEditing(true);
           }}
           onCopyPrompt={copyPromptText ? handleCopyPrompt : undefined}
-          onClone={(newSessionId) => {
-            navigate(
-              `${basePath}/projects/${projectId}/sessions/${newSessionId}`,
-            );
-          }}
           onShare={
             publicShareControlsVisible
               ? () => setShowShareModal(true)
@@ -664,6 +855,7 @@ export function SessionListItem({
           }
           useEllipsisIcon
           useFixedPositioning
+          onOpenChange={handleMenuOpenChange}
           className="session-list-item__menu"
         />
       )}
@@ -675,6 +867,23 @@ export function SessionListItem({
           title={displayTitle}
           canCreateShares={publicShareControlsVisible}
           onClose={() => setShowShareModal(false)}
+        />
+      )}
+
+      {showHoverCard && provider && previewPos && (
+        <SessionHoverCard
+          anchor={previewPos}
+          prompt={hoverPrompt}
+          lastAgentText={hoverLastAgent}
+          provider={provider}
+          model={model}
+          projectName={projectName}
+          ageLabel={hoverAgeLabel}
+          status={status}
+          pendingInputType={pendingInputType}
+          hasUnread={hasUnread}
+          activity={activity}
+          maxHeightPx={hoverCardMaxHeightPx}
         />
       )}
     </li>

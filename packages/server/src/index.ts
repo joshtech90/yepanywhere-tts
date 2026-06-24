@@ -1,3 +1,4 @@
+import "./startupEnv.js";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
@@ -38,6 +39,10 @@ import {
   SessionMetadataService,
 } from "./metadata/index.js";
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
+import {
+  initFileAccess,
+  updateFileAccess,
+} from "./middleware/file-access.js";
 import { NotificationService } from "./notifications/index.js";
 import { CodexSessionScanner } from "./projects/codex-scanner.js";
 import { GeminiSessionScanner } from "./projects/gemini-scanner.js";
@@ -69,7 +74,12 @@ import {
   SharingService,
   TtsService,
 } from "./services/index.js";
-import { initSpeechBackendRegistry } from "./services/voice/registry.js";
+import {
+  type SpeechRegistryInitOptions,
+  SpeechBackendRegistry,
+  getRequestedSpeechBackendIds,
+  registerSpeechBackends,
+} from "./services/voice/registry.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
 import { UploadManager } from "./uploads/manager.js";
 import {
@@ -384,7 +394,7 @@ const sharingService = new SharingService({
 const publicShareService = new PublicShareService({
   dataDir: config.dataDir,
 });
-const modelInfoService = new ModelInfoService();
+const modelInfoService = new ModelInfoService({ dataDir: config.dataDir });
 
 async function startServer() {
   const startupStart = Date.now();
@@ -457,14 +467,32 @@ async function startServer() {
   markStartup("authService initialized");
   await remoteAccessService.initialize();
   markStartup("remoteAccessService initialized");
+  await modelInfoService.initialize();
+  markStartup("modelInfoService initialized");
   await serverSettingsService.initialize();
   markStartup("serverSettingsService initialized");
   await ttsService.initialize();
   markStartup("ttsService initialized");
   await sharingService.initialize();
   markStartup("sharingService initialized");
-  await publicShareService.initialize();
-  markStartup("publicShareService initialized");
+  // Loading persisted public shares is not required to bind the listening
+  // socket or serve /health, but on a large data dir this file read parks the
+  // event loop for several seconds (it queues behind the FileWatcher's initial
+  // scan), which previously pushed onReady — and thus the health endpoint — out
+  // to ~6s. Start it in the background instead so the socket binds immediately;
+  // share routes default to EMPTY_STATE until it resolves (same tradeoff as the
+  // deferred speech-backend init).
+  void publicShareService
+    .initialize()
+    .then(() => {
+      console.log(
+        `[public-shares] Loaded (deferred) at +${Date.now() - startupStart}ms`,
+      );
+    })
+    .catch((error) => {
+      console.warn("[public-shares] Deferred initialization failed:", error);
+    });
+  markStartup("publicShareService initialization started (deferred)");
   await remoteSessionService.setDiskPersistenceEnabled(
     serverSettingsService.getSetting("persistRemoteSessionsToDisk"),
   );
@@ -476,6 +504,15 @@ async function startServer() {
 
   // Seed allowed hosts middleware from persisted settings
   updateAllowedHosts(serverSettingsService.getSetting("allowedHosts"));
+
+  // Seed file-access policy (resolved deps + persisted settings)
+  initFileAccess({
+    uploadsDir: config.managedUploadsDir,
+    homeDir: os.homedir(),
+    tempPaths: config.fileAccessTempPaths,
+    envPaths: config.fileAccessEnvPaths,
+  });
+  updateFileAccess(serverSettingsService.getSetting("fileAccess"));
 
   // Seed Ollama settings from persisted settings
   const savedOllamaUrl = serverSettingsService.getSetting("ollamaUrl");
@@ -536,6 +573,8 @@ async function startServer() {
     onNetworkBindingChange?: (
       config: { host: string; port: number } | null,
     ) => Promise<{ success: boolean; error?: string }>;
+    /** Live: addresses currently bound (reads real sockets at call time). */
+    getActiveListeners?: () => string[];
   } = {};
 
   // Determine effective port for server-info (CLI override or saved setting)
@@ -567,7 +606,7 @@ async function startServer() {
     );
   }
 
-  const speechBackendRegistry = await initSpeechBackendRegistry({
+  const speechBackendOptions: SpeechRegistryInitOptions = {
     voiceInputEnabled: config.voiceInputEnabled,
     voiceBackends: config.voiceBackends,
     deepgramApiKey: config.deepgramApiKey,
@@ -575,11 +614,17 @@ async function startServer() {
     whisperModel: config.whisperModel,
     whisperDevice: config.whisperDevice,
     whisperComputeType: config.whisperComputeType,
-  });
-  const enabledSpeechBackends = speechBackendRegistry.enabledIds();
-  if (enabledSpeechBackends.length > 0) {
+    parakeetModel: config.parakeetModel,
+    parakeetDevice: config.parakeetDevice,
+    nemoModel: config.nemoModel,
+    nemoDevice: config.nemoDevice,
+  };
+  const speechBackendRegistry = new SpeechBackendRegistry();
+  const requestedSpeechBackends =
+    getRequestedSpeechBackendIds(speechBackendOptions);
+  if (requestedSpeechBackends.length > 0) {
     console.log(
-      `[Voice] Enabled server-routed backends: ${enabledSpeechBackends.join(", ")}`,
+      `[Voice] Server-routed backends requested: ${requestedSpeechBackends.join(", ")}`,
     );
   }
 
@@ -785,6 +830,35 @@ async function startServer() {
 
   // Wire up the callback for relay config changes from API routes
   relayConfigCallbackHolder.callback = updateRelayConnection;
+
+  let speechBackendInitializationStarted = false;
+  function startSpeechBackendInitialization(): void {
+    if (
+      speechBackendInitializationStarted ||
+      requestedSpeechBackends.length === 0
+    ) {
+      return;
+    }
+    speechBackendInitializationStarted = true;
+    console.log(
+      `[Voice] Initializing server-routed backends after health is available: ${requestedSpeechBackends.join(", ")}`,
+    );
+    void registerSpeechBackends(speechBackendRegistry, speechBackendOptions)
+      .then(async () => {
+        const enabledSpeechBackends = speechBackendRegistry.enabledIds();
+        if (enabledSpeechBackends.length > 0) {
+          console.log(
+            `[Voice] Enabled server-routed backends: ${enabledSpeechBackends.join(", ")}`,
+          );
+        }
+        await updateRelayConnection();
+      })
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : String(error ?? "unknown");
+        console.error(`[Voice] Backend initialization failed: ${message}`);
+      });
+  }
 
   // Start relay connection on boot if configured
   await updateRelayConnection();
@@ -1050,6 +1124,19 @@ async function startServer() {
   // Wire up the callbacks to the holder so routes can use them
   networkBindingCallbackHolder.onLocalhostPortChange = onLocalhostPortChange;
   networkBindingCallbackHolder.onNetworkBindingChange = onNetworkBindingChange;
+  // Report the addresses actually bound right now by reading the live sockets.
+  // A server that failed to bind (e.g. an unresolvable --host) reports a null
+  // address(), so it never appears here -- the panel shows only real listeners.
+  networkBindingCallbackHolder.getActiveListeners = () => {
+    const listeners: string[] = [];
+    for (const server of [localhostServer, networkServer]) {
+      const address = server?.address();
+      if (address && typeof address === "object") {
+        listeners.push(`${address.address}:${address.port}`);
+      }
+    }
+    return listeners;
+  };
 
   // Create the main localhost server
   const expectedServerUrl = `${serverProtocol}://127.0.0.1:${effectivePort}`;
@@ -1069,6 +1156,7 @@ async function startServer() {
       console.log(`Server running at ${serverUrl}`);
       console.log(`Projects dir: ${config.claudeProjectsDir}`);
       console.log(`Permission mode: ${config.defaultPermissionMode}`);
+      startSpeechBackendInitialization();
 
       if (config.openBrowser) {
         const platform = os.platform();

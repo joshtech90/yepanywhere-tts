@@ -3,7 +3,7 @@ import type {
   ModelInfo,
   ProviderName,
 } from "@yep-anywhere/shared";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import {
   getShowThinkingSetting,
@@ -23,10 +23,12 @@ import {
   getThinkingModeFromProcess,
   normalizeEffortLevel,
 } from "../lib/modelConfigIndicator";
+import { ProviderBadge } from "./ProviderBadge";
 import { Modal } from "./ui/Modal";
 
 interface ModelSwitchModalProps {
-  processId: string;
+  /** Live owned process id; absent when the session isn't an owned live process. */
+  processId?: string;
   sessionId: string;
   currentModel?: string;
   onModelChanged: (next: {
@@ -35,7 +37,17 @@ interface ModelSwitchModalProps {
     thinking?: { type: string };
     effort?: string;
   }) => void;
-  onOpenSessionInfo?: () => void;
+  /** When provided, renders an "Info" tab whose pane is this node. */
+  infoPane?: ReactNode;
+  /** Which tab is focused on open (default "model"). */
+  initialTab?: "model" | "info";
+  /**
+   * Spawn a live process for a reaped session without sending a turn
+   * (message-less reactivate). When provided, the Model tab's "No active
+   * process" note becomes an Activate button; on success the parent flips
+   * ownership so `processId` arrives and the full options load.
+   */
+  onActivate?: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -73,7 +85,9 @@ export function ModelSwitchModal({
   sessionId,
   currentModel,
   onModelChanged,
-  onOpenSessionInfo,
+  infoPane,
+  initialTab,
+  onActivate,
   onClose,
 }: ModelSwitchModalProps) {
   const { t } = useI18n();
@@ -97,8 +111,20 @@ export function ModelSwitchModal({
   );
   const [lastTouchedSection, setLastTouchedSection] =
     useState<DirtySection>(null);
+  const [activeTab, setActiveTab] = useState<"model" | "info">(
+    initialTab ?? "model",
+  );
+  const [activating, setActivating] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!processId) {
+      setLoading(false);
+      return;
+    }
+    // processId may have just appeared (e.g. after Activate) - show the spinner
+    // while models load rather than flashing the empty state.
+    setLoading(true);
     let cancelled = false;
 
     Promise.all([
@@ -191,7 +217,7 @@ export function ModelSwitchModal({
     );
 
   const applyConfig = async (afterApply?: () => void) => {
-    if (switching || !selectedModel) return;
+    if (switching || !selectedModel || !processId) return;
     setSwitching(true);
     setError(null);
     try {
@@ -226,13 +252,21 @@ export function ModelSwitchModal({
     onClose();
   };
 
-  const handleOpenSessionInfo = () => {
-    if (!onOpenSessionInfo || switching) return;
-    if (dirty) {
-      void applyConfig(onOpenSessionInfo);
-      return;
+  const handleActivate = async () => {
+    if (!onActivate || activating) return;
+    setActivating(true);
+    setActivateError(null);
+    try {
+      await onActivate();
+      // On success the parent flips ownership; `processId` arrives as a prop,
+      // the model-load effect fires, and the full options replace this note.
+    } catch (err) {
+      setActivateError(
+        err instanceof Error ? err.message : t("modelSwitchActivateFailed"),
+      );
+    } finally {
+      setActivating(false);
     }
-    onOpenSessionInfo();
   };
 
   const currentIndicatorTone = getIndicatorToneFromProcess(
@@ -284,11 +318,36 @@ export function ModelSwitchModal({
   return (
     <Modal title={t("modelSwitchTitle")} onClose={handleDismiss}>
       <div className="model-switch-content">
-        {loading && (
+        {infoPane && (
+          <div className="model-switch-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "model"}
+              className={`model-switch-tab ${activeTab === "model" ? "active" : ""}`}
+              onClick={() => setActiveTab("model")}
+            >
+              {t("newSessionModelTitle")}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "info"}
+              className={`model-switch-tab ${activeTab === "info" ? "active" : ""}`}
+              onClick={() => setActiveTab("info")}
+            >
+              {t("processInfoTitle")}
+            </button>
+          </div>
+        )}
+        {infoPane && activeTab === "info" && (
+          <div className="model-switch-info-pane">{infoPane}</div>
+        )}
+        {(!infoPane || activeTab === "model") && loading && (
           <div className="model-switch-loading">{t("modelSwitchLoading")}</div>
         )}
 
-        {!loading && (
+        {(!infoPane || activeTab === "model") && !loading && (
           <>
             <div className="model-switch-status">
               <div className="model-switch-status-row">
@@ -300,7 +359,9 @@ export function ModelSwitchModal({
                   aria-hidden="true"
                 />
                 <span className="model-switch-status-main">
-                  {currentModelId ?? currentModel ?? t("processInfoDefaultModel")}
+                  {currentModelId ??
+                    currentModel ??
+                    t("processInfoDefaultModel")}
                 </span>
                 <span className="model-switch-status-detail">
                   {renderThinkingLabel(currentThinkingMode, currentEffortLevel)}
@@ -332,70 +393,81 @@ export function ModelSwitchModal({
                 </div>
               )}
             </div>
-            {onOpenSessionInfo && (
-              <div className="model-switch-info-action">
-                <button
-                  type="button"
-                  className="settings-button settings-button-secondary model-switch-inline-save"
-                  onClick={handleOpenSessionInfo}
-                  disabled={switching}
-                >
-                  {t("sessionViewInfo")}
-                </button>
+            {!processId && (
+              <div className="model-switch-activate">
+                <span className="model-switch-activate-note">
+                  {t("processInfoNoActiveProcess")}
+                </span>
+                {onActivate && (
+                  <button
+                    type="button"
+                    className="settings-button model-switch-inline-save"
+                    onClick={handleActivate}
+                    disabled={activating}
+                  >
+                    {activating
+                      ? t("modelSwitchActivating")
+                      : t("modelSwitchActivate")}
+                  </button>
+                )}
+                {activateError && (
+                  <div className="model-switch-error">{activateError}</div>
+                )}
               </div>
             )}
-
             {error && <div className="model-switch-error">{error}</div>}
 
-            <section className="model-switch-section">
-              <div className="model-switch-section-header">
-                <strong>{t("newSessionThinkingMode")}</strong>
-              </div>
-              <div className="model-switch-chip-group">
-                {thinkingModeOptions.map((mode) => {
-                  const isCurrent = currentThinkingMode === mode;
-                  const isSelected = effectiveThinkingMode === mode;
-                  const showInlineSave =
-                    dirty && lastTouchedSection === "thinking" && isSelected;
-                  return (
-                    <Fragment key={mode}>
-                      <button
-                        type="button"
-                        className={`model-switch-chip ${isCurrent ? "current" : ""} ${isSelected ? "active" : ""}`}
-                        onClick={() => {
-                          if (effectiveThinkingMode !== mode) {
-                            setLastTouchedSection("thinking");
-                          }
-                          setThinkingModeState(mode);
-                        }}
-                        disabled={switching}
-                      >
-                        <span
-                          className={`model-switch-indicator-dot tone-${
-                            mode === "off"
-                              ? "off"
+            {processId && (
+              <section className="model-switch-section">
+                <div className="model-switch-section-header">
+                  <strong>{t("newSessionThinkingMode")}</strong>
+                </div>
+                <div className="model-switch-chip-group">
+                  {thinkingModeOptions.map((mode) => {
+                    const isCurrent = currentThinkingMode === mode;
+                    const isSelected = effectiveThinkingMode === mode;
+                    const showInlineSave =
+                      dirty && lastTouchedSection === "thinking" && isSelected;
+                    return (
+                      <Fragment key={mode}>
+                        <button
+                          type="button"
+                          className={`model-switch-chip ${isCurrent ? "current" : ""} ${isSelected ? "active" : ""}`}
+                          onClick={() => {
+                            if (effectiveThinkingMode !== mode) {
+                              setLastTouchedSection("thinking");
+                            }
+                            setThinkingModeState(mode);
+                          }}
+                          disabled={switching}
+                        >
+                          <span
+                            className={`model-switch-indicator-dot tone-${
+                              mode === "off"
+                                ? "off"
+                                : mode === "auto"
+                                  ? "auto"
+                                  : effectiveEffortLevel
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {mode === "off"
+                              ? t("modelSettingsThinkingOffLabel")
                               : mode === "auto"
-                                ? "auto"
-                                : effectiveEffortLevel
-                          }`}
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {mode === "off"
-                            ? t("modelSettingsThinkingOffLabel")
-                            : mode === "auto"
-                              ? t("modelSettingsThinkingAutoLabel")
-                              : t("modelSettingsThinkingOnLabel")}
-                        </span>
-                      </button>
-                      {showInlineSave && renderInlineSave()}
-                    </Fragment>
-                  );
-                })}
-              </div>
-            </section>
+                                ? t("modelSettingsThinkingAutoLabel")
+                                : t("modelSettingsThinkingOnLabel")}
+                          </span>
+                        </button>
+                        {showInlineSave && renderInlineSave()}
+                      </Fragment>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
-            {showEffortOptions && (
+            {processId && showEffortOptions && (
               <section className="model-switch-section">
                 <div className="model-switch-section-header">
                   <strong>{t("modelSettingsEffortTitle")}</strong>
@@ -442,7 +514,7 @@ export function ModelSwitchModal({
               </section>
             )}
 
-            {!error && models.length === 0 && (
+            {processId && !error && models.length === 0 && (
               <div className="model-switch-loading">
                 {t("modelSwitchEmpty")}
               </div>
@@ -473,8 +545,16 @@ export function ModelSwitchModal({
                           disabled={switching}
                         >
                           <span className="model-switch-item-main">
-                            <span className="model-switch-name">
-                              {model.name}
+                            <span className="model-switch-name-row">
+                              <span className="model-switch-name">
+                                {model.name}
+                              </span>
+                              {provider && (
+                                <ProviderBadge
+                                  provider={provider}
+                                  model={model.id}
+                                />
+                              )}
                             </span>
                             {model.description && (
                               <span className="model-switch-description">

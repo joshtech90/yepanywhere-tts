@@ -19,6 +19,8 @@ export type SpeechProviderStatus =
   | "starting"
   | "listening"
   | "receiving"
+  | "processing"
+  | "finalizing"
   | "reconnecting"
   | "error";
 
@@ -37,6 +39,7 @@ export interface SpeechTranscriptionContext {
   sessionId?: string;
   clientTurnId?: string;
   draftKey?: string;
+  speechTargetId?: string;
 }
 
 export type SpeechTurnCommand = "send" | "cancel" | "wait";
@@ -75,7 +78,27 @@ export interface SpeechWordTimestamp {
 
 export interface SpeechTranscriptionResultMetadata {
   transcriptionId?: string;
+  speechTargetId?: string;
   smartTurnCommand?: SpeechTurnCommand;
+  /**
+   * True when a `send` is an automatic Smart Turn *endpoint* send (no spoken
+   * command word), as opposed to an explicit spoken `send`. A composer may hold
+   * the auto-send when the user has manually edited the draft mid-dictation;
+   * an explicit `send` always submits. See topics/mic-button-speech-ui.md.
+   */
+  smartTurnAutoSend?: boolean;
+  /** Replace this many characters immediately before the current speech range. */
+  replacePreviousTranscriptChars?: number;
+}
+
+export type SpeechTranscriptionSettlementStatus =
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export interface SpeechTranscriptionSettlement {
+  speechTargetId?: string;
+  status: SpeechTranscriptionSettlementStatus;
 }
 
 /** Events emitted by a provider during a listening session. */
@@ -91,6 +114,12 @@ export interface SpeechProviderEvents {
   onEnd?: () => void;
   /** Error event; also reflected in state.error / state.status. */
   onError?: (error: string) => void;
+  /**
+   * A batch transcription reached a terminal state. Emitted once per stopped
+   * recording even when a newer recording is active, so consumers can retire
+   * the exact reserved insertion target.
+   */
+  onTranscriptionSettled?: (settlement: SpeechTranscriptionSettlement) => void;
 }
 
 /** Options at construction time. */
@@ -107,6 +136,13 @@ export interface SpeechProviderOptions extends SpeechProviderEvents {
   keepMicWarm?: boolean;
   /** Browser-local microphone device id for YA-server capture. */
   micDeviceId?: string | null;
+  /**
+   * Receive browser microphone samples for local visualization. The callback
+   * must consume the view synchronously; capture buffers may be reused.
+   */
+  onAudioSamples?: (samples: Float32Array) => void;
+  /** Browser-selected local Parakeet model id for YA Parakeet backends. */
+  parakeetModel?: string;
   /** Open a dedicated relayed speech socket when YA is reached through relay. */
   openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
 }
@@ -143,6 +179,15 @@ export interface SpeechProvider {
   /** End the current session. No-op if not listening. */
   stop(): void;
 
+  /**
+   * Abandon an in-flight post-capture (`processing`) transcription. The
+   * contract is result-suppression, not work-interruption: a transcription
+   * that still completes after cancel() must be discarded (no onResult, no
+   * state change beyond returning to idle). No-op outside `processing`.
+   * Aborting the underlying request/model work is an optional optimization.
+   */
+  cancel?(): void;
+
   /** Speculatively acquire reusable resources before the user clicks. */
   prewarm?(): void;
 
@@ -164,6 +209,8 @@ export const SPEECH_STATUS_LABELS: Record<SpeechProviderStatus, string> = {
   starting: "Connecting...",
   listening: "Listening...",
   receiving: "Receiving...",
+  processing: "Transcribing...",
+  finalizing: "Finalizing...",
   reconnecting: "Reconnecting...",
   error: "Error",
 };

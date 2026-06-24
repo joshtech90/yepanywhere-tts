@@ -7,9 +7,11 @@
  * - "gemini-acp": Gemini via CLI with --experimental-acp (preferred)
  * - "grok": Grok Build via ACP (`grok agent stdio`) - Phase 1 isolated prototype
  * - "opencode": OpenCode via HTTP server (multi-provider agent)
+ * - "pi": pi via `pi --mode rpc` (provider-agnostic agent; see topics/pi-provider.md)
  *
  * "grok" added (additive only) for Phase 1 Grok Build provider per topics/grok.md.
  * Gated behind ENABLED_PROVIDERS=grok; no impact on other providers or core paths.
+ * "pi" added (additive, Plan A live RPC) per topics/pi-provider.md.
  */
 export type ProviderName =
   | "claude"
@@ -19,7 +21,8 @@ export type ProviderName =
   | "gemini"
   | "gemini-acp"
   | "grok"
-  | "opencode";
+  | "opencode"
+  | "pi";
 
 /**
  * All provider names in display order.
@@ -37,6 +40,7 @@ export const ALL_PROVIDERS: readonly ProviderName[] = [
   "gemini-acp",
   "grok",
   "opencode",
+  "pi",
 ] as const;
 
 /**
@@ -314,24 +318,59 @@ export interface SessionToolbarVisibilityClientDefaults {
   thinkingToggle?: boolean;
   renderMode?: boolean;
   microphone?: boolean;
+  waveform?: boolean;
   shortcutsHelp?: boolean;
   contextUsage?: boolean;
   btw?: boolean;
   nudge?: boolean;
-  queueControls?: boolean;
   sessionStatus?: boolean;
 }
+
+export type BusyComposerDefaultAction = "steer" | "queue";
+
+export type CollapsedComposerButtonPreference =
+  | "primary"
+  | "alternate"
+  | "microphone";
 
 export interface ClientDefaults {
   /** Defaults used by browser clients when local storage has no explicit value. */
   speech?: SpeechClientDefaults;
   /**
+   * Default primary action for busy sessions that can both steer the active turn
+   * and queue a later message. Existing session-local overrides still win.
+   */
+  busyComposerDefaultAction?: BusyComposerDefaultAction;
+  /**
+   * Trailing action shown by collapsed composers on tight layouts. Desktop may
+   * show additional side affordances when there is room.
+   */
+  collapsedComposerButton?: CollapsedComposerButtonPreference;
+  /**
    * Initial state of the per-turn "now" steering toggle for providers with a
    * "now" lane (currently Claude). The toggle itself stays per-turn.
    */
   steerNowDefault?: boolean;
+  /**
+   * Default for the "wait until the agent is fully done before delivering
+   * queued messages" preference (patient queue intent). Global; set in the
+   * Message Delivery settings pane. Off = deliver at the next end of turn
+   * (`deferred`).
+   */
+  patientQueueDefault?: boolean;
   /** Session toolbar visibility defaults for controls with no local override. */
   sessionToolbarVisibility?: SessionToolbarVisibilityClientDefaults;
+  /**
+   * Preemptive compaction thresholds, keyed by model id, each a percent (1–99)
+   * of that model's context window. When a model's live context reaches its
+   * percent, YA queues the provider `/compact` before delivering the next turn.
+   * A model absent from the map (or a value >= 100) is off — defer to the
+   * provider's own auto-compaction. Tokens are derived from model metadata at
+   * runtime. This is per-model, not a single global setting; the default for a
+   * model migrated off its non-1M variant is seeded to ~20% (≈200K of 1M). See
+   * tasks/029.
+   */
+  compactAtContextPercent?: Record<string, number>;
 }
 
 /**

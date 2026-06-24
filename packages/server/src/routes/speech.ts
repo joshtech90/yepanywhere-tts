@@ -7,6 +7,7 @@ import type { ServerSettingsService } from "../services/ServerSettingsService.js
 import { DEFAULT_SERVER_SETTINGS } from "../services/ServerSettingsService.js";
 import {
   persistSpeechAudio,
+  type SpeechStreamingTranscriptTraceEvent,
   type SpeechAudioRequestSource,
   type SpeechAudioRetentionResult,
   type SpeechTranscriptionContext,
@@ -14,13 +15,19 @@ import {
 import type { SpeechBackendRegistry } from "../services/voice/registry.js";
 import {
   supportsStreaming,
+  supportsPrewarm,
   type SpeechStreamSession,
+  type SpeechStreamDone,
+  type SpeechStreamPartial,
   type TranscribeOptions,
   type SpeechWordTimestamp,
 } from "../services/voice/SpeechBackend.js";
 
 const logger = getLogger();
 const DEFAULT_MIME_TYPE = "audio/webm;codecs=opus";
+const MAX_SMART_TURN_TIMEOUT_MS = 10000;
+const XAI_REALTIME_CLIENT_SECRET_URL =
+  "https://api.x.ai/v1/realtime/client_secrets";
 
 // biome-ignore lint/suspicious/noExplicitAny: third-party WS upgrade type
 type UpgradeWebSocketFn = (createEvents: (c: Context) => WSEvents) => any;
@@ -59,6 +66,8 @@ export interface SpeechServerMsg {
   transcriptionId?: string;
   isFinal?: boolean;
   speechFinal?: boolean;
+  start?: number;
+  duration?: number;
   words?: SpeechWordTimestamp[];
 }
 
@@ -72,11 +81,23 @@ export type SpeechWsData =
 
 interface TranscribeBody {
   backendId?: unknown;
+  model?: unknown;
   mimeType?: unknown;
   audioBase64?: unknown;
   prompt?: unknown;
   keyterms?: unknown;
   context?: unknown;
+}
+
+interface PrewarmBody {
+  backendId?: unknown;
+  model?: unknown;
+}
+
+interface XaiClientSecretResponse {
+  value?: string;
+  client_secret?: string | { value?: string };
+  expires_at?: string;
 }
 
 interface SpeechSmartTurnStartOptions {
@@ -87,6 +108,58 @@ interface SpeechSmartTurnStartOptions {
 
 function send(ws: WSContext, msg: SpeechServerMsg): void {
   ws.send(JSON.stringify(msg));
+}
+
+function parseXaiClientSecret(data: XaiClientSecretResponse): {
+  value: string;
+  expiresAt?: string;
+} | null {
+  const value =
+    typeof data.value === "string"
+      ? data.value
+      : typeof data.client_secret === "string"
+        ? data.client_secret
+        : data.client_secret?.value;
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return data.expires_at
+    ? { value: trimmed, expiresAt: data.expires_at }
+    : { value: trimmed };
+}
+
+async function createXaiClientSecret(apiKey: string): Promise<{
+  value: string;
+  expiresAt?: string;
+}> {
+  const response = await fetch(XAI_REALTIME_CLIENT_SECRET_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ expires_after: { seconds: 300 } }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `xAI client secret request failed (HTTP ${response.status}): ${text.slice(
+        0,
+        500,
+      )}`,
+    );
+  }
+  let data: XaiClientSecretResponse;
+  try {
+    data = JSON.parse(text) as XaiClientSecretResponse;
+  } catch {
+    throw new Error("xAI client secret request returned non-JSON");
+  }
+  const secret = parseXaiClientSecret(data);
+  if (!secret) {
+    throw new Error("xAI client secret response did not include a secret");
+  }
+  return secret;
 }
 
 type StreamingTranscriptTraceKind =
@@ -100,6 +173,30 @@ function formatStreamingTranscriptTraceLine(
   text: string,
 ): string {
   return `${kind}\t${text.replaceAll("\r", "\\r").replaceAll("\n", "\\n")}`;
+}
+
+function toStreamingPartialTraceEvent(
+  event: SpeechStreamPartial,
+): SpeechStreamingTranscriptTraceEvent {
+  return {
+    kind: getPartialTraceKind(event),
+    text: event.text,
+    isFinal: event.isFinal,
+    speechFinal: event.speechFinal,
+    start: event.start,
+    duration: event.duration,
+    words: event.words,
+  };
+}
+
+function toStreamingDoneTraceEvent(
+  done: SpeechStreamDone,
+): SpeechStreamingTranscriptTraceEvent {
+  return {
+    kind: "done",
+    text: done.text,
+    duration: done.duration,
+  };
 }
 
 function getPartialTraceKind(event: {
@@ -136,7 +233,7 @@ function parseSmartTurnStartOptions(
       : undefined;
   const timeoutMs =
     typeof value.timeoutMs === "number" && Number.isFinite(value.timeoutMs)
-      ? Math.round(clampNumber(value.timeoutMs, 0, 5000))
+      ? Math.round(clampNumber(value.timeoutMs, 0, MAX_SMART_TURN_TIMEOUT_MS))
       : undefined;
   return { enabled: true, threshold, timeoutMs };
 }
@@ -225,6 +322,15 @@ function cleanContextString(
   return trimmed ? trimmed.slice(0, maxLength) : undefined;
 }
 
+function cleanOptionalString(
+  value: unknown,
+  maxLength = 300,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, maxLength) : undefined;
+}
+
 function parseTranscriptionContext(
   value: unknown,
 ): SpeechTranscriptionContext | undefined {
@@ -234,6 +340,7 @@ function parseTranscriptionContext(
     sessionId: cleanContextString(value.sessionId),
     clientTurnId: cleanContextString(value.clientTurnId, 120),
     draftKey: cleanContextString(value.draftKey, 300),
+    speechTargetId: cleanContextString(value.speechTargetId, 120),
   };
   const clean = Object.fromEntries(
     Object.entries(context).filter(([, entry]) => entry !== undefined),
@@ -267,6 +374,7 @@ async function transcribeWithAudit(
     source: input.source,
     backendId: input.backendId,
     mimeType: input.options.mimeType ?? DEFAULT_MIME_TYPE,
+    model: input.options.model,
     audioBytes: input.audio.length,
     hasPrompt: !!input.options.prompt,
     keytermCount: input.options.keyterms?.length ?? 0,
@@ -290,6 +398,7 @@ async function transcribeWithAudit(
       requestId,
       source: input.source,
       backendId: input.backendId,
+      model: input.options.model,
       mimeType: input.options.mimeType ?? DEFAULT_MIME_TYPE,
       audio: input.audio,
       transcript: text,
@@ -342,6 +451,7 @@ async function persistStreamingTranscription(
     mimeType: string;
     transcript: string;
     streamingTranscriptTrace?: string[];
+    streamingTranscriptEvents?: SpeechStreamingTranscriptTraceEvent[];
     startedAt: string;
     startedAtMs: number;
     context?: SpeechTranscriptionContext;
@@ -359,6 +469,7 @@ async function persistStreamingTranscription(
     audio: input.audio,
     transcript: input.transcript,
     streamingTranscriptTrace: input.streamingTranscriptTrace,
+    streamingTranscriptEvents: input.streamingTranscriptEvents,
     startedAt: input.startedAt,
     completedAt,
     durationMs: completedAtMs - input.startedAtMs,
@@ -379,6 +490,8 @@ async function persistStreamingTranscription(
       transcriptChars: input.transcript.length,
       streamingTranscriptTraceEvents:
         input.streamingTranscriptTrace?.length ?? 0,
+      streamingTranscriptRawEvents:
+        input.streamingTranscriptEvents?.length ?? 0,
       transcriptionId: retention.transcriptionId,
       retention: {
         stored: retention.stored,
@@ -427,8 +540,30 @@ function parseTranscribeBody(value: unknown):
     options: {
       mimeType:
         typeof body.mimeType === "string" ? body.mimeType : DEFAULT_MIME_TYPE,
+      model: cleanOptionalString(body.model, 200),
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
       keyterms,
+    },
+  };
+}
+
+function parsePrewarmBody(
+  value: unknown,
+):
+  | { ok: true; backendId: string; options: TranscribeOptions }
+  | { ok: false; message: string } {
+  if (!isRecord(value)) {
+    return { ok: false, message: "Expected JSON object" };
+  }
+  const body = value as PrewarmBody;
+  if (typeof body.backendId !== "string" || body.backendId.length === 0) {
+    return { ok: false, message: "backendId is required" };
+  }
+  return {
+    ok: true,
+    backendId: body.backendId,
+    options: {
+      model: cleanOptionalString(body.model, 200),
     },
   };
 }
@@ -453,6 +588,7 @@ export function createSpeechWebSocketSession(
   let streamStartedAt = "";
   let streamStartedAtMs = 0;
   let streamingTranscriptTrace: string[] = [];
+  let streamingTranscriptEvents: SpeechStreamingTranscriptTraceEvent[] = [];
   let streamingSpeechFinalTexts: string[] = [];
   let streamingStopRequested = false;
   let messageChain = Promise.resolve();
@@ -486,6 +622,7 @@ export function createSpeechWebSocketSession(
       pendingAudio = [];
       streamRequestId = null;
       streamingTranscriptTrace = [];
+      streamingTranscriptEvents = [];
       streamingSpeechFinalTexts = [];
       streamingStopRequested = false;
 
@@ -562,7 +699,10 @@ export function createSpeechWebSocketSession(
                     event.text,
                   ),
                 );
-                if (event.speechFinal && !streamingStopRequested) {
+                streamingTranscriptEvents.push(
+                  toStreamingPartialTraceEvent(event),
+                );
+                if (event.speechFinal) {
                   streamingSpeechFinalTexts.push(event.text);
                 }
                 sendMessage({
@@ -570,6 +710,8 @@ export function createSpeechWebSocketSession(
                   text: event.text,
                   isFinal: event.isFinal,
                   speechFinal: event.speechFinal,
+                  start: event.start,
+                  duration: event.duration,
                   words: event.words,
                 });
               },
@@ -643,8 +785,10 @@ export function createSpeechWebSocketSession(
         streamingTranscriptTrace.push(
           formatStreamingTranscriptTraceLine("done", done.text),
         );
+        streamingTranscriptEvents.push(toStreamingDoneTraceEvent(done));
         const transcript =
-          done.text.trim() || joinStreamingSpeechFinals(streamingSpeechFinalTexts);
+          done.text.trim() ||
+          joinStreamingSpeechFinals(streamingSpeechFinalTexts);
         const retention = await persistStreamingTranscription(deps, {
           requestId: streamRequestId,
           backendId,
@@ -652,6 +796,7 @@ export function createSpeechWebSocketSession(
           mimeType,
           transcript,
           streamingTranscriptTrace,
+          streamingTranscriptEvents,
           startedAt: streamStartedAt,
           startedAtMs: streamStartedAtMs,
           context,
@@ -683,6 +828,7 @@ export function createSpeechWebSocketSession(
         pendingAudio = [];
         streamRequestId = null;
         streamingTranscriptTrace = [];
+        streamingTranscriptEvents = [];
         streamingSpeechFinalTexts = [];
         streamingStopRequested = false;
       }
@@ -728,6 +874,7 @@ export function createSpeechWebSocketSession(
       streamSessionPromise = null;
       pendingAudio = [];
       streamingTranscriptTrace = [];
+      streamingTranscriptEvents = [];
       streamingSpeechFinalTexts = [];
       streamingStopRequested = false;
       chunks.length = 0;
@@ -738,17 +885,42 @@ export function createSpeechWebSocketSession(
 export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
   const routes = new Hono();
 
-  routes.get("/xai-client-key", (c) => {
+  const rejectCredentialGet = (c: Context) => {
+    c.header("Allow", "POST");
+    return c.json(
+      { error: "Use POST for speech credential broker routes" },
+      405,
+    );
+  };
+
+  routes.get("/xai-client-key", rejectCredentialGet);
+
+  routes.post("/xai-client-key", (c) => {
     if (deps.shareXaiSttApiKeyWithClients !== true) {
-      return c.json(
-        { error: "Server xAI STT key borrowing is disabled" },
-        403,
-      );
+      return c.json({ error: "Server xAI STT key borrowing is disabled" }, 403);
     }
     if (!deps.xaiSttApiKey) {
       return c.json({ error: "Server xAI STT key is not configured" }, 404);
     }
     return c.json({ apiKey: deps.xaiSttApiKey });
+  });
+
+  routes.get("/xai-client-secret", rejectCredentialGet);
+
+  routes.post("/xai-client-secret", async (c) => {
+    if (!deps.xaiSttApiKey) {
+      return c.json({ error: "Server xAI STT key is not configured" }, 404);
+    }
+    try {
+      const secret = await createXaiClientSecret(deps.xaiSttApiKey);
+      return c.json({
+        clientSecret: secret.value,
+        ...(secret.expiresAt ? { expiresAt: secret.expiresAt } : {}),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 502);
+    }
   });
 
   routes.post("/transcribe", async (c) => {
@@ -779,6 +951,69 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
     }
   });
 
+  routes.post("/prewarm", async (c) => {
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const parsed = parsePrewarmBody(rawBody);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.message }, 400);
+    }
+
+    const backend = deps.speechBackendRegistry.getBackend(parsed.backendId);
+    if (!backend) {
+      return c.json(
+        { error: `Backend not available: ${parsed.backendId}` },
+        404,
+      );
+    }
+    if (!supportsPrewarm(backend)) {
+      return c.json(
+        { error: `Backend does not support prewarm: ${parsed.backendId}` },
+        400,
+      );
+    }
+
+    logger.info(
+      {
+        component: "speech",
+        backendId: parsed.backendId,
+        model: parsed.options.model,
+      },
+      "Speech backend prewarm requested",
+    );
+
+    void backend
+      .prewarm(parsed.options)
+      .then(() => {
+        logger.info(
+          {
+            component: "speech",
+            backendId: parsed.backendId,
+            model: parsed.options.model,
+          },
+          "Speech backend prewarm completed",
+        );
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          {
+            component: "speech",
+            backendId: parsed.backendId,
+            model: parsed.options.model,
+            err,
+          },
+          "Speech backend prewarm failed",
+        );
+      });
+
+    return c.json({ ok: true });
+  });
+
   routes.get(
     "/ws",
     deps.upgradeWebSocket((_c: Context) => {
@@ -800,6 +1035,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
       let streamStartedAt = "";
       let streamStartedAtMs = 0;
       let streamingTranscriptTrace: string[] = [];
+      let streamingTranscriptEvents: SpeechStreamingTranscriptTraceEvent[] = [];
       let streamingSpeechFinalTexts: string[] = [];
       let streamingStopRequested = false;
       let messageChain = Promise.resolve();
@@ -837,6 +1073,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
           pendingAudio = [];
           streamRequestId = null;
           streamingTranscriptTrace = [];
+          streamingTranscriptEvents = [];
           streamingSpeechFinalTexts = [];
           streamingStopRequested = false;
 
@@ -926,7 +1163,10 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
                         event.text,
                       ),
                     );
-                    if (event.speechFinal && !streamingStopRequested) {
+                    streamingTranscriptEvents.push(
+                      toStreamingPartialTraceEvent(event),
+                    );
+                    if (event.speechFinal) {
                       streamingSpeechFinalTexts.push(event.text);
                     }
                     send(ws, {
@@ -934,6 +1174,8 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
                       text: event.text,
                       isFinal: event.isFinal,
                       speechFinal: event.speechFinal,
+                      start: event.start,
+                      duration: event.duration,
                       words: event.words,
                     });
                   },
@@ -1011,6 +1253,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
             streamingTranscriptTrace.push(
               formatStreamingTranscriptTraceLine("done", done.text),
             );
+            streamingTranscriptEvents.push(toStreamingDoneTraceEvent(done));
             const transcript =
               done.text.trim() ||
               joinStreamingSpeechFinals(streamingSpeechFinalTexts);
@@ -1021,6 +1264,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
               mimeType,
               transcript,
               streamingTranscriptTrace,
+              streamingTranscriptEvents,
               startedAt: streamStartedAt,
               startedAtMs: streamStartedAtMs,
               context,
@@ -1052,6 +1296,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
             pendingAudio = [];
             streamRequestId = null;
             streamingTranscriptTrace = [];
+            streamingTranscriptEvents = [];
             streamingSpeechFinalTexts = [];
             streamingStopRequested = false;
           }
@@ -1106,6 +1351,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
           streamSessionPromise = null;
           pendingAudio = [];
           streamingTranscriptTrace = [];
+          streamingTranscriptEvents = [];
           streamingSpeechFinalTexts = [];
           streamingStopRequested = false;
           chunks.length = 0;

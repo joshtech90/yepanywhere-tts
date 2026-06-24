@@ -18,11 +18,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  EffortLevel,
   ModelInfo,
   OpenCodeMessagePartDeltaEvent,
   OpenCodeMessagePartUpdatedEvent,
   OpenCodeMessageUpdatedEvent,
   OpenCodePart,
+  OpenCodePermissionAskedEvent,
+  OpenCodeQuestionAskedEvent,
   OpenCodeSSEEvent,
   OpenCodeSessionStatus,
   OpenCodeSessionStatusEvent,
@@ -31,7 +34,12 @@ import { parseOpenCodeSSEEvent } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { whichCommand } from "../cli-detection.js";
 import { MessageQueue } from "../messageQueue.js";
+import {
+  mapOpenCodeQuestionAnswers,
+  normalizeOpenCodeTool,
+} from "./opencode-tools.js";
 import type {
+  CanUseTool,
   ContentBlock,
   ProviderActivitySnapshot,
   ProviderLivenessProbeResult,
@@ -67,8 +75,6 @@ function execFileUtf8(
 export interface OpenCodeProviderConfig {
   /** Path to opencode binary (auto-detected if not specified) */
   opencodePath?: string;
-  /** Request timeout in ms (default: 300000 = 5 minutes) */
-  timeout?: number;
   /** Base port to start from (auto-selects if not specified) */
   basePort?: number;
 }
@@ -93,12 +99,15 @@ interface OpenCodeRuntimeState {
 }
 
 interface OpenCodeStreamState {
-  currentAssistantMessageId: string | null;
   messageRolesById: Map<string, "user" | "assistant">;
   partMessageIdsById: Map<string, string>;
   partTypesById: Map<string, string>;
   partTextById: Map<string, string>;
   partSentLengthsById: Map<string, number>;
+  // Unified tool parts stream pending->running->completed; dedupe the tool_use
+  // and tool_result emissions per callID so they appear exactly once.
+  toolUseEmitted: Set<string>;
+  toolResultEmitted: Set<string>;
   sawAssistantContent: boolean;
   usedPostBodyFallback: boolean;
 }
@@ -119,6 +128,14 @@ interface OpenCodeMessageResponse {
     providerID?: string;
   };
   parts?: OpenCodePart[];
+}
+
+/** OpenCode file part for the message POST (used to carry inline images). */
+interface OpenCodeFilePartInput {
+  type: "file";
+  mime: string;
+  url: string;
+  filename?: string;
 }
 
 const LOCAL_GLM_MODEL_PREFIX = "local-glm/";
@@ -170,6 +187,65 @@ function parseOpenCodeModelSelection(
   };
 }
 
+const OPENCODE_EFFORT_LEVELS = new Set<EffortLevel>([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+/**
+ * Parse `opencode models --verbose` output (header `provider/id` lines followed
+ * by pretty-printed JSON model defs) into a map of model key -> the reasoning
+ * effort levels that model's `variants` expose. OpenCode passes effort by
+ * naming a variant in the message body; the variant keys
+ * (low/medium/high/xhigh/max) coincide with YA's EffortLevel.
+ */
+export function parseOpenCodeModelVariants(
+  stdout: string,
+): Map<string, EffortLevel[]> {
+  const map = new Map<string, EffortLevel[]>();
+  let header: string | null = null;
+  let block: string[] | null = null;
+  for (const line of stdout.split("\n")) {
+    if (block === null) {
+      if (line === "{") {
+        block = [line];
+      } else if (line.trim() && line.includes("/") && !line.startsWith(" ")) {
+        header = line.trim();
+      }
+      continue;
+    }
+    block.push(line);
+    if (line !== "}") continue;
+    // Top-level closing brace (column 0) ends the model def block.
+    try {
+      const def = JSON.parse(block.join("\n")) as {
+        id?: string;
+        providerID?: string;
+        variants?: Record<string, unknown>;
+      };
+      const key =
+        header ??
+        (def.providerID && def.id ? `${def.providerID}/${def.id}` : null);
+      if (key && def.variants && typeof def.variants === "object") {
+        const levels = Object.keys(def.variants).filter((v): v is EffortLevel =>
+          OPENCODE_EFFORT_LEVELS.has(v as EffortLevel),
+        );
+        if (levels.length > 0) {
+          map.set(key, levels);
+        }
+      }
+    } catch {
+      // Skip unparseable block.
+    }
+    block = null;
+    header = null;
+  }
+  return map;
+}
+
 function isProcessStillAlive(process: ChildProcess): boolean {
   return (
     !process.killed &&
@@ -210,6 +286,9 @@ function getOpenCodeEventSessionId(event: OpenCodeSSEEvent): string | undefined 
       return event.properties.part.sessionID;
     case "message.part.delta":
       return event.properties.sessionID;
+    case "permission.asked":
+    case "question.asked":
+      return event.properties.sessionID;
     default:
       return undefined;
   }
@@ -224,16 +303,17 @@ export class OpenCodeProvider implements AgentProvider {
   readonly name = "opencode" as const;
   readonly displayName = "OpenCode";
   readonly supportsPermissionMode = false; // OpenCode has its own permission model
-  readonly supportsThinkingToggle = false;
+  // OpenCode exposes per-model reasoning effort via model "variants"
+  // (low/medium/high/xhigh/max); the effort selector is gated per-model by
+  // ModelInfo.supportsEffort/supportedEffortLevels from getAvailableModels.
+  readonly supportsThinkingToggle = true;
   readonly supportsSlashCommands = false;
   readonly supportsSteering = false;
 
   private readonly opencodePath?: string;
-  private readonly timeout: number;
 
   constructor(config: OpenCodeProviderConfig = {}) {
     this.opencodePath = config.opencodePath;
-    this.timeout = config.timeout ?? 300000; // 5 minutes default
   }
 
   /**
@@ -290,15 +370,22 @@ export class OpenCodeProvider implements AgentProvider {
         timeout: 10000,
       });
 
+      // Best-effort: learn each model's reasoning-effort variants so the UI can
+      // offer an effort selector for models that support it (e.g. copilot opus).
+      const variantMap = await this.getModelVariantMap(opencodePath);
+
       const discoveredModels: ModelInfo[] = [];
 
       for (const line of result.split("\n")) {
         const trimmed = line.trim();
         if (trimmed && !trimmed.startsWith("─")) {
-          discoveredModels.push({
-            id: trimmed,
-            name: trimmed,
-          });
+          const model: ModelInfo = { id: trimmed, name: trimmed };
+          const effortLevels = variantMap.get(trimmed);
+          if (effortLevels && effortLevels.length > 0) {
+            model.supportsEffort = true;
+            model.supportedEffortLevels = effortLevels;
+          }
+          discoveredModels.push(model);
         }
       }
 
@@ -327,6 +414,26 @@ export class OpenCodeProvider implements AgentProvider {
         { id: "opencode/big-pickle", name: "Big Pickle (Free)" },
         { id: "auto", name: "Auto (recommended)" },
       ];
+    }
+  }
+
+  /**
+   * Best-effort fetch of per-model reasoning-effort variants from
+   * `opencode models --verbose`. Returns an empty map on any failure so model
+   * discovery still works without effort metadata.
+   */
+  private async getModelVariantMap(
+    opencodePath: string,
+  ): Promise<Map<string, EffortLevel[]>> {
+    try {
+      const { stdout } = await execFileUtf8(
+        opencodePath,
+        ["models", "--verbose"],
+        { encoding: "utf-8", timeout: 15000 },
+      );
+      return parseOpenCodeModelVariants(stdout);
+    } catch {
+      return new Map();
     }
   }
 
@@ -443,6 +550,12 @@ export class OpenCodeProvider implements AgentProvider {
       iterator,
       queue,
       abort: () => abortController.abort(),
+      // Graceful turn interrupt: stop the in-flight turn via the server's own
+      // abort endpoint and keep the per-session `opencode serve` alive so the
+      // session can continue. (abort(), by contrast, ends the session by
+      // killing the server.) The SSE loop already treats the resulting
+      // session.idle as turn-complete.
+      interrupt: () => this.interruptTurn(runtime),
       isProcessAlive: () => isProcessStillAlive(serverProcess),
       probeLiveness: () => this.probeLiveness(runtime),
       getProviderActivity: () => this.getProviderActivity(runtime),
@@ -450,6 +563,40 @@ export class OpenCodeProvider implements AgentProvider {
         return pidRef.value;
       },
     };
+  }
+
+  /**
+   * Stop the current OpenCode turn without killing the per-session server,
+   * via POST /session/:id/abort. Returns true when the request succeeds.
+   */
+  private async interruptTurn(
+    runtime: OpenCodeRuntimeState,
+  ): Promise<boolean> {
+    const log = getLogger();
+    try {
+      const response = await fetch(
+        `${runtime.baseUrl}/session/${runtime.opencodeSessionId}/abort`,
+        {
+          method: "POST",
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      if (!response.ok) {
+        log.warn(
+          { status: response.status, sessionId: runtime.opencodeSessionId },
+          "OpenCode turn abort request failed",
+        );
+        return false;
+      }
+      return true;
+    } catch (error) {
+      log.warn(
+        { error, sessionId: runtime.opencodeSessionId },
+        "OpenCode turn abort request errored",
+      );
+      return false;
+    }
   }
 
   /**
@@ -651,6 +798,7 @@ export class OpenCodeProvider implements AgentProvider {
         if (signal.aborted) break;
 
         let userPrompt = this.extractTextFromMessage(message);
+        const imageParts = this.extractImageFileParts(message);
 
         if (isFirstNewMessage && options.globalInstructions) {
           userPrompt = `[Global context]\n${options.globalInstructions}\n\n---\n\n${userPrompt}`;
@@ -673,6 +821,9 @@ export class OpenCodeProvider implements AgentProvider {
           userPrompt,
           options.model,
           signal,
+          options.onToolApproval,
+          options.effort,
+          imageParts,
         );
       }
     } finally {
@@ -694,6 +845,9 @@ export class OpenCodeProvider implements AgentProvider {
     text: string,
     model: string | undefined,
     signal: AbortSignal,
+    onToolApproval: CanUseTool | undefined,
+    effort: EffortLevel | undefined,
+    imageParts: OpenCodeFilePartInput[] = [],
   ): AsyncIterableIterator<SDKMessage> {
     const log = getLogger();
     let modelSelection: OpenCodeModelSelection | undefined;
@@ -711,12 +865,13 @@ export class OpenCodeProvider implements AgentProvider {
     const sseUrl = `${runtime.baseUrl}/event?directory=${encodeURIComponent(runtime.cwd)}`;
     const sseController = new AbortController();
     const streamState: OpenCodeStreamState = {
-      currentAssistantMessageId: null,
       messageRolesById: new Map(),
       partMessageIdsById: new Map(),
       partTypesById: new Map(),
       partTextById: new Map(),
       partSentLengthsById: new Map(),
+      toolUseEmitted: new Set(),
+      toolResultEmitted: new Set(),
       sawAssistantContent: false,
       usedPostBodyFallback: false,
     };
@@ -788,21 +943,41 @@ export class OpenCodeProvider implements AgentProvider {
               );
             }
 
-            // Convert to SDK message
-            const sdkMessage = this.convertSSEEventToSDKMessage(
+            // Interactive prompts: route to YA's approval/question UI and POST
+            // the reply back to opencode. Fire-and-forget so the SSE read loop
+            // keeps draining (the tool's own progress/result events follow the
+            // reply). The handlers never throw into the loop.
+            if (event.type === "permission.asked") {
+              void this.handlePermissionAsked(
+                runtime,
+                event,
+                onToolApproval,
+                signal,
+              );
+              continue;
+            }
+            if (event.type === "question.asked") {
+              void this.handleQuestionAsked(
+                runtime,
+                event,
+                onToolApproval,
+                signal,
+              );
+              continue;
+            }
+
+            // Convert to SDK messages (a single unified tool part can yield
+            // both a tool_use and a tool_result, so this is an array).
+            const sdkMessages = this.convertSSEEventToSDKMessage(
               event,
               sessionId,
               streamState,
             );
 
-            if (sdkMessage) {
+            for (const sdkMessage of sdkMessages) {
               if (sdkMessage.type === "assistant") {
                 if (streamState.usedPostBodyFallback) {
                   continue;
-                }
-                if ("uuid" in sdkMessage && sdkMessage.uuid) {
-                  streamState.currentAssistantMessageId =
-                    sdkMessage.uuid as string;
                 }
                 streamState.sawAssistantContent = true;
               }
@@ -856,7 +1031,12 @@ export class OpenCodeProvider implements AgentProvider {
           },
           body: JSON.stringify({
             ...(modelSelection ? { model: modelSelection } : {}),
-            parts: [{ type: "text", text }],
+            // OpenCode selects reasoning effort by naming a model variant; the
+            // variant keys (low/medium/high/xhigh/max) coincide with YA's
+            // EffortLevel. Only sent when YA provides an effort (the UI gates
+            // this to models advertised with supportedEffortLevels).
+            ...(effort ? { variant: effort } : {}),
+            parts: [{ type: "text", text }, ...imageParts],
           }),
           signal,
         },
@@ -942,13 +1122,142 @@ export class OpenCodeProvider implements AgentProvider {
   }
 
   /**
+   * Bridge an opencode permission request to YA's approval UI, then reply.
+   * allow -> "once", deny -> "reject". Never throws; on any failure or missing
+   * approver, reject so the gated tool does not hang.
+   */
+  private async handlePermissionAsked(
+    runtime: OpenCodeRuntimeState,
+    event: OpenCodePermissionAskedEvent,
+    onToolApproval: CanUseTool | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const log = getLogger();
+    const { id: requestId, permission, metadata } = event.properties;
+    let reply: "once" | "reject" = "reject";
+    try {
+      if (onToolApproval) {
+        const { name, input } = normalizeOpenCodeTool(permission, metadata);
+        const result = await onToolApproval(name, input, { signal });
+        reply = result.behavior === "allow" ? "once" : "reject";
+      }
+    } catch (error) {
+      log.warn(
+        { error, requestId },
+        "OpenCode permission approval failed; rejecting",
+      );
+    }
+    await this.postOpenCodeReply(
+      runtime,
+      `/permission/${requestId}/reply`,
+      { reply },
+      requestId,
+    );
+  }
+
+  /**
+   * Bridge an opencode interactive question to YA's AskUserQuestion UI, then
+   * reply with the selected option labels per question (or reject). The
+   * opencode question shape matches YA's AskUserQuestion input, so the existing
+   * pending-input UI handles it. Never throws.
+   */
+  private async handleQuestionAsked(
+    runtime: OpenCodeRuntimeState,
+    event: OpenCodeQuestionAskedEvent,
+    onToolApproval: CanUseTool | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const log = getLogger();
+    const { id: requestId, questions } = event.properties;
+    try {
+      if (onToolApproval) {
+        const result = await onToolApproval(
+          "AskUserQuestion",
+          { questions },
+          { signal },
+        );
+        if (result.behavior === "allow") {
+          const answers = mapOpenCodeQuestionAnswers(
+            questions,
+            this.extractQuestionAnswers(result.updatedInput),
+          );
+          await this.postOpenCodeReply(
+            runtime,
+            `/question/${requestId}/reply`,
+            { answers },
+            requestId,
+          );
+          return;
+        }
+      }
+    } catch (error) {
+      log.warn(
+        { error, requestId },
+        "OpenCode question handling failed; rejecting",
+      );
+    }
+    await this.postOpenCodeReply(
+      runtime,
+      `/question/${requestId}/reject`,
+      {},
+      requestId,
+    );
+  }
+
+  private extractQuestionAnswers(
+    updatedInput: unknown,
+  ): Record<string, string | string[]> | undefined {
+    if (
+      updatedInput &&
+      typeof updatedInput === "object" &&
+      "answers" in updatedInput
+    ) {
+      const answers = (updatedInput as { answers?: unknown }).answers;
+      if (answers && typeof answers === "object" && !Array.isArray(answers)) {
+        return answers as Record<string, string | string[]>;
+      }
+    }
+    return undefined;
+  }
+
+  private async postOpenCodeReply(
+    runtime: OpenCodeRuntimeState,
+    path: string,
+    body: unknown,
+    requestId: string,
+  ): Promise<void> {
+    const log = getLogger();
+    try {
+      const response = await fetch(`${runtime.baseUrl}${path}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        log.warn(
+          { requestId, status: response.status, path },
+          "OpenCode interactive reply failed",
+        );
+      }
+    } catch (error) {
+      log.warn(
+        { error, requestId, path },
+        "OpenCode interactive reply request errored",
+      );
+    }
+  }
+
+  /**
    * Convert an OpenCode SSE event to an SDK message.
    */
   private convertSSEEventToSDKMessage(
     event: OpenCodeSSEEvent,
     sessionId: string,
     streamState: OpenCodeStreamState,
-  ): SDKMessage | null {
+  ): SDKMessage[] {
     switch (event.type) {
       case "message.part.updated": {
         const partEvent = event as OpenCodeMessagePartUpdatedEvent;
@@ -976,10 +1285,10 @@ export class OpenCodeProvider implements AgentProvider {
         );
 
         if (!messageId || !partType || deltaEvent.properties.field !== "text") {
-          return null;
+          return [];
         }
 
-        return this.convertTextLikePartToSDKMessage(
+        const message = this.convertTextLikePartToSDKMessage(
           {
             partId: deltaEvent.properties.partID,
             messageId,
@@ -990,6 +1299,7 @@ export class OpenCodeProvider implements AgentProvider {
           streamState,
           streamState.messageRolesById.get(messageId),
         );
+        return message ? [message] : [];
       }
 
       case "session.idle":
@@ -999,10 +1309,10 @@ export class OpenCodeProvider implements AgentProvider {
       case "message.updated":
       case "server.connected":
         // These are status events, not content - skip
-        return null;
+        return [];
 
       default:
-        return null;
+        return [];
     }
   }
 
@@ -1042,7 +1352,12 @@ export class OpenCodeProvider implements AgentProvider {
     return {
       type: "assistant",
       session_id: sessionId,
-      uuid: streamState.currentAssistantMessageId ?? part.messageId,
+      // Use the part's own OpenCode message id (== the durable message.id), so
+      // the streamed assistant uuid matches the persisted row and the client
+      // dedups by id instead of re-appending the backfilled copy. (Previously a
+      // carried-over "current" id could attribute a later message's parts to an
+      // earlier message, diverging from the durable id.)
+      uuid: part.messageId,
       message: {
         role: "assistant",
         content,
@@ -1101,11 +1416,11 @@ export class OpenCodeProvider implements AgentProvider {
     delta: string | undefined,
     streamState: OpenCodeStreamState,
     messageRole: "user" | "assistant" | undefined,
-  ): SDKMessage | null {
+  ): SDKMessage[] {
     switch (part.type) {
       case "text":
-      case "reasoning":
-        return this.convertTextLikePartToSDKMessage(
+      case "reasoning": {
+        const message = this.convertTextLikePartToSDKMessage(
           {
             partId: part.id,
             messageId: part.messageID,
@@ -1117,66 +1432,151 @@ export class OpenCodeProvider implements AgentProvider {
           streamState,
           messageRole,
         );
+        return message ? [message] : [];
+      }
 
       case "step-start":
         // Start of a processing step - no content to emit
-        return null;
+        return [];
 
       case "step-finish": {
         // End of processing step - emit usage info if available
         if (part.tokens) {
-          return {
-            type: "result",
-            session_id: sessionId,
-            usage: {
-              input_tokens: part.tokens.input ?? 0,
-              output_tokens: part.tokens.output ?? 0,
-            },
-          } as SDKMessage;
+          return [
+            {
+              type: "result",
+              session_id: sessionId,
+              usage: {
+                input_tokens: part.tokens.input ?? 0,
+                output_tokens: part.tokens.output ?? 0,
+              },
+            } as SDKMessage,
+          ];
         }
-        return null;
+        return [];
       }
 
+      // Unified tool part (opencode 1.16+): one type:"tool" part streams
+      // pending -> running -> completed/error. Emit the tool_use once the call
+      // is underway, then the tool_result once it settles, deduped by callID.
+      case "tool":
+        return this.convertUnifiedToolPart(part, sessionId, streamState);
+
       case "tool-use": {
-        // Tool invocation
-        return {
-          type: "assistant",
-          session_id: sessionId,
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: part.id,
-                name: part.tool ?? "unknown",
-                input: part.input ?? {},
-              },
-            ],
-          },
-        } as SDKMessage;
+        // Legacy split tool invocation (older opencode)
+        const normalized = normalizeOpenCodeTool(part.tool, part.input);
+        return [
+          {
+            type: "assistant",
+            session_id: sessionId,
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: part.id,
+                  name: normalized.name,
+                  input: normalized.input,
+                },
+              ],
+            },
+          } as SDKMessage,
+        ];
       }
 
       case "tool-result": {
-        // Tool result
-        return {
-          type: "user",
-          session_id: sessionId,
-          message: {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: part.id,
-                content: part.error ?? String(part.output ?? ""),
-              },
-            ],
-          },
-        } as SDKMessage;
+        // Legacy split tool result (older opencode)
+        return [
+          {
+            type: "user",
+            session_id: sessionId,
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: part.id,
+                  content: part.error ?? String(part.output ?? ""),
+                },
+              ],
+            },
+          } as SDKMessage,
+        ];
       }
 
       default:
-        return null;
+        return [];
     }
+  }
+
+  /**
+   * Convert a unified `type:"tool"` part into YA tool_use/tool_result messages.
+   *
+   * The same part is delivered repeatedly as its `state.status` advances
+   * (pending -> running -> completed/error) and `state.input`/`state.output`
+   * fill in. Emit the tool_use once the call is underway (running or settled)
+   * and the tool_result once it settles, each deduped by callID so a streamed
+   * tool appears exactly once. A fast tool whose first update is already
+   * completed yields both messages at once.
+   */
+  private convertUnifiedToolPart(
+    part: OpenCodePart,
+    sessionId: string,
+    streamState: OpenCodeStreamState,
+  ): SDKMessage[] {
+    const callId = part.callID;
+    if (!callId) return [];
+
+    const status = part.state?.status;
+    const settled = status === "completed" || status === "error";
+    const underway = status === "running" || settled;
+    const messages: SDKMessage[] = [];
+
+    if (underway && !streamState.toolUseEmitted.has(callId)) {
+      streamState.toolUseEmitted.add(callId);
+      const normalized = normalizeOpenCodeTool(part.tool, part.state?.input);
+      messages.push({
+        type: "assistant",
+        session_id: sessionId,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: callId,
+              name: normalized.name,
+              input: normalized.input,
+            },
+          ],
+        },
+      } as SDKMessage);
+    }
+
+    if (settled && !streamState.toolResultEmitted.has(callId)) {
+      streamState.toolResultEmitted.add(callId);
+      const error = part.state?.error;
+      const output = part.state?.output;
+      const content =
+        error ??
+        (typeof output === "string" ? output : JSON.stringify(output ?? ""));
+      messages.push({
+        type: "user",
+        session_id: sessionId,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: callId,
+              content,
+              is_error: status === "error" || Boolean(error),
+            },
+          ],
+        },
+      } as SDKMessage);
+    }
+
+    return messages;
   }
 
   /**
@@ -1228,6 +1628,35 @@ export class OpenCodeProvider implements AgentProvider {
   }
 
   /**
+   * Convert any base64 image content blocks on a user message into OpenCode
+   * file parts (a data-URL `url` + mime), so pasted/uploaded images are sent to
+   * OpenCode instead of being dropped. Non-image content is untouched.
+   */
+  private extractImageFileParts(
+    message: SDKUserMessage,
+  ): OpenCodeFilePartInput[] {
+    const content = message.message?.content;
+    if (!Array.isArray(content)) return [];
+    const parts: OpenCodeFilePartInput[] = [];
+    for (const block of content) {
+      if (typeof block !== "object" || block === null) continue;
+      const b = block as {
+        type?: string;
+        source?: { type?: string; media_type?: string; data?: string };
+      };
+      if (b.type === "image" && b.source?.type === "base64" && b.source.data) {
+        const mime = b.source.media_type || "image/png";
+        parts.push({
+          type: "file",
+          mime,
+          url: `data:${mime};base64,${b.source.data}`,
+        });
+      }
+    }
+    return parts;
+  }
+
+  /**
    * Find the OpenCode CLI path.
    */
   private async findOpenCodePath(): Promise<string | null> {
@@ -1236,8 +1665,11 @@ export class OpenCodeProvider implements AgentProvider {
       return this.opencodePath;
     }
 
-    // Check common locations
+    // Check common locations. `~/.opencode/bin` is the official installer
+    // location (curl opencode.ai/install); it is on PATH for login shells but
+    // a server not launched through one may miss it, so check it explicitly.
     const commonPaths = [
+      join(homedir(), ".opencode", "bin", "opencode"),
       join(homedir(), ".local", "bin", "opencode"),
       "/usr/local/bin/opencode",
       join(homedir(), "bin", "opencode"),

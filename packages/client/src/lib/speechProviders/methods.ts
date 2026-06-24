@@ -14,18 +14,23 @@ import {
 export type SpeechMethodId = string;
 
 export const DEFAULT_SPEECH_METHOD: SpeechMethodId = "browser-native";
+export const YA_GROK_STREAMING_SPEECH_METHOD: SpeechMethodId = "ya-grok";
+export const YA_GROK_BATCH_SPEECH_METHOD: SpeechMethodId = "ya-grok-batch";
+export const XAI_DIRECT_STREAMING_SPEECH_METHOD: SpeechMethodId =
+  "xai-grok-direct-streaming";
 export const XAI_DIRECT_BATCH_SPEECH_METHOD: SpeechMethodId =
   "xai-grok-direct-batch";
 
 const SERVER_BACKEND_PREFERENCE = ["ya-grok", "ya-deepgram"] as const;
+const YA_GROK_BACKEND_ID = "ya-grok";
 
 const SERVER_BACKEND_LABELS: Record<
   string,
   { label: string; description: string }
 > = {
   "ya-grok": {
-    label: "Grok STT",
-    description: "xAI speech-to-text through YA.",
+    label: "Grok STT through YA",
+    description: "Browser streams PCM audio through YA to xAI.",
   },
   "ya-deepgram": {
     label: "Deepgram STT",
@@ -34,6 +39,14 @@ const SERVER_BACKEND_LABELS: Record<
   "ya-whisper": {
     label: "Whisper STT",
     description: "Local Whisper speech-to-text through YA.",
+  },
+  "ya-parakeet": {
+    label: "Parakeet STT",
+    description: "Local Transformers Parakeet speech-to-text through YA.",
+  },
+  "ya-nemo": {
+    label: "NeMo Parakeet STT",
+    description: "Local NeMo Parakeet speech-to-text through YA.",
   },
   "ya-dummy": {
     label: "Dummy STT",
@@ -51,12 +64,27 @@ export interface SpeechMethodDescriptor {
   serverRouted: boolean;
 }
 
-const DIRECT_XAI_BATCH_METHOD: SpeechMethodDescriptor = {
-  id: XAI_DIRECT_BATCH_SPEECH_METHOD,
+export interface SpeechMethodCapabilities {
+  streaming?: boolean;
+  smartTurn?: boolean;
+}
+
+export interface SpeechMethodAvailability {
+  /** Browser-local xAI key configured, so direct Grok can run without YA key. */
+  directXaiAvailable?: boolean;
+}
+
+const DIRECT_XAI_STREAMING_METHOD: SpeechMethodDescriptor = {
+  id: XAI_DIRECT_STREAMING_SPEECH_METHOD,
   label: "Grok STT direct",
-  description: "Browser sends batch, non-streaming audio directly to xAI.",
+  description: "Browser streams PCM audio directly to xAI.",
   clientSupported: true,
   serverRouted: false,
+};
+
+const DIRECT_XAI_STREAMING_CAPABILITIES: SpeechMethodCapabilities = {
+  streaming: true,
+  smartTurn: true,
 };
 
 function browserNativeAvailable(): boolean {
@@ -114,6 +142,72 @@ export function describeServerBackend(id: string): SpeechMethodDescriptor {
   };
 }
 
+export function isServerRoutedSpeechMethod(methodId: SpeechMethodId): boolean {
+  return (
+    methodId !== DEFAULT_SPEECH_METHOD &&
+    methodId !== XAI_DIRECT_STREAMING_SPEECH_METHOD &&
+    methodId !== XAI_DIRECT_BATCH_SPEECH_METHOD
+  );
+}
+
+export function getServerBackendIdForSpeechMethod(
+  methodId: SpeechMethodId,
+): string {
+  return methodId === YA_GROK_BATCH_SPEECH_METHOD
+    ? YA_GROK_BACKEND_ID
+    : methodId;
+}
+
+export function getSpeechMethodCapabilities(
+  methodId: SpeechMethodId,
+  serverCapabilities: Readonly<Record<string, SpeechMethodCapabilities>> = {},
+): SpeechMethodCapabilities {
+  if (methodId === XAI_DIRECT_STREAMING_SPEECH_METHOD) {
+    return DIRECT_XAI_STREAMING_CAPABILITIES;
+  }
+  if (methodId === DEFAULT_SPEECH_METHOD) {
+    return {};
+  }
+  if (
+    methodId === XAI_DIRECT_BATCH_SPEECH_METHOD ||
+    methodId === YA_GROK_BATCH_SPEECH_METHOD
+  ) {
+    return {};
+  }
+  return serverCapabilities[getServerBackendIdForSpeechMethod(methodId)] ?? {};
+}
+
+export interface SpeechMethodStreamingOptions {
+  methodId: SpeechMethodId;
+  serverCapabilities?: Readonly<Record<string, SpeechMethodCapabilities>>;
+  relayTransport?: boolean;
+  relayedServerSpeechAvailable?: boolean;
+}
+
+export function canSpeechMethodStream({
+  methodId,
+  serverCapabilities,
+  relayTransport = false,
+  relayedServerSpeechAvailable = false,
+}: SpeechMethodStreamingOptions): boolean {
+  if (methodId === DEFAULT_SPEECH_METHOD) {
+    return false;
+  }
+  if (
+    isServerRoutedSpeechMethod(methodId) &&
+    relayTransport &&
+    !relayedServerSpeechAvailable
+  ) {
+    return false;
+  }
+  if (methodId === YA_GROK_BATCH_SPEECH_METHOD) {
+    return false;
+  }
+  return (
+    getSpeechMethodCapabilities(methodId, serverCapabilities).streaming === true
+  );
+}
+
 export function getOrderedServerSpeechBackends(
   serverBackends: readonly string[] = [],
 ): string[] {
@@ -138,16 +232,43 @@ export function getOrderedServerSpeechBackends(
     .map(({ id }) => id);
 }
 
+function getAvailableSpeechMethodIds(
+  serverBackends: readonly string[] = [],
+  availability: SpeechMethodAvailability = {},
+): SpeechMethodId[] {
+  const orderedServerBackends = getOrderedServerSpeechBackends(serverBackends);
+  const serverMethods = orderedServerBackends;
+  return directXaiAvailable(orderedServerBackends, availability)
+    ? [XAI_DIRECT_STREAMING_SPEECH_METHOD, ...serverMethods]
+    : serverMethods;
+}
+
+function directXaiAvailable(
+  orderedServerBackends: readonly string[],
+  availability: SpeechMethodAvailability,
+): boolean {
+  return (
+    availability.directXaiAvailable === true ||
+    orderedServerBackends.includes(YA_GROK_BACKEND_ID)
+  );
+}
+
 export function getPreferredSpeechMethod(
   serverBackends: readonly string[] = [],
+  availability: SpeechMethodAvailability = {},
 ): SpeechMethodId {
-  return getOrderedServerSpeechBackends(serverBackends)[0] ?? DEFAULT_SPEECH_METHOD;
+  const orderedServerBackends = getOrderedServerSpeechBackends(serverBackends);
+  if (directXaiAvailable(orderedServerBackends, availability)) {
+    return XAI_DIRECT_STREAMING_SPEECH_METHOD;
+  }
+  return orderedServerBackends[0] ?? DEFAULT_SPEECH_METHOD;
 }
 
 export function resolveSpeechMethod(
   storedMethod: SpeechMethodId,
   serverBackends: readonly string[] | undefined,
   hasStoredMethod: boolean,
+  availability: SpeechMethodAvailability = {},
 ): SpeechMethodId {
   if (serverBackends === undefined) {
     return hasStoredMethod ? storedMethod : DEFAULT_SPEECH_METHOD;
@@ -155,36 +276,56 @@ export function resolveSpeechMethod(
 
   const activeServerBackends = getOrderedServerSpeechBackends(serverBackends);
   if (!hasStoredMethod) {
-    return activeServerBackends[0] ?? DEFAULT_SPEECH_METHOD;
+    return getPreferredSpeechMethod(serverBackends, availability);
   }
 
   if (storedMethod === DEFAULT_SPEECH_METHOD) {
     return DEFAULT_SPEECH_METHOD;
   }
 
-  if (storedMethod === XAI_DIRECT_BATCH_SPEECH_METHOD) {
-    return XAI_DIRECT_BATCH_SPEECH_METHOD;
+  if (storedMethod === XAI_DIRECT_STREAMING_SPEECH_METHOD) {
+    return directXaiAvailable(activeServerBackends, availability)
+      ? storedMethod
+      : DEFAULT_SPEECH_METHOD;
   }
 
-  return activeServerBackends.includes(storedMethod)
+  if (storedMethod === XAI_DIRECT_BATCH_SPEECH_METHOD) {
+    return directXaiAvailable(activeServerBackends, availability)
+      ? XAI_DIRECT_STREAMING_SPEECH_METHOD
+      : DEFAULT_SPEECH_METHOD;
+  }
+
+  if (storedMethod === YA_GROK_BATCH_SPEECH_METHOD) {
+    return activeServerBackends.includes(YA_GROK_BACKEND_ID)
+      ? getPreferredSpeechMethod(activeServerBackends, availability)
+      : DEFAULT_SPEECH_METHOD;
+  }
+
+  return getAvailableSpeechMethodIds(
+    activeServerBackends,
+    availability,
+  ).includes(storedMethod)
     ? storedMethod
     : DEFAULT_SPEECH_METHOD;
 }
 
 /**
  * Build the STT backend list from what the server advertises plus
- * the local browser-native option. Only advertised server backends
- * appear in the selector — no phantom options for unconfigured backends.
+ * the local browser-native option. Direct xAI methods appear when
+ * the server advertises Grok STT or the browser has its own xAI key.
+ * Other server-routed methods still come only from `/api/version`.
  */
 export function getSpeechMethods(
   serverBackends: readonly string[] = [],
   userAgent?: string,
+  availability: SpeechMethodAvailability = {},
 ): SpeechMethodDescriptor[] {
-  return [
-    ...getOrderedServerSpeechBackends(serverBackends).map(describeServerBackend),
-    DIRECT_XAI_BATCH_METHOD,
-    describeBrowserNative(userAgent),
-  ];
+  const orderedServerBackends = getOrderedServerSpeechBackends(serverBackends);
+  const serverMethods = orderedServerBackends.map(describeServerBackend);
+  const directMethods = [DIRECT_XAI_STREAMING_METHOD];
+  return directXaiAvailable(orderedServerBackends, availability)
+    ? [...directMethods, ...serverMethods, describeBrowserNative(userAgent)]
+    : [...serverMethods, describeBrowserNative(userAgent)];
 }
 
 /** @deprecated Use getSpeechMethods(serverBackends) instead. */

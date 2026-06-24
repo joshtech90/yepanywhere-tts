@@ -55,6 +55,8 @@ import type {
   PromptCacheRefreshResult,
   ProviderName,
   StartSessionOptions,
+  SummaryGenerationRequest,
+  SummaryGenerationResult,
 } from "./types.js";
 
 type ClaudeSdkModelInfo = Awaited<ReturnType<Query["supportedModels"]>>[number];
@@ -84,6 +86,24 @@ const requireFromClaudeSdk = createRequire(
   requireFromHere.resolve("@anthropic-ai/claude-agent-sdk"),
 );
 let cachedLocalClaudeCodeExecutable: string | null | undefined;
+
+function extractClaudeAssistantText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  let text = "";
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { type?: string }).type === "text" &&
+      typeof (block as { text?: string }).text === "string"
+    ) {
+      text += (block as { text: string }).text;
+    }
+  }
+  return text;
+}
 
 function isExecutableFile(filePath: string | undefined): filePath is string {
   if (!filePath) return false;
@@ -376,6 +396,31 @@ async function* withCleanup<T>(
   }
 }
 
+/**
+ * Opus always runs with the 1M-token context window: Opus 4.8's 1M is
+ * standard-priced (no per-token premium), so bare `opus` is normalized to the
+ * extended-context alias at every launch/setModel chokepoint and surfaced with
+ * the 1M window in the exposed model list.
+ *
+ * Sonnet is deliberately NOT extended. Its 1M window requires paid usage
+ * credits — launching it as `sonnet[1m]` errors with "Usage credits required
+ * for 1M context" — so Sonnet keeps its standard 200K window. See tasks/029.
+ */
+const ALWAYS_EXTENDED_CONTEXT_ALIASES: Record<string, string> = {
+  opus: "opus[1m]",
+};
+
+const ALWAYS_EXTENDED_DESCRIPTIONS: Record<string, string> = {
+  opus: "Opus 4.8 with the full 1M-token context window",
+};
+
+/** Normalize the opus alias to its always-on 1M variant at launch. */
+export function withExtendedClaudeContext(
+  model: string | undefined,
+): string | undefined {
+  return (model && ALWAYS_EXTENDED_CONTEXT_ALIASES[model]) || model;
+}
+
 /** Static fallback list of Claude models (used if probe fails) */
 const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
@@ -418,13 +463,7 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
     id: "opus",
     name: "Opus",
-    description: "Standard-context Opus for the most demanding reasoning",
-    contextWindow: getModelContextWindow("opus", "claude"),
-  },
-  {
-    id: "opus[1m]",
-    name: "Opus 1M",
-    description: "Opus with 1M context for the largest working sets",
+    description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
     contextWindow: getModelContextWindow("opus[1m]", "claude"),
   },
   {
@@ -521,9 +560,25 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
     ...models.map((model) => model.id),
   ];
 
-  return [...new Set(orderedIds)]
+  const merged = [...new Set(orderedIds)]
     .map((id) => byId.get(id))
     .filter((model): model is ModelInfo => model !== undefined);
+
+  // Opus always uses the 1M window (withExtendedClaudeContext), so drop the
+  // redundant "opus[1m]" entry and surface the 1M window + label on the base
+  // alias — including when the SDK probe supplies a 200K window. Sonnet keeps
+  // both a standard "sonnet" and an explicit credit-gated "sonnet[1m]" entry.
+  return merged
+    .filter((model) => model.id !== "opus[1m]")
+    .map((model) =>
+      model.id === "opus"
+        ? {
+            ...model,
+            contextWindow: getModelContextWindow("opus[1m]", "claude"),
+            description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
+          }
+        : model,
+    );
 }
 
 /** Cached models from SDK probe */
@@ -767,6 +822,26 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   /**
+   * Reported Claude model id → canonical YA alias, matched by family component.
+   * Anthropic has shipped both "{family}-{version}" (claude-opus-4-8) and
+   * "{version}-{family}" (claude-3-5-sonnet), so we look for the family anywhere
+   * in the name. One-to-(zero or more): we return the plain alias ("sonnet",
+   * not "sonnet[1m]"/"best") because the reported id can't say which the user
+   * actually launched. Used only to recover a keying id for non-YA-started
+   * sessions. See topics/provider-abstraction.md § Per-model settings keying.
+   */
+  yaModelIdForReported(reported: string | undefined): string | undefined {
+    if (!reported) return undefined;
+    const name = reported.toLowerCase();
+    for (const family of ["opus", "sonnet", "haiku", "fable"] as const) {
+      if (new RegExp(`(?:^|[-/])${family}(?:[-/]|$)`).test(name)) {
+        return family;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get available Claude models.
    * Fetches dynamically from SDK via a probe session, with caching.
    * Falls back to static list if probe fails or user is not authenticated.
@@ -904,9 +979,25 @@ export class ClaudeProvider implements AgentProvider {
    * recaps; the renderer should still strip defensively in case the SDK
    * later forwards a TUI-shaped recap unchanged.
    */
-  async generateRecap(
+  async generateSummary(
+    request: SummaryGenerationRequest,
+  ): Promise<SummaryGenerationResult> {
+    switch (request.strategy) {
+      case "side-session":
+        return {
+          text: await this.generateSideSessionRecap(
+            request.recentAssistantText,
+            request.model,
+          ),
+        };
+      case "fork":
+        return await this.generateForkBackedSummary(request);
+    }
+  }
+
+  private async generateSideSessionRecap(
     recentAssistantText: string[],
-    options?: { model?: string },
+    model?: string,
   ): Promise<string> {
     const trimmed = recentAssistantText
       .map((text) => text.trim())
@@ -967,8 +1058,7 @@ export class ClaudeProvider implements AgentProvider {
       };
     }
 
-    const helperModel =
-      options?.model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : options?.model;
+    const helperModel = model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : model;
 
     try {
       const sdkQuery = query({
@@ -993,21 +1083,7 @@ export class ClaudeProvider implements AgentProvider {
           message.type === "assistant" &&
           typeof message.message?.content !== "undefined"
         ) {
-          const content = message.message.content;
-          if (typeof content === "string") {
-            text += content;
-          } else if (Array.isArray(content)) {
-            for (const block of content) {
-              if (
-                block &&
-                typeof block === "object" &&
-                (block as { type?: string }).type === "text" &&
-                typeof (block as { text?: string }).text === "string"
-              ) {
-                text += (block as { text: string }).text;
-              }
-            }
-          }
+          text += extractClaudeAssistantText(message.message.content);
         }
         if (message.type === "result") {
           break;
@@ -1024,6 +1100,130 @@ export class ClaudeProvider implements AgentProvider {
       clearTimeout(timeout);
       abortController.abort();
     }
+  }
+
+  private async generateForkBackedSummary(
+    request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
+  ): Promise<SummaryGenerationResult> {
+    const userPrompt =
+      request.purpose === "session-retitle"
+        ? this.createSessionRetitlePrompt(request)
+        : this.createForkAfterSummaryPrompt(request);
+    const abortController = new AbortController();
+    const abortFromJob = () => abortController.abort();
+    if (request.signal?.aborted) {
+      abortController.abort();
+    } else {
+      request.signal?.addEventListener("abort", abortFromJob, { once: true });
+    }
+    const SUMMARY_TIMEOUT_MS = 60_000;
+    const timeout = setTimeout(
+      () => abortController.abort(),
+      SUMMARY_TIMEOUT_MS,
+    );
+    timeout.unref?.();
+
+    async function* singlePrompt(): AsyncGenerator<{
+      type: "user";
+      message: { role: "user"; content: string };
+      parent_tool_use_id: null;
+      session_id: string;
+    }> {
+      yield {
+        type: "user",
+        message: { role: "user", content: userPrompt },
+        parent_tool_use_id: null,
+        session_id: request.generatorSessionId,
+      };
+    }
+
+    try {
+      const sdkQuery = query({
+        prompt: singlePrompt(),
+        options: {
+          cwd: request.cwd,
+          abortController,
+          permissionMode: "default",
+          pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
+          env: this.getEnv(),
+          resume: request.generatorSessionId,
+          maxTurns: 1,
+          systemPrompt:
+            request.purpose === "session-retitle"
+              ? "You are a title helper. Reply with the session title only, no preamble."
+              : "You are a handoff summary helper. Reply with the summary text only, no preamble.",
+        },
+      });
+
+      let text = "";
+      for await (const message of sdkQuery as AsyncIterable<AgentSDKMessage>) {
+        if (
+          message.type === "assistant" &&
+          typeof message.message?.content !== "undefined"
+        ) {
+          text += extractClaudeAssistantText(message.message.content);
+        }
+        if (message.type === "result") {
+          break;
+        }
+      }
+      const cleaned = text.trim();
+      if (!cleaned) {
+        throw new Error("Summary generation returned empty text");
+      }
+      return { text: cleaned };
+    } finally {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", abortFromJob);
+      abortController.abort();
+    }
+  }
+
+  private createForkAfterSummaryPrompt(
+    request: Extract<
+      SummaryGenerationRequest,
+      { purpose: "fork-after-summary" }
+    >,
+  ): string {
+    const instructions = request.instructions?.trim();
+    const boundaryContext = request.afterTurnContext?.trim();
+    return [
+      "The first non-empty line must be a concise title of at most 120 characters, with no trailing period.",
+      "Write it as: Title: <title>",
+      "Then leave one blank line before the handoff summary.",
+      "",
+      "Summarize the useful state after the retained fork boundary for a peer-agent handoff.",
+      `The target fork retains the conversation through completed-turn message id ${request.afterTurnMessageId}.`,
+      boundaryContext
+        ? `The retained boundary is the completed turn ending with this excerpt:\n${boundaryContext}`
+        : undefined,
+      "The target fork already includes the original request and the assistant/tool work through that selected completed turn.",
+      "Do not repeat setup, instruction loading, initial repository orientation, or investigation already present in that retained prefix.",
+      "Preserve decisions, constraints, current state, changed files, verification evidence, open risks, and the next useful action.",
+      "Do not continue the task. Write text that can be submitted as the next user turn in the target fork.",
+      instructions ? "" : undefined,
+      instructions ? "Additional user instructions:" : undefined,
+      instructions || undefined,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join("\n");
+  }
+
+  private createSessionRetitlePrompt(
+    request: Extract<SummaryGenerationRequest, { purpose: "session-retitle" }>,
+  ): string {
+    const lengthTarget = request.lengthTarget ?? 80;
+    const currentTitle = request.currentTitle?.trim();
+    return [
+      "What is a good new title for this session?",
+      "",
+      `Target length: under ${lengthTarget} characters.`,
+      currentTitle ? `Current title: ${currentTitle}` : undefined,
+      "Prefer a concrete task/result phrase over a generic chat title.",
+      "Return only the title. Do not quote it. Do not add a trailing period.",
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join("\n");
   }
 
   async refreshPromptCache(options: {
@@ -1088,7 +1288,7 @@ export class ClaudeProvider implements AgentProvider {
           persistSession: false,
           maxTurns: 1,
           maxBudgetUsd: CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD,
-          model: options.model,
+          model: withExtendedClaudeContext(options.model),
           thinking: options.thinking,
           effort: options.effort,
           pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
@@ -1406,7 +1606,7 @@ export class ClaudeProvider implements AgentProvider {
           includePartialMessages: true,
           promptSuggestions: options.promptSuggestions === true,
           // Model, thinking, and effort options
-          model: options.model,
+          model: withExtendedClaudeContext(options.model),
           thinking: options.thinking,
           effort: options.effort,
           pathToClaudeCodeExecutable,
@@ -1493,7 +1693,7 @@ export class ClaudeProvider implements AgentProvider {
         this.refreshPromptCache({
           sessionId,
           cwd: effectiveCwd,
-          model: options.model,
+          model: withExtendedClaudeContext(options.model),
           thinking: options.thinking,
           effort: options.effort,
           globalInstructions: options.globalInstructions,
@@ -1532,7 +1732,8 @@ export class ClaudeProvider implements AgentProvider {
           })),
         );
       },
-      setModel: (model?: string) => sdkQuery.setModel(model),
+      setModel: (model?: string) =>
+        sdkQuery.setModel(withExtendedClaudeContext(model)),
     };
   }
 

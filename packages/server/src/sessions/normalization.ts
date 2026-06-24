@@ -35,6 +35,8 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../codex/normalization.js";
+import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
+import { normalizeOpenCodeTool } from "../sdk/providers/opencode-tools.js";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
 import type { LoadedSession } from "./types.js";
@@ -48,7 +50,11 @@ interface CodexToolUseConversion {
 const CODEX_CONTEXT_COMPACTED_DEDUPE_WINDOW_MS = 5000;
 const codexMessageCache = new WeakMap<
   CodexSessionEntry[],
-  { length: number; lastEntry: CodexSessionEntry | undefined; messages: Message[] }
+  {
+    length: number;
+    lastEntry: CodexSessionEntry | undefined;
+    messages: Message[];
+  }
 >();
 
 function normalizeClaudeQueueOperationContent(content: unknown): string {
@@ -121,6 +127,13 @@ export function normalizeSession(loaded: LoadedSession): Session {
         messages: convertGeminiMessages(data.session.messages),
       };
     case "grok":
+      return {
+        ...summary,
+        messages: data.session.messages as Message[],
+      };
+    case "pi":
+      // pi messages are already normalized YA messages (PiSessionReader maps
+      // the v3 JSONL tree), like grok — pass through.
       return {
         ...summary,
         messages: data.session.messages as Message[],
@@ -513,6 +526,31 @@ function hasCodexResponseItemUserMessages(
   );
 }
 
+// Derive the durable message uuid for a Codex response item. Tool calls and
+// their outputs key on the globally-unique call_id (call -> call_id, result ->
+// `${call_id}-result`) so the durable backfill row shares a uuid with the live
+// stream and dedups by id. Messages and reasoning have no live-matching id, so
+// they keep the positional uuid and rely on the approx-dedup backstop. See
+// topics/stream-durable-id-dedup.md (Codex).
+function codexDurableResponseItemUuid(
+  payload: CodexResponseItemEntry["payload"],
+  positionalUuid: string,
+): string {
+  switch (payload.type) {
+    case "function_call":
+      return payload.call_id;
+    case "function_call_output":
+      return `${payload.call_id}-result`;
+    case "custom_tool_call":
+    case "web_search_call":
+      return payload.call_id ?? payload.id ?? positionalUuid;
+    case "custom_tool_call_output":
+      return payload.call_id ? `${payload.call_id}-result` : positionalUuid;
+    default:
+      return positionalUuid;
+  }
+}
+
 function convertCodexResponseItem(
   entry: CodexResponseItemEntry,
   index: number,
@@ -520,7 +558,8 @@ function convertCodexResponseItem(
   closedToolResultIds: Set<string>,
 ): Message | null {
   const payload = entry.payload;
-  const uuid = `codex-${index}-${entry.timestamp}`;
+  const positionalUuid = `codex-${index}-${entry.timestamp}`;
+  const uuid = codexDurableResponseItemUuid(payload, positionalUuid);
 
   switch (payload.type) {
     case "message":
@@ -612,7 +651,9 @@ function convertCodexResponseItem(
   }
 }
 
-function isCodexStartupInstructionMessage(payload: CodexMessagePayload): boolean {
+function isCodexStartupInstructionMessage(
+  payload: CodexMessagePayload,
+): boolean {
   if (payload.role !== "user") {
     return false;
   }
@@ -975,9 +1016,10 @@ function getNumberField(
     : undefined;
 }
 
-function isCodexExecCommandEndPayload(
-  payload: unknown,
-): payload is Record<string, unknown> & {
+function isCodexExecCommandEndPayload(payload: unknown): payload is Record<
+  string,
+  unknown
+> & {
   type: "exec_command_end";
   call_id: string;
 } {
@@ -1061,9 +1103,10 @@ function convertCodexEventMsg(
     if (!context) {
       return null;
     }
+    // Tool result: key on call_id so it matches the live stream's result uuid.
     const message = convertCodexExecCommandEndPayload(
       payloadUnknown,
-      uuid,
+      `${payloadUnknown.call_id}-result`,
       entry.timestamp,
       context,
     );
@@ -1174,11 +1217,15 @@ function convertGeminiMessages(
 
       if (assistantMsg.toolCalls) {
         for (const toolCall of assistantMsg.toolCalls) {
+          const { name, input } = normalizeGeminiTool(
+            toolCall.name,
+            toolCall.args,
+          );
           content.push({
             type: "tool_use",
             id: toolCall.id,
-            name: toolCall.name,
-            input: toolCall.args,
+            name,
+            input,
           });
         }
       }
@@ -1256,7 +1303,9 @@ function convertOpenCodeEntries(entries: OpenCodeSessionEntry[]): Message[] {
   return messages;
 }
 
-function convertOpenCodeParts(parts: OpenCodeStoredPart[]): ContentBlock[] {
+export function convertOpenCodeParts(
+  parts: OpenCodeStoredPart[],
+): ContentBlock[] {
   const blocks: ContentBlock[] = [];
 
   for (const part of parts) {
@@ -1270,37 +1319,64 @@ function convertOpenCodeParts(parts: OpenCodeStoredPart[]): ContentBlock[] {
         }
         break;
 
+      case "reasoning":
+        // Durable thinking — the live path already maps reasoning to a thinking
+        // block; without this, reloaded OpenCode history dropped all thought
+        // text. Some reasoning parts carry empty text (timing-only); skip those.
+        if (part.text) {
+          blocks.push({
+            type: "thinking",
+            thinking: part.text,
+          });
+        }
+        break;
+
       case "tool":
         if (part.tool && part.callID) {
-          // Tool use block
+          // Tool use block, with name/fields normalized to YA's rich renderers.
+          const normalized = normalizeOpenCodeTool(
+            part.tool,
+            part.state?.input,
+          );
           blocks.push({
             type: "tool_use",
             id: part.callID,
-            name: part.tool,
-            input: part.state?.input ?? {},
+            name: normalized.name,
+            input: normalized.input,
           });
 
-          // If tool has completed, add tool result block
-          if (part.state?.status === "completed") {
-            const resultContent = part.state.error
-              ? part.state.error
-              : typeof part.state.output === "string"
+          // Once the tool settles (completed OR error), add a result block.
+          // Previously only "completed" was handled, so failed tools silently
+          // dropped their error text on reload.
+          const status = part.state?.status;
+          if (status === "completed" || status === "error") {
+            const error = part.state?.error;
+            const resultContent = error
+              ? error
+              : typeof part.state?.output === "string"
                 ? part.state.output
-                : JSON.stringify(part.state.output ?? "");
+                : JSON.stringify(part.state?.output ?? "");
 
             blocks.push({
               type: "tool_result",
               tool_use_id: part.callID,
               content: resultContent,
-              is_error: !!part.state.error,
+              is_error: status === "error" || !!error,
             });
           }
         }
         break;
 
-      // Skip step-start and step-finish (metadata, not content)
+      // Metadata / markers with no rich content of their own:
+      // - step-start/step-finish: turn-step boundaries (token usage is carried
+      //   at the message level in convertOpenCodeEntries).
+      // - patch: a snapshot {hash, files} of a file change; the actual edit is
+      //   already rendered by its edit/write tool block, so this is redundant.
+      // - compaction: a context-compaction marker (opencode 1.16+).
       case "step-start":
       case "step-finish":
+      case "patch":
+      case "compaction":
         break;
 
       default:

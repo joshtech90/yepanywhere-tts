@@ -1,6 +1,6 @@
 import type { ProviderName } from "@yep-anywhere/shared";
 import { getIndicatorToneFromProcess } from "../lib/modelConfigIndicator";
-import { getModelIndicatorModelLabel } from "../lib/modelIndicatorText";
+import { getModelIndicatorModelParts } from "../lib/modelIndicatorText";
 import {
   getEffortLevelLabel,
   normalizeEffortLevelForProvider,
@@ -16,6 +16,7 @@ const PROVIDER_COLORS: Record<ProviderName, string> = {
   "gemini-acp": "var(--provider-gemini)", // Google blue (same as gemini)
   grok: "var(--provider-grok)", // xAI Grok
   opencode: "var(--provider-opencode)", // OpenCode purple
+  pi: "var(--provider-pi)", // pi teal
 };
 
 const PROVIDER_LABELS: Record<ProviderName, string> = {
@@ -27,6 +28,7 @@ const PROVIDER_LABELS: Record<ProviderName, string> = {
   "gemini-acp": "Gemini ACP",
   grok: "Grok",
   opencode: "OpenCode",
+  pi: "pi",
 };
 
 interface ProviderBadgeProps {
@@ -86,8 +88,19 @@ export function ProviderBadge({
 
   // Compact glyph label for the badge body (full text preserved in title)
   const effectiveModel = !model || model === "default" ? undefined : model;
-  const glyphLabel =
-    getModelIndicatorModelLabel(provider, effectiveModel) || label;
+  const modelParts = getModelIndicatorModelParts(provider, effectiveModel);
+  // Color the model glyph/version by the sub-badge it implies (e.g. claude for a
+  // copilot-routed claude-opus), not the routing provider. Skip the override
+  // when the family matches the running provider so normal badges are unchanged.
+  const familyKey = modelParts?.modelFamilyKey;
+  const modelFamilyColor =
+    familyKey && familyKey in PROVIDER_COLORS
+      ? PROVIDER_COLORS[familyKey as ProviderName]
+      : undefined;
+  const modelColorStyle =
+    modelFamilyColor && modelFamilyColor !== color
+      ? { color: modelFamilyColor }
+      : undefined;
 
   const fullTitle = effectiveModel ?? label;
 
@@ -119,7 +132,21 @@ export function ProviderBadge({
       aria-label={fullTitle}
     >
       <span className={dotClass} style={dotStyle} />
-      <span className="provider-badge-label">{glyphLabel}</span>
+      <span className="provider-badge-label">
+        {modelParts ? (
+          <>
+            {modelParts.providerGlyph}
+            {modelParts.subProvider ? ` ${modelParts.subProvider}` : ""}
+            {modelParts.modelLabel ? (
+              <span className="provider-badge-model" style={modelColorStyle}>
+                {` ${modelParts.modelLabel}`}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          label
+        )}
+      </span>
       {effortLabel && effortTone && (
         <span
           className="provider-badge-effort"

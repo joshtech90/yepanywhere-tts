@@ -1,15 +1,13 @@
 import type { ReactNode } from "react";
+import { useSettingsIconStyle } from "../../hooks/useSettingsIconStyle";
 
 /**
  * Settings category icons.
  *
- * Inline SVGs using currentColor for theme-adaptive coloring (dark in light theme,
- * light in dark/verydark). Proper vector paths with evenodd fillRule for
- * cutouts/holes (e.g. lock keyhole) so the item background shows through cleanly
- * with no raster fringes or anti-alias artifacts.
- *
- * Sized to fit the .settings-category-icon container. Recognizable concepts
- * inspired by the previous emoji, not pixel copies.
+ * Flat renderers use inline SVGs sized to fit the .settings-category-icon
+ * container. The optional emoji renderer uses native color glyphs. SVGs use
+ * currentColor for theme-adaptive coloring and evenodd fillRule for
+ * cutouts/holes (e.g. lock keyhole).
  */
 
 const baseProps = {
@@ -35,6 +33,26 @@ function Icon(props: {
     </svg>
   );
 }
+
+export const settingsCategoryEmojiIcons: Record<string, string> = {
+  appearance: "🎨",
+  toolbar: "🎛️",
+  model: "🧠",
+  "message-delivery": "📨",
+  "agent-context": "📋",
+  notifications: "🔔",
+  webhooks: "🪝",
+  devices: "📱",
+  "local-access": "🔒",
+  remote: "🌐",
+  providers: "🔌",
+  speech: "🎙️",
+  "remote-executors": "🖥️",
+  environment: "⚙️",
+  about: "ℹ️",
+  emulator: "🤖",
+  development: "🛠️",
+};
 
 export const settingsCategoryIcons: Record<string, ReactNode> = {
   appearance: (
@@ -181,6 +199,15 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
     </Icon>
   ),
 
+  environment: (
+    <Icon>
+      {/* Terminal: an env/config console with a prompt chevron + line */}
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M6 9l3 3-3 3" />
+      <line x1="12" y1="15" x2="17" y2="15" />
+    </Icon>
+  ),
+
   about: (
     <Icon>
       {/* Info (exact Lucide "info" for clear "i" glyph) */}
@@ -216,10 +243,19 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
 };
 
 export function SettingsCategoryIcon({ id }: { id: string }) {
-  const icon = settingsCategoryIcons[id];
+  const { settingsIconStyle } = useSettingsIconStyle();
+  const icon =
+    settingsIconStyle === "emoji"
+      ? settingsCategoryEmojiIcons[id]
+      : settingsCategoryIcons[id];
   if (!icon) return null;
+  const className = [
+    "settings-category-icon",
+    `settings-category-icon-${id}`,
+    `settings-category-icon-${settingsIconStyle}`,
+  ].join(" ");
   return (
-    <span className="settings-category-icon" aria-hidden="true">
+    <span className={className} aria-hidden="true">
       {icon}
     </span>
   );

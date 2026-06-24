@@ -8,9 +8,21 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { type ComponentProps, useCallback, useMemo, useState } from "react";
+import type { ClientDefaults } from "@yep-anywhere/shared";
+import {
+  type ComponentProps,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_ISEARCH_GUIDE_EVENT } from "../../lib/sessionIsearchGuide";
+import {
+  YA_GROK_BATCH_SPEECH_METHOD,
+  XAI_DIRECT_STREAMING_SPEECH_METHOD,
+} from "../../lib/speechProviders/methods";
+import { setBrowserXaiSttApiKey } from "../../lib/speechProviders/xaiCredentials";
 import { MessageInput } from "../MessageInput";
 import {
   MessageInputToolbarView,
@@ -26,6 +38,10 @@ const {
   mockSetSpeechSmartTurnSettings,
   mockSetGrokSpeechAudioSettings,
   mockVoiceToggle,
+  mockVoiceStopAndFinalize,
+  mockVoiceCancelProcessing,
+  voiceButtonState,
+  voicePropsState,
   remoteBasePathState,
 } = vi.hoisted(() => ({
   versionState: {
@@ -39,6 +55,7 @@ const {
         string,
         { streaming?: boolean; smartTurn?: boolean }
       >,
+      clientDefaults: undefined as ClientDefaults | undefined,
     },
   },
   modelSettingsState: {
@@ -59,6 +76,35 @@ const {
   mockSetSpeechSmartTurnSettings: vi.fn(),
   mockSetGrokSpeechAudioSettings: vi.fn(),
   mockVoiceToggle: vi.fn(),
+  mockVoiceStopAndFinalize: vi.fn(() => ""),
+  mockVoiceCancelProcessing: vi.fn(),
+  voiceButtonState: {
+    isListening: false,
+  },
+  voicePropsState: {
+    current: null as null | {
+      onTranscript?: (
+        text: string,
+        metadata?: {
+          smartTurnCommand?: "cancel" | "send" | "wait";
+          smartTurnAutoSend?: boolean;
+          replacePreviousTranscriptChars?: number;
+          speechTargetId?: string;
+        },
+      ) => void;
+      onInterimTranscript?: (text: string) => void;
+      onListeningStart?: () => void;
+      onListeningStop?: () => void;
+      onPendingSpeechChange?: (
+        kind: "listening" | "transcribing" | "finalizing" | null,
+      ) => void;
+      onTranscriptionSettled?: (settlement: {
+        speechTargetId?: string;
+        status: "completed" | "cancelled" | "error";
+      }) => void;
+      getTranscriptionContext?: () => { speechTargetId?: string };
+    },
+  },
   remoteBasePathState: {
     basePath: "",
   },
@@ -66,15 +112,26 @@ const {
 
 vi.mock("../../hooks/useDraftPersistence", () => ({
   useDraftPersistence: () => {
-    const [value, setValue] = useState("");
-    const getDraft = useCallback(() => value, [value]);
-    const setDraft = useCallback(
-      (nextValue: string) => setValue(nextValue),
-      [],
-    );
+    const [value, setValueInternal] = useState("");
+    const valueRef = useRef("");
+    const setValue = useCallback((nextValue: string) => {
+      valueRef.current = nextValue;
+      setValueInternal(nextValue);
+    }, []);
+    const getDraft = useCallback(() => valueRef.current, []);
+    const setDraft = useCallback((nextValue: string) => {
+      valueRef.current = nextValue;
+      setValueInternal(nextValue);
+    }, []);
     const flushDraft = useCallback(() => {}, []);
-    const clearInput = useCallback(() => setValue(""), []);
-    const clearDraft = useCallback(() => setValue(""), []);
+    const clearInput = useCallback(() => {
+      valueRef.current = "";
+      setValueInternal("");
+    }, []);
+    const clearDraft = useCallback(() => {
+      valueRef.current = "";
+      setValueInternal("");
+    }, []);
     const restoreFromStorage = useCallback(() => {}, []);
 
     const controls = useMemo(
@@ -128,11 +185,11 @@ vi.mock("../../hooks/useSessionToolbarVisibility", () => ({
       thinkingToggle: true,
       renderMode: true,
       microphone: true,
+      waveform: true,
       shortcutsHelp: true,
       contextUsage: true,
       btw: true,
       nudge: true,
-      queueControls: true,
       sessionStatus: true,
     },
     setControlVisible: vi.fn(),
@@ -161,15 +218,6 @@ vi.mock("../../i18n", () => ({
         ({
           commonOr: "or",
           toolbarKeyboardShortcutsAria: "Session keyboard shortcuts",
-          toolbarPatientQueueEnable: "Use patient queue",
-          toolbarPatientQueueDisable: "Use regular queue",
-          toolbarPatientQueueEnabledAck: `Patient queue on: new queued messages wait for ${params?.timeout ?? ""} of verified quiet. Click again for regular queue.`,
-          toolbarPatientQueueDisabledAck: `Regular queue on. Click again for patient queue (${params?.timeout ?? ""}).`,
-          toolbarPatientQueueActionLabel: "Queue patiently",
-          toolbarPatientQueueConfiguredTimeout: `the configured ${params?.timeout ?? ""} timeout`,
-          toolbarPatientQueueToggleShortcut:
-            "Right-click or long-press a queue button to switch regular/patient queue.",
-          toolbarPatientQueueTooltip: `Patient queue waits for ${params?.timeout ?? ""} of verified quiet before delivery. Regular queued messages may pass patient messages.`,
           toolbarSteerNowLabel: "Steer now",
           toolbarSteerNowShortLabel: "Now",
           toolbarSteerNowTooltip:
@@ -210,6 +258,8 @@ vi.mock("../../i18n", () => ({
             "Full-session reverse search",
           toolbarShortcutSteerCurrentTurn: "Steer current turn",
           toolbarShortcutQueueCurrentTurn: "Queue message",
+          toolbarShortcutForkAfterSummary:
+            "Fork after initial turn with summary",
           toolbarShortcutSend: "Send",
           toolbarShortcutNewLine: "New line",
           toolbarShortcutRightClickLongPress: "Right-click / long-press ?",
@@ -222,6 +272,22 @@ vi.mock("../../i18n", () => ({
             "Cancel latest queued message",
           toolbarShortcutClearComposer: "Clear composer",
           toolbarShortcutRenderedSourceMode: "Rendered/source mode",
+          speechSettingsXaiKeyTitle: "Browser xAI STT Key",
+          speechSettingsXaiKeyPlaceholder: "Borrow from server when empty",
+          speechListeningPlaceholder: "Listening...",
+          speechTranscribingPlaceholder: "Transcribing...",
+          speechFinalizingPlaceholder: "Finalizing...",
+          speechTranscribingCancel: "Cancel transcription",
+          messageInputCollapsedLineCount: `${params?.count ?? ""} lines`,
+          forkSummaryComposerTitle: "Fork after selected turn",
+          forkSummaryComposerDescription:
+            "Keep this request and the agent response to it; replace later turns with a generated summary.",
+          forkSummaryComposerPlaceholder:
+            "Optional summary instructions; leave empty for the default summary...",
+          forkSummarySubmit: "Fork with summary",
+          forkSummaryTooltip:
+            "Fork after the selected turn with a generated summary",
+          forkSummaryCancel: "Cancel fork summary",
         }) satisfies Record<string, string>
       )[key] ?? key,
   }),
@@ -232,16 +298,44 @@ vi.mock("../VoiceInputButton", async () => {
 
   return {
     VoiceInputButton: React.forwardRef(
-      (props: { speechMethod?: string }, ref) => {
+      (
+        props: {
+          onTranscript?: (
+            text: string,
+            metadata?: {
+              smartTurnCommand?: "cancel" | "send" | "wait";
+              smartTurnAutoSend?: boolean;
+              replacePreviousTranscriptChars?: number;
+              speechTargetId?: string;
+            },
+          ) => void;
+          onInterimTranscript?: (text: string) => void;
+          onListeningStart?: () => void;
+          onListeningStop?: () => void;
+          getTranscriptionContext?: () => { speechTargetId?: string };
+          speechMethod?: string;
+        },
+        ref,
+      ) => {
+        voicePropsState.current = props;
         React.useImperativeHandle(ref, () => ({
-          stopAndFinalize: () => "",
+          stopAndFinalize: mockVoiceStopAndFinalize,
           toggle: mockVoiceToggle,
+          cancelProcessing: mockVoiceCancelProcessing,
+          prewarm: vi.fn(),
           isAvailable: true,
-          isListening: false,
+          isListening: voiceButtonState.isListening,
         }));
 
         return (
-          <button type="button" data-speech-method={props.speechMethod}>
+          <button
+            type="button"
+            data-speech-method={props.speechMethod}
+            onClick={() => {
+              props.onListeningStart?.();
+              mockVoiceToggle();
+            }}
+          >
             voice
           </button>
         );
@@ -276,6 +370,23 @@ function installDesktopMatchMedia() {
   };
 }
 
+function installWindowNumberProperty(key: "innerHeight", value: number) {
+  const previous = Object.getOwnPropertyDescriptor(window, key);
+
+  Object.defineProperty(window, key, {
+    configurable: true,
+    value,
+  });
+
+  return () => {
+    if (previous) {
+      Object.defineProperty(window, key, previous);
+    } else {
+      Reflect.deleteProperty(window, key);
+    }
+  };
+}
+
 function renderMessageInput(
   onRecallLastSubmission = vi.fn(() => true),
   extraProps: Partial<ComponentProps<typeof MessageInput>> = {},
@@ -294,7 +405,11 @@ function renderMessageInput(
   );
 
   return screen.getByPlaceholderText(
-    extraProps.collapsed ? "messageInputContinueAbove" : placeholder,
+    extraProps.collapsed
+      ? "messageInputContinueAbove"
+      : extraProps.forkSummaryMode
+        ? extraProps.forkSummaryMode.placeholder
+        : placeholder,
   );
 }
 
@@ -324,11 +439,11 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   thinkingToggle: true,
   renderMode: false,
   microphone: false,
+  waveform: false,
   shortcutsHelp: false,
   contextUsage: false,
   btw: false,
   nudge: false,
-  queueControls: false,
   sessionStatus: false,
 };
 
@@ -348,10 +463,6 @@ const toolbarT = ((key: string, params?: Record<string, string>) => {
     toolbarQueueTooltip: "Queue for the next regular delivery\nCtrl+Enter",
     toolbarSteerTooltip: "Steer current turn\nEnter",
     toolbarSend: "Send",
-    toolbarPatientQueueEnable: "Use patient queue",
-    toolbarPatientQueueDisable: "Use regular queue",
-    toolbarPatientQueueToggleShortcut:
-      "Right-click or long-press a queue button to switch regular/patient queue.",
     toolbarOverflowMenu: "More toolbar controls",
   };
   return translations[key] ?? key;
@@ -395,6 +506,7 @@ function renderToolbarView(
 
 describe("MessageInput", () => {
   beforeEach(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     versionState.version = {
       current: "test",
       latest: null,
@@ -402,6 +514,7 @@ describe("MessageInput", () => {
       capabilities: ["voiceInput"],
       voiceBackends: [],
       voiceBackendCapabilities: {},
+      clientDefaults: undefined,
     };
     modelSettingsState.speechMethod = "browser-native";
     modelSettingsState.hasStoredSpeechMethod = false;
@@ -420,6 +533,10 @@ describe("MessageInput", () => {
     mockSetSpeechSmartTurnSettings.mockReset();
     mockSetGrokSpeechAudioSettings.mockReset();
     mockVoiceToggle.mockReset();
+    mockVoiceStopAndFinalize.mockReset();
+    mockVoiceCancelProcessing.mockReset();
+    voiceButtonState.isListening = false;
+    voicePropsState.current = null;
     window.localStorage.clear();
   });
 
@@ -427,6 +544,113 @@ describe("MessageInput", () => {
     cleanup();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("grows the expanded composer until the draft reaches half the viewport", () => {
+    const restoreInnerHeight = installWindowNumberProperty("innerHeight", 400);
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+    let scrollHeight = 160;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+
+    try {
+      fireEvent.change(textarea, {
+        target: { value: "one\ntwo\nthree\nfour" },
+      });
+
+      expect(textarea.style.height).toBe("160px");
+      expect(textarea.style.overflowY).toBe("hidden");
+
+      scrollHeight = 260;
+      fireEvent.change(textarea, {
+        target: { value: "one\ntwo\nthree\nfour\nfive\nsix\nseven" },
+      });
+
+      expect(textarea.style.height).toBe("200px");
+      expect(textarea.style.overflowY).toBe("auto");
+    } finally {
+      restoreInnerHeight();
+    }
+  });
+
+  it("uses fork summary mode with empty instructions as a valid submit", () => {
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+    renderMessageInput(vi.fn(), {
+      forkSummaryMode: {
+        title: "Fork after selected turn",
+        description:
+          "Keep this request and the agent response to it; replace later turns with a generated summary.",
+        placeholder:
+          "Optional summary instructions; leave empty for the default summary...",
+        submitLabel: "Fork with summary",
+        tooltip: "Fork after the selected turn with a generated summary",
+        icon: "⑂",
+        onCancel,
+        onSubmit,
+      },
+    });
+
+    expect(screen.getByText("Fork after selected turn")).toBeTruthy();
+    expect(
+      screen.getByPlaceholderText(
+        "Optional summary instructions; leave empty for the default summary...",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fork with summary" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("");
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("uses Ctrl+Enter for fork-after without summary while in fork mode", () => {
+    const onSubmit = vi.fn();
+    const onSubmitWithoutSummary = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      forkSummaryMode: {
+        title: "Fork after selected turn",
+        description:
+          "Keep this request and the agent response to it; replace later turns with a generated summary.",
+        placeholder:
+          "Optional summary instructions; leave empty for the default summary...",
+        submitLabel: "Fork with summary",
+        tooltip: "Fork after the selected turn with a generated summary",
+        icon: "⑂",
+        noSummarySubmitLabel: "Fork without summary",
+        noSummaryTooltip: "Fork after without summary",
+        noSummaryIcon: "↱",
+        onCancel: vi.fn(),
+        onSubmit,
+        onSubmitWithoutSummary,
+      },
+    }) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "  branch text  " } });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+
+    expect(onSubmitWithoutSummary).toHaveBeenCalledWith("  branch text  ");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("");
+  });
+
+  it("sends the current draft as fork summary instructions with Ctrl+Alt+Enter", () => {
+    const onForkSummaryShortcut = vi.fn(() => true);
+    const textarea = renderMessageInput(vi.fn(), {
+      onForkSummaryShortcut,
+    }) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "focus on tests" } });
+    fireEvent.keyDown(textarea, {
+      key: "Enter",
+      ctrlKey: true,
+      altKey: true,
+    });
+
+    expect(onForkSummaryShortcut).toHaveBeenCalledWith("focus on tests");
+    expect(textarea.value).toBe("");
   });
 
   it("recalls the last submission from a blank composer with Up or Ctrl+P", () => {
@@ -512,7 +736,7 @@ describe("MessageInput", () => {
     expect(onToggleEnabled).toHaveBeenCalledTimes(1);
   });
 
-  it("selects the preferred active server STT backend for the mic button", () => {
+  it("selects direct Grok streaming by default when Grok STT is enabled", () => {
     versionState.version = {
       ...versionState.version,
       voiceBackends: ["ya-deepgram", "ya-grok"],
@@ -522,17 +746,60 @@ describe("MessageInput", () => {
 
     expect(
       screen.getByRole("button", { name: "voice" }).dataset.speechMethod,
-    ).toBe("ya-grok");
+    ).toBe(XAI_DIRECT_STREAMING_SPEECH_METHOD);
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
     expect(
       screen.getByRole("radio", {
-        name: /^Grok STT xAI speech-to-text through YA\.$/,
+        name: /^Grok STT through YA Browser streams PCM audio through YA to xAI\.$/,
       }),
     ).toBeDefined();
+    expect(
+      screen.queryByRole("radio", {
+        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+      }),
+    ).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: /Deepgram STT/ }));
 
     expect(mockSetSpeechMethod).toHaveBeenCalledWith("ya-deepgram");
+  });
+
+  it("selects direct Grok streaming when a browser xAI key is configured", async () => {
+    setBrowserXaiSttApiKey("browser-xai-key");
+
+    renderMessageInput();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "voice" }).dataset.speechMethod,
+      ).toBe(XAI_DIRECT_STREAMING_SPEECH_METHOD),
+    );
+    expect(
+      screen.getByRole("radio", {
+        name: /^Grok STT direct Browser streams PCM audio directly to xAI\.$/,
+      }),
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("radio", {
+        name: /Grok STT direct batch/,
+      }),
+    ).toBeNull();
+  });
+
+  it("stops active voice capture before opening speech settings", () => {
+    versionState.version = {
+      ...versionState.version,
+      voiceBackends: ["ya-grok"],
+    };
+    voiceButtonState.isListening = true;
+
+    renderMessageInput();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
+
+    expect(mockVoiceStopAndFinalize).toHaveBeenCalledTimes(1);
   });
 
   it("toggles session voice input on Ctrl+Space from the composer", () => {
@@ -547,7 +814,675 @@ describe("MessageInput", () => {
     expect(mockVoiceToggle).toHaveBeenCalledTimes(1);
   });
 
-  it("shows Grok audio format controls and hides Smart Turn on compressed uplink", () => {
+  it("replaces selected text only when speech text commits", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "replace this text" } });
+    textarea.focus();
+    textarea.setSelectionRange(8, 12);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("replace this text");
+      expect(textarea.selectionStart).toBe(8);
+      expect(textarea.selectionEnd).toBe(12);
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("spoken");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("replace spoken text");
+      expect(textarea.selectionStart).toBe("replace spoken".length);
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "cancel",
+      });
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("replace text");
+      expect(textarea.selectionStart).toBe("replace".length);
+    });
+  });
+
+  it("shows the Transcribing label inline at the cursor and cancels on Escape", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    expect(document.querySelector(".speech-processing-inline")).toBeNull();
+
+    // Enter the batch processing wait (no interim), e.g. parakeet first-load.
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+    });
+
+    const badge = await waitFor(() => {
+      const el = document.querySelector(".speech-processing-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(badge.textContent).toContain("Transcribing");
+
+    // The field stays editable while transcription is pending.
+    expect(textarea.disabled).toBe(false);
+    fireEvent.change(textarea, {
+      target: { value: "typed while transcribing" },
+    });
+    expect(textarea.value).toBe("typed while transcribing");
+
+    // Escape is the deliberate cancel path now (no chip ✕; backspace can't
+    // reach it). Cancel leaves the user's typed text intact.
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(document.querySelector(".speech-processing-inline")).toBeNull();
+    });
+    expect(textarea.value).toBe("typed while transcribing");
+  });
+
+  it("previews interim inline, then shows the Finalizing label inline; Escape cancels", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    // Active streaming: interim text previews inline (green highlight).
+    act(() => {
+      voicePropsState.current?.onInterimTranscript?.("live words");
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".speech-interim-inline")).not.toBeNull();
+    });
+    expect(document.querySelector(".speech-processing-inline")).toBeNull();
+
+    // Flush (stop): the finalize wait shows its label inline at the same place,
+    // unified with the batch transcribe wait; Escape cancels.
+    act(() => {
+      voicePropsState.current?.onInterimTranscript?.("");
+      voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+    });
+    const badge = await waitFor(() => {
+      const el = document.querySelector(".speech-processing-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(badge.textContent).toContain("Finalizing");
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the Listening label inline during active capture", async () => {
+    renderMessageInput();
+
+    // Active live capture previews the pending state inline at the insertion
+    // point too, not as a chip below the composer.
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+    });
+    const badge = await waitFor(() => {
+      const el = document.querySelector(".speech-processing-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(badge.textContent).toContain("Listening");
+  });
+
+  it("cancels the inline pending tag via its ✕ button", async () => {
+    renderMessageInput();
+
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+    });
+    const badge = await waitFor(() => {
+      const el = document.querySelector(".speech-processing-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    fireEvent.click(
+      badge.querySelector(".speech-tag-cancel") as HTMLButtonElement,
+    );
+    expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(document.querySelector(".speech-processing-inline")).toBeNull();
+    });
+  });
+
+  it("renders one tag per overlapping pending target, ordinal on the 2nd", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "draft" } });
+
+    // Two recordings started before either result lands: each gets its own tag.
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+    });
+
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".speech-processing-inline").length,
+      ).toBe(2);
+    });
+    // Only the 2nd (later) tag carries a "(N)" ordinal.
+    const ordinals = document.querySelectorAll(".speech-tag-ordinal");
+    expect(ordinals.length).toBe(1);
+    expect(ordinals[0]?.textContent).toContain("2");
+  });
+
+  it("retires an older failed target while a newer recording stays active", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "draft" } });
+
+    let firstTargetId: string | undefined;
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      firstTargetId =
+        voicePropsState.current?.getTranscriptionContext?.().speechTargetId;
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+    });
+
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".speech-processing-inline"),
+      ).toHaveLength(2);
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscriptionSettled?.({
+        speechTargetId: firstTargetId,
+        status: "error",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".speech-processing-inline"),
+      ).toHaveLength(1);
+    });
+    expect(document.querySelector(".speech-tag-ordinal")).toBeNull();
+    expect(document.querySelector(".speech-tag-cancel")).not.toBeNull();
+  });
+
+  it("clears a completed recording's tag; a later activation does not revive it", async () => {
+    renderMessageInput();
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
+    });
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".speech-processing-inline").length,
+      ).toBe(1);
+    });
+
+    // Recording completes (result committed, pending ends) -> tag clears.
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.(null);
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".speech-processing-inline")).toBeNull();
+    });
+
+    // A second activation shows exactly one tag, not a revived stack.
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+    });
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".speech-processing-inline").length,
+      ).toBe(1);
+    });
+    expect(document.querySelector(".speech-tag-ordinal")).toBeNull();
+  });
+
+  it("does not grace-delay the selection that started the mic transaction", () => {
+    vi.useFakeTimers();
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "replace this text" } });
+    textarea.focus();
+    textarea.setSelectionRange(8, 12);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+    });
+    fireEvent.select(textarea);
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("spoken");
+    });
+
+    expect(textarea.value).toBe("replace spoken text");
+  });
+
+  it("leaves a selected replacement untouched when speech is cancelled first", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "replace this text" } });
+    textarea.focus();
+    textarea.setSelectionRange(8, 12);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "cancel",
+      });
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("replace this text");
+      expect(textarea.selectionStart).toBe(8);
+      expect(textarea.selectionEnd).toBe(12);
+    });
+  });
+
+  it("replaces a hot-mic selection with the next final chunk after grace", () => {
+    vi.useFakeTimers();
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "replace this text" } });
+    textarea.focus();
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+    });
+
+    textarea.setSelectionRange(8, 12);
+    fireEvent.select(textarea);
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("spoken");
+    });
+
+    expect(textarea.value).toBe("replace this text");
+
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(textarea.value).toBe("replace spoken text");
+    expect(textarea.selectionStart).toBe("replace spoken".length);
+  });
+
+  it("lets a manual edit cancel a pending hot-mic selection replacement", () => {
+    vi.useFakeTimers();
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "replace this text" } });
+    textarea.focus();
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+    });
+
+    textarea.setSelectionRange(8, 12);
+    fireEvent.select(textarea);
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("spoken");
+    });
+
+    fireEvent.change(textarea, { target: { value: "replace typed text" } });
+
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(textarea.value).toBe("replace typed text");
+  });
+
+  it("renders interim speech at the current insertion point", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "hello world" } });
+    textarea.focus();
+    textarea.setSelectionRange(5, 5);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onInterimTranscript?.("there");
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
+        "hello there world",
+      );
+      expect(textarea.value).toBe("hello world");
+      expect(textarea.selectionStart).toBe(5);
+    });
+  });
+
+  it("relayouts interim speech over a hot selected replacement span", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "alpha beta gamma" } });
+    textarea.focus();
+    textarea.setSelectionRange(
+      "alpha beta gamma".length,
+      "alpha beta gamma".length,
+    );
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onInterimTranscript?.("draft");
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
+        "alpha beta gamma draft",
+      );
+    });
+
+    textarea.setSelectionRange("alpha ".length, "alpha beta".length);
+    fireEvent.select(textarea);
+
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")?.textContent).toBe(
+        "alpha draft gamma",
+      );
+      expect(textarea.value).toBe("alpha beta gamma");
+    });
+  });
+
+  it("uses selected text context to case speech replacements", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "Ok, look again." } });
+    textarea.focus();
+    textarea.setSelectionRange("Ok, ".length, "Ok, look".length);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Focus");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Ok, focus again.");
+    });
+  });
+
+  it("replaces the previous speech-owned span from provider metadata", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Testing.");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Testing.");
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("Testing. again.", {
+        replacePreviousTranscriptChars: "Testing.".length,
+      });
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Testing. again.");
+    });
+  });
+
+  it("replaces a corrected streaming segment after several final chunks", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Audio isn't done.");
+      voicePropsState.current?.onTranscript?.("Empty final box.");
+      voicePropsState.current?.onTranscript?.("Blocks");
+      voicePropsState.current?.onTranscript?.(", blocks");
+      voicePropsState.current?.onTranscript?.(", empty, five");
+      voicePropsState.current?.onTranscript?.("o blocks.");
+      voicePropsState.current?.onTranscript?.("Empty, final.");
+      voicePropsState.current?.onTranscript?.("Blocks.");
+    });
+
+    const previousSegment =
+      "Blocks, blocks, empty, five o blocks. Empty, final. Blocks.";
+    await waitFor(() => {
+      expect(textarea.value).toBe(
+        `Audio isn't done. Empty final box. ${previousSegment}`,
+      );
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.(
+        "Blocks, blocks, empty final blocks, empty final blocks.",
+        { replacePreviousTranscriptChars: previousSegment.length },
+      );
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe(
+        "Audio isn't done. Empty final box. Blocks, blocks, empty final blocks, empty final blocks.",
+      );
+    });
+  });
+
+  it("inserts consecutive final speech chunks at a middle cursor", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "prefix suffix" } });
+    textarea.focus();
+    textarea.setSelectionRange("prefix".length, "prefix".length);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("first.");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("prefix first. suffix");
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("second.");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("prefix first. second. suffix");
+    });
+  });
+
+  it("moves a pending batch target after earlier speech inserted at the same cursor", async () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "prefix suffix" } });
+    textarea.focus();
+    textarea.setSelectionRange("prefix".length, "prefix".length);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+    });
+    const firstTarget =
+      voicePropsState.current?.getTranscriptionContext?.().speechTargetId;
+    expect(firstTarget).toBeTruthy();
+
+    act(() => {
+      voicePropsState.current?.onListeningStop?.();
+      voicePropsState.current?.onListeningStart?.();
+    });
+    const secondTarget =
+      voicePropsState.current?.getTranscriptionContext?.().speechTargetId;
+    expect(secondTarget).toBeTruthy();
+    expect(secondTarget).not.toBe(firstTarget);
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("first.", {
+        speechTargetId: firstTarget,
+      });
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("prefix first. suffix");
+    });
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("second.", {
+        speechTargetId: secondTarget,
+      });
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("prefix first. second. suffix");
+    });
+  });
+
+  it("keeps active streaming final chunks in the composer", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onInterimTranscript?.("Okay");
+      voicePropsState.current?.onTranscript?.("Okay.");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Okay.");
+    });
+
+    act(() => {
+      voicePropsState.current?.onInterimTranscript?.("Does it work");
+      voicePropsState.current?.onTranscript?.("Does it work at all?");
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Okay. Does it work at all?");
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("submits committed speech when Smart Turn send follows immediately", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Okay.");
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "send",
+      });
+    });
+
+    await waitFor(() => {
+      expectSubmission(onSend, "Okay.", "direct");
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  it("holds a Smart Turn auto-send after a manual non-whitespace edit", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Hello world.");
+    });
+    await waitFor(() => expect(textarea.value).toBe("Hello world."));
+
+    // The user types into the composer mid-dictation.
+    fireEvent.change(textarea, { target: { value: "Hello world. mine" } });
+
+    // The automatic endpoint send must not submit; the draft is left for review.
+    act(() => {
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "send",
+        smartTurnAutoSend: true,
+      });
+    });
+    await waitFor(() => expect(textarea.value).toBe("Hello world. mine"));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("auto-sends when only speech (not manual typing) filled the draft", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    // Speech-inserted finals go through setDraft, not onChange, so they do not
+    // count as a manual edit and the auto-send still fires.
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Ship it.");
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "send",
+        smartTurnAutoSend: true,
+      });
+    });
+    await waitFor(() => {
+      expectSubmission(onSend, "Ship it.", "direct");
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  it("still auto-sends after a whitespace-only manual edit", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Go now.");
+    });
+    await waitFor(() => expect(textarea.value).toBe("Go now."));
+
+    // A trailing space adds no non-whitespace text, so the auto-send proceeds.
+    fireEvent.change(textarea, { target: { value: "Go now. " } });
+    act(() => {
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "send",
+        smartTurnAutoSend: true,
+      });
+    });
+    await waitFor(() => expectSubmission(onSend, "Go now.", "direct"));
+  });
+
+  it("submits an explicit spoken send even after a manual edit", async () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onSend,
+    }) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("Reply done.");
+    });
+    await waitFor(() => expect(textarea.value).toBe("Reply done."));
+
+    fireEvent.change(textarea, { target: { value: "Reply done. plus" } });
+
+    // An explicit spoken `send` (no smartTurnAutoSend) is never held.
+    act(() => {
+      voicePropsState.current?.onTranscript?.("", { smartTurnCommand: "send" });
+    });
+    await waitFor(() => {
+      expectSubmission(onSend, "Reply done. plus", "direct");
+      expect(textarea.value).toBe("");
+    });
+  });
+
+  it("hides a stored YA-routed Grok batch method from the method list", () => {
     versionState.version = {
       ...versionState.version,
       voiceBackends: ["ya-grok"],
@@ -555,33 +1490,63 @@ describe("MessageInput", () => {
         "ya-grok": { streaming: true, smartTurn: true },
       },
     };
-    modelSettingsState.speechMethod = "ya-grok";
+    modelSettingsState.speechMethod = YA_GROK_BATCH_SPEECH_METHOD;
     modelSettingsState.hasStoredSpeechMethod = true;
     modelSettingsState.speechSmartTurnSettings = {
       enabled: true,
       threshold: 0.95,
       timeoutMs: 3000,
     };
-    modelSettingsState.grokSpeechAudioSettings = {
-      uplinkMode: "browser-compressed",
+
+    renderMessageInput();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
+    expect(
+      screen.queryByRole("radio", {
+        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+      }),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole("radio", {
+          name: /^Grok STT direct Browser streams PCM audio directly to xAI\.$/,
+        })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(screen.getByText("Smart Turn")).toBeDefined();
+
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: /^Grok STT through YA Browser streams PCM audio through YA to xAI\.$/,
+      }),
+    );
+    expect(mockSetSpeechMethod).toHaveBeenCalledWith("ya-grok");
+  });
+
+  it("shows Smart Turn for direct Grok streaming without server capabilities", () => {
+    remoteBasePathState.basePath = "/ygraehl";
+    versionState.version = {
+      ...versionState.version,
+      voiceBackends: ["ya-grok"],
+      voiceBackendCapabilities: {},
+    };
+    modelSettingsState.speechMethod = XAI_DIRECT_STREAMING_SPEECH_METHOD;
+    modelSettingsState.hasStoredSpeechMethod = true;
+    modelSettingsState.speechSmartTurnSettings = {
+      enabled: true,
+      threshold: 0.95,
+      timeoutMs: 3000,
     };
 
     renderMessageInput();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
-    expect(screen.getByText("Grok STT audio")).toBeDefined();
-    expect(
-      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
-    ).toBe(true);
-    expect(screen.queryByText("Smart Turn")).toBeNull();
 
-    fireEvent.click(screen.getByLabelText("PCM16"));
-    expect(mockSetGrokSpeechAudioSettings).toHaveBeenCalledWith({
-      uplinkMode: "pcm16",
-    });
+    expect(screen.getByText("Smart Turn")).toBeDefined();
+    expect(screen.queryByText("Grok STT audio")).toBeNull();
   });
 
-  it("keeps Grok audio controls visible in relay mode", () => {
+  it("hides a stored YA-routed Grok batch method in relay mode", () => {
     remoteBasePathState.basePath = "/ygraehl";
     versionState.version = {
       ...versionState.version,
@@ -590,20 +1555,18 @@ describe("MessageInput", () => {
         "ya-grok": { streaming: true, smartTurn: true },
       },
     };
-    modelSettingsState.speechMethod = "ya-grok";
+    modelSettingsState.speechMethod = YA_GROK_BATCH_SPEECH_METHOD;
     modelSettingsState.hasStoredSpeechMethod = true;
-    modelSettingsState.grokSpeechAudioSettings = {
-      uplinkMode: "browser-compressed",
-    };
 
     renderMessageInput();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
 
-    expect(screen.getByText("Grok STT audio")).toBeDefined();
     expect(
-      (screen.getByLabelText("Batch") as HTMLInputElement).checked,
-    ).toBe(true);
+      screen.queryByRole("radio", {
+        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+      }),
+    ).toBeNull();
   });
 
   it("keeps Up as native navigation when the composer has text", () => {
@@ -627,10 +1590,13 @@ describe("MessageInput", () => {
   });
 
   it("shows slash suggestions from a leading slash token", () => {
-    const textarea = renderMessageInput(vi.fn(() => true), {
-      slashCommands: ["compact", "goal"],
-      onCustomCommand: vi.fn(() => false),
-    });
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: ["compact", "goal"],
+        onCustomCommand: vi.fn(() => false),
+      },
+    );
 
     fireEvent.change(textarea, { target: { value: "/co" } });
 
@@ -639,10 +1605,13 @@ describe("MessageInput", () => {
   });
 
   it("accepts a typed slash suggestion into the composer", () => {
-    const textarea = renderMessageInput(vi.fn(() => true), {
-      slashCommands: ["compact", "goal"],
-      onCustomCommand: vi.fn(() => false),
-    }) as HTMLTextAreaElement;
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: ["compact", "goal"],
+        onCustomCommand: vi.fn(() => false),
+      },
+    ) as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "/co" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -765,6 +1734,24 @@ describe("MessageInput", () => {
     fireEvent.keyDown(textarea, { key: "Escape" });
 
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops active voice capture with Escape before stopping the current turn", () => {
+    voiceButtonState.isListening = true;
+    const onStop = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        isRunning: true,
+        isThinking: true,
+        onStop,
+      },
+    );
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+
+    expect(mockVoiceStopAndFinalize).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
   });
 
   it("leaves Escape alone when the current turn is not stoppable", () => {
@@ -1076,6 +2063,143 @@ describe("MessageInput", () => {
     expectSubmission(onQueue, "collapsed queue", "deferred");
   });
 
+  it("keeps the collapsed composer scrolled to the cursor", async () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        collapsed: true,
+      },
+    ) as HTMLTextAreaElement;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 180,
+    });
+    Object.defineProperty(textarea, "clientHeight", {
+      configurable: true,
+      value: 28,
+    });
+
+    fireEvent.change(textarea, {
+      target: { value: "one\ntwo\nthree\nfour\nfive" },
+    });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyUp(textarea, { key: "End" });
+
+    await waitFor(() => expect(textarea.scrollTop).toBe(152));
+  });
+
+  it("uses the server default busy composer action", () => {
+    const restoreMatchMedia = installDesktopMatchMedia();
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: { busyComposerDefaultAction: "queue" },
+    };
+    const onSend = vi.fn();
+    const onQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onSend,
+        onQueue,
+        supportsSteering: true,
+      },
+    );
+
+    try {
+      fireEvent.change(textarea, { target: { value: "default queue" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expect(onSend).not.toHaveBeenCalled();
+      expectSubmission(onQueue, "default queue", "deferred");
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("keeps session-local Enter swaps ahead of the server default", () => {
+    const restoreMatchMedia = installDesktopMatchMedia();
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: { busyComposerDefaultAction: "queue" },
+    };
+    window.localStorage.setItem("test-draft:enter-action-kind", "steer");
+    const onSend = vi.fn();
+    const onQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onSend,
+        onQueue,
+        supportsSteering: true,
+      },
+    );
+
+    try {
+      fireEvent.change(textarea, { target: { value: "local steer" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      expectSubmission(onSend, "local steer", "steer");
+      expect(onQueue).not.toHaveBeenCalled();
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("can show the alternate collapsed action", () => {
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: { collapsedComposerButton: "alternate" },
+    };
+    const onQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onQueue,
+        supportsSteering: true,
+        collapsed: true,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "alternate queue" } });
+    fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
+
+    expectSubmission(onQueue, "alternate queue", "deferred");
+  });
+
+  it("can use the microphone as the collapsed action", () => {
+    versionState.version = {
+      ...versionState.version,
+      voiceBackends: ["ya-grok"],
+      clientDefaults: { collapsedComposerButton: "microphone" },
+    };
+
+    renderMessageInput(
+      vi.fn(() => true),
+      { collapsed: true },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "voice" }));
+
+    expect(mockVoiceToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses desktop collapsed side space for line count and server mic", () => {
+    versionState.version = {
+      ...versionState.version,
+      voiceBackends: ["ya-grok"],
+    };
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        collapsed: true,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "one\ntwo\nthree" } });
+
+    expect(screen.getByText("3 lines")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "voice" })).toBeTruthy();
+  });
+
   it("queues steering-capable messages without adding a mode prefix", () => {
     const onQueue = vi.fn();
     const textarea = renderMessageInput(
@@ -1085,10 +2209,6 @@ describe("MessageInput", () => {
         onQueue,
       },
     );
-
-    expect(
-      screen.getByRole("button", { name: "Use patient queue" }),
-    ).toBeTruthy();
 
     fireEvent.change(textarea, { target: { value: "follow up later" } });
     fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
@@ -1146,38 +2266,6 @@ describe("MessageInput", () => {
     expectSubmission(onQueue, "follow up later", "deferred");
   });
 
-  it("uses patient intent without rewriting text when the stopwatch is enabled", () => {
-    const onQueue = vi.fn();
-    const textarea = renderMessageInput(
-      vi.fn(() => true),
-      {
-        supportsSteering: true,
-        onQueue,
-      },
-    );
-
-    const toggle = screen.getByRole("button", { name: "Use patient queue" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    expect(toggle.getAttribute("title")).toContain("30s");
-
-    fireEvent.click(toggle);
-    expect(
-      screen
-        .getByRole("button", { name: "Use regular queue" })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
-    expect(screen.getByRole("status").textContent).toContain(
-      "Patient queue on",
-    );
-    expect(screen.getByRole("status").textContent).toContain("30s");
-    fireEvent.change(textarea, { target: { value: "follow up later" } });
-    const patientQueueAction = screen.getByLabelText("Queue patiently");
-    expect(patientQueueAction.getAttribute("title")).toContain("30s");
-    fireEvent.click(patientQueueAction);
-
-    expectSubmission(onQueue, "follow up later", "patient");
-  });
-
   it("stamps steer-now metadata when the Claude now checkbox is enabled", () => {
     const restoreMatchMedia = installDesktopMatchMedia();
     const onSend = vi.fn();
@@ -1203,42 +2291,6 @@ describe("MessageInput", () => {
     } finally {
       restoreMatchMedia();
     }
-  });
-
-  it("keeps the patient switch visible for idle steering sessions", () => {
-    renderMessageInput(
-      vi.fn(() => true),
-      {
-        supportsSteering: true,
-      },
-    );
-
-    expect(
-      screen
-        .getByRole("button", { name: "Use patient queue" })
-        .getAttribute("aria-pressed"),
-    ).toBe("false");
-    expect(screen.getByLabelText("toolbarSend")).toBeTruthy();
-    expect(screen.queryByLabelText("toolbarQueueLabel")).toBeNull();
-  });
-
-  it("keeps manually typed when-done text unchanged for patient queue", () => {
-    const onQueue = vi.fn();
-    const textarea = renderMessageInput(
-      vi.fn(() => true),
-      {
-        supportsSteering: true,
-        onQueue,
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Use patient queue" }));
-    fireEvent.change(textarea, {
-      target: { value: "When done please run tests" },
-    });
-    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
-
-    expectSubmission(onQueue, "When done please run tests", "patient");
   });
 
   it("routes a queue-only primary button through onSend", () => {
@@ -1290,93 +2342,27 @@ describe("MessageInput", () => {
       { onQueue },
     );
 
-    expect(
-      screen.getByRole("button", { name: "Use patient queue" }),
-    ).toBeTruthy();
-
     fireEvent.change(textarea, { target: { value: "plain queue" } });
     fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
 
     expectSubmission(onQueue, "plain queue", "deferred");
   });
 
-  it("uses patient intent for non-steering queued messages", () => {
+  it("uses patient intent when the patient-queue default is enabled", () => {
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: { patientQueueDefault: true },
+    };
     const onQueue = vi.fn();
     const textarea = renderMessageInput(
       vi.fn(() => true),
       { onQueue },
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Use patient queue" }));
     fireEvent.change(textarea, { target: { value: "claude patient queue" } });
-    fireEvent.click(screen.getByLabelText("Queue patiently"));
+    fireEvent.click(screen.getByLabelText("toolbarQueueLabel"));
 
     expectSubmission(onQueue, "claude patient queue", "patient");
-  });
-
-  it("changes the single queue primary action when patient mode is on", () => {
-    const onSend = vi.fn();
-    const textarea = renderMessageInput(
-      vi.fn(() => true),
-      {
-        onSend,
-        primaryActionKind: "queue",
-      },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Use patient queue" }));
-    fireEvent.change(textarea, { target: { value: "single patient action" } });
-
-    const patientAction = screen.getByLabelText("Queue patiently");
-    expect(patientAction.className).toContain("patient-queue-action");
-    fireEvent.click(patientAction);
-
-    expectSubmission(onSend, "single patient action", "patient");
-  });
-
-  it("right-clicking a queue button toggles patient mode without sending", () => {
-    const onQueue = vi.fn();
-    const textarea = renderMessageInput(
-      vi.fn(() => true),
-      {
-        supportsSteering: true,
-        onQueue,
-      },
-    );
-
-    fireEvent.change(textarea, { target: { value: "patient mode switch" } });
-    fireEvent.contextMenu(screen.getByLabelText("toolbarQueueLabel"));
-
-    expect(onQueue).not.toHaveBeenCalled();
-    expect(
-      screen
-        .getByRole("button", { name: "Use regular queue" })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
-    expect(screen.getByLabelText("Queue patiently")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain(
-      "Patient queue on",
-    );
-  });
-
-  it("keeps patient queue visible for a stoppable non-steering turn before text", () => {
-    renderMessageInput(
-      vi.fn(() => true),
-      {
-        isRunning: true,
-        isThinking: true,
-        onQueue: vi.fn(),
-        onStop: vi.fn(),
-      },
-    );
-
-    expect(screen.getByLabelText("toolbarStop")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Use patient queue" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByLabelText("toolbarQueueLabel").hasAttribute("disabled"),
-    ).toBe(true);
   });
 
   it("keeps queue available when the primary steer action downgrades", () => {
@@ -1417,55 +2403,6 @@ describe("MessageInput", () => {
     expectSubmission(onQueue, "queue from primary", "deferred");
   });
 
-  it("keeps the alternate queue action visible when patient controls are hidden", () => {
-    render(
-      <MessageInputToolbarView
-        t={toolbarT}
-        visibility={{ ...toolbarVisibility, queueControls: false }}
-        attachmentControl={{ attachmentCount: 0 }}
-        shortcutsControl={{
-          open: false,
-          isearchScope: null,
-          setOpen:
-            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
-          settingsOpen: false,
-          setSettingsOpen:
-            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
-          hasDualActions: true,
-          enterActionKind: "steer",
-          canSwapEnterAction: false,
-          queueShortcutLabel: "Queue message",
-        }}
-        actionsControl={{
-          send: {
-            onSend: vi.fn(),
-            canSend: true,
-            primaryActionKind: "steer",
-            primaryActionLabel: "Steer current turn",
-            tooltip: "Steer current turn",
-            icon: "↗",
-            queue: {
-              onQueue: vi.fn(),
-              hasDualActions: true,
-              queueTooltip: "Queue for the next regular delivery",
-              showPatientQueueMode: true,
-              patientQueueEnabled: false,
-              patientQueueTimeoutLabel: "30s",
-              patientQueueTooltip:
-                "Patient queue waits for 30s of verified quiet before delivery.",
-              onTogglePatientQueue: vi.fn(),
-            },
-          },
-        }}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Use patient queue" })).toBe(
-      null,
-    );
-    expect(screen.getByLabelText("Queue message")).toBeTruthy();
-  });
-
   it("renders context usage as passive status chrome", () => {
     const { container } = render(
       <MessageInputToolbarView
@@ -1498,6 +2435,39 @@ describe("MessageInput", () => {
     const indicator = container.querySelector(".context-usage-indicator");
     expect(indicator).toBeTruthy();
     expect(indicator?.closest("button")).toBe(null);
+  });
+
+  it("renders the active speech waveform in the toolbar center slot", () => {
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        speechWaveformActive
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    const toolbar = container.querySelector(".message-input-toolbar");
+    const waveform = container.querySelector(".composer-speech-waveform");
+    expect(waveform).toBeTruthy();
+    expect(
+      waveform?.parentElement?.classList.contains("message-input-left"),
+    ).toBe(true);
+    expect(toolbar?.contains(waveform)).toBe(true);
   });
 
   it("uses only the custom tooltip on the primary send action", () => {
@@ -1533,7 +2503,9 @@ describe("MessageInput", () => {
     );
 
     const button = screen.getByRole("button", { name: "Steer current turn" });
-    expect(button.getAttribute("data-tooltip")).toBe("Steer current turn\nEnter");
+    expect(button.getAttribute("data-tooltip")).toBe(
+      "Steer current turn\nEnter",
+    );
     expect(button.getAttribute("title")).toBe(null);
     expect(container.querySelector(".send-button-with-help")).toBe(button);
   });

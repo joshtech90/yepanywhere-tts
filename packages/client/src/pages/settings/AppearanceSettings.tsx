@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { ThinkingText } from "../../components/ThinkingText";
 import { renderFixedFontMath } from "../../components/ui/FixedFontMathToggle";
 import {
@@ -7,7 +8,20 @@ import {
   MIN_CONTENT_MAX_WIDTH_PX,
   useContentMaxWidth,
 } from "../../hooks/useContentMaxWidth";
+import {
+  DEFAULT_HOVERCARD_MAX_HEIGHT_PX,
+  DEFAULT_HOVERCARD_SHOW_DELAY_MS,
+  HOVERCARD_MAX_HEIGHT_MAX_PX,
+  HOVERCARD_MAX_HEIGHT_MIN_PX,
+  HOVERCARD_MAX_HEIGHT_STEP_PX,
+  HOVERCARD_SHOW_DELAY_MAX_MS,
+  HOVERCARD_SHOW_DELAY_MIN_MS,
+  HOVERCARD_SHOW_DELAY_STEP_MS,
+  useHoverCardAppearance,
+} from "../../hooks/useHoverCardAppearance";
+import { estimateHoverCardPromptLines } from "../../components/sessionHoverCardLines";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
+import { useAlwaysShowQuoteCircles } from "../../hooks/useAlwaysShowQuoteCircles";
 import { useFloatingActionButtonEnabled } from "../../hooks/useFloatingActionButtonEnabled";
 import { FONT_SIZES, useFontSize } from "../../hooks/useFontSize";
 import { useFunPhrases } from "../../hooks/useFunPhrases";
@@ -47,6 +61,12 @@ import {
   useOutputAppearance,
 } from "../../hooks/useOutputAppearance";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
+import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
+import {
+  SETTINGS_ICON_STYLES,
+  type SettingsIconStyle,
+  useSettingsIconStyle,
+} from "../../hooks/useSettingsIconStyle";
 import { useStableToolPreviewRendering } from "../../hooks/useStableToolPreviewRendering";
 import { useStreamingEnabled } from "../../hooks/useStreamingEnabled";
 import { TAB_SIZES, useTabSize } from "../../hooks/useTabSize";
@@ -61,6 +81,10 @@ import {
   getTabSizeLabel,
   getThemeLabel,
 } from "../../i18n-settings";
+import {
+  settingsCategoryEmojiIcons,
+  settingsCategoryIcons,
+} from "./SettingsCategoryIcons";
 
 const OUTPUT_INLINE_MATH_SAMPLE = "$E=mc^2$";
 
@@ -68,8 +92,24 @@ function formatNumberSetting(value: number): string {
   return Number.isInteger(value) ? String(value) : String(value);
 }
 
+function getSettingsIconStyleLabel(
+  value: SettingsIconStyle,
+  translate: (key: string) => string,
+): string {
+  switch (value) {
+    case "flat":
+      return translate("appearanceSettingsIconStyleFlat");
+    case "flat-white":
+      return translate("appearanceSettingsIconStyleFlatWhite");
+    case "emoji":
+      return translate("appearanceSettingsIconStyleEmoji");
+  }
+}
+
 export function AppearanceSettings() {
   const { locale, setLocale, t } = useI18n();
+  const navigate = useNavigate();
+  const basePath = useRemoteBasePath();
   const { fontSize, setFontSize } = useFontSize();
   const {
     outputFont,
@@ -94,8 +134,26 @@ export function AppearanceSettings() {
   } = useOutputAppearance();
   const { tabSize, setTabSize } = useTabSize();
   const { contentMaxWidth, setContentMaxWidth } = useContentMaxWidth();
+  const {
+    hoverCardShowDelayMs,
+    hoverCardMaxHeightPx,
+    setHoverCardShowDelayMs,
+    setHoverCardMaxHeightPx,
+  } = useHoverCardAppearance();
+  // Estimated visible request lines at the chosen height. Uses the with-reply
+  // case — the conservative estimate shown when a recent reply is also present.
+  const hoverCardHeightLines = estimateHoverCardPromptLines(
+    hoverCardMaxHeightPx,
+    true,
+  );
   const [contentMaxWidthDraft, setContentMaxWidthDraft] = useState(() =>
     String(contentMaxWidth),
+  );
+  const [hoverCardDelayDraft, setHoverCardDelayDraft] = useState(() =>
+    String(hoverCardShowDelayMs),
+  );
+  const [hoverCardHeightDraft, setHoverCardHeightDraft] = useState(() =>
+    String(hoverCardMaxHeightPx),
   );
   const [outputFontSizeDraft, setOutputFontSizeDraft] = useState(() =>
     formatNumberSetting(outputFontSizePx),
@@ -117,11 +175,14 @@ export function AppearanceSettings() {
   const [outputToolPreviewLineCountDraft, setOutputToolPreviewLineCountDraft] =
     useState(() => formatNumberSetting(outputToolPreviewLineCount));
   const { theme, setTheme } = useTheme();
+  const { settingsIconStyle, setSettingsIconStyle } = useSettingsIconStyle();
   const { streamingEnabled, setStreamingEnabled } = useStreamingEnabled();
   const { stableToolPreviewRendering, setStableToolPreviewRendering } =
     useStableToolPreviewRendering();
   const { inlineMediaExpandedByDefault, setInlineMediaExpandedByDefault } =
     useInlineMedia();
+  const { alwaysShowQuoteCircles, setAlwaysShowQuoteCircles } =
+    useAlwaysShowQuoteCircles();
   const { funPhrasesEnabled, setFunPhrasesEnabled } = useFunPhrases();
   const { floatingActionButtonEnabled, setFloatingActionButtonEnabled } =
     useFloatingActionButtonEnabled();
@@ -149,10 +210,14 @@ export function AppearanceSettings() {
       outputToolPreviewLineCount,
       tabSize,
       contentMaxWidth,
+      hoverCardShowDelayMs,
+      hoverCardMaxHeightPx,
       theme,
+      settingsIconStyle,
       streamingEnabled,
       stableToolPreviewRendering,
       inlineMediaExpandedByDefault,
+      alwaysShowQuoteCircles,
       funPhrasesEnabled,
       floatingActionButtonEnabled,
       tabTitleActivityEnabled,
@@ -172,10 +237,14 @@ export function AppearanceSettings() {
       outputToolPreviewLineCount,
       tabSize,
       contentMaxWidth,
+      hoverCardShowDelayMs,
+      hoverCardMaxHeightPx,
       theme,
+      settingsIconStyle,
       streamingEnabled,
       stableToolPreviewRendering,
       inlineMediaExpandedByDefault,
+      alwaysShowQuoteCircles,
       funPhrasesEnabled,
       floatingActionButtonEnabled,
       tabTitleActivityEnabled,
@@ -199,15 +268,21 @@ export function AppearanceSettings() {
       setOutputToolPreviewLineCount(snapshot.outputToolPreviewLineCount);
       setTabSize(snapshot.tabSize);
       setContentMaxWidth(snapshot.contentMaxWidth);
+      setHoverCardShowDelayMs(snapshot.hoverCardShowDelayMs);
+      setHoverCardMaxHeightPx(snapshot.hoverCardMaxHeightPx);
       setTheme(snapshot.theme);
+      setSettingsIconStyle(snapshot.settingsIconStyle);
       setStreamingEnabled(snapshot.streamingEnabled);
       setStableToolPreviewRendering(snapshot.stableToolPreviewRendering);
       setInlineMediaExpandedByDefault(snapshot.inlineMediaExpandedByDefault);
+      setAlwaysShowQuoteCircles(snapshot.alwaysShowQuoteCircles);
       setFunPhrasesEnabled(snapshot.funPhrasesEnabled);
       setFloatingActionButtonEnabled(snapshot.floatingActionButtonEnabled);
       setTabTitleActivityEnabled(snapshot.tabTitleActivityEnabled);
       setShowConnectionBars(snapshot.showConnectionBars);
       setContentMaxWidthDraft(String(snapshot.contentMaxWidth));
+      setHoverCardDelayDraft(String(snapshot.hoverCardShowDelayMs));
+      setHoverCardHeightDraft(String(snapshot.hoverCardMaxHeightPx));
       setOutputFontSizeDraft(formatNumberSetting(snapshot.outputFontSizePx));
       setOutputFixedFontSizeOffsetDraft(
         formatNumberSetting(snapshot.outputFixedFontSizeOffsetPx),
@@ -242,10 +317,14 @@ export function AppearanceSettings() {
       setOutputToolPreviewLineCount,
       setTabSize,
       setContentMaxWidth,
+      setHoverCardShowDelayMs,
+      setHoverCardMaxHeightPx,
       setTheme,
+      setSettingsIconStyle,
       setStreamingEnabled,
       setStableToolPreviewRendering,
       setInlineMediaExpandedByDefault,
+      setAlwaysShowQuoteCircles,
       setFunPhrasesEnabled,
       setFloatingActionButtonEnabled,
       setTabTitleActivityEnabled,
@@ -259,6 +338,14 @@ export function AppearanceSettings() {
   useEffect(() => {
     setContentMaxWidthDraft(String(contentMaxWidth));
   }, [contentMaxWidth]);
+
+  useEffect(() => {
+    setHoverCardDelayDraft(String(hoverCardShowDelayMs));
+  }, [hoverCardShowDelayMs]);
+
+  useEffect(() => {
+    setHoverCardHeightDraft(String(hoverCardMaxHeightPx));
+  }, [hoverCardMaxHeightPx]);
 
   useEffect(() => {
     setOutputFontSizeDraft(formatNumberSetting(outputFontSizePx));
@@ -302,6 +389,20 @@ export function AppearanceSettings() {
     const parsed = Number.parseInt(contentMaxWidthDraft, 10);
     setContentMaxWidth(
       Number.isFinite(parsed) ? parsed : DEFAULT_CONTENT_MAX_WIDTH_PX,
+    );
+  };
+
+  const commitHoverCardDelay = () => {
+    const parsed = Number(hoverCardDelayDraft);
+    setHoverCardShowDelayMs(
+      Number.isFinite(parsed) ? parsed : DEFAULT_HOVERCARD_SHOW_DELAY_MS,
+    );
+  };
+
+  const commitHoverCardHeight = () => {
+    const parsed = Number(hoverCardHeightDraft);
+    setHoverCardMaxHeightPx(
+      Number.isFinite(parsed) ? parsed : DEFAULT_HOVERCARD_MAX_HEIGHT_PX,
     );
   };
 
@@ -389,7 +490,6 @@ export function AppearanceSettings() {
         <div className="settings-item">
           <div className="settings-item-info">
             <strong>{t("appearanceThemeTitle")}</strong>
-            <p>{t("appearanceThemeDescription")}</p>
           </div>
           <div className="font-size-selector">
             {THEMES.map((themeValue) => (
@@ -407,7 +507,6 @@ export function AppearanceSettings() {
         <div className="settings-item">
           <div className="settings-item-info">
             <strong>{t("appearanceFontSizeTitle")}</strong>
-            <p>{t("appearanceFontSizeDescription")}</p>
           </div>
           <div className="font-size-selector">
             {FONT_SIZES.map((size) => (
@@ -422,11 +521,61 @@ export function AppearanceSettings() {
             ))}
           </div>
         </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <strong>{t("appearanceSettingsIconStyleTitle")}</strong>
+            <p>{t("appearanceSettingsIconStyleDescription")}</p>
+          </div>
+          <div
+            className="font-size-selector settings-icon-style-selector"
+            role="group"
+            aria-label={t("appearanceSettingsIconStyleTitle")}
+          >
+            {SETTINGS_ICON_STYLES.map((style) => {
+              const selected = settingsIconStyle === style;
+              const preview =
+                style === "emoji"
+                  ? settingsCategoryEmojiIcons["local-access"]
+                  : settingsCategoryIcons["local-access"];
+              return (
+                <button
+                  key={style}
+                  type="button"
+                  className={`font-size-option settings-icon-style-option ${selected ? "active" : ""}`}
+                  onClick={() => setSettingsIconStyle(style)}
+                  aria-pressed={selected}
+                >
+                  <span
+                    className={`settings-category-icon settings-category-icon-local-access settings-category-icon-${style} settings-icon-style-preview`}
+                    aria-hidden="true"
+                  >
+                    {preview}
+                  </span>
+                  <span>{getSettingsIconStyleLabel(style, translate)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <strong>{t("appearanceToolbarSettingsShortcutTitle")}</strong>
+            <p>{t("appearanceToolbarSettingsShortcutDescription")}</p>
+          </div>
+          <div className="settings-item-actions">
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => navigate(`${basePath}/settings/toolbar`)}
+            >
+              {t("appearanceToolbarSettingsShortcutAction")}
+            </button>
+          </div>
+        </div>
         <div className="settings-item output-appearance-settings">
           <div className="output-appearance-header">
             <div className="settings-item-info">
               <strong>{t("appearanceOutputTypographyTitle")}</strong>
-              <p>{t("appearanceOutputTypographyDescription")}</p>
             </div>
             <button
               type="button"
@@ -509,6 +658,50 @@ export function AppearanceSettings() {
                 ))}
               </datalist>
 
+              <label
+                className="output-appearance-control"
+                htmlFor="output-thinking-size-offset"
+              >
+                <span className="output-appearance-label">
+                  {t("appearanceOutputThinkingSizeOffsetLabel")}
+                </span>
+                <span className="output-appearance-slider-row">
+                  <input
+                    id="output-thinking-size-offset"
+                    type="range"
+                    min={OUTPUT_THINKING_FONT_SIZE_OFFSET_MIN_PX}
+                    max={OUTPUT_THINKING_FONT_SIZE_OFFSET_MAX_PX}
+                    step={OUTPUT_THINKING_FONT_SIZE_OFFSET_STEP_PX}
+                    value={outputThinkingFontSizeOffsetPx}
+                    onChange={(e) =>
+                      setOutputThinkingFontSizeOffsetPx(Number(e.target.value))
+                    }
+                  />
+                  <span className="output-appearance-number-wrap">
+                    <input
+                      type="number"
+                      className="settings-input-small output-appearance-number"
+                      min={OUTPUT_THINKING_FONT_SIZE_OFFSET_MIN_PX}
+                      max={OUTPUT_THINKING_FONT_SIZE_OFFSET_MAX_PX}
+                      step={OUTPUT_THINKING_FONT_SIZE_OFFSET_STEP_PX}
+                      value={outputThinkingFontSizeOffsetDraft}
+                      onChange={(e) =>
+                        setOutputThinkingFontSizeOffsetDraft(e.target.value)
+                      }
+                      onBlur={commitOutputThinkingFontSizeOffset}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          commitOutputThinkingFontSizeOffset();
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      aria-label={t("appearanceOutputThinkingSizeOffsetLabel")}
+                    />
+                    <span className="output-appearance-unit">px</span>
+                  </span>
+                </span>
+              </label>
+
               <div className="output-appearance-control">
                 <span className="output-appearance-label">
                   {t("appearanceOutputFixedFontLabel")}
@@ -565,50 +758,6 @@ export function AppearanceSettings() {
                         }
                       }}
                       aria-label={t("appearanceOutputFixedSizeOffsetLabel")}
-                    />
-                    <span className="output-appearance-unit">px</span>
-                  </span>
-                </span>
-              </label>
-
-              <label
-                className="output-appearance-control"
-                htmlFor="output-thinking-size-offset"
-              >
-                <span className="output-appearance-label">
-                  {t("appearanceOutputThinkingSizeOffsetLabel")}
-                </span>
-                <span className="output-appearance-slider-row">
-                  <input
-                    id="output-thinking-size-offset"
-                    type="range"
-                    min={OUTPUT_THINKING_FONT_SIZE_OFFSET_MIN_PX}
-                    max={OUTPUT_THINKING_FONT_SIZE_OFFSET_MAX_PX}
-                    step={OUTPUT_THINKING_FONT_SIZE_OFFSET_STEP_PX}
-                    value={outputThinkingFontSizeOffsetPx}
-                    onChange={(e) =>
-                      setOutputThinkingFontSizeOffsetPx(Number(e.target.value))
-                    }
-                  />
-                  <span className="output-appearance-number-wrap">
-                    <input
-                      type="number"
-                      className="settings-input-small output-appearance-number"
-                      min={OUTPUT_THINKING_FONT_SIZE_OFFSET_MIN_PX}
-                      max={OUTPUT_THINKING_FONT_SIZE_OFFSET_MAX_PX}
-                      step={OUTPUT_THINKING_FONT_SIZE_OFFSET_STEP_PX}
-                      value={outputThinkingFontSizeOffsetDraft}
-                      onChange={(e) =>
-                        setOutputThinkingFontSizeOffsetDraft(e.target.value)
-                      }
-                      onBlur={commitOutputThinkingFontSizeOffset}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          commitOutputThinkingFontSizeOffset();
-                          e.currentTarget.blur();
-                        }
-                      }}
-                      aria-label={t("appearanceOutputThinkingSizeOffsetLabel")}
                     />
                     <span className="output-appearance-unit">px</span>
                   </span>
@@ -888,31 +1037,152 @@ export function AppearanceSettings() {
           </div>
           <div className="settings-item-actions">
             <input
-              type="number"
-              className="settings-input-small"
+              type="range"
               min={MIN_CONTENT_MAX_WIDTH_PX}
               max={MAX_CONTENT_MAX_WIDTH_PX}
               step={10}
-              value={contentMaxWidthDraft}
-              onChange={(e) => setContentMaxWidthDraft(e.target.value)}
-              onBlur={commitContentMaxWidth}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  commitContentMaxWidth();
-                  e.currentTarget.blur();
-                }
-              }}
+              value={contentMaxWidth}
+              onChange={(e) => setContentMaxWidth(Number(e.target.value))}
               aria-label={t("appearanceContentWidthTitle")}
             />
+            <span className="settings-input-unit">
+              <input
+                type="number"
+                className="settings-input-small"
+                min={MIN_CONTENT_MAX_WIDTH_PX}
+                max={MAX_CONTENT_MAX_WIDTH_PX}
+                step={10}
+                value={contentMaxWidthDraft}
+                onChange={(e) => setContentMaxWidthDraft(e.target.value)}
+                onBlur={commitContentMaxWidth}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    commitContentMaxWidth();
+                    e.currentTarget.blur();
+                  }
+                }}
+                aria-label={t("appearanceContentWidthTitle")}
+              />
+              {t("appearanceContentWidthUnit")}
+            </span>
             <button
               type="button"
-              className="settings-button settings-button-secondary"
+              className="settings-inline-x"
               onClick={() => {
                 setContentMaxWidth(DEFAULT_CONTENT_MAX_WIDTH_PX);
                 setContentMaxWidthDraft(String(DEFAULT_CONTENT_MAX_WIDTH_PX));
               }}
+              aria-label={t("appearanceContentWidthReset")}
+              title={t("appearanceContentWidthReset")}
             >
-              {t("appearanceContentWidthReset")}
+              ×
+            </button>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <strong>{t("appearanceHoverCardDelayTitle")}</strong>
+            <p>{t("appearanceHoverCardDelayDescription")}</p>
+          </div>
+          <div className="settings-item-actions">
+            <input
+              type="range"
+              min={HOVERCARD_SHOW_DELAY_MIN_MS}
+              max={HOVERCARD_SHOW_DELAY_MAX_MS}
+              step={HOVERCARD_SHOW_DELAY_STEP_MS}
+              value={hoverCardShowDelayMs}
+              onChange={(e) => setHoverCardShowDelayMs(Number(e.target.value))}
+              aria-label={t("appearanceHoverCardDelayTitle")}
+            />
+            <span className="settings-input-unit">
+              <input
+                type="number"
+                className="settings-input-small"
+                min={HOVERCARD_SHOW_DELAY_MIN_MS}
+                max={HOVERCARD_SHOW_DELAY_MAX_MS}
+                step={HOVERCARD_SHOW_DELAY_STEP_MS}
+                value={hoverCardDelayDraft}
+                onChange={(e) => setHoverCardDelayDraft(e.target.value)}
+                onBlur={commitHoverCardDelay}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    commitHoverCardDelay();
+                    e.currentTarget.blur();
+                  }
+                }}
+                aria-label={t("appearanceHoverCardDelayTitle")}
+              />
+              {t("appearanceHoverCardDelayUnit")}
+            </span>
+            <button
+              type="button"
+              className="settings-inline-x"
+              onClick={() => {
+                setHoverCardShowDelayMs(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
+                setHoverCardDelayDraft(String(DEFAULT_HOVERCARD_SHOW_DELAY_MS));
+              }}
+              aria-label={t("appearanceHoverCardReset")}
+              title={t("appearanceHoverCardReset")}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <strong>{t("appearanceHoverCardHeightTitle")}</strong>
+            <p>{t("appearanceHoverCardHeightDescription")}</p>
+          </div>
+          <div className="settings-item-actions">
+            <input
+              type="range"
+              min={HOVERCARD_MAX_HEIGHT_MIN_PX}
+              max={HOVERCARD_MAX_HEIGHT_MAX_PX}
+              step={HOVERCARD_MAX_HEIGHT_STEP_PX}
+              value={hoverCardMaxHeightPx}
+              onChange={(e) => setHoverCardMaxHeightPx(Number(e.target.value))}
+              aria-label={t("appearanceHoverCardHeightTitle")}
+            />
+            <span className="settings-input-unit">
+              <input
+                type="number"
+                className="settings-input-small"
+                min={HOVERCARD_MAX_HEIGHT_MIN_PX}
+                max={HOVERCARD_MAX_HEIGHT_MAX_PX}
+                step={HOVERCARD_MAX_HEIGHT_STEP_PX}
+                value={hoverCardHeightDraft}
+                onChange={(e) => setHoverCardHeightDraft(e.target.value)}
+                onBlur={commitHoverCardHeight}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    commitHoverCardHeight();
+                    e.currentTarget.blur();
+                  }
+                }}
+                aria-label={t("appearanceHoverCardHeightTitle")}
+              />
+              {t("appearanceHoverCardHeightUnit")}
+            </span>
+            <span className="settings-hovercard-lines">
+              ({hoverCardHeightLines}{" "}
+              {hoverCardHeightLines === 1
+                ? t("appearanceHoverCardLineUnit")
+                : t("appearanceHoverCardLinesUnit")}
+              )
+            </span>
+            <button
+              type="button"
+              className="settings-inline-x"
+              onClick={() => {
+                setHoverCardMaxHeightPx(DEFAULT_HOVERCARD_MAX_HEIGHT_PX);
+                setHoverCardHeightDraft(
+                  String(DEFAULT_HOVERCARD_MAX_HEIGHT_PX),
+                );
+              }}
+              aria-label={t("appearanceHoverCardReset")}
+              title={t("appearanceHoverCardReset")}
+            >
+              ×
             </button>
           </div>
         </div>
@@ -956,6 +1226,20 @@ export function AppearanceSettings() {
               onChange={(e) =>
                 setInlineMediaExpandedByDefault(e.target.checked)
               }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <strong>{t("appearanceAlwaysShowQuoteCirclesTitle")}</strong>
+            <p>{t("appearanceAlwaysShowQuoteCirclesDescription")}</p>
+          </div>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={alwaysShowQuoteCircles}
+              onChange={(e) => setAlwaysShowQuoteCircles(e.target.checked)}
             />
             <span className="toggle-slider" />
           </label>

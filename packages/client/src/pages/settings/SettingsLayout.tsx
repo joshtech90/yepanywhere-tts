@@ -1,9 +1,9 @@
+import { useLayoutEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useVersion } from "../../hooks/useVersion";
-import { useViewportWidth } from "../../hooks/useViewportWidth";
 import { useI18n } from "../../i18n";
 import {
   getDevelopmentCategory,
@@ -17,6 +17,7 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import { DevelopmentSettings } from "./DevelopmentSettings";
 import { DevicesSettings } from "./DevicesSettings";
 import { EmulatorSettings } from "./EmulatorSettings";
+import { EnvironmentSettings } from "./EnvironmentSettings";
 import { LifecycleWebhooksSettings } from "./LifecycleWebhooksSettings";
 import { LocalAccessSettings } from "./LocalAccessSettings";
 import { MessageDeliverySettings } from "./MessageDeliverySettings";
@@ -50,14 +51,51 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
   speech: SpeechSettings,
   "remote-executors": RemoteExecutorsSettings,
   emulator: EmulatorSettings,
+  environment: EnvironmentSettings,
   about: AboutSettings,
   development: DevelopmentSettings,
 };
 
-export const SETTINGS_TWO_COLUMN_BREAKPOINT = 720;
+// 700px leaves 685px after the stable scrollbar gutter: 32px shell padding,
+// 251px current intrinsic category rail, 16px gap, and 386px detail content.
+export const SETTINGS_TWO_COLUMN_MIN_WIDTH = 700;
 
-export function shouldUseSettingsTwoColumn(viewportWidth: number): boolean {
-  return viewportWidth >= SETTINGS_TWO_COLUMN_BREAKPOINT;
+export function shouldUseSettingsTwoColumn(availableWidth: number): boolean {
+  return availableWidth >= SETTINGS_TWO_COLUMN_MIN_WIDTH;
+}
+
+function getInitialSettingsWidth(): number {
+  return typeof window === "undefined" ? 1200 : window.innerWidth;
+}
+
+function useSettingsContainerWidth(): [
+  (element: HTMLDivElement | null) => void,
+  number,
+] {
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(getInitialSettingsWidth);
+
+  useLayoutEffect(() => {
+    if (!container) {
+      return;
+    }
+
+    const updateWidth = () => {
+      setWidth(container.clientWidth);
+    };
+    updateWidth();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateWidth);
+      return () => window.removeEventListener("resize", updateWidth);
+    }
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [container]);
+
+  return [setContainer, width];
 }
 
 interface SettingsCategoryItemProps {
@@ -96,8 +134,11 @@ export function SettingsLayout() {
   const basePath = useRemoteBasePath();
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
-  const viewportWidth = useViewportWidth();
-  const useTwoColumnSettings = shouldUseSettingsTwoColumn(viewportWidth);
+  const [settingsContainerRef, settingsContainerWidth] =
+    useSettingsContainerWidth();
+  const useTwoColumnSettings = shouldUseSettingsTwoColumn(
+    settingsContainerWidth,
+  );
   const { isManualReloadMode } = useReloadNotifications();
   const { version: versionInfo } = useVersion();
   const capabilities = versionInfo?.capabilities ?? [];
@@ -169,7 +210,10 @@ export function SettingsLayout() {
     if (!category) {
       // Show category list
       return (
-        <MainContent isWideScreen={isWideScreen}>
+        <MainContent
+          isWideScreen={isWideScreen}
+          innerRef={settingsContainerRef}
+        >
           <PageHeader
             title={t("pageTitleSettings")}
             onOpenSidebar={openSidebar}
@@ -178,7 +222,7 @@ export function SettingsLayout() {
             isSidebarCollapsed={isSidebarCollapsed}
           />
           <main className="page-scroll-container">
-            <div className="page-content-inner">
+            <div className="page-content-inner settings-category-list-shell">
               <div className="settings-category-list">
                 {categories.map((cat) => (
                   <SettingsCategoryItem
@@ -198,7 +242,7 @@ export function SettingsLayout() {
     // Show category detail with back button
     const currentCategory = categories.find((c) => c.id === category);
     return (
-      <MainContent isWideScreen={isWideScreen}>
+      <MainContent isWideScreen={isWideScreen} innerRef={settingsContainerRef}>
         <PageHeader
           title={currentCategory?.label || t("pageTitleSettings")}
           onOpenSidebar={openSidebar}
@@ -219,7 +263,7 @@ export function SettingsLayout() {
 
   // Desktop: two-column layout with category list on left, content on right
   return (
-    <MainContent isWideScreen={isWideScreen}>
+    <MainContent isWideScreen={isWideScreen} innerRef={settingsContainerRef}>
       <PageHeader
         title={t("pageTitleSettings")}
         onOpenSidebar={openSidebar}

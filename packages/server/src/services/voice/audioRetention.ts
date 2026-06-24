@@ -11,9 +11,28 @@ export interface SpeechTranscriptionContext {
   sessionId?: string;
   clientTurnId?: string;
   draftKey?: string;
+  speechTargetId?: string;
 }
 
 export type SpeechAudioRequestSource = "http" | "ws";
+
+export interface SpeechStreamingTranscriptTraceEvent {
+  kind: "update" | "final" | "speech-final" | "done";
+  text: string;
+  isFinal?: boolean;
+  speechFinal?: boolean;
+  start?: number;
+  duration?: number;
+  words?: Array<{
+    word?: string;
+    text?: string;
+    punctuated_word?: string;
+    start?: number;
+    end?: number;
+    duration?: number;
+    speaker?: number | string;
+  }>;
+}
 
 export interface SpeechAudioRetentionInput {
   dataDir?: string;
@@ -21,10 +40,12 @@ export interface SpeechAudioRetentionInput {
   requestId: string;
   source: SpeechAudioRequestSource;
   backendId: string;
+  model?: string;
   mimeType: string;
   audio: Buffer;
   transcript: string;
   streamingTranscriptTrace?: string[];
+  streamingTranscriptEvents?: SpeechStreamingTranscriptTraceEvent[];
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -97,6 +118,7 @@ export async function persistSpeechAudio(
           requestId: input.requestId,
           source: input.source,
           backendId: input.backendId,
+          model: input.model,
           mimeType: input.mimeType,
           audioBytes: input.audio.length,
           transcript: input.transcript,
@@ -105,6 +127,7 @@ export async function persistSpeechAudio(
           streamingTranscriptTraceText: input.streamingTranscriptTrace?.join(
             "\n",
           ),
+          streamingTranscriptEvents: input.streamingTranscriptEvents,
           startedAt: input.startedAt,
           completedAt: input.completedAt,
           durationMs: input.durationMs,

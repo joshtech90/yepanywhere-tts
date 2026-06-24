@@ -6,8 +6,9 @@ import type {
   ThinkingMode,
   ThinkingOption,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useInstallId } from "../contexts/InstallIdContext";
 import {
   CLIENT_STORAGE_DEFAULT,
   type DefaultedValue,
@@ -15,6 +16,10 @@ import {
   resolveDefaultedValue,
 } from "../lib/defaultedStorage";
 import { EFFORT_LEVEL_OPTIONS, isEffortLevel } from "../lib/effortLevels";
+import {
+  cleanParakeetSpeechModel,
+  DEFAULT_PARAKEET_SPEECH_MODEL,
+} from "../lib/speechProviders/parakeetModels";
 import {
   DEFAULT_SPEECH_METHOD,
   isSpeechMethodId,
@@ -45,15 +50,30 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string }[] = [
   { value: "sonnet", label: "Sonnet" },
   { value: "sonnet[1m]", label: "Sonnet 1M" },
   { value: "opus", label: "Opus" },
-  { value: "opus[1m]", label: "Opus 1M" },
   { value: "haiku", label: "Haiku" },
   { value: "opusplan", label: "Opus Plan" },
 ];
 
 export { EFFORT_LEVEL_OPTIONS };
 
+const MAX_SPEECH_SMART_TURN_TIMEOUT_MS = 10000;
+
+/**
+ * Opus is always 1M now (the picker no longer offers a separate "Opus 1M"
+ * choice), so remap any previously stored "opus[1m]" preference to the base
+ * alias rather than dropping it back to "default". Sonnet is NOT always-1M
+ * (its 1M needs usage credits), so "sonnet[1m]" remains a distinct valid
+ * choice and is not remapped.
+ */
+function remapLegacyModelChoice(stored: string | null): string | null {
+  if (stored === "opus[1m]") return "opus";
+  return stored;
+}
+
 function loadModel(): ModelOption {
-  const stored = getServerScoped("model", LEGACY_KEYS.model);
+  const stored = remapLegacyModelChoice(
+    getServerScoped("model", LEGACY_KEYS.model),
+  );
   if (stored && MODEL_OPTIONS.some((option) => option.value === stored)) {
     return stored as ModelOption;
   }
@@ -201,7 +221,13 @@ function cleanSpeechSmartTurnSettings(
     timeoutMs:
       typeof settings.timeoutMs === "number" &&
       Number.isFinite(settings.timeoutMs)
-        ? Math.round(clampNumber(settings.timeoutMs, 0, 5000))
+        ? Math.round(
+            clampNumber(
+              settings.timeoutMs,
+              0,
+              MAX_SPEECH_SMART_TURN_TIMEOUT_MS,
+            ),
+          )
         : DEFAULT_SPEECH_SMART_TURN_SETTINGS.timeoutMs,
   };
 }
@@ -279,6 +305,22 @@ function saveGrokSpeechAudioSettings(settings: GrokSpeechAudioSettings) {
   );
 }
 
+function loadParakeetSpeechModel(): string {
+  const stored = getServerScoped(
+    "parakeetSpeechModel",
+    LEGACY_KEYS.parakeetSpeechModel,
+  );
+  return stored?.trim() ? stored : DEFAULT_PARAKEET_SPEECH_MODEL;
+}
+
+function saveParakeetSpeechModel(model: string) {
+  setServerScoped(
+    "parakeetSpeechModel",
+    cleanParakeetSpeechModel(model),
+    LEGACY_KEYS.parakeetSpeechModel,
+  );
+}
+
 function getBuiltInSpeechClientDefaults(): Required<
   NonNullable<ClientDefaults["speech"]>
 > {
@@ -338,6 +380,13 @@ export function useModelSettings() {
     useState<ThinkingMode>(loadThinkingMode);
   const [showThinking, setShowThinkingState] =
     useState<ShowThinking>(loadShowThinking);
+  // showThinking is stored under a server-scoped key that needs the installId,
+  // which arrives asynchronously after a /api/server-info fetch. The synchronous
+  // useState(loadShowThinking) above therefore runs before installId is known
+  // and (lacking a legacy-key fallback) resolves to "default" on every reload.
+  // Re-read once installId lands, unless the user already changed it this mount.
+  const { installId } = useInstallId();
+  const showThinkingTouchedRef = useRef(false);
   const [voiceInputEnabled, setVoiceInputEnabledState] = useState<boolean>(() =>
     resolveDefaultedValue(
       loadVoiceInputEnabledSetting(),
@@ -367,6 +416,9 @@ export function useModelSettings() {
         speechDefaults.grokSpeechAudioSettings,
       ),
     );
+  const [parakeetSpeechModel, setParakeetSpeechModelState] = useState<string>(
+    loadParakeetSpeechModel,
+  );
 
   useEffect(() => {
     if (isClientStorageDefault(loadVoiceInputEnabledSetting())) {
@@ -390,6 +442,14 @@ export function useModelSettings() {
     hasServerSpeechMethodDefault,
   ]);
 
+  useEffect(() => {
+    if (!installId || showThinkingTouchedRef.current) {
+      return;
+    }
+    const stored = loadShowThinking();
+    setShowThinkingState((prev) => (prev === stored ? prev : stored));
+  }, [installId]);
+
   const setModel = useCallback((m: ModelOption) => {
     setModelState(m);
     saveModel(m);
@@ -406,6 +466,7 @@ export function useModelSettings() {
   }, []);
 
   const setShowThinking = useCallback((value: ShowThinking) => {
+    showThinkingTouchedRef.current = true;
     setShowThinkingState(value);
     saveShowThinking(value);
   }, []);
@@ -457,6 +518,11 @@ export function useModelSettings() {
     [],
   );
 
+  const setParakeetSpeechModel = useCallback((model: string) => {
+    setParakeetSpeechModelState(model);
+    saveParakeetSpeechModel(model);
+  }, []);
+
   return {
     model,
     setModel,
@@ -480,6 +546,8 @@ export function useModelSettings() {
     setSpeechSmartTurnSettings,
     grokSpeechAudioSettings,
     setGrokSpeechAudioSettings,
+    parakeetSpeechModel,
+    setParakeetSpeechModel,
   };
 }
 
@@ -543,4 +611,8 @@ export function getSpeechSmartTurnSettings(): SpeechSmartTurnSettings {
 
 export function getGrokSpeechAudioSettings(): GrokSpeechAudioSettings {
   return loadGrokSpeechAudioSettings();
+}
+
+export function getParakeetSpeechModel(): string {
+  return loadParakeetSpeechModel() || DEFAULT_PARAKEET_SPEECH_MODEL;
 }

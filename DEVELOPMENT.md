@@ -21,13 +21,23 @@ pnpm dev
 ## Commands
 
 ```bash
-pnpm setup:core # Install root + client + server + shared, skipping relay
-pnpm dev        # Start dev server
-pnpm lint       # Biome linter
-pnpm typecheck  # TypeScript type checking
-pnpm test       # Unit tests
-pnpm test:e2e   # E2E tests
+pnpm setup:core       # Install root + client + server + shared, skipping relay
+pnpm dev              # Start dev server
+pnpm lint             # Biome linter
+pnpm typecheck        # TypeScript type checking
+pnpm test             # Unit tests
+pnpm test:e2e         # E2E tests
+pnpm clone-references # Clone upstream source into ./references for local reading
 ```
+
+## Reference Source
+
+`pnpm clone-references` shallow-clones upstream source into `references/` for
+local reading (currently the Codex Rust source, `codex-rs`, under
+`references/codex`). The directory is gitignored and optional — clone it when
+you want to grep upstream source while working on a related YA surface (e.g. the
+Codex provider/schema/protocol). It is idempotent; delete a subdir and re-run to
+refresh. The Claude SDK is not open source and is not included.
 
 ## Client I18n
 
@@ -129,12 +139,12 @@ Use profiles to run dev and production instances simultaneously:
 PORT=3400 pnpm start
 
 # Development (dev profile, port 4000)
-PORT=4000 YEP_ANYWHERE_PROFILE=dev pnpm dev
+PORT=4000 YEP_PROFILE=dev pnpm dev
 ```
 
 Environment variables:
-- `YEP_ANYWHERE_PROFILE` — Profile name suffix (creates `~/.yep-anywhere-{profile}/`)
-- `YEP_ANYWHERE_DATA_DIR` — Full path override for data directory
+- `YEP_PROFILE` — Profile name suffix (creates `~/.yep-anywhere-{profile}/`)
+- `YEP_DATA_DIR` — Full path override for data directory
 
 ## Server Logs
 

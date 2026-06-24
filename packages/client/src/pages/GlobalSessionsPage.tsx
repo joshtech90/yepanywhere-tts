@@ -39,6 +39,7 @@ const PROVIDER_COLORS: Record<ProviderName, string> = {
   "gemini-acp": "#4285f4", // Same as gemini
   grok: "#111827",
   opencode: "#9333ea", // Purple for OpenCode
+  pi: "#0d9488", // Teal for pi
 };
 
 function isStatusFilter(value: string): value is StatusFilter {
@@ -981,6 +982,7 @@ export function GlobalSessionsPage() {
                         session.fullTitle ?? getSessionDisplayTitle(session)
                       }
                       initialPrompt={session.initialPrompt}
+                      lastAgentText={session.lastAgentText}
                       updatedAt={session.updatedAt}
                       createdAt={session.createdAt}
                       hasUnread={session.hasUnread}
@@ -988,6 +990,7 @@ export function GlobalSessionsPage() {
                       pendingInputType={session.pendingInputType}
                       status={session.ownership}
                       provider={session.provider}
+                      model={session.model}
                       parentSessionId={session.parentSessionId}
                       executor={session.executor}
                       isStarred={session.isStarred}
@@ -1055,6 +1058,7 @@ export function GlobalSessionsPage() {
                               getSessionDisplayTitle(session)
                             }
                             initialPrompt={session.initialPrompt}
+                            lastAgentText={session.lastAgentText}
                             updatedAt={session.updatedAt}
                             createdAt={session.createdAt}
                             hasUnread={session.hasUnread}
@@ -1065,6 +1069,7 @@ export function GlobalSessionsPage() {
                             pendingInputType={session.pendingInputType}
                             status={session.ownership}
                             provider={session.provider}
+                            model={session.model}
                             parentSessionId={session.parentSessionId}
                             executor={session.executor}
                             isStarred={session.isStarred}

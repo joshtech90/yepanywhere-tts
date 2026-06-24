@@ -108,16 +108,32 @@ server-mediated STT, export the provider key in the Yep Anywhere server
 environment before starting the app:
 
 ```bash
-export YA_stt__XAI_API_KEY="xai-..."
-export YA_stt__DEEPGRAM_API_KEY="deepgram-..."
+export YEP_STT_XAI_API_KEY="xai-..."
+export YEP_STT_DEEPGRAM_API_KEY="deepgram-..."
 ```
 
-Providing `YA_stt__XAI_API_KEY` auto-enables the `ya-grok` backend; providing
-`YA_stt__DEEPGRAM_API_KEY` auto-enables the `ya-deepgram` backend. These
-`YA_<module>__<NAME>` secrets are consumed by Yep Anywhere and stripped from
+Providing `YEP_STT_XAI_API_KEY` auto-enables the `ya-grok` backend; providing
+`YEP_STT_DEEPGRAM_API_KEY` auto-enables the `ya-deepgram` backend. These
+`YEP_<MODULE>_<NAME>` secrets are consumed by Yep Anywhere and stripped from
 child agent environments. The STT-specific xAI key is preferred over a general
 `XAI_API_KEY`, which lets speech transcription use different billing from any
 Grok model or CLI usage.
+
+Local STT backends are opt-in and use the committed pixi `stt` environment:
+
+```bash
+# Enable one or more local backends before starting the server:
+export YEP_VOICE_BACKENDS=ya-whisper
+export YEP_VOICE_BACKENDS=ya-whisper,ya-parakeet
+export YEP_VOICE_BACKENDS=ya-whisper,ya-parakeet,ya-nemo
+```
+
+When `ya-whisper`, `ya-parakeet`, or `ya-nemo` is enabled, startup
+creates/updates the pixi environment if needed, installs the matching local STT
+Python requirements, and downloads the selected model on first load. `ya-nemo`
+uses the heavier optional `stt-bootstrap-nemo` add-on. If setup and model
+validation succeed, the STT backend menu includes the local backend; otherwise
+the server logs repair hints and hides the unavailable option.
 
 If you already exported xAI's standard `XAI_API_KEY`, Yep Anywhere will also use
 it for Grok STT and scrub it from child agent environments. Grok Build does not

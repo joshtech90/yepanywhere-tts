@@ -14,10 +14,12 @@ import {
 import {
   type ChangeEvent,
   type ClipboardEvent,
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +28,7 @@ import { useNavigate } from "react-router-dom";
 import { type UploadedFile, api } from "../api/client";
 import { ENTER_SENDS_MESSAGE } from "../constants";
 import { useToastContext } from "../contexts/ToastContext";
+import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useConnection } from "../hooks/useConnection";
 import { useDraftPersistence } from "../hooks/useDraftPersistence";
 import {
@@ -68,6 +71,8 @@ import {
 } from "../lib/serverClock";
 import { createSessionNavigationState } from "../lib/sessionNavigationState";
 import {
+  canSpeechMethodStream,
+  getSpeechMethodCapabilities,
   getSpeechMethods,
   isSpeechMethodId,
   resolveSpeechMethod,
@@ -78,21 +83,48 @@ import type {
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
 } from "../lib/speechProviders/SpeechProvider";
-import { appendSpeechTranscript } from "../lib/speechRecognition";
+import {
+  clearSpeechInsertionRangeReplacement,
+  createSpeechInsertionRange,
+  getSpeechSelectionFinalDelayMs,
+  getSpeechMirrorSegments,
+  getSpeechTranscriptInsertionParts,
+  getSpeechTranscriptReplacementParts,
+  mapSpeechInsertionRangeThroughEdit,
+  retargetSpeechInsertionRangeReplacement,
+  type SpeechInsertionRange,
+} from "../lib/speechRecognition";
+import {
+  commitSpeechTranscript,
+  hasNonWhitespaceEdit,
+  type PendingTextareaSelectionRestore,
+} from "../lib/speechDraftTransaction";
 import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
+import { generateUUID } from "../lib/uuid";
 import { useVersion } from "../hooks/useVersion";
 import { shortenPath } from "../lib/text";
 import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
+import { ProviderBadge } from "./ProviderBadge";
 import { SpeechControlMenu } from "./SpeechControlMenu";
 import { ThinkingControlsPanel } from "./ThinkingControls";
-import { VoiceInputButton, type VoiceInputButtonRef } from "./VoiceInputButton";
+import {
+  VoiceInputButton,
+  type SpeechPendingKind,
+  type VoiceInputButtonRef,
+} from "./VoiceInputButton";
 
 interface PendingFile {
   id: string;
   file: File;
   previewUrl?: string;
+}
+
+interface PendingSpeechFinal {
+  timer: ReturnType<typeof setTimeout>;
+  transcript: string;
+  metadata?: SpeechTranscriptionResultMetadata;
 }
 
 const RECAP_MODE_ORDER: RecapMode[] = ["off", "native", "side-session"];
@@ -112,10 +144,11 @@ function formatSize(bytes: number): string {
 }
 
 function createClientSpeechTurnId(): string {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `speech-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  );
+  return generateUUID();
+}
+
+function createSpeechTargetId(): string {
+  return `speech-target-${generateUUID()}`;
 }
 
 function toThinkingOption(
@@ -354,6 +387,10 @@ export function NewSessionForm({
   >({});
   const [attachmentQuality] = useAttachmentUploadQuality();
   const [interimTranscript, setInterimTranscript] = useState("");
+  const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
+    null,
+  );
+  const [, setSpeechPreviewRevision] = useState(0);
   const [isProjectChooserExpanded, setIsProjectChooserExpanded] =
     useState(false);
   const [projectInput, setProjectInput] = useState(
@@ -364,10 +401,21 @@ export function NewSessionForm({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
   const speechTurnIdRef = useRef<string | null>(null);
+  const speechInsertionRangeRef = useRef<SpeechInsertionRange | null>(null);
+  const activeSpeechTargetIdRef = useRef<string | null>(null);
+  const speechInsertionRangesRef = useRef<Map<string, SpeechInsertionRange>>(
+    new Map(),
+  );
+  const pendingSpeechFinalRef = useRef<PendingSpeechFinal | null>(null);
+  // True once the user manually edits (non-whitespace) during the active mic
+  // transaction; holds an automatic Smart Turn endpoint send. Speech-inserted
+  // finals go through setDraft (not onChange) and never set this.
+  const composerEditedDuringSpeechRef = useRef(false);
+  const pendingTextareaSelectionRef =
+    useRef<PendingTextareaSelectionRestore | null>(null);
   const hasInitializedDefaultsRef = useRef(false);
   const hasUserCustomizedDefaultsRef = useRef(false);
-  const preferredPromptSuggestionModeRef =
-    useRef<PromptSuggestionMode>("off");
+  const preferredPromptSuggestionModeRef = useRef<PromptSuggestionMode>("off");
   const lastSyncedProjectIdRef = useRef<string | null>(null);
 
   // Thinking toggle state
@@ -376,14 +424,14 @@ export function NewSessionForm({
     setEffortLevel,
     thinkingMode,
     setThinkingMode,
+    showThinking,
+    setShowThinking,
     voiceInputEnabled,
     speechMethod,
     hasStoredSpeechMethod,
     setSpeechMethod,
     speechSmartTurnSettings,
     setSpeechSmartTurnSettings,
-    grokSpeechAudioSettings,
-    setGrokSpeechAudioSettings,
   } = useModelSettings();
 
   // Connection for uploads (uses WebSocket when enabled)
@@ -391,6 +439,7 @@ export function NewSessionForm({
 
   // Server version for voiceBackends advertisement
   const { version: versionInfo } = useVersion();
+  const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
 
   // Toast for error messages
   const { showToast } = useToastContext();
@@ -845,9 +894,19 @@ export function NewSessionForm({
         if (parts.length > 0) description = parts.join(" · ");
       }
 
-      return { value: model.id, label, description };
+      return {
+        value: model.id,
+        label,
+        description,
+        // Reuse the session-header/tooltip badge so the model's route (e.g.
+        // pi's "copilot") is visible in the picker, in the same provider →
+        // route → model order the badge already establishes.
+        icon: selectedProvider ? (
+          <ProviderBadge provider={selectedProvider} model={model.id} />
+        ) : undefined,
+      };
     });
-  }, [availableModels]);
+  }, [availableModels, selectedProvider]);
 
   // Handle model selection from FilterDropdown
   const handleModelSelect = useCallback((selected: string[]) => {
@@ -858,20 +917,28 @@ export function NewSessionForm({
   // Build STT backend options for the mic-attached speech menu.
   const speechMethodOptions = useMemo((): FilterOption<SpeechMethodId>[] => {
     const serverBackends = versionInfo?.voiceBackends ?? [];
-    return getSpeechMethods(serverBackends).map((method) => ({
+    return getSpeechMethods(serverBackends, undefined, {
+      directXaiAvailable: hasBrowserXaiSttApiKey,
+    }).map((method) => ({
       value: method.id,
       label: method.label,
       description: method.description,
     }));
-  }, [versionInfo?.voiceBackends]);
+  }, [versionInfo?.voiceBackends, hasBrowserXaiSttApiKey]);
   const selectedSpeechMethod = useMemo(
     () =>
       resolveSpeechMethod(
         speechMethod,
         versionInfo?.voiceBackends,
         hasStoredSpeechMethod,
+        { directXaiAvailable: hasBrowserXaiSttApiKey },
       ),
-    [speechMethod, versionInfo?.voiceBackends, hasStoredSpeechMethod],
+    [
+      speechMethod,
+      versionInfo?.voiceBackends,
+      hasStoredSpeechMethod,
+      hasBrowserXaiSttApiKey,
+    ],
   );
 
   const handleSpeechMethodSelect = useCallback(
@@ -885,35 +952,19 @@ export function NewSessionForm({
   );
   const showSpeechMethodSelector =
     voiceInputEnabled && speechMethodOptions.length > 1;
-  const selectedSpeechBackendCapabilities =
-    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod];
-  const selectedSpeechCanStream =
-    selectedSpeechMethod !== "browser-native" &&
-    (selectedSpeechMethod !== "ya-grok" ||
-      grokSpeechAudioSettings.uplinkMode === "pcm16") &&
-    selectedSpeechBackendCapabilities?.streaming === true;
+  const selectedSpeechMethodCapabilities = getSpeechMethodCapabilities(
+    selectedSpeechMethod,
+    versionInfo?.voiceBackendCapabilities,
+  );
+  const selectedSpeechCanStream = canSpeechMethodStream({
+    methodId: selectedSpeechMethod,
+    serverCapabilities: versionInfo?.voiceBackendCapabilities,
+  });
   const supportsSelectedSpeechSmartTurn =
     selectedSpeechCanStream &&
-    selectedSpeechBackendCapabilities?.smartTurn === true;
+    selectedSpeechMethodCapabilities.smartTurn === true;
   const activeSpeechSmartTurnSettings: SpeechSmartTurnSettings | undefined =
     supportsSelectedSpeechSmartTurn ? speechSmartTurnSettings : undefined;
-  const showGrokSpeechAudioControls = selectedSpeechMethod === "ya-grok";
-
-  // Combined display text: committed text + interim transcript
-  const displayText = interimTranscript
-    ? message + (message.trimEnd() ? " " : "") + interimTranscript
-    : message;
-
-  // Auto-scroll textarea when voice input updates (interim transcript changes)
-  // Browser handles scrolling for normal typing, but programmatic updates need explicit scroll
-  useEffect(() => {
-    if (interimTranscript) {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        textarea.scrollTop = textarea.scrollHeight;
-      }
-    }
-  }, [interimTranscript]);
 
   // Focus textarea on mount if autoFocus is enabled
   useEffect(() => {
@@ -921,6 +972,14 @@ export function NewSessionForm({
       textareaRef.current?.focus();
     }
   }, [autoFocus]);
+
+  useLayoutEffect(() => {
+    const pending = pendingTextareaSelectionRef.current;
+    const textarea = textareaRef.current;
+    if (!pending || !textarea || textarea.value !== pending.value) return;
+    pendingTextareaSelectionRef.current = null;
+    pending.restore(textarea);
+  }, [message]);
 
   // Check for opt-in new-session prefill on mount.
   useEffect(() => {
@@ -1069,7 +1128,10 @@ export function NewSessionForm({
       const uploadedFiles: UploadedFile[] = [];
 
       // Get model and thinking settings
-      const thinking = toThinkingOption(effectiveThinkingMode, effectiveEffortLevel);
+      const thinking = toThinkingOption(
+        effectiveThinkingMode,
+        effectiveEffortLevel,
+      );
       // Display preference for thinking rows; sent for compatibility while the
       // server requests provider summaries independently.
       const showThinking = getShowThinkingSetting();
@@ -1188,8 +1250,7 @@ export function NewSessionForm({
           uploadedFiles.length > 0 ? uploadedFiles : undefined,
           undefined, // tempId
           thinking, // Pass the captured thinking setting to avoid process restart
-          undefined,
-          undefined,
+          undefined, // deferred
           clientTimestamp,
           undefined, // messageMetadata
           undefined, // serviceTier
@@ -1340,6 +1401,37 @@ export function NewSessionForm({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Escape cancels a pending post-capture wait (its label is inline at the
+    // cursor; no chip ✕). Active listening still finalizes on Escape below.
+    if (
+      e.key === "Escape" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      (speechPending === "transcribing" || speechPending === "finalizing")
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleCancelTranscription();
+      return;
+    }
+
+    if (
+      e.key === "Escape" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      voiceButtonRef.current?.isListening
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleListeningStop();
+      voiceButtonRef.current.stopAndFinalize();
+      return;
+    }
+
     if (e.key === "Enter") {
       // Skip Enter during IME composition (e.g. Chinese/Japanese/Korean input)
       if (e.nativeEvent.isComposing) return;
@@ -1401,40 +1493,209 @@ export function NewSessionForm({
   };
 
   // Voice input handlers
-  const handleVoiceTranscript = useCallback(
-    (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      if (metadata?.smartTurnCommand === "cancel") {
-        setInterimTranscript("");
-        return;
-      }
+  const handleListeningStart = useCallback(() => {
+    const textarea = textareaRef.current;
+    const current = draftControls.getDraft();
+    const selectionStart = Math.max(
+      0,
+      Math.min(textarea?.selectionStart ?? current.length, current.length),
+    );
+    const selectionEnd = Math.max(
+      selectionStart,
+      Math.min(textarea?.selectionEnd ?? selectionStart, current.length),
+    );
+    const targetId = createSpeechTargetId();
+    const range = createSpeechInsertionRange(selectionStart, selectionEnd);
+    activeSpeechTargetIdRef.current = targetId;
+    speechInsertionRangeRef.current = range;
+    speechInsertionRangesRef.current.set(targetId, range);
+    pendingTextareaSelectionRef.current = null;
+    composerEditedDuringSpeechRef.current = false;
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(selectionStart, selectionEnd);
+    }
+    setInterimTranscript("");
+  }, [draftControls]);
 
-      const current = draftControls.getDraft();
-      const trimmedTranscript = transcript.trim();
-      const nextMessage = trimmedTranscript
-        ? appendSpeechTranscript(current, trimmedTranscript)
-        : current;
-      if (nextMessage !== current) {
-        draftControls.setDraft(nextMessage);
+  const clearPendingSpeechFinal = useCallback(() => {
+    const pending = pendingSpeechFinalRef.current;
+    if (pending === null) return;
+    clearTimeout(pending.timer);
+    pendingSpeechFinalRef.current = null;
+  }, []);
+
+  useEffect(() => clearPendingSpeechFinal, [clearPendingSpeechFinal]);
+
+  const handleSpeechSelectionTarget = useCallback(() => {
+    const textarea = textareaRef.current;
+    const range = speechInsertionRangeRef.current;
+    if (!textarea || !range) return;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    if (selectionStart === selectionEnd) {
+      clearPendingSpeechFinal();
+      const nextRange = clearSpeechInsertionRangeReplacement(range);
+      speechInsertionRangeRef.current = nextRange;
+      if (activeSpeechTargetIdRef.current) {
+        speechInsertionRangesRef.current.set(
+          activeSpeechTargetIdRef.current,
+          nextRange,
+        );
       }
-      setInterimTranscript("");
-      if (metadata?.smartTurnCommand === "send") {
-        void handleStartSession(nextMessage);
+      setSpeechPreviewRevision((revision) => revision + 1);
+      return;
+    }
+    if (
+      range.replaceSelectedAtMs === undefined &&
+      range.end === selectionStart &&
+      range.replaceEnd === selectionEnd
+    ) {
+      return;
+    }
+    const nextRange = retargetSpeechInsertionRangeReplacement(
+      range,
+      selectionStart,
+      selectionEnd,
+    );
+    speechInsertionRangeRef.current = nextRange;
+    if (activeSpeechTargetIdRef.current) {
+      speechInsertionRangesRef.current.set(
+        activeSpeechTargetIdRef.current,
+        nextRange,
+      );
+    }
+    setSpeechPreviewRevision((revision) => revision + 1);
+  }, [clearPendingSpeechFinal]);
+
+  const clearSpeechSelectionTarget = useCallback(() => {
+    clearPendingSpeechFinal();
+    if (!speechInsertionRangeRef.current) return;
+    const nextRange = clearSpeechInsertionRangeReplacement(
+      speechInsertionRangeRef.current,
+    );
+    speechInsertionRangeRef.current = nextRange;
+    if (activeSpeechTargetIdRef.current) {
+      speechInsertionRangesRef.current.set(
+        activeSpeechTargetIdRef.current,
+        nextRange,
+      );
+    }
+    setSpeechPreviewRevision((revision) => revision + 1);
+  }, [clearPendingSpeechFinal]);
+
+  const commitVoiceTranscript = useCallback(
+    (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
+      commitSpeechTranscript(
+        {
+          textareaRef,
+          getDraft: draftControls.getDraft,
+          setDraft: draftControls.setDraft,
+          setInterimTranscript,
+          speechInsertionRangeRef,
+          activeSpeechTargetIdRef,
+          speechInsertionRangesRef,
+          pendingTextareaSelectionRef,
+          onSmartTurnSend: (text) => {
+            void handleStartSession(text);
+          },
+          composerEditedDuringSpeech: () =>
+            composerEditedDuringSpeechRef.current,
+        },
+        transcript,
+        metadata,
+      );
+      // A completed overlapping (non-active) target's result has landed; forget
+      // its range so its tag clears (active target is forgotten on pending->null).
+      const committedTargetId = metadata?.speechTargetId;
+      if (
+        committedTargetId &&
+        committedTargetId !== activeSpeechTargetIdRef.current &&
+        speechInsertionRangesRef.current.delete(committedTargetId)
+      ) {
+        setSpeechPreviewRevision((revision) => revision + 1);
       }
-      // Scroll to bottom after committing voice transcript
-      // Use setTimeout to ensure state update has rendered
-      setTimeout(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-          textarea.scrollTop = textarea.scrollHeight;
-        }
-      }, 0);
     },
     [draftControls, handleStartSession],
   );
 
+  const handleVoiceTranscript = useCallback(
+    (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
+      const speechRange = metadata?.speechTargetId
+        ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ??
+          null)
+        : speechInsertionRangeRef.current;
+      const delayMs = metadata?.smartTurnCommand
+        ? 0
+        : getSpeechSelectionFinalDelayMs(speechRange);
+      if (delayMs > 0) {
+        clearPendingSpeechFinal();
+        const timer = setTimeout(() => {
+          const pending = pendingSpeechFinalRef.current;
+          if (!pending || pending.timer !== timer) return;
+          pendingSpeechFinalRef.current = null;
+          commitVoiceTranscript(pending.transcript, pending.metadata);
+        }, delayMs);
+        pendingSpeechFinalRef.current = { timer, transcript, metadata };
+        return;
+      }
+
+      clearPendingSpeechFinal();
+      commitVoiceTranscript(transcript, metadata);
+    },
+    [clearPendingSpeechFinal, commitVoiceTranscript],
+  );
+
+  const flushPendingSpeechFinal = useCallback(() => {
+    const pending = pendingSpeechFinalRef.current;
+    if (pending === null) return;
+    clearTimeout(pending.timer);
+    pendingSpeechFinalRef.current = null;
+    commitVoiceTranscript(pending.transcript, pending.metadata);
+  }, [commitVoiceTranscript]);
+
+  const handleListeningStop = useCallback(() => {
+    flushPendingSpeechFinal();
+    setInterimTranscript("");
+  }, [flushPendingSpeechFinal]);
+
   const handleInterimTranscript = useCallback((transcript: string) => {
     setInterimTranscript(transcript);
   }, []);
+
+  const handlePendingSpeechChange = useCallback(
+    (kind: SpeechPendingKind | null) => {
+      if (kind === null) {
+        // Active recording finished: forget its target so the inline tag clears
+        // and completed targets don't accumulate (see MessageInput).
+        const targetId = activeSpeechTargetIdRef.current;
+        if (targetId) {
+          speechInsertionRangesRef.current.delete(targetId);
+        }
+        speechInsertionRangeRef.current = null;
+        activeSpeechTargetIdRef.current = null;
+      }
+      setSpeechPending(kind);
+    },
+    [],
+  );
+
+  // Cancel a pending transcription/finalization from the chip's ✕. The provider
+  // discards the in-flight result (keeping committed text); here we drop the
+  // pending speech target. Cancel is explicit-click-only so backspace can never
+  // trigger it.
+  const handleCancelTranscription = useCallback(() => {
+    voiceButtonRef.current?.cancelProcessing();
+    clearPendingSpeechFinal();
+    const targetId = activeSpeechTargetIdRef.current;
+    if (targetId) {
+      speechInsertionRangesRef.current.delete(targetId);
+    }
+    speechInsertionRangeRef.current = null;
+    activeSpeechTargetIdRef.current = null;
+    setSpeechPending(null);
+    setInterimTranscript("");
+  }, [clearPendingSpeechFinal]);
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
@@ -1444,16 +1705,87 @@ export function NewSessionForm({
       const voice = voiceButtonRef.current;
       if (!voice?.isAvailable) return;
       const wasActive = voice.isListening;
-      voice.toggle();
-      if (!wasActive) {
-        textareaRef.current?.focus();
+      if (wasActive) {
+        handleListeningStop();
+        voice.toggle();
+        return;
       }
+      handleListeningStart();
+      voice.toggle();
     },
-    [],
+    [handleListeningStart, handleListeningStop],
   );
 
   const hasContent = message.trim() || pendingFiles.length > 0;
   const canStart = Boolean(hasContent);
+  const interimDisplayTranscript = interimTranscript.trim();
+  // The inline mirror previews speech in place at the insertion point: streaming
+  // interim text, otherwise the pending-state label (Listening…/Transcribing…/
+  // Finalizing…), unified with the streaming preview rather than a sibling chip.
+  // See topics/mic-button-speech-ui.md.
+  const speechPendingLabel = speechPending
+    ? speechPending === "finalizing"
+      ? t("speechFinalizingPlaceholder" as never)
+      : speechPending === "listening"
+        ? t("speechListeningPlaceholder" as never)
+        : t("speechTranscribingPlaceholder" as never)
+    : "";
+  const speechInlineTranscript = interimDisplayTranscript || speechPendingLabel;
+  const speechInsertionRange = speechInsertionRangeRef.current;
+  const interimInsertion = speechInsertionRange
+    ? getSpeechTranscriptReplacementParts(
+        message,
+        speechInlineTranscript,
+        speechInsertionRange.end,
+        speechInsertionRange.replaceEnd ?? speechInsertionRange.end,
+      )
+    : getSpeechTranscriptInsertionParts(
+        message,
+        speechInlineTranscript,
+        message.length,
+      );
+
+  // One tag per pending speech target at its own insertion point (arrival
+  // order, "(N)" on the Nth>1); see MessageInput / topics/mic-button-speech-ui.md.
+  const pendingTagLabel = (kind: SpeechPendingKind | null): string =>
+    kind === "finalizing"
+      ? t("speechFinalizingPlaceholder" as never)
+      : kind === "listening"
+        ? t("speechListeningPlaceholder" as never)
+        : t("speechTranscribingPlaceholder" as never);
+  const speechRangeTags = interimDisplayTranscript
+    ? []
+    : [...speechInsertionRangesRef.current.entries()].map(
+        ([targetId, range], index) => {
+          const active = targetId === activeSpeechTargetIdRef.current;
+          return {
+            targetId,
+            position: range.end,
+            replaceEnd: range.replaceEnd ?? range.end,
+            active,
+            ordinal: index + 1,
+            label: pendingTagLabel(active ? speechPending : "transcribing"),
+          };
+        },
+      );
+  const speechPendingTags =
+    speechRangeTags.length === 0 && !interimDisplayTranscript && speechPending
+      ? [
+          {
+            targetId: "pending",
+            position: message.length,
+            replaceEnd: message.length,
+            active: true,
+            ordinal: 1,
+            label: pendingTagLabel(speechPending),
+          },
+        ]
+      : speechRangeTags;
+  const speechMirrorSegments = getSpeechMirrorSegments(
+    message,
+    speechPendingTags,
+  );
+
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
       if (!speechTurnIdRef.current) {
@@ -1463,25 +1795,130 @@ export function NewSessionForm({
         projectId,
         draftKey: NEW_SESSION_DRAFT_KEY,
         clientTurnId: speechTurnIdRef.current,
+        speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
       };
     }, [projectId]);
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
   const inputArea = (
     <>
-      <textarea
-        ref={textareaRef}
-        value={displayText}
-        onChange={(e) => {
-          setInterimTranscript("");
-          setMessage(e.target.value);
-        }}
-        onKeyDown={handleKeyDown}
-        onPaste={handlePaste}
-        placeholder={resolvedPlaceholder}
-        disabled={isStarting}
-        rows={rows}
-        className="new-session-form-textarea"
-      />
+      <div
+        className={`speech-draft-field ${speechInlineTranscript ? "has-interim" : ""}${
+          speechInlineTranscript && !interimDisplayTranscript
+            ? " has-pending-tag"
+            : ""
+        }`}
+      >
+        <div className="speech-draft-inline">
+          {speechInlineTranscript && (
+            <div className="speech-draft-mirror" aria-hidden="true">
+              {interimDisplayTranscript ? (
+                <>
+                  <span>{interimInsertion.before}</span>
+                  {interimInsertion.separatorBefore}
+                  <span className="speech-interim-inline">
+                    {interimInsertion.transcript}
+                  </span>
+                  {interimInsertion.separatorAfter}
+                  <span>{interimInsertion.after}</span>
+                </>
+              ) : (
+                speechMirrorSegments.map((seg) =>
+                  seg.type === "text" ? (
+                    <span key={seg.key}>{seg.text}</span>
+                  ) : (
+                    <Fragment key={seg.tag.targetId}>
+                      <span className="speech-processing-inline">
+                        {seg.tag.label}
+                        {seg.tag.ordinal > 1 && (
+                          <span className="speech-tag-ordinal">
+                            {` (${seg.tag.ordinal})`}
+                          </span>
+                        )}
+                        {seg.tag.active && (
+                          <button
+                            type="button"
+                            className="speech-tag-cancel"
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={handleCancelTranscription}
+                            title={t("speechTranscribingCancel" as never)}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                      {seg.tag.active && <span className="speech-tag-caret" />}
+                    </Fragment>
+                  ),
+                )
+              )}
+            </div>
+          )}
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => {
+              const nextMessage = e.target.value;
+              clearPendingSpeechFinal();
+              if (speechInsertionRangesRef.current.size > 0) {
+                const nextRanges = new Map<string, SpeechInsertionRange>();
+                for (const [
+                  targetId,
+                  range,
+                ] of speechInsertionRangesRef.current) {
+                  nextRanges.set(
+                    targetId,
+                    clearSpeechInsertionRangeReplacement(
+                      mapSpeechInsertionRangeThroughEdit(
+                        message,
+                        nextMessage,
+                        range,
+                      ),
+                    ),
+                  );
+                }
+                speechInsertionRangesRef.current = nextRanges;
+                speechInsertionRangeRef.current =
+                  activeSpeechTargetIdRef.current !== null
+                    ? (nextRanges.get(activeSpeechTargetIdRef.current) ?? null)
+                    : null;
+              }
+              if (
+                activeSpeechTargetIdRef.current !== null &&
+                hasNonWhitespaceEdit(message, nextMessage)
+              ) {
+                composerEditedDuringSpeechRef.current = true;
+              }
+              setMessage(nextMessage);
+            }}
+            onKeyDown={handleKeyDown}
+            onSelect={handleSpeechSelectionTarget}
+            onPointerUp={handleSpeechSelectionTarget}
+            onKeyUp={handleSpeechSelectionTarget}
+            onCut={clearSpeechSelectionTarget}
+            onCopy={clearSpeechSelectionTarget}
+            onPaste={(event) => {
+              clearSpeechSelectionTarget();
+              handlePaste(event);
+            }}
+            placeholder={resolvedPlaceholder}
+            disabled={isStarting}
+            rows={rows}
+            className="new-session-form-textarea"
+          />
+        </div>
+        {interimTranscript && (
+          <div
+            className="speech-interim-status"
+            role="status"
+            aria-live="polite"
+            aria-label="Tentative speech transcript"
+          >
+            {interimTranscript}
+          </div>
+        )}
+      </div>
       <div className="new-session-form-toolbar">
         <div className="new-session-form-toolbar-left">
           <input
@@ -1522,27 +1959,28 @@ export function NewSessionForm({
                 : undefined
             }
             smartTurnDisabled={isStarting}
-            grokAudioSettings={
-              showGrokSpeechAudioControls ? grokSpeechAudioSettings : undefined
-            }
-            onGrokAudioSettingsChange={
-              showGrokSpeechAudioControls
-                ? setGrokSpeechAudioSettings
-                : undefined
-            }
+            onBeforeOpen={() => {
+              handleListeningStop();
+              voiceButtonRef.current?.stopAndFinalize();
+            }}
+            onBeforeCaptureChange={() => {
+              handleListeningStop();
+              voiceButtonRef.current?.stopAndFinalize();
+            }}
             onPointerNearTrigger={() => voiceButtonRef.current?.prewarm?.()}
             trigger={
               <VoiceInputButton
                 ref={voiceButtonRef}
                 onTranscript={handleVoiceTranscript}
                 onInterimTranscript={handleInterimTranscript}
-                onListeningStart={() => textareaRef.current?.focus()}
+                onListeningStart={handleListeningStart}
+                onListeningStop={handleListeningStop}
+                onPendingSpeechChange={handlePendingSpeechChange}
                 disabled={isStarting}
                 className="toolbar-button"
                 speechMethod={selectedSpeechMethod}
                 getTranscriptionContext={getTranscriptionContext}
                 smartTurn={activeSpeechSmartTurnSettings}
-                grokSpeechAudioSettings={grokSpeechAudioSettings}
               />
             }
           />
@@ -1632,7 +2070,9 @@ export function NewSessionForm({
           level={effectiveEffortLevel}
           effortOptions={effortOptions}
           onSetEffort={setEffortLevel}
-          showThinkingControl={false}
+          showThinking={showThinking}
+          onSetShowThinking={setShowThinking}
+          provider={selectedProvider ?? undefined}
           t={t}
           className="thinking-controls-panel--inline new-session-thinking-controls"
         />
@@ -1783,6 +2223,7 @@ export function NewSessionForm({
       <div className="new-session-model-field">
         <h3>{t("newSessionModelTitle")}</h3>
         <FilterDropdown
+          className="model-filter-dropdown"
           label={t("newSessionModelTitle")}
           options={modelOptions}
           selected={selectedModel ? [selectedModel] : []}

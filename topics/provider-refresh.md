@@ -123,7 +123,30 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
-Current source refresh, 2026-06-14:
+Current source refresh, 2026-06-16:
+
+- Installed Codex is `codex-cli 0.140.0`; repo expected version is `0.140.0`.
+- `pnpm codex:protocol:check` is clean after regenerating the checked-in
+  app-server subset. Notable protocol drift from the 0.139 target: generated
+  `AgentMessageInputContent` now admits `input_text`; `ThreadSource` is now
+  provider-defined `string`; `ToolRequestUserInputParams` gained
+  `autoResolutionMs`; `ThreadStartParams` gained selected capability roots; and
+  `ThreadItem` gained `subAgentActivity`.
+- App-server `model/list` returned the same visible YA model set:
+  `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex-spark`; `priority`
+  service tier remains on `gpt-5.5` and `gpt-5.4`.
+- Runtime compatibility change: YA now normalizes live `subAgentActivity`
+  items into visible system messages. Codex docs say subagent activity is
+  surfaced in the first-party CLI/app, so silently dropping those app-server
+  items would make YA less faithful to the provider UI. Selected capability
+  roots remain protocol-only for YA because this provider path does not set
+  them, and tool user-input requests still receive empty answers in the current
+  MVP path.
+
+Status: Codex 0.140 compatibility refresh complete in source; no new
+latest-Codex requirement was introduced.
+
+Previous source refresh, 2026-06-14:
 
 - Installed Codex is `codex-cli 0.139.0`; repo expected version is `0.139.0`.
 - `pnpm codex:protocol:check` failed only because generated
@@ -220,6 +243,30 @@ Difference detectors:
   by `claude-sdk-schema` or visible normalization tests.
 - Model ids, effort levels, or context windows change enough to make fallback
   constants or model glyph rules misleading.
+
+Current source refresh, 2026-06-19:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.170` to `0.3.183`,
+  whose package metadata declares bundled Claude Code `2.1.183`.
+- Claude Code 2.1.181 added automatic recovery for API connection drops during
+  thinking. This matters to YA because local provider startup prefers the
+  SDK-bundled executable over an independently installed `claude` binary.
+- YA now opts into Claude Code's persistent retry watchdog for retryable
+  429/529 responses and preserves the original in-flight request with
+  exponential backoff capped at five minutes. The documented retry-count limit
+  is set to an effectively unbounded value for other transient server, timeout,
+  and connection failures. Both launch values preserve explicit operator
+  overrides.
+- SDK type drift adds `system/informational` user-visible banners and
+  `system/worker_shutting_down` remote-worker lifecycle events. YA's loose
+  server pass-through accepts both. `worker_shutting_down` is not authoritative
+  for YA's locally owned process lifecycle; `informational` still needs a
+  deliberate client rendering policy because the current system-message
+  allowlist drops it.
+
+Status: retry compatibility is refreshed through Claude Code 2.1.183. The new
+informational-message rendering surface remains a known follow-up rather than a
+retry-path blocker.
 
 Current read-only/local audit, 2026-06-14:
 

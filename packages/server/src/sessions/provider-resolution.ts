@@ -3,15 +3,21 @@ import type {
   ISessionIndexService,
   SessionIndexListOptions,
 } from "../indexes/types.js";
-import { GROK_SESSIONS_DIR, canonicalizeProjectPath } from "../projects/paths.js";
+import {
+  GROK_SESSIONS_DIR,
+  PI_SESSIONS_DIR,
+  canonicalizeProjectPath,
+} from "../projects/paths.js";
 import type { Project, SessionSummary } from "../supervisor/types.js";
 import { CodexSessionReader } from "./codex-reader.js";
 import { GeminiSessionReader } from "./gemini-reader.js";
 import { GrokSessionReader } from "./grok-reader.js";
+import { OPENCODE_STORAGE_DIR } from "./opencode-reader.js";
+import { PiSessionReader } from "./pi-reader.js";
 import { ClaudeSessionReader } from "./reader.js";
 import type { ISessionReader } from "./types.js";
 
-type ProviderGroup = "claude" | "codex" | "gemini" | "opencode" | "grok";
+type ProviderGroup = "claude" | "codex" | "gemini" | "opencode" | "grok" | "pi";
 
 export interface ProviderProjectCatalog {
   codexPaths: Set<string>;
@@ -29,13 +35,15 @@ export interface ProviderResolutionDeps {
   geminiHashToCwd?: Promise<Map<string, string>>;
   grokSessionsDir?: string;
   grokReaderFactory?: (projectPath: string) => GrokSessionReader;
+  piSessionsDir?: string;
+  piReaderFactory?: (projectPath: string) => PiSessionReader;
 }
 
 export interface SessionSource {
   provider: ProviderName;
   reader: ISessionReader;
   sessionDir: string;
-  kind: "primary" | "codex" | "gemini" | "opencode" | "grok";
+  kind: "primary" | "codex" | "gemini" | "opencode" | "grok" | "pi";
 }
 
 export interface ResolvedSessionSummary {
@@ -52,6 +60,7 @@ function normalizeProviderGroup(
   if (provider === "opencode") return "opencode";
   if (provider === "claude" || provider === "claude-ollama") return "claude";
   if (provider === "grok" || provider === "grok-acp") return "grok";
+  if (provider === "pi") return "pi";
   return null;
 }
 
@@ -80,6 +89,22 @@ function mayHaveGrokSessions(_project: Project): boolean {
   // Grok sessions are keyed by cwd under ~/.grok/sessions, so the reader's
   // project-path filter is the real membership test. Include it for every
   // provider group so mixed-provider projects survive YA restarts.
+  return true;
+}
+
+function mayHavePiSessions(_project: Project): boolean {
+  // pi sessions are keyed by cwd under ~/.pi/agent/sessions, so the reader's
+  // project-path filter is the real membership test. Include it for every
+  // provider group so pi sessions survive YA restarts (mirrors Grok).
+  return true;
+}
+
+function mayHaveOpenCodeSessions(_project: Project): boolean {
+  // OpenCode sessions live under its own storage keyed by a project whose
+  // worktree is the cwd; the reader matches that worktree, so its project-path
+  // filter is the real membership test. Include it for every provider group so
+  // OpenCode sessions appear (and resume) in any project that has them, even
+  // when YA's primary provider for the project is Claude/Codex/etc.
   return true;
 }
 
@@ -157,6 +182,24 @@ function createGrokSource(
   };
 }
 
+function createPiSource(
+  project: Project,
+  deps: ProviderResolutionDeps,
+): SessionSource {
+  const reader =
+    deps.piReaderFactory?.(project.path) ??
+    new PiSessionReader({
+      sessionsDir: deps.piSessionsDir ?? PI_SESSIONS_DIR,
+      projectPath: project.path,
+    });
+  return {
+    provider: "pi",
+    reader,
+    sessionDir: deps.piSessionsDir ?? PI_SESSIONS_DIR,
+    kind: "pi",
+  };
+}
+
 function createOpenCodeSource(
   project: Project,
   deps: ProviderResolutionDeps,
@@ -164,7 +207,10 @@ function createOpenCodeSource(
   return {
     provider: "opencode",
     reader: deps.readerFactory({ ...project, provider: "opencode" }),
-    sessionDir: project.sessionDir,
+    // Use OpenCode's own storage dir (not the project's Claude-style dir) so the
+    // session-index cache key is distinct from the Claude source for the same
+    // project — otherwise the two would collide on (sessionDir, projectId).
+    sessionDir: OPENCODE_STORAGE_DIR,
     kind: "opencode",
   };
 }
@@ -195,6 +241,12 @@ function buildCandidateGroups(
   if (mayHaveGrokSessions(project)) {
     pushGroup("grok");
   }
+  if (mayHavePiSessions(project)) {
+    pushGroup("pi");
+  }
+  if (mayHaveOpenCodeSessions(project)) {
+    pushGroup("opencode");
+  }
 
   return groups;
 }
@@ -216,6 +268,8 @@ function getSourceForGroup(
       return createGeminiSource(project, deps, catalog);
     case "grok":
       return createGrokSource(project, deps);
+    case "pi":
+      return createPiSource(project, deps);
   }
 }
 

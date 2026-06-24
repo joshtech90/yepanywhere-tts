@@ -33,6 +33,7 @@ import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import type {
   ProviderActivitySnapshot,
+  ProviderCommandResult,
   ProviderLivenessProbeResult,
   SDKMessage,
   TimestampedSDKMessage,
@@ -53,8 +54,15 @@ import type {
   RawResponseItemCompletedNotification,
   ReasoningSummaryTextDeltaNotification,
   SandboxMode as CodexSandboxMode,
+  ThreadForkParams,
+  ThreadForkResponse,
   ThreadReadParams,
+  ThreadReadResponse,
   ThreadItem as CodexThreadItem,
+  ThreadCompactStartParams,
+  ThreadCompactStartResponse,
+  ThreadRollbackParams,
+  ThreadRollbackResponse,
   CommandExecutionApprovalDecision,
   CommandExecutionRequestApprovalParams,
   FileChangeApprovalDecision,
@@ -81,6 +89,8 @@ import type {
   AgentSession,
   AuthStatus,
   StartSessionOptions,
+  SummaryGenerationRequest,
+  SummaryGenerationResult,
 } from "./types.js";
 
 const log = getLogger().child({ component: "codex-provider" });
@@ -144,13 +154,14 @@ const CODEX_CLI_GPT55_MIN_VERSION = "0.124.0";
 const CODEX_FAILURE_TRACE_LIMIT = 12;
 const CODEX_FAILURE_PREVIEW_CHARS = 240;
 const CODEX_RECAP_TIMEOUT_MS = 20_000;
+const CODEX_SUMMARY_TIMEOUT_MS = 60_000;
 const CODEX_RECAP_MAX_TOTAL_CHARS = 6000;
 const CODEX_RECAP_CHEAPEST_MODEL_PREFERENCES = [
   "gpt-5.4-mini",
   "gpt-5.1-codex-mini",
   "gpt-5.3-codex-spark",
 ] as const;
-const CODEX_DISABLE_LIVE_DELTAS_ENV = "YA_CODEX_DISABLE_LIVE_DELTAS";
+const CODEX_DISABLE_LIVE_DELTAS_ENV = "YEP_CODEX_DISABLE_LIVE_DELTAS";
 const CODEX_LIVE_DELTA_NOTIFICATION_METHODS = new Set<string>([
   "item/agentMessage/delta",
   "item/plan/delta",
@@ -188,17 +199,14 @@ interface CodexThreadPolicy {
   sandbox: CodexSandboxMode;
 }
 
-interface CodexThreadReadResponse {
-  thread?: {
-    id?: string;
-    status?: {
-      type?: string;
-      activeFlags?: unknown;
-    };
-  };
-}
-
 type CodexThreadResumeParamsForRequest = ThreadResumeParams;
+type CodexThreadForkParamsForRequest = ThreadForkParams;
+type CodexThreadTurn = ThreadReadResponse["thread"]["turns"][number];
+
+interface CodexForkAnchor {
+  turnIndex: number;
+  itemIndex: number | null;
+}
 
 /**
  * When enabled, declare Codex session originator as "Codex Desktop"
@@ -568,6 +576,14 @@ type NormalizedThreadItem =
       id: string;
       type: "todo_list";
       items: Array<{ text: string; completed: boolean }>;
+    }
+  | {
+      id: string;
+      type: "subagent_activity";
+      kind: string;
+      agentThreadId: string;
+      agentPath: string;
+      text: string;
     }
   | { id: string; type: "context_compaction" }
   | { id: string; type: "error"; message: string }
@@ -1570,7 +1586,108 @@ export class CodexProvider implements AgentProvider {
         } satisfies TurnInterruptParams);
         return true;
       },
+      runProviderCommand: async (command): Promise<ProviderCommandResult> => {
+        // Only `/compact` is dispatched natively; every other slash command
+        // falls through to ordinary turn delivery.
+        const name = command.trim().replace(/^\/+/, "").toLowerCase();
+        if (name !== "compact") {
+          return { handled: false };
+        }
+        // Codex compaction takes no instructions, so any trailing argument is
+        // intentionally dropped here — there is no app-server surface for it.
+        if (!activeClient || !runtimeState.threadId) {
+          return {
+            handled: true,
+            error: "Codex session is not ready for compaction yet",
+          };
+        }
+        // A compact runs as its own (non-steerable) turn; refuse mid-turn so we
+        // do not collide with active work or send `/compact` as plain text.
+        if (runtimeState.activeTurnId) {
+          return {
+            handled: true,
+            error: "Cannot compact while a turn is in progress",
+          };
+        }
+        try {
+          await activeClient.request<ThreadCompactStartResponse>(
+            "thread/compact/start",
+            {
+              threadId: runtimeState.threadId,
+            } satisfies ThreadCompactStartParams,
+          );
+          return { handled: true };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          log.warn(
+            { threadId: runtimeState.threadId, error: message },
+            "Codex thread/compact/start failed",
+          );
+          return { handled: true, error: message };
+        }
+      },
     };
+  }
+
+  async forkSession(options: {
+    sessionId: string;
+    cwd: string;
+    upToMessageId?: string;
+    title?: string;
+  }): Promise<{ sessionId: string }> {
+    const codexCommand = await this.resolveCodexCommand();
+    const appServer = new CodexAppServerClient(
+      codexCommand,
+      options.cwd,
+      this.getCodexEnv(),
+    );
+    appServer.setServerRequestHandler((request) =>
+      this.handleForkServerRequest(request),
+    );
+
+    try {
+      await appServer.connect();
+      const experimentalApiEnabled = await this.initializeAppServer(appServer);
+      appServer.notify("initialized");
+
+      const rollbackCount = options.upToMessageId
+        ? await this.resolveCodexForkRollbackCount(
+            appServer,
+            options.sessionId,
+            options.upToMessageId,
+          )
+        : 0;
+      const policy = this.mapPermissionModeToThreadPolicy(undefined);
+      const fork = await appServer.request<ThreadForkResponse>(
+        "thread/fork",
+        this.createThreadForkParams(options, policy, experimentalApiEnabled),
+      );
+      const forkSessionId = fork.thread?.id;
+      if (!forkSessionId) {
+        throw new Error("Codex thread/fork did not return a thread id");
+      }
+
+      if (rollbackCount > 0) {
+        await appServer.request<ThreadRollbackResponse>("thread/rollback", {
+          threadId: forkSessionId,
+          numTurns: rollbackCount,
+        } satisfies ThreadRollbackParams);
+      }
+
+      log.info(
+        {
+          sourceSessionId: options.sessionId,
+          forkSessionId,
+          upToMessageId: options.upToMessageId ?? null,
+          rollbackCount,
+        },
+        "Forked Codex app-server thread",
+      );
+      return { sessionId: forkSessionId };
+    } finally {
+      await appServer.close();
+    }
   }
 
   private async probeCodexLiveness(
@@ -1598,14 +1715,20 @@ export class CodexProvider implements AgentProvider {
     }
 
     try {
-      const response = await activeClient.request<CodexThreadReadResponse>(
+      const response = await activeClient.request<ThreadReadResponse>(
         "thread/read",
         {
           threadId: runtimeState.threadId,
           includeTurns: false,
         } satisfies ThreadReadParams,
       );
-      const status = response.thread?.status;
+      const status =
+        response.thread?.status && typeof response.thread.status === "object"
+          ? (response.thread.status as {
+              type?: string;
+              activeFlags?: unknown;
+            })
+          : null;
       const statusType = status?.type;
       const activeFlags = Array.isArray(status?.activeFlags)
         ? status.activeFlags.filter(
@@ -1701,10 +1824,19 @@ export class CodexProvider implements AgentProvider {
     const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
       options.resumeSessionId,
     );
+    const codexEnv = agentctlSessionEnvBridge.extendEnv(this.getCodexEnv());
+    if (options.resumeSessionId) {
+      // The bridge only reaches bash tool shells that source BASH_ENV, which
+      // codex's sandbox may strip. For resume the id is known at spawn, so set
+      // it directly in the app-server env too; every shell codex launches
+      // inherits it regardless of BASH_ENV. New sessions (id unknown until
+      // thread/start) stay on the bridge alone.
+      codexEnv.AGENTCTL_SESSION_ID = options.resumeSessionId;
+    }
     const appServer = new CodexAppServerClient(
       codexCommand,
       options.cwd,
-      agentctlSessionEnvBridge.extendEnv(this.getCodexEnv()),
+      codexEnv,
       (notification) =>
         this.shouldSuppressLiveDeltaNotification(notification, options),
     );
@@ -2172,6 +2304,115 @@ export class CodexProvider implements AgentProvider {
     return params;
   }
 
+  private createThreadForkParams(
+    options: {
+      sessionId: string;
+      cwd: string;
+    },
+    policy: CodexThreadPolicy,
+    experimentalApiEnabled = false,
+  ): CodexThreadForkParamsForRequest {
+    const params: CodexThreadForkParamsForRequest = {
+      threadId: options.sessionId,
+      cwd: options.cwd,
+      ...this.buildThreadPermissionParams(policy),
+      config: null,
+    };
+    if (experimentalApiEnabled) {
+      params.excludeTurns = true;
+    }
+    return params;
+  }
+
+  private async resolveCodexForkRollbackCount(
+    appServer: CodexAppServerClient,
+    sessionId: string,
+    upToMessageId: string,
+  ): Promise<number> {
+    const response = await appServer.request<ThreadReadResponse>(
+      "thread/read",
+      {
+        threadId: sessionId,
+        includeTurns: true,
+      } satisfies ThreadReadParams,
+    );
+    const turns = response.thread.turns ?? [];
+    return this.computeCodexForkRollbackCount(turns, upToMessageId);
+  }
+
+  private computeCodexForkRollbackCount(
+    turns: CodexThreadTurn[],
+    upToMessageId: string,
+  ): number {
+    const anchor = this.findCodexForkAnchor(turns, upToMessageId);
+    if (!anchor) {
+      throw new Error(
+        `Codex fork anchor ${upToMessageId} was not found in source thread`,
+      );
+    }
+
+    if (anchor.itemIndex !== null) {
+      const turn = turns[anchor.turnIndex];
+      if (!turn) {
+        throw new Error(
+          `Codex fork anchor ${upToMessageId} resolved to a missing turn`,
+        );
+      }
+      if (anchor.itemIndex < turn.items.length - 1) {
+        throw new Error(
+          `Codex fork anchor ${upToMessageId} is inside a turn; Codex can only fork at completed turn boundaries`,
+        );
+      }
+    }
+
+    return turns.length - anchor.turnIndex - 1;
+  }
+
+  private findCodexForkAnchor(
+    turns: CodexThreadTurn[],
+    upToMessageId: string,
+  ): CodexForkAnchor | null {
+    for (const [turnIndex, turn] of turns.entries()) {
+      if (
+        turn.id === upToMessageId ||
+        `codex-turn-interrupted-${turn.id}` === upToMessageId
+      ) {
+        return { turnIndex, itemIndex: null };
+      }
+
+      for (const [itemIndex, item] of turn.items.entries()) {
+        if (this.codexItemMatchesForkAnchor(item, turn.id, upToMessageId)) {
+          return { turnIndex, itemIndex };
+        }
+      }
+
+      if (`codex-compaction-${turn.id}` === upToMessageId) {
+        return { turnIndex, itemIndex: turn.items.length - 1 };
+      }
+    }
+    return null;
+  }
+
+  private codexItemMatchesForkAnchor(
+    item: CodexThreadItem,
+    turnId: string,
+    upToMessageId: string,
+  ): boolean {
+    const candidates = new Set<string>();
+    candidates.add(item.id);
+    candidates.add(`${item.id}-${turnId}`);
+    candidates.add(`${item.id}-result`);
+
+    const itemRecord = item as Record<string, unknown>;
+    const clientId = this.getOptionalString(itemRecord.clientId);
+    if (clientId) {
+      candidates.add(clientId);
+      candidates.add(`${clientId}-${turnId}`);
+    }
+
+    return candidates.has(upToMessageId);
+  }
+
   private buildThreadPermissionParams(
     policy: CodexThreadPolicy,
   ): Pick<ThreadStartParams, "approvalPolicy" | "sandbox"> {
@@ -2229,12 +2470,28 @@ export class CodexProvider implements AgentProvider {
    * not natively emit prompt_suggestion messages, but it can still run the YA
    * simulated recap helper without mutating the parent session transcript.
    */
-  async generateRecap(
+  async generateSummary(
+    request: SummaryGenerationRequest,
+  ): Promise<SummaryGenerationResult> {
+    switch (request.strategy) {
+      case "side-session": {
+        const text = await this.generateSideSessionRecap(
+          request.recentAssistantText,
+          request.model,
+        );
+        return { text };
+      }
+      case "fork":
+        return await this.generateForkBackedSummary(request);
+    }
+  }
+
+  private async generateSideSessionRecap(
     recentAssistantText: string[],
-    options?: { model?: string },
+    requestedModel?: string,
   ): Promise<string> {
     const userPrompt = this.createRecapPrompt(recentAssistantText);
-    const model = await this.resolveRecapHelperModel(options?.model);
+    const model = await this.resolveRecapHelperModel(requestedModel);
     const codexCommand = await this.resolveCodexCommand();
     const abortController = new AbortController();
     let timedOut = false;
@@ -2371,6 +2628,214 @@ export class CodexProvider implements AgentProvider {
     ].join("\n");
   }
 
+  private async generateForkBackedSummary(
+    request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
+  ): Promise<SummaryGenerationResult> {
+    const userPrompt =
+      request.purpose === "session-retitle"
+        ? this.createSessionRetitlePrompt(request)
+        : this.createForkAfterSummaryPrompt(request);
+    const codexCommand = await this.resolveCodexCommand();
+    const appServer = new CodexAppServerClient(
+      codexCommand,
+      request.cwd,
+      this.getCodexEnv(),
+    );
+    const abortController = new AbortController();
+    let timedOut = false;
+    const abortFromRequest = () => {
+      abortController.abort();
+      void appServer.close();
+    };
+    if (request.signal?.aborted) {
+      abortController.abort();
+    } else {
+      request.signal?.addEventListener("abort", abortFromRequest, {
+        once: true,
+      });
+    }
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+      void appServer.close();
+    }, CODEX_SUMMARY_TIMEOUT_MS);
+    timeout.unref?.();
+
+    appServer.setServerRequestHandler((serverRequest) =>
+      this.handleNonTurnServerRequest(serverRequest, "summary helper"),
+    );
+
+    try {
+      if (abortController.signal.aborted) {
+        throw new DOMException("Summary generation cancelled", "AbortError");
+      }
+      await appServer.connect();
+      const experimentalApiEnabled = await this.initializeAppServer(appServer);
+      appServer.notify("initialized");
+
+      const threadResult = await appServer.request<ThreadResumeResponse>(
+        "thread/resume",
+        this.createForkSummaryThreadResumeParams(
+          request,
+          experimentalApiEnabled,
+        ),
+      );
+      const threadId = threadResult.thread.id || request.generatorSessionId;
+      const turnResult = await appServer.request<TurnStartResponse>(
+        "turn/start",
+        {
+          threadId,
+          input: [{ type: "text", text: userPrompt, text_elements: [] }],
+          effort: "low",
+          summary: "auto",
+          approvalPolicy: "untrusted",
+        } satisfies TurnStartParams,
+      );
+
+      const textByItemId = new Map<string, string>();
+      this.captureRecapTextFromTurnItems(turnResult.turn.items, textByItemId);
+
+      if (turnResult.turn.status === "failed") {
+        throw new Error(
+          turnResult.turn.error?.message ?? "Codex summary generation failed",
+        );
+      }
+
+      const turnId = turnResult.turn.id;
+      let turnComplete = turnResult.turn.status !== "inProgress";
+      while (!turnComplete && !abortController.signal.aborted) {
+        const notification = await appServer.nextNotification(
+          abortController.signal,
+        );
+        this.captureRecapTextFromNotification(notification, textByItemId);
+
+        if (notification.method === "turn/completed") {
+          const completed = this.asTurnCompletedNotification(
+            notification.params,
+          );
+          if (completed?.turn.id !== turnId) {
+            continue;
+          }
+          this.captureRecapTextFromTurnItems(
+            completed.turn.items,
+            textByItemId,
+          );
+          if (completed.turn.status === "failed") {
+            throw new Error(
+              completed.turn.error?.message ??
+                "Codex summary generation failed",
+            );
+          }
+          turnComplete = true;
+          continue;
+        }
+
+        if (notification.method === "error") {
+          const error = this.asErrorNotification(notification.params);
+          if (error?.turnId === turnId && !error.willRetry) {
+            throw new Error(
+              error.error.message ?? "Codex summary generation failed",
+            );
+          }
+        }
+      }
+      if (abortController.signal.aborted) {
+        if (request.signal?.aborted) {
+          throw new DOMException("Summary generation cancelled", "AbortError");
+        }
+        throw new Error("Timed out generating Codex summary");
+      }
+
+      const cleaned = [...textByItemId.values()].join("\n").trim();
+      if (!cleaned) {
+        throw new Error("Summary generation returned empty text");
+      }
+      return { text: cleaned };
+    } catch (error) {
+      if (request.signal?.aborted) {
+        throw new DOMException("Summary generation cancelled", "AbortError");
+      }
+      if (timedOut) {
+        throw new Error("Timed out generating Codex summary");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", abortFromRequest);
+      abortController.abort();
+      await appServer.close();
+    }
+  }
+
+  private createForkSummaryThreadResumeParams(
+    request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
+    experimentalApiEnabled = false,
+  ): CodexThreadResumeParamsForRequest {
+    const params: CodexThreadResumeParamsForRequest = {
+      threadId: request.generatorSessionId,
+      model: null,
+      cwd: request.cwd,
+      approvalPolicy: "untrusted",
+      sandbox: "read-only",
+      config: null,
+      developerInstructions:
+        request.purpose === "session-retitle"
+          ? "You are a title helper. Reply with the session title only, no preamble. Do not call tools."
+          : "You are a handoff summary helper. Reply with the summary text only, no preamble. Do not call tools.",
+    };
+    if (experimentalApiEnabled) {
+      params.excludeTurns = true;
+    }
+    return params;
+  }
+
+  private createForkAfterSummaryPrompt(
+    request: Extract<
+      SummaryGenerationRequest,
+      { purpose: "fork-after-summary" }
+    >,
+  ): string {
+    const instructions = request.instructions?.trim();
+    const boundaryContext = request.afterTurnContext?.trim();
+    return [
+      "The first non-empty line must be a concise title of at most 120 characters, with no trailing period.",
+      "Write it as: Title: <title>",
+      "Then leave one blank line before the handoff summary.",
+      "",
+      "Summarize the useful state after the retained fork boundary for a peer-agent handoff.",
+      `The target fork retains the conversation through completed-turn message id ${request.afterTurnMessageId}.`,
+      boundaryContext
+        ? `The retained boundary is the completed turn ending with this excerpt:\n${boundaryContext}`
+        : undefined,
+      "The target fork already includes the original request and the assistant/tool work through that selected completed turn.",
+      "Do not repeat setup, instruction loading, initial repository orientation, or investigation already present in that retained prefix.",
+      "Preserve decisions, constraints, current state, changed files, verification evidence, open risks, and the next useful action.",
+      "Do not continue the task. Write text that can be submitted as the next user turn in the target fork.",
+      instructions ? "" : undefined,
+      instructions ? "Additional user instructions:" : undefined,
+      instructions || undefined,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join("\n");
+  }
+
+  private createSessionRetitlePrompt(
+    request: Extract<SummaryGenerationRequest, { purpose: "session-retitle" }>,
+  ): string {
+    const lengthTarget = request.lengthTarget ?? 80;
+    const currentTitle = request.currentTitle?.trim();
+    return [
+      "What is a good new title for this session?",
+      "",
+      `Target length: under ${lengthTarget} characters.`,
+      currentTitle ? `Current title: ${currentTitle}` : undefined,
+      "Prefer a concrete task/result phrase over a generic chat title.",
+      "Return only the title. Do not quote it. Do not add a trailing period.",
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join("\n");
+  }
+
   private async resolveRecapHelperModel(
     requestedModel: string | undefined,
   ): Promise<string | null> {
@@ -2393,9 +2858,22 @@ export class CodexProvider implements AgentProvider {
   private handleRecapServerRequest(
     request: JsonRpcServerRequest,
   ): Promise<unknown> {
+    return this.handleNonTurnServerRequest(request, "recap helper");
+  }
+
+  private handleForkServerRequest(
+    request: JsonRpcServerRequest,
+  ): Promise<unknown> {
+    return this.handleNonTurnServerRequest(request, "fork");
+  }
+
+  private handleNonTurnServerRequest(
+    request: JsonRpcServerRequest,
+    purpose: string,
+  ): Promise<unknown> {
     log.warn(
-      { method: request.method, requestId: request.id },
-      "Declining Codex recap helper server request",
+      { method: request.method, requestId: request.id, purpose },
+      "Declining Codex non-turn server request",
     );
 
     switch (request.method) {
@@ -3745,6 +4223,19 @@ export class CodexProvider implements AgentProvider {
         };
       }
 
+      case "sub_agent_activity": {
+        const kind = this.getOptionalString(itemRecord.kind) ?? "updated";
+        const agentPath = this.getOptionalString(itemRecord.agentPath) ?? "";
+        return {
+          id,
+          type: "subagent_activity",
+          kind,
+          agentThreadId: this.getOptionalString(itemRecord.agentThreadId) ?? "",
+          agentPath,
+          text: this.formatSubagentActivity(kind, agentPath),
+        };
+      }
+
       case "context_compaction":
         return { id, type: "context_compaction" };
 
@@ -3788,6 +4279,20 @@ export class CodexProvider implements AgentProvider {
     }
 
     return "";
+  }
+
+  private formatSubagentActivity(kind: string, agentPath: string): string {
+    const target = agentPath ? `: ${agentPath}` : "";
+    switch (kind) {
+      case "started":
+        return `Subagent started${target}`;
+      case "interacted":
+        return `Subagent updated${target}`;
+      case "interrupted":
+        return `Subagent interrupted${target}`;
+      default:
+        return `Subagent ${kind}${target}`;
+    }
   }
 
   private normalizeStatus(status: unknown): string {
@@ -4055,8 +4560,18 @@ export class CodexProvider implements AgentProvider {
     return `${itemId}-${turnId}`;
   }
 
-  private buildItemResultUuid(turnId: string, itemId: string): string {
-    return `${this.buildItemMessageUuid(turnId, itemId)}-result`;
+  // Tool items carry Codex's globally-unique call_id as their thread item id,
+  // and the durable rollout persists the same call_id on the matching response
+  // item. Key the rendered uuid on call_id alone (no turn scoping — call_id is
+  // already unique) so the streamed message and its durable backfill row share
+  // a uuid and dedup by id instead of the content+timestamp backstop. See
+  // topics/stream-durable-id-dedup.md (Codex tool calls).
+  private buildItemToolUuid(callId: string): string {
+    return callId;
+  }
+
+  private buildItemResultUuid(callId: string): string {
+    return `${callId}-result`;
   }
 
   private isResultBackedThreadItem(item: NormalizedThreadItem): boolean {
@@ -4067,6 +4582,13 @@ export class CodexProvider implements AgentProvider {
       item.type === "dynamic_tool_call" ||
       item.type === "image_view"
     );
+  }
+
+  // Thread items whose rendered uuid keys on call_id (item.id) so the streamed
+  // message matches its durable backfill row. web_search emits a tool_use but is
+  // not result-backed, so it is not covered by isResultBackedThreadItem.
+  private isToolBackedThreadItem(item: NormalizedThreadItem): boolean {
+    return this.isResultBackedThreadItem(item) || item.type === "web_search";
   }
 
   private recordLiveResultBackedToolItem(
@@ -4185,7 +4707,7 @@ export class CodexProvider implements AgentProvider {
     const message = withCodexTimestamp({
       type: "user",
       session_id: sessionId,
-      uuid: this.buildItemResultUuid(turnId, itemId),
+      uuid: this.buildItemResultUuid(itemId),
       _isStreaming: true,
       message: {
         role: "user",
@@ -4258,7 +4780,7 @@ export class CodexProvider implements AgentProvider {
           {
             type: "assistant",
             session_id: sessionId,
-            uuid: this.buildItemMessageUuid(params.turnId, callId),
+            uuid: this.buildItemToolUuid(callId),
             message: {
               role: "assistant",
               content: [
@@ -4321,7 +4843,7 @@ export class CodexProvider implements AgentProvider {
           {
             type: "user",
             session_id: sessionId,
-            uuid: this.buildItemResultUuid(params.turnId, callId),
+            uuid: this.buildItemResultUuid(callId),
             message: {
               role: "user",
               content: [toolResult],
@@ -4369,7 +4891,7 @@ export class CodexProvider implements AgentProvider {
           {
             type: "assistant",
             session_id: sessionId,
-            uuid: this.buildItemMessageUuid(params.turnId, callId),
+            uuid: this.buildItemToolUuid(callId),
             message: {
               role: "assistant",
               content: [
@@ -4432,7 +4954,7 @@ export class CodexProvider implements AgentProvider {
           {
             type: "user",
             session_id: sessionId,
-            uuid: this.buildItemResultUuid(params.turnId, callId),
+            uuid: this.buildItemResultUuid(callId),
             message: {
               role: "user",
               content: [toolResult],
@@ -4491,8 +5013,12 @@ export class CodexProvider implements AgentProvider {
   ): SDKMessage[] {
     const isComplete = sourceEvent === "item/completed";
     const observedAt = new Date().toISOString();
-    // Create unique UUID by combining item.id with turn ID.
-    const uuid = `${item.id}-${turnId}`;
+    // Tool items key the uuid on call_id (item.id) so stream and durable rows
+    // dedup by id; message/reasoning items use a counter id (item-N) with no
+    // durable equivalent, so they stay turn-scoped and rely on the backstop.
+    const uuid = this.isToolBackedThreadItem(item)
+      ? this.buildItemToolUuid(item.id)
+      : `${item.id}-${turnId}`;
 
     switch (item.type) {
       case "reasoning": {
@@ -4924,6 +5450,30 @@ export class CodexProvider implements AgentProvider {
         );
         logSdkCorrelationDebug(sessionId, message, {
           eventKind: "todo_list",
+          turnId,
+          itemId: item.id,
+          phase: isComplete ? "completed" : "started",
+          sourceEvent,
+        });
+        return [message];
+      }
+
+      case "subagent_activity": {
+        const message = withCodexTimestamp(
+          {
+            type: "system",
+            subtype: "subagent_activity",
+            session_id: sessionId,
+            uuid,
+            content: item.text,
+            codexSubagentKind: item.kind,
+            codexSubagentThreadId: item.agentThreadId,
+            codexSubagentPath: item.agentPath,
+          } as SDKMessage,
+          observedAt,
+        );
+        logSdkCorrelationDebug(sessionId, message, {
+          eventKind: "subagent_activity",
           turnId,
           itemId: item.id,
           phase: isComplete ? "completed" : "started",

@@ -1,4 +1,5 @@
 import {
+  ALL_PERMISSION_MODES,
   type ContextUsage,
   type PermissionRules,
   PROMPT_SUGGESTION_MODES,
@@ -13,6 +14,7 @@ import {
   type SessionOwnership,
   type ShowThinking,
   type ThinkingOption,
+  type TranscriptDisplayObject,
   type UploadedFile,
   type UserQuestionAnswers,
   type UserMessageDeliveryIntent,
@@ -25,6 +27,7 @@ import {
   thinkingOptionToConfig,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { Hono } from "hono";
@@ -37,6 +40,7 @@ import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import { DETACHED_PROJECT_PATH, encodeProjectId } from "../projects/paths.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { ensureRemoteDirectory } from "../sdk/remote-spawn.js";
+import { parseSlashCommandSubmission } from "../sdk/slashCommandEmulation.js";
 import { getProjectDirFromCwd, syncSessions } from "../sdk/session-sync.js";
 import type { PermissionMode, SDKMessage, UserMessage } from "../sdk/types.js";
 import { appendApprovalAuditLog } from "../security/approvalAuditLog.js";
@@ -47,6 +51,8 @@ import { cloneClaudeSession, cloneCodexSession } from "../sessions/fork.js";
 import { GeminiSessionReader } from "../sessions/gemini-reader.js";
 import { buildDag } from "../sessions/dag.js";
 import { GrokSessionReader } from "../sessions/grok-reader.js";
+import { PiSessionReader } from "../sessions/pi-reader.js";
+import { extractLastAgentExcerpt } from "../sessions/agent-excerpt.js";
 import { normalizeSession } from "../sessions/normalization.js";
 import {
   type PaginationInfo,
@@ -60,12 +66,10 @@ import {
 } from "../sessions/persisted-augments.js";
 import { findSessionSummaryAcrossProviders } from "../sessions/provider-resolution.js";
 import type { ISessionReader } from "../sessions/types.js";
+import { getProvider } from "../sdk/providers/index.js";
 import { getStaticSlashCommandsForProvider } from "../sdk/providers/staticSlashCommands.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
-import type {
-  DeferredMessagePlacement,
-  Process,
-} from "../supervisor/Process.js";
+import type { Process } from "../supervisor/Process.js";
 import type {
   QueueFullResponse,
   ResumeMode,
@@ -372,35 +376,6 @@ function isCodexProviderName(
   return provider === "codex" || provider === "codex-oss";
 }
 
-function parseDeferredPlacement(body: {
-  insertBeforeTempId?: unknown;
-  insertAfterTempId?: unknown;
-  replaceDeferredTempId?: unknown;
-}): DeferredMessagePlacement | undefined {
-  const beforeTempId =
-    typeof body.insertBeforeTempId === "string" &&
-    body.insertBeforeTempId.trim()
-      ? body.insertBeforeTempId.trim()
-      : undefined;
-  const afterTempId =
-    typeof body.insertAfterTempId === "string" && body.insertAfterTempId.trim()
-      ? body.insertAfterTempId.trim()
-      : undefined;
-  const replaceTempId =
-    typeof body.replaceDeferredTempId === "string" &&
-    body.replaceDeferredTempId.trim()
-      ? body.replaceDeferredTempId.trim()
-      : undefined;
-  if (!beforeTempId && !afterTempId && !replaceTempId) {
-    return undefined;
-  }
-  return {
-    ...(afterTempId ? { afterTempId } : {}),
-    ...(beforeTempId ? { beforeTempId } : {}),
-    ...(replaceTempId ? { replaceTempId } : {}),
-  };
-}
-
 const USER_MESSAGE_DELIVERY_INTENTS: ReadonlySet<UserMessageDeliveryIntent> =
   new Set(["direct", "steer", "deferred", "patient"]);
 
@@ -537,6 +512,10 @@ export interface SessionsDeps {
   grokSessionsDir?: string;
   /** Optional shared Grok reader factory for cross-provider session lookups */
   grokReaderFactory?: (projectPath: string) => GrokSessionReader;
+  /** pi sessions directory (defaults to ~/.pi/agent/sessions) */
+  piSessionsDir?: string;
+  /** Optional shared pi reader factory for cross-provider session lookups */
+  piReaderFactory?: (projectPath: string) => PiSessionReader;
   /** ServerSettingsService for reading global instructions */
   serverSettingsService?: ServerSettingsService;
   /** ModelInfoService for context window lookups */
@@ -563,12 +542,6 @@ interface StartSessionBody {
   messageMetadata?: UserMessageMetadata;
   /** Client-generated temp ID for optimistic UI tracking */
   tempId?: string;
-  /** Deferred queue reinsertion anchor for edited queued messages */
-  insertBeforeTempId?: string;
-  /** Deferred queue reinsertion anchor for edited queued messages */
-  insertAfterTempId?: string;
-  /** Queued temp ID currently held behind an edit barrier */
-  replaceDeferredTempId?: string;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
   /** Permission rules for tool filtering (deny/allow patterns) */
@@ -743,6 +716,17 @@ function messageContent(message: Message): unknown {
   return nested?.content ?? (message as { content?: unknown }).content;
 }
 
+function messageId(message: Message | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+  return (
+    (typeof message.uuid === "string" && message.uuid) ||
+    (typeof message.id === "string" && message.id) ||
+    undefined
+  );
+}
+
 function messageHasToolResult(message: Message): boolean {
   if (message.toolUseResult !== undefined) {
     return true;
@@ -775,6 +759,46 @@ function isAutoCompactModel(model: string | undefined): boolean {
   return AUTO_COMPACT_MODEL_PREFIXES.some((prefix) =>
     normalized.startsWith(prefix),
   );
+}
+
+/**
+ * Per-model compact-early percent (task 029): a direct lookup of the resolved YA
+ * model id in the client-defaults map. The id is resolved upstream (the requested
+ * launch alias, else the alias persisted at launch, else the provider's
+ * reported→YA-id helper for sessions YA didn't start), so per-model settings key
+ * by the same YA id the slider stored — no family fallback. "default" is the
+ * runtime holdout and never carries a stored threshold. Out-of-range values are
+ * ignored by the consumer. See topics/provider-abstraction.md.
+ */
+export function resolveCompactPercent(
+  map: Record<string, number> | undefined,
+  yaModelId: string | undefined,
+): number | undefined {
+  if (!map || !yaModelId || yaModelId === "default") return undefined;
+  const value = map[yaModelId];
+  return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * Effective context window for the compaction threshold (task 029): the first
+ * candidate identifier with a known window. Provider-specific window quirks
+ * (Claude opus is always-1M even when its id resolves to "claude-opus-4-8")
+ * now come from `contextWindow` itself — ModelInfoService delegates to the
+ * provider's `contextWindowFor` — so this special-cases no model. See
+ * topics/provider-abstraction.md.
+ */
+export function resolveCompactWindow(
+  provider: ProviderName | undefined,
+  candidates: (string | undefined)[],
+  contextWindow: (model: string | undefined, provider?: ProviderName) => number,
+): number | undefined {
+  for (const m of candidates) {
+    if (m && m !== "default") {
+      const w = contextWindow(m, provider);
+      if (w > 0) return w;
+    }
+  }
+  return undefined;
 }
 
 function isAutoCompactEligibleMessage(message: string): boolean {
@@ -1266,6 +1290,128 @@ function isHumanUserMessage(message: Message): boolean {
   return role === "user" && !messageHasToolResult(message);
 }
 
+function resolveForkAfterBoundary(
+  messages: Message[],
+  sourceMessageId: string,
+  sourceIsBusy: boolean,
+):
+  | {
+      placementAfterMessageId: string;
+      retainedThroughMessageId: string;
+      retainedThroughContext?: string;
+    }
+  | { error: string; status: 400 | 404 | 409 } {
+  const sourceIndex = messages.findIndex(
+    (message) => messageId(message) === sourceMessageId,
+  );
+  const sourceMessage = messages[sourceIndex];
+  if (sourceIndex < 0 || !sourceMessage) {
+    return { error: "Selected source message was not found", status: 404 };
+  }
+  if (!isHumanUserMessage(sourceMessage)) {
+    return {
+      error: "sourceMessageId must identify a user-authored request",
+      status: 400,
+    };
+  }
+
+  let nextUserIndex = -1;
+  for (let index = sourceIndex + 1; index < messages.length; index += 1) {
+    const candidate = messages[index];
+    if (candidate && isHumanUserMessage(candidate)) {
+      nextUserIndex = index;
+      break;
+    }
+  }
+  if (nextUserIndex < 0 && sourceIsBusy) {
+    return {
+      error: "The selected turn is still in progress",
+      status: 409,
+    };
+  }
+
+  const searchEnd =
+    nextUserIndex >= 0 ? nextUserIndex - 1 : messages.length - 1;
+  let hasAssistantResponse = false;
+  for (let index = sourceIndex + 1; index <= searchEnd; index += 1) {
+    const candidate = messages[index];
+    if (candidate && messageRole(candidate) === "assistant") {
+      hasAssistantResponse = true;
+      break;
+    }
+  }
+  if (!hasAssistantResponse) {
+    return {
+      error: "The selected request has no completed assistant response",
+      status: 409,
+    };
+  }
+
+  let boundary: Message | undefined;
+  for (let index = searchEnd; index > sourceIndex; index -= 1) {
+    const candidate = messages[index];
+    const role = candidate ? messageRole(candidate) : undefined;
+    if (
+      candidate &&
+      messageId(candidate) &&
+      (role === "user" || role === "assistant")
+    ) {
+      boundary = candidate;
+      break;
+    }
+  }
+  const retainedThroughMessageId = messageId(boundary);
+  if (!boundary || !retainedThroughMessageId) {
+    return { error: "Completed turn boundary has no message id", status: 409 };
+  }
+
+  const placementAfterMessageId =
+    [...messages].reverse().map(messageId).find(Boolean) ??
+    retainedThroughMessageId;
+  const rendered = renderRestartContent(messageContent(boundary)).trim();
+  return {
+    placementAfterMessageId,
+    retainedThroughMessageId,
+    retainedThroughContext: rendered
+      ? truncateForRestart(rendered, 1200)
+      : undefined,
+  };
+}
+
+function forkSummaryTitle(
+  summary: string,
+  fallback: string | undefined,
+): string {
+  const firstLine = summary
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  const candidate = firstLine
+    ?.replace(/^#{1,6}\s*/u, "")
+    .replace(/^title:\s*/iu, "")
+    .trim()
+    .replace(/[.!?]+$/u, "");
+  return truncateSessionTitle(candidate || fallback || "Forked session");
+}
+
+function generatedRetitleCandidate(title: string): string | undefined {
+  const firstLine = title
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return undefined;
+  }
+  const candidate = normalizeRestartTitleCandidate(
+    firstLine
+      .replace(/^title:\s*/iu, "")
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, "")
+      .replace(/[.!?]+$/u, "")
+      .trim(),
+  );
+  return candidate ? truncateSessionTitle(candidate) : undefined;
+}
+
 function messageTitleCandidate(message: Message): string | undefined {
   if (
     !isHumanUserMessage(message) ||
@@ -1625,6 +1771,40 @@ function extractContextUsageFromSDKMessages(
 
 export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const routes = new Hono();
+  const activeForkSummaryJobs = new Map<
+    string,
+    { objectId: string; abortController: AbortController }
+  >();
+  const emitTranscriptDisplayObjects = (sessionId: string): void => {
+    deps.eventBus?.emit({
+      type: "session-metadata-changed",
+      sessionId,
+      transcriptDisplayObjects:
+        deps.sessionMetadataService?.getTranscriptDisplayObjects(sessionId) ??
+        [],
+      timestamp: new Date().toISOString(),
+    });
+  };
+  const updateForkSummaryChildMetadata = async (
+    childSessionId: string,
+    parentSessionId: string,
+    title: string,
+    archived: boolean,
+  ): Promise<void> => {
+    await deps.sessionMetadataService?.updateMetadata(childSessionId, {
+      title,
+      archived,
+      parentSessionId,
+    });
+    deps.eventBus?.emit({
+      type: "session-metadata-changed",
+      sessionId: childSessionId,
+      title,
+      archived,
+      parentSessionId,
+      timestamp: new Date().toISOString(),
+    });
+  };
   const getCodexReader = (projectPath: string): CodexSessionReader | null =>
     deps.codexReaderFactory?.(projectPath) ??
     (deps.codexSessionsDir
@@ -1639,6 +1819,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     (deps.grokSessionsDir
       ? new GrokSessionReader({
           sessionsDir: deps.grokSessionsDir,
+          projectPath,
+        })
+      : null);
+
+  const getPiReader = (projectPath: string): PiSessionReader | null =>
+    deps.piReaderFactory?.(projectPath) ??
+    (deps.piSessionsDir
+      ? new PiSessionReader({
+          sessionsDir: deps.piSessionsDir,
           projectPath,
         })
       : null);
@@ -1694,6 +1883,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     provider: ProviderName | undefined,
     executor: string | undefined,
     initialPrompt?: string,
+    requestedModel?: string,
+    promptSuggestionMode?: PromptSuggestionMode,
   ): Promise<void> => {
     if (!deps.sessionMetadataService) {
       return;
@@ -1709,6 +1900,23 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         sessionId,
         initialPrompt,
       );
+    }
+    // Persist the requested YA model id (the launch alias, incl. "default") so
+    // per-model settings still key by it after a server restart, instead of
+    // falling back to the reported model. See topics/provider-abstraction.md.
+    if (requestedModel) {
+      await deps.sessionMetadataService.setRequestedModel(
+        sessionId,
+        requestedModel,
+      );
+    }
+    // Persist the resolved prompt-suggestion mode so a later resume (which may
+    // omit it from the request body) recovers the per-session preference
+    // instead of falling back to the provider's native default.
+    if (promptSuggestionMode !== undefined) {
+      await deps.sessionMetadataService.updateMetadata(sessionId, {
+        promptSuggestionMode,
+      });
     }
   };
 
@@ -1732,6 +1940,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         geminiHashToCwd: deps.geminiScanner?.getHashToCwd(),
         grokSessionsDir: deps.grokSessionsDir,
         grokReaderFactory: deps.grokReaderFactory,
+        piSessionsDir: deps.piSessionsDir,
+        piReaderFactory: deps.piReaderFactory,
       },
       preferredProvider,
     );
@@ -1964,6 +2174,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         geminiHashToCwd: deps.geminiScanner?.getHashToCwd(),
         grokSessionsDir: deps.grokSessionsDir,
         grokReaderFactory: deps.grokReaderFactory,
+        piSessionsDir: deps.piSessionsDir,
+        piReaderFactory: deps.piReaderFactory,
       },
       metadataProvider ?? process?.provider,
     );
@@ -2030,6 +2242,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         heartbeatTurnText: metadata?.heartbeatTurnText,
         heartbeatForceAfterMinutes:
           metadata?.heartbeatForceAfterMinutes ?? undefined,
+        promptSuggestionMode: metadata?.promptSuggestionMode,
+        transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         lastSeenAt,
         hasUnread,
       },
@@ -2041,6 +2255,58 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     return c.json(response);
   });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/refresh-preview
+  // On-demand recompute of the hover-card recent-activity excerpt for a
+  // non-running session (its live state is otherwise only refreshed when the
+  // session is resumed). Fast reverse-scan of the JSONL, then push the result
+  // to lists/hovers via a session-updated event so the preview updates in
+  // place without flicker. See topics/session-hovercard-recent-activity.md.
+  routes.post(
+    "/projects/:projectId/sessions/:sessionId/refresh-preview",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) {
+        return c.json({ error: "Project not found" }, 404);
+      }
+      const metadataProvider = deps.sessionMetadataService?.getProvider(
+        sessionId,
+      ) as ProviderName | undefined;
+      // Claude uses the fast reverse-scan; every other provider goes through
+      // the cross-provider load + normalize, then a shared extractor on the
+      // uniform message form — so the preview is provider-independent.
+      const reader = deps.readerFactory(project);
+      let lastAgentText = reader.getLastAgentExcerpt
+        ? await reader.getLastAgentExcerpt(sessionId)
+        : undefined;
+      if (lastAgentText === undefined) {
+        const normalized = await loadRestartSourceSession(
+          project,
+          sessionId,
+          projectId as UrlProjectId,
+          metadataProvider,
+        );
+        if (normalized) {
+          lastAgentText = extractLastAgentExcerpt(normalized.messages);
+        }
+      }
+      if (lastAgentText !== undefined) {
+        deps.eventBus?.emit({
+          type: "session-updated",
+          sessionId,
+          projectId: projectId as UrlProjectId,
+          lastAgentText,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return c.json({ lastAgentText: lastAgentText ?? null });
+    },
+  );
 
   // GET /api/projects/:projectId/sessions/:sessionId - Get session detail
   // Optional query params:
@@ -2159,9 +2425,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
     }
 
-    // For mixed-provider projects, a restarted YA process may need session
-    // metadata to rediscover an OpenCode-native ses_* transcript.
-    if (!loadedSession && metadataProvider === "opencode") {
+    // For mixed-provider projects, consult the OpenCode reader for any
+    // OpenCode-native id (ses_*), not just sessions YA itself recorded as
+    // opencode. A TUI- or externally-owned 1.16+ session has no YA metadata, so
+    // gating on metadataProvider alone 404'd it even though the reader can load
+    // it from opencode.db. The ses_* shape gate keeps non-opencode ids (UUIDs)
+    // from triggering a wasted `opencode export` fallback. (The summary/list
+    // path already resolves opencode unconditionally via getSessionSources.)
+    if (
+      !loadedSession &&
+      (metadataProvider === "opencode" || sessionId.startsWith("ses_"))
+    ) {
       const opencodeReader = deps.readerFactory({
         ...project,
         provider: "opencode",
@@ -2178,6 +2452,18 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const grokReader = getGrokReader(project.path);
       if (grokReader) {
         loadedSession = await grokReader.getSession(
+          sessionId,
+          project.id,
+          afterMessageId,
+          { includeOrphans: wasEverOwned && !process },
+        );
+      }
+    }
+
+    if (!loadedSession) {
+      const piReader = getPiReader(project.path);
+      if (piReader) {
+        loadedSession = await piReader.getSession(
           sessionId,
           project.id,
           afterMessageId,
@@ -2227,7 +2513,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // native built-ins, such as Codex, can expose those while stopped.
     const slashCommands = await getSessionSlashCommands(
       process,
-      process?.provider ?? session?.provider ?? metadataProvider ?? project.provider,
+      process?.provider ??
+        session?.provider ??
+        metadataProvider ??
+        project.provider,
     );
 
     if (!session) {
@@ -2251,14 +2540,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
               ? (m, p) => mis.getContextWindow(m, p)
               : undefined,
         );
-        // Cache SDK-reported context window for future JSONL reads
-        if (mis && sdkContextWindow && process.resolvedModel) {
-          mis.recordContextWindow(
-            process.resolvedModel,
-            sdkContextWindow,
-            process.provider,
-          );
-        }
+        // (Durable recording happens at the observation point in Process via
+        // onContextWindowObserved, not as a side effect of this GET.)
         // Get metadata even for new sessions (in case it was set before file was written)
         const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
         // Get notification data for new sessions too
@@ -2285,6 +2568,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
             heartbeatTurnText: metadata?.heartbeatTurnText,
             heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
+            promptSuggestionMode: metadata?.promptSuggestionMode,
+            transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
             lastSeenAt: lastSeenEntry?.timestamp,
             hasUnread,
             provider: process.provider,
@@ -2388,12 +2673,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         percentage: Math.round((contextUsage.inputTokens / cw) * 100),
         contextWindow: cw,
       };
-      // Cache for future reads without a live process
-      deps.modelInfoService?.recordContextWindow(
-        process.resolvedModel ?? session.model ?? "",
-        cw,
-        process.provider,
-      );
+      // Durable recording happens at the observation point in Process via
+      // onContextWindowObserved; this block only overrides the displayed value.
     }
 
     const { messages: _messages, ...sessionMetadata } = session;
@@ -2445,6 +2726,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
         heartbeatTurnText: metadata?.heartbeatTurnText,
         heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
+        promptSuggestionMode: metadata?.promptSuggestionMode,
+        transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         // Model comes from the session reader (extracted from JSONL)
         model: session.model,
         lastSeenAt,
@@ -2560,6 +2843,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.provider,
       executor,
       body.message,
+      body.model,
+      result.promptSuggestionMode,
     );
 
     return c.json({
@@ -2647,7 +2932,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202); // 202 Accepted - queued for processing
     }
 
-    await persistLaunchMetadata(result.sessionId, body.provider, executor);
+    await persistLaunchMetadata(
+      result.sessionId,
+      body.provider,
+      executor,
+      undefined,
+      body.model,
+      result.promptSuggestionMode,
+    );
 
     return c.json({
       sessionId: result.sessionId,
@@ -2736,6 +3028,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.provider,
       executor,
       body.message,
+      body.model,
+      result.promptSuggestionMode,
     );
 
     return c.json({
@@ -2801,7 +3095,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202);
     }
 
-    await persistLaunchMetadata(result.sessionId, body.provider, executor);
+    await persistLaunchMetadata(
+      result.sessionId,
+      body.provider,
+      executor,
+      undefined,
+      body.model,
+      result.promptSuggestionMode,
+    );
 
     return c.json({
       sessionId: result.sessionId,
@@ -2869,9 +3170,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       ? thinkingOptionToConfig(body.thinking, body.showThinking)
       : { thinking: undefined, effort: undefined };
 
-    // Convert model option (undefined or "default" means use CLI default)
+    // Convert model option (undefined or "default" means use CLI default). When
+    // the client sends no model (e.g. resume after a server restart), recover the
+    // YA model id persisted at launch so the process keeps its requested alias
+    // and per-model settings stay keyed by it. See topics/provider-abstraction.md.
+    const requestedModel =
+      body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId);
     const model =
-      body.model && body.model !== "default" ? body.model : undefined;
+      requestedModel && requestedModel !== "default"
+        ? requestedModel
+        : undefined;
     const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
 
     // Use client-provided executor, falling back to saved executor from metadata.
@@ -2932,6 +3240,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           geminiHashToCwd: deps.geminiScanner?.getHashToCwd(),
           grokSessionsDir: deps.grokSessionsDir,
           grokReaderFactory: deps.grokReaderFactory,
+          piSessionsDir: deps.piSessionsDir,
+          piReaderFactory: deps.piReaderFactory,
         },
         metadataProvider ?? body.provider,
       );
@@ -3037,7 +3347,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           globalInstructions,
           permissions: body.permissions,
           recapMode: helperSettings.recapMode,
-          promptSuggestionMode: helperSettings.promptSuggestionMode,
+          // Body value wins; otherwise recover the per-session preference from
+          // metadata so a body-less resume does not default back to native.
+          promptSuggestionMode:
+            helperSettings.promptSuggestionMode ??
+            deps.sessionMetadataService?.getPromptSuggestionMode?.(sessionId),
           helperSideModel: helperSettings.helperSideModel,
           resumeMode,
           resumeSessionAt,
@@ -3103,6 +3417,110 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       },
     });
   });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/reactivate
+  // Spawn a live harness process bound to the session WITHOUT delivering a turn,
+  // so the client can read live process state (model options) before messaging.
+  // Idempotent: returns the existing process if the session is already owned.
+  routes.post(
+    "/projects/:projectId/sessions/:sessionId/reactivate",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: "Project not found or path does not exist" },
+          404,
+        );
+      }
+
+      // Already owned by a live process - return it (idempotent).
+      const existing = deps.supervisor.getProcessForSession(sessionId);
+      if (existing) {
+        return c.json({
+          processId: existing.id,
+          permissionMode: existing.permissionMode,
+          modeVersion: existing.modeVersion,
+          serverTimestamp: Date.now(),
+        });
+      }
+
+      // Body is optional - allows overriding mode/model/executor.
+      let body: StartSessionBody = {} as StartSessionBody;
+      try {
+        body = await c.req.json<StartSessionBody>();
+      } catch {
+        // No body - resume with the session's saved settings.
+      }
+
+      const parsedBodyExecutor = parseOptionalExecutor(body.executor);
+      if (parsedBodyExecutor.error) {
+        return c.json({ error: parsedBodyExecutor.error }, 400);
+      }
+
+      // Resolve provider/model/executor from the YA launch record (persisted on
+      // launch) so reactivation resumes with the correct backend and model.
+      const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
+      const providerName =
+        (metadata?.provider as ProviderName | undefined) ??
+        body.provider ??
+        project.provider;
+      const executor = parsedBodyExecutor.executor ?? metadata?.executor;
+      // Prefer an explicit override, else the YA id the session was launched
+      // with; "default" means let the backend pick (pass undefined).
+      const rawModel =
+        body.model && body.model !== "default"
+          ? body.model
+          : metadata?.requestedModel;
+      const model = rawModel && rawModel !== "default" ? rawModel : undefined;
+      const { thinking, effort } = body.thinking
+        ? thinkingOptionToConfig(body.thinking, body.showThinking)
+        : { thinking: undefined, effort: undefined };
+
+      let process: Process;
+      try {
+        process = await deps.supervisor.reactivateSession(
+          project.path,
+          sessionId,
+          body.mode,
+          {
+            model,
+            thinking,
+            effort,
+            providerName,
+            executor,
+            globalInstructions: getGlobalInstructions(),
+          },
+        );
+      } catch (error) {
+        return c.json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to reactivate session",
+          },
+          503,
+        );
+      }
+
+      // Keep the launch record current (provider/executor) for this session.
+      await persistLaunchMetadata(sessionId, providerName, executor);
+
+      return c.json({
+        processId: process.id,
+        permissionMode: process.permissionMode,
+        modeVersion: process.modeVersion,
+        serverTimestamp: Date.now(),
+      });
+    },
+  );
 
   // POST /api/projects/:projectId/sessions/:sessionId/restart
   // Start a fresh session from a bounded handoff, then terminate the old YA-owned process.
@@ -3258,7 +3676,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           globalInstructions: getGlobalInstructions(),
           permissions: body.permissions,
           recapMode: helperSettings.recapMode,
-          promptSuggestionMode: helperSettings.promptSuggestionMode,
+          // Inherit the source session's preference unless the body overrides.
+          promptSuggestionMode:
+            helperSettings.promptSuggestionMode ??
+            originalMetadata?.promptSuggestionMode,
           helperSideModel: helperSettings.helperSideModel,
         },
       );
@@ -3280,7 +3701,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
 
-      await persistLaunchMetadata(result.sessionId, sourceProvider, executor);
+      await persistLaunchMetadata(
+        result.sessionId,
+        sourceProvider,
+        executor,
+        undefined,
+        body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId),
+        result.promptSuggestionMode,
+      );
       if (deps.sessionMetadataService) {
         await deps.sessionMetadataService.updateMetadata(result.sessionId, {
           title: forkTitle,
@@ -3354,7 +3782,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         globalInstructions: getGlobalInstructions(),
         permissions: body.permissions,
         recapMode: helperSettings.recapMode,
-        promptSuggestionMode: helperSettings.promptSuggestionMode,
+        // Inherit the source session's preference unless the body overrides.
+        promptSuggestionMode:
+          helperSettings.promptSuggestionMode ??
+          originalMetadata?.promptSuggestionMode,
         helperSideModel: helperSettings.helperSideModel,
       },
     );
@@ -3377,7 +3808,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
-    await persistLaunchMetadata(result.sessionId, providerName, executor);
+    await persistLaunchMetadata(
+      result.sessionId,
+      providerName,
+      executor,
+      undefined,
+      body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId),
+      result.promptSuggestionMode,
+    );
     if (deps.sessionMetadataService) {
       await deps.sessionMetadataService.updateMetadata(result.sessionId, {
         title: handoffTitle,
@@ -3442,9 +3880,30 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const metadataProvider = deps.sessionMetadataService?.getProvider(
       sessionId,
     ) as ProviderName | undefined;
+    const sourceProcess = deps.supervisor.getProcessForSession(sessionId);
+    const sessionSummaryResult = await findSessionSummaryAcrossProviders(
+      project,
+      sessionId,
+      projectId,
+      {
+        readerFactory: deps.readerFactory,
+        codexSessionsDir: deps.codexSessionsDir,
+        codexReaderFactory: deps.codexReaderFactory,
+        geminiSessionsDir: deps.geminiSessionsDir,
+        geminiReaderFactory: deps.geminiReaderFactory,
+        geminiHashToCwd: deps.geminiScanner?.getHashToCwd(),
+        grokSessionsDir: deps.grokSessionsDir,
+        grokReaderFactory: deps.grokReaderFactory,
+        piSessionsDir: deps.piSessionsDir,
+        piReaderFactory: deps.piReaderFactory,
+      },
+      sourceProcess?.provider ?? metadataProvider,
+    );
+    const sessionSummary = sessionSummaryResult?.summary ?? null;
     const providerName =
+      sourceProcess?.provider ??
       metadataProvider ??
-      deps.supervisor.getProcessForSession(sessionId)?.provider ??
+      sessionSummary?.provider ??
       project.provider;
     if (!deps.supervisor.supportsForkSession(providerName)) {
       return c.json(
@@ -3507,7 +3966,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const savedExecutor = parseOptionalExecutor(
       deps.sessionMetadataService?.getExecutor(sessionId),
     ).executor;
-    await persistLaunchMetadata(fork.sessionId, providerName, savedExecutor);
+    await persistLaunchMetadata(
+      fork.sessionId,
+      providerName,
+      savedExecutor,
+      undefined,
+      deps.sessionMetadataService?.getRequestedModel(sessionId),
+      deps.sessionMetadataService?.getMetadata(sessionId)?.promptSuggestionMode,
+    );
     if (forkTitle && deps.sessionMetadataService) {
       await deps.sessionMetadataService.updateMetadata(fork.sessionId, {
         title: forkTitle,
@@ -3529,6 +3995,672 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       upToMessageId,
     });
   });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/retitle
+  // Generate a proposed session title through an archived helper fork. This
+  // never updates the source session title; the client must explicitly accept
+  // the returned proposal through the ordinary metadata update route.
+  routes.post("/projects/:projectId/sessions/:sessionId/retitle", async (c) => {
+    const projectId = c.req.param("projectId");
+    const sessionId = c.req.param("sessionId");
+
+    if (!isUrlProjectId(projectId)) {
+      return c.json({ error: "Invalid project ID format" }, 400);
+    }
+    const project = await deps.scanner.getOrCreateProject(projectId);
+    if (!project) {
+      return c.json({ error: "Project not found or path does not exist" }, 404);
+    }
+    if (!deps.sessionMetadataService) {
+      return c.json({ error: "Session metadata service not available" }, 503);
+    }
+
+    let body: { currentTitle?: unknown; lengthTarget?: unknown } = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      // Body is optional.
+    }
+
+    const currentTitle =
+      typeof body.currentTitle === "string"
+        ? body.currentTitle.trim().slice(0, 200)
+        : undefined;
+    let lengthTarget: number | undefined;
+    if (body.lengthTarget !== undefined) {
+      if (
+        typeof body.lengthTarget !== "number" ||
+        !Number.isInteger(body.lengthTarget) ||
+        body.lengthTarget < 20 ||
+        body.lengthTarget > 120
+      ) {
+        return c.json(
+          { error: "lengthTarget must be an integer between 20 and 120" },
+          400,
+        );
+      }
+      lengthTarget = body.lengthTarget;
+    }
+
+    const metadataProvider = deps.sessionMetadataService.getProvider(
+      sessionId,
+    ) as ProviderName | undefined;
+    let sourceProcess = deps.supervisor.getProcessForSession(sessionId);
+    const liveSourceProcess =
+      sourceProcess && !sourceProcess.isTerminated ? sourceProcess : undefined;
+    const sessionSummaryResult = await findSessionSummaryAcrossProviders(
+      project,
+      sessionId,
+      projectId,
+      {
+        readerFactory: deps.readerFactory,
+        codexSessionsDir: deps.codexSessionsDir,
+        codexReaderFactory: deps.codexReaderFactory,
+        geminiSessionsDir: deps.geminiSessionsDir,
+        geminiReaderFactory: deps.geminiReaderFactory,
+        geminiHashToCwd: deps.geminiScanner?.getHashToCwd(),
+        grokSessionsDir: deps.grokSessionsDir,
+        grokReaderFactory: deps.grokReaderFactory,
+        piSessionsDir: deps.piSessionsDir,
+        piReaderFactory: deps.piReaderFactory,
+      },
+      liveSourceProcess?.provider ?? metadataProvider,
+    );
+    const sessionSummary = sessionSummaryResult?.summary ?? null;
+    const providerName =
+      liveSourceProcess?.provider ??
+      metadataProvider ??
+      sessionSummary?.provider ??
+      sourceProcess?.provider ??
+      project.provider;
+    if (!deps.supervisor.supportsForkSession(providerName)) {
+      return c.json(
+        { error: `${providerName} does not support transcript fork` },
+        400,
+      );
+    }
+
+    const savedExecutor = parseOptionalExecutor(
+      deps.sessionMetadataService.getExecutor(sessionId),
+    ).executor;
+    let requestedModel =
+      deps.sessionMetadataService.getRequestedModel(sessionId) ??
+      liveSourceProcess?.model;
+    const promptSuggestionMode =
+      deps.sessionMetadataService.getMetadata(sessionId)?.promptSuggestionMode;
+    const abortController = new AbortController();
+    const abortFromRequest = () => abortController.abort();
+    if (c.req.raw.signal.aborted) {
+      abortController.abort();
+    } else {
+      c.req.raw.signal.addEventListener("abort", abortFromRequest, {
+        once: true,
+      });
+    }
+
+    let generatorSessionId: string | undefined;
+    try {
+      if (!liveSourceProcess) {
+        sourceProcess = await deps.supervisor.reactivateSession(
+          project.path,
+          sessionId,
+          undefined,
+          {
+            model:
+              requestedModel && requestedModel !== "default"
+                ? requestedModel
+                : undefined,
+            providerName,
+            executor: savedExecutor,
+            globalInstructions: getGlobalInstructions(),
+            promptSuggestionMode,
+          },
+        );
+        requestedModel = requestedModel ?? sourceProcess.model;
+      }
+
+      const generator = await deps.supervisor.forkSession({
+        sessionId,
+        projectPath: project.path,
+        providerName,
+        title: "Retitle generator",
+      });
+      generatorSessionId = generator.sessionId;
+      await updateForkSummaryChildMetadata(
+        generator.sessionId,
+        sessionId,
+        "Retitle generator",
+        true,
+      );
+      await persistLaunchMetadata(
+        generator.sessionId,
+        providerName,
+        savedExecutor,
+        undefined,
+        requestedModel,
+        promptSuggestionMode,
+      );
+      if (abortController.signal.aborted) {
+        throw new DOMException("Retitle cancelled", "AbortError");
+      }
+
+      const generated = await deps.supervisor.generateSummary(providerName, {
+        purpose: "session-retitle",
+        strategy: "fork",
+        generatorSessionId: generator.sessionId,
+        cwd: project.path,
+        currentTitle,
+        lengthTarget,
+        signal: abortController.signal,
+      });
+      const title = generatedRetitleCandidate(generated.text);
+      if (!title) {
+        throw new Error("Retitle generation returned empty title");
+      }
+      return c.json({ title, generatorSessionId: generator.sessionId });
+    } catch (error) {
+      const cancelled =
+        abortController.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError");
+      const message =
+        error instanceof Error ? error.message : "Retitle generation failed";
+      getLogger().warn(
+        {
+          event: cancelled
+            ? "session_retitle_cancelled"
+            : "session_retitle_failed",
+          sessionId,
+          projectId,
+          providerName,
+          generatorSessionId,
+          error: message,
+        },
+        cancelled ? "Session retitle cancelled" : "Session retitle failed",
+      );
+      return c.json({ error: message }, cancelled ? 400 : 500);
+    } finally {
+      c.req.raw.signal.removeEventListener("abort", abortFromRequest);
+      abortController.abort();
+    }
+  });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/fork-summary
+  // Start a server-owned whole-context fork-after-summary job. The response
+  // returns after durable job creation; generation continues independently of
+  // the requesting client connection.
+  routes.post(
+    "/projects/:projectId/sessions/:sessionId/fork-summary",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: "Project not found or path does not exist" },
+          404,
+        );
+      }
+
+      let body: {
+        sourceMessageId?: unknown;
+        instructions?: unknown;
+        mode?: unknown;
+        autoOpenWhenReady?: unknown;
+      };
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: "Invalid JSON body" }, 400);
+      }
+      const sourceMessageId =
+        typeof body.sourceMessageId === "string" && body.sourceMessageId.trim()
+          ? body.sourceMessageId.trim()
+          : undefined;
+      if (!sourceMessageId) {
+        return c.json({ error: "sourceMessageId is required" }, 400);
+      }
+      if (
+        body.mode !== undefined &&
+        (typeof body.mode !== "string" ||
+          !ALL_PERMISSION_MODES.includes(body.mode as PermissionMode))
+      ) {
+        return c.json({ error: "Invalid permission mode" }, 400);
+      }
+      if (
+        body.autoOpenWhenReady !== undefined &&
+        typeof body.autoOpenWhenReady !== "boolean"
+      ) {
+        return c.json({ error: "autoOpenWhenReady must be a boolean" }, 400);
+      }
+      const mode = body.mode as PermissionMode | undefined;
+      const instructions =
+        typeof body.instructions === "string" ? body.instructions : undefined;
+      const autoOpenWhenReady = body.autoOpenWhenReady === true;
+
+      const metadataProvider = deps.sessionMetadataService?.getProvider(
+        sessionId,
+      ) as ProviderName | undefined;
+      const sourceProcess = deps.supervisor.getProcessForSession(sessionId);
+      const providerName =
+        metadataProvider ?? sourceProcess?.provider ?? project.provider;
+      if (!deps.supervisor.supportsForkSession(providerName)) {
+        return c.json(
+          { error: `${providerName} does not support transcript fork` },
+          400,
+        );
+      }
+      if (!deps.sessionMetadataService) {
+        return c.json({ error: "Session metadata service not available" }, 503);
+      }
+      if (activeForkSummaryJobs.has(sessionId)) {
+        return c.json(
+          { error: "A fork summary is already generating for this session" },
+          409,
+        );
+      }
+
+      const sourceSession = sourceProcess
+        ? ({
+            messages: sdkMessagesToClientMessages(
+              sourceProcess.getMessageHistory(),
+            ),
+          } as Session)
+        : await loadRestartSourceSession(
+            project,
+            sessionId,
+            projectId,
+            providerName,
+          );
+      if (!sourceSession) {
+        return c.json({ error: "Source session not found" }, 404);
+      }
+      const boundary = resolveForkAfterBoundary(
+        sourceSession.messages,
+        sourceMessageId,
+        sourceProcess?.state.type === "in-turn" ||
+          sourceProcess?.state.type === "waiting-input",
+      );
+      if ("error" in boundary) {
+        return c.json({ error: boundary.error }, boundary.status);
+      }
+
+      const displayObject: TranscriptDisplayObject = {
+        id: randomUUID(),
+        kind: "fork-summary",
+        createdAt: new Date().toISOString(),
+        placementAfterMessageId: boundary.placementAfterMessageId,
+        sourceMessageId,
+        retainedThroughMessageId: boundary.retainedThroughMessageId,
+        status: "generating",
+        autoOpenWhenReady: autoOpenWhenReady || undefined,
+      };
+      const abortController = new AbortController();
+      activeForkSummaryJobs.set(sessionId, {
+        objectId: displayObject.id,
+        abortController,
+      });
+      try {
+        await deps.sessionMetadataService.addTranscriptDisplayObject(
+          sessionId,
+          displayObject,
+        );
+      } catch (error) {
+        activeForkSummaryJobs.delete(sessionId);
+        throw error;
+      }
+      emitTranscriptDisplayObjects(sessionId);
+
+      const originalMetadata =
+        deps.sessionMetadataService.getMetadata(sessionId);
+      const baseTitle = normalizeRestartTitleCandidate(
+        originalMetadata?.customTitle ?? sourceSession.title,
+      );
+      const fallbackTitle = baseTitle
+        ? truncateSessionTitle(
+            /^Fork:/i.test(baseTitle) ? baseTitle : `Fork: ${baseTitle}`,
+          )
+        : undefined;
+      const savedExecutor = parseOptionalExecutor(
+        deps.sessionMetadataService.getExecutor(sessionId),
+      ).executor;
+      const requestedModel =
+        deps.sessionMetadataService.getRequestedModel(sessionId) ??
+        sourceProcess?.model;
+
+      void (async () => {
+        let generatorSessionId: string | undefined;
+        let targetSessionId: string | undefined;
+        let targetTitle: string | undefined;
+        let targetProcessId: string | undefined;
+        let completed = false;
+        try {
+          const generator = await deps.supervisor.forkSession({
+            sessionId,
+            projectPath: project.path,
+            providerName,
+            title: "Fork summary generator",
+          });
+          generatorSessionId = generator.sessionId;
+          await updateForkSummaryChildMetadata(
+            generator.sessionId,
+            sessionId,
+            "Fork summary generator",
+            true,
+          );
+          await persistLaunchMetadata(
+            generator.sessionId,
+            providerName,
+            savedExecutor,
+            undefined,
+            requestedModel,
+            originalMetadata?.promptSuggestionMode,
+          );
+          if (abortController.signal.aborted) {
+            throw new DOMException("Fork summary cancelled", "AbortError");
+          }
+
+          const generated = await deps.supervisor.generateSummary(
+            providerName,
+            {
+              purpose: "fork-after-summary",
+              strategy: "fork",
+              generatorSessionId: generator.sessionId,
+              cwd: project.path,
+              afterTurnMessageId: boundary.retainedThroughMessageId,
+              afterTurnContext: boundary.retainedThroughContext,
+              instructions,
+              signal: abortController.signal,
+            },
+          );
+          if (abortController.signal.aborted) {
+            throw new DOMException("Fork summary cancelled", "AbortError");
+          }
+
+          const title = forkSummaryTitle(generated.text, fallbackTitle);
+          targetTitle = title;
+          const target = await deps.supervisor.forkSession({
+            sessionId,
+            projectPath: project.path,
+            providerName,
+            upToMessageId: boundary.retainedThroughMessageId,
+            title,
+          });
+          targetSessionId = target.sessionId;
+          await updateForkSummaryChildMetadata(
+            target.sessionId,
+            sessionId,
+            title,
+            true,
+          );
+          await persistLaunchMetadata(
+            target.sessionId,
+            providerName,
+            savedExecutor,
+            undefined,
+            requestedModel,
+            originalMetadata?.promptSuggestionMode,
+          );
+          if (abortController.signal.aborted) {
+            throw new DOMException("Fork summary cancelled", "AbortError");
+          }
+
+          const result = await deps.supervisor.resumeSession(
+            target.sessionId,
+            project.path,
+            { text: generated.text, mode },
+            mode,
+            {
+              providerName,
+              executor: savedExecutor,
+              globalInstructions: getGlobalInstructions(),
+              model: requestedModel,
+              promptSuggestionMode: originalMetadata?.promptSuggestionMode,
+            },
+          );
+          if (isQueueFullResponse(result)) {
+            throw new Error("Queue is full");
+          }
+          if (isQueuedResponse(result)) {
+            deps.supervisor.cancelQueuedRequest(result.queueId);
+            throw new Error("Fork summary could not start immediately");
+          }
+          targetProcessId = result.id;
+          if (abortController.signal.aborted) {
+            await deps.supervisor.abortProcess(result.id);
+            targetProcessId = undefined;
+            throw new DOMException("Fork summary cancelled", "AbortError");
+          }
+
+          await persistLaunchMetadata(
+            result.sessionId,
+            providerName,
+            savedExecutor,
+            undefined,
+            requestedModel,
+            result.promptSuggestionMode,
+          );
+          await updateForkSummaryChildMetadata(
+            result.sessionId,
+            sessionId,
+            title,
+            false,
+          );
+          await deps.sessionMetadataService?.updateTranscriptDisplayObject(
+            sessionId,
+            displayObject.id,
+            (object) => ({
+              ...object,
+              status: "ready",
+              targetSessionId: result.sessionId,
+              title,
+              error: undefined,
+            }),
+          );
+          emitTranscriptDisplayObjects(sessionId);
+          completed = true;
+        } catch (error) {
+          const cancelled =
+            abortController.signal.aborted ||
+            (error instanceof DOMException && error.name === "AbortError");
+          const logCleanupFailure = (
+            stage: string,
+            cleanupError: unknown,
+          ): void => {
+            getLogger().warn(
+              {
+                event: "fork_after_summary_cleanup_failed",
+                sessionId,
+                projectId,
+                providerName,
+                stage,
+                error:
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : String(cleanupError),
+              },
+              "Fork-after-summary cleanup failed",
+            );
+          };
+          if (generatorSessionId) {
+            try {
+              await updateForkSummaryChildMetadata(
+                generatorSessionId,
+                sessionId,
+                "Fork summary generator",
+                true,
+              );
+            } catch (cleanupError) {
+              logCleanupFailure("archive-generator", cleanupError);
+            }
+          }
+          if (targetSessionId && targetTitle) {
+            try {
+              await updateForkSummaryChildMetadata(
+                targetSessionId,
+                sessionId,
+                targetTitle,
+                true,
+              );
+            } catch (cleanupError) {
+              logCleanupFailure("archive-target", cleanupError);
+            }
+          }
+          if (!completed && targetProcessId) {
+            try {
+              await deps.supervisor.abortProcess(targetProcessId);
+            } catch (cleanupError) {
+              logCleanupFailure("abort-target-process", cleanupError);
+            }
+          }
+          if (!cancelled) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Summary generation failed";
+            getLogger().warn(
+              {
+                event: "fork_after_summary_failed",
+                sessionId,
+                projectId,
+                providerName,
+                sourceMessageId,
+                error: message,
+              },
+              "Fork-after-summary job failed",
+            );
+            try {
+              await deps.sessionMetadataService?.updateTranscriptDisplayObject(
+                sessionId,
+                displayObject.id,
+                (object) => ({
+                  ...object,
+                  status: "error",
+                  error: message,
+                }),
+              );
+              emitTranscriptDisplayObjects(sessionId);
+            } catch (cleanupError) {
+              logCleanupFailure("persist-error-state", cleanupError);
+            }
+          }
+        } finally {
+          const active = activeForkSummaryJobs.get(sessionId);
+          if (active?.objectId === displayObject.id) {
+            activeForkSummaryJobs.delete(sessionId);
+          }
+        }
+      })().catch((error) => {
+        getLogger().error(
+          {
+            event: "fork_after_summary_unhandled_failure",
+            sessionId,
+            projectId,
+            providerName,
+            sourceMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Fork-after-summary job escaped its guarded workflow",
+        );
+      });
+
+      return c.json({ displayObject }, 202);
+    },
+  );
+
+  routes.post(
+    "/projects/:projectId/sessions/:sessionId/fork-summary/:objectId/cancel",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+      const objectId = c.req.param("objectId");
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+      const active = activeForkSummaryJobs.get(sessionId);
+      const object = deps.sessionMetadataService
+        ?.getTranscriptDisplayObjects(sessionId)
+        .find((candidate) => candidate.id === objectId);
+      if (!object) {
+        return c.json({ error: "Transcript display object not found" }, 404);
+      }
+      if (active?.objectId === objectId && object.status === "generating") {
+        active.abortController.abort();
+      } else if (object.status !== "error") {
+        return c.json({ error: "Fork summary job is not active" }, 409);
+      }
+      await deps.sessionMetadataService?.removeTranscriptDisplayObject(
+        sessionId,
+        objectId,
+      );
+      emitTranscriptDisplayObjects(sessionId);
+      return c.json({
+        transcriptDisplayObjects:
+          deps.sessionMetadataService?.getTranscriptDisplayObjects(sessionId) ??
+          [],
+      });
+    },
+  );
+
+  routes.patch(
+    "/projects/:projectId/sessions/:sessionId/fork-summary/:objectId",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+      const objectId = c.req.param("objectId");
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+      if (!deps.sessionMetadataService) {
+        return c.json({ error: "Session metadata service not available" }, 503);
+      }
+      let body: { autoOpenWhenReady?: unknown; action?: unknown };
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: "Invalid JSON body" }, 400);
+      }
+      const action =
+        body.action === "opened" || body.action === "clicked"
+          ? body.action
+          : undefined;
+      if (
+        body.autoOpenWhenReady !== undefined &&
+        typeof body.autoOpenWhenReady !== "boolean"
+      ) {
+        return c.json({ error: "autoOpenWhenReady must be a boolean" }, 400);
+      }
+      if (body.action !== undefined && !action) {
+        return c.json({ error: "action must be opened or clicked" }, 400);
+      }
+      const now = new Date().toISOString();
+      const updated =
+        await deps.sessionMetadataService.updateTranscriptDisplayObject(
+          sessionId,
+          objectId,
+          (object) => ({
+            ...object,
+            ...(typeof body.autoOpenWhenReady === "boolean"
+              ? { autoOpenWhenReady: body.autoOpenWhenReady || undefined }
+              : {}),
+            ...(action === "opened" ? { openedAt: now } : {}),
+            ...(action === "clicked" ? { clickedAt: now } : {}),
+          }),
+        );
+      if (!updated) {
+        return c.json({ error: "Transcript display object not found" }, 404);
+      }
+      emitTranscriptDisplayObjects(sessionId);
+      return c.json({
+        displayObject: updated,
+        transcriptDisplayObjects:
+          deps.sessionMetadataService.getTranscriptDisplayObjects(sessionId),
+      });
+    },
+  );
 
   // POST /api/sessions/:sessionId/messages - Queue message
   routes.post("/sessions/:sessionId/messages", async (c) => {
@@ -3576,6 +4708,31 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       ); // 410 Gone
     }
 
+    // Provider-native slash commands (e.g. Codex `/compact`) are dispatched
+    // through the provider's own protocol rather than delivered as turn text the
+    // model would never interpret. Claude's `/compact` reports handled:false and
+    // falls through to normal delivery so the SDK handles it as a regular turn
+    // (and any trailing focus instructions reach the SDK verbatim). A deferred
+    // submission keeps normal queue semantics.
+    if (!body.deferred) {
+      const parsed = parseSlashCommandSubmission(body.message);
+      if (parsed) {
+        const providerResult = await process.runProviderCommand(
+          parsed.name,
+          parsed.argument,
+        );
+        if (providerResult.handled) {
+          if (providerResult.error) {
+            return c.json(
+              { error: "Failed to run command", reason: providerResult.error },
+              409,
+            );
+          }
+          return c.json({ queued: true, serverTimestamp });
+        }
+      }
+    }
+
     const resolvedModel =
       body.model && body.model !== "default"
         ? body.model
@@ -3606,7 +4763,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       await process.primeSupportedCommandsForMessage(userMessage);
       const deferredResult = process.deferMessage(userMessage, {
         promoteIfReady: true,
-        placement: parseDeferredPlacement(body),
       });
       if (!deferredResult.success) {
         return c.json(
@@ -3654,6 +4810,35 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         : (process.resolvedModel ?? process.model);
     const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
 
+    // Per-model preemptive-compaction threshold (task 029). The route holds the
+    // settings; the Supervisor stays settings-agnostic. Key strictly by the YA
+    // model id: the alias the user picked this turn, else the live requested
+    // alias, else the alias persisted at launch (survives restart), else the
+    // provider's reported→YA-id helper for sessions YA didn't start. No family
+    // fallback. See topics/provider-abstraction.md § Per-model settings keying.
+    const yaModelId =
+      body.model ??
+      process.requestedModel ??
+      deps.sessionMetadataService?.getRequestedModel(sessionId) ??
+      getProvider(process.provider)?.yaModelIdForReported?.(
+        process.resolvedModel,
+      );
+    const compactAtContextPercent = resolveCompactPercent(
+      deps.serverSettingsService?.getSetting("clientDefaults")
+        ?.compactAtContextPercent,
+      yaModelId,
+    );
+    // Resolve the effective window here too — process.contextWindow is
+    // unreliable (often undefined) and the base resolver ignores always-1M.
+    const compactAtContextWindow =
+      compactAtContextPercent === undefined
+        ? undefined
+        : resolveCompactWindow(
+            process.provider,
+            [yaModelId, process.resolvedModel, process.model],
+            resolveContextWindow,
+          );
+
     // Use queueMessageToSession which handles thinking mode changes
     // If thinking mode changed, it will restart the process automatically
     const queueGlobalInstructions = getGlobalInstructions();
@@ -3675,6 +4860,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           undefined,
         globalInstructions: queueGlobalInstructions,
         permissions: body.permissions,
+        compactAtContextPercent,
+        compactAtContextWindow,
       },
     );
 
@@ -3713,105 +4900,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
 
     return c.json({ cancelled: true });
-  });
-
-  // PUT /api/sessions/:sessionId/deferred/:tempId - Update queued text in place
-  routes.put("/sessions/:sessionId/deferred/:tempId", async (c) => {
-    const sessionId = c.req.param("sessionId");
-    const tempId = c.req.param("tempId");
-
-    let body: { message?: unknown };
-    try {
-      body = await c.req.json<{ message?: unknown }>();
-    } catch {
-      return c.json({ error: "Invalid JSON body" }, 400);
-    }
-
-    if (typeof body.message !== "string") {
-      return c.json({ error: "Message must be a string" }, 400);
-    }
-
-    const process = deps.supervisor.getProcessForSession(sessionId);
-    if (!process) {
-      return c.json({ error: "No active process for session" }, 404);
-    }
-
-    const updated = process.updateDeferredMessage(tempId, body.message);
-    if (!updated) {
-      return c.json({ error: "Deferred message not found" }, 404);
-    }
-
-    return c.json({
-      updated: true,
-      tempId: updated.tempId,
-      message: updated.text,
-      deferredMessages: process.getDeferredQueueSummary(),
-    });
-  });
-
-  // POST /api/sessions/:sessionId/deferred/:tempId/edit - Take a deferred message for editing
-  routes.post("/sessions/:sessionId/deferred/:tempId/edit", (c) => {
-    const sessionId = c.req.param("sessionId");
-    const tempId = c.req.param("tempId");
-
-    const process = deps.supervisor.getProcessForSession(sessionId);
-    if (!process) {
-      return c.json({ error: "No active process for session" }, 404);
-    }
-
-    const taken = process.takeDeferredMessage(tempId);
-    if (!taken) {
-      return c.json({ error: "Deferred message not found" }, 404);
-    }
-
-    return c.json({
-      message: taken.message.text,
-      tempId: taken.message.tempId,
-      mode: taken.message.mode,
-      attachments: taken.message.attachments,
-      placement: taken.placement,
-    });
-  });
-
-  // POST /api/sessions/:sessionId/deferred/:tempId/steer - Send a queued message as active-turn steering
-  routes.post("/sessions/:sessionId/deferred/:tempId/steer", (c) => {
-    const sessionId = c.req.param("sessionId");
-    const tempId = c.req.param("tempId");
-
-    const process = deps.supervisor.getProcessForSession(sessionId);
-    if (!process) {
-      return c.json({ error: "No active process for session" }, 404);
-    }
-
-    const steered = process.steerDeferredMessage(tempId);
-    if (!steered) {
-      return c.json({ error: "Deferred message not found" }, 404);
-    }
-
-    return c.json({
-      steered: true,
-      tempId: steered.message.tempId,
-      message: steered.message.text,
-      position: steered.position,
-      deferredMessages: process.getDeferredQueueSummary(),
-    });
-  });
-
-  // POST /api/sessions/:sessionId/deferred/:tempId/edit/release - Release a queued edit barrier
-  routes.post("/sessions/:sessionId/deferred/:tempId/edit/release", (c) => {
-    const sessionId = c.req.param("sessionId");
-    const tempId = c.req.param("tempId");
-
-    const process = deps.supervisor.getProcessForSession(sessionId);
-    if (!process) {
-      return c.json({ error: "No active process for session" }, 404);
-    }
-
-    const released = process.releaseDeferredEditBarrier(tempId);
-    return c.json({
-      released,
-      deferredMessages: process.getDeferredQueueSummary(),
-    });
   });
 
   // PUT /api/sessions/:sessionId/mode - Update permission mode without sending a message
@@ -4081,6 +5169,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       heartbeatTurnsAfterMinutes?: number | null;
       heartbeatTurnText?: string | null;
       heartbeatForceAfterMinutes?: number | null;
+      promptSuggestionMode?: unknown;
     } = {};
     try {
       body = await c.req.json();
@@ -4097,7 +5186,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.heartbeatTurnsEnabled === undefined &&
       body.heartbeatTurnsAfterMinutes === undefined &&
       body.heartbeatTurnText === undefined &&
-      body.heartbeatForceAfterMinutes === undefined
+      body.heartbeatForceAfterMinutes === undefined &&
+      body.promptSuggestionMode === undefined
     ) {
       return c.json(
         {
@@ -4193,6 +5283,31 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           ? body.parentSessionId.trim() || null
           : null;
 
+    // promptSuggestionMode: null/"" clears the preference (revert to default);
+    // a valid enum value is stored; any other value is rejected.
+    let promptSuggestionMode: PromptSuggestionMode | null | undefined;
+    if (body.promptSuggestionMode !== undefined) {
+      if (
+        body.promptSuggestionMode === null ||
+        body.promptSuggestionMode === ""
+      ) {
+        promptSuggestionMode = null;
+      } else if (
+        typeof body.promptSuggestionMode === "string" &&
+        PROMPT_SUGGESTION_MODES.includes(
+          body.promptSuggestionMode as PromptSuggestionMode,
+        )
+      ) {
+        promptSuggestionMode =
+          body.promptSuggestionMode as PromptSuggestionMode;
+      } else {
+        return c.json(
+          { error: "promptSuggestionMode must be one of: off, native" },
+          400,
+        );
+      }
+    }
+
     await deps.sessionMetadataService.updateMetadata(sessionId, {
       title: body.title,
       archived: body.archived,
@@ -4202,6 +5317,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       heartbeatTurnsAfterMinutes,
       heartbeatTurnText,
       heartbeatForceAfterMinutes,
+      promptSuggestionMode,
     });
 
     // Emit SSE event so sidebar and other clients can update
@@ -4217,6 +5333,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         heartbeatTurnsAfterMinutes,
         heartbeatTurnText,
         heartbeatForceAfterMinutes,
+        promptSuggestionMode: promptSuggestionMode ?? undefined,
         timestamp: new Date().toISOString(),
       });
     }

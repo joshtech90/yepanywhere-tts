@@ -3,6 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Level as LogLevel } from "pino";
 import { ALL_PERMISSION_MODES } from "@yep-anywhere/shared";
+import "./startupEnv.js";
+import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "./defaults.js";
+import { captureStartupEnvSettings } from "./envSettings.js";
 import { getDefaultCodexSessionsDir } from "./projects/codex-scanner.js";
 import type { PermissionMode } from "./sdk/types.js";
 import { getModuleEnv, harvestYaModuleEnv } from "./yaModuleEnv.js";
@@ -12,15 +15,15 @@ import { getModuleEnv, harvestYaModuleEnv } from "./yaModuleEnv.js";
  * Supports profiles for running multiple instances (like Chrome profiles).
  *
  * Priority:
- * 1. YEP_ANYWHERE_DATA_DIR - Full path override
- * 2. YEP_ANYWHERE_PROFILE - Appends suffix: ~/.yep-anywhere-{profile}
+ * 1. YEP_DATA_DIR - Full path override
+ * 2. YEP_PROFILE - Appends suffix: ~/.yep-anywhere-{profile}
  * 3. Default: ~/.yep-anywhere
  */
 export function getDataDir(): string {
-  if (process.env.YEP_ANYWHERE_DATA_DIR) {
-    return process.env.YEP_ANYWHERE_DATA_DIR;
+  if (process.env.YEP_DATA_DIR) {
+    return process.env.YEP_DATA_DIR;
   }
-  const profile = process.env.YEP_ANYWHERE_PROFILE;
+  const profile = process.env.YEP_PROFILE;
   if (profile) {
     return path.join(os.homedir(), `.yep-anywhere-${profile}`);
   }
@@ -113,7 +116,7 @@ export interface Config {
    * Max seconds between consecutive compose times for deferred
    * (queued-while-busy) turns to join into one provider turn joined with
    * `--------` separators at a delivery boundary
-   * (YA_DEFERRED_JOIN_WINDOW_S). Default 0: never join — one verbatim
+   * (YEP_DEFERRED_JOIN_WINDOW_S). Default 0: never join — one verbatim
    * deferred turn is promoted per boundary, matching first-party queue
    * behavior (topics/vanilla-defaults.md). The UI-configurable server
    * setting `deferredJoinWindowSeconds` overrides this when set.
@@ -121,7 +124,7 @@ export interface Config {
   deferredJoinWindowSeconds: number;
   /**
    * Prepend `(Ns ago)` / `(Ms later)` compose-time staleness anchors to
-   * delivered deferred turns (YA_COMPOSE_ANCHORS=1). Default false: queued
+   * delivered deferred turns (YEP_COMPOSE_ANCHORS=1). Default false: queued
    * text reaches the provider verbatim
    * (topics/compose-time-context-anchors.md).
    */
@@ -130,9 +133,9 @@ export interface Config {
   voiceInputEnabled: boolean;
   /** Explicitly enabled server-routed voice backend ids. Empty = none. */
   voiceBackends: string[];
-  /** Deepgram API key for the ya-deepgram backend (from YA_stt__DEEPGRAM_API_KEY). */
+  /** Deepgram API key for the ya-deepgram backend (from YEP_STT_DEEPGRAM_API_KEY). */
   deepgramApiKey?: string;
-  /** xAI key for the ya-grok backend (from YA_stt__XAI_API_KEY, or scrubbed XAI_API_KEY fallback). */
+  /** xAI key for the ya-grok backend (from YEP_STT_XAI_API_KEY, or scrubbed XAI_API_KEY fallback). */
   xaiSttApiKey?: string;
   /** General xAI API key from XAI_API_KEY, scrubbed from process.env after load. */
   ambientXaiApiKey?: string;
@@ -144,8 +147,22 @@ export interface Config {
   whisperDevice?: string;
   /** Whisper compute type for ya-whisper backend (default: int8). */
   whisperComputeType?: string;
+  /** Parakeet fallback model name for ya-parakeet backend (default: nvidia/parakeet-tdt-0.6b-v3). */
+  parakeetModel?: string;
+  /** Parakeet device for ya-parakeet backend (default: auto). */
+  parakeetDevice?: string;
+  /** NeMo Parakeet fallback model name for ya-nemo backend (default: nvidia/parakeet-tdt-0.6b-v3). */
+  nemoModel?: string;
+  /** NeMo Parakeet device for ya-nemo backend (default: auto). */
+  nemoDevice?: string;
   /** Allowed directory prefixes for serving local images (e.g., ["/tmp"]). Empty = disabled. */
   allowedImagePaths: string[];
+  /** Managed uploads directory ({dataDir}/uploads); always part of the file-access set. */
+  managedUploadsDir: string;
+  /** Per-OS temp prefixes the "Temp folders" file-access toggle expands to. */
+  fileAccessTempPaths: string[];
+  /** Env-pinned file-access allow-list (ALLOWED_FILE_PATHS/ALLOWED_IMAGE_PATHS); null = unset. */
+  fileAccessEnvPaths: string[] | null;
 
   /** Whether cookie-based auth is disabled by env var (--auth-disable or AUTH_DISABLED=true). Used for recovery. */
   authDisabled: boolean;
@@ -174,7 +191,10 @@ export interface Config {
  * Load configuration from environment variables with defaults.
  */
 export function loadConfig(): Config {
-  // Harvest YA_<module>__* secrets into the private store and strip them from
+  // Snapshot the documented env for the Environment settings panel before any
+  // secrets are harvested/stripped below, redacting secrets at capture time.
+  captureStartupEnvSettings();
+  // Harvest private YEP_STT_* values into the private store and strip them from
   // process.env before anything can spawn a child that would inherit them.
   harvestYaModuleEnv();
   const sttEnv = getModuleEnv("stt");
@@ -243,6 +263,16 @@ export function loadConfig(): Config {
     process.env.ALLOWED_IMAGE_PATHS !== undefined
       ? parseCommaSeparatedList(process.env.ALLOWED_IMAGE_PATHS)
       : getDefaultAllowedImagePaths();
+  // File-access env override governs BOTH the media doors and the project-files
+  // door. ALLOWED_FILE_PATHS is the generalized name; ALLOWED_IMAGE_PATHS is the
+  // legacy alias. When either is set it pins (replaces) the editable allow-set
+  // and the UI renders read-only. `null` = no env override (use UI settings).
+  const fileAccessEnvRaw =
+    process.env.ALLOWED_FILE_PATHS ?? process.env.ALLOWED_IMAGE_PATHS;
+  const fileAccessEnvPaths =
+    fileAccessEnvRaw !== undefined
+      ? parseCommaSeparatedList(fileAccessEnvRaw)
+      : null;
 
   return {
     dataDir,
@@ -258,7 +288,9 @@ export function loadConfig(): Config {
     sessionIndexWriteLockStaleMs,
     sessionAutoArchiveDays,
     projectScanCacheTtlMs,
-    idleTimeoutMs: parseIntOrDefault(process.env.IDLE_TIMEOUT, 20 * 60) * 1000,
+    idleTimeoutMs:
+      parseIntOrDefault(process.env.IDLE_TIMEOUT, DEFAULT_IDLE_TIMEOUT_SECONDS) *
+      1000,
     defaultPermissionMode: parsePermissionMode(process.env.PERMISSION_MODE),
     port: parseIntOrDefault(process.env.PORT, 3400),
     portFile: process.env.PORT_FILE ?? null,
@@ -317,14 +349,14 @@ export function loadConfig(): Config {
     // queued turns reach the provider verbatim, one per delivery boundary.
     deferredJoinWindowSeconds: Math.max(
       0,
-      Number(process.env.YA_DEFERRED_JOIN_WINDOW_S) || 0,
+      Number(process.env.YEP_DEFERRED_JOIN_WINDOW_S) || 0,
     ),
-    composeAnchors: process.env.YA_COMPOSE_ANCHORS === "1",
+    composeAnchors: process.env.YEP_COMPOSE_ANCHORS === "1",
     // Voice input (default: true, set VOICE_INPUT=false to disable)
     voiceInputEnabled: process.env.VOICE_INPUT !== "false",
     // Explicit local/test voice backends (cloud backends auto-enable on key
-    // presence). Example: YA_VOICE_BACKENDS=ya-whisper
-    voiceBackends: parseCommaSeparatedList(process.env.YA_VOICE_BACKENDS),
+    // presence). Example: YEP_VOICE_BACKENDS=ya-whisper
+    voiceBackends: parseCommaSeparatedList(process.env.YEP_VOICE_BACKENDS),
     deepgramApiKey: sttEnv.DEEPGRAM_API_KEY || undefined,
     xaiSttApiKey: sttEnv.XAI_API_KEY || ambientXaiApiKey,
     ambientXaiApiKey,
@@ -335,11 +367,18 @@ export function loadConfig(): Config {
     whisperModel: process.env.WHISPER_MODEL || undefined,
     whisperDevice: process.env.WHISPER_DEVICE || undefined,
     whisperComputeType: process.env.WHISPER_COMPUTE_TYPE || undefined,
+    parakeetModel: process.env.PARAKEET_MODEL || undefined,
+    parakeetDevice: process.env.PARAKEET_DEVICE || undefined,
+    nemoModel: process.env.NEMO_MODEL || undefined,
+    nemoDevice: process.env.NEMO_DEVICE || undefined,
     // Always allow yep-managed uploads. ALLOWED_IMAGE_PATHS adds external paths
     // like /tmp; an empty value disables only those extras.
     allowedImagePaths: Array.from(
       new Set([managedUploadsDir, ...extraAllowedImagePaths]),
     ),
+    managedUploadsDir,
+    fileAccessTempPaths: getDefaultAllowedImagePaths(),
+    fileAccessEnvPaths,
     // Auth disabled override (for recovery if user forgets password)
     authDisabled: process.env.AUTH_DISABLED === "true",
     authCookieSecret: process.env.AUTH_COOKIE_SECRET,
@@ -381,11 +420,12 @@ export function getDefaultAllowedImagePaths(
   platform: NodeJS.Platform = process.platform,
   tmpDir: string = os.tmpdir(),
 ): string[] {
-  const paths = ["/tmp"];
+  // Windows has no `/tmp`; the real temp dir is `os.tmpdir()`
+  // (%LOCALAPPDATA%\Temp / %TEMP%). Posix keeps `/tmp`.
   if (platform === "win32") {
-    paths.push("C:\\tmp", tmpDir);
+    return Array.from(new Set([tmpDir]));
   }
-  return Array.from(new Set(paths));
+  return ["/tmp"];
 }
 
 /**

@@ -137,6 +137,20 @@ settings surface):
   margin), using the currently selected mic device. If Chrome microphone
   permission is not already granted, the first click still performs the
   permission/device open; subsequent dictations reuse the warm stream.
+- **Warm-mic also warms the server STT model.** The same pointer-near warm
+  trigger fires a one-shot `/speech/prewarm` for the selected server-routed
+  backend (`YaServerProvider.prewarm`), so the first dictation skips the
+  backend's cold model load (e.g. parakeet's ~20s first-load). This widens the
+  earlier "warm = mic/MediaStream only" rule: warm now also covers a server
+  model load. It stays an HTTP prewarm call — no audio, no held speech
+  WebSocket — and needs no mic permission, so it runs even where the mic warm
+  cannot. It is fired once per backend+model per provider instance (cleared on
+  failure to allow retry). The server load is **singleflight**: `prewarm` and a
+  subsequent mic-activated `transcribe` of the same model share one
+  `warmPromise` in the local backend, so a backgrounded warm and the first real
+  transcribe coalesce to **one** model instance with no aborted load — the
+  transcribe simply awaits the in-flight warm. Gated on the warm-mic opt-in:
+  with it off, no speculative model load is requested.
 
 The cold-open cannot be eliminated for the *first* use without prewarming
 before the click (mic indicator before intent), which is exactly why warm-mic
@@ -192,8 +206,9 @@ capture, not in the button. Best guesses, roughly in order:
    being cleared) - worth checking.
 2. **Device open itself stalls.** `getUserMedia()` may hang/reject on mobile;
    the streaming path only reaches graph setup after a live `MediaStream`.
-   Batch mode can still be selected by using browser-compressed Grok audio, but
-   it has different browser-default processing and no streaming Smart Turn.
+   The Grok batch implementations remain in code, but normal STT menus no
+   longer advertise them; they have different browser-default processing and no
+   streaming Smart Turn.
 3. **AudioWorklet mode is the likely real fix.** The deprecated
    `ScriptProcessorNode` is exactly the component that is flaky on mobile;
    moving capture to an `AudioWorklet` (the planned opt-in mode) is the

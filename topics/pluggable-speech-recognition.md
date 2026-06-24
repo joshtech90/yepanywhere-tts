@@ -9,24 +9,28 @@ Topic: pluggable-speech-recognition
 See also: [direct-xai-speech.md](direct-xai-speech.md) for the hosted Grok
 plan where the browser sends audio directly to xAI and YA only brokers
 explicit credential/config material.
+See also: [mic-button-speech-ui.md](mic-button-speech-ui.md) for the mic
+button's composer insertion, selection replacement, and spoken-command
+behavior across streaming and batch STT.
 
 ## Contract
 
 - `VOICE_INPUT=false` is the master kill switch. When it is false, YA does
   not advertise voice input or server-routed speech backends.
 - Server-routed backends are off unless an explicit signal enables them.
-  Local/test backends (`ya-whisper`, `ya-dummy`) must be named in
-  `YA_VOICE_BACKENDS`; cloud backends (`ya-deepgram`, `ya-grok`) auto-enable
-  when their YA-scoped key is provided, since providing a metered key is the
-  operator's explicit opt-in. Only backends that pass startup validation are
-  advertised through `/api/version` as `voiceBackends`.
+  Local/test backends (`ya-whisper`, `ya-parakeet`, `ya-nemo`, `ya-dummy`) must
+  be named in `YEP_VOICE_BACKENDS`; cloud backends (`ya-deepgram`, `ya-grok`)
+  auto-enable when their YA-scoped key is provided, since providing a metered
+  key is the operator's explicit opt-in. Configured backends appear immediately
+  through `/api/version.voiceBackendStatuses`, but only backends that pass
+  startup validation are routable and advertised as `voiceBackends`.
 - Browser-native Web Speech recognition is a selectable local escape hatch,
   not a YA server backend. The browser still owns its recognizer, credentials,
   latency, and failure modes.
 - The user chooses among advertised methods. YA should not silently fall back
   from one configured server method to another, and it should not auto-enable
   a backend merely because its code exists — enablement requires an explicit
-  signal: a `YA_VOICE_BACKENDS` entry, or a provided cloud key.
+  signal: a `YEP_VOICE_BACKENDS` entry, or a provided cloud key.
 - OS keyboard dictation is outside YA's speech stack. If the user taps the
   keyboard's mic glyph, that is device-native text entry, not YA-mediated
   speech recognition.
@@ -34,6 +38,14 @@ explicit credential/config material.
   native cannot: server-side keys, backend choice, project/session biasing,
   retry/buffering under YA's transport, or direct audio input to an
   audio-capable agent provider.
+- Speech readiness UI is event-driven. The mic must not turn red, show
+  recording bars, or display "Listening" from a fixed delay or from a weak
+  start-request acknowledgement. Use real capture/listening events from the
+  active path: first Web Audio processor frame for YA-controlled PCM capture,
+  browser Web Speech audio/sound/speech events for browser-native STT, and
+  backend/socket events only for backend readiness. A fixed delay or warm-up
+  margin may be proposed, but it requires explicit maintainer authorization
+  before implementation.
 - YA-server recognition keeps an audit trail by default. Captured speech audio
   is retained for eight weeks or 400 MB, whichever limit prunes it first, using
   a speech-appropriate compressed browser recording such as Opus/WebM. Each
@@ -46,6 +58,17 @@ explicit credential/config material.
   source, audio size, MIME type, session/turn pointer, duration, transcript
   character count, and retention result. Logs must not include the transcript
   text itself; retained metadata is the place where transcript text belongs.
+- A provider may implement an optional `cancel()` to abandon an in-flight
+  post-capture (`processing`) transcription. The contract is result-suppression,
+  not work-interruption: after `cancel()`, a transcription that still completes
+  must be discarded — no `onResult`, and no state change beyond returning to
+  idle. Cancellation is batch-token-specific: starting a newer recording must
+  not cancel or suppress an older queued transcription. Aborting the underlying
+  request or model work is an optional optimization. Every stopped batch also
+  emits one terminal settlement keyed by its captured speech target, including
+  completion, cancellation, and failure, so consumers can retire the exact
+  pending insertion target independently. See the batch cancel chip in
+  [mic-button-speech-ui.md](mic-button-speech-ui.md).
 
 ## Intended Architecture
 
@@ -68,13 +91,22 @@ PCM multiplexed through the app/control relay socket.
 
 Backends should implement a common `SpeechBackend` contract:
 
-- validate credentials or local runtime readiness at startup;
+- validate credentials or local runtime/import readiness at startup without
+  forcing an expensive local model load;
 - advertise only validated ids plus their capabilities;
 - transcribe a complete utterance with optional `mimeType`, `prompt`, and
   `keyterms` options;
 - optionally open a streaming session that accepts raw audio frames and emits
   interim/final transcript events;
 - keep expensive local models warm rather than loading per utterance.
+
+Local STT backends should use the same event contract when the model/runtime can
+produce meaningful stream updates. A local model that exposes partial/final
+segments, timestamps, endpoint confidence, or a confidence signal that an audio
+chunk is transcribable should feed those events through the generalized
+streaming path instead of inventing a separate UI flow. Offline-only models
+such as a basic faster-whisper worker remain batch backends until a verified
+streaming/confidence surface exists.
 
 ## Implemented
 
@@ -90,32 +122,70 @@ Backends should implement a common `SpeechBackend` contract:
   `YaServerProvider` captures microphone audio through Web Audio, downsamples it
   to 16 kHz signed PCM16 little-endian, and sends binary frames to
   `/api/speech/ws`. Interim and chunk-final events update the composer
-  preview; only utterance-final streaming partials commit transcript deltas.
+  preview; final partial events commit provider-owned transcript segments into
+  the editable draft without stopping the mic, and utterance-final partials
+  (`speech_final=true`) close or Smart Turn-decide the speech turn.
+  For xAI-style streaming events, YA treats word timestamps as the committed
+  audio span when they are present. The top-level `start` plus `duration` may
+  instead describe a broader segment window that remains fixed while xAI emits
+  several non-empty `is_final` sub-chunks. YA uses the top-level `start` as the
+  replacement group key, uses word spans to advance the committed cursor inside
+  that group, and treats a later `speech_final=true` event for the group as an
+  authoritative correction of the group-owned text. If a stitched
+  utterance-final event starts at an earlier committed group and no longer has
+  the already-committed group text as its prefix, YA replaces the owned group
+  range through explicit composer replacement metadata. If the event is merely
+  cumulative and still has the committed group text as a prefix, YA keeps only
+  the word-timestamp tail after the committed-audio cursor. Distinct later spans
+  append even if their transcript text is identical. The streaming path must
+  not dedupe or slice by substring comparison.
+  The client does not infer safe sub-spans from punctuation, confidence, or
+  sentence boundaries; safe-to-edit text is only the text already committed by
+  provider event semantics.
   Clicking stop commits the currently visible preview before ignoring
   stop-flush partials, and the final event carries the retained transcription
   id.
-  With Smart Turn enabled, a very short `speech_final` fragment that already
-  appears inside a fuller visible preview is treated as a recognizer regression:
-  the client commits the fuller preview and still uses the Smart Turn final
-  event to stop and send.
+  Interim streaming text is rendered through an inline textarea mirror: it wraps
+  in the same visual compose plane as the committed draft and highlights the
+  mutable tail, but it is not part of the textarea value. The textarea remains
+  the committed draft only, so user edits do not accidentally freeze recognizer
+  text that may still be revised.
+  Appending committed speech deltas must not steal the textarea cursor: if the
+  user is editing earlier committed text, preserve selection and scroll; if the
+  cursor was already at the old end, let it follow the appended speech.
+  Starting the mic also creates a speech-owned insertion range. If committed
+  text is selected, YA deletes that selection first, places the cursor at the
+  deletion point, and inserts final speech deltas there rather than at the end.
+  User edits map the speech-owned range through ordinary textarea changes;
+  edits inside that range remain part of the speech-owned text. A Smart Turn
+  `wait` command leaves the range's committed text in the composer without
+  sending, while `cancel` removes the range and clears the mutable preview.
+  Selection restoration is tied to the committed textarea value update, not to a
+  fixed UI delay.
 - Backends may advertise `smartTurn: true` when their streaming API supports
   ML end-of-turn detection. Grok STT exposes this through the xAI
   `smart_turn` threshold and `smart_turn_timeout` parameters. The client shows
   Smart Turn controls only when the selected backend advertises that capability.
-- Grok STT has an explicit browser-to-YA audio uplink setting. The default
-  PCM16 mode captures Web Audio in the browser and sends raw 16 kHz PCM16
-  frames to YA for streaming recognition. The comparative browser-compressed
-  mode uses the browser's MediaRecorder output and the batch transcription
-  route; compressed MediaRecorder audio may be equivalent in practice, but YA
-  treats that as unverified until compared. Smart Turn depends on Grok
-  streaming and is therefore only active when the Grok uplink mode is PCM16.
+- Grok STT through YA is advertised as a streaming method. `ya-grok` captures
+  Web Audio in the browser and sends raw 16 kHz PCM16 frames to YA for
+  streaming recognition. The retained `ya-grok-batch` implementation uses the
+  browser's MediaRecorder output and the batch transcription route, but normal
+  STT menus do not offer it. Smart Turn depends on streaming `speech_final`
+  events and is therefore only active for methods whose capabilities advertise
+  both `streaming` and `smartTurn`.
 - `useSpeechRecognition` selects browser-native when the method is
-  `browser-native`; any other method constructs `YaServerProvider` with the
-  advertised backend id unchanged.
+  `browser-native`; `xai-grok-direct-streaming` constructs a direct xAI
+  streaming provider; the retained `xai-grok-direct-batch` id constructs a
+  direct xAI batch provider but is not advertised in normal STT menus;
+  advertised server backend ids construct `YaServerProvider` unchanged.
 - The client speech-method selector is data-driven from
-  `/api/version.voiceBackends` plus the special browser-native fallback. It
-  does not keep a client-side whitelist of server backend ids; unknown
-  advertised ids remain selectable and route through YA unchanged.
+  `/api/version.voiceBackends`, the special browser-native fallback, and direct
+  xAI client methods only when direct xAI can run: either `ya-grok` is
+  advertised or this browser has a local xAI STT key. It does not keep a
+  client-side whitelist of server backend ids; unknown advertised ids remain
+  selectable and route through YA unchanged. Grok batch ids are hidden from the
+  normal selector; stored batch selections resolve to streaming Grok when Grok
+  STT is available.
 - `NewSessionForm` and the active session composer toolbar build
   speech-method dropdowns from the same advertised active backend list. The
   dropdown is shown only when more than one method is available.
@@ -125,27 +195,64 @@ Backends should implement a common `SpeechBackend` contract:
   the local explicit value and a partial server client-default update so a later
   browser with no explicit local override inherits the most recent UI choice.
   If neither local nor server default exists, the effective runtime default
-  prefers active server-routed STT over browser-native, with `ya-grok` ranked
-  before `ya-deepgram`; browser-native remains the explicit local escape hatch.
-- Server config parses `VOICE_INPUT`, `YA_VOICE_BACKENDS`,
-  `YA_stt__DEEPGRAM_API_KEY`, `YA_stt__XAI_API_KEY`, `XAI_API_KEY`,
-  `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE`.
-  `YA_stt__XAI_API_KEY` takes precedence for `ya-grok`; `XAI_API_KEY` is a
+  prefers direct Grok streaming when `ya-grok` is configured, otherwise active
+  server-routed STT over browser-native, with `ya-deepgram` ranked ahead of
+  unknown server backends. Browser-native remains the explicit local escape
+  hatch.
+- Server config parses `VOICE_INPUT`, `YEP_VOICE_BACKENDS`,
+  `YEP_STT_DEEPGRAM_API_KEY`, `YEP_STT_XAI_API_KEY`, `XAI_API_KEY`,
+  `WHISPER_MODEL`, `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE`,
+  `PARAKEET_MODEL`, `PARAKEET_DEVICE`, `NEMO_MODEL`, and `NEMO_DEVICE`.
+  `YEP_STT_XAI_API_KEY` takes precedence for `ya-grok`; `XAI_API_KEY` is a
   convenience fallback that is scrubbed from `process.env` after config load.
 - `SpeechBackendRegistry` supports `ya-dummy`, `ya-deepgram`,
-  `ya-grok`, and `ya-whisper`; it validates configured backends and
-  exposes enabled ids plus capability metadata to `/api/version`.
+  `ya-grok`, `ya-whisper`, `ya-parakeet`, and `ya-nemo`. It records configured
+  backends immediately as pending, validates them asynchronously, and keeps
+  pending/disabled entries out of routing. `/api/version` exposes validated ids
+  plus capabilities separately from the full pending/enabled/disabled status
+  catalog, allowing clients to show startup state without sending audio early.
 - `ya-grok` posts batch multipart audio to xAI's `POST /v1/stt`
   endpoint and implements xAI's `wss://api.x.ai/v1/stt` streaming endpoint.
   In streaming mode it can enable Smart Turn and pass through xAI word
   timestamps so the client can recognize optional paused end commands.
   Both cloud backends auto-enable when their key is present
-  (`YA_stt__XAI_API_KEY` or scrubbed `XAI_API_KEY` for `ya-grok`,
-  `YA_stt__DEEPGRAM_API_KEY` for `ya-deepgram`) because providing a metered key
+  (`YEP_STT_XAI_API_KEY` or scrubbed `XAI_API_KEY` for `ya-grok`,
+  `YEP_STT_DEEPGRAM_API_KEY` for `ya-deepgram`) because providing a metered key
   is the operator's explicit opt-in. `ya-grok` is currently the only backend
   advertising streaming.
 - Deepgram and local faster-whisper backend implementations exist. The local
   Whisper path uses a warm Python worker subprocess around `faster_whisper`.
+  The local Parakeet path uses the same pixi `stt` environment with a separate
+  Transformers/PyTorch bootstrap and a warm Python worker around
+  `pipeline("automatic-speech-recognition")`. The local NeMo Parakeet path is a
+  separate explicit `ya-nemo` backend in the same pixi `stt` environment plus
+  the heavier `stt-bootstrap-nemo` add-on. It uses a warm `nemo.collections.asr`
+  worker and decodes compressed browser recordings through `ffmpeg` only when
+  needed before handing NeMo a mono 16 kHz WAV. The browser can choose the
+  Parakeet model id per request from STT settings or the mic options panel for
+  either Parakeet backend; `PARAKEET_MODEL` / `NEMO_MODEL` remain server
+  fallbacks for clients that send no model. The implemented presets are
+  limited to model ids tested in the current runtimes:
+  `nvidia/parakeet-tdt-0.6b-v3`, `nvidia/parakeet-ctc-1.1b`, and
+  `nvidia/parakeet-rnnt-1.1b`. Presets carry backend compatibility metadata:
+  model selection keeps the current compatible backend, switches to another
+  enabled compatible backend when needed, and hides or disables presets that no
+  enabled backend can run. Custom model ids stay backend-neutral and are sent to
+  the currently selected Parakeet backend. Both local Parakeet backends are
+  batch-only until a local streaming/chunking surface is proven.
+- Each local backend (Whisper, Parakeet, NeMo) keeps a single worker and
+  serializes all loads and transcriptions onto one FIFO queue (`SerialQueue`).
+  A request that arrives while a model is still loading — or while a model swap
+  is in flight — waits its turn (record audio, block on the load, then
+  transcribe) instead of being rejected with "backend is busy with another
+  request". A model swap still kills the old worker before loading the new one
+  (single worker by design), but the swap-load is just another queued step, so
+  it blocks rather than errors. A failed load (e.g. a NeMo-only model sent to
+  the Transformers `ya-parakeet` backend) rejects only that request; the queue
+  continues. Client batch providers retain each recording's captured speech
+  target while it waits and emit a target-specific terminal settlement, so
+  overlapping requests can complete or fail independently without orphaning
+  composer tags.
 - The normal `index.ts` runtime mounts `/api/speech` after
   `createNodeWebSocket()` creates the shared `upgradeWebSocket` helper.
 - `createSpeechRoutes` implements `POST /api/speech/transcribe` for batch
@@ -154,6 +261,31 @@ Backends should implement a common `SpeechBackend` contract:
   accepts JSON control frames even when the unified Node WS path presents text
   frames as `Buffer`s. Streaming metadata includes the ordered transcript trace
   as one recognizer event per line.
+- `createSpeechRoutes` also exposes direct xAI credential brokering:
+  `/api/speech/xai-client-secret` mints a short-lived xAI client secret for
+  browser WebSocket streaming to `/v1/stt`, while
+  `/api/speech/xai-client-key` returns the long-lived STT key only when
+  `YEP_STT_SHARE_XAI_KEY_WITH_CLIENTS=1` enables direct batch borrowing.
+- `xai-grok-direct-streaming` reuses the YA Web Audio PCM16 capture path but
+  opens `wss://api.x.ai/v1/stt` directly from the browser with
+  `Sec-WebSocket-Protocol: xai-client-secret.*`. `xai-grok-direct-batch`
+  records a complete `MediaRecorder` utterance and posts it directly to
+  `POST /v1/stt`, so it emits final text only.
+- The browser-local xAI STT key field is always reachable from STT settings and
+  from the mic-button speech options. Saving a non-empty browser key updates
+  the method list locally and can make direct Grok streaming the selected
+  default even when the YA server advertises no Grok STT backend.
+- YA-controlled and direct xAI STT paths share one browser mic capture owner
+  when Keep Mic Warm is enabled. The shared stream is keyed by the selected mic
+  device, requests the same raw speech constraints for batch and streaming
+  paths (mono / 16 kHz / 16-bit ideals, echo cancellation, noise suppression,
+  and auto gain off), survives provider disposal during STT backend switches,
+  and is released when Keep Mic Warm is disabled or the selected mic changes.
+- Browser-native STT does not consume YA's shared mic stream: Chrome owns the
+  Web Speech capture path. Its UI treats `SpeechRecognition.onstart` only as a
+  start acknowledgement; red/listening state waits for Web Speech
+  audio/sound/speech start events or for a result event if Chrome skips the
+  earlier events.
 - Hosted/relay clients can stream to server STT through a dedicated secure
   relay `speech` channel. The server registers that channel separately from the
   app channel under the same relay username/install id, the browser opens a
@@ -173,7 +305,7 @@ current implementation fixes those blockers for batch transcription by
 mounting `/api/speech`, preserving backend ids, and routing the production
 client through `fetchJSON("/speech/transcribe", ...)`.
 
-- With no cloud STT keys and an empty `YA_VOICE_BACKENDS`, a server advertises
+- With no cloud STT keys and an empty `YEP_VOICE_BACKENDS`, a server advertises
   `voiceInput` but `voiceBackends: []`, causing the UI to expose only
   browser-native recognition. Seeing device-native speech on mobile is
   therefore expected in that bare runtime.
@@ -208,8 +340,20 @@ client through `fetchJSON("/speech/transcribe", ...)`.
   likely intended as message content or as an end command, including cases with
   a smaller pause. Do not build that extra judging layer until we have traces
   that justify it.
-- Grok streaming has focused route tests, but it still needs a live
+- Direct Grok streaming has a browser WebSocket auth probe and focused client
+  tests for the xAI socket adapter, but it still needs a live
   browser-plus-xAI smoke test with a real microphone or captured audio source.
+- Switching speech methods no longer intentionally tears down the warmed
+  YA-controlled mic stream. If Chrome still pays a later cold-open cost after a
+  backend switch, treat it as a browser/device behavior to measure, not a
+  provider-disposal consequence.
+- Live browser-native testing dropped the first second of "1 2 3 4..." after
+  Chrome had fired `SpeechRecognition.onstart`; YA therefore does not treat
+  `onstart` as a red/listening event. Browser-native remains a fallback whose
+  capture and first-word behavior are owned by Chrome, not YA. Grok PCM
+  streaming through YA appears reliable in live `ya.graehl.org` testing,
+  likely because YA buffers PCM frames while the socket/provider handshake
+  finishes.
 - Audio-as-modality forwarding to providers that natively accept audio is not
   implemented. All current YA-server backend code is transcript-first.
 
@@ -251,18 +395,54 @@ Deploy it in stages:
    `whisper.cpp` or another runtime as a swappable backend implementation only
    if deployment friction, CPU performance, or packaging makes
    `faster-whisper` the wrong choice.
+   Parakeet is a plausible alternate local recognizer, especially if current
+   Hugging Face / Transformers support keeps installation lighter than a full
+   NeMo stack. Do not wire it directly into the YA Node runtime first: the
+   Rocky 8 host has old glibc and an old/easy Docker path may not match modern
+   NVIDIA container assumptions. Spike it in an isolated Python environment or
+   pinned container, verify CUDA/PyTorch compatibility on the L40S, and expose
+   it behind the same warm-worker `SpeechBackend` boundary only if install plus
+   cold/warm latency beats `faster-whisper` for this server.
 3. **Ship explicit operator configuration.** The opt-in is
-   `YA_VOICE_BACKENDS=ya-whisper`. Model/runtime knobs stay server-local:
-   `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE`. The default
-   should remain CPU-safe (`device=cpu`, `compute_type=int8`) and the model
-   should be chosen for the host class rather than silently downloading a
-   multi-GB model on first use without a clear operator decision.
+   `YEP_VOICE_BACKENDS=ya-whisper`, `YEP_VOICE_BACKENDS=ya-parakeet`, or
+   `YEP_VOICE_BACKENDS=ya-nemo`. The backend is pixi-only in the first
+   implementation: the YA checkout commits a `stt` pixi environment, and the
+   server validates the backend by importing the required Python packages; if
+   that import probe fails for an explicitly enabled local backend, startup runs
+   the matching pixi bootstrap task once (`stt-bootstrap` for `ya-whisper`,
+   `stt-bootstrap-parakeet` for `ya-parakeet`, `stt-bootstrap-nemo` for
+   `ya-nemo`) and then probes again. `stt-bootstrap-all` intentionally covers
+   Whisper plus Transformers Parakeet only; NeMo is a heavier optional add-on.
+   Runtime validation and the warm worker use `pixi run --frozen -e stt
+   python`, not ambient `python3`, so old system Python cannot accidentally
+   become the ASR runtime. Parakeet validation also loads the configured
+   fallback model at startup; if Hugging Face auth, model access, cache space,
+   or model loading is broken, YA logs repair hints and does not advertise the
+   broken backend to the UI. Model/runtime knobs stay server-local for Whisper:
+   `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE`. For
+   Transformers Parakeet, `PARAKEET_MODEL` is the server fallback and
+   `PARAKEET_DEVICE` is the server device policy. For NeMo Parakeet,
+   `NEMO_MODEL` is the server fallback and `NEMO_DEVICE` is the server device
+   policy. Authenticated browser UI may send a per-request Parakeet model id to
+   either backend. Selecting a Parakeet model in either global STT settings or
+   the mic-attached speech options picks a compatible enabled backend when the
+   preset requires one, then asks YA to prewarm that backend/model in the
+   background; the UI request returns immediately and model-load success or
+   failure is logged server-side. Whisper's default should remain CPU-safe
+   (`device=cpu`, `compute_type=int8`). Parakeet defaults to
+   `nvidia/parakeet-tdt-0.6b-v3` with `device=auto`, which lets the worker
+   choose CUDA when available without making CUDA a startup requirement.
 4. **Add a readiness surface before advertising.** Startup validation should
-   confirm Python exists, `faster_whisper` imports, the configured model can
-   load, and a tiny known audio sample transcribes within an acceptable
-   timeout. Only then should `/api/version.voiceBackends` advertise
-   `ya-whisper`. Failures should be actionable in logs: missing package,
-   missing model/cache, unsupported device/compute type, or model-load timeout.
+   confirm pixi exists, the `stt` environment is already bootstrapped,
+   `faster_whisper` imports, the configured model can load, and a tiny known
+   audio sample transcribes within an acceptable timeout. Only then should
+   `/api/version.voiceBackends` advertise `ya-whisper`. Failures should be
+   actionable in logs: missing pixi, stale/missing pixi lock or environment,
+   missing package, missing model/cache, unsupported device/compute type, or
+   model-load timeout. The YA server should still start with a requested local
+   backend disabled if bootstrap or validation fails; deploy wrappers may
+   choose to run `stt-bootstrap`/`stt-check` as a strict preflight and abort
+   before launching YA.
 5. **Make model warm-up observable.** The first utterance may legitimately pay
    model-load cost, but the UI and logs should distinguish "loading local STT
    model" from ordinary recognition. Record model name, device, compute type,
@@ -284,6 +464,113 @@ Deploy it in stages:
    subsequent requests reuse the worker, and transcription metadata records the
    runtime settings.
 
+### Local STT pixi bootstrap
+
+The committed pixi environment is intentionally not part of the normal
+Node/PNPM install. To enable local Whisper on a server:
+
+1. Install pixi on the host.
+2. Either let YA run the relevant bootstrap task when the backend is explicitly
+   enabled, or preflight it manually from the YA checkout:
+   - `pixi run -e stt stt-bootstrap` for `ya-whisper`;
+   - `pixi run -e stt stt-bootstrap-parakeet` for `ya-parakeet`;
+   - `pixi run -e stt stt-bootstrap-nemo` for `ya-nemo`;
+   - `pixi run -e stt stt-bootstrap-all` for Whisper plus Transformers
+     Parakeet.
+   These commands create the `stt` environment from `pixi.lock` and install the
+   relevant Python requirements file(s).
+3. Start YA with `YEP_VOICE_BACKENDS` containing `ya-whisper`, `ya-parakeet`,
+   `ya-nemo`, or any comma-separated combination.
+
+For the private `reyep` helper, the local-STT switch should be set-union logic,
+not assignment. A `YEP_LOCAL_STT=1 reyep`-style wrapper should append
+`ya-whisper` only when the current comma-separated `YEP_VOICE_BACKENDS` does not
+already contain it. Cloud STT backends still auto-enable from their
+`YEP_STT_*` keys; the wrapper must not read or print those keys.
+
+Transformers Parakeet reuses this deployment shape through
+`requirements/stt-parakeet.txt` and `stt-bootstrap-parakeet`. NeMo Parakeet
+uses `requirements/stt-nemo.txt` and `stt-bootstrap-nemo` as a heavier optional
+add-on to the same pixi environment. The YA server runs those bootstraps only
+after the operator explicitly names the matching backend; a deploy wrapper may
+still choose to run the pixi bootstrap as a stricter preflight.
+
+### STT env recovery before NeMo spikes
+
+`requirements/stt-known-good-2026-06-16.txt` pins the working pixi `stt`
+environment after Whisper plus the Transformers Parakeet install. It exists so
+NeMo experiments can be attempted in-place without guessing how to recover the
+known-good ASR runtime.
+
+If a NeMo install poisons the environment, reset and repin it from the YA
+checkout:
+
+1. `pixi reinstall --frozen -e stt`
+2. `pixi run --frozen -e stt python -m pip install --requirement requirements/stt-known-good-2026-06-16.txt`
+3. `pixi run --frozen -e stt stt-check`
+4. `pixi run --frozen -e stt stt-check-parakeet`
+
+When testing whether NeMo can coexist with the current stack, install it under
+that pin set as a constraint first:
+
+`pixi run --frozen -e stt python -m pip install --constraint requirements/stt-known-good-2026-06-16.txt 'nemo_toolkit[asr]'`
+
+That command is a meaningful coexistence test: it may add packages, but it must
+not downgrade or upgrade Torch, Transformers, faster-whisper, or the CUDA
+package set that the working Transformers Parakeet path is using. If the
+resolver cannot satisfy NeMo under those constraints, use a separate pixi
+environment for NeMo rather than weakening the current STT runtime.
+
+The 2026-06-16 coexistence spike found:
+
+- `nemo_toolkit[asr]==2.7.3` does not coexist with the exact current pins. It
+  requires `fsspec==2024.12.0`, while the known-good STT env has
+  `fsspec==2026.4.0`; an unconstrained dry run would also replace the
+  Transformers git build with `transformers==4.57.6` and change protobuf,
+  packaging, and Hugging Face hub packages. Treat modern NeMo as a separate
+  pixi environment unless those pins are deliberately moved together.
+- `nemo_toolkit[asr]==2.0.0` does coexist with the current pins when installed
+  through `requirements/stt-nemo.txt`. The install also needs
+  `pytorch-lightning==2.4.0`; the resolver's newer default no longer exports
+  `NeptuneLogger`, which NeMo 2.0.0 imports. `matplotlib` is also needed
+  because NeMo ASR imports VAD plotting utilities during module import.
+- Under that NeMo 2.0.0 add-on, `pip check`, `stt-check`, and
+  `stt-check-parakeet` pass; `nemo.collections.asr` imports successfully.
+- `nvidia/parakeet-rnnt-1.1b` and `nvidia/parakeet-ctc-1.1b` both load on CUDA
+  and transcribe a short 16 kHz mono PCM WAV smoke file. The RNNT model loaded
+  in about 13 s and transcribed a 7.4 s file in about 0.54 s; the CTC model
+  loaded in about 13 s and transcribed the same file in about 0.43 s.
+- NeMo 2.0.0 still expects NumPy's removed `np.sctypes` table during audio
+  preprocessing. A NeMo worker can patch this process-locally before importing
+  NeMo:
+
+  ```python
+  import numpy as np
+
+  if not hasattr(np, "sctypes"):
+      np.sctypes = {
+          "int": [np.int8, np.int16, np.int32, np.int64],
+          "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+          "float": [np.float16, np.float32, np.float64],
+          "complex": [np.complex64, np.complex128],
+          "others": [np.bool_, np.object_, np.bytes_, np.str_],
+      }
+  ```
+
+- `nvidia/parakeet-unified-en-0.6b` does not load under NeMo 2.0.0. Its config
+  passes `att_chunk_context_size` to `ConformerEncoder`, and this older NeMo
+  encoder does not accept that argument. Keep the unified streaming target on
+  the separate/newer-NeMo track.
+
+YA now exposes this as a separate batch-only `ya-nemo` backend. The shared
+Parakeet model selector includes the current NeMo 2.0.0-compatible set:
+`nvidia/parakeet-tdt-0.6b-v3`, `nvidia/parakeet-rnnt-1.1b`, and
+`nvidia/parakeet-ctc-1.1b`; `nvidia/parakeet-unified-en-0.6b` remains the
+desired streaming-quality target for a separate newer-NeMo environment. Any
+NIM/NGC multilingual RNNT variant should be considered only if there is a
+host-installable local runtime that fits the Rocky 8 / pixi deployment
+constraints.
+
 Hosted relay support for server-local STT is a product choice, not a technical
 requirement. If the operator wants phone-to-local-Whisper dictation through
 YA, the existing batch YA API path is the safer first target; relayed streaming
@@ -291,10 +578,10 @@ to a local model remains a later optimization after local batch is solid.
 
 ## Verification Checklist
 
-- With no cloud keys and empty `YA_VOICE_BACKENDS`, `/api/version` returns
+- With no cloud keys and empty `YEP_VOICE_BACKENDS`, `/api/version` returns
   `voiceBackends: []`, the selector is hidden, and browser-native remains the
   only YA mic method.
-- With `YA_VOICE_BACKENDS=ya-dummy`, `/api/version.voiceBackends` includes
+- With `YEP_VOICE_BACKENDS=ya-dummy`, `/api/version.voiceBackends` includes
   `ya-dummy`, the selector appears, and choosing it posts `backendId:
   "ya-dummy"` to `/api/speech/transcribe`.
 - The dummy backend returns a deterministic transcript through both
@@ -302,47 +589,64 @@ to a local model remains a later optimization after local batch is solid.
 - Remote clients use the existing `fetchJSON` / `SecureConnection` path for
   batch transcription; direct WS streaming needs a separate remote transport
   decision before it is treated as a remote-supported path.
-- With `YA_stt__DEEPGRAM_API_KEY` present, startup validation auto-enables and
+- With `YEP_STT_DEEPGRAM_API_KEY` present, startup validation auto-enables and
   advertises `ya-deepgram`; with a missing or rejected key, it does not.
-- With `YA_stt__XAI_API_KEY` exported in the YA server environment,
+- With `YEP_STT_XAI_API_KEY` exported in the YA server environment,
   `/api/version.voiceBackends` includes `ya-grok`, and a short batch
   transcription through `/api/speech/transcribe` returns text or a provider
   error from xAI.
-- With `YA_stt__XAI_API_KEY` exported in the YA server environment,
+- With `YEP_STT_XAI_API_KEY` exported in the YA server environment,
   `/api/version.voiceBackendCapabilities["ya-grok"].streaming` is true, the
   client uses `/api/speech/ws` for Grok STT, interim events update the composer,
-  and the final event includes the retained transcription id.
-- With `YA_stt__XAI_API_KEY` exported, the version response advertises
+  chunk-final events commit locked deltas into the draft, and the final event
+  includes the retained transcription id.
+- With `YEP_STT_XAI_API_KEY` exported, the version response advertises
   `voiceBackendCapabilities["ya-grok"].smartTurn: true`. Selecting Grok STT
   shows Smart Turn threshold and timeout controls; selecting browser-native,
   Deepgram, Whisper, or dummy hides those controls unless that backend later
   advertises `smartTurn: true`.
-- With Grok Smart Turn enabled, `speech_final=true` commits the utterance,
-  stops the streaming recognizer, and then applies a paused final command:
+- With Grok Smart Turn enabled, `speech_final=true` commits any remaining
+  uncommitted delta, stops the streaming recognizer, and then applies a paused
+  final command:
   `send` submits, `cancel` discards the speech turn, and `wait` leaves the
   draft for keyboard editing or thought. No recognized command defaults to
   `send`.
-- With Grok STT selected, the audio uplink setting defaults to PCM16 and the
-  WebSocket start frame advertises `mimeType:
-  "audio/pcm;rate=16000;encoding=s16le"`, `sampleRate: 16000`, and
-  `encoding: "pcm"`. Switching to browser-compressed mode uses the
-  MediaRecorder batch path and hides Smart Turn because that path has no
-  streaming `speech_final` events.
+- With `Grok STT through YA` selected, the WebSocket start frame advertises
+  `mimeType: "audio/pcm;rate=16000;encoding=s16le"`, `sampleRate: 16000`, and
+  `encoding: "pcm"`. The hidden `Grok STT through YA batch` path uses
+  MediaRecorder batch transcription and has no streaming `speech_final` events.
 - With both `ya-grok` and `ya-deepgram` advertised and no explicit stored
-  speech method, the client selects `ya-grok` as the effective mic backend.
+  speech method, the client selects `Grok STT direct` as the effective mic
+  backend. The through-YA Grok methods remain explicit fallback/debug choices.
 - A successful server-routed transcription emits positive-path logs naming the
   backend and audio metadata without logging transcript text.
 - A successful server-routed transcription writes retained audio plus metadata
   under the configured data directory by default, and the metadata contains the
   returned transcript plus session/client-turn pointers when the client has
   supplied them.
-- A successful streaming transcription writes each interim update, final-ish
+- A successful streaming transcription writes each interim update, chunk-final
   partial, speech-final marker, and final done transcript into retained
   metadata as an ordered one-line-per-event trace.
 - With an advertised backend id not hardcoded in the client, the selector still
   displays that id generically and sends it unchanged as `backendId`.
-- With `YA_VOICE_BACKENDS=ya-whisper` and `faster_whisper` importable, startup
+- With `YEP_VOICE_BACKENDS=ya-whisper` and `faster_whisper` importable, startup
   validation advertises `ya-whisper`; the first utterance warms the model once
   and later utterances reuse the worker.
+- With `YEP_VOICE_BACKENDS=ya-parakeet`, the Parakeet Transformers runtime
+  importable, and the configured fallback model loadable, startup validation
+  advertises `ya-parakeet`; otherwise it logs the cache/auth/model-load repair
+  hint and hides the backend from the UI. Choosing a different Parakeet model
+  in STT settings or mic options sends that model id to `/api/speech/transcribe`
+  and restarts the warm worker for the new model.
+- With `YEP_VOICE_BACKENDS=ya-nemo`, the NeMo ASR runtime importable, and the
+  configured fallback model loadable, startup validation advertises `ya-nemo`;
+  otherwise it logs cache/auth/model-load repair hints and hides the backend
+  from the UI. The same Parakeet model selector sends model ids to `ya-nemo`;
+  compressed batch recordings are decoded through `ffmpeg` only when needed
+  before NeMo transcribes them.
+- With both local Parakeet backends enabled, selecting an RNNT-only preset while
+  the Transformers backend is active switches the STT backend to `ya-nemo` and
+  prewarms that model. With `ya-nemo` unavailable, compact mic options hide that
+  preset and global settings disable it with a required-backend hint.
 - Removing a previously selected backend causes an explicit method-selection
   prompt or notice, not a silent fallback and not a dead mic button.

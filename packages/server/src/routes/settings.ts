@@ -6,7 +6,9 @@ import {
   ALL_PERMISSION_MODES,
   ALL_PROVIDERS,
   type AgentContextHints,
+  type BusyComposerDefaultAction,
   type ClientDefaults,
+  type CollapsedComposerButtonPreference,
   type GrokSpeechAudioClientDefault,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
@@ -29,6 +31,11 @@ import {
   type SpeechSmartTurnClientDefault,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import {
+  type FileAccessSettings,
+  getFileAccessInfo,
+  normalizeFileAccess,
+} from "../middleware/file-access.js";
 import { testSSHConnection } from "../sdk/remote-spawn.js";
 import type { PublicShareService } from "../services/PublicShareService.js";
 import type {
@@ -59,29 +66,45 @@ const SESSION_TOOLBAR_VISIBILITY_CLIENT_DEFAULT_KEYS = [
   "thinkingToggle",
   "renderMode",
   "microphone",
+  "waveform",
   "shortcutsHelp",
   "contextUsage",
   "btw",
   "nudge",
-  "queueControls",
   "sessionStatus",
 ] as const satisfies readonly (keyof SessionToolbarVisibilityClientDefaults)[];
 const CLIENT_DEFAULT_KEYS = [
   "speech",
+  "busyComposerDefaultAction",
+  "collapsedComposerButton",
   "sessionToolbarVisibility",
   "steerNowDefault",
+  "patientQueueDefault",
+  "compactAtContextPercent",
 ] as const;
+const BUSY_COMPOSER_DEFAULT_ACTIONS = [
+  "steer",
+  "queue",
+] as const satisfies readonly BusyComposerDefaultAction[];
+const COLLAPSED_COMPOSER_BUTTON_PREFERENCES = [
+  "primary",
+  "alternate",
+  "microphone",
+] as const satisfies readonly CollapsedComposerButtonPreference[];
 const SPEECH_CLIENT_DEFAULT_KEYS = [
   "voiceInputEnabled",
   "speechMethod",
   "speechSmartTurnSettings",
   "grokSpeechAudioSettings",
 ] as const;
+const MAX_SPEECH_SMART_TURN_TIMEOUT_MS = 10000;
 
 export interface SettingsRoutesDeps {
   serverSettingsService: ServerSettingsService;
   /** Callback to apply allowedHosts changes at runtime */
   onAllowedHostsChanged?: (value: string | undefined) => void;
+  /** Callback to apply fileAccess changes at runtime */
+  onFileAccessChanged?: (value: FileAccessSettings | undefined) => void;
   /** Callback to apply remote session persistence changes at runtime */
   onRemoteSessionPersistenceChanged?: (
     enabled: boolean,
@@ -193,6 +216,59 @@ function parseHelperTargets(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+const MAX_FILE_ACCESS_CUSTOM_ENTRIES = 100;
+const MAX_FILE_ACCESS_CUSTOM_LENGTH = 1024;
+
+/**
+ * Returns:
+ * - `null` when the payload is invalid
+ * - `undefined` when the setting should be cleared (reset to secure defaults)
+ * - a normalized object when valid
+ */
+function parseFileAccess(raw: unknown): FileAccessSettings | undefined | null {
+  if (raw === undefined) return null;
+  if (raw === null || raw === "") return undefined;
+  if (!isRecord(raw)) return null;
+
+  const allowedKeys = new Set([
+    "projects",
+    "uploads",
+    "temp",
+    "home",
+    "custom",
+  ]);
+  for (const key of Object.keys(raw)) {
+    if (!allowedKeys.has(key)) return null;
+  }
+  for (const key of ["projects", "uploads", "temp", "home"] as const) {
+    if (key in raw && typeof raw[key] !== "boolean") return null;
+  }
+  if ("custom" in raw) {
+    if (
+      !Array.isArray(raw.custom) ||
+      raw.custom.length > MAX_FILE_ACCESS_CUSTOM_ENTRIES
+    ) {
+      return null;
+    }
+    for (const entry of raw.custom) {
+      if (
+        typeof entry !== "string" ||
+        entry.length > MAX_FILE_ACCESS_CUSTOM_LENGTH
+      ) {
+        return null;
+      }
+    }
+  }
+
+  return normalizeFileAccess({
+    projects: raw.projects as boolean | undefined,
+    uploads: raw.uploads as boolean | undefined,
+    temp: raw.temp as boolean | undefined,
+    home: raw.home as boolean | undefined,
+    custom: (raw.custom as string[] | undefined) ?? [],
+  });
 }
 
 function parseOpenAiModelsResponse(raw: unknown): ModelInfo[] | null {
@@ -398,7 +474,7 @@ function parseSpeechSmartTurnClientDefault(
     raw.threshold < 0 ||
     raw.threshold > 1 ||
     raw.timeoutMs < 0 ||
-    raw.timeoutMs > 5000
+    raw.timeoutMs > MAX_SPEECH_SMART_TURN_TIMEOUT_MS
   ) {
     return null;
   }
@@ -440,6 +516,27 @@ function parseSessionToolbarVisibilityClientDefaults(
     parsed[key] = value;
   }
   return Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+// Per-model compaction thresholds: each value is "compact at X% of that
+// model's context window". Reject non-numbers (the slider only ever sends
+// numbers), but treat out-of-range like the load path does — keep 1–99 and
+// drop anything else (including >= 100 = "off"). An empty result clears the
+// setting. The returned map is authoritative: the client always sends the
+// full map, so mergeClientDefaults replaces rather than per-model merges,
+// which is what makes turning a model "off" (dropping its key) take effect.
+function parseCompactAtContextPercent(
+  raw: unknown,
+): Record<string, number> | undefined | null {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (!isRecord(raw)) return null;
+  const cleaned: Record<string, number> = {};
+  for (const [modelId, value] of Object.entries(raw)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    const pct = Math.round(value);
+    if (pct > 0 && pct < 100) cleaned[modelId] = pct;
+  }
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
 function parseClientDefaults(raw: unknown): ClientDefaults | undefined | null {
@@ -497,6 +594,40 @@ function parseClientDefaults(raw: unknown): ClientDefaults | undefined | null {
       parsed.speech = speech;
     }
   }
+  if ("busyComposerDefaultAction" in raw) {
+    if (
+      raw.busyComposerDefaultAction === undefined ||
+      raw.busyComposerDefaultAction === null
+    ) {
+      parsed.busyComposerDefaultAction = undefined;
+    } else if (
+      !BUSY_COMPOSER_DEFAULT_ACTIONS.includes(
+        raw.busyComposerDefaultAction as BusyComposerDefaultAction,
+      )
+    ) {
+      return null;
+    } else {
+      parsed.busyComposerDefaultAction =
+        raw.busyComposerDefaultAction as BusyComposerDefaultAction;
+    }
+  }
+  if ("collapsedComposerButton" in raw) {
+    if (
+      raw.collapsedComposerButton === undefined ||
+      raw.collapsedComposerButton === null
+    ) {
+      parsed.collapsedComposerButton = undefined;
+    } else if (
+      !COLLAPSED_COMPOSER_BUTTON_PREFERENCES.includes(
+        raw.collapsedComposerButton as CollapsedComposerButtonPreference,
+      )
+    ) {
+      return null;
+    } else {
+      parsed.collapsedComposerButton =
+        raw.collapsedComposerButton as CollapsedComposerButtonPreference;
+    }
+  }
   if ("steerNowDefault" in raw) {
     if (raw.steerNowDefault === undefined || raw.steerNowDefault === null) {
       parsed.steerNowDefault = undefined;
@@ -506,12 +637,31 @@ function parseClientDefaults(raw: unknown): ClientDefaults | undefined | null {
       parsed.steerNowDefault = raw.steerNowDefault;
     }
   }
+  if ("patientQueueDefault" in raw) {
+    if (
+      raw.patientQueueDefault === undefined ||
+      raw.patientQueueDefault === null
+    ) {
+      parsed.patientQueueDefault = undefined;
+    } else if (typeof raw.patientQueueDefault !== "boolean") {
+      return null;
+    } else {
+      parsed.patientQueueDefault = raw.patientQueueDefault;
+    }
+  }
   if ("sessionToolbarVisibility" in raw) {
     const parsedVisibility = parseSessionToolbarVisibilityClientDefaults(
       raw.sessionToolbarVisibility,
     );
     if (parsedVisibility === null) return null;
     parsed.sessionToolbarVisibility = parsedVisibility;
+  }
+  if ("compactAtContextPercent" in raw) {
+    const parsedCompact = parseCompactAtContextPercent(
+      raw.compactAtContextPercent,
+    );
+    if (parsedCompact === null) return null;
+    parsed.compactAtContextPercent = parsedCompact;
   }
 
   return Object.keys(parsed).length > 0 ? parsed : undefined;
@@ -533,11 +683,32 @@ function mergeClientDefaults(
       };
     }
   }
+  if ("busyComposerDefaultAction" in update) {
+    if (update.busyComposerDefaultAction === undefined) {
+      delete merged.busyComposerDefaultAction;
+    } else {
+      merged.busyComposerDefaultAction = update.busyComposerDefaultAction;
+    }
+  }
+  if ("collapsedComposerButton" in update) {
+    if (update.collapsedComposerButton === undefined) {
+      delete merged.collapsedComposerButton;
+    } else {
+      merged.collapsedComposerButton = update.collapsedComposerButton;
+    }
+  }
   if ("steerNowDefault" in update) {
     if (update.steerNowDefault === undefined) {
       delete merged.steerNowDefault;
     } else {
       merged.steerNowDefault = update.steerNowDefault;
+    }
+  }
+  if ("patientQueueDefault" in update) {
+    if (update.patientQueueDefault === undefined) {
+      delete merged.patientQueueDefault;
+    } else {
+      merged.patientQueueDefault = update.patientQueueDefault;
     }
   }
   if ("sessionToolbarVisibility" in update) {
@@ -548,6 +719,15 @@ function mergeClientDefaults(
         ...current?.sessionToolbarVisibility,
         ...update.sessionToolbarVisibility,
       };
+    }
+  }
+  if ("compactAtContextPercent" in update) {
+    // Replace the whole map (not a per-model merge): the client always sends
+    // the complete map, so a model dropped from it means "off" for that model.
+    if (update.compactAtContextPercent === undefined) {
+      delete merged.compactAtContextPercent;
+    } else {
+      merged.compactAtContextPercent = update.compactAtContextPercent;
     }
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
@@ -655,6 +835,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
   const {
     serverSettingsService,
     onAllowedHostsChanged,
+    onFileAccessChanged,
     onRemoteSessionPersistenceChanged,
     onOllamaUrlChanged,
     onOllamaSystemPromptChanged,
@@ -670,6 +851,15 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
   app.get("/", (c) => {
     const settings = serverSettingsService.getSettings();
     return c.json({ settings });
+  });
+
+  /**
+   * GET /api/settings/file-access
+   * Read-only info for the File access settings UI: whether an env var pins
+   * the allow-set, plus the resolved temp/uploads/home prefixes for hints.
+   */
+  app.get("/file-access", (c) => {
+    return c.json(getFileAccessInfo());
   });
 
   /**
@@ -813,6 +1003,15 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       } else if (typeof body.allowedHosts === "string") {
         updates.allowedHosts = body.allowedHosts;
       }
+    }
+
+    // Handle fileAccess object (checkbox model; undefined/null/"" = secure defaults)
+    if ("fileAccess" in body) {
+      const parsed = parseFileAccess(body.fileAccess);
+      if (parsed === null) {
+        return c.json({ error: "Invalid fileAccess setting" }, 400);
+      }
+      updates.fileAccess = parsed;
     }
 
     // Handle globalInstructions string (free-form text, or undefined/null/"" to clear)
@@ -1032,6 +1231,9 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     // Apply allowedHosts change to middleware at runtime
     if ("allowedHosts" in updates && onAllowedHostsChanged) {
       onAllowedHostsChanged(settings.allowedHosts);
+    }
+    if ("fileAccess" in updates && onFileAccessChanged) {
+      onFileAccessChanged(settings.fileAccess);
     }
     if (
       "persistRemoteSessionsToDisk" in updates &&

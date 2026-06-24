@@ -184,6 +184,63 @@ describe("preprocessMessages", () => {
     }
   });
 
+  it("updates a deduplicated pending tool_use snapshot", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call_1",
+            name: "Bash",
+            input: { command: "npm test" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-2",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call_1",
+            name: "Bash",
+            input: {
+              command: "npm test",
+              _previewResult: {
+                stdout: "partial\n",
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              },
+            },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ];
+
+    const items = preprocessMessages(messages);
+    const call = items.find((item) => item.type === "tool_call");
+
+    expect(call).toMatchObject({
+      type: "tool_call",
+      id: "call_1",
+      status: "pending",
+      toolInput: {
+        command: "npm test",
+        _previewResult: {
+          stdout: "partial\n",
+          stderr: "",
+          interrupted: false,
+          isImage: false,
+        },
+      },
+    });
+  });
+
   it("attaches tool_result to deduplicated tool_use", () => {
     const messages: Message[] = [
       {
@@ -516,8 +573,12 @@ describe("preprocessMessages", () => {
 
     const streamingThinking = streamingItems[0];
     const completeThinking = completeItems[0];
-    expect(streamingThinking?.type === "thinking" && streamingThinking.status).toBe("streaming");
-    expect(completeThinking?.type === "thinking" && completeThinking.status).toBe("complete");
+    expect(
+      streamingThinking?.type === "thinking" && streamingThinking.status,
+    ).toBe("streaming");
+    expect(
+      completeThinking?.type === "thinking" && completeThinking.status,
+    ).toBe("complete");
   });
 
   it("hides internal reasoning placeholders but keeps real text", () => {
@@ -847,6 +908,26 @@ describe("preprocessMessages", () => {
       type: "system",
       subtype: "turn_aborted",
       content: "approval denied",
+    });
+  });
+
+  it("renders subagent activity system messages", () => {
+    const messages: Message[] = [
+      {
+        id: "subagent-1",
+        type: "system",
+        subtype: "subagent_activity",
+        content: "Subagent started: Explore",
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+    ];
+
+    const items = preprocessMessages(messages);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "system",
+      subtype: "subagent_activity",
+      content: "Subagent started: Explore",
     });
   });
 
@@ -1425,6 +1506,96 @@ describe("preprocessMessages", () => {
         id: "tool-1",
         status: "pending", // Already pending, stays pending
       });
+    });
+  });
+
+  describe("task notifications", () => {
+    const TASK_NOTIFICATION_XML = [
+      "<task-notification>",
+      "<task-id>brltxam79</task-id>",
+      "<tool-use-id>toolu_01T15Fx9KFBxXmgAzNYZnEBY</tool-use-id>",
+      "<output-file>/tmp/tasks/brltxam79.output</output-file>",
+      "<status>completed</status>",
+      '<summary>Background command "Deploy fix" completed (exit code 0)</summary>',
+      "</task-notification>",
+    ].join("\n");
+
+    it("renders an origin.kind task-notification as a parsed chip item", () => {
+      const messages: Message[] = [
+        {
+          uuid: "11111111-1111-1111-1111-111111111111",
+          type: "user",
+          origin: { kind: "task-notification" },
+          message: { role: "user", content: TASK_NOTIFICATION_XML },
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+      ];
+
+      const items = preprocessMessages(messages);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        type: "task_notification",
+        taskId: "brltxam79",
+        toolUseId: "toolu_01T15Fx9KFBxXmgAzNYZnEBY",
+        outputFile: "/tmp/tasks/brltxam79.output",
+        status: "completed",
+        summary: 'Background command "Deploy fix" completed (exit code 0)',
+      });
+    });
+
+    it("classifies a queue-sourced notification with no origin via the structural marker", () => {
+      // Monitor events arrive as queue-operation enqueues that the server
+      // normalizes into deferred user messages WITHOUT origin.kind. Detection
+      // must fall back to the content being a <task-notification> element.
+      const progressXml = [
+        "<task-notification>",
+        "<task-id>bsmbc763d</task-id>",
+        '<summary>Monitor event: "Wait for staging deploy to finish"</summary>',
+        "<event>verify / attempt 1: 502\nverify / attempt 2: 200\nactive</event>",
+        "</task-notification>",
+      ].join("\n");
+      const messages: Message[] = [
+        {
+          id: "queue-operation-0-2024",
+          type: "user",
+          role: "user",
+          content: progressXml,
+          message: { role: "user", content: progressXml },
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+      ];
+
+      const items = preprocessMessages(messages);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        type: "task_notification",
+        taskId: "bsmbc763d",
+        status: undefined,
+        event: "verify / attempt 1: 502\nverify / attempt 2: 200\nactive",
+      });
+    });
+
+    it("does not classify a user prompt that merely quotes the tag", () => {
+      const messages: Message[] = [
+        {
+          uuid: "22222222-2222-2222-2222-222222222222",
+          type: "user",
+          // No origin.kind, and the tag is embedded in prose — not a whole
+          // <task-notification> element — so it stays a normal user prompt.
+          message: {
+            role: "user",
+            content: `how should we render ${TASK_NOTIFICATION_XML}?`,
+          },
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+      ];
+
+      const items = preprocessMessages(messages);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.type).toBe("user_prompt");
     });
   });
 });

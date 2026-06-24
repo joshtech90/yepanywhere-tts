@@ -13,8 +13,12 @@ Related topics: [provider-context-economics](provider-context-economics.md),
 [compact-and-handoff](compact-and-handoff.md),
 [provider-state-machine](provider-state-machine.md),
 [session-liveness](session-liveness.md),
+[session-reactivation](session-reactivation.md) — planned message-less
+reactivate (spawn an idle live process with no turn),
 [session-ui-customization](session-ui-customization.md),
-[recaps](recaps.md)
+[recaps](recaps.md),
+[fork-from-turn](fork-from-turn.md) — per-turn fork / fork-after-summary, which
+revises the handoff decision below
 
 ## Context lifetime and recovery after inactivity
 
@@ -22,10 +26,11 @@ Nothing semantically owned by the conversation is discarded by
 inactivity; what dies is the *process* and the *cache warmth*.
 
 - YA reaps an idle provider process after `IDLE_TIMEOUT` seconds
-  (default 20 minutes, `DEFAULT_IDLE_TIMEOUT_MS` in
-  `packages/server/src/supervisor/types.ts`, env parsing in
-  `config.ts`). The supervisor `Process` tracks this as an intentional
-  idle reap, distinct from a crash.
+  (default 60 minutes, matching the prompt-cache window;
+  `DEFAULT_IDLE_TIMEOUT_MS`/`DEFAULT_IDLE_TIMEOUT_SECONDS` in
+  `packages/server/src/defaults.ts`, env parsing in `config.ts`). The
+  supervisor `Process` tracks this as an intentional idle reap, distinct
+  from a crash.
 - The transcript persists on disk independently of the process: Claude
   writes jsonl under `{CLAUDE_CONFIG_DIR}/projects/`, Codex writes
   rollout files under its own sessions dir. These survive server
@@ -104,12 +109,13 @@ Verified in SDK 0.3.170 `sdk.d.ts` (none of these are used by YA yet):
   up to a given message; the branch-from-a-point primitive without
   creating a separate file first.
 
-Other providers: Codex has no documented fork primitive; copying a
-rollout file under a new id is plausible but unverified. ACP providers
-(gemini-acp, grok-acp) and opencode hold session state provider-side
-with no exposed branch surface. A YA fork action should therefore ship
-as a Claude-capability-gated feature (a provider capability flag, same
-pattern as compact support), not a generic session action.
+Other providers: Codex implements `forkSession` through native app-server
+`thread/fork` plus `thread/rollback` for trailing completed turns; Pi
+implements `forkSession` by writing a new Pi-format JSONL file containing the
+retained branch. ACP providers (gemini-acp, grok-acp) and opencode hold session
+state provider-side with no exposed branch surface. A YA fork action should stay
+provider-capability-gated (`supportsForkSession`), not become an unconditional
+generic session action.
 
 ## Handoff and synthetic-turn replay
 
@@ -117,11 +123,20 @@ Current validated mechanism: the scripted template handoff
 (`buildRestartHandoff` in `packages/server/src/routes/sessions.ts`) —
 one bounded user message carrying source-session metadata, recent
 transcript, any compact summary, and still-queued turns. The originally
-planned agent-summarization hook was dropped in practice: the template
-plus the source session id is enough, because agents look up the named
+planned agent-summarization hook was dropped at first: the template plus
+the source session id was enough, because agents look up the named
 session when they need more. `RestartSessionModal` already lets the
 user pick a different target provider/model, so "handoff to other
 agent" exists today via restart-handoff.
+
+Revised (2026-06-23): agent summarization returns as an explicit
+opt-in, not the default. [fork-from-turn](fork-from-turn.md) builds a
+working LLM-summary facility (the generalized recap/summary path), and
+the same summary-instruction control is offered both by fork-after-summary
+and on standard handoff. The default stays template + source-session-id;
+the generated summary is opt-in. The earlier "dropped" posture held only
+while no working summary path existed — it is superseded now that one is
+committed to build.
 
 The unexplored alternative — replaying selected or synthetic
 user/assistant turns as real context rather than quoting them inside

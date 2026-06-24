@@ -1,8 +1,7 @@
+import type { PromptSuggestionMode } from "@yep-anywhere/shared";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api } from "../api/client";
 import { useI18n } from "../i18n";
-import { getProvider } from "../providers/registry";
 
 export interface SessionMenuProps {
   sessionId: string;
@@ -20,8 +19,6 @@ export interface SessionMenuProps {
   onRename: () => void;
   /** Copy the session's initial prompt, when available. */
   onCopyPrompt?: () => void | Promise<void>;
-  /** Called after successful clone with the new session ID */
-  onClone?: (newSessionId: string) => void | Promise<void>;
   /** Called to request compaction in the current session */
   onCompact?: () => void | Promise<void>;
   /** Called to hand off the session into a fresh agent session */
@@ -36,6 +33,13 @@ export interface SessionMenuProps {
   onConfigureHeartbeat?: () => void;
   /** Called to configure session recap settings */
   onConfigureRecaps?: () => void;
+  /**
+   * Current per-session prompt-suggestion mode. When provided alongside
+   * onTogglePromptSuggestions, a toggle entry is shown.
+   */
+  promptSuggestionMode?: PromptSuggestionMode;
+  /** Toggle the per-session prompt-suggestion preference (off <-> native) */
+  onTogglePromptSuggestions?: () => void | Promise<void>;
   /** Whether dismissed warnings can be restored */
   warningRestoreAvailable?: boolean;
   /** Restore dismissed per-session warnings */
@@ -50,22 +54,20 @@ export interface SessionMenuProps {
   className?: string;
   /** Use fixed positioning for dropdown (escapes overflow clipping) */
   useFixedPositioning?: boolean;
+  /** Notified when the menu opens/closes so callers can react to open state. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function SessionMenu({
-  sessionId,
-  projectId,
   isStarred,
   isArchived,
   hasUnread,
-  provider,
   processId,
   onToggleStar,
   onToggleArchive,
   onToggleRead,
   onRename,
   onCopyPrompt,
-  onClone,
   onCompact,
   onHandoff,
   onClear,
@@ -73,16 +75,18 @@ export function SessionMenu({
   onReload,
   onConfigureHeartbeat,
   onConfigureRecaps,
+  promptSuggestionMode,
+  onTogglePromptSuggestions,
   warningRestoreAvailable = false,
   onRestoreWarnings,
   onShare,
   useEllipsisIcon = false,
   className = "",
   useFixedPositioning = false,
+  onOpenChange,
 }: SessionMenuProps) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
-  const [isCloning, setIsCloning] = useState(false);
   const [isTerminating, setIsTerminating] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState<{
@@ -130,6 +134,12 @@ export function SessionMenu({
     };
   }, [isOpen]);
 
+  // Notify the caller of every open/close (covers toggle, outside-click,
+  // scroll, and item-select close paths), not just the trigger click.
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
+
   const handleToggleOpen = () => {
     if (isOpen) {
       setIsOpen(false);
@@ -175,27 +185,6 @@ export function SessionMenu({
     setDropdownPosition(null);
     triggerRef.current?.blur();
     action();
-  };
-
-  const handleClone = async () => {
-    if (isCloning) return;
-    setIsCloning(true);
-    setIsOpen(false);
-    setDropdownPosition(null);
-    triggerRef.current?.blur();
-    try {
-      const result = await api.cloneSession(
-        projectId,
-        sessionId,
-        undefined,
-        provider,
-      );
-      onClone?.(result.sessionId);
-    } catch (error) {
-      console.error("Failed to clone session:", error);
-    } finally {
-      setIsCloning(false);
-    }
   };
 
   const handleTerminate = async () => {
@@ -301,7 +290,10 @@ export function SessionMenu({
         </button>
       )}
       {onConfigureHeartbeat && (
-        <button type="button" onClick={() => handleAction(onConfigureHeartbeat)}>
+        <button
+          type="button"
+          onClick={() => handleAction(onConfigureHeartbeat)}
+        >
           <svg
             width="14"
             height="14"
@@ -342,6 +334,28 @@ export function SessionMenu({
           {t("sessionMenuRecaps")}
         </button>
       )}
+      {onTogglePromptSuggestions && (
+        <button
+          type="button"
+          onClick={() => handleAction(onTogglePromptSuggestions)}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <path d="M9.5 2A7.5 7.5 0 0 0 5 15.5V18a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2.5A7.5 7.5 0 0 0 9.5 2Z" />
+            <path d="M9 22h2" />
+          </svg>
+          {promptSuggestionMode === "native"
+            ? t("sessionMenuPromptSuggestionsOn")
+            : t("sessionMenuPromptSuggestionsOff")}
+        </button>
+      )}
       {warningRestoreAvailable && onRestoreWarnings && (
         <button type="button" onClick={() => handleAction(onRestoreWarnings)}>
           <svg
@@ -357,23 +371,6 @@ export function SessionMenu({
             <path d="M3 3v5h5" />
           </svg>
           {t("sessionMenuRestoreWarnings")}
-        </button>
-      )}
-      {onClone && getProvider(provider).capabilities.supportsCloning && (
-        <button type="button" onClick={handleClone} disabled={isCloning}>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            aria-hidden="true"
-          >
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
-          {isCloning ? t("sessionMenuCloning") : t("sessionMenuClone")}
         </button>
       )}
       {onCompact && (
@@ -516,7 +513,13 @@ export function SessionMenu({
         </button>
       )}
       {onReload && (
-        <button type="button" onClick={() => { setIsOpen(false); onReload(); }}>
+        <button
+          type="button"
+          onClick={() => {
+            setIsOpen(false);
+            onReload();
+          }}
+        >
           <svg
             width="14"
             height="14"
@@ -554,7 +557,6 @@ export function SessionMenu({
           e.stopPropagation();
           handleToggleOpen();
         }}
-        title={t("sessionMenuOptions")}
         aria-label={t("sessionMenuOptions")}
         aria-expanded={isOpen}
       >

@@ -20,6 +20,11 @@ import type {
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import {
+  getAllowedFilePaths,
+  shouldIncludeProjects,
+  updateFileAccess,
+} from "./middleware/file-access.js";
+import {
   corsMiddleware,
   hostCheckMiddleware,
   requireCustomHeader,
@@ -33,7 +38,7 @@ import {
   GEMINI_TMP_DIR,
   GeminiSessionScanner,
 } from "./projects/gemini-scanner.js";
-import { GROK_SESSIONS_DIR } from "./projects/paths.js";
+import { GROK_SESSIONS_DIR, PI_SESSIONS_DIR } from "./projects/paths.js";
 import { ProjectScanner } from "./projects/scanner.js";
 import { PushNotifier, type PushService } from "./push/index.js";
 import { createPushRoutes } from "./push/routes.js";
@@ -67,6 +72,7 @@ import {
 } from "./routes/public-shares.js";
 import { createRecentsRoutes } from "./routes/recents.js";
 import { createServerAdminRoutes } from "./routes/server-admin.js";
+import { createEnvSettingsRoutes } from "./routes/env-settings.js";
 import { createServerInfoRoutes } from "./routes/server-info.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSettingsRoutes } from "./routes/settings.js";
@@ -82,7 +88,10 @@ import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
 import { createVersionRoutes } from "./routes/version.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
-import { configureProviderRuntime, getProvider } from "./sdk/providers/index.js";
+import {
+  configureProviderRuntime,
+  getProvider,
+} from "./sdk/providers/index.js";
 import type {
   ClaudeSDK,
   PermissionMode,
@@ -102,6 +111,7 @@ import { CodexSessionReader } from "./sessions/codex-reader.js";
 import { GeminiSessionReader } from "./sessions/gemini-reader.js";
 import { GrokSessionReader } from "./sessions/grok-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
+import { PiSessionReader } from "./sessions/pi-reader.js";
 import { findSessionSummaryAcrossProviders } from "./sessions/provider-resolution.js";
 import { normalizeSession } from "./sessions/normalization.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
@@ -191,6 +201,8 @@ export interface AppOptions {
     onNetworkBindingChange?: (
       config: { host: string; port: number } | null,
     ) => Promise<{ success: boolean; error?: string }>;
+    /** Live accessor for the addresses the server is actually listening on. */
+    getActiveListeners?: () => string[];
   };
   /** ConnectedBrowsersService for tracking active browser connections */
   connectedBrowsers?: ConnectedBrowsersService;
@@ -214,9 +226,9 @@ export interface AppOptions {
   voiceInputEnabled?: boolean;
   /** Validated server-routed speech backends for capability advertisement. */
   speechBackendRegistry?: SpeechBackendRegistry;
-  /** xAI STT key that direct browser STT clients may borrow when enabled. */
+  /** xAI STT key used for ya-grok and to mint direct-browser client secrets. */
   xaiSttApiKey?: string;
-  /** Whether authenticated clients may borrow the server's xAI STT key. */
+  /** Whether authenticated clients may borrow the long-lived xAI STT key. */
   shareXaiSttApiKeyWithClients?: boolean;
   /** Allowed directory prefixes for serving local images. Default: ["/tmp"] */
   allowedImagePaths?: string[];
@@ -411,6 +423,15 @@ export function createApp(options: AppOptions): AppResult {
               projectPath: project.path,
             }),
         );
+      case "pi":
+        return getOrCreateReader(
+          `pi::${PI_SESSIONS_DIR}::${project.path}`,
+          () =>
+            new PiSessionReader({
+              sessionsDir: PI_SESSIONS_DIR,
+              projectPath: project.path,
+            }),
+        );
     }
   };
   const codexReaderFactory = (projectPath: string): CodexSessionReader =>
@@ -441,6 +462,15 @@ export function createApp(options: AppOptions): AppResult {
           projectPath,
         }),
     );
+  const piReaderFactory = (projectPath: string): PiSessionReader =>
+    getOrCreateReader(
+      `pi-extra::${PI_SESSIONS_DIR}::${projectPath}`,
+      () =>
+        new PiSessionReader({
+          sessionsDir: PI_SESSIONS_DIR,
+          projectPath,
+        }),
+    );
   const getSessionSummary = async (sessionId: string, projectId: string) => {
     const project = await scanner.getProject(projectId);
     if (!project) return null;
@@ -457,6 +487,8 @@ export function createApp(options: AppOptions): AppResult {
         geminiHashToCwd: geminiScanner.getHashToCwd(),
         grokSessionsDir: GROK_SESSIONS_DIR,
         grokReaderFactory,
+        piSessionsDir: PI_SESSIONS_DIR,
+        piReaderFactory,
       },
       options.sessionMetadataService?.getProvider(sessionId),
     );
@@ -489,6 +521,8 @@ export function createApp(options: AppOptions): AppResult {
       geminiHashToCwd: geminiScanner.getHashToCwd(),
       grokSessionsDir: GROK_SESSIONS_DIR,
       grokReaderFactory,
+      piSessionsDir: PI_SESSIONS_DIR,
+      piReaderFactory,
     };
 
     for (const [sessionId, metadata] of heartbeatSessionIds) {
@@ -552,6 +586,16 @@ export function createApp(options: AppOptions): AppResult {
           options.sessionMetadataService?.setExecutor(sessionId, executor) ??
           Promise.resolve()
       : undefined,
+    // Durably record a model's real context window the moment a process
+    // observes it (in the result message), independent of any client fetch.
+    onContextWindowObserved: options.modelInfoService
+      ? (model, contextWindow, provider) =>
+          options.modelInfoService?.recordContextWindow(
+            model,
+            contextWindow,
+            provider,
+          )
+      : undefined,
     onSessionSummary: getSessionSummary,
     getHeartbeatTurnSettings:
       options.serverSettingsService || options.sessionMetadataService
@@ -589,9 +633,9 @@ export function createApp(options: AppOptions): AppResult {
         };
       }
 
-      const saved =
-        options.serverSettingsService?.getSetting("promptCacheKeepalive")
-          ?.providers?.[providerName];
+      const saved = options.serverSettingsService?.getSetting(
+        "promptCacheKeepalive",
+      )?.providers?.[providerName];
       const mode = saved?.mode ?? capability.defaultMode;
       const inactivityMinutes =
         saved?.inactivityMinutes ??
@@ -664,6 +708,8 @@ export function createApp(options: AppOptions): AppResult {
       voiceInputEnabled: options.voiceInputEnabled,
       getEnabledVoiceBackends: () =>
         options.speechBackendRegistry?.enabledIds() ?? [],
+      getVoiceBackendStatuses: () =>
+        options.speechBackendRegistry?.allInfo() ?? [],
       getVoiceBackendCapabilities: () =>
         options.speechBackendRegistry?.enabledCapabilities() ?? {},
       getClientDefaults: () =>
@@ -683,6 +729,17 @@ export function createApp(options: AppOptions): AppResult {
       }),
     );
   }
+
+  // Documented startup env vars (read-only; secrets redacted server-side).
+  // The HOST entry is annotated with the live listen addresses; read the holder
+  // lazily since its getter is set after startServer() binds.
+  app.route(
+    "/api/env-settings",
+    createEnvSettingsRoutes({
+      getActiveListeners: () =>
+        options.networkBindingCallbackHolder?.getActiveListeners?.() ?? [],
+    }),
+  );
 
   // Server admin routes (restart, always available for remote relay)
   app.route(
@@ -760,6 +817,8 @@ export function createApp(options: AppOptions): AppResult {
       geminiReaderFactory,
       grokSessionsDir: GROK_SESSIONS_DIR,
       grokReaderFactory,
+      piSessionsDir: PI_SESSIONS_DIR,
+      piReaderFactory,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
     }),
   );
@@ -781,6 +840,8 @@ export function createApp(options: AppOptions): AppResult {
       geminiReaderFactory,
       grokSessionsDir: GROK_SESSIONS_DIR,
       grokReaderFactory,
+      piSessionsDir: PI_SESSIONS_DIR,
+      piReaderFactory,
       serverSettingsService: options.serverSettingsService,
       modelInfoService: options.modelInfoService,
       dataDir: options.dataDir,
@@ -845,6 +906,8 @@ export function createApp(options: AppOptions): AppResult {
       geminiReaderFactory,
       grokSessionsDir: GROK_SESSIONS_DIR,
       grokReaderFactory,
+      piSessionsDir: PI_SESSIONS_DIR,
+      piReaderFactory,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
     }),
   );
@@ -868,13 +931,23 @@ export function createApp(options: AppOptions): AppResult {
       geminiReaderFactory,
       grokSessionsDir: GROK_SESSIONS_DIR,
       grokReaderFactory,
+      piSessionsDir: PI_SESSIONS_DIR,
+      piReaderFactory,
       eventBus: options.eventBus,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
     }),
   );
 
-  // Files routes (file browser)
-  app.route("/api/projects", createFilesRoutes({ scanner }));
+  // Files routes (file browser). Absolute/`~` paths go through the shared
+  // file-access allow-set (same as the media doors below).
+  app.route(
+    "/api/projects",
+    createFilesRoutes({
+      scanner,
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
+    }),
+  );
 
   // Git status routes
   app.route("/api/projects", createGitStatusRoutes({ scanner }));
@@ -896,6 +969,8 @@ export function createApp(options: AppOptions): AppResult {
         geminiReaderFactory,
         grokSessionsDir: GROK_SESSIONS_DIR,
         grokReaderFactory,
+        piSessionsDir: PI_SESSIONS_DIR,
+        piReaderFactory,
       }),
     );
   }
@@ -916,6 +991,7 @@ export function createApp(options: AppOptions): AppResult {
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
         onAllowedHostsChanged: updateAllowedHosts,
+        onFileAccessChanged: updateFileAccess,
         onRemoteSessionPersistenceChanged: options.remoteSessionService
           ? (enabled) =>
               options.remoteSessionService?.setDiskPersistenceEnabled(enabled)
@@ -1196,23 +1272,25 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
 
-  // Local image serving (opt-in, restricted to allowed paths)
-  if (options.allowedImagePaths && options.allowedImagePaths.length > 0) {
-    app.route(
-      "/api/local-image",
-      createLocalImageRoutes({
-        allowedPaths: options.allowedImagePaths,
-        scanner,
-      }),
-    );
-    app.route(
-      "/api/local-file",
-      createLocalFileRoutes({
-        allowedPaths: options.allowedImagePaths,
-        scanner,
-      }),
-    );
-  }
+  // Local media/file serving — both doors enforce the live file-access
+  // allow-set (uploads ∪ temp ∪ home ∪ custom, plus projects). Always mounted;
+  // the policy denies anything outside the set.
+  app.route(
+    "/api/local-image",
+    createLocalImageRoutes({
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
+      scanner,
+    }),
+  );
+  app.route(
+    "/api/local-file",
+    createLocalFileRoutes({
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
+      scanner,
+    }),
+  );
 
   // Push notification routes
   if (options.pushService) {

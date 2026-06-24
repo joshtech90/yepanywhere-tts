@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { useOptionalSessionMetadata } from "../../../contexts/SessionMetadataContext";
+import { useInlineMedia } from "../../../hooks/useInlineMedia";
 import { isMarkdownLikeFile } from "../../../lib/markdownFiles";
 import { useScrollPreservingToggle } from "../../../lib/scrollAnchor";
 import { compactShikiLineBreaks } from "../../../lib/shikiHtml";
@@ -41,6 +42,47 @@ interface ReadResultWithAugment extends ReadResult {
  */
 function getFileName(filePath: string): string {
   return getPathBasename(filePath);
+}
+
+/**
+ * Runtime check that a Read result `file` is a fully-populated text file.
+ *
+ * The Zod schema marks every TextFile field `.optional()`, so `result.file as
+ * TextFile` is unsound: a successful (non-error) Read can return a `file` with
+ * only `filePath`. Claude Code's read-dedup does exactly this — when a file is
+ * unchanged since the last Read it skips re-sending the body ("Wasted call —
+ * file unchanged since your last Read") and omits `content`/`numLines`. Use this
+ * guard instead of casting so the incomplete case is handled explicitly rather
+ * than crashing in `undefined.replace(...)` or printing "undefined lines".
+ *
+ * A genuinely empty file still passes (content: "", numLines: 0); only the
+ * content-less dedup shape is excluded.
+ */
+function isCompleteTextFile(file: unknown): file is TextFile {
+  const f = file as Partial<TextFile> | null | undefined;
+  return typeof f?.content === "string" && typeof f.numLines === "number";
+}
+
+function getResultFilePath(file: unknown): string {
+  const f = file as { filePath?: unknown } | null | undefined;
+  return typeof f?.filePath === "string" ? f.filePath : "";
+}
+
+/**
+ * Read-dedup result: a non-error Read whose `file` omits content/lines because
+ * the file was unchanged since the last Read. Render the link plus an
+ * "unchanged" marker rather than implying an empty file.
+ */
+function ReadUnchangedResult({ filePath }: { filePath: string }) {
+  const meta = useOptionalSessionMetadata();
+  const displayPath = makeDisplayPath(filePath, meta?.projectPath);
+  return (
+    <div className="read-text-result read-text-inline">
+      <ReadFilePathSummary displayPath={displayPath} filePath={filePath}>
+        <span className="file-line-count-inline">unchanged</span>
+      </ReadFilePathSummary>
+    </div>
+  );
 }
 
 function getReadLineRange(file: TextFile): {
@@ -392,13 +434,37 @@ function ImageFileResult({
   const hasDimensions =
     dimensions?.originalWidth != null && dimensions?.originalHeight != null;
 
+  // Respect the "Expand Inline Media by Default" appearance setting. Like the
+  // markdown/transcript media previews, start collapsed unless the user opts in,
+  // and let the setting drive expansion until the user toggles this preview.
+  const { inlineMediaExpandedByDefault } = useInlineMedia();
+  const [override, setOverride] = useState<boolean | null>(null);
+  const expanded = override ?? inlineMediaExpandedByDefault;
+
   return (
     <div className="read-image-result">
-      {filePath && displayPath && (
-        <div className="file-range-inline">
-          <SessionFilePathLink displayPath={displayPath} filePath={filePath} />
-        </div>
-      )}
+      <div className="local-media-link-group">
+        <button
+          type="button"
+          className="local-media-inline-toggle"
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse image" : "Expand image"}
+          title={expanded ? "Collapse inline preview" : "Expand inline preview"}
+          onClick={() => setOverride(!expanded)}
+        >
+          {expanded ? "-" : "+"}
+        </button>
+        {filePath && displayPath ? (
+          <span className="file-range-inline">
+            <SessionFilePathLink
+              displayPath={displayPath}
+              filePath={filePath}
+            />
+          </span>
+        ) : (
+          <span className="local-media-type">image</span>
+        )}
+      </div>
       {(hasDimensions || sizeKB > 0) && (
         <div className="image-info">
           {hasDimensions && (
@@ -410,13 +476,15 @@ function ImageFileResult({
           {sizeKB > 0 && <>({sizeKB}\u202fkb)</>}
         </div>
       )}
-      <img
-        className="read-image"
-        src={`data:${file.type};base64,${file.base64}`}
-        alt="File content"
-        width={dimensions?.displayWidth}
-        height={dimensions?.displayHeight}
-      />
+      {expanded && (
+        <img
+          className="read-image"
+          src={`data:${file.type};base64,${file.base64}`}
+          alt="File content"
+          width={dimensions?.displayWidth}
+          height={dimensions?.displayHeight}
+        />
+      )}
     </div>
   );
 }
@@ -557,13 +625,26 @@ function ReadToolResult({
     );
   }
 
+  if (!isCompleteTextFile(result.file)) {
+    return (
+      <>
+        {showValidationWarning && validationErrors && (
+          <SchemaWarning toolName="Read" errors={validationErrors} />
+        )}
+        <ReadUnchangedResult
+          filePath={getResultFilePath(result.file) || (input?.file_path ?? "")}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       {showValidationWarning && validationErrors && (
         <SchemaWarning toolName="Read" errors={validationErrors} />
       )}
       <TextFileResult
-        file={result.file as TextFile}
+        file={result.file}
         highlightedHtml={result._highlightedContentHtml}
         highlightedTruncated={result._highlightedTruncated}
         renderedMarkdownHtml={result._renderedMarkdownHtml}
@@ -655,7 +736,18 @@ function ReadInteractiveSummary({
     );
   }
 
-  const file = result.file as TextFile;
+  if (!isCompleteTextFile(result.file)) {
+    return (
+      <ReadFilePathSummary displayPath={displayPath} filePath={input.file_path}>
+        <span className="file-line-count-inline">unchanged</span>
+        {showValidationWarning && validationErrors && (
+          <SchemaWarning toolName="Read" errors={validationErrors} />
+        )}
+      </ReadFilePathSummary>
+    );
+  }
+
+  const file = result.file;
 
   if (file.numLines <= 0) {
     return (
@@ -716,8 +808,8 @@ export const readRenderer: ToolRenderer<ReadInput, ReadResult> = {
     if (!r?.file) return "Reading...";
     if (r.type === "pdf") return "PDF";
     if (r.type === "image") return "Image";
-    const file = r.file as TextFile;
-    return file.numLines <= 0 ? "0 lines" : getFileName(file.filePath);
+    if (!isCompleteTextFile(r.file)) return "unchanged";
+    return r.file.numLines <= 0 ? "0 lines" : getFileName(r.file.filePath);
   },
 
   renderInteractiveSummary(input, result, isError, _context) {

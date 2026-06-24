@@ -15,7 +15,11 @@ import {
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import { getProvider } from "../sdk/providers/index.js";
-import type { AgentProvider } from "../sdk/providers/types.js";
+import type {
+  AgentProvider,
+  SummaryGenerationRequest,
+  SummaryGenerationResult,
+} from "../sdk/providers/types.js";
 import { normalizeSlashCommandName } from "../sdk/slashCommandEmulation.js";
 import type {
   ClaudeSDK,
@@ -188,6 +192,29 @@ function isCompactSuccessStatus(message: SDKMessage): boolean {
   );
 }
 
+/**
+ * Pure gate for the per-model compact-early threshold (task 029): true when a
+ * valid percent (1–99) and a known context window put live usage at or over
+ * the token threshold (percent% × window). Anything unknown or out of range
+ * yields false — the trigger never fires on missing usage. Semantics are
+ * "current usage already crosses the threshold", not a prediction of the next
+ * turn's size.
+ */
+export function crossesCompactThreshold(
+  percent: number | undefined,
+  contextWindow: number | undefined,
+  inputTokens: number | undefined,
+): boolean {
+  if (typeof percent !== "number" || percent <= 0 || percent >= 100) {
+    return false;
+  }
+  if (typeof contextWindow !== "number" || contextWindow <= 0) return false;
+  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) {
+    return false;
+  }
+  return inputTokens >= (percent / 100) * contextWindow;
+}
+
 function getStaleInTurnThresholdMs(provider: ProviderName): number {
   return provider === "codex" || provider === "codex-oss"
     ? CODEX_STALE_IN_TURN_THRESHOLD_MS
@@ -327,6 +354,19 @@ export interface ModelSettings {
    * providers that support prefix resume; ignored elsewhere.
    */
   resumeSessionAt?: string;
+  /**
+   * Per-model preemptive compaction threshold (task 029): "compact at X% of
+   * this model's context window". Resolved by the route from
+   * `clientDefaults.compactAtContextPercent[model]` and threaded through so the
+   * Supervisor stays settings-agnostic. 1–99 active; absent/out-of-range = off.
+   */
+  compactAtContextPercent?: number;
+  /**
+   * Effective context window (tokens) for the compaction threshold, resolved
+   * by the route. Preferred over `process.contextWindow`, which is often
+   * undefined and ignores always-1M for opus/sonnet.
+   */
+  compactAtContextWindow?: number;
 }
 
 /** Error response when queue is full */
@@ -393,6 +433,12 @@ export interface SupervisorOptions {
   maxQueueSize?: number;
   /** Callback to persist executor when session ID is received (for remote execution resume) */
   onSessionExecutor?: OnSessionExecutorCallback;
+  /** Callback invoked when a process observes a model's real context window. */
+  onContextWindowObserved?: (
+    model: string,
+    contextWindow: number,
+    provider: ProviderName,
+  ) => void;
   /** Callback to fetch session summary for initial metadata reconciliation */
   onSessionSummary?: OnSessionSummaryCallback;
   /** Callback to read the current heartbeat-turn settings for a session */
@@ -414,6 +460,7 @@ export interface SupervisorOptions {
 export class Supervisor {
   private processes: Map<string, Process> = new Map();
   private sessionToProcess: Map<string, string> = new Map(); // sessionId -> processId
+  private sessionActivationInFlight: Map<string, Promise<Process>> = new Map();
   private observedProcessIds: Set<string> = new Set();
   private everOwnedSessions: Set<string> = new Set(); // Sessions we've ever owned (for orphan detection)
   private terminatedProcesses: ProcessInfo[] = []; // Recently terminated processes
@@ -427,6 +474,11 @@ export class Supervisor {
   private idlePreemptThresholdMs: number;
   private workerQueue: WorkerQueue;
   private onSessionExecutor?: OnSessionExecutorCallback;
+  private onContextWindowObserved?: (
+    model: string,
+    contextWindow: number,
+    provider: ProviderName,
+  ) => void;
   private onSessionSummary?: OnSessionSummaryCallback;
   private staleCheckTimer: ReturnType<typeof setInterval>;
   private getHeartbeatTurnSettings?: (
@@ -463,6 +515,7 @@ export class Supervisor {
       maxQueueSize: options.maxQueueSize,
     });
     this.onSessionExecutor = options.onSessionExecutor;
+    this.onContextWindowObserved = options.onContextWindowObserved;
     this.onSessionSummary = options.onSessionSummary;
     this.getHeartbeatTurnSettings = options.getHeartbeatTurnSettings;
     this.getHeartbeatTurnCandidates = options.getHeartbeatTurnCandidates;
@@ -517,6 +570,35 @@ export class Supervisor {
       return "native";
     }
     return "off";
+  }
+
+  private async waitForSessionActivation(sessionId: string): Promise<boolean> {
+    const activation = this.sessionActivationInFlight.get(sessionId);
+    if (!activation) {
+      return false;
+    }
+    try {
+      await activation;
+    } catch {
+      // The caller will retry the ordinary resume path, which can surface the
+      // fresh failure or recover if the transient activation failed.
+    }
+    return true;
+  }
+
+  private async startSessionActivation<T extends Process>(
+    sessionId: string,
+    activate: () => Promise<T> | T,
+  ): Promise<T> {
+    const activation = Promise.resolve().then(activate);
+    this.sessionActivationInFlight.set(sessionId, activation);
+    try {
+      return (await activation) as T;
+    } finally {
+      if (this.sessionActivationInFlight.get(sessionId) === activation) {
+        this.sessionActivationInFlight.delete(sessionId);
+      }
+    }
   }
 
   registerPromptCacheKeepaliveViewer(process: Process): () => void {
@@ -682,6 +764,85 @@ export class Supervisor {
     throw new Error(
       "createSession requires provider or real SDK - legacy mock SDK not supported",
     );
+  }
+
+  /**
+   * Reactivate an existing session: spawn a live harness process bound to the
+   * session id WITHOUT delivering a user turn. The process resumes the session
+   * and idles on the queue (the same state it occupies after a completed turn),
+   * so the client can read live process state (model options, config) before
+   * any message is sent. Idempotent: returns the existing live process if the
+   * session is already owned.
+   *
+   * Provider-agnostic: rides the existing message-less resume path
+   * (`createProviderSession`/`createRealSession` with `resumeSessionId`), so
+   * Claude and Codex reactivate with no synthetic turn.
+   */
+  async reactivateSession(
+    projectPath: string,
+    resumeSessionId: string,
+    permissionMode?: PermissionMode,
+    modelSettings?: ModelSettings,
+  ): Promise<Process> {
+    const existing = this.getProcessForSession(resumeSessionId);
+    if (existing) {
+      if (!existing.isTerminated) {
+        return existing;
+      }
+      this.unregisterProcess(existing);
+    }
+
+    const activeActivation =
+      this.sessionActivationInFlight.get(resumeSessionId);
+    if (activeActivation) {
+      return activeActivation;
+    }
+
+    return this.startSessionActivation(resumeSessionId, async () => {
+      const activated = this.getProcessForSession(resumeSessionId);
+      if (activated) {
+        if (!activated.isTerminated) {
+          return activated;
+        }
+        this.unregisterProcess(activated);
+      }
+
+      if (this.isAtCapacity()) {
+        const preemptable = this.findPreemptableWorker();
+        if (preemptable) {
+          await this.preemptWorker(preemptable);
+        } else {
+          throw new Error(
+            "Cannot reactivate: server is at worker capacity and no idle process can be preempted",
+          );
+        }
+      }
+
+      const projectId = encodeProjectId(projectPath);
+      const provider = this.resolveProvider(modelSettings);
+      if (provider) {
+        return this.createProviderSession(
+          projectPath,
+          projectId,
+          permissionMode,
+          modelSettings,
+          provider,
+          resumeSessionId,
+        );
+      }
+      if (this.realSdk) {
+        return this.createRealSession(
+          projectPath,
+          projectId,
+          permissionMode,
+          modelSettings,
+          resumeSessionId,
+        );
+      }
+      throw new Error(
+        "reactivateSession requires provider or real SDK - legacy mock SDK not supported",
+      );
+    });
   }
 
   /**
@@ -954,7 +1115,9 @@ export class Supervisor {
 
     const watcher = this.watchResumeCompaction(process, command.command);
     const queued = process.queueMessage(
-      { text: `/${command.command}` },
+      // Hidden: native compaction shows no `/compact` user turn, so neither
+      // should YA-initiated compaction (resume-time or threshold-triggered).
+      { text: `/${command.command}`, metadata: { hidden: true } },
       { allowSteer: false },
     );
     if (!queued.success) {
@@ -967,6 +1130,85 @@ export class Supervisor {
     }
 
     return watcher.promise;
+  }
+
+  /**
+   * Threshold-triggered preemptive compaction (task 029). When the per-model
+   * compact-at-% is set and live context already sits at/over that fraction of
+   * the model's window, run a `/compact` before delivering the next turn — the
+   * same native compaction the harness would eventually auto-fire, just
+   * earlier. Conservative per task 002: claude only, idle process only, only
+   * when usage is known. Best-effort — the turn is delivered regardless of the
+   * compaction outcome, and there is no retry loop. Reuses
+   * `tryResumeCompaction`, so the boundary the client renders is the native
+   * `compact_boundary` and the `/compact` carries no visible user echo.
+   *
+   * No double compaction: live usage is re-read and re-tested immediately
+   * before executing (there is no deferral gap between decide and run), so a
+   * prior compaction — the harness's enforced one or a previous voluntary one —
+   * that dropped usage below the threshold makes the next evaluation a no-op.
+   * The voluntary threshold also sits well below the harness's enforced point,
+   * so in steady state the two never fire together.
+   */
+  private async maybeCompactBeforeDelivery(
+    process: Process,
+    sessionId: string,
+    modelSettings: ModelSettings | undefined,
+  ): Promise<void> {
+    const percent = modelSettings?.compactAtContextPercent;
+    if (typeof percent !== "number" || percent <= 0 || percent >= 100) return;
+    // Only an idle claude process can be safely compacted before delivery;
+    // tryResumeCompaction also self-guards, but skip the usage read otherwise.
+    if (process.state.type !== "idle") return;
+    if (process.provider !== "claude" && process.provider !== "claude-ollama") {
+      return;
+    }
+    // Prefer the route-resolved window; process.contextWindow is often
+    // undefined and ignores always-1M for opus/sonnet.
+    const contextWindow =
+      modelSettings?.compactAtContextWindow ?? process.contextWindow;
+    if (!contextWindow || contextWindow <= 0) return;
+
+    let inputTokens: number | undefined;
+    try {
+      const summary = await this.onSessionSummary?.(
+        sessionId,
+        process.projectId,
+      );
+      inputTokens = summary?.contextUsage?.inputTokens;
+    } catch {
+      // Usage unavailable → never block the turn.
+      return;
+    }
+    if (!crossesCompactThreshold(percent, contextWindow, inputTokens)) return;
+
+    try {
+      const attempt = await this.tryResumeCompaction(process);
+      if (attempt.status !== "completed") {
+        getLogger().info(
+          {
+            event: "threshold_compaction_skipped",
+            sessionId,
+            processId: process.id,
+            status: attempt.status,
+            percent,
+            inputTokens,
+            thresholdTokens: Math.round((percent / 100) * contextWindow),
+          },
+          "Threshold compaction did not complete; delivering turn as-is",
+        );
+      }
+    } catch (error) {
+      getLogger().warn(
+        {
+          event: "threshold_compaction_failed",
+          sessionId,
+          processId: process.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Threshold compaction errored; delivering turn as-is",
+      );
+    }
   }
 
   private async queueAfterResumeCompaction(params: {
@@ -1254,6 +1496,7 @@ export class Supervisor {
       supportedModels,
       supportedCommands,
       setModel,
+      runProviderCommand,
       publishAgentctlSessionId,
     } = result;
 
@@ -1282,6 +1525,7 @@ export class Supervisor {
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
       setModelFn: setModel,
+      runProviderCommandFn: runProviderCommand,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
       permissionMode: effectiveMode,
       provider: activeProvider.name,
@@ -1379,6 +1623,7 @@ export class Supervisor {
       supportedModels,
       supportedCommands,
       setModel,
+      runProviderCommand,
       publishAgentctlSessionId,
     } = result;
 
@@ -1407,6 +1652,7 @@ export class Supervisor {
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
       setModelFn: setModel,
+      runProviderCommandFn: runProviderCommand,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
       permissionMode: effectiveMode,
       provider: activeProvider.name,
@@ -1493,6 +1739,8 @@ export class Supervisor {
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
+    await this.waitForSessionActivation(sessionId);
+
     // Check if already have a process for this session
     const existingProcessId = this.sessionToProcess.get(sessionId);
     if (existingProcessId) {
@@ -1617,42 +1865,66 @@ export class Supervisor {
 
     const projectId = encodeProjectId(projectPath);
 
-    // Check if at capacity
-    if (this.isAtCapacity()) {
-      // Try to preempt an idle worker
-      const preemptable = this.findPreemptableWorker();
-      if (preemptable) {
-        await this.preemptWorker(preemptable);
-        // Fall through to start session normally
-      } else {
-        // Queue the request
-        const result = this.workerQueue.enqueue({
-          type: "resume-session",
-          projectPath,
-          projectId,
-          sessionId,
-          message,
-          permissionMode,
-          modelSettings,
-        });
-        if (isQueueFullError(result)) {
-          return result;
-        }
-        return {
-          queued: true,
-          queueId: result.queueId,
-          position: result.position,
-        };
+    if (this.isAtCapacity() && !this.findPreemptableWorker()) {
+      const result = this.workerQueue.enqueue({
+        type: "resume-session",
+        projectPath,
+        projectId,
+        sessionId,
+        message,
+        permissionMode,
+        modelSettings,
+      });
+      if (isQueueFullError(result)) {
+        return result;
       }
+      return {
+        queued: true,
+        queueId: result.queueId,
+        position: result.position,
+      };
     }
 
-    const provider = this.resolveProvider(modelSettings);
-    const resumeMode = modelSettings?.resumeMode ?? "full";
+    if (await this.waitForSessionActivation(sessionId)) {
+      return this.resumeSession(
+        sessionId,
+        projectPath,
+        message,
+        permissionMode,
+        modelSettings,
+      );
+    }
 
-    // Use provider if available (preferred)
-    if (provider) {
-      if (resumeMode === "compact-first") {
-        return this.startCompactFirstProviderResume(
+    return this.startSessionActivation(sessionId, async () => {
+      if (this.isAtCapacity()) {
+        const preemptable = this.findPreemptableWorker();
+        if (preemptable) {
+          await this.preemptWorker(preemptable);
+        } else {
+          throw new Error(
+            "Cannot resume: server is at worker capacity and no idle process can be preempted",
+          );
+        }
+      }
+
+      const provider = this.resolveProvider(modelSettings);
+      const resumeMode = modelSettings?.resumeMode ?? "full";
+
+      // Use provider if available (preferred)
+      if (provider) {
+        if (resumeMode === "compact-first") {
+          return this.startCompactFirstProviderResume(
+            projectPath,
+            projectId,
+            message,
+            sessionId,
+            permissionMode,
+            modelSettings,
+            provider,
+          );
+        }
+
+        return this.startProviderSession(
           projectPath,
           projectId,
           message,
@@ -1663,21 +1935,20 @@ export class Supervisor {
         );
       }
 
-      return this.startProviderSession(
-        projectPath,
-        projectId,
-        message,
-        sessionId,
-        permissionMode,
-        modelSettings,
-        provider,
-      );
-    }
+      // Use real SDK if available
+      if (this.realSdk) {
+        if (resumeMode === "compact-first") {
+          return this.startCompactFirstRealResume(
+            projectPath,
+            projectId,
+            message,
+            sessionId,
+            permissionMode,
+            modelSettings,
+          );
+        }
 
-    // Use real SDK if available
-    if (this.realSdk) {
-      if (resumeMode === "compact-first") {
-        return this.startCompactFirstRealResume(
+        return this.startRealSession(
           projectPath,
           projectId,
           message,
@@ -1687,35 +1958,26 @@ export class Supervisor {
         );
       }
 
-      return this.startRealSession(
+      // Fall back to legacy mock SDK
+      if (resumeMode === "compact-first") {
+        throw new ResumeCompactionError({
+          sessionId,
+          provider: "claude",
+          attempt: {
+            status: "unavailable",
+            reason: "legacy mock SDK does not support compact-first resume",
+          },
+        });
+      }
+
+      return this.startLegacySession(
         projectPath,
         projectId,
         message,
         sessionId,
         permissionMode,
-        modelSettings,
       );
-    }
-
-    // Fall back to legacy mock SDK
-    if (resumeMode === "compact-first") {
-      throw new ResumeCompactionError({
-        sessionId,
-        provider: "claude",
-        attempt: {
-          status: "unavailable",
-          reason: "legacy mock SDK does not support compact-first resume",
-        },
-      });
-    }
-
-    return this.startLegacySession(
-      projectPath,
-      projectId,
-      message,
-      sessionId,
-      permissionMode,
-    );
+    });
   }
 
   /** Whether the resolved provider has a real transcript-fork primitive. */
@@ -1754,6 +2016,22 @@ export class Supervisor {
       upToMessageId: options.upToMessageId,
       title: options.title,
     });
+  }
+
+  async generateSummary(
+    providerName: ProviderName | undefined,
+    request: SummaryGenerationRequest,
+  ): Promise<SummaryGenerationResult> {
+    const provider = this.resolveProvider(
+      providerName ? { providerName } : undefined,
+    );
+    if (!provider) {
+      throw new Error("provider is not available");
+    }
+    if (typeof provider.generateSummary !== "function") {
+      throw new Error(`${provider.name} does not support summary generation`);
+    }
+    return provider.generateSummary(request);
   }
 
   getProcess(processId: string): Process | undefined {
@@ -1990,6 +2268,11 @@ export class Supervisor {
     if (permissionMode) {
       process.setPermissionMode(permissionMode);
     }
+
+    // Preemptively compact when this turn would push an already-near-threshold
+    // session over its per-model compact-early limit (task 029). No-op unless
+    // the threshold is set and the idle process is over it.
+    await this.maybeCompactBeforeDelivery(process, sessionId, modelSettings);
 
     const result = await this.queueProcessMessage(process, message);
     if (result.success) {
@@ -2583,7 +2866,12 @@ export class Supervisor {
   async requestRecap(
     processId: string,
     options?: { sinceMs?: number | null },
-  ): Promise<{ supported: boolean; emitted: boolean; reason?: string }> {
+  ): Promise<{
+    supported: boolean;
+    emitted: boolean;
+    reason?: string;
+    text?: string;
+  }> {
     const process = this.processes.get(processId);
     if (!process) {
       return {
@@ -2602,7 +2890,22 @@ export class Supervisor {
       };
     }
 
-    return process.requestRecap(provider, options);
+    const result = await process.requestRecap(provider, options);
+    // A fresh recap is newer than any prior turn, so surface it as the
+    // session's current agent line in lists/hovers via the live update path
+    // (it is intentionally not persisted; the next real turn overwrites it
+    // from the JSONL). See topics/session-hovercard-recent-activity.md.
+    if (result.emitted && result.text && this.eventBus) {
+      const event: SessionUpdatedEvent = {
+        type: "session-updated",
+        sessionId: process.sessionId,
+        projectId: process.projectId,
+        lastAgentText: result.text,
+        timestamp: new Date().toISOString(),
+      };
+      this.eventBus.emit(event);
+    }
+    return result;
   }
 
   private async interruptProcessWithTimeout(
@@ -2768,6 +3071,12 @@ export class Supervisor {
         this.emitSessionAborted(process.sessionId, process.projectId);
       } else if (event.type === "complete") {
         this.unregisterProcess(process);
+      } else if (event.type === "context-window-observed") {
+        this.onContextWindowObserved?.(
+          event.model,
+          event.contextWindow,
+          event.provider,
+        );
       } else if (event.type === "session-id-changed") {
         // Update session→process mapping when temp ID is replaced by real ID from SDK
         // This is critical for ExternalSessionTracker to correctly identify owned sessions
@@ -3139,6 +3448,7 @@ export class Supervisor {
       updatedAt: summary.updatedAt,
       contextUsage: summary.contextUsage,
       model: summary.model,
+      lastAgentText: summary.lastAgentText,
       timestamp: new Date().toISOString(),
     };
     this.eventBus.emit(event);

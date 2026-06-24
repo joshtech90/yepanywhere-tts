@@ -6,6 +6,8 @@ import type {
   AgentActivity,
   ContextUsage,
   PendingInputType,
+  PromptSuggestionMode,
+  TranscriptDisplayObject,
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { SessionOwnership, SessionSummary } from "../supervisor/types.js";
@@ -152,6 +154,10 @@ export interface SessionMetadataChangedEvent {
   heartbeatTurnText?: string | null;
   /** Updated per-session heartbeat force timeout (if changed) */
   heartbeatForceAfterMinutes?: number | null;
+  /** Updated per-session prompt-suggestion preference (if changed) */
+  promptSuggestionMode?: PromptSuggestionMode;
+  /** Complete current set of saved viewer-only transcript objects. */
+  transcriptDisplayObjects?: TranscriptDisplayObject[];
   timestamp: string;
 }
 
@@ -182,6 +188,8 @@ export interface SessionUpdatedEvent {
   contextUsage?: ContextUsage;
   /** Resolved model name (e.g., "claude-sonnet-4-5-20250929") */
   model?: string;
+  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  lastAgentText?: string;
   timestamp: string;
 }
 

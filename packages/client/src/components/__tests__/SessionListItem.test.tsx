@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,6 +10,8 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../api/client";
+import { DEFAULT_HOVERCARD_SHOW_DELAY_MS } from "../../hooks/useHoverCardAppearance";
 import { I18nProvider } from "../../i18n";
 import { SessionListItem } from "../SessionListItem";
 
@@ -33,6 +36,7 @@ describe("SessionListItem links", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: originalClipboard,
@@ -211,5 +215,227 @@ describe("SessionListItem links", () => {
         "Full initial prompt that should be recoverable",
       );
     });
+  });
+
+  it("delays session hover previews", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Delayed hover"
+              initialPrompt="Delayed hover prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Delayed hover/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS - 1);
+    });
+    expect(screen.queryByText("Delayed hover prompt")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("Delayed hover prompt")).toBeTruthy();
+  });
+
+  it("keeps only one session hover preview visible", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="First session"
+              initialPrompt="First session prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+            <SessionListItem
+              sessionId="session-2"
+              projectId="project-1"
+              title="Second session"
+              initialPrompt="Second session prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-2" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const firstItem = screen
+      .getByRole("link", { name: /First session/ })
+      .closest("li");
+    const secondItem = screen
+      .getByRole("link", { name: /Second session/ })
+      .closest("li");
+    expect(firstItem).toBeTruthy();
+    expect(secondItem).toBeTruthy();
+
+    fireEvent.mouseEnter(firstItem!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.getByText("First session prompt")).toBeTruthy();
+
+    fireEvent.mouseEnter(secondItem!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.queryByText("First session prompt")).toBeNull();
+    expect(screen.getByText("Second session prompt")).toBeTruthy();
+  });
+
+  it("keeps session hover previews open during unrelated scrolls", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <div data-testid="transcript-scroll" />
+          <div data-testid="sidebar-scroll">
+            <ul>
+              <SessionListItem
+                sessionId="session-1"
+                projectId="project-1"
+                title="Scoped scroll"
+                initialPrompt="Scoped scroll prompt"
+                provider="claude"
+                status={{ owner: "self", processId: "pid-1" }}
+                mode="compact"
+              />
+            </ul>
+          </div>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Scoped scroll/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.getByText("Scoped scroll prompt")).toBeTruthy();
+
+    fireEvent.scroll(screen.getByTestId("transcript-scroll"));
+    expect(screen.getByText("Scoped scroll prompt")).toBeTruthy();
+
+    fireEvent.scroll(screen.getByTestId("sidebar-scroll"));
+    expect(screen.queryByText("Scoped scroll prompt")).toBeNull();
+  });
+
+  it("does not use a native title tooltip for session menu options", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Menu title"
+              provider="claude"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByLabelText("Session options").getAttribute("title")).toBe(
+      null,
+    );
+  });
+
+  it("does not show a hover card while the session menu is open", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Menu open"
+              initialPrompt="Menu open prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen.getByRole("link", { name: /Menu open/ }).closest("li");
+    expect(item).toBeTruthy();
+
+    act(() => {
+      fireEvent.click(screen.getByLabelText("Session options"));
+    });
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS + 50);
+    });
+
+    expect(screen.queryByText("Menu open prompt")).toBeNull();
+  });
+
+  it("refreshes the preview on hover, before the show delay elapses", () => {
+    vi.useFakeTimers();
+    const refreshSpy = vi
+      .spyOn(api, "refreshSessionPreview")
+      .mockResolvedValue(undefined as never);
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Idle row"
+              initialPrompt="Idle row prompt"
+              provider="claude"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen.getByRole("link", { name: /Idle row/ }).closest("li");
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+
+    // Fires immediately on hover, not gated behind the show delay.
+    expect(refreshSpy).toHaveBeenCalledWith("project-1", "session-1");
+
+    refreshSpy.mockRestore();
   });
 });

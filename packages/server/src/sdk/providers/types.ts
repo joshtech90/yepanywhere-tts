@@ -9,6 +9,7 @@ import type { MessageQueue } from "../messageQueue.js";
 import type {
   CanUseTool,
   ProviderActivitySnapshot,
+  ProviderCommandResult,
   ProviderLivenessProbeResult,
   ProviderRetentionSnapshot,
   SDKMessage,
@@ -30,7 +31,8 @@ export type ProviderName =
   | "gemini"
   | "gemini-acp"
   | "grok"
-  | "opencode";
+  | "opencode"
+  | "pi";
 
 /**
  * Authentication status for a provider.
@@ -169,6 +171,17 @@ export interface AgentSession {
    * Only supported by Claude SDK 0.2.7+.
    */
   setModel?: (model?: string) => Promise<void>;
+  /**
+   * Run a provider-native slash command out-of-band — dispatched through the
+   * provider's own protocol rather than delivered as a user turn. Codex uses
+   * this for `/compact` (`thread/compact/start`); a `{ handled: false }` result
+   * means the command is not native here and should fall back to normal turn
+   * delivery (as Claude's `/compact` does).
+   */
+  runProviderCommand?: (
+    command: string,
+    argument?: string,
+  ) => Promise<ProviderCommandResult>;
 }
 
 /**
@@ -248,21 +261,27 @@ export interface AgentProvider {
   getAvailableModels(): Promise<ModelInfo[]>;
 
   /**
-   * Synthesize a short recap of recent agent activity from already-emitted
-   * assistant text. The provider runs an ephemeral, non-persisted query —
-   * the output must not appear in the underlying session transcript.
-   * See topics/recaps.md.
-   *
-   * Implementations may apply timeouts and length limits. Returns the recap
-   * text on success; throws on unrecoverable failure. Implementations should
-   * NOT include trailing CLI-side hints (e.g., the Claude TUI's
-   * `(disable recaps in /config)` suffix) — those are TUI affordances that
-   * do not apply to a YA-generated recap.
+   * Map a provider-reported model id (e.g. "claude-opus-4-8") back to a YA model
+   * id / launch alias (e.g. "opus"), or `undefined` when no mapping is known.
+   * This is the imperfect inverse of how YA aliases resolve at launch — properly
+   * one-to-(zero or more), so the table returns a single canonical alias. Used
+   * only to recover a keying id for sessions YA didn't start (the requested YA id
+   * is unavailable); owned sessions key by their stored requested id instead.
+   * See topics/provider-abstraction.md § Per-model settings keying.
    */
-  generateRecap?: (
-    recentAssistantText: string[],
-    options?: { model?: string },
-  ) => Promise<string>;
+  yaModelIdForReported?(reported: string | undefined): string | undefined;
+
+  /**
+   * Generate a YA-owned summary through one of the supported helper
+   * strategies. Recaps use a cheap side-session strategy over recent
+   * assistant text; fork-backed helpers use a throwaway real fork so the
+   * source transcript is not polluted and provider message structure/cache
+   * warmth are preserved. See topics/recaps.md, topics/fork-from-turn.md,
+   * and topics/session-retitle.md.
+   */
+  generateSummary?: (
+    request: SummaryGenerationRequest,
+  ) => Promise<SummaryGenerationResult>;
 
   /**
    * Fork a session's transcript into a new resumable session, optionally
@@ -282,6 +301,48 @@ export interface AgentProvider {
     /** Title for the forked session. */
     title?: string;
   }) => Promise<{ sessionId: string }>;
+}
+
+export type SummaryGenerationRequest =
+  | {
+      purpose: "recap";
+      strategy: "side-session";
+      recentAssistantText: string[];
+      model?: string;
+    }
+  | {
+      purpose: "fork-after-summary";
+      strategy: "fork";
+      /** Archived helper fork whose whole context should be summarized. */
+      generatorSessionId: string;
+      /** Project working directory the session belongs to. */
+      cwd: string;
+      /** Completed-turn boundary retained by the target fork. */
+      afterTurnMessageId: string;
+      /** Human-readable excerpt of the retained boundary, when available. */
+      afterTurnContext?: string;
+      /** User-authored summary instructions from the composer. */
+      instructions?: string;
+      /** Cancels the helper query when the server-owned job is cancelled. */
+      signal?: AbortSignal;
+    }
+  | {
+      purpose: "session-retitle";
+      strategy: "fork";
+      /** Archived helper fork whose whole context should be titled. */
+      generatorSessionId: string;
+      /** Project working directory the session belongs to. */
+      cwd: string;
+      /** Current displayed title, if any, to avoid repeating a bad title. */
+      currentTitle?: string;
+      /** Target maximum title length in characters. */
+      lengthTarget?: number;
+      /** Cancels the helper query when the request is abandoned. */
+      signal?: AbortSignal;
+    };
+
+export interface SummaryGenerationResult {
+  text: string;
 }
 
 export interface PromptCacheRefreshResult {

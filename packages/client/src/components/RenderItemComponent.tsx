@@ -3,9 +3,12 @@ import {
   MESSAGE_STALE_THRESHOLD_MS,
   getLatestMessageTimestampMs,
 } from "../lib/messageAge";
+import type { CommentAnchor } from "../lib/commentAnchors";
 import type { RenderItem } from "../types/renderItems";
 import { MessageAge } from "./MessageAge";
+import { ForkSummaryDisplayObject } from "./ForkSummaryDisplayObject";
 import { SessionSetupBlock } from "./blocks/SessionSetupBlock";
+import { TaskNotificationBlock } from "./blocks/TaskNotificationBlock";
 import { TextBlock } from "./blocks/TextBlock";
 import { ThinkingBlock } from "./blocks/ThinkingBlock";
 import { ToolCallRow } from "./blocks/ToolCallRow";
@@ -20,9 +23,15 @@ interface Props {
   onCorrectUserPrompt?: () => void;
   onTrimBeforeUserPrompt?: () => void;
   onForkBeforeUserPrompt?: () => void;
+  onQuoteTextBlock?: (anchor: CommentAnchor) => void;
+  alwaysShowQuoteCircle?: boolean;
   staleNowMs?: number;
   latestVisibleTimestampMs?: number | null;
   thinkingDurationMs?: number;
+  getForkSummaryTargetHref?: (targetSessionId: string) => string;
+  onCancelForkSummary?: (objectId: string) => void;
+  onToggleForkSummaryAutoOpen?: (objectId: string, value: boolean) => void;
+  onFollowForkSummary?: (objectId: string) => void;
 }
 
 function getMessageIdLike(message: Record<string, unknown>): string {
@@ -140,9 +149,15 @@ export const RenderItemComponent = memo(function RenderItemComponent({
   onCorrectUserPrompt,
   onTrimBeforeUserPrompt,
   onForkBeforeUserPrompt,
+  onQuoteTextBlock,
+  alwaysShowQuoteCircle,
   staleNowMs,
   latestVisibleTimestampMs,
   thinkingDurationMs,
+  getForkSummaryTargetHref,
+  onCancelForkSummary,
+  onToggleForkSummaryAutoOpen,
+  onFollowForkSummary,
 }: Props) {
   const staticAgeNowMsRef = useRef(Date.now());
   const timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
@@ -190,6 +205,8 @@ export const RenderItemComponent = memo(function RenderItemComponent({
             text={item.text}
             isStreaming={item.isStreaming}
             augmentHtml={item.augmentHtml}
+            onQuoteBlock={onQuoteTextBlock}
+            alwaysShowQuoteCircle={alwaysShowQuoteCircle}
           />
         );
 
@@ -229,6 +246,26 @@ export const RenderItemComponent = memo(function RenderItemComponent({
       case "session_setup":
         return <SessionSetupBlock title={item.title} prompts={item.prompts} />;
 
+      case "transcript_display_object":
+        return (
+          <ForkSummaryDisplayObject
+            object={item.object}
+            targetHref={
+              item.object.targetSessionId
+                ? getForkSummaryTargetHref?.(item.object.targetSessionId)
+                : undefined
+            }
+            onCancel={() => onCancelForkSummary?.(item.object.id)}
+            onToggleAutoOpen={(value) =>
+              onToggleForkSummaryAutoOpen?.(item.object.id, value)
+            }
+            onFollow={() => onFollowForkSummary?.(item.object.id)}
+          />
+        );
+
+      case "task_notification":
+        return <TaskNotificationBlock item={item} />;
+
       case "system": {
         if (item.subtype === "away_summary") {
           return (
@@ -244,9 +281,16 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           item.subtype === "status" && item.status === "compacting";
         const isError = item.subtype === "error";
         const isConfigAck = item.subtype === "config_ack";
+        const isSubagentActivity = item.subtype === "subagent_activity";
         const isHighlightedConfigAck =
           isConfigAck && item.configChanged !== false;
-        const icon = isError ? "!" : isConfigAck ? "✓" : "⟳";
+        const icon = isError
+          ? "!"
+          : isConfigAck
+            ? "✓"
+            : isSubagentActivity
+              ? "↳"
+              : "⟳";
         return (
           <div
             className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""}`}

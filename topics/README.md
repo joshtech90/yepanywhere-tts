@@ -1,5 +1,6 @@
 - new session project selection
 - Rich rendering for agent output via yepanywhere
+- Task-list rendering from incremental Claude `Task*` events (problem framing)
 - Codex GPT-5.5 model and protocol compatibility
 - Pluggable speech recognition providers
 - Browser-load session UI reliability
@@ -16,6 +17,8 @@
 - OpenCode ses_ session ID unification with YA session ID
 - MessageQueue batch delivery and steering UI
 - Message-control and queue intent (`/btw`, queue intent, later-interrupt state contract)
+- Queue survival across compaction boundaries (verified-idle/patient queue lost on Claude compaction termination)
+- Queued messages: server-authoritative design (draft-only localStorage, no fuzzy matching)
 - Emulated slash commands
 - Provider-agnostic /btw asides
 - Side session configuration
@@ -23,9 +26,21 @@
 - Session liveness and queue intent
 - Provider process state machine
 - Compact-and-handoff guardrail (targeted provider/model policy)
+- Claude 1M vs 200K context window (resolution, reporting, autocompact)
+- Exposing older Claude models (Opus 4.7/4.6/4.5, Sonnet 4.5) as an opt-in path
 - Heartbeat ownership and timers
 - Claude provider control
 - Codex API provider as a future API-key-backed backend
 - Pixel-scale icon aesthetics
 - UI testing and screenshot regression checks
 - Provider/model compact glyph vocabulary (top-right status)
+- Claude API failures and auto-retry (transient 5xx/overload evidence)
+- Media rendering and routing (image/video/file surfaces, the relay fetch rule, serving doors)
+- Sidebar session ordering (active rows pinned and stable, idle rows deduped by recency)
+- Deferred & tactical roadmap (prioritized: backgrounded-jobs badge, `Task*` list rendering, queue-across-compaction, rich-text gaps, OpenCode/pi provider fleshout)
+- pi provider (Zechner's pi-mono as agnostic backend: integration plan + periodic progress tracking)
+- Provider read/edit disciplines (native edit formats vs YA's one canonical Read/Edit/Write presentation)
+- Collapse/expand mode (brainstorm: default-collapse more actions; expand subagent progress as pure outline UI)
+- Session hover card recent activity (add last regular agent turn excerpt to the row tooltip; fire it on all-sessions + search too)
+- Turn-notch actions / fork-from-turn (fork already exists; proposal: expose fork/copy/trim from scrollbar notches + seed compose with the forked turn)
+- Turn-rail marker layout (hit targets sized to neighbor gaps; optional PAVA de-cluster spread behind one off-by-default constant)

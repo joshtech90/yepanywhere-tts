@@ -1,5 +1,6 @@
 import type {
   MarkdownAugment,
+  TranscriptDisplayObject,
   UploadedFile,
   UserMessageMetadata,
 } from "@yep-anywhere/shared";
@@ -13,11 +14,20 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  createCommentAnchor,
+  type CommentAnchor,
+  draftContainsAnchorQuote,
+} from "../lib/commentAnchors";
 import { getShowThinkingSetting } from "../hooks/useModelSettings";
+import { useAlwaysShowQuoteCircles } from "../hooks/useAlwaysShowQuoteCircles";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useI18n } from "../i18n";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
-import { copyMarkdownSelectionToClipboard } from "../lib/markdownSelectionCopy";
+import {
+  copyMarkdownSelectionToClipboard,
+  extractMarkdownSnippetsFromSelection,
+} from "../lib/markdownSelectionCopy";
 import {
   formatCompactRelativeAge,
   getLatestMessageTimestampMs,
@@ -35,6 +45,7 @@ import {
   type SessionIsearchScope,
 } from "../lib/sessionIsearchGuide";
 import { stabilizeRenderItems } from "../lib/stableRenderItems";
+import { insertTranscriptDisplayObjects } from "../lib/transcriptDisplayObjects";
 import { UI_KEYS } from "../lib/storageKeys";
 import type { ContentBlock, Message } from "../types";
 import type { RenderItem } from "../types/renderItems";
@@ -61,18 +72,36 @@ import {
 } from "./UserTurnNavigator";
 import { CopyTextButton } from "./ui/CopyTextButton";
 
+const EMPTY_TRANSCRIPT_DISPLAY_OBJECTS: readonly TranscriptDisplayObject[] = [];
+
 /**
  * Groups consecutive assistant items (text, thinking, tool_call) into turns.
  * User prompts break the grouping and are returned as separate groups.
  */
-function groupItemsIntoTurns(
-  items: RenderItem[],
-): Array<{ isUserPrompt: boolean; items: RenderItem[] }> {
-  const groups: Array<{ isUserPrompt: boolean; items: RenderItem[] }> = [];
+function groupItemsIntoTurns(items: RenderItem[]): Array<{
+  isUserPrompt: boolean;
+  isStandalone?: boolean;
+  items: RenderItem[];
+}> {
+  const groups: Array<{
+    isUserPrompt: boolean;
+    isStandalone?: boolean;
+    items: RenderItem[];
+  }> = [];
   let currentAssistantGroup: RenderItem[] = [];
 
   for (const item of items) {
-    if (item.type === "user_prompt" || item.type === "session_setup") {
+    if (item.type === "transcript_display_object") {
+      if (currentAssistantGroup.length > 0) {
+        groups.push({ isUserPrompt: false, items: currentAssistantGroup });
+        currentAssistantGroup = [];
+      }
+      groups.push({
+        isUserPrompt: false,
+        isStandalone: true,
+        items: [item],
+      });
+    } else if (item.type === "user_prompt" || item.type === "session_setup") {
       // Flush any pending assistant items
       if (currentAssistantGroup.length > 0) {
         groups.push({ isUserPrompt: false, items: currentAssistantGroup });
@@ -260,21 +289,6 @@ function findRenderRow(
     "[data-render-id]",
   )) {
     if (row.dataset.renderId === id) {
-      return row;
-    }
-  }
-  return null;
-}
-
-function findQueuedTailRow(
-  messageList: HTMLDivElement | null,
-  key: string,
-): HTMLElement | null {
-  if (!messageList) return null;
-  for (const row of messageList.querySelectorAll<HTMLElement>(
-    "[data-queued-tail-key]",
-  )) {
-    if (row.dataset.queuedTailKey === key) {
       return row;
     }
   }
@@ -477,6 +491,22 @@ function getFullSessionSearchAnchorForItem(
           }
         : null;
     }
+    case "transcript_display_object": {
+      const searchText = joinSearchParts([
+        item.object.title,
+        item.object.status,
+        item.object.error,
+      ]);
+      return searchText
+        ? {
+            id: item.id,
+            preview:
+              item.object.title ??
+              getSearchPreviewFallback(item.object.error ?? item.object.status),
+            searchText,
+          }
+        : null;
+    }
     case "text":
       return item.text
         ? {
@@ -501,6 +531,16 @@ function getFullSessionSearchAnchorForItem(
             searchText: item.content,
           }
         : null;
+    case "task_notification": {
+      const searchText = item.summary ?? item.raw;
+      return searchText
+        ? {
+            id: item.id,
+            preview: getSearchPreviewFallback(searchText),
+            searchText,
+          }
+        : null;
+    }
     case "tool_call": {
       const searchText = getToolSearchText(item);
       return searchText
@@ -758,22 +798,14 @@ interface DeferredMessage {
   tempId?: string;
   content: string;
   timestamp: string;
-  clientOrder?: number;
   metadata?: UserMessageMetadata;
   attachmentCount?: number;
   attachments?: UploadedFile[];
-  blockedByEdit?: boolean;
-  deliveryState?: "queued" | "sending" | "recovered" | "verifying";
 }
 
 interface ComposerTailLanePosition {
   regularIndex?: number;
   patientIndex?: number;
-}
-
-interface QueuedContextReturnAnchor {
-  tailKey: string;
-  scrollTop: number;
 }
 
 function isPatientDeferredMessage(message: DeferredMessage): boolean {
@@ -786,35 +818,16 @@ function formatQueuedAge(timestampMs: number, nowMs: number): string {
 }
 
 function getDeferredMessageStatus({
-  deferred,
   isPatient,
   lanePosition,
   timestampMs,
   nowMs,
 }: {
-  deferred: DeferredMessage;
   isPatient: boolean;
   lanePosition: ComposerTailLanePosition | undefined;
   timestampMs: number | null;
   nowMs: number;
 }): string {
-  if (deferred.deliveryState === "sending") {
-    return isPatient
-      ? "Sending patient message..."
-      : "Sending queued message...";
-  }
-  if (deferred.deliveryState === "recovered") {
-    return isPatient
-      ? "Recovered patient draft"
-      : "Recovered draft (not queued)";
-  }
-  if (deferred.deliveryState === "verifying") {
-    return isPatient ? "Patient (verifying)" : "Queued (verifying)";
-  }
-  if (deferred.blockedByEdit) {
-    return isPatient ? "Patient (after edit)" : "Queued (after edit)";
-  }
-
   if (isPatient) {
     const age =
       timestampMs !== null ? formatQueuedAge(timestampMs, nowMs) : null;
@@ -853,8 +866,21 @@ function compareComposerTailItems(
   left: ComposerTailItem,
   right: ComposerTailItem,
 ): number {
-  const leftOrder = left.message.clientOrder;
-  const rightOrder = right.message.clientOrder;
+  // Two lanes, each kept in its own order: optimistic pending sends (in flight)
+  // render before server-queued deferred messages, and deferred messages
+  // preserve the server's authoritative queue order rather than being re-sorted.
+  if (left.kind !== right.kind) {
+    return left.kind === "pending" ? -1 : 1;
+  }
+
+  if (left.kind === "deferred" && right.kind === "deferred") {
+    return left.deferredIndex - right.deferredIndex;
+  }
+
+  const leftOrder =
+    left.kind === "pending" ? left.message.clientOrder : undefined;
+  const rightOrder =
+    right.kind === "pending" ? right.message.clientOrder : undefined;
   if (
     typeof leftOrder === "number" &&
     Number.isFinite(leftOrder) &&
@@ -897,6 +923,7 @@ interface BtwAsideTimelineItem {
 
 interface Props {
   messages: Message[];
+  transcriptDisplayObjects?: readonly TranscriptDisplayObject[];
   provider?: string;
   isStreaming?: boolean;
   isProcessing?: boolean;
@@ -920,22 +947,25 @@ interface Props {
   onToggleBtwAsideExpanded?: (asideId: string) => void;
   /** Insert a /btw transcript turn into the Mother composer. */
   onTransferBtwAsideTurn?: (text: string) => void;
+  /** Append quoted assistant output to the composer. */
+  onQuoteSelection?: (quotedText: string) => string | null;
+  /** Read current composer draft for quote tint reconciliation. */
+  getComposerDraft?: () => string;
+  composerDraft?: string;
+  /** Clear all comment anchors after the quoted turn is sent. */
+  quoteClearSignal?: number;
   /** Callback to cancel a deferred message */
   onCancelDeferred?: (tempId: string) => void;
-  /** Callback to update queued text without moving it into the composer */
-  onUpdateDeferred?: (tempId: string, content: string) => void | Promise<void>;
-  /** Fallback callback to take a deferred message back into the composer */
-  onEditDeferred?: (tempId: string) => void;
-  /** Callback to promote a deferred message into current-turn steering */
-  onSteerDeferred?: (tempId: string) => void;
-  /** Whether the current session can accept active-turn steering now */
-  canSteerDeferred?: boolean;
   /** Callback to correct the latest actually-sent user message */
   onCorrectLatestUserMessage?: (messageId: string, content: string) => void;
   /** Callback to aggressively reload the client transcript from a user turn */
   onTrimBeforeUserMessage?: (messageId: string) => void;
   /** Fork the session from just before the given user message (real prefix fork only). */
   onForkBeforeUserMessage?: (messageId: string) => void;
+  /** Fork after the completed turn for this user message, optionally with a summary. */
+  onForkAfterUserMessage?: (messageId: string) => void;
+  /** Copy the given user turn's text (turn-notch context menu). */
+  onCopyUserMessage?: (messageId: string) => void;
   /** Pre-rendered markdown HTML from server (keyed by message ID) */
   markdownAugments?: Record<string, MarkdownAugment>;
   /** Active tool approval - prevents matching orphaned tool from showing as interrupted */
@@ -948,25 +978,10 @@ interface Props {
   onLoadOlderMessages?: () => void;
   /** Whether the client transcript is intentionally loaded from a recent tail */
   clientTailActive?: boolean;
-}
-
-function PencilIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  );
+  getForkSummaryTargetHref?: (targetSessionId: string) => string;
+  onCancelForkSummary?: (objectId: string) => void;
+  onToggleForkSummaryAutoOpen?: (objectId: string, value: boolean) => void;
+  onFollowForkSummary?: (objectId: string) => void;
 }
 
 function XIcon({ size = 14 }: { size?: number }) {
@@ -986,38 +1001,6 @@ function XIcon({ size = 14 }: { size?: number }) {
       <path d="m6 6 12 12" />
     </svg>
   );
-}
-
-function rangeIntersectsNode(range: Range, node: Node): boolean {
-  try {
-    return range.intersectsNode(node);
-  } catch {
-    return false;
-  }
-}
-
-function hasSelectedTextInside(element: HTMLElement): boolean {
-  const selection = element.ownerDocument.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-    return false;
-  }
-
-  if (selection.toString().length === 0) {
-    return false;
-  }
-
-  for (let index = 0; index < selection.rangeCount; index += 1) {
-    if (rangeIntersectsNode(selection.getRangeAt(index), element)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function resizeQueuedInlineEditor(textarea: HTMLTextAreaElement): void {
-  textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 function BtwAsideTimelineCard({
@@ -1126,6 +1109,7 @@ function BtwAsideTimelineCard({
 
 export const MessageList = memo(function MessageList({
   messages,
+  transcriptDisplayObjects = EMPTY_TRANSCRIPT_DISPLAY_OBJECTS,
   provider,
   isStreaming = false,
   isProcessing = false,
@@ -1139,22 +1123,27 @@ export const MessageList = memo(function MessageList({
   onStopBtwAside,
   onToggleBtwAsideExpanded,
   onTransferBtwAsideTurn,
+  onQuoteSelection,
+  getComposerDraft,
+  composerDraft = "",
+  quoteClearSignal = 0,
   onCancelDeferred,
-  onUpdateDeferred,
-  onEditDeferred,
-  onSteerDeferred,
-  canSteerDeferred = false,
   onCorrectLatestUserMessage,
   onTrimBeforeUserMessage,
   onForkBeforeUserMessage,
+  onForkAfterUserMessage,
+  onCopyUserMessage,
   markdownAugments,
   activeToolApproval,
   hasOlderMessages = false,
   loadingOlder = false,
   onLoadOlderMessages,
   clientTailActive = false,
+  getForkSummaryTargetHref,
+  onCancelForkSummary,
+  onToggleForkSummaryAutoOpen,
+  onFollowForkSummary,
 }: Props) {
-  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const isInitialLoadRef = useRef(true);
@@ -1165,13 +1154,6 @@ export const MessageList = memo(function MessageList({
   const forcedCurrentScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>(
     [],
   );
-  const queuedInlineEditorRef = useRef<HTMLTextAreaElement | null>(null);
-  const [queuedInlineEdit, setQueuedInlineEdit] = useState<{
-    tempId: string;
-    originalContent: string;
-    draft: string;
-    saving?: boolean;
-  } | null>(null);
   const programmaticScrollReleaseRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -1227,93 +1209,102 @@ export const MessageList = memo(function MessageList({
     selectedId: null,
     originalScrollTop: null,
   });
-  const [queuedContextReturn, setQueuedContextReturn] =
-    useState<QueuedContextReturnAnchor | null>(null);
+  const [commentAnchors, setCommentAnchors] = useState<
+    readonly CommentAnchor[]
+  >([]);
+  const [floatingQuoteButton, setFloatingQuoteButton] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  const { alwaysShowQuoteCircles } = useAlwaysShowQuoteCircles();
+  const { t } = useI18n();
   const nowMs = useRelativeNow();
 
-  const startQueuedInlineEdit = useCallback(
-    (deferred: DeferredMessage) => {
-      if (!deferred.tempId) {
-        return;
+  const applyQuoteAnchors = useCallback(
+    (anchors: readonly CommentAnchor[], typedPrefix = "") => {
+      if (!onQuoteSelection || anchors.length === 0) {
+        return false;
       }
-      if (!onUpdateDeferred) {
-        onEditDeferred?.(deferred.tempId);
-        return;
+      const quotedText = anchors
+        .map((anchor) => anchor.quotedText)
+        .join("\n\n");
+      const nextDraft = onQuoteSelection(
+        typedPrefix ? `${quotedText}\n${typedPrefix}` : `${quotedText}\n`,
+      );
+      if (nextDraft === null) {
+        return false;
       }
-      shouldAutoScrollRef.current = false;
-      setQueuedInlineEdit({
-        tempId: deferred.tempId,
-        originalContent: deferred.content,
-        draft: deferred.content,
-      });
+      setCommentAnchors((previous) => [...previous, ...anchors]);
+      containerRef.current?.ownerDocument.getSelection()?.removeAllRanges();
+      setFloatingQuoteButton(null);
+      return true;
     },
-    [onEditDeferred, onUpdateDeferred],
+    [onQuoteSelection],
   );
 
-  const cancelQueuedInlineEdit = useCallback(() => {
-    setQueuedInlineEdit(null);
-  }, []);
-
-  const saveQueuedInlineEdit = useCallback(async () => {
-    const edit = queuedInlineEdit;
-    if (!edit || edit.saving) {
-      return;
-    }
-    if (!onUpdateDeferred || edit.draft === edit.originalContent) {
-      setQueuedInlineEdit(null);
-      return;
-    }
-
-    setQueuedInlineEdit((current) =>
-      current?.tempId === edit.tempId ? { ...current, saving: true } : current,
-    );
-    try {
-      await onUpdateDeferred(edit.tempId, edit.draft);
-      setQueuedInlineEdit((current) =>
-        current?.tempId === edit.tempId ? null : current,
-      );
-    } catch {
-      setQueuedInlineEdit((current) =>
-        current?.tempId === edit.tempId
-          ? { ...current, saving: false }
-          : current,
-      );
-      if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(() => queuedInlineEditorRef.current?.focus());
-      } else {
-        setTimeout(() => queuedInlineEditorRef.current?.focus(), 0);
+  const applyQuoteFromSelection = useCallback(
+    (typedPrefix = "") => {
+      const root = containerRef.current;
+      if (!root) {
+        return false;
       }
-    }
-  }, [onUpdateDeferred, queuedInlineEdit]);
+      const anchors =
+        extractMarkdownSnippetsFromSelection(root).map(createCommentAnchor);
+      return applyQuoteAnchors(anchors, typedPrefix);
+    },
+    [applyQuoteAnchors],
+  );
+
+  const handleQuoteTextBlock = useCallback(
+    (anchor: CommentAnchor) => {
+      applyQuoteAnchors([anchor]);
+    },
+    [applyQuoteAnchors],
+  );
 
   useEffect(() => {
-    const textarea = queuedInlineEditorRef.current;
-    if (!textarea || !queuedInlineEdit) {
+    if (commentAnchors.length === 0) {
       return;
     }
-    textarea.focus();
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
-  }, [queuedInlineEdit?.tempId]);
+    const draft = getComposerDraft?.() ?? composerDraft;
+    setCommentAnchors((previous) => {
+      const next = previous.filter((anchor) =>
+        draftContainsAnchorQuote(draft, anchor),
+      );
+      return next.length === previous.length ? previous : next;
+    });
+  }, [commentAnchors.length, composerDraft, getComposerDraft]);
 
   useEffect(() => {
-    const textarea = queuedInlineEditorRef.current;
-    if (!textarea || !queuedInlineEdit) {
-      return;
+    if (quoteClearSignal > 0) {
+      setCommentAnchors([]);
     }
-    resizeQueuedInlineEditor(textarea);
-  }, [queuedInlineEdit?.draft, queuedInlineEdit]);
+  }, [quoteClearSignal]);
 
   useEffect(() => {
     if (
-      queuedInlineEdit &&
-      !deferredMessages.some(
-        (message) => message.tempId === queuedInlineEdit.tempId,
-      )
+      typeof CSS === "undefined" ||
+      !("highlights" in CSS) ||
+      typeof Highlight === "undefined"
     ) {
-      setQueuedInlineEdit(null);
+      return;
     }
-  }, [deferredMessages, queuedInlineEdit]);
+
+    if (commentAnchors.length === 0) {
+      CSS.highlights.delete("comment-tint");
+      return;
+    }
+
+    const highlight = new Highlight(
+      ...commentAnchors
+        .filter((anchor) => anchor.sourceElement.isConnected)
+        .map((anchor) => anchor.range),
+    );
+    CSS.highlights.set("comment-tint", highlight);
+    return () => {
+      CSS.highlights.delete("comment-tint");
+    };
+  }, [commentAnchors]);
 
   // Scroll to bottom, marking it as programmatic so scroll handler ignores it
   const scrollToBottom = useCallback(
@@ -1451,10 +1442,13 @@ export const MessageList = memo(function MessageList({
       markdownAugments: Object.keys(markdownAugments ?? {}).length,
       hasActiveToolApproval: !!activeToolApproval,
     });
-    const nextRenderItems = preprocessMessages(messages, {
-      markdown: markdownAugments,
-      activeToolApproval,
-    });
+    const nextRenderItems = insertTranscriptDisplayObjects(
+      preprocessMessages(messages, {
+        markdown: markdownAugments,
+        activeToolApproval,
+      }),
+      transcriptDisplayObjects,
+    );
     const stabilized = stabilizeRenderItems(
       previousRenderItemsRef.current,
       nextRenderItems,
@@ -1465,7 +1459,12 @@ export const MessageList = memo(function MessageList({
       durationMs: highResolutionNowMs() - startedAt,
     });
     return stabilized;
-  }, [messages, markdownAugments, activeToolApproval]);
+  }, [
+    messages,
+    markdownAugments,
+    activeToolApproval,
+    transcriptDisplayObjects,
+  ]);
   useEffect(() => {
     previousRenderItemsRef.current = renderItems;
   }, [renderItems]);
@@ -1826,6 +1825,83 @@ export const MessageList = memo(function MessageList({
     document.addEventListener("copy", handleCopy);
     return () => document.removeEventListener("copy", handleCopy);
   }, []);
+
+  useEffect(() => {
+    if (!onQuoteSelection) {
+      setFloatingQuoteButton(null);
+      return;
+    }
+
+    const updateFloatingQuoteButton = () => {
+      const root = containerRef.current;
+      const selection = root?.ownerDocument.getSelection();
+      if (
+        !root ||
+        !selection ||
+        selection.isCollapsed ||
+        selection.rangeCount === 0 ||
+        extractMarkdownSnippetsFromSelection(root).length === 0
+      ) {
+        setFloatingQuoteButton(null);
+        return;
+      }
+
+      const range = selection.getRangeAt(selection.rangeCount - 1);
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setFloatingQuoteButton(null);
+        return;
+      }
+      const rootRect = root.getBoundingClientRect();
+      setFloatingQuoteButton({
+        top: rect.top - rootRect.top - 34,
+        left: Math.max(
+          0,
+          Math.min(rect.right - rootRect.left + 8, root.clientWidth - 36),
+        ),
+      });
+    };
+
+    document.addEventListener("selectionchange", updateFloatingQuoteButton);
+    window.addEventListener("resize", updateFloatingQuoteButton);
+    window.addEventListener("scroll", updateFloatingQuoteButton, true);
+    return () => {
+      document.removeEventListener(
+        "selectionchange",
+        updateFloatingQuoteButton,
+      );
+      window.removeEventListener("resize", updateFloatingQuoteButton);
+      window.removeEventListener("scroll", updateFloatingQuoteButton, true);
+    };
+  }, [onQuoteSelection]);
+
+  useEffect(() => {
+    if (!onQuoteSelection) {
+      return;
+    }
+    const handleSelectionTyping = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.key.length !== 1 ||
+        isInteractiveScrollTarget(event.target)
+      ) {
+        return;
+      }
+      if (!applyQuoteFromSelection(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener("keydown", handleSelectionTyping, true);
+    return () =>
+      window.removeEventListener("keydown", handleSelectionTyping, true);
+  }, [applyQuoteFromSelection, onQuoteSelection]);
   const latestVisibleTimestampMs = useMemo(() => {
     let latest: number | null = null;
     const includeTimestamp = (timestampMs: number | null) => {
@@ -1892,16 +1968,6 @@ export const MessageList = memo(function MessageList({
 
     return positions;
   }, [composerTailItems]);
-  useEffect(() => {
-    if (
-      queuedContextReturn &&
-      !composerTailItems.some(
-        (item) => item.key === queuedContextReturn.tailKey,
-      )
-    ) {
-      setQueuedContextReturn(null);
-    }
-  }, [composerTailItems, queuedContextReturn]);
   const latestCorrectablePrompt = useMemo(() => {
     if (!onCorrectLatestUserMessage) return null;
 
@@ -2253,72 +2319,6 @@ export const MessageList = memo(function MessageList({
       allowThinkingDeltas: true,
     });
   }, [forceScrollToCurrent]);
-
-  const findQueuedContextRenderId = useCallback(
-    (queuedTimestampMs: number): string | null => {
-      let candidate: { id: string; timestampMs: number } | null = null;
-      for (const item of displayRenderItems) {
-        const timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
-        if (timestampMs === null || timestampMs > queuedTimestampMs) {
-          continue;
-        }
-        if (!candidate || timestampMs >= candidate.timestampMs) {
-          candidate = { id: item.id, timestampMs };
-        }
-      }
-      return candidate?.id ?? displayRenderItems[0]?.id ?? null;
-    },
-    [displayRenderItems],
-  );
-
-  const jumpToQueuedContext = useCallback(
-    (tailKey: string, contextRenderId: string) => {
-      const scrollContainer = containerRef.current?.parentElement;
-      if (!scrollContainer) {
-        return;
-      }
-      setQueuedContextReturn({
-        tailKey,
-        scrollTop: scrollContainer.scrollTop,
-      });
-      scrollToRenderId(contextRenderId, "auto", "center", true);
-    },
-    [scrollToRenderId],
-  );
-
-  const returnToQueuedContext = useCallback(() => {
-    const anchor = queuedContextReturn;
-    const messageList = containerRef.current;
-    const scrollContainer = messageList?.parentElement;
-    setQueuedContextReturn(null);
-    if (!anchor || !scrollContainer) {
-      return;
-    }
-
-    const row = findQueuedTailRow(messageList, anchor.tailKey);
-    isProgrammaticScrollRef.current = true;
-    shouldAutoScrollRef.current = false;
-    setIsScrolledToBottom(false);
-
-    if (row) {
-      const scrollRect = scrollContainer.getBoundingClientRect();
-      const rowRect = row.getBoundingClientRect();
-      const offset = Math.max(
-        0,
-        (scrollContainer.clientHeight - rowRect.height) / 2,
-      );
-      scrollContainer.scrollTop = Math.max(
-        0,
-        scrollContainer.scrollTop + rowRect.top - scrollRect.top - offset,
-      );
-    } else {
-      scrollContainer.scrollTop = anchor.scrollTop;
-    }
-    lastHeightRef.current = scrollContainer.scrollHeight;
-    requestAnimationFrame(() => {
-      isProgrammaticScrollRef.current = false;
-    });
-  }, [queuedContextReturn]);
 
   const closeUserTurnSearch = useCallback((restoreScroll: boolean) => {
     const scrollTopToRestore = restoreScroll
@@ -2924,18 +2924,6 @@ export const MessageList = memo(function MessageList({
       <span>Follow</span>
     </button>
   ) : null;
-  const queuedContextReturnButton = queuedContextReturn ? (
-    <button
-      type="button"
-      className="queued-context-return"
-      onClick={returnToQueuedContext}
-      aria-label="Return to queued message"
-      title="Return to queued message"
-    >
-      ↩
-    </button>
-  ) : null;
-
   return (
     <>
       <UserTurnNavigator
@@ -2948,6 +2936,9 @@ export const MessageList = memo(function MessageList({
         }}
         onSearchMatchSelect={selectUserTurnSearchMatch}
         onTrimAnchor={onTrimBeforeUserMessage}
+        onForkBeforeAnchor={onForkBeforeUserMessage}
+        onForkAfterAnchor={onForkAfterUserMessage}
+        onCopyAnchor={onCopyUserMessage}
         searchState={userTurnNavSearchState}
       />
       {searchPanelTarget && searchPanel
@@ -2957,7 +2948,22 @@ export const MessageList = memo(function MessageList({
         ? createPortal(followButton, followButtonTarget)
         : followButton}
       <div className="message-list" ref={containerRef}>
-        {queuedContextReturnButton}
+        {floatingQuoteButton && (
+          <button
+            type="button"
+            className="selection-quote-button"
+            style={{
+              top: `${floatingQuoteButton.top}px`,
+              left: `${floatingQuoteButton.left}px`,
+            }}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => applyQuoteFromSelection()}
+            aria-label={t("sessionQuoteSelection")}
+            title={t("sessionQuoteSelection")}
+          >
+            &gt;
+          </button>
+        )}
         {(hasOlderMessages || clientTailActive) && (
           <div className="load-older-messages">
             {clientTailActive && (
@@ -2999,6 +3005,24 @@ export const MessageList = memo(function MessageList({
           }
 
           const { group } = entry;
+          if (group.isStandalone) {
+            const item = group.items[0];
+            if (!item) return null;
+            return (
+              <RenderItemComponent
+                key={item.id}
+                item={item}
+                isStreaming={isStreaming}
+                thinkingExpanded={false}
+                toggleThinkingExpanded={noopToggleThinkingExpanded}
+                sessionProvider={provider}
+                getForkSummaryTargetHref={getForkSummaryTargetHref}
+                onCancelForkSummary={onCancelForkSummary}
+                onToggleForkSummaryAutoOpen={onToggleForkSummaryAutoOpen}
+                onFollowForkSummary={onFollowForkSummary}
+              />
+            );
+          }
           if (group.isUserPrompt) {
             // User prompts render directly without timeline wrapper
             const item = group.items[0];
@@ -3089,6 +3113,10 @@ export const MessageList = memo(function MessageList({
                         ? () => onForkBeforeUserMessage(item.id)
                         : undefined
                     }
+                    onQuoteTextBlock={
+                      item.type === "text" ? handleQuoteTextBlock : undefined
+                    }
+                    alwaysShowQuoteCircle={alwaysShowQuoteCircles}
                     staleNowMs={getItemStaleNowMs(item)}
                     latestVisibleTimestampMs={latestVisibleTimestampMs}
                     thinkingDurationMs={getThinkingDurationMs(
@@ -3161,104 +3189,23 @@ export const MessageList = memo(function MessageList({
           const deferred = tailItem.message;
           const isPatientDeferred = isPatientDeferredMessage(deferred);
           const lanePosition = composerTailLanePositions.get(tailItem.key);
-          const contextRenderId =
-            timestampMs !== null
-              ? findQueuedContextRenderId(timestampMs)
-              : null;
           const deferredStatus = getDeferredMessageStatus({
-            deferred,
             isPatient: isPatientDeferred,
             lanePosition,
             timestampMs,
             nowMs,
           });
-          const isEditingDeferred =
-            queuedInlineEdit?.tempId === deferred.tempId;
-          const canEditDeferred = !!(
-            deferred.tempId &&
-            (onUpdateDeferred || onEditDeferred) &&
-            deferred.deliveryState !== "sending"
-          );
-          const canSteerQueued =
-            canSteerDeferred &&
-            !!deferred.tempId &&
-            !!onSteerDeferred &&
-            !deferred.blockedByEdit &&
-            deferred.deliveryState !== "sending" &&
-            deferred.deliveryState !== "recovered";
           return (
             <div
               key={tailItem.key}
-              data-queued-tail-key={tailItem.key}
               className={`deferred-message message-render-row ${
-                isPatientDeferred ? "patient-deferred-message" : ""
-              } ${
                 timestampMs !== null ? "has-message-age" : ""
               } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
             >
               <div className="message-render-content">
-                {isEditingDeferred ? (
-                  <textarea
-                    ref={queuedInlineEditorRef}
-                    className="message-user-prompt deferred-message-bubble deferred-message-inline-editor"
-                    value={queuedInlineEdit?.draft ?? deferred.content}
-                    disabled={queuedInlineEdit?.saving}
-                    rows={1}
-                    aria-label={t("sessionQueuedInlineEditLabel")}
-                    onChange={(event) => {
-                      resizeQueuedInlineEditor(event.currentTarget);
-                      const draft = event.currentTarget.value;
-                      setQueuedInlineEdit((current) => {
-                        if (!current || current.tempId !== deferred.tempId) {
-                          return current;
-                        }
-                        return { ...current, draft };
-                      });
-                    }}
-                    onBlur={() => {
-                      void saveQueuedInlineEdit();
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        cancelQueuedInlineEdit();
-                      } else if (
-                        event.key === "Enter" &&
-                        (event.metaKey || event.ctrlKey)
-                      ) {
-                        event.preventDefault();
-                        void saveQueuedInlineEdit();
-                      }
-                    }}
-                  />
-                ) : canEditDeferred ? (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    className="message-user-prompt deferred-message-bubble deferred-message-edit"
-                    onClick={(event) => {
-                      if (hasSelectedTextInside(event.currentTarget)) {
-                        return;
-                      }
-                      startQueuedInlineEdit(deferred);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter" && event.key !== " ") {
-                        return;
-                      }
-                      event.preventDefault();
-                      startQueuedInlineEdit(deferred);
-                    }}
-                    title="Select text or press Enter to edit queued message"
-                    aria-label="Queued message text; press Enter to edit"
-                  >
-                    {deferred.content}
-                  </div>
-                ) : (
-                  <div className="message-user-prompt deferred-message-bubble">
-                    {deferred.content}
-                  </div>
-                )}
+                <div className="message-user-prompt deferred-message-bubble">
+                  {deferred.content}
+                </div>
                 {deferred.attachments?.length ? (
                   <div className="attachment-list deferred-message-attachments-list">
                     {deferred.attachments.map((file) => (
@@ -3314,111 +3261,26 @@ export const MessageList = memo(function MessageList({
                     </span>
                   ) : null}
                   <div className="deferred-message-actions">
-                    {isEditingDeferred ? (
-                      <>
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-save"
-                          disabled={queuedInlineEdit?.saving}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            void saveQueuedInlineEdit();
-                          }}
-                          aria-label={t("sessionQueuedInlineSave")}
-                          title={t("sessionQueuedInlineSave")}
-                        >
-                          <span>{t("sessionQueuedInlineSave")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-cancel-edit"
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            cancelQueuedInlineEdit();
-                          }}
-                          aria-label={t("sessionQueuedInlineCancel")}
-                          title={t("sessionQueuedInlineCancel")}
-                        >
-                          <XIcon />
-                          <span>{t("sessionQueuedInlineCancel")}</span>
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-context"
-                          onClick={() => {
-                            if (contextRenderId) {
-                              jumpToQueuedContext(
-                                tailItem.key,
-                                contextRenderId,
-                              );
-                            }
-                          }}
-                          disabled={!contextRenderId}
-                          aria-label="Jump to queued message context"
-                          title={
-                            contextRenderId
-                              ? "Jump to queued message context"
-                              : "No loaded context before this queued message"
-                          }
-                        >
-                          <span className="deferred-message-context-icon">
-                            ↩
-                          </span>
-                          <span>Context</span>
-                        </button>
-                        <CopyTextButton
-                          text={deferred.content}
-                          label="Copy queued message"
-                          className="deferred-message-action deferred-message-action-copy"
-                          showTextLabel
-                          onClick={(event) => event.stopPropagation()}
-                        />
-                        {canEditDeferred && (
-                          <button
-                            type="button"
-                            className="deferred-message-action deferred-message-action-edit"
-                            onClick={() => startQueuedInlineEdit(deferred)}
-                            aria-label="Edit queued message"
-                            title="Edit queued message"
-                          >
-                            <PencilIcon />
-                            <span>Edit</span>
-                          </button>
-                        )}
-                        {canSteerQueued && (
-                          <button
-                            type="button"
-                            className="deferred-message-action deferred-message-action-steer"
-                            onClick={() =>
-                              onSteerDeferred?.(deferred.tempId as string)
-                            }
-                            aria-label={t("sessionSteerQueuedMessageNow")}
-                            title={t("sessionSteerQueuedMessageNow")}
-                          >
-                            <span className="deferred-message-steer-icon">
-                              ↗
-                            </span>
-                            <span>{t("sessionSteerNow")}</span>
-                          </button>
-                        )}
-                        {deferred.tempId && onCancelDeferred && (
-                          <button
-                            type="button"
-                            className="deferred-message-action deferred-message-action-cancel"
-                            onClick={() =>
-                              onCancelDeferred(deferred.tempId as string)
-                            }
-                            aria-label="Cancel queued message"
-                            title="Cancel queued message"
-                          >
-                            <XIcon />
-                            <span>Cancel</span>
-                          </button>
-                        )}
-                      </>
+                    <CopyTextButton
+                      text={deferred.content}
+                      label="Copy queued message"
+                      className="deferred-message-action deferred-message-action-copy"
+                      showTextLabel
+                      onClick={(event) => event.stopPropagation()}
+                    />
+                    {deferred.tempId && onCancelDeferred && (
+                      <button
+                        type="button"
+                        className="deferred-message-action deferred-message-action-cancel"
+                        onClick={() =>
+                          onCancelDeferred(deferred.tempId as string)
+                        }
+                        aria-label="Cancel queued message"
+                        title="Cancel queued message"
+                      >
+                        <XIcon />
+                        <span>Cancel</span>
+                      </button>
                     )}
                   </div>
                 </div>

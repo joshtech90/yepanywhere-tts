@@ -19,6 +19,7 @@ import type { CodexSessionReader } from "../sessions/codex-reader.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
 import { listSessionsAcrossProviders } from "../sessions/provider-resolution.js";
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
+import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader } from "../sessions/types.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
@@ -59,6 +60,9 @@ export interface GlobalSessionsDeps {
   /** Grok sessions directory (defaults to ~/.grok/sessions) */
   grokSessionsDir?: string;
   grokReaderFactory?: (projectPath: string) => GrokSessionReader;
+  /** pi sessions directory (defaults to ~/.pi/agent/sessions) */
+  piSessionsDir?: string;
+  piReaderFactory?: (projectPath: string) => PiSessionReader;
   /** Event bus for cache invalidation */
   eventBus?: EventBus;
   /** Sessions older than this many days are hidden from default scans. 0 disables. */
@@ -74,6 +78,8 @@ export interface GlobalSessionItem {
   updatedAt: string;
   messageCount: number;
   provider: ProviderName;
+  /** Last active model for this session (from JSONL), for list/badge display. */
+  model?: string;
   // Project context
   projectId: string;
   projectName: string;
@@ -91,6 +97,8 @@ export interface GlobalSessionItem {
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
+  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  lastAgentText?: string;
 }
 
 /** Stats about all sessions (computed during full scan) */
@@ -191,6 +199,8 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         geminiHashToCwd: providerCatalog.geminiHashToCwd,
         grokSessionsDir: deps.grokSessionsDir,
         grokReaderFactory: deps.grokReaderFactory,
+        piSessionsDir: deps.piSessionsDir,
+        piReaderFactory: deps.piReaderFactory,
       },
       providerCatalog,
       options,
@@ -427,6 +437,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
           provider: session.provider,
+          model: session.model,
           projectId: session.projectId,
           projectName: project.name,
           ownership,
@@ -439,6 +450,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           parentSessionId,
           initialPrompt: initialPrompt ?? undefined,
           executor,
+          lastAgentText: session.lastAgentText,
         });
       }
     }

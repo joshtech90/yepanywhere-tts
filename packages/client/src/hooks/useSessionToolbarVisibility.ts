@@ -18,11 +18,11 @@ export interface SessionToolbarVisibility {
   thinkingToggle: boolean;
   renderMode: boolean;
   microphone: boolean;
+  waveform: boolean;
   shortcutsHelp: boolean;
   contextUsage: boolean;
   btw: boolean;
   nudge: boolean;
-  queueControls: boolean;
   sessionStatus: boolean;
 }
 
@@ -39,11 +39,11 @@ export const DEFAULT_SESSION_TOOLBAR_VISIBILITY: SessionToolbarVisibility = {
   thinkingToggle: true,
   renderMode: false,
   microphone: true,
+  waveform: true,
   shortcutsHelp: true,
   contextUsage: true,
   btw: false,
   nudge: false,
-  queueControls: false,
   sessionStatus: true,
 };
 

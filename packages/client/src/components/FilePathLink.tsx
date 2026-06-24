@@ -196,20 +196,18 @@ export const FilePathLink = memo(function FilePathLink({
           <span className="file-path-link-line">{visibleSuffix}</span>
         )}
       </a>
-      {showModal &&
-        createPortal(
-          <FileViewerModal
-            projectId={projectId}
-            filePath={viewerFilePath}
-            lineNumber={lineNumber}
-            lineEnd={lineEnd}
-            viewMode={viewMode}
-            source={publicShareFileViewerSource}
-            openInNewTabUrl={fileViewUrl}
-            onClose={handleClose}
-          />,
-          document.body,
-        )}
+      {showModal && (
+        <FileViewerModal
+          projectId={projectId}
+          filePath={viewerFilePath}
+          lineNumber={lineNumber}
+          lineEnd={lineEnd}
+          viewMode={viewMode}
+          source={publicShareFileViewerSource}
+          openInNewTabUrl={fileViewUrl}
+          onClose={handleClose}
+        />
+      )}
     </>
   );
 });
@@ -255,6 +253,30 @@ export function FileViewerModal({
     return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [onClose]);
 
+  // Make the back gesture (mobile edge-swipe or browser Back) close this
+  // pane instead of navigating the underlying session route back to the
+  // session list. Push a history entry on open; popping it (via Back) fires
+  // popstate, which we translate into onClose. The pushed entry keeps the
+  // same URL, so the router does not actually change routes. Closing via the
+  // X or Escape pops our own entry so history does not keep a dead state.
+  useEffect(() => {
+    const priorState =
+      typeof window !== "undefined" ? window.history.state : null;
+    window.history.pushState({ ...priorState, __fileViewerModal: true }, "");
+    let closedByPop = false;
+    const handlePopState = () => {
+      closedByPop = true;
+      onClose();
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      if (!closedByPop) {
+        window.history.back();
+      }
+    };
+  }, [onClose]);
+
   // Prevent body scroll when modal is open
   useEffect(() => {
     document.body.style.overflow = "hidden";
@@ -263,7 +285,7 @@ export function FileViewerModal({
     };
   }, []);
 
-  return (
+  const modalContent = (
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click dismisses the modal; Escape is handled globally
     // biome-ignore lint/a11y/useKeyWithClickEvents: Escape key handled in useEffect, click is for overlay dismiss
     <div
@@ -292,4 +314,6 @@ export function FileViewerModal({
       </dialog>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 }

@@ -3,7 +3,7 @@
  *
  * Tests provider detection, authentication checking, and message normalization
  * without requiring actual Codex CLI installation. The real app-server
- * contract check is opt-in via YA_CODEX_REAL_CONTRACT_TEST.
+ * contract check is opt-in via YEP_CODEX_REAL_CONTRACT_TEST.
  */
 
 import { execFileSync, spawn } from "node:child_process";
@@ -284,6 +284,54 @@ describe("CodexProvider app-server lifecycle", () => {
     },
   );
 
+  it("sets AGENTCTL_SESSION_ID directly in the app-server env on resume", async () => {
+    // Resume knows the session id at spawn, so it is set directly in the
+    // app-server's own env (not only via the BASH_ENV bridge), surviving even
+    // if codex never sources BASH_ENV. The fake server records the value it
+    // reads straight from process.env at the first request.
+    const tempDir = mkdtempSync(
+      join(tmpdir(), "codex-provider-agentctl-resume-"),
+    );
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-agentctl-resume",
+      buildFakeCodexAppServerWithAgentctlShellProbe(logPath),
+    );
+
+    let session: Awaited<ReturnType<CodexProvider["startSession"]>> | undefined;
+    let consume: Promise<void> | undefined;
+
+    try {
+      const testProvider = new CodexProvider({ codexPath });
+      session = await testProvider.startSession({
+        cwd: tempDir,
+        resumeSessionId: "thread-resume-direct",
+        initialMessage: { text: "resume the agentctl session" },
+        effort: "low",
+      });
+
+      consume = (async () => {
+        for await (const _message of session?.iterator ?? []) {
+          // drain until abort below
+        }
+      })();
+
+      await waitForFakeCodexRequest(logPath, "initialize");
+
+      const initializeRequest = readFakeCodexRequests(logPath).find(
+        (request) => request.method === "initialize",
+      );
+      expect(initializeRequest?.processEnvAgentctlSessionId).toBe(
+        "thread-resume-direct",
+      );
+    } finally {
+      session?.abort();
+      await consume?.catch(() => undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses the steered turn id for soft interrupt completion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-lifecycle-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -424,7 +472,7 @@ describe("CodexProvider app-server lifecycle", () => {
       "fake-codex-live-deltas",
       buildFakeCodexAppServerWithLiveDelta(logPath),
     );
-    vi.stubEnv("YA_CODEX_DISABLE_LIVE_DELTAS", "true");
+    vi.stubEnv("YEP_CODEX_DISABLE_LIVE_DELTAS", "true");
 
     let session: Awaited<ReturnType<CodexProvider["startSession"]>> | undefined;
     let consume: Promise<void> | undefined;
@@ -704,10 +752,15 @@ describe("CodexProvider app-server lifecycle", () => {
       expect(testProvider.supportsRecaps).toBe(true);
       expect(testProvider.supportsNativePromptSuggestions).toBe(false);
 
-      const recap = await testProvider.generateRecap(
-        ["Implemented the Codex helper recap path.", "Ran the focused tests."],
-        { model: "cheapest" },
-      );
+      const { text: recap } = await testProvider.generateSummary({
+        purpose: "recap",
+        strategy: "side-session",
+        recentAssistantText: [
+          "Implemented the Codex helper recap path.",
+          "Ran the focused tests.",
+        ],
+        model: "cheapest",
+      });
 
       expect(recap).toBe("Implemented the helper recap and ran focused tests.");
 
@@ -739,10 +792,117 @@ describe("CodexProvider app-server lifecycle", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("generates session retitles through an archived helper fork", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-retitle-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-retitle",
+      buildFakeCodexAppServerForForkSummary(logPath),
+    );
+
+    try {
+      const testProvider = new CodexProvider({ codexPath });
+
+      const { text } = await testProvider.generateSummary({
+        purpose: "session-retitle",
+        strategy: "fork",
+        generatorSessionId: "thread-generator",
+        cwd: tempDir,
+        currentTitle: "Old title",
+        lengthTarget: 72,
+      });
+
+      expect(text).toBe("Codex fork retitle");
+
+      const requests = readFakeCodexRequests(logPath);
+      const resume = requests.find(
+        (request) => request.method === "thread/resume",
+      );
+      const turnStart = requests.find(
+        (request) => request.method === "turn/start",
+      );
+
+      expect(resume?.params).toMatchObject({
+        threadId: "thread-generator",
+        cwd: tempDir,
+        approvalPolicy: "untrusted",
+        sandbox: "read-only",
+        excludeTurns: true,
+      });
+      expect(JSON.stringify(resume?.params)).toContain("title helper");
+      expect(turnStart?.params).toMatchObject({
+        threadId: "thread-generator",
+        approvalPolicy: "untrusted",
+        effort: "low",
+        summary: "auto",
+      });
+      expect(JSON.stringify(turnStart?.params)).toContain(
+        "What is a good new title for this session?",
+      );
+      expect(JSON.stringify(turnStart?.params)).toContain(
+        "Current title: Old title",
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forks a Codex thread and rolls back trailing turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-fork-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-fork",
+      buildFakeCodexAppServerForFork(logPath),
+    );
+
+    try {
+      const testProvider = new CodexProvider({ codexPath });
+      const fork = await testProvider.forkSession({
+        sessionId: "source-thread",
+        cwd: tempDir,
+        upToMessageId: "assistant-2-turn-2",
+        title: "Forked from second turn",
+      });
+
+      expect(fork).toEqual({ sessionId: "fork-thread" });
+
+      const requests = readFakeCodexRequests(logPath);
+      const read = requests.find((request) => request.method === "thread/read");
+      const forkRequest = requests.find(
+        (request) => request.method === "thread/fork",
+      );
+      const rollback = requests.find(
+        (request) => request.method === "thread/rollback",
+      );
+
+      expect(read?.params).toMatchObject({
+        threadId: "source-thread",
+        includeTurns: true,
+      });
+      expect(forkRequest?.params).toMatchObject({
+        threadId: "source-thread",
+        cwd: tempDir,
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        excludeTurns: true,
+      });
+      expect(rollback?.params).toMatchObject({
+        threadId: "fork-thread",
+        numTurns: 1,
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 const describeRealCodexContract =
-  process.env.YA_CODEX_REAL_CONTRACT_TEST === "true" ? describe : describe.skip;
+  process.env.YEP_CODEX_REAL_CONTRACT_TEST === "true"
+    ? describe
+    : describe.skip;
 
 describeRealCodexContract("Codex app-server real contract", () => {
   it("verifies steer and interrupt against the installed Codex app-server", async () => {
@@ -1287,6 +1447,197 @@ process.stdin.on("data", (chunk) => {
 `;
 }
 
+function buildFakeCodexAppServerForFork(logPath: string): string {
+  return `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const logPath = ${JSON.stringify(logPath)};
+let buffer = "";
+
+function write(payload) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
+}
+
+function logRequest(message) {
+  appendFileSync(
+    logPath,
+    JSON.stringify({
+      id: message.id,
+      method: message.method,
+      params: message.params,
+    }) + "\\n",
+  );
+}
+
+function respond(id, result) {
+  write({ id, result });
+}
+
+function turn(id, userId, assistantId) {
+  return {
+    id,
+    items: [
+      { type: "userMessage", id: userId, clientId: null, content: [] },
+      {
+        type: "agentMessage",
+        id: assistantId,
+        text: "assistant text",
+        phase: null,
+        memoryCitation: null,
+      },
+    ],
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+}
+
+function handleMessage(message) {
+  if (!message || typeof message !== "object") return;
+  logRequest(message);
+  if (message.id === undefined) return;
+
+  switch (message.method) {
+    case "initialize":
+      respond(message.id, { userAgent: "fake-codex" });
+      break;
+    case "thread/read":
+      respond(message.id, {
+        thread: {
+          id: "source-thread",
+          status: { type: "idle" },
+          turns: [
+            turn("turn-1", "user-1", "assistant-1"),
+            turn("turn-2", "user-2", "assistant-2"),
+            turn("turn-3", "user-3", "assistant-3"),
+          ],
+        },
+      });
+      break;
+    case "thread/fork":
+      respond(message.id, {
+        thread: { id: "fork-thread", turns: [] },
+        model: "gpt-5.4-mini",
+        modelProvider: "openai",
+        serviceTier: null,
+        cwd: message.params?.cwd,
+        runtimeWorkspaceRoots: [],
+        instructionSources: [],
+        approvalPolicy: message.params?.approvalPolicy ?? "on-request",
+        approvalsReviewer: "auto",
+        sandbox: { mode: message.params?.sandbox ?? "workspace-write" },
+        activePermissionProfile: null,
+        reasoningEffort: null,
+        multiAgentMode: "disabled",
+      });
+      break;
+    case "thread/rollback":
+      respond(message.id, {
+        thread: { id: message.params?.threadId ?? "fork-thread", turns: [] },
+      });
+      break;
+    default:
+      respond(message.id, {});
+      break;
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString("utf-8");
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() || "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    handleMessage(JSON.parse(line));
+  }
+});
+`;
+}
+
+function buildFakeCodexAppServerForForkSummary(logPath: string): string {
+  return `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const logPath = ${JSON.stringify(logPath)};
+let buffer = "";
+
+function write(payload) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
+}
+
+function logRequest(message) {
+  appendFileSync(
+    logPath,
+    JSON.stringify({
+      id: message.id,
+      method: message.method,
+      params: message.params,
+    }) + "\\n",
+  );
+}
+
+function respond(id, result) {
+  write({ id, result });
+}
+
+function handleMessage(message) {
+  if (!message || typeof message !== "object") return;
+  logRequest(message);
+  if (message.id === undefined) return;
+
+  switch (message.method) {
+    case "initialize":
+      respond(message.id, { userAgent: "fake-codex" });
+      break;
+    case "thread/resume":
+      respond(message.id, {
+        thread: { id: message.params?.threadId ?? "thread-generator" },
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+      });
+      break;
+    case "turn/start":
+      respond(message.id, {
+        turn: {
+          id: "turn-summary",
+          items: [
+            {
+              type: "agentMessage",
+              id: "message-summary",
+              text: "Codex fork retitle",
+              phase: null,
+              memoryCitation: null,
+            },
+          ],
+          itemsView: "complete",
+          status: "completed",
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          durationMs: null,
+        },
+      });
+      break;
+    default:
+      respond(message.id, {});
+      break;
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString("utf-8");
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() || "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    handleMessage(JSON.parse(line));
+  }
+});
+`;
+}
+
 function buildFakeCodexAppServerForRecap(logPath: string): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -1426,6 +1777,7 @@ function logRequest(message) {
     id: message.id,
     method: message.method,
     params: message.params,
+    processEnvAgentctlSessionId: process.env.AGENTCTL_SESSION_ID ?? "",
   };
   if (message.method === "turn/start") {
     record.agentctlSessionId = agentctlSessionIdFromBash();
@@ -1449,6 +1801,13 @@ function handleMessage(message) {
     case "thread/start":
       respond(message.id, {
         thread: { id: "thread-agentctl" },
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+      });
+      break;
+    case "thread/resume":
+      respond(message.id, {
+        thread: { id: message.params?.threadId ?? "thread-agentctl" },
         model: "gpt-5.4-mini",
         reasoningEffort: "low",
       });
@@ -1481,6 +1840,7 @@ function readFakeCodexRequests(logPath: string): Array<{
   method?: string;
   params?: Record<string, unknown>;
   agentctlSessionId?: string;
+  processEnvAgentctlSessionId?: string;
 }> {
   if (!existsSync(logPath)) return [];
   return readFileSync(logPath, "utf-8")
@@ -1681,7 +2041,7 @@ describe("CodexProvider Event Normalization", () => {
     ];
 
     try {
-      vi.stubEnv("YA_CODEX_DISABLE_LIVE_DELTAS", "false");
+      vi.stubEnv("YEP_CODEX_DISABLE_LIVE_DELTAS", "false");
 
       for (const method of liveDeltaMethods) {
         expect(
@@ -1703,7 +2063,7 @@ describe("CodexProvider Event Normalization", () => {
         ).toBe(true);
       }
 
-      vi.stubEnv("YA_CODEX_DISABLE_LIVE_DELTAS", "true");
+      vi.stubEnv("YEP_CODEX_DISABLE_LIVE_DELTAS", "true");
 
       for (const method of liveDeltaMethods) {
         expect(
@@ -1951,6 +2311,52 @@ describe("CodexProvider Event Normalization", () => {
       id: "reason-1",
       type: "reasoning",
       text: "Short summary",
+    });
+  });
+
+  it("surfaces subagent activity items as visible system messages", () => {
+    const provider = createTestProvider() as unknown as {
+      normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
+      convertItemToSDKMessages: (
+        item: unknown,
+        sessionId: string,
+        turnId: string,
+        sourceEvent: "item/started" | "item/completed",
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const normalized = provider.normalizeThreadItem({
+      id: "subagent-activity-1",
+      type: "subAgentActivity",
+      kind: "started",
+      agentThreadId: "thread-subagent-1",
+      agentPath: "Explore",
+    });
+
+    expect(normalized).toMatchObject({
+      id: "subagent-activity-1",
+      type: "subagent_activity",
+      kind: "started",
+      agentThreadId: "thread-subagent-1",
+      agentPath: "Explore",
+      text: "Subagent started: Explore",
+    });
+
+    const messages = provider.convertItemToSDKMessages(
+      normalized,
+      "session-1",
+      "turn-1",
+      "item/completed",
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "system",
+      subtype: "subagent_activity",
+      content: "Subagent started: Explore",
+      codexSubagentKind: "started",
+      codexSubagentThreadId: "thread-subagent-1",
+      codexSubagentPath: "Explore",
     });
   });
 
@@ -2669,7 +3075,7 @@ describe("CodexProvider Event Normalization", () => {
     expect(toolUse[0]).toMatchObject({
       type: "assistant",
       session_id: "session-1",
-      uuid: "call-1-turn-1",
+      uuid: "call-1",
       message: {
         role: "assistant",
         content: [
@@ -2687,7 +3093,7 @@ describe("CodexProvider Event Normalization", () => {
     expect(toolResult[0]).toMatchObject({
       type: "user",
       session_id: "session-1",
-      uuid: "call-1-turn-1-result",
+      uuid: "call-1-result",
       message: {
         role: "user",
         content: [

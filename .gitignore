@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.pixi/
 
 # Build outputs
 dist/
@@ -54,6 +55,9 @@ tasks/
 /AGENTS.local.md
 /ui-report/
 
+# Agent session/run state (local, any depth: root + packages/*)
+.agentctl/
+
 # Codex sample sessions (local dev data)
 codex-sample-sessions/
 
@@ -72,6 +76,7 @@ packages/server/bundled/
 references/
 start.sh
 scripts/reyep-detached.sh
+scripts/publish-pages.sh
 
 # Local launcher scripts (machine-specific, not part of the repo)
 Start Yep (mit Vorlesen).command

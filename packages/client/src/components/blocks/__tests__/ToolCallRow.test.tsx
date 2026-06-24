@@ -37,12 +37,37 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    // Pending rows read in the present tense ("Running"), past tense ("Ran")
+    // Pending rows read in the present tense ("Run"), past tense ("Ran")
     // only once the command has finished.
-    expect(screen.getByText("Running")).toBeDefined();
+    expect(screen.getByText("Run")).toBeDefined();
     expect(screen.getByText("npm run test:e2e:pipeline-v2")).toBeDefined();
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
     expect(container.querySelector(".tool-use-expanded")).toBeNull();
+  });
+
+  it("shows pending pi Bash output previews when live updates attach one", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-pi-bash"
+        toolName="Bash"
+        toolInput={{
+          command: "printf 'partial\\n'",
+          _previewResult: {
+            stdout: "partial\n",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          },
+        }}
+        status="pending"
+        sessionProvider="pi"
+      />,
+    );
+
+    expect(screen.getByText("Run")).toBeDefined();
+    const preview = container.querySelector(".tool-row-collapsed-preview");
+    expect(preview).not.toBeNull();
+    expect(preview?.textContent).toContain("partial");
   });
 
   it("shows pending Edit targets as title-backed clickable summaries", () => {
@@ -217,7 +242,7 @@ describe("ToolCallRow", () => {
     const command = ["printf first", "printf second", "printf third"].join(
       "\n",
     );
-    render(
+    const { container } = render(
       <ToolCallRow
         id="tool-multiline-bash"
         toolName="Bash"
@@ -242,13 +267,18 @@ describe("ToolCallRow", () => {
     });
     expect(commandButton.textContent).toContain("printf first");
     expect(commandButton.textContent).toContain("printf second");
-    expect(commandButton.textContent).toContain("+1 line");
     expect(commandButton.textContent).not.toContain("printf third");
+
+    // The hidden-content badge sits on its own line under the Run/Ran
+    // label, not inside the command button.
+    const moreBadge = container.querySelector(".tool-summary-command-more");
+    expect(moreBadge?.textContent).toContain("+1 line");
+    expect(commandButton.textContent).not.toContain("+1 line");
 
     fireEvent.click(commandButton);
 
     expect(commandButton.textContent).toContain("printf third");
-    expect(commandButton.textContent).not.toContain("+1 line");
+    expect(container.querySelector(".tool-summary-command-more")).toBeNull();
   });
 
   it("uses the timeline dot to expand long Grep summaries", () => {
@@ -413,7 +443,7 @@ describe("ToolCallRow", () => {
     ).toBeDefined();
   });
 
-  it("expands completed Edit rows inline from the timeline dot", () => {
+  it("collapses completed Edit previews from the row outline", () => {
     const { container } = render(
       <ToolCallRow
         id="tool-edit"
@@ -451,17 +481,32 @@ describe("ToolCallRow", () => {
     expect(container.querySelector(".edit-collapsed-preview")).not.toBeNull();
     expect(container.querySelector(".edit-result")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Expand inline view" }));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse preview" }));
 
     expect(container.querySelector(".edit-collapsed-preview")).toBeNull();
-    expect(container.querySelector(".edit-result")).not.toBeNull();
+    expect(container.querySelector(".edit-result")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Expand preview" }),
+    ).toBeDefined();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Collapse expanded tool row" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Expand preview" }));
 
     expect(container.querySelector(".edit-collapsed-preview")).not.toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse preview from left gutter" }),
+    );
+
+    expect(container.querySelector(".edit-collapsed-preview")).toBeNull();
     expect(container.querySelector(".edit-result")).toBeNull();
+
+    const header = container.querySelector<HTMLElement>(".tool-row-header");
+    expect(header).not.toBeNull();
+    if (header) {
+      fireEvent.click(header);
+    }
+
+    expect(container.querySelector(".edit-collapsed-preview")).not.toBeNull();
   });
 
   it("focuses the tool row top when expanding long inline content", () => {

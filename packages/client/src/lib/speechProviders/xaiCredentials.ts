@@ -8,11 +8,27 @@ export interface XaiSttCredential {
   source: XaiSttCredentialSource;
 }
 
+export type XaiSttStreamingSecretSource =
+  | "browser-local"
+  | "server-ephemeral";
+
+export interface XaiSttStreamingSecret {
+  clientSecret: string;
+  expiresAt?: string;
+  source: XaiSttStreamingSecretSource;
+}
+
 interface XaiClientKeyResponse {
   apiKey?: string;
 }
 
+interface XaiClientSecretResponse {
+  clientSecret?: string;
+  expiresAt?: string;
+}
+
 const XAI_STT_KEY_STORAGE = "xaiSttApiKey";
+const XAI_STT_KEY_CHANGE_EVENT = "ya:xai-stt-api-key-change";
 
 export function getBrowserXaiSttApiKey(): string {
   return (
@@ -20,9 +36,30 @@ export function getBrowserXaiSttApiKey(): string {
   );
 }
 
+export function hasBrowserXaiSttApiKey(): boolean {
+  return getBrowserXaiSttApiKey().length > 0;
+}
+
 export function setBrowserXaiSttApiKey(apiKey: string): void {
   const trimmed = apiKey.trim();
+  const previous = getBrowserXaiSttApiKey();
   setServerScoped(XAI_STT_KEY_STORAGE, trimmed, LEGACY_KEYS.xaiSttApiKey);
+  if (previous !== trimmed && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(XAI_STT_KEY_CHANGE_EVENT));
+  }
+}
+
+export function subscribeBrowserXaiSttApiKey(
+  listener: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handleStorage = () => listener();
+  window.addEventListener(XAI_STT_KEY_CHANGE_EVENT, listener);
+  window.addEventListener("storage", handleStorage);
+  return () => {
+    window.removeEventListener(XAI_STT_KEY_CHANGE_EVENT, listener);
+    window.removeEventListener("storage", handleStorage);
+  };
 }
 
 export async function getXaiSttCredential(): Promise<XaiSttCredential> {
@@ -33,7 +70,7 @@ export async function getXaiSttCredential(): Promise<XaiSttCredential> {
 
   const response = await fetchJSON<XaiClientKeyResponse>(
     "/speech/xai-client-key",
-    { method: "GET" },
+    { method: "POST" },
   );
   const apiKey = response.apiKey?.trim();
   if (!apiKey) {
@@ -42,4 +79,27 @@ export async function getXaiSttCredential(): Promise<XaiSttCredential> {
     );
   }
   return { apiKey, source: "server-borrowed" };
+}
+
+export async function getXaiSttStreamingSecret(): Promise<XaiSttStreamingSecret> {
+  const browserKey = getBrowserXaiSttApiKey();
+  if (browserKey) {
+    return { clientSecret: browserKey, source: "browser-local" };
+  }
+
+  const response = await fetchJSON<XaiClientSecretResponse>(
+    "/speech/xai-client-secret",
+    { method: "POST" },
+  );
+  const clientSecret = response.clientSecret?.trim();
+  if (!clientSecret) {
+    throw new Error(
+      "No xAI STT streaming secret available. Add a browser key in Speech settings or configure the YA server xAI STT key.",
+    );
+  }
+  return {
+    clientSecret,
+    expiresAt: response.expiresAt,
+    source: "server-ephemeral",
+  };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  claudeProvider,
   formatClaudeLoginCommand,
   mergeClaudeModels,
   probeClaudeControlLiveness,
@@ -8,12 +9,46 @@ import {
 } from "../../../src/sdk/providers/claude.js";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 
+describe("ClaudeProvider.yaModelIdForReported", () => {
+  it("maps reported ids to the canonical family alias", () => {
+    expect(claudeProvider.yaModelIdForReported("claude-opus-4-8")).toBe("opus");
+    expect(claudeProvider.yaModelIdForReported("claude-sonnet-4-6")).toBe(
+      "sonnet",
+    );
+    expect(claudeProvider.yaModelIdForReported("claude-haiku-4-5")).toBe(
+      "haiku",
+    );
+    expect(claudeProvider.yaModelIdForReported("claude-fable-5")).toBe("fable");
+  });
+
+  it("matches the family regardless of component order (version-first ids)", () => {
+    expect(claudeProvider.yaModelIdForReported("claude-3-5-sonnet")).toBe(
+      "sonnet",
+    );
+  });
+
+  it("is idempotent on bare aliases", () => {
+    expect(claudeProvider.yaModelIdForReported("opus")).toBe("opus");
+    expect(claudeProvider.yaModelIdForReported("sonnet")).toBe("sonnet");
+  });
+
+  it("returns undefined for unknown ids and empty input", () => {
+    expect(
+      claudeProvider.yaModelIdForReported("claude-mythos-5"),
+    ).toBeUndefined();
+    expect(
+      claudeProvider.yaModelIdForReported("gpt-5.3-codex"),
+    ).toBeUndefined();
+    expect(claudeProvider.yaModelIdForReported(undefined)).toBeUndefined();
+    expect(claudeProvider.yaModelIdForReported("")).toBeUndefined();
+  });
+});
+
 function control(
   mcpServerStatus: () => Promise<unknown>,
 ): Pick<Query, "mcpServerStatus"> {
   return {
-    mcpServerStatus:
-      mcpServerStatus as unknown as Query["mcpServerStatus"],
+    mcpServerStatus: mcpServerStatus as unknown as Query["mcpServerStatus"],
   };
 }
 
@@ -115,10 +150,10 @@ describe("Claude provider liveness probe", () => {
     const mcpServerStatus = vi.fn(async () => []);
     const checkedAt = new Date("2026-04-25T00:00:20.000Z");
 
-    const result = await probeClaudeControlLiveness(
-      control(mcpServerStatus),
-      { checkedAt, isProcessAlive: () => false },
-    );
+    const result = await probeClaudeControlLiveness(control(mcpServerStatus), {
+      checkedAt,
+      isProcessAlive: () => false,
+    });
 
     expect(result).toEqual({
       status: "unavailable",

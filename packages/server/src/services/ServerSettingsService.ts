@@ -15,7 +15,10 @@ import type {
   PromptCacheKeepaliveSettings,
 } from "@yep-anywhere/shared";
 import { normalizeYaClientBaseUrlFromShareViewerUrl } from "@yep-anywhere/shared";
+import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
+
+export type { FileAccessSettings };
 
 const CURRENT_VERSION = 2;
 export const DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS = 56;
@@ -25,11 +28,7 @@ const LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS = new Set([
   "heartbeat",
   "yepanywhere heartbeat",
 ]);
-const DEFAULT_CLIENT_DEFAULTS: ClientDefaults = {
-  sessionToolbarVisibility: {
-    queueControls: false,
-  },
-};
+const DEFAULT_CLIENT_DEFAULTS: ClientDefaults = {};
 
 export interface SpeechAudioRetentionSettings {
   /** Whether YA persists server-routed speech audio and sidecar metadata. */
@@ -60,6 +59,13 @@ export interface ServerSettings {
   chromeOsHosts?: string[];
   /** Allowed hostnames for host/origin validation. "*" = allow all, comma-separated = specific hosts. */
   allowedHosts?: string;
+  /**
+   * Which local path prefixes the HTTP file doors (media + project-files routes)
+   * may read. Undefined = secure defaults (projects/uploads/temp on, home off,
+   * no custom). Ignored when ALLOWED_FILE_PATHS/ALLOWED_IMAGE_PATHS is set.
+   * See docs/tactical/018-file-access-scoping.md.
+   */
+  fileAccess?: FileAccessSettings;
   /** Free-form instructions appended to the system prompt for all sessions */
   globalInstructions?: string;
   /** Optional client-context hints composed additively with global instructions */
@@ -108,12 +114,12 @@ export interface ServerSettings {
    * Max seconds between consecutive compose times for queued-while-busy turns
    * to join into one `--------`-joined provider turn at a delivery boundary.
    * 0 = never join (the vanilla default). Unset falls back to env
-   * `YA_DEFERRED_JOIN_WINDOW_S` (topics/compose-time-context-anchors.md).
+   * `YEP_DEFERRED_JOIN_WINDOW_S` (topics/compose-time-context-anchors.md).
    */
   deferredJoinWindowSeconds?: number;
   /**
    * Prepend `(Ns ago)` / `(Ms later)` compose-time staleness anchors to
-   * delivered queued turns. Unset falls back to env `YA_COMPOSE_ANCHORS`.
+   * delivered queued turns. Unset falls back to env `YEP_COMPOSE_ANCHORS`.
    */
   composeAnchorsEnabled?: boolean;
 }
@@ -166,6 +172,31 @@ function mergeLoadedClientDefaults(
     merged.sessionToolbarVisibility = sessionToolbarVisibility;
   } else {
     delete merged.sessionToolbarVisibility;
+  }
+
+  // Per-model compaction thresholds: keep only valid in-range percents (1–99);
+  // anything else (including >= 100 = "off") is dropped per model, and an empty
+  // map is removed so "off everywhere" stays canonically absent.
+  const compactByModel = merged.compactAtContextPercent;
+  if (compactByModel && typeof compactByModel === "object") {
+    const cleaned: Record<string, number> = {};
+    for (const [modelId, pct] of Object.entries(compactByModel)) {
+      if (
+        typeof pct === "number" &&
+        Number.isFinite(pct) &&
+        pct > 0 &&
+        pct < 100
+      ) {
+        cleaned[modelId] = Math.round(pct);
+      }
+    }
+    if (Object.keys(cleaned).length > 0) {
+      merged.compactAtContextPercent = cleaned;
+    } else {
+      delete merged.compactAtContextPercent;
+    }
+  } else {
+    delete merged.compactAtContextPercent;
   }
 
   return Object.keys(merged).length > 0 ? merged : undefined;

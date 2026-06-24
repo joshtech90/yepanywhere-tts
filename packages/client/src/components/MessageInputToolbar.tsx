@@ -1,9 +1,8 @@
-import {
-  DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
-  type ModelInfo,
-  type ProviderName,
-  type SessionLivenessSnapshot,
-  type ShowThinking,
+import type {
+  ModelInfo,
+  ProviderName,
+  SessionLivenessSnapshot,
+  ShowThinking,
 } from "@yep-anywhere/shared";
 import type { MouseEvent, RefObject, TouchEvent } from "react";
 import {
@@ -22,6 +21,7 @@ import {
   type ThinkingMode,
   useModelSettings,
 } from "../hooks/useModelSettings";
+import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useProviders } from "../hooks/useProviders";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import {
@@ -53,27 +53,35 @@ import {
   type SessionIsearchScope,
 } from "../lib/sessionIsearchGuide";
 import {
+  DEFAULT_SPEECH_METHOD,
+  canSpeechMethodStream,
+  getSpeechMethodCapabilities,
   getSpeechMethods,
   isSpeechMethodId,
   resolveSpeechMethod,
   type SpeechMethodId,
 } from "../lib/speechProviders/methods";
 import type {
-  GrokSpeechAudioSettings,
   SpeechSmartTurnSettings,
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
+  SpeechTranscriptionSettlement,
 } from "../lib/speechProviders/SpeechProvider";
 import type { ContextUsage, PermissionMode } from "../types";
-import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { ContextThresholdQuickEdit } from "./ContextThresholdQuickEdit";
 import type { FilterOption } from "./FilterDropdown";
 import { MessageAge } from "./MessageAge";
 import { ModeSelector } from "./ModeSelector";
 import { SlashCommandButton } from "./SlashCommandButton";
 import { SpeechControlMenu } from "./SpeechControlMenu";
+import { SpeechWaveform } from "./SpeechWaveform";
 import { ThinkingControlsPanel, ThinkingIcon } from "./ThinkingControls";
 import { RenderModeGlyph } from "./ui/RenderModeGlyph";
-import { VoiceInputButton, type VoiceInputButtonRef } from "./VoiceInputButton";
+import {
+  VoiceInputButton,
+  type SpeechPendingKind,
+  type VoiceInputButtonRef,
+} from "./VoiceInputButton";
 
 type ToolbarTranslate = ReturnType<typeof useI18n>["t"];
 
@@ -91,6 +99,9 @@ function getFlexGapPx(element: HTMLElement): number {
 }
 
 function getVisibleControlWidth(element: HTMLElement): number {
+  if (element.dataset.composerElastic === "true") {
+    return 0;
+  }
   const style = getComputedStyle(element);
   if (style.display === "none" || style.position === "absolute") {
     return 0;
@@ -162,22 +173,6 @@ function getIsearchAlternateRows(
   ];
 }
 
-function formatPatientQueueTimeout(seconds?: number | null): string | null {
-  if (!Number.isFinite(seconds ?? NaN)) {
-    return null;
-  }
-  const normalized = Math.max(0, Math.round(seconds as number));
-  if (normalized < 60) {
-    return `${normalized}s`;
-  }
-  if (normalized < 60 * 60) {
-    const minutes = normalized / 60;
-    return Number.isInteger(minutes) ? `${minutes}m` : `${minutes.toFixed(1)}m`;
-  }
-  const hours = normalized / (60 * 60);
-  return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
-}
-
 export interface MessageInputToolbarProps {
   // Mode selector
   mode?: PermissionMode;
@@ -201,6 +196,9 @@ export interface MessageInputToolbarProps {
   ) => void;
   onInterimTranscript?: (transcript: string) => void;
   onListeningStart?: () => void;
+  onListeningStop?: () => void;
+  onPendingSpeechChange?: (kind: SpeechPendingKind | null) => void;
+  onTranscriptionSettled?: (settlement: SpeechTranscriptionSettlement) => void;
   voiceDisabled?: boolean;
   getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
 
@@ -214,6 +212,12 @@ export interface MessageInputToolbarProps {
   /** Provider/model context used by the thinking effort chooser. */
   thinkingProvider?: string;
   thinkingModel?: string;
+  /**
+   * YA model id (launch alias) used to key the context quick-edit's per-model
+   * compaction threshold. Distinct from `thinkingModel` (the reported model);
+   * falls back to it when absent. See topics/provider-abstraction.md.
+   */
+  contextRequestedModel?: string;
 
   // Session heartbeat
   heartbeatEnabled?: boolean;
@@ -226,14 +230,6 @@ export interface MessageInputToolbarProps {
   lastActivityAt?: string | null;
   /** Server-derived provider/session liveness evidence. */
   sessionLiveness?: SessionLivenessSnapshot | null;
-  /** Patient queue mode is available for future queued items. */
-  showPatientQueueMode?: boolean;
-  /** Whether future queue submissions use patient intent. */
-  patientQueueEnabled?: boolean;
-  /** Toggle patient intent for future queue submissions. */
-  onTogglePatientQueue?: () => void;
-  /** Current quiet-period timeout used by patient queue mode. */
-  patientQueuePatienceSeconds?: number | null;
   /** Whether the provider exposes a soft-immediate steer lane. */
   showSteerNowMode?: boolean;
   /** Whether steering uses the soft-immediate lane for future sends. */
@@ -257,6 +253,18 @@ export interface MessageInputToolbarProps {
   /** Steer the current turn. Used as the alternate action when Enter queues. */
   onSteer?: () => void;
   primaryActionKind?: "send" | "steer" | "queue";
+  sendOverride?: {
+    label: string;
+    tooltip: string;
+    icon: string;
+  };
+  sendAlternate?: {
+    label: string;
+    tooltip: string;
+    icon: string;
+    onClick: () => void;
+  };
+  canForkAfterSummary?: boolean;
   canSend?: boolean;
   disabled?: boolean;
 
@@ -484,11 +492,16 @@ type ToolbarVoiceButtonControl =
       ) => void;
       onInterimTranscript: (transcript: string) => void;
       onListeningStart?: () => void;
+      onListeningStop?: () => void;
+      onPendingSpeechChange?: (kind: SpeechPendingKind | null) => void;
+      onTranscriptionSettled?: (
+        settlement: SpeechTranscriptionSettlement,
+      ) => void;
+      showWaveform?: boolean;
       disabled?: boolean;
       speechMethod: SpeechMethodId;
       getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
       smartTurn?: SpeechSmartTurnSettings;
-      grokSpeechAudioSettings?: GrokSpeechAudioSettings;
     }
   | {
       kind: "preview";
@@ -503,8 +516,6 @@ interface ToolbarSpeechControl {
   smartTurnSettings?: SpeechSmartTurnSettings;
   onSmartTurnSettingsChange?: (settings: SpeechSmartTurnSettings) => void;
   smartTurnDisabled?: boolean;
-  grokAudioSettings?: GrokSpeechAudioSettings;
-  onGrokAudioSettingsChange?: (settings: GrokSpeechAudioSettings) => void;
   voiceButton?: ToolbarVoiceButtonControl;
 }
 
@@ -531,6 +542,7 @@ interface ToolbarShortcutsControl {
   canSwapEnterAction: boolean;
   onSwapEnterAction?: () => void;
   queueShortcutLabel: string;
+  canForkAfterSummary?: boolean;
 }
 
 interface ToolbarBtwControl {
@@ -545,11 +557,6 @@ interface ToolbarQueueControl {
   onSteer?: () => void;
   hasDualActions: boolean;
   queueTooltip: string;
-  showPatientQueueMode: boolean;
-  patientQueueEnabled: boolean;
-  patientQueueTimeoutLabel: string | null;
-  patientQueueTooltip: string;
-  onTogglePatientQueue?: () => void;
 }
 
 interface ToolbarSendControl {
@@ -564,6 +571,12 @@ interface ToolbarSendControl {
   steerNowEnabled?: boolean;
   onToggleSteerNow?: () => void;
   queue?: ToolbarQueueControl;
+  alternate?: {
+    label: string;
+    tooltip: string;
+    icon: string;
+    onClick: () => void;
+  };
 }
 
 interface ToolbarStopControl {
@@ -575,6 +588,10 @@ interface ToolbarActionsControl {
   disabled?: boolean;
   voiceDisabled?: boolean;
   contextUsage?: ContextUsage;
+  /** Session model id, for the long-press compact-threshold quick-edit. */
+  contextModel?: string;
+  /** Model context window, for the quick-edit token preview. */
+  contextWindow?: number;
   btw?: ToolbarBtwControl | null;
   stop?: ToolbarStopControl | null;
   send?: ToolbarSendControl | null;
@@ -592,6 +609,7 @@ export interface MessageInputToolbarViewProps {
   renderModeControl?: ToolbarRenderModeControl | null;
   nudgeControl?: ToolbarNudgeControl | null;
   speechControl?: ToolbarSpeechControl | null;
+  speechWaveformActive?: boolean;
   statusControl?: ToolbarStatusControl | null;
   pendingApproval?: MessageInputToolbarProps["pendingApproval"];
   shortcutsControl: ToolbarShortcutsControl;
@@ -791,6 +809,7 @@ export function MessageInputToolbarView({
   renderModeControl,
   nudgeControl,
   speechControl,
+  speechWaveformActive = false,
   statusControl,
   pendingApproval,
   shortcutsControl,
@@ -806,16 +825,6 @@ export function MessageInputToolbarView({
   const showStopButton = !!actionsControl.stop;
   const selectedSpeechMethod = speechControl?.selectedMethod;
   const queueControl = actionsControl.send?.queue;
-  const canTogglePatientQueue = !!(
-    visibility.queueControls &&
-    queueControl?.showPatientQueueMode &&
-    queueControl.onTogglePatientQueue
-  );
-  const queueIsPatient = queueControl?.patientQueueEnabled ?? false;
-  const patientQueueTimeoutForCopy =
-    queueControl?.patientQueueTimeoutLabel ??
-    formatPatientQueueTimeout(DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS) ??
-    "30s";
   const canToggleSteerNow = !!(
     visibility.steerNow &&
     actionsControl.send?.showSteerNowMode &&
@@ -830,7 +839,6 @@ export function MessageInputToolbarView({
     (visibility.nudge && nudgeControl) ||
     visibility.shortcutsHelp
   );
-  const [patientQueueAck, setPatientQueueAck] = useState<string | null>(null);
   const [bottomOverflowOpen, setBottomOverflowOpen] = useState(false);
   const [bottomOverflowTier, setBottomOverflowTier] =
     useState<ComposerOverflowTier>(() =>
@@ -841,14 +849,6 @@ export function MessageInputToolbarView({
   const shortcutsLongPressTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const patientQueueAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const queueLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const suppressQueueClickRef = useRef(false);
-
   const setToolbarRef = useCallback(
     (node: HTMLDivElement | null) => {
       toolbarRef.current = node;
@@ -858,97 +858,6 @@ export function MessageInputToolbarView({
     },
     [refs?.toolbar],
   );
-
-  const clearPatientQueueAck = useCallback(() => {
-    if (patientQueueAckTimerRef.current) {
-      clearTimeout(patientQueueAckTimerRef.current);
-      patientQueueAckTimerRef.current = null;
-    }
-  }, []);
-
-  const showPatientQueueAck = useCallback(
-    (nextPatient: boolean) => {
-      clearPatientQueueAck();
-      setPatientQueueAck(
-        nextPatient
-          ? t("toolbarPatientQueueEnabledAck", {
-              timeout: patientQueueTimeoutForCopy,
-            })
-          : t("toolbarPatientQueueDisabledAck", {
-              timeout: patientQueueTimeoutForCopy,
-            }),
-      );
-      patientQueueAckTimerRef.current = setTimeout(() => {
-        patientQueueAckTimerRef.current = null;
-        setPatientQueueAck(null);
-      }, 1800);
-    },
-    [clearPatientQueueAck, patientQueueTimeoutForCopy, t],
-  );
-
-  const togglePatientQueue = useCallback(() => {
-    if (!canTogglePatientQueue || !queueControl?.onTogglePatientQueue) return;
-    const nextPatient = !queueIsPatient;
-    queueControl.onTogglePatientQueue();
-    showPatientQueueAck(nextPatient);
-  }, [
-    canTogglePatientQueue,
-    queueControl,
-    queueIsPatient,
-    showPatientQueueAck,
-  ]);
-
-  const clearQueueLongPress = useCallback(() => {
-    if (queueLongPressTimerRef.current) {
-      clearTimeout(queueLongPressTimerRef.current);
-      queueLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  const startQueueLongPress = useCallback(() => {
-    if (!canTogglePatientQueue) return;
-    clearQueueLongPress();
-    suppressQueueClickRef.current = false;
-    queueLongPressTimerRef.current = setTimeout(() => {
-      suppressQueueClickRef.current = true;
-      queueLongPressTimerRef.current = null;
-      togglePatientQueue();
-    }, 450);
-  }, [canTogglePatientQueue, clearQueueLongPress, togglePatientQueue]);
-
-  const handleQueueTouchEnd = useCallback(
-    (event: TouchEvent<HTMLButtonElement>) => {
-      if (suppressQueueClickRef.current) {
-        event.preventDefault();
-      }
-      clearQueueLongPress();
-    },
-    [clearQueueLongPress],
-  );
-
-  const handleQueueContextMenu = useCallback(
-    (event: MouseEvent<HTMLButtonElement>) => {
-      if (!canTogglePatientQueue) return;
-      event.preventDefault();
-      togglePatientQueue();
-    },
-    [canTogglePatientQueue, togglePatientQueue],
-  );
-
-  const handleQueueActionClick = useCallback((action?: () => void) => {
-    if (suppressQueueClickRef.current) {
-      suppressQueueClickRef.current = false;
-      return;
-    }
-    action?.();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      clearPatientQueueAck();
-      clearQueueLongPress();
-    };
-  }, [clearPatientQueueAck, clearQueueLongPress]);
 
   useLayoutEffect(() => {
     const toolbar = toolbarRef.current;
@@ -1194,10 +1103,6 @@ export function MessageInputToolbarView({
                 speechControl.onSmartTurnSettingsChange
               }
               smartTurnDisabled={speechControl.smartTurnDisabled}
-              grokAudioSettings={speechControl.grokAudioSettings}
-              onGrokAudioSettingsChange={
-                speechControl.onGrokAudioSettingsChange
-              }
               trigger={
                 <button
                   type="button"
@@ -1225,10 +1130,18 @@ export function MessageInputToolbarView({
                 speechControl.onSmartTurnSettingsChange
               }
               smartTurnDisabled={speechControl.smartTurnDisabled}
-              grokAudioSettings={speechControl.grokAudioSettings}
-              onGrokAudioSettingsChange={
-                speechControl.onGrokAudioSettingsChange
-              }
+              onBeforeOpen={() => {
+                if (speechControl.voiceButton?.kind !== "live") return;
+                speechControl.voiceButton.onListeningStop?.();
+                speechControl.voiceButton.ref?.current?.stopAndFinalize();
+                speechControl.voiceButton.onInterimTranscript("");
+              }}
+              onBeforeCaptureChange={() => {
+                if (speechControl.voiceButton?.kind !== "live") return;
+                speechControl.voiceButton.onListeningStop?.();
+                speechControl.voiceButton.ref?.current?.stopAndFinalize();
+                speechControl.voiceButton.onInterimTranscript("");
+              }}
               onPointerNearTrigger={() =>
                 speechControl.voiceButton?.kind === "live"
                   ? speechControl.voiceButton.ref?.current?.prewarm?.()
@@ -1242,19 +1155,25 @@ export function MessageInputToolbarView({
                     speechControl.voiceButton.onInterimTranscript
                   }
                   onListeningStart={speechControl.voiceButton.onListeningStart}
+                  onListeningStop={speechControl.voiceButton.onListeningStop}
+                  onPendingSpeechChange={
+                    speechControl.voiceButton.onPendingSpeechChange
+                  }
+                  onTranscriptionSettled={
+                    speechControl.voiceButton.onTranscriptionSettled
+                  }
                   disabled={speechControl.voiceButton.disabled}
                   speechMethod={speechControl.voiceButton.speechMethod}
                   getTranscriptionContext={
                     speechControl.voiceButton.getTranscriptionContext
                   }
                   smartTurn={speechControl.voiceButton.smartTurn}
-                  grokSpeechAudioSettings={
-                    speechControl.voiceButton.grokSpeechAudioSettings
-                  }
+                  showWaveform={speechControl.voiceButton.showWaveform}
                 />
               }
             />
           )}
+        {speechWaveformActive && <SpeechWaveform />}
       </div>
       {showToolbarStatus && statusControl && (
         <div ref={refs?.status} className="composer-status-ages">
@@ -1667,6 +1586,16 @@ export function MessageInputToolbarView({
                       </span>
                       <span>{shortcutsControl.queueShortcutLabel}</span>
                     </div>
+                    {shortcutsControl.canForkAfterSummary && (
+                      <div className="session-shortcuts-row">
+                        <span className="session-shortcuts-keys">
+                          <kbd>Ctrl</kbd>
+                          <kbd>Alt</kbd>
+                          <kbd>Enter</kbd>
+                        </span>
+                        <span>{t("toolbarShortcutForkAfterSummary")}</span>
+                      </div>
+                    )}
                     <div className="session-shortcuts-row session-shortcuts-row-muted">
                       <span className="session-shortcuts-keys">
                         {t("toolbarShortcutRightClickLongPress")}
@@ -1763,8 +1692,10 @@ export function MessageInputToolbarView({
           </div>
         )}
         {visibility.contextUsage && (
-          <ContextUsageIndicator
+          <ContextThresholdQuickEdit
             usage={actionsControl.contextUsage}
+            model={actionsControl.contextModel}
+            contextWindow={actionsControl.contextWindow}
             size={16}
           />
         )}
@@ -1796,49 +1727,6 @@ export function MessageInputToolbarView({
         )}
         {showSendButton && actionsControl.send ? (
           <>
-            {canTogglePatientQueue && queueControl && (
-              <span className="patient-queue-switch-wrap">
-                <button
-                  type="button"
-                  onClick={() => handleQueueActionClick(togglePatientQueue)}
-                  onContextMenu={handleQueueContextMenu}
-                  onTouchStart={startQueueLongPress}
-                  onTouchEnd={handleQueueTouchEnd}
-                  onTouchCancel={clearQueueLongPress}
-                  onTouchMove={clearQueueLongPress}
-                  disabled={actionsControl.disabled}
-                  className={`patient-queue-switch ${
-                    queueControl.patientQueueEnabled ? "is-active" : ""
-                  }`}
-                  aria-label={
-                    queueControl.patientQueueEnabled
-                      ? t("toolbarPatientQueueDisable")
-                      : t("toolbarPatientQueueEnable")
-                  }
-                  aria-pressed={queueControl.patientQueueEnabled}
-                  title={`${
-                    queueControl.patientQueueEnabled
-                      ? t("toolbarPatientQueueDisable")
-                      : t("toolbarPatientQueueEnable")
-                  }\n${queueControl.patientQueueTooltip}`}
-                >
-                  <span className="patient-queue-switch-track" aria-hidden>
-                    <span className="patient-queue-switch-option patient-queue-switch-option--regular">
-                      →
-                    </span>
-                    <span className="patient-queue-switch-option patient-queue-switch-option--patient">
-                      Zz
-                    </span>
-                    <span className="patient-queue-switch-thumb" />
-                  </span>
-                </button>
-                {patientQueueAck && (
-                  <span className="patient-queue-ack" role="status">
-                    {patientQueueAck}
-                  </span>
-                )}
-              </span>
-            )}
             {canToggleSteerNow && actionsControl.send && (
               <label
                 className="steer-now-toggle"
@@ -1859,33 +1747,15 @@ export function MessageInputToolbarView({
               queueControl.onQueue && (
                 <button
                   type="button"
-                  onClick={() => handleQueueActionClick(queueControl.onQueue)}
-                  onContextMenu={handleQueueContextMenu}
-                  onTouchStart={startQueueLongPress}
-                  onTouchEnd={handleQueueTouchEnd}
-                  onTouchCancel={clearQueueLongPress}
-                  onTouchMove={clearQueueLongPress}
+                  onClick={queueControl.onQueue}
                   disabled={
                     actionsControl.disabled || !actionsControl.send.canSend
                   }
-                  className={`send-button queue-button ${
-                    queueControl.patientQueueEnabled
-                      ? "patient-queue-action"
-                      : ""
-                  }`}
-                  aria-label={
-                    queueControl.patientQueueEnabled
-                      ? t("toolbarPatientQueueActionLabel")
-                      : t("toolbarQueueLabel")
-                  }
+                  className="send-button queue-button"
+                  aria-label={t("toolbarQueueLabel")}
                   title={queueControl.queueTooltip}
                 >
                   <span className="send-icon queue-icon">→</span>
-                  {queueControl.patientQueueEnabled && (
-                    <span className="send-patient-mark" aria-hidden>
-                      Zz
-                    </span>
-                  )}
                 </button>
               )}
             {queueControl?.hasDualActions &&
@@ -1893,7 +1763,7 @@ export function MessageInputToolbarView({
               queueControl.onSteer && (
                 <button
                   type="button"
-                  onClick={() => handleQueueActionClick(queueControl.onSteer)}
+                  onClick={queueControl.onSteer}
                   disabled={
                     actionsControl.disabled || !actionsControl.send.canSend
                   }
@@ -1904,57 +1774,33 @@ export function MessageInputToolbarView({
                   <span className="send-icon">↗</span>
                 </button>
               )}
+            {actionsControl.send.alternate && (
+              <button
+                type="button"
+                onClick={actionsControl.send.alternate.onClick}
+                disabled={actionsControl.disabled || !actionsControl.send.canSend}
+                className="send-button fork-summary-no-summary-button"
+                aria-label={actionsControl.send.alternate.label}
+                title={actionsControl.send.alternate.tooltip}
+              >
+                <span className="send-icon">
+                  {actionsControl.send.alternate.icon}
+                </span>
+              </button>
+            )}
             <button
               type="button"
-              onClick={() =>
-                handleQueueActionClick(actionsControl.send?.onSend)
-              }
-              onContextMenu={
-                actionsControl.send.primaryActionKind === "queue"
-                  ? handleQueueContextMenu
-                  : undefined
-              }
-              onTouchStart={
-                actionsControl.send.primaryActionKind === "queue"
-                  ? startQueueLongPress
-                  : undefined
-              }
-              onTouchEnd={
-                actionsControl.send.primaryActionKind === "queue"
-                  ? handleQueueTouchEnd
-                  : undefined
-              }
-              onTouchCancel={
-                actionsControl.send.primaryActionKind === "queue"
-                  ? clearQueueLongPress
-                  : undefined
-              }
-              onTouchMove={
-                actionsControl.send.primaryActionKind === "queue"
-                  ? clearQueueLongPress
-                  : undefined
-              }
+              onClick={actionsControl.send?.onSend}
               disabled={actionsControl.disabled || !actionsControl.send.canSend}
               className={`send-button send-button-with-help ${
                 actionsControl.send.primaryActionKind === "queue"
                   ? "queue-mode"
-                  : ""
-              } ${
-                actionsControl.send.primaryActionKind === "queue" &&
-                queueControl?.patientQueueEnabled
-                  ? "patient-queue-action"
                   : ""
               }`}
               aria-label={actionsControl.send.primaryActionLabel}
               data-tooltip={actionsControl.send.tooltip}
             >
               <span className="send-icon">{actionsControl.send.icon}</span>
-              {actionsControl.send.primaryActionKind === "queue" &&
-                queueControl?.patientQueueEnabled && (
-                  <span className="send-patient-mark" aria-hidden>
-                    Zz
-                  </span>
-                )}
             </button>
           </>
         ) : null}
@@ -1976,6 +1822,9 @@ export function MessageInputToolbar({
   onVoiceTranscript,
   onInterimTranscript,
   onListeningStart,
+  onListeningStop,
+  onPendingSpeechChange,
+  onTranscriptionSettled,
   voiceDisabled,
   getTranscriptionContext,
   slashCommands = [],
@@ -1986,16 +1835,13 @@ export function MessageInputToolbar({
   btwToolbarMode,
   thinkingProvider,
   thinkingModel,
+  contextRequestedModel,
   heartbeatEnabled = false,
   onToggleHeartbeat,
   onConfigureHeartbeat,
   contextUsage,
   lastActivityAt,
   sessionLiveness,
-  showPatientQueueMode = false,
-  patientQueueEnabled = false,
-  onTogglePatientQueue,
-  patientQueuePatienceSeconds,
   showSteerNowMode = false,
   steerNowEnabled = false,
   onToggleSteerNow,
@@ -2009,6 +1855,9 @@ export function MessageInputToolbar({
   onQueue,
   onSteer,
   primaryActionKind,
+  sendOverride,
+  sendAlternate,
+  canForkAfterSummary,
   canSend,
   disabled,
   pendingApproval,
@@ -2027,8 +1876,6 @@ export function MessageInputToolbar({
     setSpeechMethod,
     speechSmartTurnSettings,
     setSpeechSmartTurnSettings,
-    grokSpeechAudioSettings,
-    setGrokSpeechAudioSettings,
   } = useModelSettings();
   const { version: versionInfo } = useVersion();
   const { providers } = useProviders();
@@ -2040,6 +1887,7 @@ export function MessageInputToolbar({
   const [isearchScope, setIsearchScope] = useState<SessionIsearchScope | null>(
     null,
   );
+  const [speechCaptureActive, setSpeechCaptureActive] = useState(false);
   const lastNonOffThinkingModeRef =
     useRef<Exclude<ThinkingMode, "off">>("auto");
   const toolbarRef = useRef<HTMLDivElement | null>(null);
@@ -2166,27 +2014,10 @@ export function MessageInputToolbar({
     hasPotentialDualActions &&
     (effectivePrimaryActionKind === "steer" ||
       effectivePrimaryActionKind === "queue");
-  const patientQueueTimeoutLabel =
-    formatPatientQueueTimeout(patientQueuePatienceSeconds) ??
-    formatPatientQueueTimeout(DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS);
-  const queueIsPatient = showPatientQueueMode && patientQueueEnabled;
-  const canShowPatientQueueToggle = !!(
-    toolbarVisibility.queueControls &&
-    showPatientQueueMode &&
-    onTogglePatientQueue
-  );
-  const patientTooltip = t("toolbarPatientQueueTooltip", {
-    timeout: patientQueueTimeoutLabel ?? "30s",
-  });
-  const regularQueueTooltip = t("toolbarQueueTooltip");
-  const queueActionTooltip = [
-    queueIsPatient ? patientTooltip : regularQueueTooltip,
-    canShowPatientQueueToggle ? t("toolbarPatientQueueToggleShortcut") : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const sendTooltip =
-    effectivePrimaryActionKind === "steer"
+  const queueActionTooltip = t("toolbarQueueTooltip");
+  const sendTooltip = sendOverride
+    ? sendOverride.tooltip
+    : effectivePrimaryActionKind === "steer"
       ? t("toolbarSteerTooltip")
       : effectivePrimaryActionKind === "queue"
         ? queueActionTooltip
@@ -2201,47 +2032,52 @@ export function MessageInputToolbar({
     (btwActive ? "focused-footer" : btwHasAsides ? "focus-existing" : "start");
   const btwTitle = getBtwTitle(effectiveBtwToolbarMode, t);
   const btwPressed = isBtwPressed(effectiveBtwToolbarMode);
-  const primaryActionIcon =
-    effectivePrimaryActionKind === "steer"
+  const primaryActionIcon = sendOverride
+    ? sendOverride.icon
+    : effectivePrimaryActionKind === "steer"
       ? "↗"
       : effectivePrimaryActionKind === "queue"
         ? "→"
         : "↑";
-  const primaryActionLabel =
-    effectivePrimaryActionKind === "steer"
+  const primaryActionLabel = sendOverride
+    ? sendOverride.label
+    : effectivePrimaryActionKind === "steer"
       ? t("toolbarSteerTooltip")
       : effectivePrimaryActionKind === "queue"
-        ? queueIsPatient
-          ? t("toolbarPatientQueueActionLabel")
-          : hasDualActions
-            ? t("toolbarQueuePrimaryActionLabel")
-            : t("toolbarQueueLabel")
+        ? hasDualActions
+          ? t("toolbarQueuePrimaryActionLabel")
+          : t("toolbarQueueLabel")
         : t("toolbarSend");
   const stopTitle = `${t("toolbarStop")} (Esc)`;
   const showStopButton = !!(isRunning && onStop && isThinking && !canSend);
-  const showPatientQueueToggle = canShowPatientQueueToggle;
-  const showSendButton = !!(
-    onSend &&
-    (!showStopButton || canSend || showPatientQueueToggle)
-  );
+  const showSendButton = !!(onSend && (!showStopButton || canSend));
   const serverVoiceEnabled =
     versionInfo?.capabilities?.includes("voiceInput") ?? true;
+  const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
   const speechMethodOptions = useMemo((): FilterOption<SpeechMethodId>[] => {
     const serverBackends = versionInfo?.voiceBackends ?? [];
-    return getSpeechMethods(serverBackends).map((method) => ({
+    return getSpeechMethods(serverBackends, undefined, {
+      directXaiAvailable: hasBrowserXaiSttApiKey,
+    }).map((method) => ({
       value: method.id,
       label: method.label,
       description: method.description,
     }));
-  }, [versionInfo?.voiceBackends]);
+  }, [versionInfo?.voiceBackends, hasBrowserXaiSttApiKey]);
   const selectedSpeechMethod = useMemo(
     () =>
       resolveSpeechMethod(
         speechMethod,
         versionInfo?.voiceBackends,
         hasStoredSpeechMethod,
+        { directXaiAvailable: hasBrowserXaiSttApiKey },
       ),
-    [speechMethod, versionInfo?.voiceBackends, hasStoredSpeechMethod],
+    [
+      speechMethod,
+      versionInfo?.voiceBackends,
+      hasStoredSpeechMethod,
+      hasBrowserXaiSttApiKey,
+    ],
   );
   const handleSpeechMethodSelect = useCallback(
     (selected: string[]) => {
@@ -2257,17 +2093,17 @@ export function MessageInputToolbar({
     voiceInputEnabled &&
     serverVoiceEnabled &&
     speechMethodOptions.length > 1;
-  const selectedSpeechBackendCapabilities =
-    versionInfo?.voiceBackendCapabilities?.[selectedSpeechMethod];
-  const selectedSpeechCanStream =
-    selectedSpeechMethod !== "browser-native" &&
-    (selectedSpeechMethod !== "ya-grok" ||
-      grokSpeechAudioSettings.uplinkMode === "pcm16") &&
-    selectedSpeechBackendCapabilities?.streaming === true;
+  const selectedSpeechMethodCapabilities = getSpeechMethodCapabilities(
+    selectedSpeechMethod,
+    versionInfo?.voiceBackendCapabilities,
+  );
+  const selectedSpeechCanStream = canSpeechMethodStream({
+    methodId: selectedSpeechMethod,
+    serverCapabilities: versionInfo?.voiceBackendCapabilities,
+  });
   const supportsSelectedSpeechSmartTurn =
     selectedSpeechCanStream &&
-    selectedSpeechBackendCapabilities?.smartTurn === true;
-  const showGrokSpeechAudioControls = selectedSpeechMethod === "ya-grok";
+    selectedSpeechMethodCapabilities.smartTurn === true;
   const activeSpeechSmartTurnSettings: SpeechSmartTurnSettings | undefined =
     supportsSelectedSpeechSmartTurn ? speechSmartTurnSettings : undefined;
   const showLastActivityChip =
@@ -2431,6 +2267,13 @@ export function MessageInputToolbar({
   };
 
   const heartbeatTitle = t("sessionHeartbeatTitle");
+  const handleToolbarPendingSpeechChange = useCallback(
+    (kind: SpeechPendingKind | null) => {
+      setSpeechCaptureActive(kind === "listening");
+      onPendingSpeechChange?.(kind);
+    },
+    [onPendingSpeechChange],
+  );
 
   return (
     <MessageInputToolbarView
@@ -2515,14 +2358,6 @@ export function MessageInputToolbar({
           ? setSpeechSmartTurnSettings
           : undefined,
         smartTurnDisabled: voiceDisabled,
-        grokAudioSettings:
-          showGrokSpeechAudioControls
-            ? grokSpeechAudioSettings
-            : undefined,
-        onGrokAudioSettingsChange:
-          showGrokSpeechAudioControls
-            ? setGrokSpeechAudioSettings
-            : undefined,
         voiceButton:
           toolbarVisibility.microphone &&
           voiceButtonRef &&
@@ -2534,14 +2369,22 @@ export function MessageInputToolbar({
                 onTranscript: onVoiceTranscript,
                 onInterimTranscript,
                 onListeningStart,
+                onListeningStop,
+                onPendingSpeechChange: handleToolbarPendingSpeechChange,
+                onTranscriptionSettled,
+                showWaveform: toolbarVisibility.waveform,
                 disabled: voiceDisabled,
                 speechMethod: selectedSpeechMethod,
                 getTranscriptionContext,
                 smartTurn: activeSpeechSmartTurnSettings,
-                grokSpeechAudioSettings,
               }
             : undefined,
       }}
+      speechWaveformActive={
+        toolbarVisibility.waveform &&
+        speechCaptureActive &&
+        selectedSpeechMethod !== DEFAULT_SPEECH_METHOD
+      }
       statusControl={{
         showToolbarStatus,
         showLivenessChip,
@@ -2565,11 +2408,14 @@ export function MessageInputToolbar({
         canSwapEnterAction,
         onSwapEnterAction,
         queueShortcutLabel,
+        canForkAfterSummary,
       }}
       actionsControl={{
         disabled,
         voiceDisabled,
         contextUsage,
+        contextModel: contextRequestedModel ?? thinkingModel,
+        contextWindow: thinkingModelInfo?.contextWindow,
         btw: onBtwClick
           ? {
               onClick: onBtwClick,
@@ -2601,12 +2447,8 @@ export function MessageInputToolbar({
                 onSteer,
                 hasDualActions,
                 queueTooltip,
-                showPatientQueueMode,
-                patientQueueEnabled: queueIsPatient,
-                patientQueueTimeoutLabel,
-                patientQueueTooltip: patientTooltip,
-                onTogglePatientQueue,
               },
+              alternate: sendAlternate,
             }
           : null,
       }}

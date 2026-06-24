@@ -4,6 +4,7 @@ import type {
   ProviderName,
   PublicSessionShareSessionStatusResponse,
   ThinkingOption,
+  TranscriptDisplayObject,
   UploadedFile,
   UserQuestionAnswers,
 } from "@yep-anywhere/shared";
@@ -16,7 +17,7 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { api, type DeferredMessagePlacement } from "../api/client";
+import { api } from "../api/client";
 import {
   BtwAsidePane,
   BtwAsideTranscript,
@@ -24,6 +25,7 @@ import {
 } from "../components/BtwAsidePane";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
+import { getForkSummaryAutoOpen } from "../hooks/useForkSummaryAutoOpen";
 import { PendingToolWarning } from "../components/PendingToolWarning";
 import {
   MessageInput,
@@ -33,7 +35,7 @@ import {
 import { MessageInputToolbar } from "../components/MessageInputToolbar";
 import { MessageList } from "../components/MessageList";
 import { ModelSwitchModal } from "../components/ModelSwitchModal";
-import { ProcessInfoModal } from "../components/ProcessInfoModal";
+import { ProcessInfoBody } from "../components/ProcessInfoModal";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { QuestionAnswerPanel } from "../components/QuestionAnswerPanel";
 import { RecentSessionsDropdown } from "../components/RecentSessionsDropdown";
@@ -77,7 +79,6 @@ import { recordSessionVisit } from "../hooks/useRecentSessions";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
 import {
-  type DeferredMessage,
   type StreamingMarkdownCallbacks,
   useSession,
 } from "../hooks/useSession";
@@ -135,11 +136,6 @@ const BTW_ASIDE_FORK_PROVIDERS = new Set<ProviderName>([
   "codex-oss",
 ]);
 
-interface QueuedEditDraft {
-  originalTempId: string;
-  placement?: DeferredMessagePlacement;
-}
-
 interface PreparedComposerSubmission {
   outgoingText: string;
   thinking?: ThinkingOption;
@@ -148,6 +144,9 @@ interface PreparedComposerSubmission {
 
 interface LiveModelConfig {
   model?: string;
+  /** YA model id (launch alias) for keying per-model settings, distinct from
+   * the reported `model` above. See topics/provider-abstraction.md. */
+  requestedModel?: string;
   thinking?: { type: string };
   effort?: string;
   promptSuggestionMode?: PromptSuggestionMode;
@@ -185,6 +184,37 @@ function providerSupportsBtwAsideFork(
   return provider ? BTW_ASIDE_FORK_PROVIDERS.has(provider) : false;
 }
 
+/** Plain text of a turn's content (string or text blocks); for fork-prefill
+ *  and the turn-notch copy action. See topics/fork-from-turn.md. */
+function turnContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (b): b is { type: "text"; text: string } =>
+        (b as { type?: string })?.type === "text" &&
+        typeof (b as { text?: unknown }).text === "string",
+    )
+    .map((b) => b.text)
+    .join("\n");
+}
+
+function messageKey(message: Message | undefined): string | undefined {
+  return message?.uuid ?? message?.id;
+}
+
+function isForkAnchorMessage(message: Message | undefined): boolean {
+  return message?.type === "user" || message?.type === "assistant";
+}
+
+function isSessionSetupTurnText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return (
+    trimmed.startsWith("# AGENTS.md instructions") ||
+    trimmed.startsWith("<environment_context>")
+  );
+}
+
 function appendComposerTransferDraft(
   currentDraft: string,
   text: string,
@@ -210,25 +240,6 @@ function appendSlashCommandDraft(
     return `${normalizedCommand} `;
   }
   return current ? `${current} ${normalizedCommand} ` : `${normalizedCommand} `;
-}
-
-function getDeferredEditPlacement(
-  messages: DeferredMessage[],
-  tempId: string,
-): DeferredMessagePlacement | undefined {
-  const index = messages.findIndex((message) => message.tempId === tempId);
-  if (index === -1) {
-    return undefined;
-  }
-  const afterTempId = messages[index - 1]?.tempId;
-  const beforeTempId = messages[index + 1]?.tempId;
-  if (!afterTempId && !beforeTempId) {
-    return undefined;
-  }
-  return {
-    ...(afterTempId ? { afterTempId } : {}),
-    ...(beforeTempId ? { beforeTempId } : {}),
-  };
 }
 
 function isMissingDeferredQueueEntryError(error: unknown): boolean {
@@ -579,10 +590,46 @@ function isSameLiveModelConfig(
   return (
     current !== null &&
     current.model === next.model &&
+    current.requestedModel === next.requestedModel &&
     current.thinking?.type === next.thinking?.type &&
     current.effort === next.effort &&
     current.promptSuggestionMode === next.promptSuggestionMode
   );
+}
+
+type TitleEditMode = "manual" | "retitle";
+
+interface GeneratedRetitleInsertion {
+  prefix: string;
+  suffix: string;
+}
+
+interface GeneratedRetitleState {
+  requestId: number;
+  status: "generating" | "ready" | "error";
+  submittedTurnText: string;
+  title?: string;
+  error?: string;
+  deferredInsertion?: GeneratedRetitleInsertion;
+}
+
+const SESSION_RETITLE_LENGTH_TARGET = 72;
+
+function createSessionRetitleSubmittedTurnText(
+  currentTitle: string,
+  lengthTarget: number,
+): string {
+  const title = currentTitle.trim();
+  return [
+    "What is a good new title for this session?",
+    "",
+    `Target length: under ${lengthTarget} characters.`,
+    title ? `Current title: ${title}` : undefined,
+    "Prefer a concrete task/result phrase over a generic chat title.",
+    "Return only the title. Do not quote it. Do not add a trailing period.",
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join("\n");
 }
 
 export function SessionPage() {
@@ -698,6 +745,7 @@ function SessionPageContent({
 
   const {
     session,
+    setSession,
     messages,
     agentContent,
     setAgentContent,
@@ -724,9 +772,7 @@ function SessionPageContent({
     removePendingMessage,
     updatePendingMessage,
     deferredMessages,
-    addDeferredMessage,
-    syncDeferredMessages,
-    removeDeferredMessage,
+    setDeferredMessages,
     slashCommands,
     setSessionModel,
     pagination,
@@ -797,6 +843,8 @@ function SessionPageContent({
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const draftControlsRef = useRef<DraftControls | null>(null);
+  const [composerDraftForAnchors, setComposerDraftForAnchors] = useState("");
+  const [quoteClearSignal, setQuoteClearSignal] = useState(0);
   const pendingMotherComposerTransferRef = useRef<string | null>(null);
   const lastComposerSubmissionRef = useRef<LastComposerSubmission | null>(null);
   const lastSentComposerSubmissionRef = useRef<SentComposerSubmission | null>(
@@ -819,36 +867,43 @@ function SessionPageContent({
     messageId: string;
     originalText: string;
   } | null>(null);
-  const [queuedEditDraft, setQueuedEditDraft] =
-    useState<QueuedEditDraft | null>(null);
+  const [forkSummaryDraft, setForkSummaryDraft] = useState<{
+    sourceMessageId: string;
+  } | null>(null);
+  const forkSummaryStartPendingRef = useRef<Set<string>>(new Set());
+  const initiatedForkSummaryAutoOpenRef = useRef<Map<string, boolean>>(
+    new Map(),
+  );
+  const attemptedForkSummaryAutoOpenRef = useRef<Set<string>>(new Set());
+  // File attachment state
+  const [attachments, setAttachments] = useState<UploadedFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  const [attachmentQuality] = useAttachmentUploadQuality();
+  // Track in-flight upload promises so handleSend can wait for them
+  const pendingUploadsRef = useRef<Map<string, Promise<UploadedFile | null>>>(
+    new Map(),
+  );
   const { showToast } = useToastContext();
-
-  const releaseQueuedEditBarrier = useCallback(
-    (editDraft: QueuedEditDraft | null, reason: string) => {
-      if (!editDraft) {
-        return;
-      }
-      logSessionUiTrace("queued-edit-release", {
-        sessionId,
-        originalTempId: editDraft.originalTempId,
-        reason,
+  const updateTranscriptDisplayObjectsForSession = useCallback(
+    (
+      targetSessionId: string,
+      updater: (
+        objects: TranscriptDisplayObject[],
+      ) => TranscriptDisplayObject[],
+    ) => {
+      setSession((current) => {
+        if (!current || current.id !== targetSessionId) {
+          return current;
+        }
+        return {
+          ...current,
+          transcriptDisplayObjects: updater(
+            current.transcriptDisplayObjects ?? [],
+          ),
+        };
       });
-      api
-        .releaseDeferredEditBarrier(sessionId, editDraft.originalTempId)
-        .then((result) => {
-          if (result.deferredMessages) {
-            syncDeferredMessages(result.deferredMessages, {
-              reason: "edited",
-              tempId: editDraft.originalTempId,
-              source: "rest",
-            });
-          }
-        })
-        .catch((err) => {
-          console.warn("Failed to release deferred edit barrier:", err);
-        });
     },
-    [sessionId, syncDeferredMessages],
+    [setSession],
   );
 
   const rememberSentSubmission = useCallback((text: string, id: string) => {
@@ -930,11 +985,370 @@ function SessionPageContent({
   const currentOwnedProcessId =
     status.owner === "self" ? status.processId : undefined;
 
-  // "Fork from here": real prefix fork up to the message before this user
+  // "Fork before…": real prefix fork up to the message before this user
   // turn; the fork opens cold with an empty composer (rewind-and-continue).
   // Only offered when the provider has a fork primitive (never emulated).
   const supportsForkFromTurn =
     currentProviderInfo?.supportsForkSession === true;
+  const resolveForkAfterAnchor = useCallback(
+    (messageId: string): { anchorId?: string; pending?: boolean } => {
+      const index = messages.findIndex((m) => messageKey(m) === messageId);
+      if (index < 0) return {};
+
+      let nextUserIndex = -1;
+      for (let i = index + 1; i < messages.length; i += 1) {
+        if (messages[i]?.type === "user") {
+          nextUserIndex = i;
+          break;
+        }
+      }
+
+      if (
+        nextUserIndex < 0 &&
+        (processState === "in-turn" || processState === "waiting-input")
+      ) {
+        return { pending: true };
+      }
+
+      const searchEnd =
+        nextUserIndex >= 0 ? nextUserIndex - 1 : messages.length - 1;
+      for (let i = searchEnd; i >= index; i -= 1) {
+        const candidate = messages[i];
+        const candidateId = messageKey(candidate);
+        if (candidateId && isForkAnchorMessage(candidate)) {
+          return { anchorId: candidateId };
+        }
+      }
+      return {};
+    },
+    [messages, processState],
+  );
+  const submitForkAfterSummary = useCallback(
+    async (sourceMessageId: string, instructions: string) => {
+      const requestSessionId = actualSessionId;
+      if (
+        forkSummaryStartPendingRef.current.has(requestSessionId) ||
+        session?.transcriptDisplayObjects?.some(
+          (object) => object.status === "generating",
+        )
+      ) {
+        return;
+      }
+      forkSummaryStartPendingRef.current.add(requestSessionId);
+      const autoOpenDefault = getForkSummaryAutoOpen();
+      draftControlsRef.current?.clearDraft();
+      setForkSummaryDraft(null);
+      showToast(t("forkSummaryStarted"), "info");
+      try {
+        const result = await api.forkSessionWithSummary(
+          projectId,
+          requestSessionId,
+          {
+            sourceMessageId,
+            instructions,
+            mode: permissionMode,
+            autoOpenWhenReady: autoOpenDefault,
+          },
+        );
+        initiatedForkSummaryAutoOpenRef.current.set(
+          result.displayObject.id,
+          autoOpenDefault,
+        );
+        updateTranscriptDisplayObjectsForSession(requestSessionId, (objects) =>
+          objects.some((object) => object.id === result.displayObject.id)
+            ? [...objects]
+            : [...objects, result.displayObject],
+        );
+      } catch (err) {
+        showToast(
+          err instanceof Error ? err.message : t("forkSummaryFailed"),
+          "error",
+        );
+      } finally {
+        forkSummaryStartPendingRef.current.delete(requestSessionId);
+      }
+    },
+    [
+      actualSessionId,
+      permissionMode,
+      projectId,
+      session?.transcriptDisplayObjects,
+      showToast,
+      t,
+      updateTranscriptDisplayObjectsForSession,
+    ],
+  );
+  const submitForkAfterWithoutSummary = useCallback(
+    async (sourceMessageId: string, nextTurnText: string) => {
+      if (attachments.length > 0 || uploadProgress.length > 0) {
+        showToast(t("forkSummaryAttachmentsUnsupported"), "error");
+        return;
+      }
+      const resolved = resolveForkAfterAnchor(sourceMessageId);
+      if (resolved.pending) {
+        showToast(t("forkAfterTurnPending"), "error");
+        return;
+      }
+      if (!resolved.anchorId) {
+        showToast(t("forkAfterTurnNoAnchor"), "error");
+        return;
+      }
+
+      draftControlsRef.current?.clearDraft();
+      setForkSummaryDraft(null);
+      try {
+        const result = await api.forkSession(projectId, actualSessionId, {
+          upToMessageId: resolved.anchorId,
+        });
+        if (nextTurnText.trim()) {
+          await api.queueMessage(
+            result.sessionId,
+            nextTurnText,
+            permissionMode,
+          );
+        }
+        showToast(t("forkFromTurnStarted"), "success");
+        navigate(
+          `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
+        );
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : t("sessionRestartFailed"),
+          "error",
+        );
+      }
+    },
+    [
+      actualSessionId,
+      attachments.length,
+      basePath,
+      navigate,
+      permissionMode,
+      projectId,
+      resolveForkAfterAnchor,
+      showToast,
+      t,
+      uploadProgress.length,
+    ],
+  );
+  const cancelForkSummaryJob = useCallback(
+    async (objectId: string) => {
+      const requestSessionId = actualSessionId;
+      try {
+        const result = await api.cancelForkSessionWithSummary(
+          projectId,
+          requestSessionId,
+          objectId,
+        );
+        initiatedForkSummaryAutoOpenRef.current.delete(objectId);
+        updateTranscriptDisplayObjectsForSession(
+          requestSessionId,
+          () => result.transcriptDisplayObjects,
+        );
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : t("forkSummaryFailed"),
+          "error",
+        );
+      }
+    },
+    [
+      actualSessionId,
+      projectId,
+      showToast,
+      t,
+      updateTranscriptDisplayObjectsForSession,
+    ],
+  );
+  const setForkSummaryAutoOpen = useCallback(
+    async (objectId: string, next: boolean) => {
+      const requestSessionId = actualSessionId;
+      initiatedForkSummaryAutoOpenRef.current.set(objectId, next);
+      updateTranscriptDisplayObjectsForSession(requestSessionId, (objects) =>
+        objects.map((object) =>
+          object.id === objectId
+            ? { ...object, autoOpenWhenReady: next || undefined }
+            : object,
+        ),
+      );
+      try {
+        const result = await api.updateForkSummaryDisplayObject(
+          projectId,
+          requestSessionId,
+          objectId,
+          { autoOpenWhenReady: next },
+        );
+        updateTranscriptDisplayObjectsForSession(
+          requestSessionId,
+          () => result.transcriptDisplayObjects,
+        );
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : t("forkSummaryFailed"),
+          "error",
+        );
+      }
+    },
+    [
+      actualSessionId,
+      projectId,
+      showToast,
+      t,
+      updateTranscriptDisplayObjectsForSession,
+    ],
+  );
+  const followForkSummary = useCallback(
+    (objectId: string) => {
+      const requestSessionId = actualSessionId;
+      void api
+        .updateForkSummaryDisplayObject(projectId, requestSessionId, objectId, {
+          action: "clicked",
+        })
+        .then((result) => {
+          updateTranscriptDisplayObjectsForSession(
+            requestSessionId,
+            () => result.transcriptDisplayObjects,
+          );
+        })
+        .catch(() => {});
+    },
+    [actualSessionId, projectId, updateTranscriptDisplayObjectsForSession],
+  );
+  const getForkSummaryTargetHref = useCallback(
+    (targetSessionId: string) =>
+      `${window.location.origin}${basePath}/projects/${projectId}/sessions/${targetSessionId}`,
+    [basePath, projectId],
+  );
+  useEffect(() => {
+    for (const object of session?.transcriptDisplayObjects ?? []) {
+      if (
+        object.status !== "ready" ||
+        !object.targetSessionId ||
+        object.openedAt ||
+        attemptedForkSummaryAutoOpenRef.current.has(object.id) ||
+        initiatedForkSummaryAutoOpenRef.current.get(object.id) !== true ||
+        object.autoOpenWhenReady !== true
+      ) {
+        continue;
+      }
+      attemptedForkSummaryAutoOpenRef.current.add(object.id);
+      try {
+        const opened = window.open(
+          getForkSummaryTargetHref(object.targetSessionId),
+          "_blank",
+        );
+        if (!opened) {
+          continue;
+        }
+        opened.opener = null;
+        void api
+          .updateForkSummaryDisplayObject(
+            projectId,
+            actualSessionId,
+            object.id,
+            { action: "opened" },
+          )
+          .then((result) => {
+            updateTranscriptDisplayObjectsForSession(
+              actualSessionId,
+              () => result.transcriptDisplayObjects,
+            );
+          })
+          .catch(() => {});
+      } catch {
+        // Popup blocking leaves the durable follow link available.
+      }
+    }
+  }, [
+    actualSessionId,
+    getForkSummaryTargetHref,
+    projectId,
+    session?.transcriptDisplayObjects,
+    updateTranscriptDisplayObjectsForSession,
+  ]);
+  const beginForkAfterSummary = useCallback(
+    (messageId: string) => {
+      if (attachments.length > 0 || uploadProgress.length > 0) {
+        showToast(t("forkSummaryAttachmentsUnsupported"), "error");
+        return false;
+      }
+      const resolved = resolveForkAfterAnchor(messageId);
+      if (resolved.pending) {
+        showToast(t("forkAfterTurnPending"), "error");
+        return false;
+      }
+      if (!resolved.anchorId) {
+        showToast(t("forkAfterTurnNoAnchor"), "error");
+        return false;
+      }
+      const instructions = (
+        draftControlsRef.current?.getDraft() ?? composerDraftForAnchors
+      ).trim();
+      if (instructions) {
+        void submitForkAfterSummary(messageId, instructions);
+        return true;
+      }
+      setForkSummaryDraft({
+        sourceMessageId: messageId,
+      });
+      draftControlsRef.current?.focus?.();
+      return true;
+    },
+    [
+      attachments.length,
+      composerDraftForAnchors,
+      resolveForkAfterAnchor,
+      showToast,
+      submitForkAfterSummary,
+      t,
+      uploadProgress.length,
+    ],
+  );
+  const beginForkAfterInitialTurn = useCallback(
+    (instructions: string) => {
+      if (attachments.length > 0 || uploadProgress.length > 0) {
+        showToast(t("forkSummaryAttachmentsUnsupported"), "error");
+        return false;
+      }
+      const firstUser = messages.find((message) => {
+        if (message.type !== "user") return false;
+        const text = turnContentText(message.message?.content);
+        return !isSessionSetupTurnText(text);
+      });
+      const firstUserId = messageKey(firstUser);
+      if (!firstUserId) {
+        showToast(t("forkAfterTurnNoAnchor"), "error");
+        return false;
+      }
+      const resolved = resolveForkAfterAnchor(firstUserId);
+      if (resolved.pending) {
+        showToast(t("forkAfterTurnPending"), "error");
+        return false;
+      }
+      if (!resolved.anchorId) {
+        showToast(t("forkAfterTurnNoAnchor"), "error");
+        return false;
+      }
+      if (instructions.trim()) {
+        void submitForkAfterSummary(firstUserId, instructions.trim());
+        return true;
+      }
+      setForkSummaryDraft({
+        sourceMessageId: firstUserId,
+      });
+      draftControlsRef.current?.focus?.();
+      return true;
+    },
+    [
+      attachments.length,
+      messages,
+      resolveForkAfterAnchor,
+      showToast,
+      submitForkAfterSummary,
+      t,
+      uploadProgress.length,
+    ],
+  );
   const forkBeforeUserMessage = useCallback(
     async (messageId: string) => {
       const index = messages.findIndex((m) => (m.uuid ?? m.id) === messageId);
@@ -954,10 +1368,22 @@ function SessionPageContent({
         showToast(t("forkFromTurnNoAnchor"), "error");
         return;
       }
+      // The fork excludes the selected turn (we fork *before* it), so seed the
+      // new session's composer with that turn's text — "branch and retry this
+      // turn" — instead of dropping it. The composer reads this draft key
+      // directly (useDraftPersistence). See topics/fork-from-turn.md.
+      const prefill = turnContentText(messages[index]?.message?.content);
       try {
         const result = await api.forkSession(projectId, actualSessionId, {
           upToMessageId: anchorId,
         });
+        if (prefill.trim()) {
+          try {
+            localStorage.setItem(`draft-message-${result.sessionId}`, prefill);
+          } catch {
+            // localStorage unavailable/full — fork still proceeds, just no seed.
+          }
+        }
         showToast(t("forkFromTurnStarted"), "success");
         navigate(
           `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
@@ -970,6 +1396,17 @@ function SessionPageContent({
       }
     },
     [messages, projectId, actualSessionId, navigate, basePath, showToast, t],
+  );
+  const copyUserMessage = useCallback(
+    (messageId: string) => {
+      const msg = messages.find((m) => (m.uuid ?? m.id) === messageId);
+      const text = turnContentText(msg?.message?.content).trim();
+      if (!text) return;
+      void navigator.clipboard?.writeText(text).catch((err) => {
+        console.error("Failed to copy turn:", err);
+      });
+    },
+    [messages],
   );
   const activityRenderItems = useMemo(
     () => preprocessMessages(messages),
@@ -1020,6 +1457,7 @@ function SessionPageContent({
           process
             ? {
                 model: process.model,
+                requestedModel: process.requestedModel,
                 thinking: process.thinking,
                 effort: process.effort,
                 promptSuggestionMode: process.promptSuggestionMode,
@@ -1089,10 +1527,16 @@ function SessionPageContent({
 
   // Inline title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleEditMode, setTitleEditMode] = useState<TitleEditMode>("manual");
   const [renameValue, setRenameValue] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
+  const [generatedRetitle, setGeneratedRetitle] =
+    useState<GeneratedRetitleState | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const titleEditControlsRef = useRef<HTMLDivElement>(null);
   const isSavingTitleRef = useRef(false);
+  const retitleRequestIdRef = useRef(0);
+  const generatedRetitleRef = useRef<GeneratedRetitleState | null>(null);
 
   // Recent sessions dropdown state
   const [showRecentSessions, setShowRecentSessions] = useState(false);
@@ -1119,9 +1563,16 @@ function SessionPageContent({
   >(undefined);
   const [localHeartbeatForceAfterMinutes, setLocalHeartbeatForceAfterMinutes] =
     useState<number | undefined>(undefined);
+  const [localPromptSuggestionMode, setLocalPromptSuggestionMode] = useState<
+    PromptSuggestionMode | undefined
+  >(undefined);
   const [localHasUnread, setLocalHasUnread] = useState<boolean | undefined>(
     undefined,
   );
+
+  useEffect(() => {
+    generatedRetitleRef.current = generatedRetitle;
+  }, [generatedRetitle]);
 
   // Reset local metadata state when sessionId changes
   useEffect(() => {
@@ -1132,6 +1583,7 @@ function SessionPageContent({
     setLocalHeartbeatTurnsAfterMinutes(undefined);
     setLocalHeartbeatTurnText(undefined);
     setLocalHeartbeatForceAfterMinutes(undefined);
+    setLocalPromptSuggestionMode(undefined);
     setLocalHasUnread(undefined);
   }, [sessionId]);
 
@@ -1187,18 +1639,8 @@ function SessionPageContent({
     session?.projectId,
   ]);
 
-  // File attachment state
-  const [attachments, setAttachments] = useState<UploadedFile[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
-  const [attachmentQuality] = useAttachmentUploadQuality();
-  // Track in-flight upload promises so handleSend can wait for them
-  const pendingUploadsRef = useRef<Map<string, Promise<UploadedFile | null>>>(
-    new Map(),
-  );
-
   useEffect(() => {
     setCorrectionDraft(null);
-    setQueuedEditDraft(null);
     setBtwAsides([]);
     btwAsidesRef.current = [];
     setFocusedBtwAsideId(null);
@@ -1208,13 +1650,10 @@ function SessionPageContent({
   }, [sessionId]);
 
   const handleCancelCorrection = useCallback(() => {
-    const editDraft = queuedEditDraft;
     setCorrectionDraft(null);
-    setQueuedEditDraft(null);
     draftControlsRef.current?.clearDraft();
     setAttachments([]);
-    releaseQueuedEditBarrier(editDraft, "cancel-correction");
-  }, [queuedEditDraft, releaseQueuedEditBarrier]);
+  }, []);
 
   const handleCorrectLatestUserMessage = useCallback(
     (messageId: string, content: string) => {
@@ -1231,11 +1670,9 @@ function SessionPageContent({
 
       draftControls.setDraft(content);
       setAttachments([]);
-      releaseQueuedEditBarrier(queuedEditDraft, "start-sent-correction");
       setCorrectionDraft({ messageId, originalText: content });
-      setQueuedEditDraft(null);
     },
-    [queuedEditDraft, releaseQueuedEditBarrier, showToast, t],
+    [showToast, t],
   );
 
   const getOutgoingMessageText = useCallback(
@@ -1307,8 +1744,6 @@ function SessionPageContent({
   // Approval panel collapsed state (separate from message input collapse)
   const [approvalCollapsed, setApprovalCollapsed] = useState(false);
 
-  // Process info modal state
-  const [showProcessInfoModal, setShowProcessInfoModal] = useState(false);
   const [showHeartbeatModal, setShowHeartbeatModal] = useState(false);
   const [showRecapModal, setShowRecapModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
@@ -1322,6 +1757,9 @@ function SessionPageContent({
 
   // Model switch modal state
   const [showModelSwitchModal, setShowModelSwitchModal] = useState(false);
+  const [modelPanelInitialTab, setModelPanelInitialTab] = useState<
+    "model" | "info"
+  >("model");
   const [showHandoffModal, setShowHandoffModal] = useState(false);
 
   // Track user engagement to mark session as "seen"
@@ -1367,7 +1805,6 @@ function SessionPageContent({
     // Display preference for thinking rows; sent for compatibility while the
     // server requests provider summaries independently.
     const showThinking = getShowThinkingSetting();
-    const queuedEditDraftAtSubmit = queuedEditDraft;
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
     const clientTimestampIso = new Date(clientTimestamp).toISOString();
@@ -1392,7 +1829,6 @@ function SessionPageContent({
       textLength: outgoingText.length,
       attachmentCount: attachments.length,
       hasCorrectionDraft: !!correctionDraft,
-      hasQueuedEditDraft: !!queuedEditDraft,
       clientTimestamp,
       serverOffsetMs: getEstimatedServerOffsetMs(),
     });
@@ -1485,11 +1921,10 @@ function SessionPageContent({
           currentAttachments.length > 0 ? currentAttachments : undefined,
           tempId,
           thinking,
-          undefined,
-          undefined,
+          undefined, // deferred
           clientTimestamp,
           metadata,
-          undefined,
+          undefined, // serviceTier
           showThinking,
         );
         const responseReceivedAtMs = Date.now();
@@ -1526,8 +1961,7 @@ function SessionPageContent({
       rememberSentSubmission(text, tempId);
       draftControlsRef.current?.clearDraft();
       setCorrectionDraft(null);
-      setQueuedEditDraft(null);
-      releaseQueuedEditBarrier(queuedEditDraftAtSubmit, "send-edited-queue");
+      clearQuoteAnchors();
     } catch (err) {
       console.error("Failed to send:", err);
       let finalError: unknown = err;
@@ -1591,11 +2025,7 @@ function SessionPageContent({
           rememberSentSubmission(text, tempId);
           draftControlsRef.current?.clearDraft();
           setCorrectionDraft(null);
-          setQueuedEditDraft(null);
-          releaseQueuedEditBarrier(
-            queuedEditDraftAtSubmit,
-            "retry-send-edited-queue",
-          );
+          clearQuoteAnchors();
           return;
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
@@ -1648,13 +2078,12 @@ function SessionPageContent({
     const showThinking = getShowThinkingSetting();
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
-    const clientTimestampIso = new Date(clientTimestamp).toISOString();
 
-    const { tempId, clientOrder } = addPendingMessage(
-      outgoingText,
-      undefined,
-      clientTimestampIso,
-    );
+    // The queue path is not optimistic: no "Sending..." pending chip. The
+    // composer disables for the round-trip and the queued chip renders from the
+    // server's deferred-queue state (SSE event + this POST response). We still
+    // mint a tempId so the server can echo this message back by identity.
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setScrollTrigger((prev) => prev + 1);
     logSessionUiTrace("composer-deferred-start", {
       sessionId,
@@ -1666,7 +2095,6 @@ function SessionPageContent({
       slashCommand: slashCommand ?? null,
       textLength: outgoingText.length,
       attachmentCount: attachments.length,
-      queuedEditOriginalTempId: queuedEditDraft?.originalTempId ?? null,
       clientTimestamp,
       serverOffsetMs: getEstimatedServerOffsetMs(),
     });
@@ -1677,7 +2105,6 @@ function SessionPageContent({
     // Wait for any in-flight uploads to complete before queuing
     const pendingAtSendTime = [...pendingUploadsRef.current.values()];
     if (pendingAtSendTime.length > 0) {
-      updatePendingMessage(tempId, { status: t("sessionUploading") });
       setAttachments([]);
       const results = await Promise.all(pendingAtSendTime);
       for (const result of results) {
@@ -1685,24 +2112,12 @@ function SessionPageContent({
       }
       const sentIds = new Set(currentAttachments.map((a) => a.id));
       setAttachments((prev) => prev.filter((a) => !sentIds.has(a.id)));
-      updatePendingMessage(tempId, { status: undefined });
     } else {
       setAttachments([]);
     }
 
-    if (currentAttachments.length > 0) {
-      updatePendingMessage(tempId, { attachments: currentAttachments });
-    }
-
     try {
       const requestSentAtMs = Date.now();
-      const queuedEditDraftAtSubmit = queuedEditDraft;
-      const queuedEditPlacement = queuedEditDraftAtSubmit
-        ? {
-            ...queuedEditDraftAtSubmit.placement,
-            replaceTempId: queuedEditDraftAtSubmit.originalTempId,
-          }
-        : undefined;
       const result = await api.queueMessage(
         sessionId,
         outgoingText,
@@ -1711,10 +2126,9 @@ function SessionPageContent({
         tempId,
         thinking,
         true, // deferred
-        queuedEditPlacement,
         clientTimestamp,
         metadata,
-        undefined,
+        undefined, // serviceTier
         showThinking,
       );
       const responseReceivedAtMs = Date.now();
@@ -1740,69 +2154,15 @@ function SessionPageContent({
           result.serverTimestamp,
         ),
       });
-      removePendingMessage(tempId);
-      const localDeferredMessage = {
-        tempId,
-        content: outgoingText,
-        timestamp: clientTimestampIso,
-        clientOrder,
-        ...(currentAttachments.length > 0
-          ? {
-              attachmentCount: currentAttachments.length,
-              attachments: currentAttachments,
-            }
-          : {}),
-        mode: permissionMode,
-        metadata,
-        deliveryState: "queued" as const,
-      };
+      // Mirror the server's authoritative queue from the response. The
+      // deferred-queue SSE event reports the same thing; whichever lands last
+      // wins, and both are server truth, so there is nothing to reconcile.
+      setDeferredMessages(result.deferredMessages ?? []);
       if (result.deferred === false || result.promoted) {
-        addDeferredMessage({
-          ...localDeferredMessage,
-          deliveryState: "sending" as const,
-        });
-        if (result.deferredMessages) {
-          syncDeferredMessages(result.deferredMessages, {
-            reason: "promoted",
-            tempId,
-            source: "rest",
-          });
-        }
+        // Promoted straight into the active turn — treat it like a sent message
+        // for composer recall.
         rememberSentSubmission(text, tempId);
-        draftControlsRef.current?.clearDraft();
-        setCorrectionDraft(null);
-        setQueuedEditDraft(null);
-        return;
-      }
-      const serverDeferredMessages = result.deferredMessages?.map((message) =>
-        message.tempId === tempId
-          ? {
-              ...message,
-              attachments: currentAttachments,
-              mode: permissionMode,
-              deliveryState: "queued" as const,
-            }
-          : message,
-      );
-      if (
-        serverDeferredMessages?.some((message) => message.tempId === tempId)
-      ) {
-        syncDeferredMessages(serverDeferredMessages, {
-          reason: "queued",
-          tempId,
-          source: "rest",
-        });
-      } else {
-        addDeferredMessage(localDeferredMessage);
-        if (serverDeferredMessages) {
-          syncDeferredMessages(serverDeferredMessages, {
-            reason: "queued",
-            tempId,
-            source: "rest",
-          });
-        }
-      }
-      if (text.trim()) {
+      } else if (text.trim()) {
         lastComposerSubmissionRef.current = {
           kind: "queued",
           text: text.trim(),
@@ -1811,7 +2171,7 @@ function SessionPageContent({
       }
       draftControlsRef.current?.clearDraft();
       setCorrectionDraft(null);
-      setQueuedEditDraft(null);
+      clearQuoteAnchors();
     } catch (err) {
       console.error("Failed to queue deferred message:", err);
       let finalError: unknown = err;
@@ -1857,11 +2217,10 @@ function SessionPageContent({
             permissionMode: result.permissionMode,
             modeVersion: result.modeVersion,
           });
-          removePendingMessage(tempId);
           rememberSentSubmission(text, tempId);
           draftControlsRef.current?.clearDraft();
           setCorrectionDraft(null);
-          setQueuedEditDraft(null);
+          clearQuoteAnchors();
           return;
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
@@ -1875,7 +2234,6 @@ function SessionPageContent({
         }
       }
 
-      removePendingMessage(tempId);
       draftControlsRef.current?.restoreFromStorage();
       setAttachments(currentAttachments);
       const errorMsg =
@@ -1898,9 +2256,8 @@ function SessionPageContent({
 
   const handleCancelDeferred = useCallback(
     async (tempId: string) => {
-      const localMessage = deferredMessages.find(
-        (message) => message.tempId === tempId,
-      );
+      // No optimistic removal: the chip disappears when the server's next
+      // deferred-queue state (which omits this tempId) is mirrored.
       const previousLastSubmission = lastComposerSubmissionRef.current;
       lastComposerSubmissionRef.current = getRecallSubmissionAfterQueuedCancel(
         lastComposerSubmissionRef.current,
@@ -1908,19 +2265,11 @@ function SessionPageContent({
         deferredMessages,
         tempId,
       );
-      removeDeferredMessage(tempId);
-      if (localMessage?.deliveryState === "recovered") {
-        return;
-      }
-
       try {
         await api.cancelDeferredMessage(sessionId, tempId);
       } catch (err) {
         if (isMissingDeferredQueueEntryError(err)) {
           return;
-        }
-        if (localMessage) {
-          addDeferredMessage(localMessage);
         }
         lastComposerSubmissionRef.current = previousLastSubmission;
         console.error("Failed to cancel deferred message:", err);
@@ -1931,20 +2280,13 @@ function SessionPageContent({
         );
       }
     },
-    [
-      addDeferredMessage,
-      deferredMessages,
-      removeDeferredMessage,
-      sessionId,
-      showToast,
-      t,
-    ],
+    [deferredMessages, sessionId, showToast, t],
   );
 
   const handleCancelLatestDeferred = useCallback(() => {
     const latest = [...deferredMessages]
       .reverse()
-      .find((message) => message.tempId && message.deliveryState !== "sending");
+      .find((message) => message.tempId);
     if (!latest?.tempId) {
       return false;
     }
@@ -1952,230 +2294,30 @@ function SessionPageContent({
     return true;
   }, [deferredMessages, handleCancelDeferred]);
 
-  const handleUpdateDeferred = useCallback(
-    async (tempId: string, content: string) => {
-      const localMessage = deferredMessages.find(
-        (message) => message.tempId === tempId,
-      );
-      if (!localMessage) {
-        throw new Error("Deferred message not found");
-      }
-
-      addDeferredMessage({ ...localMessage, content });
-      if (localMessage.deliveryState === "recovered") {
-        return;
-      }
-
-      try {
-        const result = await api.updateDeferredMessage(
-          sessionId,
-          tempId,
-          content,
-        );
-        if (result.deferredMessages) {
-          syncDeferredMessages(result.deferredMessages, {
-            reason: "edited",
-            tempId,
-            source: "rest",
-          });
-        }
-      } catch (err) {
-        if (isMissingDeferredQueueEntryError(err)) {
-          addDeferredMessage({
-            ...localMessage,
-            content,
-            deliveryState: "recovered",
-          });
-          showToast(t("sessionDeferredEditLocalOnly"), "info");
-          return;
-        }
-
-        addDeferredMessage(localMessage);
-        console.error("Failed to update deferred message:", err);
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        showToast(
-          t("sessionDeferredEditFailed", { message: errorMsg }),
-          "error",
-        );
-        throw err;
-      }
-    },
-    [
-      addDeferredMessage,
-      deferredMessages,
-      sessionId,
-      showToast,
-      syncDeferredMessages,
-      t,
-    ],
-  );
-
-  const handleEditDeferred = useCallback(
-    async (tempId: string) => {
-      const draftControls = draftControlsRef.current;
-      if (!draftControls) {
-        showToast(
-          t("sessionDeferredEditFailed", {
-            message: "Composer is not available",
-          }),
-          "error",
-        );
-        return;
-      }
-
-      const localMessage = deferredMessages.find(
-        (message) => message.tempId === tempId,
-      );
-      const localPlacement = getDeferredEditPlacement(deferredMessages, tempId);
-      if (localMessage?.deliveryState === "recovered") {
-        const restoredAttachments = localMessage.attachments ?? [];
-        draftControls.setDraft(localMessage.content);
-        setAttachments(restoredAttachments);
-        if (localMessage.mode) {
-          setPermissionMode(localMessage.mode);
-        }
-        removeDeferredMessage(tempId);
-        setQueuedEditDraft({
-          originalTempId: tempId,
-          placement: localPlacement,
-        });
-        if (
-          (localMessage.attachmentCount ?? 0) > 0 &&
-          restoredAttachments.length === 0
-        ) {
-          showToast(t("sessionDeferredEditMissingAttachments"), "error");
-        }
-        return;
-      }
-
-      try {
-        const result = await api.editDeferredMessage(sessionId, tempId);
-        const restoredAttachments =
-          result.attachments ?? localMessage?.attachments ?? [];
-        draftControls.setDraft(result.message);
-        setAttachments(restoredAttachments);
-        setQueuedEditDraft({
-          originalTempId: result.tempId ?? tempId,
-          placement: result.placement ?? localPlacement,
-        });
-        const restoredMode = result.mode ?? localMessage?.mode;
-        if (restoredMode) {
-          setPermissionMode(restoredMode);
-        }
-        removeDeferredMessage(tempId);
-        if (
-          (localMessage?.attachmentCount ?? 0) > 0 &&
-          restoredAttachments.length === 0
-        ) {
-          showToast(t("sessionDeferredEditMissingAttachments"), "error");
-        }
-      } catch (err) {
-        if (localMessage && isMissingDeferredQueueEntryError(err)) {
-          const restoredAttachments = localMessage.attachments ?? [];
-          draftControls.setDraft(localMessage.content);
-          setAttachments(restoredAttachments);
-          setQueuedEditDraft({
-            originalTempId: tempId,
-            placement: localPlacement,
-          });
-          if (localMessage.mode) {
-            setPermissionMode(localMessage.mode);
-          }
-          removeDeferredMessage(tempId);
-          showToast(t("sessionDeferredEditLocalOnly"), "info");
-          if (
-            (localMessage.attachmentCount ?? 0) > 0 &&
-            restoredAttachments.length === 0
-          ) {
-            showToast(t("sessionDeferredEditMissingAttachments"), "error");
-          }
-          return;
-        }
-
-        console.error("Failed to edit deferred message:", err);
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        showToast(
-          t("sessionDeferredEditFailed", { message: errorMsg }),
-          "error",
-        );
-      }
-    },
-    [
-      deferredMessages,
-      removeDeferredMessage,
-      sessionId,
-      setPermissionMode,
-      showToast,
-      t,
-    ],
-  );
-
-  const handleSteerDeferred = useCallback(
-    async (tempId: string) => {
-      const localMessage = deferredMessages.find(
-        (message) => message.tempId === tempId,
-      );
-      if (!localMessage || localMessage.deliveryState === "recovered") {
-        return;
-      }
-
-      removeDeferredMessage(tempId);
-      try {
-        const result = await api.steerDeferredMessage(sessionId, tempId);
-        if (result.deferredMessages) {
-          syncDeferredMessages(result.deferredMessages, {
-            reason: "promoted",
-            tempId,
-            source: "rest",
-          });
-        }
-        if (result.message.trim()) {
-          rememberSentSubmission(result.message, result.tempId ?? tempId);
-        }
-      } catch (err) {
-        if (isMissingDeferredQueueEntryError(err)) {
-          return;
-        }
-        addDeferredMessage(localMessage);
-        console.error("Failed to steer deferred message:", err);
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        showToast(
-          t("sessionDeferredSteerFailed", { message: errorMsg }),
-          "error",
-        );
-      }
-    },
-    [
-      addDeferredMessage,
-      deferredMessages,
-      rememberSentSubmission,
-      removeDeferredMessage,
-      sessionId,
-      showToast,
-      syncDeferredMessages,
-      t,
-    ],
-  );
-
   const handleRecallLastSubmission = useCallback((): boolean => {
     const lastSubmission = lastComposerSubmissionRef.current;
     if (!lastSubmission?.text.trim()) {
       return false;
     }
 
+    const draftControls = draftControlsRef.current;
+    if (!draftControls) {
+      return false;
+    }
+
+    // Recalling a still-queued message cancels it server-side and restores its
+    // text to the composer — the "edit" affordance is intentionally just
+    // cancel + re-queue (see topics/queued-messages.md).
     if (
       lastSubmission.kind === "queued" &&
       deferredMessages.some(
         (message) => message.tempId === lastSubmission.tempId,
       )
     ) {
-      void handleEditDeferred(lastSubmission.tempId);
+      void handleCancelDeferred(lastSubmission.tempId);
+      draftControls.setDraft(lastSubmission.text);
+      setAttachments([]);
       return true;
-    }
-
-    const draftControls = draftControlsRef.current;
-    if (!draftControls) {
-      return false;
     }
 
     draftControls.setDraft(lastSubmission.text);
@@ -2188,7 +2330,7 @@ function SessionPageContent({
       originalText: lastSubmission.text,
     });
     return true;
-  }, [deferredMessages, handleEditDeferred]);
+  }, [deferredMessages, handleCancelDeferred]);
 
   const handleModelChanged = useCallback(
     (next: {
@@ -2204,13 +2346,16 @@ function SessionPageContent({
       if (next.thinking !== undefined || next.effort !== undefined) {
         setLiveModelConfig((prev) => ({
           model: next.model ?? prev?.model,
+          requestedModel: next.model ?? prev?.requestedModel,
           thinking: next.thinking,
           effort: next.effort,
           promptSuggestionMode: prev?.promptSuggestionMode,
         }));
       } else if (next.model) {
         setLiveModelConfig((prev) =>
-          prev ? { ...prev, model: next.model } : { model: next.model },
+          prev
+            ? { ...prev, model: next.model, requestedModel: next.model }
+            : { model: next.model, requestedModel: next.model },
         );
       }
       if (status.owner === "self") {
@@ -2223,24 +2368,32 @@ function SessionPageContent({
     [reconnectStream, setSessionModel, showToast, status.owner, t],
   );
 
-  const handleCompactSession = useCallback(async () => {
-    if (status.owner !== "self" || !supportsManualCompact) return;
-    try {
-      await api.queueMessage(actualSessionId, "/compact", permissionMode);
-      showToast(t("sessionCompactRequested"), "success");
-    } catch (err) {
-      console.error("Failed to request compaction:", err);
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      showToast(t("sessionCompactFailed", { message: errorMsg }), "error");
-    }
-  }, [
-    actualSessionId,
-    permissionMode,
-    showToast,
-    status.owner,
-    supportsManualCompact,
-    t,
-  ]);
+  const handleCompactSession = useCallback(
+    async (argument = "") => {
+      if (status.owner !== "self" || !supportsManualCompact) return;
+      // Trailing focus instructions ("/compact preserve X") ride along
+      // verbatim; Claude honors them natively. Providers without an instruction
+      // surface (e.g. Codex) ignore the argument server-side.
+      const trimmed = argument.trim();
+      const message = trimmed ? `/compact ${trimmed}` : "/compact";
+      try {
+        await api.queueMessage(actualSessionId, message, permissionMode);
+        showToast(t("sessionCompactRequested"), "success");
+      } catch (err) {
+        console.error("Failed to request compaction:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(t("sessionCompactFailed", { message: errorMsg }), "error");
+      }
+    },
+    [
+      actualSessionId,
+      permissionMode,
+      showToast,
+      status.owner,
+      supportsManualCompact,
+      t,
+    ],
+  );
 
   const focusedBtwAside = focusedBtwAsideId
     ? (btwAsides.find((aside) => aside.id === focusedBtwAsideId) ?? null)
@@ -2732,6 +2885,36 @@ function SessionPageContent({
     [showToast],
   );
 
+  const insertQuotedSelection = useCallback(
+    (quotedText: string): string | null => {
+      const controls = draftControlsRef.current;
+      if (!controls) {
+        showToast(t("sessionQuoteComposerUnavailable"), "error");
+        return null;
+      }
+      const insertedText = quotedText.trimEnd();
+      const appendedDraft = appendComposerTransferDraft(
+        controls.getDraft(),
+        insertedText,
+      );
+      const nextDraft = quotedText.endsWith("\n")
+        ? `${appendedDraft}\n`
+        : appendedDraft;
+      controls.setDraft(nextDraft);
+      setComposerDraftForAnchors(nextDraft);
+      requestAnimationFrame(() => {
+        controls.focus?.();
+        controls.setSelectionRange?.(nextDraft.length, nextDraft.length);
+      });
+      return nextDraft;
+    },
+    [showToast, t],
+  );
+
+  const clearQuoteAnchors = useCallback(() => {
+    setQuoteClearSignal((current) => current + 1);
+  }, []);
+
   const flushPendingMotherComposerTransfer = useCallback(
     (controls = draftControlsRef.current) => {
       if (mainComposerForAside || !controls) {
@@ -2789,7 +2972,7 @@ function SessionPageContent({
         return true;
       }
       if (command === "compact" && supportsManualCompact) {
-        void handleCompactSession();
+        void handleCompactSession(argument);
         return true;
       }
       if (command === "btw") {
@@ -3210,6 +3393,13 @@ function SessionPageContent({
     localHeartbeatTurnText ?? session?.heartbeatTurnText;
   const heartbeatForceAfterMinutes =
     localHeartbeatForceAfterMinutes ?? session?.heartbeatForceAfterMinutes;
+  // Effective per-session suggestion mode: optimistic local toggle wins, then
+  // the live process config, then the persisted session metadata, else off.
+  const promptSuggestionMode =
+    localPromptSuggestionMode ??
+    liveModelConfig?.promptSuggestionMode ??
+    session?.promptSuggestionMode ??
+    "off";
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3237,44 +3427,56 @@ function SessionPageContent({
   // Update browser tab title
   useDocumentTitle(project?.name, displayTitle);
 
-  const handleStartEditingTitle = () => {
-    setRenameValue(displayTitle);
-    setIsEditingTitle(true);
-    // Focus the input and select all text after it renders
+  const setRetitleState = (state: GeneratedRetitleState | null) => {
+    generatedRetitleRef.current = state;
+    setGeneratedRetitle(state);
+  };
+
+  const invalidateGeneratedRetitle = () => {
+    retitleRequestIdRef.current += 1;
+    setRetitleState(null);
+  };
+
+  const focusAndSelectTitleInput = () => {
     setTimeout(() => {
       renameInputRef.current?.focus();
       renameInputRef.current?.select();
     }, 0);
   };
 
-  const handleCancelEditingTitle = () => {
-    // Don't cancel if we're in the middle of saving
-    if (isSavingTitleRef.current) return;
-    setIsEditingTitle(false);
-    setRenameValue("");
+  const captureGeneratedRetitleInsertion = (): GeneratedRetitleInsertion => {
+    const input = renameInputRef.current;
+    const value = input?.value ?? renameValue;
+    const start = input?.selectionStart ?? value.length;
+    const end = input?.selectionEnd ?? start;
+    return {
+      prefix: value.slice(0, start),
+      suffix: value.slice(end),
+    };
   };
 
-  // On blur, save if value changed (handles mobile keyboard dismiss on Enter)
-  const handleTitleBlur = () => {
-    // Don't interfere if we're already saving
-    if (isSavingTitleRef.current) return;
-    // If value is empty or unchanged, just cancel
-    if (!renameValue.trim() || renameValue.trim() === displayTitle) {
+  const composeGeneratedRetitle = (
+    title: string,
+    insertion: GeneratedRetitleInsertion,
+  ): string => `${insertion.prefix}${title}${insertion.suffix}`;
+
+  const saveTitleValue = async (nextTitle: string) => {
+    const trimmed = nextTitle.trim();
+    if (!trimmed || isRenaming) return;
+    if (trimmed === displayTitle) {
       handleCancelEditingTitle();
       return;
     }
-    // Otherwise save (handles mobile Enter which blurs before keydown fires)
-    handleSaveTitle();
-  };
 
-  const handleSaveTitle = async () => {
-    if (!renameValue.trim() || isRenaming) return;
+    invalidateGeneratedRetitle();
     isSavingTitleRef.current = true;
     setIsRenaming(true);
     try {
-      await api.updateSessionMetadata(sessionId, { title: renameValue.trim() });
-      setLocalCustomTitle(renameValue.trim());
+      await api.updateSessionMetadata(sessionId, { title: trimmed });
+      setLocalCustomTitle(trimmed);
       setIsEditingTitle(false);
+      setTitleEditMode("manual");
+      setRenameValue("");
       showToast(t("sessionRenamed"), "success");
     } catch (err) {
       console.error("Failed to rename session:", err);
@@ -3285,15 +3487,165 @@ function SessionPageContent({
     }
   };
 
+  const handleStartEditingTitle = () => {
+    invalidateGeneratedRetitle();
+    setTitleEditMode("manual");
+    setRenameValue(displayTitle);
+    setIsEditingTitle(true);
+    focusAndSelectTitleInput();
+  };
+
+  const handleStartRetitleTitle = (options?: { applyWhenReady?: boolean }) => {
+    setShowRecentSessions(false);
+    setTitleEditMode("retitle");
+    setRenameValue(displayTitle);
+    setIsEditingTitle(true);
+    if (!options?.applyWhenReady) {
+      focusAndSelectTitleInput();
+    }
+
+    const requestId = retitleRequestIdRef.current + 1;
+    retitleRequestIdRef.current = requestId;
+    const submittedTurnText = createSessionRetitleSubmittedTurnText(
+      displayTitle,
+      SESSION_RETITLE_LENGTH_TARGET,
+    );
+    if (!supportsForkFromTurn) {
+      setRetitleState({
+        requestId,
+        status: "error",
+        submittedTurnText,
+        error: t("sessionRetitleUnsupported"),
+      });
+      return;
+    }
+
+    setRetitleState({
+      requestId,
+      status: "generating",
+      submittedTurnText,
+      ...(options?.applyWhenReady
+        ? { deferredInsertion: { prefix: "", suffix: "" } }
+        : {}),
+    });
+    void (async () => {
+      try {
+        const result = await api.proposeSessionRetitle(projectId, sessionId, {
+          currentTitle: displayTitle,
+          lengthTarget: SESSION_RETITLE_LENGTH_TARGET,
+        });
+        if (retitleRequestIdRef.current !== requestId) return;
+        const current = generatedRetitleRef.current;
+        if (!current || current.requestId !== requestId) return;
+        if (current.deferredInsertion) {
+          await saveTitleValue(
+            composeGeneratedRetitle(result.title, current.deferredInsertion),
+          );
+          return;
+        }
+        setRetitleState({
+          requestId,
+          status: "ready",
+          submittedTurnText,
+          title: result.title,
+        });
+      } catch (err) {
+        if (retitleRequestIdRef.current !== requestId) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setRetitleState({
+          requestId,
+          status: "error",
+          submittedTurnText,
+          error: message || t("sessionRetitleFailed"),
+        });
+      }
+    })();
+  };
+
+  const handleGenerateAndApplyTitle = () => {
+    handleStartRetitleTitle({ applyWhenReady: true });
+  };
+
+  const handleCancelEditingTitle = () => {
+    // Don't cancel if we're in the middle of saving
+    if (isSavingTitleRef.current) return;
+    invalidateGeneratedRetitle();
+    setIsEditingTitle(false);
+    setTitleEditMode("manual");
+    setRenameValue("");
+  };
+
+  // On blur, save if value changed (handles mobile keyboard dismiss on Enter)
+  const handleTitleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    const nextTarget = e.relatedTarget;
+    if (
+      nextTarget instanceof Node &&
+      titleEditControlsRef.current?.contains(nextTarget)
+    ) {
+      return;
+    }
+    // Don't interfere if we're already saving
+    if (isSavingTitleRef.current) return;
+    if (titleEditMode === "retitle") {
+      handleCancelEditingTitle();
+      return;
+    }
+    // If value is empty or unchanged, just cancel
+    if (!renameValue.trim() || renameValue.trim() === displayTitle) {
+      handleCancelEditingTitle();
+      return;
+    }
+    // Otherwise save (handles mobile Enter which blurs before keydown fires)
+    handleSaveTitle();
+  };
+
+  const handleSaveTitle = () => {
+    void saveTitleValue(renameValue);
+  };
+
+  const handleAcceptGeneratedRetitle = () => {
+    if (titleEditMode !== "retitle") {
+      handleSaveTitle();
+      return;
+    }
+    const current = generatedRetitleRef.current;
+    if (!current || current.status === "error") return;
+    const insertion = captureGeneratedRetitleInsertion();
+    if (current.status === "ready" && current.title) {
+      void saveTitleValue(composeGeneratedRetitle(current.title, insertion));
+      return;
+    }
+    if (current.status === "generating") {
+      const next = { ...current, deferredInsertion: insertion };
+      setRetitleState(next);
+    }
+  };
+
   const handleTitleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleSaveTitle();
+      if (titleEditMode === "retitle" && !e.ctrlKey) {
+        handleAcceptGeneratedRetitle();
+      } else {
+        handleSaveTitle();
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
       handleCancelEditingTitle();
     }
   };
+
+  useEffect(() => {
+    if (!isEditingTitle) return;
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      handleCancelEditingTitle();
+    };
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [isEditingTitle, handleCancelEditingTitle]);
 
   const handleToggleArchive = async () => {
     const newArchived = !isArchived;
@@ -3322,6 +3674,28 @@ function SessionPageContent({
     } catch (err) {
       console.error("Failed to update star status:", err);
       showToast(t("sessionStarFailed"), "error");
+    }
+  };
+
+  const handleTogglePromptSuggestions = async () => {
+    const next: PromptSuggestionMode =
+      promptSuggestionMode === "native" ? "off" : "native";
+    const previous = localPromptSuggestionMode;
+    setLocalPromptSuggestionMode(next);
+    try {
+      await api.updateSessionMetadata(sessionId, {
+        promptSuggestionMode: next,
+      });
+      showToast(
+        next === "native"
+          ? t("sessionPromptSuggestionsEnabled")
+          : t("sessionPromptSuggestionsDisabled"),
+        "success",
+      );
+    } catch (err) {
+      console.error("Failed to update prompt suggestion mode:", err);
+      setLocalPromptSuggestionMode(previous);
+      showToast(t("sessionPromptSuggestionsFailed"), "error");
     }
   };
 
@@ -3496,9 +3870,6 @@ function SessionPageContent({
           </div>
           <p style={{ fontSize: "12px", color: "#888", marginTop: 20 }}>
             {t("sessionNotFoundSessionId")} <code>{actualSessionId}</code>
-            <br />
-            {t("sessionNotFoundCleanupPrefix")} <code>ya-clean</code>{" "}
-            {t("sessionNotFoundCleanupSuffix")}
           </p>
         </div>
       );
@@ -3588,26 +3959,193 @@ function SessionPageContent({
               {loading ? (
                 <span className="session-title-skeleton" />
               ) : isEditingTitle ? (
-                <input
-                  ref={renameInputRef}
-                  type="text"
-                  className="session-title-input"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={handleTitleKeyDown}
-                  onBlur={handleTitleBlur}
-                  disabled={isRenaming}
-                />
+                <div ref={titleEditControlsRef} className="session-title-edit">
+                  <div className="session-title-edit-row">
+                    <input
+                      ref={renameInputRef}
+                      type="text"
+                      className="session-title-input"
+                      value={
+                        generatedRetitle?.deferredInsertion ? "" : renameValue
+                      }
+                      placeholder={
+                        generatedRetitle?.deferredInsertion
+                          ? t("sessionRetitleGenerating")
+                          : undefined
+                      }
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={handleTitleKeyDown}
+                      onBlur={handleTitleBlur}
+                      disabled={
+                        isRenaming || !!generatedRetitle?.deferredInsertion
+                      }
+                      title={
+                        generatedRetitle?.deferredInsertion
+                          ? generatedRetitle.submittedTurnText
+                          : undefined
+                      }
+                    />
+                    {titleEditMode === "retitle" && (
+                      <button
+                        type="button"
+                        className={`session-title-edit-button session-title-retitle-accept${
+                          generatedRetitle?.deferredInsertion ? " is-armed" : ""
+                        }`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleAcceptGeneratedRetitle}
+                        disabled={
+                          isRenaming ||
+                          !generatedRetitle ||
+                          !!generatedRetitle.deferredInsertion ||
+                          generatedRetitle.status === "error"
+                        }
+                        title={
+                          generatedRetitle?.status === "generating"
+                            ? t("sessionRetitleUseGeneratedWhenReady")
+                            : t("sessionRetitleUseGenerated")
+                        }
+                        aria-label={
+                          generatedRetitle?.status === "generating"
+                            ? t("sessionRetitleUseGeneratedWhenReady")
+                            : t("sessionRetitleUseGenerated")
+                        }
+                      >
+                        <svg
+                          width="15"
+                          height="15"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
+                          <path d="m11 8 4 4-4 4" />
+                          <path d="M8 12h7" />
+                        </svg>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="session-title-edit-button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleSaveTitle}
+                      disabled={
+                        isRenaming || !!generatedRetitle?.deferredInsertion
+                      }
+                      title={t("sessionRetitleSaveAsTyped")}
+                      aria-label={t("sessionRetitleSaveAsTyped")}
+                    >
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <path d="M17 21v-8H7v8" />
+                        <path d="M7 3v5h8" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="session-title-edit-button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleCancelEditingTitle}
+                      disabled={isRenaming}
+                      title={t("sessionRetitleCancel")}
+                      aria-label={t("sessionRetitleCancel")}
+                    >
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  {titleEditMode === "retitle" && generatedRetitle && (
+                    <div
+                      className={`session-title-retitle-status is-${generatedRetitle.status}${
+                        generatedRetitle.deferredInsertion ? " is-armed" : ""
+                      }`}
+                      title={
+                        generatedRetitle.status === "generating" ||
+                        generatedRetitle.deferredInsertion
+                          ? generatedRetitle.submittedTurnText
+                          : undefined
+                      }
+                    >
+                      {generatedRetitle.deferredInsertion
+                        ? t("sessionRetitleDeferred")
+                        : generatedRetitle.status === "generating"
+                          ? t("sessionRetitleGenerating")
+                          : generatedRetitle.status === "ready" &&
+                              generatedRetitle.title
+                            ? `${t("sessionRetitleProposalLabel")} ${generatedRetitle.title}`
+                            : (generatedRetitle.error ??
+                              t("sessionRetitleFailed"))}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <>
                   <button
-                    ref={titleButtonRef}
                     type="button"
-                    className="session-title session-title-dropdown-trigger"
-                    onClick={() => setShowRecentSessions(!showRecentSessions)}
+                    className="session-title session-title-retitle-trigger"
+                    onClick={() => handleStartRetitleTitle()}
                     title={session?.fullTitle ?? displayTitle}
                   >
                     <span className="session-title-text">{displayTitle}</span>
+                  </button>
+                  {supportsForkFromTurn && (
+                    <button
+                      type="button"
+                      className="session-title-generate-trigger"
+                      onClick={handleGenerateAndApplyTitle}
+                      title={t("sessionGenerateNewTitle")}
+                      aria-label={t("sessionGenerateNewTitle")}
+                    >
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
+                        <path d="m11 8 4 4-4 4" />
+                        <path d="M8 12h7" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    ref={titleButtonRef}
+                    type="button"
+                    className="session-title-chevron-trigger"
+                    onClick={() => setShowRecentSessions(!showRecentSessions)}
+                    title={t("sessionRecentSessions")}
+                    aria-label={t("sessionRecentSessions")}
+                  >
                     <svg
                       className="session-title-chevron"
                       width="12"
@@ -3659,15 +4197,16 @@ function SessionPageContent({
                       ? () => setShowRecapModal(true)
                       : undefined
                   }
+                  promptSuggestionMode={promptSuggestionMode}
+                  onTogglePromptSuggestions={
+                    currentProviderInfo?.supportsNativePromptSuggestions
+                      ? handleTogglePromptSuggestions
+                      : undefined
+                  }
                   warningRestoreAvailable={
                     hasPendingToolCalls && pendingElsewhereDismissed
                   }
                   onRestoreWarnings={handleRestorePendingElsewhereWarning}
-                  onClone={(newSessionId) => {
-                    navigate(
-                      `${basePath}/projects/${projectId}/sessions/${newSessionId}`,
-                    );
-                  }}
                   onHandoff={
                     effectiveProvider
                       ? () => setShowHandoffModal(true)
@@ -3757,11 +4296,13 @@ function SessionPageContent({
                 type="button"
                 className="provider-badge-button"
                 onClick={() => {
-                  if (status.owner === "self" && status.processId) {
-                    setShowModelSwitchModal(true);
-                    return;
-                  }
-                  setShowProcessInfoModal(true);
+                  setModelPanelInitialTab("model");
+                  setShowModelSwitchModal(true);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setModelPanelInitialTab("info");
+                  setShowModelSwitchModal(true);
                 }}
                 title={
                   status.owner === "self" && status.processId
@@ -3781,28 +4322,6 @@ function SessionPageContent({
           </div>
         </div>
       </header>
-
-      {/* Process Info Modal */}
-      {showProcessInfoModal && session && (
-        <ProcessInfoModal
-          sessionId={actualSessionId}
-          provider={session.provider}
-          model={session.model}
-          status={status}
-          processState={processState}
-          sessionLiveness={sessionLiveness}
-          contextUsage={session.contextUsage}
-          originator={session.originator}
-          cliVersion={session.cliVersion}
-          sessionSource={session.source}
-          approvalPolicy={session.approvalPolicy}
-          sandboxPolicy={session.sandboxPolicy}
-          createdAt={session.createdAt}
-          sessionStreamConnected={sessionUpdatesConnected}
-          lastSessionEventAt={lastStreamActivityAt}
-          onClose={() => setShowProcessInfoModal(false)}
-        />
-      )}
 
       {showHeartbeatModal && (
         <SessionHeartbeatModal
@@ -3852,15 +4371,40 @@ function SessionPageContent({
       )}
 
       {/* Model Switch Modal */}
-      {showModelSwitchModal && status.owner === "self" && status.processId && (
+      {showModelSwitchModal && (
         <ModelSwitchModal
-          processId={status.processId}
+          processId={status.owner === "self" ? status.processId : undefined}
           sessionId={actualSessionId}
           currentModel={session?.model}
           onModelChanged={handleModelChanged}
-          onOpenSessionInfo={() => {
-            setShowModelSwitchModal(false);
-            setShowProcessInfoModal(true);
+          initialTab={modelPanelInitialTab}
+          infoPane={
+            session ? (
+              <ProcessInfoBody
+                sessionId={actualSessionId}
+                provider={session.provider}
+                model={session.model}
+                status={status}
+                processState={processState}
+                sessionLiveness={sessionLiveness}
+                contextUsage={session.contextUsage}
+                originator={session.originator}
+                cliVersion={session.cliVersion}
+                sessionSource={session.source}
+                approvalPolicy={session.approvalPolicy}
+                sandboxPolicy={session.sandboxPolicy}
+                createdAt={session.createdAt}
+                sessionStreamConnected={sessionUpdatesConnected}
+                lastSessionEventAt={lastStreamActivityAt}
+              />
+            ) : null
+          }
+          onActivate={async () => {
+            const result = await api.reactivateSession(
+              projectId,
+              actualSessionId,
+            );
+            setStatus({ owner: "self", processId: result.processId });
           }}
           onClose={() => setShowModelSwitchModal(false)}
         />
@@ -3950,6 +4494,7 @@ function SessionPageContent({
               >
                 <MessageList
                   messages={messages}
+                  transcriptDisplayObjects={session?.transcriptDisplayObjects}
                   provider={session?.provider}
                   isProcessing={sessionActivityUi.showProcessingIndicator}
                   isCompacting={isCompacting}
@@ -3962,22 +4507,36 @@ function SessionPageContent({
                   onStopBtwAside={handleStopBtwAsideFromTranscript}
                   onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
                   onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
+                  onQuoteSelection={insertQuotedSelection}
+                  getComposerDraft={() =>
+                    draftControlsRef.current?.getDraft() ?? ""
+                  }
+                  composerDraft={composerDraftForAnchors}
+                  quoteClearSignal={quoteClearSignal}
                   onCancelDeferred={handleCancelDeferred}
-                  onUpdateDeferred={handleUpdateDeferred}
-                  onEditDeferred={handleEditDeferred}
-                  onSteerDeferred={handleSteerDeferred}
-                  canSteerDeferred={primaryComposerAction === "steer"}
                   onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
                   onTrimBeforeUserMessage={trimClientFromUserMessage}
                   onForkBeforeUserMessage={
                     supportsForkFromTurn ? forkBeforeUserMessage : undefined
                   }
+                  onForkAfterUserMessage={
+                    supportsForkFromTurn ? beginForkAfterSummary : undefined
+                  }
+                  onCopyUserMessage={copyUserMessage}
                   markdownAugments={markdownAugments}
                   activeToolApproval={activeToolApproval}
                   hasOlderMessages={pagination?.hasOlderMessages}
                   loadingOlder={loadingOlder}
                   onLoadOlderMessages={loadOlderMessages}
                   clientTailActive={clientTailActive}
+                  getForkSummaryTargetHref={getForkSummaryTargetHref}
+                  onCancelForkSummary={(objectId) => {
+                    void cancelForkSummaryJob(objectId);
+                  }}
+                  onToggleForkSummaryAutoOpen={(objectId, value) => {
+                    void setForkSummaryAutoOpen(objectId, value);
+                  }}
+                  onFollowForkSummary={followForkSummary}
                 />
               </AgentContentProvider>
             </SessionMetadataProvider>
@@ -4154,6 +4713,7 @@ function SessionPageContent({
                     onSelectSlashCommand={handleToolbarSlashCommand}
                     thinkingProvider={effectiveProvider}
                     thinkingModel={liveBadgeModel}
+                    contextRequestedModel={liveModelConfig?.requestedModel}
                     heartbeatEnabled={heartbeatTurnsEnabled}
                     onToggleHeartbeat={handleToggleHeartbeat}
                     onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
@@ -4225,6 +4785,7 @@ function SessionPageContent({
                     : `draft-message-${sessionId}`
                 }
                 onDraftControlsReady={handleDraftControlsReady}
+                onDraftTextChange={setComposerDraftForAnchors}
                 correctionActive={
                   !mainComposerForAside && correctionDraft !== null
                 }
@@ -4264,6 +4825,7 @@ function SessionPageContent({
                 btwToolbarMode={btwToolbarMode}
                 thinkingProvider={effectiveProvider}
                 thinkingModel={liveBadgeModel}
+                contextRequestedModel={liveModelConfig?.requestedModel}
                 heartbeatEnabled={heartbeatTurnsEnabled}
                 onToggleHeartbeat={handleToggleHeartbeat}
                 onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
@@ -4274,6 +4836,43 @@ function SessionPageContent({
                 }
                 onDismissPromptSuggestion={
                   mainComposerForAside ? undefined : dismissPromptSuggestion
+                }
+                forkSummaryMode={
+                  !mainComposerForAside && forkSummaryDraft
+                    ? {
+                        title: t("forkSummaryComposerTitle"),
+                        description: t("forkSummaryComposerDescription"),
+                        placeholder: t("forkSummaryComposerPlaceholder"),
+                        submitLabel: t("forkSummarySubmit"),
+                        tooltip: t("forkSummaryTooltip"),
+                        icon: "⑂",
+                        noSummarySubmitLabel: t("forkSummaryNoSummarySubmit"),
+                        noSummaryTooltip: t("forkSummaryNoSummaryTooltip"),
+                        noSummaryIcon: "↱",
+                        // The composer fork mode is dismissed the moment we
+                        // submit (generation backgrounds into the indicator),
+                        // so it never sits in a submitting state.
+                        submitting: false,
+                        onCancel: () => setForkSummaryDraft(null),
+                        onSubmit: (instructions) => {
+                          void submitForkAfterSummary(
+                            forkSummaryDraft.sourceMessageId,
+                            instructions,
+                          );
+                        },
+                        onSubmitWithoutSummary: (nextTurnText) => {
+                          void submitForkAfterWithoutSummary(
+                            forkSummaryDraft.sourceMessageId,
+                            nextTurnText,
+                          );
+                        },
+                      }
+                    : undefined
+                }
+                onForkSummaryShortcut={
+                  !mainComposerForAside && supportsForkFromTurn
+                    ? beginForkAfterInitialTurn
+                    : undefined
                 }
               />
             )}

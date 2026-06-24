@@ -30,6 +30,10 @@ import {
   isCompactBoundary,
   isConversationEntry,
 } from "@yep-anywhere/shared";
+import {
+  assistantContentParts,
+  formatAgentExcerpt,
+} from "./agent-excerpt.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
 import { buildDag } from "./dag.js";
 
@@ -277,6 +281,24 @@ export class ClaudeSessionReader implements ISessionReader {
       const firstUserMessage = this.findFirstUserMessage(messages);
       const fullTitle = firstUserMessage?.trim() || null;
       const model = this.extractModel(conversationMessages);
+      const lastAgentText = this.findLastAgentExcerpt(conversationMessages);
+
+      // Prefer the first entry's content timestamp for the creation time. The
+      // file's birthtime is unreliable on Linux filesystems without statx btime
+      // (Node returns the unix epoch there), which made all Claude sessions show
+      // a 1970 / suppressed creation age; fall back to mtime over an epoch
+      // birthtime so the value is never bogus.
+      const firstTimestamp = messages.find(
+        (m): m is Extract<ClaudeSessionEntry, { timestamp: string }> =>
+          "timestamp" in m &&
+          typeof m.timestamp === "string" &&
+          m.timestamp.length > 0,
+      )?.timestamp;
+      const createdAt =
+        firstTimestamp ??
+        (stats.birthtimeMs > 0
+          ? stats.birthtime.toISOString()
+          : stats.mtime.toISOString());
 
       // claude-ollama sessions use the same JSONL format but have non-Claude
       // model IDs (e.g. "qwen3-coder-128k:latest" vs "claude-opus-4-5-20251101")
@@ -294,13 +316,14 @@ export class ClaudeSessionReader implements ISessionReader {
         projectId,
         title: this.extractTitle(firstUserMessage),
         fullTitle,
-        createdAt: stats.birthtime.toISOString(),
+        createdAt,
         updatedAt: stats.mtime.toISOString(),
         messageCount: conversationMessages.length,
         ownership: { owner: "none" }, // Will be updated by Supervisor
         contextUsage,
         provider,
         model,
+        lastAgentText,
       };
     } catch {
       return null;
@@ -598,6 +621,69 @@ export class ClaudeSessionReader implements ISessionReader {
       }
     }
     return null;
+  }
+
+  /**
+   * Excerpt of the most recent regular agent turn for the row hover card.
+   * Scans backward for the latest assistant message carrying prose (the "what
+   * did it tell me" signal); when the latest turns are tool-only, falls back to
+   * an earlier text block, and only to a "⚙ <tool>" label when there is no
+   * agent prose at all. See topics/session-hovercard-recent-activity.md.
+   */
+  private findLastAgentExcerpt(
+    messages: ClaudeSessionEntry[],
+  ): string | undefined {
+    let trailingTool: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg?.type !== "assistant") continue;
+      const { text, toolName } = assistantContentParts(
+        (msg as { message?: { content?: unknown } }).message?.content,
+      );
+      const excerpt = formatAgentExcerpt(text);
+      if (excerpt) return excerpt;
+      // No prose here — remember the most recent tool name (first seen while
+      // scanning backward) in case no earlier turn has prose either.
+      if (!trailingTool && toolName) trailingTool = toolName;
+    }
+    return trailingTool ? `⚙ ${trailingTool}` : undefined;
+  }
+
+  /**
+   * Fast, on-demand recompute of the hover-card excerpt for a non-running
+   * session: read the file and scan raw lines from the end, parsing only until
+   * an assistant turn qualifies — skipping the full parse + DAG build the
+   * summary path does. Approximates the active branch (a post-rewind dead
+   * branch could win), which is acceptable for a preview. Used to refresh a
+   * stale preview on focus/hover. See topics/session-hovercard-recent-activity.md.
+   */
+  async getLastAgentExcerpt(sessionId: string): Promise<string | undefined> {
+    const filePath = await this.findSessionFile(sessionId);
+    if (!filePath) return undefined;
+    let content: string;
+    try {
+      content = await readFile(filePath, "utf-8");
+    } catch {
+      return undefined;
+    }
+    const lines = content.split("\n");
+    let trailingTool: string | undefined;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      let entry: { type?: string; message?: { content?: unknown } };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry.type !== "assistant") continue;
+      const { text, toolName } = assistantContentParts(entry.message?.content);
+      const excerpt = formatAgentExcerpt(text);
+      if (excerpt) return excerpt;
+      if (!trailingTool && toolName) trailingTool = toolName;
+    }
+    return trailingTool ? `⚙ ${trailingTool}` : undefined;
   }
 
   /**

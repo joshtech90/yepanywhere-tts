@@ -2,6 +2,8 @@ import type {
   AgentActivity,
   ContextUsage,
   PendingInputType,
+  PromptSuggestionMode,
+  TranscriptDisplayObject,
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { SessionStatus, SessionSummary } from "../types";
@@ -81,6 +83,8 @@ export interface SessionMetadataChangedEvent {
   heartbeatTurnsAfterMinutes?: number | null;
   heartbeatTurnText?: string | null;
   heartbeatForceAfterMinutes?: number | null;
+  promptSuggestionMode?: PromptSuggestionMode;
+  transcriptDisplayObjects?: TranscriptDisplayObject[];
   timestamp: string;
 }
 
@@ -103,6 +107,8 @@ export interface SessionUpdatedEvent {
   contextUsage?: ContextUsage;
   /** Resolved model name (e.g., "claude-sonnet-4-5-20250929") */
   model?: string;
+  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  lastAgentText?: string;
   timestamp: string;
 }
 

@@ -14,8 +14,6 @@ import type {
 } from "@yep-anywhere/shared";
 import type { PermissionMode, SDKMessage } from "../sdk/types.js";
 
-// Constants
-export const DEFAULT_IDLE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 export const DEFAULT_IDLE_PREEMPT_THRESHOLD_MS = 10 * 1000; // 10 seconds - workers idle longer than this can be preempted
 
 // Re-export path utilities for backward compatibility
@@ -107,6 +105,15 @@ export interface SessionSummary {
   provider: ProviderName;
   /** Model used for this session (extracted from JSONL, e.g. "claude-opus-4-5-20251101") */
   model?: string;
+  /**
+   * Excerpt of the most recent regular agent turn (last assistant message with
+   * prose), capped to the last few lines. Shown in the row hover card so a
+   * glance answers "where did this land?". A "⚙ <tool>" label when the latest
+   * turns are tool-only. Undefined when the provider's reader does not populate
+   * it yet, or there is no agent text. See
+   * topics/session-hovercard-recent-activity.md.
+   */
+  lastAgentText?: string;
   /** Launcher identifier from session metadata (e.g. "Codex Desktop", "yep-anywhere") */
   originator?: string;
   /** CLI version from session metadata (e.g. "0.101.0") */
@@ -209,8 +216,15 @@ export interface ProcessInfo {
   effort?: EffortLevel;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
-  /** Model used for this session (e.g., "claude-opus-4-5-20251101") */
+  /** Reported model for this session (e.g., "claude-opus-4-5-20251101"), for display */
   model?: string;
+  /**
+   * YA model id for keying per-model settings: the requested launch alias when
+   * YA owns the session (survives restart via persisted metadata), else the
+   * reported model mapped back through the provider's yaModelIdForReported.
+   * See topics/provider-abstraction.md § Per-model settings keying.
+   */
+  requestedModel?: string;
   /** Context window usage from the last assistant message */
   contextUsage?: ContextUsage;
   /** SSH host for remote execution (undefined = local) */
@@ -234,6 +248,12 @@ export type ProcessEvent =
   | { type: "liveness-update" }
   | { type: "mode-change"; mode: PermissionMode; version: number }
   | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
+  | {
+      type: "context-window-observed";
+      model: string;
+      contextWindow: number;
+      provider: ProviderName;
+    }
   | { type: "error"; error: Error }
   | { type: "idle-reap" }
   | { type: "complete" }
@@ -245,9 +265,8 @@ export type ProcessEvent =
         content: string;
         timestamp: string;
         attachmentCount?: number;
-        blockedByEdit?: boolean;
       }[];
-      reason?: "queued" | "cancelled" | "edited" | "promoted";
+      reason?: "queued" | "cancelled" | "promoted";
       tempId?: string;
     };
 
@@ -256,7 +275,7 @@ export interface ProcessOptions {
   projectPath: string;
   projectId: UrlProjectId;
   sessionId: string;
-  idleTimeoutMs?: number; // default 20 minutes
+  idleTimeoutMs?: number; // default 60 minutes
   permissionMode?: PermissionMode;
   provider: ProviderName; // which provider is running this process
   /** Thinking configuration (undefined = thinking disabled) */

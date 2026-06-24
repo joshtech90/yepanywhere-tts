@@ -72,6 +72,12 @@ export function canReuseRenderItem(
         sameArrayItems(previous.prompts, next.prompts)
       );
 
+    case "transcript_display_object":
+      return (
+        next.type === "transcript_display_object" &&
+        previous.object === next.object
+      );
+
     case "system":
       return (
         next.type === "system" &&
@@ -80,6 +86,9 @@ export function canReuseRenderItem(
         previous.status === next.status &&
         previous.configChanged === next.configChanged
       );
+
+    case "task_notification":
+      return next.type === "task_notification" && previous.raw === next.raw;
   }
 }
 

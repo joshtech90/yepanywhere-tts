@@ -108,6 +108,51 @@ describe("getModelIndicatorModelLabel", () => {
     });
   });
 
+  describe("sub-provider namespaced models (opencode routing)", () => {
+    it("github-copilot/claude-opus renders OC + copilot + native opus glyph", () => {
+      expect(
+        getModelIndicatorModelLabel(
+          "opencode",
+          "github-copilot/claude-opus-4.8",
+        ),
+      ).toBe("OC copilot ◐ 4.8");
+    });
+    it("github-copilot/gpt routes to codex glyph rules", () => {
+      expect(
+        getModelIndicatorModelLabel("opencode", "github-copilot/gpt-5.4"),
+      ).toBe("OC copilot ◇ 5.4");
+    });
+    it("unknown sub-provider falls back to the cleaned path segment", () => {
+      expect(
+        getModelIndicatorModelLabel("opencode", "openrouter/claude-sonnet-4-6"),
+      ).toBe("OC openrouter ♪ 4.6");
+    });
+    it("unrecognized inner model keeps its bare name as the third part", () => {
+      expect(
+        getModelIndicatorModelLabel("opencode", "github-copilot/whatever-1"),
+      ).toBe("OC copilot whatever-1");
+    });
+    it("huggingface renders as HF and drops the org/dirname", () => {
+      expect(
+        getModelIndicatorModelLabel("pi", "huggingface/minimaxai/minimax-m2.1"),
+      ).toBe("pi HF minimax-m2.1");
+    });
+    it("huggingface org-namespaced model keeps a verbatim basename (no glyph, no stray slash)", () => {
+      expect(
+        getModelIndicatorModelLabel(
+          "pi",
+          "huggingface/qwen/qwen3-coder-next",
+        ),
+      ).toBe("pi HF qwen3-coder-next");
+      expect(
+        getModelIndicatorModelLabel(
+          "pi",
+          "huggingface/qwen/qwen3-235b-a22b-thinking-2507",
+        ),
+      ).toBe("pi HF qwen3-235b-a22b-thinking-2507");
+    });
+  });
+
   describe("fallbacks", () => {
     it("unknown model falls back to provider abbrev + raw model", () => {
       expect(

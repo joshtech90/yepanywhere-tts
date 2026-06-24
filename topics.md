@@ -9,7 +9,10 @@
 - session-liveness - Provider/session cache state, stale entries, and recovery.
 - pluggable-speech-recognition - YA server-routed speech backends and browser-native fallback.
 - cost-efficiency - Preferring subscription/local over metered APIs; billing footgun masking.
-- ya-env-vars - Catalog of YA env vars and the YA_/YA_module__ naming conventions.
+- ya-env-vars - Catalog of YA env vars and the canonical YEP_/YEP_MODULE_
+  naming conventions.
+- source-name-prefixes - Distinguish TypeScript module symbols from YEP_
+  process environment variables and runtime globals.
 - env-vars-config - Settings UI for process-start env visibility and future
   child-process override defaults.
 - kzahel-disabled - Upstream-disabled feature decisions to revisit as configurable defaults.
@@ -36,4 +39,12 @@
 - vanilla-defaults - Overarching UX theory: first-party-familiar out of the box; YA-novel user-visible behavior is configurable default-off.
 - streaming-speech-capture - Client PCM capture contracts, warm-mic latency, and AudioWorklet follow-up.
 - direct-xai-speech - Hosted Grok STT direct browser-to-xAI data path and explicit client key borrowing.
+- mic-button-speech-ui - Mic button speech insertion, spoken commands, and streaming/batch composer behavior.
 - prompt-cache-keepalive - Open-client-only provider prompt-cache warming and cost/activity bounds.
+- session-list-display - Session list/sidebar badges, model glyph mapping, and the hover tooltip card.
+- stream-durable-id-dedup - Stream-vs-durable message id alignment and the approx-dedup backstop (codex/opencode steer double-render).
+- selection-comment-ui - Quote selected assistant output into the composer with source-block tint reminders.
+- fork-from-turn - Turn-notch fork actions and server-owned fork-after-summary jobs.
+- transcript-display-objects - Persisted viewer-only objects anchored in transcript order.
+- backward-compat - Observable and persisted surface compatibility decisions.
+- session-retitle - Explicit title editing and user-confirmed generated retitle proposals.
