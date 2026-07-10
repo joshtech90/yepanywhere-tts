@@ -31,6 +31,11 @@ translation. For a permissive advisory scan of obvious raw English copy, run
 `pnpm i18n:scan`; use `--include-info` to inspect low-priority labels and
 `--max-warnings <n>` only when intentionally ratcheting the check toward CI.
 
+Add new strings to `en.json` only. Missing keys in the other locale files
+fall back to English at runtime, and non-English locales are batch-updated
+before a release (a maintainer step). Do not hand-translate per-locale
+entries during feature work.
+
 ## Biome Import/Export Ordering
 
 Do not apply Biome's organize-imports/exports assist as a routine cleanup.
@@ -86,6 +91,24 @@ compatibility; then summarize the behavioral changes, risks, and follow-on work.
 Also state the likely benefit in one sentence, e.g. that this catches protocol
 or schema drift early and reduces silent breakage in YA's Codex integration.
 
+After any provider-refresh pass for Codex or Claude, update the tracked
+compatibility marker in root `package.json`:
+
+- `yepAnywhere.codexCli.compatibleThroughVersion` records the latest Codex CLI
+  version whose YA-visible app-server protocol, model catalog, and runtime
+  assumptions were checked or updated.
+- `yepAnywhere.claudeCode.compatibleThroughVersion` records the latest Claude
+  Code runtime version whose YA-visible SDK/package, model/command, and
+  transcript/control assumptions were checked or updated; keep
+  `yepAnywhere.claudeCode.claudeAgentSdkVersion` paired with the committed
+  `@anthropic-ai/claude-agent-sdk` dependency when the SDK is refreshed.
+
+This marker is the committed "compatible through / up to date as of" answer for
+future minor-version checks. For Codex, keep `expectedVersion` in sync with
+source/protocol refreshes that change the audited app-server target; a no-op
+audit may advance only `compatibleThroughVersion` if the checked-in source did
+not need to change.
+
 ## Reference Source (local-only)
 
 `references/` holds upstream source cloned for local reading. It is gitignored
@@ -97,6 +120,24 @@ source is invaluable; much of that work is effectively reverse-engineered from
 Codex behavior. If `references/codex` is not present, run `pnpm
 clone-references` (shallow, idempotent), then grep it directly. The Claude SDK
 is not open source, so it is not included.
+
+## Zero-Warning Commits
+
+Before committing, the checks you run must be warning-free, not merely
+passing: `pnpm lint` reports zero warnings, and test runs covering the
+touched areas emit no runtime warnings (React "cannot update while
+rendering", "not wrapped in act(...)", and similar). Fix the cause rather
+than suppressing the report; a warning that must stand needs an inline
+justification. DEVELOPMENT.md carries the contributor-facing statement of
+the same policy.
+
+## Client Console Chatter Budget
+
+When a change touches `packages/client`, or a client console looks
+chatty, run `pnpm console:scan` with the pre-commit checks and read
+[`topics/console-chatter.md`](topics/console-chatter.md) — it carries
+the budget policy, the remediation preference order, the measurement
+tools, and the ratcheting baseline.
 
 ## Commit Lock Protocol
 

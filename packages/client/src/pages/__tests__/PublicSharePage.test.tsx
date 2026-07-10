@@ -7,7 +7,10 @@ import {
   rewritePublicShareLocalAppHref,
   rewritePublicShareLocalAppLinks,
 } from "../../contexts/PublicShareContext";
-import { isPublicShareLocalAppHref } from "../PublicSharePage";
+import {
+  getPublicShareCautionKey,
+  isPublicShareLocalAppHref,
+} from "../PublicSharePage";
 
 describe("isPublicShareLocalAppHref", () => {
   const shareUrl = "https://ya.graehl.org/share/secret";
@@ -41,6 +44,20 @@ describe("isPublicShareLocalAppHref", () => {
   });
 });
 
+describe("getPublicShareCautionKey", () => {
+  it("uses the stronger secret warning for live shares", () => {
+    expect(getPublicShareCautionKey("live")).toBe(
+      "publicShareLiveSecretWarning",
+    );
+  });
+
+  it("uses the milder public-output caution for snapshots", () => {
+    expect(getPublicShareCautionKey("frozen")).toBe(
+      "publicShareReadOnlySecretCaution",
+    );
+  });
+});
+
 describe("rewritePublicShareLocalAppHref", () => {
   const projectId = toUrlProjectId("/local/graehl/yepanywhere");
   const context = {
@@ -61,6 +78,18 @@ describe("rewritePublicShareLocalAppHref", () => {
     expect(rewritten).toBe(
       `/share/share-secret/file?path=ui-report%2FREADME.md&h=ygraehl&r=wss%3A%2F%2Frelay.graehl.org%2Fws&projectId=${projectId}&line=8&view=range`,
     );
+  });
+
+  it("strips private project-file inline-code links from public shares", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `<p>See <a class="fixed-font-file-link" data-ya-private-project-file-link="true" data-ya-resource="project-file" data-ya-project-id="${projectId}" data-ya-path="topics/security.md" href="/projects/${projectId}/file?path=topics%2Fsecurity.md"><code>topics/security.md</code></a>.</p>`;
+
+    rewritePublicShareLocalAppLinks(root, context, shareUrl);
+
+    expect(root.querySelector("a")).toBeNull();
+    expect(root.querySelector("code")?.textContent).toBe("topics/security.md");
+    expect(root.innerHTML).not.toContain("/projects/");
+    expect(root.innerHTML).not.toContain("data-ya-private-project-file-link");
   });
 
   it("rewrites local-file links under the shared project root", () => {

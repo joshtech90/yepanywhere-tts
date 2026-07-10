@@ -1,5 +1,10 @@
 import { homedir } from "node:os";
-import { isUrlProjectId, toUrlProjectId } from "@yep-anywhere/shared";
+import {
+  isUrlProjectId,
+  toUrlProjectId,
+  type ProjectQueueItemSummary,
+  type UrlProjectId,
+} from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import type { SessionIndexService } from "../indexes/index.js";
 import type {
@@ -11,6 +16,8 @@ import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import {
   canonicalizeProjectPath,
+  decodeProjectId,
+  getProjectIdentityKey,
   isAbsolutePath,
   isDetachedProjectPath,
 } from "../projects/paths.js";
@@ -21,7 +28,13 @@ import { listSessionsAcrossProviders } from "../sessions/provider-resolution.js"
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader } from "../sessions/types.js";
+import type { ProjectQueueService } from "../services/ProjectQueueService.js";
+import {
+  applyRecapOverlayToSummary,
+  hasUnreadProviderContent,
+} from "../sessions/recap-overlays.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
+import type { Process } from "../supervisor/Process.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type {
   AgentActivity,
@@ -41,6 +54,7 @@ export interface ProjectsDeps {
   sessionMetadataService?: SessionMetadataService;
   /** ProjectMetadataService for persisting added projects */
   projectMetadataService?: ProjectMetadataService;
+  projectQueueService?: Pick<ProjectQueueService, "listAll" | "listProject">;
   sessionIndexService?: SessionIndexService;
   /** Codex scanner for checking if a project has Codex sessions */
   codexScanner?: CodexSessionScanner;
@@ -67,6 +81,94 @@ export interface ProjectsDeps {
 interface ProjectActivityCounts {
   activeOwnedCount: number;
   activeExternalCount: number;
+  projectQueueBlockingCount: number;
+}
+
+function emptyProjectActivityCounts(): ProjectActivityCounts {
+  return {
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    projectQueueBlockingCount: 0,
+  };
+}
+
+function getMutableProjectActivityCounts(
+  counts: Map<string, ProjectActivityCounts>,
+  projectId: string,
+): ProjectActivityCounts {
+  const existing = counts.get(projectId);
+  if (existing) return existing;
+  const created = emptyProjectActivityCounts();
+  counts.set(projectId, created);
+  return created;
+}
+
+function processBlocksProjectQueue(process: Process): boolean {
+  const stateType = process.state.type;
+  return (
+    stateType === "in-turn" ||
+    stateType === "waiting-input" ||
+    process.isRetainingProviderWork() ||
+    process.queueDepth > 0 ||
+    process.getDeferredQueueSummary().length > 0 ||
+    process.getPendingInputRequest() !== null ||
+    process.getLivenessSnapshot().derivedStatus !== "verified-idle"
+  );
+}
+
+function isVisibleProjectQueueItem(item: ProjectQueueItemSummary): boolean {
+  return item.status === "queued" || item.status === "failed";
+}
+
+function projectIdsShareIdentity(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    return (
+      getProjectIdentityKey(decodeProjectId(left as UrlProjectId)) ===
+      getProjectIdentityKey(decodeProjectId(right as UrlProjectId))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function addProjectActivityCounts(
+  left: ProjectActivityCounts,
+  right: ProjectActivityCounts,
+): ProjectActivityCounts {
+  return {
+    activeOwnedCount: left.activeOwnedCount + right.activeOwnedCount,
+    activeExternalCount: left.activeExternalCount + right.activeExternalCount,
+    projectQueueBlockingCount:
+      left.projectQueueBlockingCount + right.projectQueueBlockingCount,
+  };
+}
+
+function getActivityCountsForProject(
+  counts: Map<string, ProjectActivityCounts>,
+  projectId: string,
+): ProjectActivityCounts {
+  let total = emptyProjectActivityCounts();
+  for (const [candidateProjectId, candidateCounts] of counts.entries()) {
+    if (projectIdsShareIdentity(candidateProjectId, projectId)) {
+      total = addProjectActivityCounts(total, candidateCounts);
+    }
+  }
+  return total;
+}
+
+function getProjectQueueCountForProject(
+  projectQueueService: ProjectsDeps["projectQueueService"],
+  projectId: string,
+): number {
+  if (!projectQueueService) return 0;
+  return projectQueueService
+    .listAll()
+    .filter(
+      (item) =>
+        isVisibleProjectQueueItem(item) &&
+        projectIdsShareIdentity(item.projectId, projectId),
+    ).length;
 }
 
 /**
@@ -82,12 +184,19 @@ async function getProjectActivityCounts(
   // Count owned sessions from Supervisor (uses base64url projectId)
   if (supervisor) {
     for (const process of supervisor.getAllProcesses()) {
-      const existing = counts.get(process.projectId) || {
-        activeOwnedCount: 0,
-        activeExternalCount: 0,
-      };
+      const existing = getMutableProjectActivityCounts(counts, process.projectId);
       existing.activeOwnedCount++;
-      counts.set(process.projectId, existing);
+      if (processBlocksProjectQueue(process)) {
+        existing.projectQueueBlockingCount++;
+      }
+    }
+
+    for (const request of supervisor.getQueueInfo()) {
+      const existing = getMutableProjectActivityCounts(
+        counts,
+        request.projectId,
+      );
+      existing.projectQueueBlockingCount++;
     }
   }
 
@@ -97,12 +206,9 @@ async function getProjectActivityCounts(
       const info =
         await externalTracker.getExternalSessionInfoWithUrlId(sessionId);
       if (info) {
-        const existing = counts.get(info.projectId) || {
-          activeOwnedCount: 0,
-          activeExternalCount: 0,
-        };
+        const existing = getMutableProjectActivityCounts(counts, info.projectId);
         existing.activeExternalCount++;
-        counts.set(info.projectId, existing);
+        existing.projectQueueBlockingCount++;
       }
     }
   }
@@ -124,11 +230,11 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     if (!deps.supervisor) return ownedSessions;
 
     for (const process of deps.supervisor.getAllProcesses()) {
-      if (process.projectId === projectId) {
+      if (projectIdsShareIdentity(process.projectId, projectId)) {
         const now = new Date().toISOString();
         ownedSessions.set(process.sessionId, {
           id: process.sessionId,
-          projectId: process.projectId,
+          projectId: projectId as UrlProjectId,
           title: null, // Title will be populated once file has content
           fullTitle: null,
           createdAt: process.startedAt.toISOString(),
@@ -139,6 +245,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
             processId: process.id,
             permissionMode: process.permissionMode,
             modeVersion: process.modeVersion,
+            recapAfterSeconds: process.recapAfterSeconds,
           },
           provider: process.provider,
         });
@@ -187,6 +294,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
             processId: process.id,
             permissionMode: process.permissionMode,
             modeVersion: process.modeVersion,
+            recapAfterSeconds: process.recapAfterSeconds,
           }
         : isExternal
           ? { owner: "external" as const }
@@ -210,23 +318,34 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         }
       }
 
-      // Get last seen and unread status
-      const lastSeenEntry = deps.notificationService?.getLastSeen(session.id);
-      const lastSeenAt = lastSeenEntry?.timestamp;
-      const hasUnread = deps.notificationService
-        ? deps.notificationService.hasUnread(session.id, session.updatedAt)
-        : undefined;
-
       // Get session metadata (custom title, archived, starred)
       const metadata = deps.sessionMetadataService?.getMetadata(session.id);
+      const overlaidSession = deps.sessionMetadataService
+        ? applyRecapOverlayToSummary(
+            session,
+            deps.sessionMetadataService.getRecapMessages(session.id),
+          )
+        : session;
+
+      const lastSeenEntry = deps.notificationService?.getLastSeen(session.id);
+      const lastSeenAt = lastSeenEntry?.timestamp;
+      const hasUnread = hasUnreadProviderContent(
+        deps.notificationService,
+        session.id,
+        session.updatedAt,
+      );
+
       const customTitle = metadata?.customTitle;
       const isArchived = metadata?.isArchived;
       const isStarred = metadata?.isStarred;
       const parentSessionId =
-        metadata?.parentSessionId ?? session.parentSessionId;
+        metadata?.parentSessionId ?? overlaidSession.parentSessionId;
+      const effectiveProjectId =
+        metadata?.workingProjectId ?? overlaidSession.projectId;
 
       return {
-        ...session,
+        ...overlaidSession,
+        projectId: effectiveProjectId,
         ownership,
         pendingInputType,
         activity,
@@ -236,6 +355,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         isArchived,
         isStarred,
         parentSessionId,
+        workstreamId: metadata?.workstreamId,
       };
     });
   }
@@ -252,11 +372,16 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     // Enrich projects with active counts (all keyed by UrlProjectId now)
     const projects = rawProjects.map((project) => {
-      const counts = activityCounts.get(project.id);
+      const counts = getActivityCountsForProject(activityCounts, project.id);
       return {
         ...project,
-        activeOwnedCount: counts?.activeOwnedCount ?? 0,
-        activeExternalCount: counts?.activeExternalCount ?? 0,
+        activeOwnedCount: counts.activeOwnedCount,
+        activeExternalCount: counts.activeExternalCount,
+        projectQueueBlockingCount: counts.projectQueueBlockingCount,
+        projectQueueCount: getProjectQueueCountForProject(
+          deps.projectQueueService,
+          project.id,
+        ),
       };
     });
 
@@ -288,7 +413,24 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return c.json({ error: "Project not found" }, 404);
     }
 
-    return c.json({ project });
+    const activityCounts = await getProjectActivityCounts(
+      deps.supervisor,
+      deps.externalTracker,
+    );
+    const counts = getActivityCountsForProject(activityCounts, project.id);
+    const projectQueueCount = deps.projectQueueService
+      ? getProjectQueueCountForProject(deps.projectQueueService, project.id)
+      : 0;
+
+    return c.json({
+      project: {
+        ...project,
+        activeOwnedCount: counts.activeOwnedCount,
+        activeExternalCount: counts.activeExternalCount,
+        projectQueueBlockingCount: counts.projectQueueBlockingCount,
+        projectQueueCount,
+      },
+    });
   });
 
   // POST /api/projects - Add a project by path
@@ -413,9 +555,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     );
 
     // Add missing owned sessions (new sessions that don't have user/assistant messages yet)
-    sessions = addMissingOwnedSessions(sessions, projectId);
+    const resolvedProjectId = project.id;
+    sessions = addMissingOwnedSessions(sessions, resolvedProjectId);
 
-    return c.json({ sessions: enrichSessions(sessions) });
+    const enriched = enrichSessions(sessions).filter(
+      (session) => projectIdsShareIdentity(session.projectId, resolvedProjectId),
+    );
+
+    return c.json({ sessions: enriched });
   });
 
   return routes;

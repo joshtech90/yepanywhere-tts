@@ -2,6 +2,7 @@
 import type {
   AgentStatus as AgentStatusType,
   AppContentBlock,
+  ProviderName,
 } from "@yep-anywhere/shared";
 
 // Re-export shared types
@@ -37,6 +38,7 @@ export type {
   AppConversationMessage,
   AppContentBlock,
   PendingInputType,
+  ProviderRuntimeStatus,
   AgentActivity,
   ContextUsage,
   SessionOwnership,
@@ -144,6 +146,7 @@ export interface SessionMetadata extends SessionSummary {
   heartbeatTurnText?: string;
   heartbeatForceAfterMinutes?: number;
   promptSuggestionMode?: PromptSuggestionMode;
+  recapAfterSeconds?: number;
 }
 
 /**
@@ -171,7 +174,10 @@ export interface Project {
   path: string;
   name: string;
   sessionCount: number;
+  sessionCountsByProvider?: Partial<Record<ProviderName, number>>;
   activeOwnedCount: number;
   activeExternalCount: number;
+  projectQueueBlockingCount?: number;
+  projectQueueCount?: number;
   lastActivity: string | null;
 }

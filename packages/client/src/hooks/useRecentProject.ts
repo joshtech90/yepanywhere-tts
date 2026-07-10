@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  LEGACY_KEYS,
-  getServerScoped,
-  setServerScoped,
-} from "../lib/storageKeys";
+import { BROWSER_LOCAL_KEYS } from "../lib/storageKeys";
 
 interface ProjectLike {
   id: string;
@@ -15,7 +11,7 @@ interface ProjectLike {
  */
 export function getRecentProjectId(): string | null {
   if (typeof window === "undefined") return null;
-  return getServerScoped("recentProject", LEGACY_KEYS.recentProject);
+  return localStorage.getItem(BROWSER_LOCAL_KEYS.recentProject);
 }
 
 /**
@@ -23,11 +19,11 @@ export function getRecentProjectId(): string | null {
  */
 export function setRecentProjectId(projectId: string): void {
   if (typeof window === "undefined") return;
-  setServerScoped("recentProject", projectId, LEGACY_KEYS.recentProject);
+  localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, projectId);
 }
 
 /**
- * Resolve the best available project ID for starting a new session.
+ * Resolve the best available project ID for project-scoped pages and actions.
  *
  * Prefers the recent project stored in localStorage when it still exists in the
  * current project list, then an optional caller-provided fallback, then the
@@ -53,6 +49,38 @@ export function resolvePreferredProjectId<T extends ProjectLike>(
   }
 
   return projects[0]?.id ?? null;
+}
+
+/**
+ * Extract the route-scoped project ID from project-owned pages.
+ *
+ * Matches direct and relay-mode paths such as:
+ * - /projects/:projectId
+ * - /projects/:projectId/sessions/:sessionId
+ * - /remote/:server/projects/:projectId/sessions/:sessionId
+ */
+export function extractProjectIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/\/projects\/([^/]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Extract the visible project context from a route location.
+ *
+ * Different pages express project context differently: project-owned routes put
+ * it in the path, New Session/Git Status use projectId, and the global
+ * Sessions/Inbox filters use project.
+ */
+export function getProjectIdFromLocation(
+  pathname: string,
+  search: string,
+): string | null {
+  const searchParams = new URLSearchParams(search);
+  return (
+    searchParams.get("projectId") ||
+    searchParams.get("project") ||
+    extractProjectIdFromPath(pathname)
+  );
 }
 
 /**

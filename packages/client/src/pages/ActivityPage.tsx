@@ -85,7 +85,7 @@ export function ActivityPage() {
   const [pathFilter, setPathFilter] = useState("");
   const [typeFilters, setTypeFilters] = useState<Set<FileType>>(new Set());
   const { events, connected, paused, clearEvents, togglePause } =
-    useFileActivity();
+    useFileActivity({ bufferEvents: true });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -129,6 +129,7 @@ export function ActivityPage() {
 
   // Auto-scroll to bottom when new events arrive (if already at bottom)
   useLayoutEffect(() => {
+    void displayedEvents.length;
     const container = scrollContainerRef.current;
     if (container && isAtBottomRef.current) {
       container.scrollTop = container.scrollHeight;

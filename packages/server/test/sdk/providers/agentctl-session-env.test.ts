@@ -30,10 +30,15 @@ function bridgeTestEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   delete env.AGENTCTL_SESSION_ID;
   delete env.YA_ORIGINAL_BASH_ENV_MARKER;
   delete env.YEP_ORIGINAL_BASH_ENV;
+  // Scrub any inherited BASH_ENV so these tests stay hermetic when run from a
+  // shell that already has the agentctl session-env bridge installed (e.g.
+  // dogfooding YA). Callers that need an "original" BASH_ENV pass it via
+  // overrides.
+  delete env.BASH_ENV;
   return env;
 }
 
-const bashIt = isBashAvailable() ? it : it.skip;
+const bashIt = process.platform !== "win32" && isBashAvailable() ? it : it.skip;
 
 describe("agentctl session env bridge", () => {
   bashIt("publishes AGENTCTL_SESSION_ID to later Bash shells", () => {

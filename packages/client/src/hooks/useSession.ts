@@ -2,14 +2,20 @@ import {
   type MarkdownAugment,
   type ContextUsage,
   type ProviderName,
+  type ProviderRuntimeStatus,
+  type RecapMode,
+  type SessionQueuedMessageSummary,
   type SessionLivenessSnapshot,
   type UploadedFile,
-  type UserMessageMetadata,
+  DEFAULT_RECAP_AFTER_SECONDS,
   getModelContextWindow,
+  normalizeRecapAfterSeconds,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
+import { hasUnconfirmedSelfSends } from "../lib/deliveryState";
 import { getMessageId } from "../lib/mergeMessages";
 import { findPendingTasks } from "../lib/pendingTasks";
 import { extractSessionIdFromFileEvent } from "../lib/sessionFile";
@@ -48,8 +54,70 @@ const THROTTLE_MS = 500;
 const STREAM_ACTIVITY_TOKEN_UPDATE_MS = 500;
 const STREAM_LIVENESS_UPDATE_MS = 500;
 const FALLBACK_STREAM_LONG_SILENCE_THRESHOLD_MS = 300_000;
-const RECAP_AWAY_THRESHOLD_MS = 5 * 60 * 1000;
-const RECAP_REQUEST_COOLDOWN_MS = 30_000;
+// Background "away recap" scheduling. A session is "away" when its tab is
+// hidden or the user navigated away from its view -- equivalent conditions.
+// After the session's configured away threshold elapses while still away, we
+// request a recap in the background rather than on return: recap generation has
+// ~10s latency, so on-return would stall the view. Timers are module-level so
+// they survive this hook unmounting on navigation. We gate on a live processId:
+// with no YA-owned process there is nothing to recap and we avoid the cost. (A
+// live processId is only a weak proxy for the provider context still being
+// warm, but it is the cheap, simple guard.)
+const awayRecapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleAwayRecap(
+  projectId: string,
+  sessionId: string,
+  awayThresholdMs: number,
+): void {
+  // One away period -> one timer; keep the original "away since".
+  if (awayRecapTimers.has(sessionId)) {
+    return;
+  }
+  const awaySinceMs = Date.now();
+  const timer = setTimeout(() => {
+    awayRecapTimers.delete(sessionId);
+    // Session-keyed so a process that died while we were away (e.g. a server
+    // restart) can still be revived and recapped server-side.
+    void api
+      .requestSessionRecap(projectId, sessionId, awaySinceMs)
+      .catch((error) => {
+        console.warn("Failed to request recap:", error);
+      });
+  }, awayThresholdMs);
+  awayRecapTimers.set(sessionId, timer);
+}
+
+function cancelAwayRecap(sessionId: string): void {
+  const timer = awayRecapTimers.get(sessionId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    awayRecapTimers.delete(sessionId);
+  }
+}
+
+// Test-only: clear any pending away-recap timers between tests.
+export function __resetAwayRecapTimersForTest(): void {
+  for (const timer of awayRecapTimers.values()) {
+    clearTimeout(timer);
+  }
+  awayRecapTimers.clear();
+}
+
+// Whether an away-recap POST is worth sending for this session: only when a
+// recap mode that can act is enabled. A live session recaps in any non-off
+// mode; a cold (process-dead) session can only be revived+recapped in fork
+// mode. `mode` is undefined until we have seen the session live this view, so
+// a never-live (list-browsed) session never fires. See topics/fork-recap.md.
+function awayRecapEnabled(
+  mode: RecapMode | undefined,
+  sessionIsLive: boolean,
+): boolean {
+  if (!mode || mode === "off") {
+    return false;
+  }
+  return sessionIsLive || mode === "fork";
+}
 
 function hasUserVisibleStreamProgress(
   streamEvent: Record<string, unknown>,
@@ -223,14 +291,7 @@ export interface PendingMessage {
  * persists it, never reconciles it by text, and never adds delivery states of
  * its own. The server is the single source of truth.
  */
-export interface DeferredMessage {
-  tempId?: string;
-  content: string;
-  timestamp: string;
-  metadata?: UserMessageMetadata;
-  attachmentCount?: number;
-  attachments?: UploadedFile[];
-}
+export type DeferredMessage = SessionQueuedMessageSummary;
 
 const CONCATENATED_USER_TURN_SEPARATOR = "\n\n--------\n\n";
 const USER_ECHO_CLOCK_SKEW_MS = 60_000;
@@ -430,10 +491,17 @@ export function useSession(
     processId: string;
     permissionMode?: PermissionMode;
     modeVersion?: number;
+    recapAfterSeconds?: number;
+    recapMode?: RecapMode;
   },
   streamingMarkdownCallbacks?: StreamingMarkdownCallbacks,
-  options?: { tailTurns?: number; tailFrom?: string },
+  options?: {
+    tailTurns?: number;
+    tailFrom?: string;
+    detailedLoadingProgress?: boolean;
+  },
 ) {
+  const sourceSummary = useCurrentSourceRuntime().summary;
   // Use initial status if provided (from navigation state) to connect stream immediately
   const [status, setStatus] = useState<SessionStatus>(
     initialStatus ?? { owner: "none" },
@@ -445,6 +513,20 @@ export function useSession(
   const [pendingInputRequest, setPendingInputRequest] =
     useState<InputRequest | null>(null);
   const [error, setError] = useState<Error | null>(null);
+
+  const reportProviderRuntimeStatus = useCallback(
+    (
+      targetSessionId: string,
+      providerRuntimeStatus: ProviderRuntimeStatus | undefined,
+    ) => {
+      sourceSummary.reportProviderRuntimeStatusSnapshot({
+        sessionId: targetSessionId,
+        projectId,
+        providerRuntimeStatus: providerRuntimeStatus ?? null,
+      });
+    },
+    [projectId, sourceSummary],
+  );
 
   // Actual session ID from server (may differ from URL sessionId during temp→real ID transition)
   // This happens when createSession returns before the SDK sends the real session ID
@@ -580,6 +662,7 @@ export function useSession(
 
   // Reset when switching sessions; the server's connected event repopulates it.
   useEffect(() => {
+    void sessionId;
     setDeferredMessages([]);
   }, [sessionId]);
 
@@ -625,57 +708,85 @@ export function useSession(
   // For Codex providers, the first connected-event catch-up fetch can duplicate
   // freshly streamed messages because JSONL and stream IDs are not yet aligned.
   const hasHandledConnectedEventRef = useRef(false);
-  const hiddenSinceMsRef = useRef<number | null>(null);
-  const lastRecapRequestMsRef = useRef<number | null>(null);
-  const liveProcessId = status.owner === "self" ? status.processId : null;
+  const recapAwayThresholdMs =
+    normalizeRecapAfterSeconds(
+      status.owner === "self"
+        ? status.recapAfterSeconds
+        : DEFAULT_RECAP_AFTER_SECONDS,
+    ) * 1000;
+  const recapAwayThresholdMsRef = useRef(recapAwayThresholdMs);
+  recapAwayThresholdMsRef.current = recapAwayThresholdMs;
+  // Last-known recap mode + liveness, kept in refs so the away trigger (fired
+  // on hide/leave) can suppress the POST when recaps are off, and so the mode
+  // learned while the process was live survives the owner->none flip when it
+  // dies (e.g. a server restart).
+  const liveRecapMode = status.owner === "self" ? status.recapMode : undefined;
+  const recapModeRef = useRef<RecapMode | undefined>(liveRecapMode);
+  if (liveRecapMode) {
+    recapModeRef.current = liveRecapMode;
+  }
+  const sessionIsLiveRef = useRef(status.owner === "self");
+  sessionIsLiveRef.current = status.owner === "self";
 
   // Reset connected-event tracking when switching sessions.
   useEffect(() => {
+    void sessionId;
     hasHandledConnectedEventRef.current = false;
     setSessionLiveness(null);
   }, [sessionId]);
 
+  // Tab visibility is one "away" signal: hiding schedules the background recap;
+  // returning (visible) cancels it if it has not fired yet.
   useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
-
     const handleVisibilityChange = () => {
-      const nowMs = Date.now();
       if (document.visibilityState === "hidden") {
-        hiddenSinceMsRef.current = nowMs;
+        // Arm only when a recap mode that can act is enabled (a cold fork-mode
+        // session is revived + recapped server-side on fire); skip otherwise so
+        // we do not POST for sessions with recaps off.
+        if (awayRecapEnabled(recapModeRef.current, sessionIsLiveRef.current)) {
+          scheduleAwayRecap(
+            projectId,
+            sessionId,
+            recapAwayThresholdMsRef.current,
+          );
+        }
         return;
       }
-      if (document.visibilityState !== "visible") {
-        return;
+      if (document.visibilityState === "visible") {
+        cancelAwayRecap(sessionId);
       }
-
-      const hiddenSinceMs = hiddenSinceMsRef.current;
-      hiddenSinceMsRef.current = null;
-      if (hiddenSinceMs === null || !liveProcessId) {
-        return;
-      }
-
-      const hiddenDurationMs = nowMs - hiddenSinceMs;
-      const previousRequestMs = lastRecapRequestMsRef.current;
-      const isCoolingDown =
-        previousRequestMs !== null &&
-        nowMs - previousRequestMs < RECAP_REQUEST_COOLDOWN_MS;
-      if (hiddenDurationMs < RECAP_AWAY_THRESHOLD_MS || isCoolingDown) {
-        return;
-      }
-
-      lastRecapRequestMsRef.current = nowMs;
-      void api.requestRecap(liveProcessId, hiddenSinceMs).catch((error) => {
-        console.warn("Failed to request recap:", error);
-      });
     };
-
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [liveProcessId]);
+  }, [sessionId, projectId]);
+
+  // Navigating away from this session's view is the equivalent away signal:
+  // being present (mounted with the tab visible) cancels any pending recap;
+  // leaving (unmount or in-place session switch) schedules it. The cleanup
+  // closure carries this render's projectId and sessionId, so an in-place
+  // A->B switch schedules A against A's own session.
+  useEffect(() => {
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState === "visible"
+    ) {
+      cancelAwayRecap(sessionId);
+    }
+    return () => {
+      if (awayRecapEnabled(recapModeRef.current, sessionIsLiveRef.current)) {
+        scheduleAwayRecap(
+          projectId,
+          sessionId,
+          recapAwayThresholdMsRef.current,
+        );
+      }
+    };
+  }, [sessionId, projectId]);
 
   // Slash commands available for this session (from init message)
   const [slashCommands, setSlashCommands] = useState<string[]>([]);
@@ -744,6 +855,7 @@ export function useSession(
       // The SSE init message that normally carries these is discarded after
       // ~30s; stopped providers with static commands also rely on this payload.
       setSlashCommands(result.slashCommands?.map((c) => c.name) ?? []);
+      setDeferredMessages(result.deferredMessages ?? []);
 
       // Focusing a non-running session: its list/hover preview gets no live
       // session-updated events, so recompute it once (the server pushes the
@@ -767,24 +879,31 @@ export function useSession(
     agentContent,
     toolUseToAgent,
     loading,
+    sessionLoadProgress,
     session,
-    setSession,
+    updateSession,
     handleStreamingUpdate,
     handleStreamMessageEvent,
     handleStreamSubagentMessage,
     registerToolUseAgent,
-    setAgentContent,
-    setToolUseToAgent,
-    setMessages,
+    mergeLoadedAgentContent,
+    updateAgentContextUsage,
+    clearAgentStreamingPlaceholders,
+    clearStreamingPlaceholders,
+    removeUnconfirmedSelfSend,
     fetchNewMessages,
     pagination,
     loadingOlder,
     loadOlderMessages,
+    initialScrollSnapshot,
+    updateRouteScrollSnapshot,
+    restoredFromSnapshot,
   } = useSessionMessages({
     projectId,
     sessionId,
     tailTurns: options?.tailTurns,
     tailFrom: options?.tailFrom,
+    detailedLoadingProgress: options?.detailedLoadingProgress,
     onLoadComplete: handleLoadComplete,
     onLoadError: handleLoadError,
   });
@@ -855,12 +974,14 @@ export function useSession(
   }, [isCompacting, messages, setIsCompacting, status.owner]);
 
   useEffect(() => {
+    void sessionId;
     setIsCompacting(false);
   }, [sessionId, setIsCompacting]);
 
   const nextClientOrderRef = useRef(0);
 
   useEffect(() => {
+    void sessionId;
     nextClientOrderRef.current = 0;
   }, [sessionId]);
 
@@ -871,6 +992,14 @@ export function useSession(
     setPendingMessages((prev) =>
       removeDeliveredPendingMessages(prev, messages),
     );
+  }, [messages]);
+
+  // Tracks whether any self-sent turn is still awaiting its durable
+  // transcript copy (delivery-state "sent"); read by handleFileChange via ref
+  // so the handler identity stays stable.
+  const hasUnconfirmedSendsRef = useRef(false);
+  useEffect(() => {
+    hasUnconfirmedSendsRef.current = hasUnconfirmedSelfSends(messages);
   }, [messages]);
 
   // Update local mode (UI selection) and sync to server if process is active
@@ -985,17 +1114,11 @@ export function useSession(
           mappings.map((m) => [m.toolUseId, m.agentId]),
         );
 
-        // Update the toolUseToAgent state with loaded mappings
-        // This allows TaskRenderer to access agentContent even after page reload
-        setToolUseToAgent((prev) => {
-          const next = new Map(prev);
-          for (const [toolUseId, agentId] of mappingsMap) {
-            if (!next.has(toolUseId)) {
-              next.set(toolUseId, agentId);
-            }
-          }
-          return next;
-        });
+        // Register loaded mappings so TaskRenderer can access agent content
+        // after page reload through the same reducer/store path as streaming.
+        for (const [toolUseId, agentId] of mappingsMap) {
+          registerToolUseAgent(toolUseId, agentId);
+        }
 
         // Load content for each pending task that has an agent file
         for (const task of pendingTasks) {
@@ -1009,32 +1132,7 @@ export function useSession(
               agentId,
             );
 
-            // Merge into agentContent state, deduping by message ID
-            // Use getMessageId to prefer uuid over id
-            setAgentContent((prev) => {
-              const existing = prev[agentId];
-              if (existing && existing.messages.length > 0) {
-                // Already have content (maybe from stream), merge without duplicates
-                const existingIds = new Set(
-                  existing.messages.map((m) => getMessageId(m)),
-                );
-                const newMessages = agentData.messages.filter(
-                  (m) => !existingIds.has(getMessageId(m)),
-                );
-                return {
-                  ...prev,
-                  [agentId]: {
-                    messages: [...existing.messages, ...newMessages],
-                    status: agentData.status,
-                  },
-                };
-              }
-              // No existing content, use loaded data
-              return {
-                ...prev,
-                [agentId]: agentData,
-              };
-            });
+            mergeLoadedAgentContent(agentId, agentData);
           } catch {
             // Skip agents that can't be loaded
           }
@@ -1048,10 +1146,10 @@ export function useSession(
   }, [
     loading,
     messages,
+    mergeLoadedAgentContent,
     projectId,
+    registerToolUseAgent,
     sessionId,
-    setAgentContent,
-    setToolUseToAgent,
   ]);
 
   // Leading + trailing edge throttle:
@@ -1094,9 +1192,14 @@ export function useSession(
         return;
       }
 
-      // For owned sessions: messages come via stream stream, metadata via session-updated event
-      // No API call needed - skip file change processing entirely
-      if (status.owner === "self") {
+      // For owned sessions: messages come via the stream, metadata via the
+      // session-updated event — skip file-change processing, EXCEPT while a
+      // self-send is still awaiting its durable copy. Then the durable rows
+      // are exactly what confirms the send (flips delivery-state to
+      // "confirmed" via the merge/queue-operation pairing), so fetch them
+      // mid-turn. Self-limiting: once nothing is unconfirmed, owned sessions
+      // go back to skipping.
+      if (status.owner === "self" && !hasUnconfirmedSendsRef.current) {
         return;
       }
 
@@ -1112,7 +1215,7 @@ export function useSession(
       if (event.sessionId !== sessionId) return;
 
       // Update session metadata from stream event (no API call needed)
-      setSession((prev) => {
+      updateSession((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
@@ -1130,14 +1233,14 @@ export function useSession(
         };
       });
     },
-    [sessionId, setSession],
+    [sessionId, updateSession],
   );
 
   const handleSessionMetadataChange = useCallback(
     (event: SessionMetadataChangedEvent) => {
       if (event.sessionId !== sessionId) return;
 
-      setSession((prev) => {
+      updateSession((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
@@ -1164,13 +1267,36 @@ export function useSession(
           ...(event.promptSuggestionMode !== undefined && {
             promptSuggestionMode: event.promptSuggestionMode,
           }),
+          ...(event.recapAfterSeconds !== undefined && {
+            recapAfterSeconds: event.recapAfterSeconds,
+          }),
           ...(event.transcriptDisplayObjects !== undefined && {
             transcriptDisplayObjects: event.transcriptDisplayObjects,
           }),
+          ...(event.projectId !== undefined && {
+            projectId: event.projectId,
+            workingProjectId:
+              event.transcriptProjectId === null ? undefined : event.projectId,
+          }),
+          ...(event.transcriptProjectId !== undefined && {
+            transcriptProjectId: event.transcriptProjectId ?? undefined,
+          }),
         };
       });
+      if (event.recapAfterSeconds !== undefined) {
+        setStatus((prev) =>
+          prev.owner === "self"
+            ? {
+                ...prev,
+                recapAfterSeconds: normalizeRecapAfterSeconds(
+                  event.recapAfterSeconds,
+                ),
+              }
+            : prev,
+        );
+      }
     },
-    [sessionId, setSession],
+    [sessionId, updateSession],
   );
 
   // Listen for session status changes via stream
@@ -1232,16 +1358,21 @@ export function useSession(
 
           // Fetch pending request in background (can't return promise from setState)
           api.getSessionMetadata(projectId, sessionId).then((result) => {
+            reportProviderRuntimeStatus(
+              sessionId,
+              result.providerRuntimeStatus,
+            );
             if (result.pendingInputRequest) {
               setPendingInputRequest(result.pendingInputRequest);
             }
+            setDeferredMessages(result.deferredMessages ?? []);
           });
 
           return current; // Return unchanged for now, will update when fetch completes
         });
       }
     },
-    [projectId, sessionId],
+    [projectId, reportProviderRuntimeStatus, sessionId],
   );
 
   // Handle activity bus reconnection (e.g., after phone screen wake).
@@ -1253,6 +1384,7 @@ export function useSession(
     fetchNewMessages();
     try {
       const data = await api.getSessionMetadata(projectId, sessionId);
+      reportProviderRuntimeStatus(sessionId, data.providerRuntimeStatus);
       const metadataProcessState = parseProcessState(data.processState);
       setStatus(data.ownership);
       if (metadataProcessState) {
@@ -1272,10 +1404,11 @@ export function useSession(
       ) {
         setPendingInputRequest(null);
       }
+      setDeferredMessages(data.deferredMessages ?? []);
     } catch {
       // Silent fail - non-critical
     }
-  }, [projectId, sessionId, fetchNewMessages]);
+  }, [projectId, sessionId, fetchNewMessages, reportProviderRuntimeStatus]);
 
   useFileActivity({
     onSessionStatusChange: handleSessionStatusChange,
@@ -1319,18 +1452,9 @@ export function useSession(
   // Callback for agent context usage updates
   const handleAgentContextUsage = useCallback(
     (agentId: string, usage: { inputTokens: number; percentage: number }) => {
-      setAgentContent((prev) => {
-        const existing = prev[agentId] ?? {
-          messages: [],
-          status: "running",
-        };
-        return {
-          ...prev,
-          [agentId]: { ...existing, contextUsage: usage },
-        };
-      });
+      updateAgentContextUsage(agentId, usage);
     },
-    [setAgentContent],
+    [updateAgentContextUsage],
   );
 
   // Use streaming content hook for handling stream_event stream messages
@@ -1432,20 +1556,9 @@ export function useSession(
           clearStreaming();
 
           if (msgAgentId) {
-            // Remove streaming placeholders from this agent's content
-            setAgentContent((prev) => {
-              const existing = prev[msgAgentId];
-              if (!existing) return prev;
-              const filtered = existing.messages.filter((m) => !m._isStreaming);
-              if (filtered.length === existing.messages.length) return prev;
-              return {
-                ...prev,
-                [msgAgentId]: { ...existing, messages: filtered },
-              };
-            });
+            clearAgentStreamingPlaceholders(msgAgentId);
           } else {
-            // Remove ALL streaming placeholder messages from main messages
-            setMessages((prev) => prev.filter((m) => !m._isStreaming));
+            clearStreamingPlaceholders();
           }
         }
 
@@ -1487,7 +1600,7 @@ export function useSession(
             session?.provider,
           );
           if (usage) {
-            setSession((prev) =>
+            updateSession((prev) =>
               prev ? { ...prev, contextUsage: usage } : prev,
             );
           }
@@ -1570,10 +1683,16 @@ export function useSession(
       } else if (data.eventType === "status") {
         const statusData = data as {
           eventType: string;
+          sessionId?: string;
           state: string;
           request?: InputRequest;
           liveness?: SessionLivenessSnapshot;
+          providerRuntimeStatus?: ProviderRuntimeStatus;
         };
+        reportProviderRuntimeStatus(
+          statusData.sessionId ?? statusData.request?.sessionId ?? sessionId,
+          statusData.providerRuntimeStatus,
+        );
         if (statusData.liveness) {
           setSessionLiveness(statusData.liveness);
         }
@@ -1642,7 +1761,12 @@ export function useSession(
           throttledFetch();
         }
       } else if (data.eventType === "complete") {
+        const completeData = data as {
+          eventType: string;
+          sessionId?: string;
+        };
         logSessionUiTrace("stream-complete", { sessionId });
+        reportProviderRuntimeStatus(completeData.sessionId ?? sessionId, null);
         setProcessState("idle");
         setStatus({ owner: "none" });
         setSessionLiveness(null);
@@ -1659,10 +1783,16 @@ export function useSession(
           request?: InputRequest;
           provider?: ProviderName;
           model?: string;
+          recapAfterSeconds?: number;
+          recapMode?: RecapMode;
           deferredMessages?: DeferredMessage[];
           liveness?: SessionLivenessSnapshot;
+          providerRuntimeStatus?: ProviderRuntimeStatus;
         };
         setSessionLiveness(connectedData.liveness ?? null);
+        if (connectedData.recapMode) {
+          recapModeRef.current = connectedData.recapMode;
+        }
 
         // Update actual session ID if server reports a different one
         // This handles the temp→real ID transition when createSession returns
@@ -1670,6 +1800,10 @@ export function useSession(
         // Check both the connected event's sessionId and the request's sessionId
         const serverSessionId =
           connectedData.sessionId ?? connectedData.request?.sessionId;
+        reportProviderRuntimeStatus(
+          serverSessionId ?? sessionId,
+          connectedData.providerRuntimeStatus,
+        );
         logSessionUiTrace("stream-connected", {
           sessionId,
           serverSessionId: serverSessionId ?? null,
@@ -1678,8 +1812,21 @@ export function useSession(
           modeVersion: connectedData.modeVersion ?? null,
           provider: connectedData.provider ?? null,
           model: connectedData.model ?? null,
+          recapAfterSeconds: connectedData.recapAfterSeconds ?? null,
           deferredCount: connectedData.deferredMessages?.length ?? 0,
         });
+        if (connectedData.recapAfterSeconds !== undefined) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? {
+                  ...prev,
+                  recapAfterSeconds: normalizeRecapAfterSeconds(
+                    connectedData.recapAfterSeconds,
+                  ),
+                }
+              : prev,
+          );
+        }
         if (serverSessionId && serverSessionId !== sessionId) {
           setActualSessionId(serverSessionId);
         }
@@ -1715,7 +1862,7 @@ export function useSession(
         const sseProvider = connectedData.provider;
         const sseModel = connectedData.model;
         if (sseProvider) {
-          setSession((prev) => {
+          updateSession((prev) => {
             if (!prev) return prev;
             // Always update model if the connected event has a resolved model
             // (provider won't change, but model resolves from undefined/"Default" to actual name)
@@ -1830,18 +1977,20 @@ export function useSession(
       sessionId,
       handleStreamEvent,
       noteStreamActivity,
+      noteStreamProgressLiveness,
       clearStreaming,
       removePendingMessage,
-      setDeferredMessages,
       streamingMarkdownCallbacks,
       handleStreamMessageEvent,
       handleStreamSubagentMessage,
       registerToolUseAgent,
-      setAgentContent,
-      setMessages,
-      setSession,
+      clearAgentStreamingPlaceholders,
+      clearStreamingPlaceholders,
+      setIsCompacting,
+      updateSession,
       fetchNewMessages,
       throttledFetch,
+      reportProviderRuntimeStatus,
       session?.provider,
       session?.model,
     ],
@@ -1853,6 +2002,8 @@ export function useSession(
   const handleStreamError = useCallback(async () => {
     try {
       const data = await api.getSessionMetadata(projectId, sessionId);
+      reportProviderRuntimeStatus(sessionId, data.providerRuntimeStatus);
+      setDeferredMessages(data.deferredMessages ?? []);
       const metadataProcessState = parseProcessState(data.processState);
       if (data.ownership.owner !== "self") {
         setStatus({ owner: "none" });
@@ -1878,7 +2029,7 @@ export function useSession(
       setProcessState("idle");
       setPendingInputRequest(null);
     }
-  }, [projectId, sessionId]);
+  }, [projectId, sessionId, reportProviderRuntimeStatus]);
 
   // Only connect to session stream when we own the session
   // External sessions are tracked via the activity stream instead
@@ -1897,18 +2048,18 @@ export function useSession(
   // Allow external model update (e.g., after /model command switches mid-session)
   const setSessionModel = useCallback(
     (model: string) => {
-      setSession((prev) => (prev ? { ...prev, model } : prev));
+      updateSession((prev) => (prev ? { ...prev, model } : prev));
     },
-    [setSession],
+    [updateSession],
   );
 
   return {
     session,
-    setSession,
+    updateSession,
     setSessionModel,
     messages,
     agentContent, // Subagent messages keyed by agentId (for Task tool)
-    setAgentContent, // Setter for merging lazy-loaded agent content
+    mergeLoadedAgentContent,
     toolUseToAgent, // Mapping from Task tool_use_id → agentId (for rendering during streaming)
     markdownAugments, // Pre-rendered markdown HTML from REST response (keyed by blockId)
     status,
@@ -1921,6 +2072,7 @@ export function useSession(
     permissionMode: localMode, // UI-selected mode (sent with next message)
     modeVersion,
     loading,
+    sessionLoadProgress,
     error,
     connected,
     sessionWatchConnected,
@@ -1936,6 +2088,7 @@ export function useSession(
     updatePendingMessage, // Update pending message fields (e.g. status)
     deferredMessages, // Server-authoritative queued-message mirror
     setDeferredMessages, // Replace the mirror from a server queue/cancel response
+    removeUnconfirmedSelfSend, // Remove a cancelled optimistic steering echo
     slashCommands, // Available slash commands from init message
     sessionTools, // Available tools from init message
     mcpServers, // Available MCP servers from init message
@@ -1944,6 +2097,9 @@ export function useSession(
     pagination, // Compact-boundary pagination metadata
     loadingOlder, // Whether older messages are being loaded
     loadOlderMessages, // Load next chunk of older messages
+    initialScrollSnapshot, // Retained same-tab route scroll anchor
+    updateRouteScrollSnapshot, // Update retained same-tab route scroll anchor
+    restoredFromSnapshot, // Initial render came from retained same-tab data
     reconnectStream, // Force session stream reconnection (e.g., after process restart)
   };
 }

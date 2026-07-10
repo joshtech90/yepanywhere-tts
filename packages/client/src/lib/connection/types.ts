@@ -1,6 +1,7 @@
 import type {
   DeviceServerMessage,
   RemoteClientMessage,
+  StagedAttachmentRef,
   UploadedFile,
 } from "@yep-anywhere/shared";
 
@@ -202,7 +203,6 @@ export interface UploadOptions {
  * Connection abstraction for client-server communication.
  *
  * Implementations:
- * - DirectConnection: Uses native fetch for REST, WebSocket for uploads (localhost)
  * - WebSocketConnection: Multiplexes everything over a single WebSocket (localhost subscriptions)
  * - SecureConnection: Multiplexes everything over encrypted WebSocket (remote/relay)
  *
@@ -296,6 +296,18 @@ export interface Connection {
     file: File,
     options?: UploadOptions,
   ): Promise<UploadedFile>;
+
+  /**
+   * Upload a file to draft attachment staging.
+   *
+   * @param file - File to stage
+   * @param options - Upload options plus optional existing draft batch ID
+   * @returns Staged attachment metadata safe to persist in a draft envelope
+   */
+  uploadStagedAttachment(
+    file: File,
+    options?: UploadOptions & { batchId?: string },
+  ): Promise<StagedAttachmentRef>;
 
   /**
    * Force reconnection of the underlying transport.

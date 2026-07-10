@@ -176,6 +176,10 @@ export interface SidebarNavItemProps {
   label: string;
   /** Optional badge count (displays if > 0) */
   badge?: number;
+  /** Badge visual variant */
+  badgeVariant?: "default" | "projectQueue";
+  /** Optional badge tooltip */
+  badgeTitle?: string;
   /** Called when item is clicked (e.g., to close mobile sidebar) */
   onClick?: () => void;
   /** Title tooltip */
@@ -197,6 +201,8 @@ export function SidebarNavItem({
   icon,
   label,
   badge,
+  badgeVariant = "default",
+  badgeTitle,
   onClick,
   title,
   hasDraft,
@@ -205,8 +211,11 @@ export function SidebarNavItem({
 }: SidebarNavItemProps) {
   const location = useLocation();
   const fullPath = `${basePath}${to}`;
+  const fullPathname = fullPath.split(/[?#]/)[0] || fullPath;
+  const targetPathname = to.split(/[?#]/)[0] || to;
   // Check if current path matches (with or without basePath prefix)
-  const isActive = location.pathname === fullPath || location.pathname === to;
+  const isActive =
+    location.pathname === fullPathname || location.pathname === targetPathname;
 
   return (
     <Link
@@ -220,7 +229,12 @@ export function SidebarNavItem({
       {hasDraft && <span className="session-draft-badge">Draft</span>}
       {hasActivityIndicator && <ThinkingIndicator />}
       {badge !== undefined && badge > 0 && (
-        <span className="sidebar-nav-badge">{badge}</span>
+        <span
+          className={`sidebar-nav-badge sidebar-nav-badge--${badgeVariant}`}
+          title={badgeTitle}
+        >
+          {badge}
+        </span>
       )}
     </Link>
   );

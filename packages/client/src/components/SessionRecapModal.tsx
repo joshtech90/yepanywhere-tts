@@ -1,16 +1,18 @@
 import {
+  DEFAULT_RECAP_AFTER_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   type ModelInfo,
   type ProviderName,
   type RecapMode,
+  normalizeRecapAfterSeconds,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useProviders } from "../hooks/useProviders";
-import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
-import { helperTargetsToModelOptions } from "../lib/helperTargets";
+import { getRecapModeDescription } from "../lib/recapModes";
+import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import { Modal } from "./ui/Modal";
 
 interface SessionRecapModalProps {
@@ -21,25 +23,19 @@ interface SessionRecapModalProps {
   onClose: () => void;
   onSaved: (settings: {
     recapMode: RecapMode;
+    recapAfterSeconds: number;
     helperSideModel: string;
   }) => void;
 }
 
-const RECAP_MODE_ORDER: RecapMode[] = ["off", "native", "side-session"];
+const RECAP_MODE_ORDER: RecapMode[] = ["off", "side-session", "fork"];
 type Translate = ReturnType<typeof useI18n>["t"];
 
 function modeLabel(mode: RecapMode, t: Translate): string {
   if (mode === "native") return t("recapModeNative");
+  if (mode === "fork") return t("recapModeFork");
   if (mode === "side-session") return t("recapModeSideSession");
   return t("recapModeOff");
-}
-
-function modeDescription(mode: RecapMode, t: Translate): string {
-  if (mode === "native") return t("recapModeNativeDescription");
-  if (mode === "side-session") {
-    return t("recapModeSideSessionDescription");
-  }
-  return t("recapModeOffDescription");
 }
 
 export function SessionRecapModal({
@@ -52,14 +48,16 @@ export function SessionRecapModal({
 }: SessionRecapModalProps) {
   const { t } = useI18n();
   const { providers } = useProviders();
-  const { settings } = useServerSettings();
   const [recapMode, setRecapMode] = useState<RecapMode>("off");
+  const [recapAfterSeconds, setRecapAfterSeconds] = useState(
+    DEFAULT_RECAP_AFTER_SECONDS,
+  );
   const [helperSideModel, setHelperSideModel] = useState<string>(
     HELPER_SIDE_MODEL_CHEAPEST,
   );
-  const [processProvider, setProcessProvider] = useState<ProviderName | undefined>(
-    provider,
-  );
+  const [processProvider, setProcessProvider] = useState<
+    ProviderName | undefined
+  >(provider);
   const [processModel, setProcessModel] = useState<string | undefined>(
     currentModel,
   );
@@ -77,16 +75,27 @@ export function SessionRecapModal({
       .then((response) => {
         if (cancelled) return;
         const process = response.process;
-        setRecapMode(process?.recapMode ?? "off");
+        setRecapMode(
+          process?.recapMode === "native"
+            ? "off"
+            : (process?.recapMode ?? "off"),
+        );
+        setRecapAfterSeconds(
+          normalizeRecapAfterSeconds(process?.recapAfterSeconds),
+        );
         setHelperSideModel(
           process?.helperSideModel ?? HELPER_SIDE_MODEL_CHEAPEST,
         );
-        setProcessProvider((process?.provider as ProviderName | undefined) ?? provider);
+        setProcessProvider(
+          (process?.provider as ProviderName | undefined) ?? provider,
+        );
         setProcessModel(process?.model ?? currentModel);
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : t("sessionRecapLoadFailed"));
+          setError(
+            err instanceof Error ? err.message : t("sessionRecapLoadFailed"),
+          );
         }
       })
       .finally(() => {
@@ -102,14 +111,11 @@ export function SessionRecapModal({
 
   const providerInfo = providers.find((p) => p.name === processProvider);
   const models = providerInfo?.models ?? [];
-  const helperTargetModelOptions = useMemo(
-    () => helperTargetsToModelOptions(settings?.helperTargets),
-    [settings?.helperTargets],
-  );
   const modeAvailability = useMemo(
     () => ({
       off: true,
-      native: providerInfo?.supportsNativeRecaps === true,
+      native: false,
+      fork: providerInfo?.supportsRecaps === true,
       "side-session": providerInfo?.supportsRecaps === true,
     }),
     [providerInfo],
@@ -128,11 +134,15 @@ export function SessionRecapModal({
             ? processModel
             : undefined,
       },
-      ...helperTargetModelOptions,
       ...models,
     ],
-    [helperTargetModelOptions, models, processModel, t],
+    [models, processModel, t],
   );
+  const effectiveHelperSideModel = modelOptions.some(
+    (model) => model.id === helperSideModel,
+  )
+    ? helperSideModel
+    : HELPER_SIDE_MODEL_CHEAPEST;
 
   const save = useCallback(async () => {
     if (!modeAvailability[recapMode]) {
@@ -144,30 +154,38 @@ export function SessionRecapModal({
     try {
       const result = await api.setProcessRecapConfig(processId, {
         recapMode,
-        helperSideModel,
+        recapAfterSeconds,
+        helperSideModel: effectiveHelperSideModel,
       });
       onSaved({
         recapMode: result.recapMode,
+        recapAfterSeconds: result.recapAfterSeconds,
         helperSideModel: result.helperSideModel,
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("sessionRecapSaveFailed"));
+      setError(
+        err instanceof Error ? err.message : t("sessionRecapSaveFailed"),
+      );
     } finally {
       setIsSaving(false);
     }
   }, [
-    helperSideModel,
+    effectiveHelperSideModel,
     modeAvailability,
     onClose,
     onSaved,
     processId,
+    recapAfterSeconds,
     recapMode,
     t,
   ]);
 
   return (
-    <Modal title={t("sessionRecapTitle")} onClose={isSaving ? () => {} : onClose}>
+    <Modal
+      title={t("sessionRecapTitle")}
+      onClose={isSaving ? () => {} : onClose}
+    >
       <div className="settings-group session-recap-modal">
         <div className="settings-item model-settings-item">
           <div className="settings-item-info">
@@ -184,14 +202,26 @@ export function SessionRecapModal({
                   className={`font-size-option ${recapMode === mode ? "active" : ""}`}
                   onClick={() => setRecapMode(mode)}
                   disabled={isLoading || isSaving || !available}
-                  title={modeDescription(mode, t)}
+                  title={getRecapModeDescription(mode, t, recapAfterSeconds)}
                 >
                   {modeLabel(mode, t)}
                 </button>
               );
             })}
           </div>
+          <p className="recap-mode-caption">
+            {getRecapModeDescription(recapMode, t, recapAfterSeconds)}
+          </p>
         </div>
+
+        {recapMode !== "off" && (
+          <RecapAfterSecondsControl
+            value={recapAfterSeconds}
+            disabled={isLoading || isSaving}
+            mode={recapMode}
+            onCommit={setRecapAfterSeconds}
+          />
+        )}
 
         {recapMode === "side-session" && (
           <label className="settings-item model-settings-item">
@@ -201,7 +231,7 @@ export function SessionRecapModal({
             </div>
             <select
               className="settings-select"
-              value={helperSideModel}
+              value={effectiveHelperSideModel}
               onChange={(event) => setHelperSideModel(event.target.value)}
               disabled={isLoading || isSaving}
             >

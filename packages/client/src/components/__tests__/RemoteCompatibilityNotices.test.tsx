@@ -23,6 +23,7 @@ function version(overrides: Partial<VersionInfo> = {}): VersionInfo {
     latest: "0.4.29",
     updateAvailable: false,
     resumeProtocolVersion: 3,
+    remoteCompatibilityLevel: 10,
     capabilities: [],
     ...overrides,
   };
@@ -63,7 +64,9 @@ describe("RemoteCompatibilityNotices", () => {
       "Server update required soon",
     );
     expect(screen.getByText(/compatibility window/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remind me later" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Remind me later" }),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
@@ -229,6 +232,7 @@ describe("RemoteCompatibilityNotices", () => {
           latestVersion: props.versionInfo.latest,
           updateAvailable: props.versionInfo.updateAvailable,
           resumeProtocolVersion: props.versionInfo.resumeProtocolVersion,
+          remoteCompatibilityLevel: props.versionInfo.remoteCompatibilityLevel,
           capabilities: props.versionInfo.capabilities,
           relayUsername: props.relayUsername,
         }),
@@ -238,5 +242,39 @@ describe("RemoteCompatibilityNotices", () => {
     await waitFor(() =>
       expect(screen.getByTestId("remote-compatibility-notice")).toBeTruthy(),
     );
+  });
+
+  it("stays hidden while server version data is still loading", () => {
+    render(
+      <RemoteCompatibilityNotices
+        relayUsername="dev-box"
+        versionInfo={null}
+      />,
+    );
+
+    expect(screen.queryByTestId("remote-compatibility-notice")).toBeNull();
+  });
+
+  it("renders the remote compatibility level warning for older servers", () => {
+    render(
+      <RemoteCompatibilityNotices
+        relayUsername="dev-box"
+        versionInfo={version({
+          current: "0.5.2",
+          latest: "0.5.2",
+          remoteCompatibilityLevel: undefined,
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "Update local server soon",
+    );
+    expect(
+      screen.getByText("Compatibility level 0; recommended 10"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/newer than your local YA server/i),
+    ).toBeTruthy();
   });
 });

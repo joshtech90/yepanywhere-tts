@@ -3,7 +3,13 @@ import {
   MESSAGE_STALE_THRESHOLD_MS,
   getLatestMessageTimestampMs,
 } from "../lib/messageAge";
+import {
+  getCancellableUnconfirmedSteerTempId,
+  getUserPromptDeliveryState,
+} from "../lib/deliveryState";
+import { useQuoteableTextSource } from "../hooks/useQuoteableTextSource";
 import type { CommentAnchor } from "../lib/commentAnchors";
+import type { ContentBlock } from "../types";
 import type { RenderItem } from "../types/renderItems";
 import { MessageAge } from "./MessageAge";
 import { ForkSummaryDisplayObject } from "./ForkSummaryDisplayObject";
@@ -13,6 +19,7 @@ import { TextBlock } from "./blocks/TextBlock";
 import { ThinkingBlock } from "./blocks/ThinkingBlock";
 import { ToolCallRow } from "./blocks/ToolCallRow";
 import { UserPromptBlock } from "./blocks/UserPromptBlock";
+import { LinkifiedText } from "./ui/LinkifiedText";
 
 interface Props {
   item: RenderItem;
@@ -21,10 +28,12 @@ interface Props {
   toggleThinkingExpanded: () => void;
   sessionProvider?: string;
   onCorrectUserPrompt?: () => void;
+  onCancelUnconfirmedUserPrompt?: (tempId: string) => void;
   onTrimBeforeUserPrompt?: () => void;
   onForkBeforeUserPrompt?: () => void;
   onQuoteTextBlock?: (anchor: CommentAnchor) => void;
   alwaysShowQuoteCircle?: boolean;
+  paragraphQuoteCirclesEnabled?: boolean;
   staleNowMs?: number;
   latestVisibleTimestampMs?: number | null;
   thinkingDurationMs?: number;
@@ -140,6 +149,83 @@ function buildDebugSnapshot(
   };
 }
 
+function systemDetailToText(detail: string | ContentBlock[]): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  return detail
+    .map((block) => {
+      if (block.type === "text" && typeof block.text === "string") {
+        return block.text;
+      }
+      if (block.type === "tool_result" && typeof block.content === "string") {
+        return block.content;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function CollapsibleSystemMessage({
+  item,
+  icon,
+}: {
+  item: Extract<RenderItem, { type: "system" }>;
+  icon: string;
+}) {
+  const details = (item.details ?? [])
+    .map(systemDetailToText)
+    .map((text) => text.trim())
+    .filter(Boolean);
+  const variantClass =
+    item.subtype === "compact_boundary"
+      ? "system-message-compact-boundary"
+      : "system-message-local-command";
+  const summaryClass =
+    item.subtype === "compact_boundary"
+      ? "system-message-summary system-message-compact-summary"
+      : "system-message-summary system-message-local-command-summary";
+
+  if (details.length === 0) {
+    return (
+      <div className={`system-message ${variantClass}`}>
+        <span className="system-message-icon">{icon}</span>
+        <span className="system-message-text">
+          <LinkifiedText text={item.content} />
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <details
+      className={`system-message ${variantClass} ${variantClass}--details system-message--details`}
+    >
+      <summary className={summaryClass}>
+        <span className="collapsible__icon" aria-hidden="true">
+          ▸
+        </span>
+        <span className="system-message-icon">{icon}</span>
+        <span className="system-message-text">
+          <LinkifiedText text={item.content} />
+        </span>
+      </summary>
+      <div className="system-message-details">
+        {details.map((detail, index) => (
+          <pre
+            className="system-message-detail"
+            key={`${item.id}-system-detail-${index}`}
+          >
+            {detail}
+          </pre>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export const RenderItemComponent = memo(function RenderItemComponent({
   item,
   isStreaming,
@@ -147,10 +233,12 @@ export const RenderItemComponent = memo(function RenderItemComponent({
   toggleThinkingExpanded,
   sessionProvider,
   onCorrectUserPrompt,
+  onCancelUnconfirmedUserPrompt,
   onTrimBeforeUserPrompt,
   onForkBeforeUserPrompt,
   onQuoteTextBlock,
   alwaysShowQuoteCircle,
+  paragraphQuoteCirclesEnabled,
   staleNowMs,
   latestVisibleTimestampMs,
   thinkingDurationMs,
@@ -171,6 +259,11 @@ export const RenderItemComponent = memo(function RenderItemComponent({
     isLatestVisibleTimestamp &&
     ageNowMs !== null &&
     ageNowMs - timestampMs >= MESSAGE_STALE_THRESHOLD_MS;
+  const recapQuoteRef = useQuoteableTextSource<HTMLSpanElement>(
+    item.type === "system" && item.subtype === "away_summary"
+      ? item.content
+      : "",
+  );
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -207,6 +300,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
             augmentHtml={item.augmentHtml}
             onQuoteBlock={onQuoteTextBlock}
             alwaysShowQuoteCircle={alwaysShowQuoteCircle}
+            paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
           />
         );
 
@@ -233,15 +327,26 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           />
         );
 
-      case "user_prompt":
+      case "user_prompt": {
+        const deliveryState = getUserPromptDeliveryState(item.sourceMessages);
+        const cancellableTempId = getCancellableUnconfirmedSteerTempId(
+          item.sourceMessages,
+        );
         return (
           <UserPromptBlock
             content={item.content}
             onCorrect={onCorrectUserPrompt}
+            onCancelUnconfirmed={
+              cancellableTempId && onCancelUnconfirmedUserPrompt
+                ? () => onCancelUnconfirmedUserPrompt(cancellableTempId)
+                : undefined
+            }
             onTrimBefore={onTrimBeforeUserPrompt}
             onForkBefore={onForkBeforeUserPrompt}
+            deliveryState={deliveryState}
           />
         );
+      }
 
       case "session_setup":
         return <SessionSetupBlock title={item.title} prompts={item.prompts} />;
@@ -271,7 +376,9 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           return (
             <div className="system-message-recap">
               <span className="system-message-recap-mark">※</span>
-              <span className="system-message-recap-body">{item.content}</span>
+              <span ref={recapQuoteRef} className="system-message-recap-body">
+                <LinkifiedText text={item.content} />
+              </span>
             </div>
           );
         }
@@ -281,6 +388,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           item.subtype === "status" && item.status === "compacting";
         const isError = item.subtype === "error";
         const isConfigAck = item.subtype === "config_ack";
+        const isLocalCommand = item.subtype === "local_command";
         const isSubagentActivity = item.subtype === "subagent_activity";
         const isHighlightedConfigAck =
           isConfigAck && item.configChanged !== false;
@@ -288,19 +396,26 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           ? "!"
           : isConfigAck
             ? "✓"
-            : isSubagentActivity
-              ? "↳"
-              : "⟳";
+            : isLocalCommand
+              ? "/"
+              : isSubagentActivity
+                ? "↳"
+                : "⟳";
+        if (item.subtype === "compact_boundary" || isLocalCommand) {
+          return <CollapsibleSystemMessage item={item} icon={icon} />;
+        }
         return (
           <div
-            className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""}`}
+            className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""} ${isLocalCommand ? "system-message-local-command" : ""}`}
           >
             <span
               className={`system-message-icon ${isCompacting ? "spinning" : ""}`}
             >
               {icon}
             </span>
-            <span className="system-message-text">{item.content}</span>
+            <span className="system-message-text">
+              <LinkifiedText text={item.content} />
+            </span>
           </div>
         );
       }

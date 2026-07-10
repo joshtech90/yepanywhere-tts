@@ -4,15 +4,31 @@ import {
   type LocalResourceRef,
   parseLocalResourceLink,
 } from "@yep-anywhere/shared";
-import { type MouseEvent, type RefObject, useEffect, useState } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useState,
+} from "react";
+import { api } from "../api/client";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../hooks/useInlineMedia";
-import { getGlobalConnection, isRemoteMode } from "../lib/connection";
+import { useI18n } from "../i18n";
+import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
+import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
+import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
 import {
   getPathBasename,
   getProjectRelativePath,
   makeDisplayPath,
 } from "../lib/text";
+import type { SourceTransport } from "../lib/transport";
+import {
+  FilePathContextMenu,
+  useStartNewSessionFromFileAction,
+} from "./FileResourceActions";
 import { Modal } from "./ui/Modal";
 
 export interface LocalMediaSource {
@@ -62,7 +78,9 @@ interface UseLocalResourceClickResult {
   closeModal: () => void;
   closeLocalFileModal: () => void;
   closeProjectFileModal: () => void;
+  contextMenuElement: ReactNode;
   handleClick: (e: MouseEvent) => void;
+  handleContextMenu: (e: MouseEvent) => void;
 }
 
 type LocalFileViewState =
@@ -91,6 +109,15 @@ function normalizeResourceForProjectContext(
   resource: LocalResourceRef,
   projectContext: ProjectContext | null | undefined,
 ): ProjectFileModalTarget | null {
+  if (resource.kind === "project-file" && resource.projectId) {
+    return {
+      filePath: resource.path,
+      lineEnd: resource.lineEnd,
+      lineNumber: resource.lineNumber,
+      projectId: resource.projectId,
+    };
+  }
+
   if (resource.kind !== "local-file" || !projectContext) {
     return null;
   }
@@ -115,7 +142,10 @@ function localMediaApiPath(path: string): string {
   return `/api/local-image?path=${encodeURIComponent(path)}`;
 }
 
-function localResourceApiPath(resource: LocalResourceRef): string {
+function localResourceApiPath(
+  resource: LocalResourceRef,
+  sameOriginUrls: boolean,
+): string {
   if (resource.kind === "project-raw-file") {
     const params = new URLSearchParams({ path: resource.path });
     if (resource.download) {
@@ -127,7 +157,7 @@ function localResourceApiPath(resource: LocalResourceRef): string {
   }
 
   const params = new URLSearchParams({ path: resource.path });
-  if (resource.renderMarkdown && !isRemoteMode()) {
+  if (resource.renderMarkdown && sameOriginUrls) {
     params.set("render", "1");
   }
   if (resource.download) {
@@ -196,20 +226,11 @@ async function toPngBlob(blob: Blob): Promise<Blob> {
   }
 }
 
-export async function fetchMediaBlob(apiPath: string): Promise<Blob> {
-  if (isRemoteMode()) {
-    const connection = getGlobalConnection();
-    if (!connection) {
-      throw new Error("No connection available");
-    }
-    return connection.fetchBlob(apiPath);
-  }
-
-  const response = await fetch(apiPath, { credentials: "include" });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
-  return response.blob();
+export async function fetchMediaBlob(
+  apiPath: string,
+  transport = getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
+): Promise<Blob> {
+  return transport.fetchBlob(toSourceTransportApiPath(apiPath));
 }
 
 function buildMediaApiPath(
@@ -223,6 +244,7 @@ async function fetchMediaBlobWithSource(
   path: string,
   mediaSource: LocalMediaSource | undefined,
   purpose: "inline" | "modal",
+  transport: SourceTransport,
 ): Promise<Blob> {
   const apiPath = buildMediaApiPath(path, mediaSource);
   if (!apiPath) {
@@ -230,43 +252,14 @@ async function fetchMediaBlobWithSource(
   }
   return mediaSource?.fetchBlob
     ? mediaSource.fetchBlob(path, apiPath, purpose)
-    : fetchMediaBlob(apiPath);
+    : fetchMediaBlob(apiPath, transport);
 }
 
-async function formatLocalFileFetchError(response: Response): Promise<string> {
-  let detail = "";
-  try {
-    const contentType = response.headers.get("content-type") ?? "";
-    if (contentType.toLowerCase().includes("application/json")) {
-      const body = (await response.json()) as { error?: unknown };
-      if (typeof body.error === "string" && body.error.trim()) {
-        detail = body.error.trim();
-      }
-    } else {
-      detail = (await response.text()).trim();
-    }
-  } catch {
-    detail = "";
-  }
-
-  const status = `${response.status} ${response.statusText}`.trim();
-  return detail ? `API error: ${status}: ${detail}` : `API error: ${status}`;
-}
-
-async function fetchLocalResourceBlob(apiPath: string): Promise<Blob> {
-  if (isRemoteMode()) {
-    const connection = getGlobalConnection();
-    if (!connection) {
-      throw new Error("No connection available");
-    }
-    return connection.fetchBlob(apiPath);
-  }
-
-  const response = await fetch(apiPath, { credentials: "include" });
-  if (!response.ok) {
-    throw new Error(await formatLocalFileFetchError(response));
-  }
-  return response.blob();
+async function fetchLocalResourceBlob(
+  apiPath: string,
+  transport: SourceTransport,
+): Promise<Blob> {
+  return transport.fetchBlob(toSourceTransportApiPath(apiPath));
 }
 
 function readBlobText(blob: Blob): Promise<string> {
@@ -377,10 +370,13 @@ export function LocalMediaModal({
   mediaSource,
   onClose,
 }: LocalMediaModalProps) {
+  const { t } = useI18n();
+  const transport = useCurrentSourceRuntime().transport;
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileName = getFileName(path);
+  const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
 
   useEffect(() => {
     let cancelled = false;
@@ -389,7 +385,7 @@ export function LocalMediaModal({
     setError(null);
     setUrl(null);
 
-    void fetchMediaBlobWithSource(path, mediaSource, "modal")
+    void fetchMediaBlobWithSource(path, mediaSource, "modal", transport)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -408,7 +404,7 @@ export function LocalMediaModal({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [mediaSource, path]);
+  }, [mediaSource, path, transport]);
 
   return (
     <Modal title={fileName} onClose={onClose}>
@@ -420,7 +416,16 @@ export function LocalMediaModal({
             // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
             <video controls autoPlay className="local-media-player" src={url} />
           ) : (
-            <img className="local-media-image" src={url} alt={fileName} />
+            <a
+              className="local-media-image-link"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={openImageInNewTabLabel}
+              aria-label={openImageInNewTabLabel}
+            >
+              <img className="local-media-image" src={url} alt={fileName} />
+            </a>
           ))}
       </div>
     </Modal>
@@ -429,7 +434,9 @@ export function LocalMediaModal({
 
 export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
   const sessionMetadata = useOptionalSessionMetadata();
-  const apiPath = localResourceApiPath(resource);
+  const transport = useCurrentSourceRuntime().transport;
+  const sameOriginUrls = transport.capabilities.sameOriginUrls;
+  const apiPath = localResourceApiPath(resource, sameOriginUrls);
   const fileName = getFileName(resource.path);
   const locationSuffix = `${resource.lineNumber !== undefined ? `:${resource.lineNumber}` : ""}${
     resource.columnNumber !== undefined ? `:${resource.columnNumber}` : ""
@@ -447,7 +454,7 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
     let objectUrl: string | null = null;
     setState({ status: "loading" });
 
-    fetchLocalResourceBlob(apiPath)
+    fetchLocalResourceBlob(apiPath, transport)
       .then(async (blob) => {
         if (cancelled) return;
         const contentType = blob.type || "application/octet-stream";
@@ -456,9 +463,9 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
           const html = await readBlobText(blob);
           if (!cancelled) {
             setState(
-              isRemoteMode()
-                ? { status: "text", contentType, text: html }
-                : { status: "html", html },
+              sameOriginUrls
+                ? { status: "html", html }
+                : { status: "text", contentType, text: html },
             );
           }
           return;
@@ -491,7 +498,7 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [apiPath]);
+  }, [apiPath, sameOriginUrls, transport]);
 
   return (
     <Modal title={fileName} onClose={onClose}>
@@ -580,9 +587,12 @@ function isLocalFileResource(resource: LocalResourceRef): boolean {
   return resource.kind === "local-file" || resource.kind === "project-raw-file";
 }
 
-function shouldPreserveDirectBrowserGesture(e: MouseEvent): boolean {
+function shouldPreserveDirectBrowserGesture(
+  e: MouseEvent,
+  sameOriginUrls: boolean,
+): boolean {
   return (
-    !isRemoteMode() &&
+    sameOriginUrls &&
     (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
   );
 }
@@ -601,6 +611,78 @@ function getLocalMediaType(
   return "image";
 }
 
+function LocalResourceContextMenu({
+  contextMenu,
+  projectContext,
+  sameOriginUrls,
+  transport,
+  onClose,
+  onOpenResource,
+}: {
+  contextMenu: {
+    x: number;
+    y: number;
+    resource: LocalResourceRef;
+    projectFileTarget: ProjectFileModalTarget | null;
+  };
+  projectContext: ProjectContext | null | undefined;
+  sameOriginUrls: boolean;
+  transport: SourceTransport;
+  onClose: () => void;
+  onOpenResource: (
+    resource: LocalResourceRef,
+    target: HTMLAnchorElement,
+  ) => void;
+}) {
+  const startNewSessionFromFile = useStartNewSessionFromFileAction();
+
+  return (
+    <FilePathContextMenu
+      x={contextMenu.x}
+      y={contextMenu.y}
+      canStartNewSession={Boolean(projectContext?.projectId)}
+      onClose={onClose}
+      onView={() => {
+        const anchor = document.createElement("a");
+        anchor.href = "#";
+        onOpenResource(contextMenu.resource, anchor);
+      }}
+      onStartNewSession={
+        projectContext?.projectId
+          ? () =>
+              startNewSessionFromFile(
+                projectContext.projectId,
+                contextMenu.projectFileTarget?.filePath ??
+                  contextMenu.resource.path,
+              )
+          : undefined
+      }
+      onCopyPath={() =>
+        void writeClipboardText(
+          contextMenu.projectFileTarget?.filePath ?? contextMenu.resource.path,
+        )
+      }
+      onCopyContents={() => {
+        const { projectFileTarget, resource } = contextMenu;
+        if (projectFileTarget) {
+          void writeClipboardTextLater(
+            api
+              .getFile(projectFileTarget.projectId, projectFileTarget.filePath)
+              .then((file) => file.content ?? ""),
+          );
+          return;
+        }
+        void writeClipboardTextLater(
+          fetchLocalResourceBlob(
+            localResourceApiPath(resource, sameOriginUrls),
+            transport,
+          ).then(readBlobText),
+        );
+      }}
+    />
+  );
+}
+
 /**
  * Hook that provides a delegated click handler for rendered HTML containing
  * local-resource links. Local media opens the existing modal. Local file paths
@@ -610,6 +692,8 @@ export function useLocalResourceClick(
   options: UseLocalResourceClickOptions = {},
 ): UseLocalResourceClickResult {
   const sessionMetadata = useOptionalSessionMetadata();
+  const transport = useCurrentSourceRuntime().transport;
+  const sameOriginUrls = transport.capabilities.sameOriginUrls;
   const projectContext = options.projectContext ?? sessionMetadata;
   const [modal, setModal] = useState<{
     path: string;
@@ -620,6 +704,47 @@ export function useLocalResourceClick(
   );
   const [projectFileModal, setProjectFileModal] =
     useState<ProjectFileModalTarget | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    resource: LocalResourceRef;
+    projectFileTarget: ProjectFileModalTarget | null;
+  } | null>(null);
+
+  const openResource = (
+    resource: LocalResourceRef,
+    target: HTMLAnchorElement,
+  ) => {
+    const projectFileTarget = normalizeResourceForProjectContext(
+      resource,
+      projectContext,
+    );
+    if (projectFileTarget) {
+      setProjectFileModal(projectFileTarget);
+      setLocalFileModal(null);
+      setModal(null);
+      return true;
+    }
+
+    if (resource.kind === "local-media") {
+      setModal({
+        path: resource.path,
+        mediaType: getLocalMediaType(resource, target),
+      });
+      setLocalFileModal(null);
+      setProjectFileModal(null);
+      return true;
+    }
+
+    if (isLocalFileResource(resource)) {
+      setLocalFileModal(resource);
+      setModal(null);
+      setProjectFileModal(null);
+      return true;
+    }
+
+    return false;
+  };
 
   const handleClick = (e: MouseEvent) => {
     if (!(e.target instanceof Element)) {
@@ -681,53 +806,84 @@ export function useLocalResourceClick(
       projectContext,
     );
     if (projectFileTarget) {
-      if (shouldPreserveDirectBrowserGesture(e)) {
+      if (shouldPreserveDirectBrowserGesture(e, sameOriginUrls)) {
         return;
       }
       e.preventDefault();
       e.stopPropagation();
-      setProjectFileModal(projectFileTarget);
-      setLocalFileModal(null);
-      setModal(null);
+      openResource(resource, target);
       return;
     }
 
     if (resource.kind === "local-media") {
       e.preventDefault();
       e.stopPropagation();
-      setModal({
-        path: resource.path,
-        mediaType: getLocalMediaType(resource, target),
-      });
-      setLocalFileModal(null);
-      setProjectFileModal(null);
+      openResource(resource, target);
       return;
     }
 
     if (isLocalFileResource(resource)) {
-      if (shouldPreserveDirectBrowserGesture(e)) {
+      if (shouldPreserveDirectBrowserGesture(e, sameOriginUrls)) {
         return;
       }
       e.preventDefault();
       e.stopPropagation();
-      setLocalFileModal(resource);
-      setModal(null);
-      setProjectFileModal(null);
+      openResource(resource, target);
     }
+  };
+
+  const handleContextMenu = (e: MouseEvent) => {
+    const target = getClickedAnchor(e.target);
+    if (!target) return;
+
+    const href = target.getAttribute("href");
+    const resource = parseLocalResourceLink(
+      {
+        attributes: getLocalResourceAttributes(target),
+        href,
+      },
+      { currentHref: getCurrentHref() },
+    );
+    if (!resource || resource.kind === "local-media") return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      resource,
+      projectFileTarget: normalizeResourceForProjectContext(
+        resource,
+        projectContext,
+      ),
+    });
   };
 
   const closeModal = () => setModal(null);
   const closeLocalFileModal = () => setLocalFileModal(null);
   const closeProjectFileModal = () => setProjectFileModal(null);
+  const closeContextMenu = () => setContextMenu(null);
+  const contextMenuElement = contextMenu ? (
+    <LocalResourceContextMenu
+      contextMenu={contextMenu}
+      projectContext={projectContext}
+      sameOriginUrls={sameOriginUrls}
+      transport={transport}
+      onClose={closeContextMenu}
+      onOpenResource={openResource}
+    />
+  ) : null;
 
   return {
     modal,
     localFileModal,
     projectFileModal,
     handleClick,
+    handleContextMenu,
     closeModal,
     closeLocalFileModal,
     closeProjectFileModal,
+    contextMenuElement,
   };
 }
 
@@ -744,8 +900,10 @@ export function useLocalMediaInlinePreviews(
   mediaSource?: LocalMediaSource,
 ) {
   const { inlineMediaExpandedByDefault } = useInlineMedia();
+  const transport = useCurrentSourceRuntime().transport;
 
   useEffect(() => {
+    void refreshKey;
     const root = rootRef.current;
     if (!root) return;
     const objectUrls = new Set<string>();
@@ -832,7 +990,7 @@ export function useLocalMediaInlinePreviews(
         loading.textContent = "Loading...";
         element.append(loading);
 
-        fetchMediaBlobWithSource(path, mediaSource, "inline")
+        fetchMediaBlobWithSource(path, mediaSource, "inline", transport)
           .then((blob) => {
             const objectUrl = URL.createObjectURL(blob);
             objectUrls.add(objectUrl);
@@ -862,5 +1020,11 @@ export function useLocalMediaInlinePreviews(
         URL.revokeObjectURL(url);
       }
     };
-  }, [inlineMediaExpandedByDefault, rootRef, refreshKey, mediaSource]);
+  }, [
+    inlineMediaExpandedByDefault,
+    rootRef,
+    refreshKey,
+    mediaSource,
+    transport,
+  ]);
 }

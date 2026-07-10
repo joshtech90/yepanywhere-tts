@@ -83,6 +83,7 @@ intentionally redesigned to import that package again.
 Primary sources:
 
 - root `package.json` `yepAnywhere.codexCli.expectedVersion`;
+- root `package.json` `yepAnywhere.codexCli.compatibleThroughVersion`;
 - `codex --version`;
 - `scripts/update-codex-protocol.mjs`;
 - `packages/server/src/sdk/providers/codex-protocol/generated/`;
@@ -123,7 +124,94 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
-Current source refresh, 2026-06-16:
+Current source refresh, 2026-07-10:
+
+- Installed Codex is `codex-cli 0.144.1`. Root `package.json` now records
+  `yepAnywhere.codexCli.expectedVersion` and `compatibleThroughVersion` as
+  `0.144.1`; `pnpm codex:protocol:check` remains clean.
+- The no-token app-server `model/list` probe is unchanged from 0.144.0:
+  `gpt-5.6-sol` remains the default, followed by `gpt-5.6-terra`,
+  `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and
+  `gpt-5.3-codex-spark`, with the same reasoning-effort and service-tier
+  surface consumed by YA.
+- A full Zod audit of 1,342 persisted Codex rollouts now validates all
+  1,875,103 JSONL lines. Schema coverage was added for code-mode tool-search
+  items, `world_state`, `patch_apply_end`, `thread_settings_applied`, the
+  other observed operational event discriminants, and nullable primary rate
+  limits.
+- Codex Desktop code-mode rollouts persist an outer `custom_tool_call` named
+  `exec`, raw JavaScript orchestration input, and text content-block outputs.
+  YA now uses a standalone fail-closed recognizer for direct literal
+  `tools.<name>(...)` calls. A single recognized call reuses the canonical
+  Read/Bash/Edit renderer; multiple calls remain an explicit Exec group; and
+  unknown JavaScript keeps the generic fallback. Both live app-server events
+  and persisted reloads share this normalization, and the recognizer never
+  evaluates provider code.
+- Adjacent `patch_apply_end` events have provider-native call ids that differ
+  from the outer code-mode call id. YA associates structured changes only
+  when exactly one recognized apply-patch call is pending, preserving the raw
+  fallback when correlation is ambiguous.
+
+Status: Codex 0.144.1 app-server, persisted transcript schemas, and code-mode
+tool rendering refreshed; no model-catalog or provider-control change was
+required.
+
+Current source refresh, 2026-07-09:
+
+- Installed Codex is `codex-cli 0.144.0`. Root `package.json` now records
+  `yepAnywhere.codexCli.expectedVersion` and `compatibleThroughVersion` as
+  `0.144.0`.
+- `pnpm codex:protocol:check` reported four new and thirteen changed generated
+  files. The refreshed subset adds extracted web-search and image-generation
+  item types, thread history/extra fields, provider-model fallback control,
+  custom multi-agent mode hints, session-budget errors, richer MCP app context,
+  and direct `lastTurnId` fork boundaries. YA does not send the new optional
+  thread controls; existing web-search/image item fields remain compatible.
+  `thread/rollback` is deprecated but still available, so adopting direct fork
+  boundaries is a design follow-up rather than a 0.144 compatibility blocker.
+- App-server `model/list` added `gpt-5.6-sol`, `gpt-5.6-terra`, and
+  `gpt-5.6-luna`. It marks Sol as default with low reasoning effort and exposes
+  `max` plus `ultra` effort where supported. YA now ranks Sol first and uses it
+  as the fallback default for CLI 0.144+, while preserving the GPT-5.5 fallback
+  catalog for 0.124 through 0.143 installs.
+- Compact model badges use semantic glyphs for the named 5.6 variants:
+  `Cd ☀` (Sol), `Cd ♁` (Terra), and `Cd ☾` (Luna).
+- Codex's best-effort shared arg0-temp janitor still emits a known
+  `Directory not empty` warning while concurrent Codex sessions populate that
+  directory. The protocol check itself completes cleanly and reports the
+  generated subset up to date.
+
+Status: Codex 0.144 compatibility, GPT-5.6 model defaults/catalog, and compact
+glyphs refreshed; no additional provider runtime change is required.
+
+Current source refresh, 2026-06-29:
+
+- Installed Codex is `codex-cli 0.142.4`; npm `@openai/codex` `latest` is
+  `0.142.4`. Root `package.json` records
+  `yepAnywhere.codexCli.expectedVersion` and
+  `compatibleThroughVersion` as `0.142.4`.
+- `pnpm codex:protocol:check` initially reported stale checked-in generated
+  files: `LegacyAppPathString.ts`, `ResponseItem.ts`,
+  `v2/ThreadForkResponse.ts`, `v2/ThreadResumeResponse.ts`,
+  `v2/ThreadStartParams.ts`, `v2/ThreadStartResponse.ts`, and
+  `v2/TurnStartParams.ts`. Regenerating the app-server subset made the check
+  clean.
+- YA-visible protocol drift is generated-only in this slice: path-conversion
+  comment wording changed; `ResponseItem` no longer gives
+  `compaction_trigger` an internal metadata passthrough field; and
+  `multiAgentMode` on thread/turn params and responses is now deprecated or
+  ignored in favor of Ultra reasoning effort. YA does not set
+  `multiAgentMode` and does not consume `compaction_trigger` metadata, so no
+  provider runtime change is indicated.
+- App-server `model/list` returned the same visible YA model set:
+  `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and
+  `gpt-5.3-codex-spark`; `priority` service tier remains on `gpt-5.5` and
+  `gpt-5.4`.
+
+Status: Codex 0.142.4 compatibility refresh complete in generated source; no
+new runtime behavior change was introduced.
+
+Previous source refresh, 2026-06-16:
 
 - Installed Codex is `codex-cli 0.140.0`; repo expected version is `0.140.0`.
 - `pnpm codex:protocol:check` is clean after regenerating the checked-in
@@ -211,6 +299,8 @@ Primary sources:
 
 - `packages/server/package.json` and `pnpm-lock.yaml` for
   `@anthropic-ai/claude-agent-sdk`;
+- root `package.json` `yepAnywhere.claudeCode.compatibleThroughVersion` and
+  `yepAnywhere.claudeCode.claudeAgentSdkVersion`;
 - SDK `query()` control methods used in `packages/server/src/sdk/providers/claude.ts`;
 - live `supportedModels()` and `supportedCommands()` from the SDK handshake;
 - `CLAUDE_MODELS_FALLBACK`, `mergeClaudeModels()`, and `/goal` alias logic;
@@ -244,7 +334,51 @@ Difference detectors:
 - Model ids, effort levels, or context windows change enough to make fallback
   constants or model glyph rules misleading.
 
-Current source refresh, 2026-06-19:
+Current source refresh, 2026-07-09:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.199` to `0.3.205`.
+  Its bundled Linux executable and the independently installed `claude` both
+  report Claude Code `2.1.205`; root `package.json` records the paired runtime
+  and SDK compatibility markers.
+- The SDK control methods YA uses for model/command discovery, model and
+  thinking updates, interruption, and MCP status remain present. Focused Claude
+  provider tests pass, and no YA runtime source change is indicated by this
+  package refresh.
+
+Status: Claude Code 2.1.205 / SDK 0.3.205 compatibility refresh complete as a
+package and marker update; no new runtime behavior change was introduced.
+
+Current source refresh, 2026-07-03:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.195` to `0.3.199`,
+  whose bundled executable reports Claude Code `2.1.199`.
+- npm `@anthropic-ai/claude-agent-sdk` `latest` is `0.3.199` (`next` is
+  `0.3.200`). Root `package.json` records Claude Code compatibility through
+  `2.1.199` and pairs it with SDK `0.3.199`.
+- Fable remains represented by YA's existing fallback/catalog normalization:
+  the `fable` alias and SDK-reported `claude-fable-5` carry 1M context,
+  adaptive thinking, auto mode, and effort metadata. No additional runtime
+  source change was indicated by this package refresh slice.
+
+Status: Claude Code 2.1.199 / SDK 0.3.199 compatibility refresh complete as a
+package and marker update; no new runtime behavior change was introduced.
+
+Previous source refresh, 2026-06-29:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.183` to `0.3.195`,
+  whose package metadata declares bundled Claude Code `2.1.195`.
+- Local `claude --version` reports `2.1.195 (Claude Code)`, and npm
+  `@anthropic-ai/claude-agent-sdk` `latest` is `0.3.195` (`next` is
+  `0.3.196`). Root `package.json` records Claude Code compatibility through
+  `2.1.195` and pairs it with SDK `0.3.195`.
+- No checked-in Claude protocol regeneration exists. Focused Claude provider
+  tests passed after the dependency refresh, and no YA source change was
+  indicated by the package/runtime version check in this slice.
+
+Status: Claude Code 2.1.195 / SDK 0.3.195 compatibility refresh complete as a
+package and marker update; no new runtime behavior change was introduced.
+
+Previous source refresh, 2026-06-19:
 
 - `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.170` to `0.3.183`,
   whose package metadata declares bundled Claude Code `2.1.183`.
@@ -463,7 +597,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.158` | `0.3.163` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.199` | `0.3.199` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

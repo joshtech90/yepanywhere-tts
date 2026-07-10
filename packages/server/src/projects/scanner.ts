@@ -14,6 +14,7 @@ import {
   type UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { ProjectMetadataService } from "../metadata/index.js";
+import type { WorkstreamService } from "../services/WorkstreamService.js";
 import type { Project } from "../supervisor/types.js";
 import type { EventBus, FileChangeEvent } from "../watcher/index.js";
 import { CODEX_SESSIONS_DIR, CodexSessionScanner } from "./codex-scanner.js";
@@ -23,6 +24,7 @@ import {
   canonicalizeProjectPath,
   decodeProjectId,
   encodeProjectId,
+  getProjectIdentityKey,
   getProjectName,
   isAbsolutePath,
   normalizeProjectPathForDedup,
@@ -39,6 +41,7 @@ export interface ScannerOptions {
   enableCodex?: boolean; // whether to include Codex projects (default: true)
   enableGemini?: boolean; // whether to include Gemini projects (default: true)
   projectMetadataService?: ProjectMetadataService; // for persisting added projects
+  workstreamService?: WorkstreamService; // for grouping lane checkouts
   /** Optional EventBus for watcher-driven cache invalidation */
   eventBus?: EventBus;
   /** Project snapshot TTL in milliseconds (default: 5000) */
@@ -47,7 +50,7 @@ export interface ScannerOptions {
 
 const CLAUDE_PROJECT_SCAN_BATCH_SIZE = 16;
 const CWD_SCAN_BATCH_SIZE = 8;
-const PROJECT_SCAN_CACHE_VERSION = 1;
+const PROJECT_SCAN_CACHE_VERSION = 4;
 
 interface ProjectScanSourceState {
   projectsDir: string;
@@ -63,6 +66,9 @@ interface ProjectScanSourceState {
   projectMetadataFilePath: string | null;
   projectMetadataFileMtimeMs: number | null;
   projectMetadataFileExists: boolean;
+  workstreamFilePath: string | null;
+  workstreamFileMtimeMs: number | null;
+  workstreamFileExists: boolean;
   enableCodex: boolean;
   enableGemini: boolean;
 }
@@ -77,8 +83,48 @@ interface CachedProjectSnapshotData {
 interface ProjectSnapshot {
   projects: Project[];
   byId: Map<string, Project>;
+  byIdentityKey: Map<string, Project>;
   bySessionDirSuffix: Map<string, Project>;
   timestamp: number;
+}
+
+function cloneSessionCountsByProvider(
+  counts: Project["sessionCountsByProvider"],
+): Project["sessionCountsByProvider"] {
+  return counts ? { ...counts } : undefined;
+}
+
+function addProviderSessionCount(
+  project: Project,
+  provider: ProviderName,
+  count: number,
+): void {
+  project.sessionCount += count;
+  project.sessionCountsByProvider = {
+    ...project.sessionCountsByProvider,
+    [provider]: (project.sessionCountsByProvider?.[provider] ?? 0) + count,
+  };
+}
+
+function latestActivity(
+  current: string | null,
+  next: string | null,
+): string | null {
+  if (!next) return current;
+  if (!current) return next;
+  return next > current ? next : current;
+}
+
+function withProviderSessionCounts(project: Project): Project {
+  return {
+    ...project,
+    sessionCountsByProvider: {
+      ...project.sessionCountsByProvider,
+      [project.provider]:
+        project.sessionCountsByProvider?.[project.provider] ??
+        project.sessionCount,
+    },
+  };
 }
 
 export class ProjectScanner {
@@ -91,6 +137,8 @@ export class ProjectScanner {
   private enableGemini: boolean;
   private projectMetadataService: ProjectMetadataService | null;
   private projectMetadataFilePath: string | null;
+  private workstreamService: WorkstreamService | null;
+  private workstreamFilePath: string | null;
   private projectScanCachePath: string | null;
   private cacheTtlMs: number;
   private cacheDirty = false;
@@ -119,13 +167,18 @@ export class ProjectScanner {
     this.projectMetadataService = options.projectMetadataService ?? null;
     this.projectMetadataFilePath =
       this.projectMetadataService?.getFilePath?.() ?? null;
+    this.workstreamService = options.workstreamService ?? null;
+    this.workstreamFilePath = this.workstreamService?.getFilePath?.() ?? null;
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 5000);
     this.projectScanCachePath = options.projectScanCachePath ?? null;
 
     if (options.eventBus) {
       this.unsubscribeEventBus = options.eventBus.subscribe((event) => {
-        if (event.type !== "file-change") return;
-        this.handleFileChange(event);
+        if (event.type === "file-change") {
+          this.handleFileChange(event);
+        } else if (event.type === "workstreams-changed") {
+          this.invalidateCache();
+        }
       });
     }
   }
@@ -204,12 +257,17 @@ export class ProjectScanner {
     return snapshot;
   }
 
-  private buildSnapshot(projects: Project[], timestamp = Date.now()): ProjectSnapshot {
+  private buildSnapshot(
+    projects: Project[],
+    timestamp = Date.now(),
+  ): ProjectSnapshot {
     const byId = new Map<string, Project>();
+    const byIdentityKey = new Map<string, Project>();
     const bySessionDirSuffix = new Map<string, Project>();
 
     for (const project of projects) {
       byId.set(project.id, project);
+      byIdentityKey.set(getProjectIdentityKey(project.path), project);
 
       const primarySuffix = this.normalizeDirSuffix(
         this.sessionDirToSuffix(project.sessionDir),
@@ -231,6 +289,7 @@ export class ProjectScanner {
     return {
       projects,
       byId,
+      byIdentityKey,
       bySessionDirSuffix,
       timestamp,
     };
@@ -253,7 +312,9 @@ export class ProjectScanner {
       }
 
       const currentSourceState = await this.getSourceState();
-      if (!this.areSourceStatesCompatible(currentSourceState, parsed.sourceState)) {
+      if (
+        !this.areSourceStatesCompatible(currentSourceState, parsed.sourceState)
+      ) {
         return null;
       }
 
@@ -271,6 +332,9 @@ export class ProjectScanner {
           mergedSessionDirs: project.mergedSessionDirs
             ? [...project.mergedSessionDirs]
             : undefined,
+          sessionCountsByProvider: cloneSessionCountsByProvider(
+            project.sessionCountsByProvider,
+          ),
         });
       }
 
@@ -292,11 +356,7 @@ export class ProjectScanner {
     };
 
     await mkdir(dirname(this.projectScanCachePath), { recursive: true });
-    await writeFile(
-      this.projectScanCachePath,
-      JSON.stringify(data),
-      "utf-8",
-    );
+    await writeFile(this.projectScanCachePath, JSON.stringify(data), "utf-8");
   }
 
   private async getSourceState(): Promise<ProjectScanSourceState> {
@@ -306,6 +366,7 @@ export class ProjectScanner {
       codexSessionsState,
       geminiSessionsState,
       metadataState,
+      workstreamState,
     ] = await Promise.all([
       this.getDirectoryEntries(this.projectsDir),
       this.getPathState(this.projectsDir),
@@ -313,6 +374,9 @@ export class ProjectScanner {
       this.getPathState(this.geminiSessionsDir),
       this.projectMetadataFilePath
         ? this.getPathState(this.projectMetadataFilePath)
+        : Promise.resolve({ exists: false, mtimeMs: null }),
+      this.workstreamFilePath
+        ? this.getPathState(this.workstreamFilePath)
         : Promise.resolve({ exists: false, mtimeMs: null }),
     ]);
 
@@ -330,14 +394,15 @@ export class ProjectScanner {
       projectMetadataFilePath: this.projectMetadataFilePath,
       projectMetadataFileMtimeMs: metadataState.mtimeMs,
       projectMetadataFileExists: metadataState.exists,
+      workstreamFilePath: this.workstreamFilePath,
+      workstreamFileMtimeMs: workstreamState.mtimeMs,
+      workstreamFileExists: workstreamState.exists,
       enableCodex: this.enableCodex,
       enableGemini: this.enableGemini,
     };
   }
 
-  private async getDirectoryEntries(
-    targetPath: string,
-  ): Promise<string[]> {
+  private async getDirectoryEntries(targetPath: string): Promise<string[]> {
     try {
       const entries = await readdir(targetPath, { withFileTypes: true });
       return entries
@@ -380,7 +445,11 @@ export class ProjectScanner {
       current.geminiSessionsDirMtimeMs === cached.geminiSessionsDirMtimeMs &&
       current.projectMetadataFilePath === cached.projectMetadataFilePath &&
       current.projectMetadataFileExists === cached.projectMetadataFileExists &&
-      current.projectMetadataFileMtimeMs === cached.projectMetadataFileMtimeMs &&
+      current.projectMetadataFileMtimeMs ===
+        cached.projectMetadataFileMtimeMs &&
+      current.workstreamFilePath === cached.workstreamFilePath &&
+      current.workstreamFileExists === cached.workstreamFileExists &&
+      current.workstreamFileMtimeMs === cached.workstreamFileMtimeMs &&
       current.enableCodex === cached.enableCodex &&
       current.enableGemini === cached.enableGemini
     );
@@ -424,6 +493,11 @@ export class ProjectScanner {
       (state.projectMetadataFileMtimeMs === null ||
         typeof state.projectMetadataFileMtimeMs === "number") &&
       typeof state.projectMetadataFileExists === "boolean" &&
+      (state.workstreamFilePath === null ||
+        typeof state.workstreamFilePath === "string") &&
+      (state.workstreamFileMtimeMs === null ||
+        typeof state.workstreamFileMtimeMs === "number") &&
+      typeof state.workstreamFileExists === "boolean" &&
       typeof state.enableCodex === "boolean" &&
       typeof state.enableGemini === "boolean"
     );
@@ -439,13 +513,22 @@ export class ProjectScanner {
       typeof project.name === "string" &&
       typeof project.sessionDir === "string" &&
       typeof project.sessionCount === "number" &&
+      (project.sessionCountsByProvider === undefined ||
+        (typeof project.sessionCountsByProvider === "object" &&
+          project.sessionCountsByProvider !== null &&
+          Object.values(project.sessionCountsByProvider).every(
+            (count) => typeof count === "number",
+          ))) &&
       typeof project.activeOwnedCount === "number" &&
       typeof project.activeExternalCount === "number" &&
-      (project.lastActivity === null || typeof project.lastActivity === "string") &&
+      (project.lastActivity === null ||
+        typeof project.lastActivity === "string") &&
       typeof project.provider === "string" &&
       (project.mergedSessionDirs === undefined ||
         (Array.isArray(project.mergedSessionDirs) &&
-          project.mergedSessionDirs.every((item) => typeof item === "string"))) &&
+          project.mergedSessionDirs.every(
+            (item) => typeof item === "string",
+          ))) &&
       (project.hasCodexSessions === undefined ||
         typeof project.hasCodexSessions === "boolean") &&
       (project.hasGeminiSessions === undefined ||
@@ -471,6 +554,9 @@ export class ProjectScanner {
       mergedSessionDirs: project.mergedSessionDirs
         ? [...project.mergedSessionDirs]
         : undefined,
+      sessionCountsByProvider: cloneSessionCountsByProvider(
+        project.sessionCountsByProvider,
+      ),
       hasCodexSessions: project.hasCodexSessions,
       hasGeminiSessions: project.hasGeminiSessions,
     };
@@ -490,11 +576,29 @@ export class ProjectScanner {
     }
   }
 
+  private resolveProjectPathForKnownWorkstream(rawProjectPath: string): string {
+    const resolved = this.workstreamService?.resolvePath(rawProjectPath);
+    if (!resolved) return rawProjectPath;
+    try {
+      return decodeProjectId(resolved.projectId);
+    } catch {
+      return rawProjectPath;
+    }
+  }
+
   private async scanProjects(): Promise<Project[]> {
     const projects: Project[] = [];
     const seenPaths = new Set<string>();
+    const seenIdentityKeys = new Set<string>();
     // Map from normalized path to project index for cross-machine dedup
     const normalizedIndex = new Map<string, number>();
+
+    const findProjectByIdentity = (projectPath: string): Project | undefined =>
+      projects.find(
+        (project) =>
+          getProjectIdentityKey(project.path) ===
+          getProjectIdentityKey(projectPath),
+      );
 
     // ~/.claude/projects/ can have two structures:
     // 1. Projects directly as -home-user-project/
@@ -516,10 +620,12 @@ export class ProjectScanner {
       sessionCount: number,
       lastActivity: string | null,
     ) => {
-      const projectPath = canonicalizeProjectPath(rawProjectPath);
+      const projectPath = canonicalizeProjectPath(
+        this.resolveProjectPathForKnownWorkstream(rawProjectPath),
+      );
       if (this.isHiddenProjectPath(projectPath)) return;
-      if (seenPaths.has(projectPath)) return; // exact path duplicate
       seenPaths.add(projectPath);
+      seenIdentityKeys.add(getProjectIdentityKey(projectPath));
 
       const normalized = normalizeProjectPathForDedup(projectPath);
       const existingIdx = normalizedIndex.get(normalized);
@@ -528,17 +634,18 @@ export class ProjectScanner {
         // Cross-machine duplicate — merge into existing project
         const existing = projects[existingIdx];
         if (!existing) return;
-        existing.sessionCount += sessionCount;
+        const existingSessionCount = existing.sessionCount;
+        addProviderSessionCount(existing, "claude", sessionCount);
         if (!existing.mergedSessionDirs) {
           existing.mergedSessionDirs = [];
         }
-        existing.mergedSessionDirs.push(sessionDir);
-        if (
-          lastActivity &&
-          (!existing.lastActivity || lastActivity > existing.lastActivity)
-        ) {
-          existing.lastActivity = lastActivity;
+        if (!existing.mergedSessionDirs.includes(sessionDir)) {
+          existing.mergedSessionDirs.push(sessionDir);
         }
+        existing.lastActivity = latestActivity(
+          existing.lastActivity,
+          lastActivity,
+        );
 
         // Prefer the local path for session creation.
         // Remote executor sessions (rsynced) may store a foreign cwd
@@ -553,7 +660,21 @@ export class ProjectScanner {
         const newIsLocal =
           projectPath.startsWith(localHomePrefix) ||
           projectPath.startsWith(localHomePrefixWin);
-        if (!existingIsLocal && newIsLocal) {
+        const candidateHasMoreSessions =
+          getProjectIdentityKey(existing.path) ===
+            getProjectIdentityKey(projectPath) &&
+          sessionCount > existingSessionCount;
+        const candidateIsEquallyCommonAndLexicalFirst =
+          getProjectIdentityKey(existing.path) ===
+            getProjectIdentityKey(projectPath) &&
+          sessionCount === existingSessionCount &&
+          projectPath < existing.path;
+        if (
+          (!existingIsLocal && newIsLocal) ||
+          (existingIsLocal === newIsLocal &&
+            (candidateHasMoreSessions ||
+              candidateIsEquallyCommonAndLexicalFirst))
+        ) {
           existing.path = projectPath;
           existing.id = encodeProjectId(projectPath);
           existing.name = getProjectName(projectPath);
@@ -565,6 +686,7 @@ export class ProjectScanner {
           path: projectPath,
           name: getProjectName(projectPath),
           sessionCount,
+          sessionCountsByProvider: { claude: sessionCount },
           sessionDir,
           hasCodexSessions: false,
           hasGeminiSessions: false,
@@ -610,8 +732,15 @@ export class ProjectScanner {
       const projectDirPaths = projectDirNames.map((projectDir) =>
         join(dirPath, projectDir),
       );
-      for (let i = 0; i < projectDirPaths.length; i += CLAUDE_PROJECT_SCAN_BATCH_SIZE) {
-        const batch = projectDirPaths.slice(i, i + CLAUDE_PROJECT_SCAN_BATCH_SIZE);
+      for (
+        let i = 0;
+        i < projectDirPaths.length;
+        i += CLAUDE_PROJECT_SCAN_BATCH_SIZE
+      ) {
+        const batch = projectDirPaths.slice(
+          i,
+          i + CLAUDE_PROJECT_SCAN_BATCH_SIZE,
+        );
         const batchInfos = await Promise.all(
           batch.map((projectDirPath) => this.getProjectDirInfo(projectDirPath)),
         );
@@ -634,18 +763,30 @@ export class ProjectScanner {
     if (this.codexScanner) {
       const codexProjects = await this.codexScanner.listProjects();
       for (const codexProject of codexProjects) {
-        const projectPath = canonicalizeProjectPath(codexProject.path);
-        if (this.isHiddenProjectPath(projectPath)) continue;
-        const existing = projects.find(
-          (project) => canonicalizeProjectPath(project.path) === projectPath,
+        const projectPath = canonicalizeProjectPath(
+          this.resolveProjectPathForKnownWorkstream(codexProject.path),
         );
+        if (this.isHiddenProjectPath(projectPath)) continue;
+        const existing = findProjectByIdentity(projectPath);
         if (existing) {
+          addProviderSessionCount(
+            existing,
+            codexProject.provider,
+            codexProject.sessionCount,
+          );
           existing.hasCodexSessions = true;
+          existing.lastActivity = latestActivity(
+            existing.lastActivity,
+            codexProject.lastActivity,
+          );
+          seenPaths.add(projectPath);
+          seenIdentityKeys.add(getProjectIdentityKey(projectPath));
           continue;
         }
         seenPaths.add(projectPath);
+        seenIdentityKeys.add(getProjectIdentityKey(projectPath));
         projects.push({
-          ...codexProject,
+          ...withProviderSessionCounts(codexProject),
           id: encodeProjectId(projectPath),
           path: projectPath,
           name: getProjectName(projectPath),
@@ -662,18 +803,30 @@ export class ProjectScanner {
 
       const geminiProjects = await this.geminiScanner.listProjects();
       for (const geminiProject of geminiProjects) {
-        const projectPath = canonicalizeProjectPath(geminiProject.path);
-        if (this.isHiddenProjectPath(projectPath)) continue;
-        const existing = projects.find(
-          (project) => canonicalizeProjectPath(project.path) === projectPath,
+        const projectPath = canonicalizeProjectPath(
+          this.resolveProjectPathForKnownWorkstream(geminiProject.path),
         );
+        if (this.isHiddenProjectPath(projectPath)) continue;
+        const existing = findProjectByIdentity(projectPath);
         if (existing) {
+          addProviderSessionCount(
+            existing,
+            geminiProject.provider,
+            geminiProject.sessionCount,
+          );
           existing.hasGeminiSessions = true;
+          existing.lastActivity = latestActivity(
+            existing.lastActivity,
+            geminiProject.lastActivity,
+          );
+          seenPaths.add(projectPath);
+          seenIdentityKeys.add(getProjectIdentityKey(projectPath));
           continue;
         }
         seenPaths.add(projectPath);
+        seenIdentityKeys.add(getProjectIdentityKey(projectPath));
         projects.push({
-          ...geminiProject,
+          ...withProviderSessionCounts(geminiProject),
           id: encodeProjectId(projectPath),
           path: projectPath,
           name: getProjectName(projectPath),
@@ -690,7 +843,7 @@ export class ProjectScanner {
         const projectPath = canonicalizeProjectPath(metadata.path);
         if (this.isHiddenProjectPath(projectPath)) continue;
         // Skip if we've already seen this path from another source
-        if (seenPaths.has(projectPath)) continue;
+        if (seenIdentityKeys.has(getProjectIdentityKey(projectPath))) continue;
 
         // Verify the directory still exists
         try {
@@ -702,12 +855,14 @@ export class ProjectScanner {
         }
 
         seenPaths.add(projectPath);
+        seenIdentityKeys.add(getProjectIdentityKey(projectPath));
         const encodedPath = projectPath.replace(/[/\\:]/g, "-");
         projects.push({
           id: encodeProjectId(projectPath),
           path: projectPath,
           name: getProjectName(projectPath),
           sessionCount: 0,
+          sessionCountsByProvider: { claude: 0 },
           sessionDir: join(this.projectsDir, encodedPath),
           hasCodexSessions: false,
           hasGeminiSessions: false,
@@ -729,6 +884,7 @@ export class ProjectScanner {
         path: home,
         name: basename(home) || "Home",
         sessionCount: 0,
+        sessionCountsByProvider: { claude: 0 },
         sessionDir: join(this.projectsDir, encodedPath),
         activeOwnedCount: 0,
         activeExternalCount: 0,
@@ -742,15 +898,22 @@ export class ProjectScanner {
 
   async getProject(projectId: string): Promise<Project | null> {
     const snapshot = await this.getSnapshot();
-    const project = snapshot.byId.get(projectId);
+    let project = snapshot.byId.get(projectId);
+    if (!project) {
+      try {
+        project = snapshot.byIdentityKey.get(
+          getProjectIdentityKey(decodeProjectId(projectId as UrlProjectId)),
+        );
+      } catch {
+        project = undefined;
+      }
+    }
     return project ? this.cloneProject(project) : null;
   }
 
   private isHiddenProjectPath(projectPath: string): boolean {
     if (!this.projectMetadataService) return false;
-    return this.projectMetadataService.isHiddenProject(
-      encodeProjectId(projectPath),
-    );
+    return this.projectMetadataService.isHiddenProjectPath(projectPath);
   }
 
   /**
@@ -777,7 +940,9 @@ export class ProjectScanner {
       return null;
     }
 
-    const canonicalProjectPath = canonicalizeProjectPath(projectPath);
+    const canonicalProjectPath = canonicalizeProjectPath(
+      this.resolveProjectPathForKnownWorkstream(projectPath),
+    );
     if (canonicalProjectPath !== projectPath) {
       const canonicalId = encodeProjectId(canonicalProjectPath);
       const canonicalProject = await this.getProject(canonicalId);
@@ -844,6 +1009,7 @@ export class ProjectScanner {
       path: projectPath,
       name: getProjectName(projectPath),
       sessionCount: 0,
+      sessionCountsByProvider: { [provider]: 0 },
       sessionDir,
       activeOwnedCount: 0,
       activeExternalCount: 0,
@@ -902,16 +1068,23 @@ export class ProjectScanner {
 
       // Read cwd from session files in small batches and return early on first match.
       // Most project dirs have a session file with cwd near the top of the first file.
-      const regularSessionFiles = jsonlFiles.filter((f) => !f.startsWith("agent-"));
+      const regularSessionFiles = jsonlFiles.filter(
+        (f) => !f.startsWith("agent-"),
+      );
       const orderedFiles =
         regularSessionFiles.length > 0
-          ? [...regularSessionFiles, ...jsonlFiles.filter((f) => f.startsWith("agent-"))]
+          ? [
+              ...regularSessionFiles,
+              ...jsonlFiles.filter((f) => f.startsWith("agent-")),
+            ]
           : jsonlFiles;
 
       for (let i = 0; i < orderedFiles.length; i += CWD_SCAN_BATCH_SIZE) {
         const batch = orderedFiles.slice(i, i + CWD_SCAN_BATCH_SIZE);
         const batchCwds = await Promise.all(
-          batch.map((file) => readCwdFromSessionFile(join(projectDirPath, file))),
+          batch.map((file) =>
+            readCwdFromSessionFile(join(projectDirPath, file)),
+          ),
         );
 
         for (const cwd of batchCwds) {

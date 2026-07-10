@@ -1,6 +1,87 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CONFIG_ENV_VARS } from "./setup/config-env-vars.js";
+
+interface ConfigEnvReadReport {
+  names: string[];
+  dynamicReads: string[];
+}
+
+function collectConfigEnvReads(): ConfigEnvReadReport {
+  const configPath = fileURLToPath(new URL("../src/config.ts", import.meta.url));
+  const sourceText = fs.readFileSync(configPath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    configPath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const names = new Set<string>();
+  const dynamicReads: string[] = [];
+
+  function isProcessEnv(node: ts.Expression): boolean {
+    return (
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "env" &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "process"
+    );
+  }
+
+  function addDynamicRead(node: ts.Node): void {
+    const { line, character } = sourceFile.getLineAndCharacterOfPosition(
+      node.getStart(sourceFile),
+    );
+    dynamicReads.push(
+      `${line + 1}:${character + 1} ${node.getText(sourceFile)}`,
+    );
+  }
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      isProcessEnv(node.expression)
+    ) {
+      names.add(node.name.text);
+    } else if (
+      ts.isElementAccessExpression(node) &&
+      isProcessEnv(node.expression)
+    ) {
+      const argument = node.argumentExpression;
+      if (
+        ts.isStringLiteral(argument) ||
+        ts.isNoSubstitutionTemplateLiteral(argument)
+      ) {
+        names.add(argument.text);
+      } else {
+        addDynamicRead(node);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return {
+    names: Array.from(names).sort(),
+    dynamicReads,
+  };
+}
+
+describe("hermetic config env setup", () => {
+  it("scrubs every direct config env read from unit tests", () => {
+    const { names, dynamicReads } = collectConfigEnvReads();
+    const scrubbed = new Set(CONFIG_ENV_VARS);
+
+    expect(dynamicReads).toEqual([]);
+    expect(names.filter((name) => !scrubbed.has(name))).toEqual([]);
+  });
+});
 
 describe("loadConfig codex paths", () => {
   afterEach(() => {
@@ -58,6 +139,51 @@ describe("loadConfig codex paths", () => {
 
     expect(config.desktopRuntime).toBe(true);
     expect(config.codexCliPath).toBeUndefined();
+  });
+
+  it("defaults Codex summary parser worker on when unset", async () => {
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.claudeSummaryParserWorkerMode).toBe("off");
+    expect(config.codexSummaryParserWorkerMode).toBe("on");
+  });
+
+  it("preserves an explicit Codex summary parser worker off override", async () => {
+    vi.stubEnv("CODEX_SUMMARY_PARSER_WORKER", "off");
+
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.codexSummaryParserWorkerMode).toBe("off");
+  });
+
+  it("treats blank or invalid Codex summary parser worker overrides as off", async () => {
+    vi.stubEnv("CODEX_SUMMARY_PARSER_WORKER", "");
+
+    const { loadConfig } = await import("../src/config.js");
+    const blankConfig = loadConfig();
+
+    expect(blankConfig.codexSummaryParserWorkerMode).toBe("off");
+
+    vi.resetModules();
+    vi.stubEnv("CODEX_SUMMARY_PARSER_WORKER", "invalid");
+
+    const { loadConfig: loadConfigAgain } = await import("../src/config.js");
+    const invalidConfig = loadConfigAgain();
+
+    expect(invalidConfig.codexSummaryParserWorkerMode).toBe("off");
+  });
+
+  it("parses summary parser worker overrides", async () => {
+    vi.stubEnv("CLAUDE_SUMMARY_PARSER_WORKER", "required");
+    vi.stubEnv("CODEX_SUMMARY_PARSER_WORKER", "required");
+
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.claudeSummaryParserWorkerMode).toBe("required");
+    expect(config.codexSummaryParserWorkerMode).toBe("required");
   });
 
   it("uses the real Windows temp directory for default local-image paths", async () => {
@@ -154,6 +280,24 @@ describe("loadConfig codex paths", () => {
     const config = loadConfig();
 
     expect(config.idleTimeoutMs).toBe(60 * 60 * 1000);
+  });
+
+  it("defaults session auto-archive off", async () => {
+    vi.stubEnv("SESSION_AUTO_ARCHIVE_DAYS", "");
+
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.sessionAutoArchiveDays).toBe(0);
+  });
+
+  it("preserves an explicit session auto-archive override", async () => {
+    vi.stubEnv("SESSION_AUTO_ARCHIVE_DAYS", "14");
+
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.sessionAutoArchiveDays).toBe(14);
   });
 
   it("preserves an explicit IDLE_TIMEOUT override", async () => {

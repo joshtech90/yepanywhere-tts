@@ -9,12 +9,20 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
   AgentContextHints,
+  CacheMissBillingSettings,
   ClientDefaults,
   HelperTargetConfig,
   NewSessionDefaults,
   PromptCacheKeepaliveSettings,
+  SessionToolbarPresenceClientDefaults,
+  ToolbarControlPresence,
 } from "@yep-anywhere/shared";
-import { normalizeYaClientBaseUrlFromShareViewerUrl } from "@yep-anywhere/shared";
+import {
+  DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+  DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  clampProjectQueueQuietSeconds,
+  normalizeYaClientBaseUrlFromShareViewerUrl,
+} from "@yep-anywhere/shared";
 import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
 
@@ -47,8 +55,12 @@ export interface ServerSettings {
   persistRemoteSessionsToDisk: boolean;
   /** Whether the server is requesting browser clients to upload diagnostic logs */
   clientLogCollectionRequested: boolean;
+  /** Whether approve/deny decisions are written to logs/approval-decisions.jsonl */
+  approvalAuditLogEnabled: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled: boolean;
+  /** Whether experimental workstream surfaces and APIs are enabled */
+  workstreamsEnabled?: boolean;
   /** Base URL for the hosted YA client; remote login/share routes are appended */
   yaClientBaseUrl?: string;
   /** @deprecated Use yaClientBaseUrl. Kept to migrate older settings files. */
@@ -94,6 +106,8 @@ export interface ServerSettings {
   helperTargets?: HelperTargetConfig[];
   /** Per-provider prompt-cache keepalive policy and cadence. */
   promptCacheKeepalive?: PromptCacheKeepaliveSettings;
+  /** Usage-accounting monitor for suspected prompt-cache billing misses. */
+  cacheMissBilling?: CacheMissBillingSettings;
   /** Whether lifecycle webhook delivery is enabled */
   lifecycleWebhooksEnabled?: boolean;
   /** External webhook URL that receives lifecycle events */
@@ -122,6 +136,11 @@ export interface ServerSettings {
    * delivered queued turns. Unset falls back to env `YEP_COMPOSE_ANCHORS`.
    */
   composeAnchorsEnabled?: boolean;
+  /**
+   * Seconds the whole-project idle predicate must remain clear before Project
+   * Queue promotes one item. Range 0-300, default 30.
+   */
+  projectQueueQuietSeconds?: number;
 }
 
 export const CODEX_UPDATE_POLICIES = ["auto", "notify", "off"] as const;
@@ -132,7 +151,9 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   serviceWorkerEnabled: true,
   persistRemoteSessionsToDisk: false,
   clientLogCollectionRequested: false,
+  approvalAuditLogEnabled: false,
   publicSharesEnabled: false,
+  workstreamsEnabled: false,
   heartbeatTurnsAfterMinutes: 15,
   heartbeatTurnText: DEFAULT_HEARTBEAT_TURN_TEXT,
   speechAudioRetention: {
@@ -145,7 +166,48 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   grokBuildUseXaiApiKey: false,
   codexUpdatePolicy: "notify",
   clientDefaults: DEFAULT_CLIENT_DEFAULTS,
+  cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+  projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
 };
+
+const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
+
+/**
+ * Fold pre-presence toolbar defaults (a visibility boolean map plus a
+ * narrowing-priority map) into the single presence map: explicit `false`
+ * visibility becomes `hidden`, explicit `true` becomes the stored tier when
+ * one exists (else stays absent, falling to client defaults). Values already
+ * in `sessionToolbarPresence` win.
+ */
+function migrateLegacyToolbarClientDefaults(
+  loaded: ClientDefaults | undefined,
+): SessionToolbarPresenceClientDefaults {
+  const legacy = loaded as
+    | undefined
+    | (ClientDefaults & {
+        sessionToolbarVisibility?: Record<string, unknown>;
+        sessionToolbarPriority?: Record<string, unknown>;
+      });
+  const presence: Record<string, ToolbarControlPresence> = {};
+  const priority = legacy?.sessionToolbarPriority;
+  if (priority) {
+    for (const [key, value] of Object.entries(priority)) {
+      if (typeof value === "string" && TOOLBAR_PRESENCE_TIERS.has(value)) {
+        presence[key] = value as ToolbarControlPresence;
+      }
+    }
+  }
+  const visibility = legacy?.sessionToolbarVisibility;
+  if (visibility) {
+    for (const [key, value] of Object.entries(visibility)) {
+      if (value === false) presence[key] = "hidden";
+    }
+  }
+  return {
+    ...presence,
+    ...loaded?.sessionToolbarPresence,
+  } as SessionToolbarPresenceClientDefaults;
+}
 
 function mergeLoadedClientDefaults(
   loaded: ClientDefaults | undefined,
@@ -154,24 +216,23 @@ function mergeLoadedClientDefaults(
     ...DEFAULT_CLIENT_DEFAULTS,
     ...loaded,
   };
+  delete (merged as Record<string, unknown>).sessionToolbarVisibility;
+  delete (merged as Record<string, unknown>).sessionToolbarPriority;
   const speech = {
     ...DEFAULT_CLIENT_DEFAULTS.speech,
     ...loaded?.speech,
   };
-  const sessionToolbarVisibility = {
-    ...DEFAULT_CLIENT_DEFAULTS.sessionToolbarVisibility,
-    ...loaded?.sessionToolbarVisibility,
-  };
+  const sessionToolbarPresence = migrateLegacyToolbarClientDefaults(loaded);
 
   if (Object.keys(speech).length > 0) {
     merged.speech = speech;
   } else {
     delete merged.speech;
   }
-  if (Object.keys(sessionToolbarVisibility).length > 0) {
-    merged.sessionToolbarVisibility = sessionToolbarVisibility;
+  if (Object.keys(sessionToolbarPresence).length > 0) {
+    merged.sessionToolbarPresence = sessionToolbarPresence;
   } else {
-    delete merged.sessionToolbarVisibility;
+    delete merged.sessionToolbarPresence;
   }
 
   // Per-model compaction thresholds: keep only valid in-range percents (1–99);
@@ -224,6 +285,17 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
       // Leave invalid legacy values for the status endpoint to report clearly.
     }
   }
+  normalized.cacheMissBilling = {
+    ...DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+    ...settings.cacheMissBilling,
+    providerFreshWindowMinutes: {
+      ...DEFAULT_CACHE_MISS_BILLING_SETTINGS.providerFreshWindowMinutes,
+      ...settings.cacheMissBilling?.providerFreshWindowMinutes,
+    },
+  };
+  normalized.projectQueueQuietSeconds =
+    clampProjectQueueQuietSeconds(settings.projectQueueQuietSeconds) ??
+    DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
   return normalized;
 }
 

@@ -9,8 +9,10 @@ import type {
   ThinkingOption,
 } from "@yep-anywhere/shared";
 import {
+  DEFAULT_RECAP_AFTER_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
+  normalizeRecapAfterSeconds,
   resolveModel,
 } from "@yep-anywhere/shared";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -21,9 +23,10 @@ import {
   getDefaultProvider,
 } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
-import { helperTargetsToModelOptions } from "../lib/helperTargets";
+import { getRecapModeDescription } from "../lib/recapModes";
 import type { PermissionMode } from "../types";
 import { useI18n } from "../i18n";
+import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import {
   getEffortLevelLabel,
   getEffortLevelOptions,
@@ -32,11 +35,12 @@ import {
   resolveSupportedEffortLevel,
   resolveSupportedThinkingMode,
 } from "../lib/effortLevels";
+import { getProviderSessionDefaults } from "../lib/newSessionDefaults";
 import { Modal } from "./ui/Modal";
 
 type ThinkingMode = "off" | "auto" | "on";
 
-const RECAP_MODE_ORDER: RecapMode[] = ["off", "native", "side-session"];
+const RECAP_MODE_ORDER: RecapMode[] = ["off", "side-session", "fork"];
 const PROMPT_SUGGESTION_MODE_ORDER: PromptSuggestionMode[] = ["off", "native"];
 
 function parseThinkingOption(option: ThinkingOption | undefined): {
@@ -92,20 +96,43 @@ function getRestartDefaultModel(params: {
   defaults?: NewSessionDefaults | null;
 }): string {
   const sessionDefaultModel =
-    params.defaults?.provider === params.provider
-      ? params.defaults.model
-      : undefined;
-  const legacyClaudeFallbackModel =
     params.provider === "claude" ? resolveModel(getModelSetting()) : undefined;
+  const providerDefaults = getProviderSessionDefaults(
+    params.defaults,
+    params.provider,
+    {
+      model: sessionDefaultModel,
+    },
+  );
 
   return (
     getPreferredModelId(
       params.models,
-      sessionDefaultModel ?? legacyClaudeFallbackModel ?? params.currentModel,
+      providerDefaults.model ?? params.currentModel,
     ) ??
     params.currentModel ??
     "default"
   );
+}
+
+function getRestartDefaultThinking(params: {
+  provider: ProviderName;
+  defaults?: NewSessionDefaults | null;
+  currentThinking?: ThinkingOption;
+}): { mode: ThinkingMode; effort: EffortLevel } {
+  const current = parseThinkingOption(params.currentThinking);
+  const providerDefaults = getProviderSessionDefaults(
+    params.defaults,
+    params.provider,
+    {
+      thinkingMode: current.mode,
+      effortLevel: current.effort,
+    },
+  );
+  return {
+    mode: providerDefaults.thinkingMode ?? current.mode,
+    effort: providerDefaults.effortLevel ?? current.effort,
+  };
 }
 
 function getRestartDefaultProvider(params: {
@@ -151,7 +178,7 @@ function providerSupportsRecapMode(
   mode: RecapMode,
 ): boolean {
   if (mode === "off") return true;
-  if (mode === "native") return provider?.supportsNativeRecaps === true;
+  if (mode === "native") return false;
   return provider?.supportsRecaps === true;
 }
 
@@ -165,7 +192,7 @@ function getRestartDefaultRecapMode(params: {
   ) {
     return params.defaults.recapMode;
   }
-  return params.provider?.supportsNativeRecaps ? "native" : "off";
+  return "off";
 }
 
 function providerSupportsPromptSuggestionMode(
@@ -203,10 +230,15 @@ function getRestartDefaultPromptSuggestionMode(params: {
 }
 
 function getRestartDefaultHelperSideModel(params: {
+  provider: ProviderName;
   models: ModelInfo[];
   defaults?: NewSessionDefaults | null;
 }): string {
-  const defaultModel = params.defaults?.helperSideModel;
+  const providerDefaults = getProviderSessionDefaults(
+    params.defaults,
+    params.provider,
+  );
+  const defaultModel = providerDefaults.helperSideModel;
   if (
     defaultModel &&
     (defaultModel === HELPER_SIDE_MODEL_CHEAPEST ||
@@ -239,6 +271,7 @@ interface RestartSessionModalProps {
       title?: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       oldProcessAborted: boolean;
     },
     options?: {
@@ -300,13 +333,9 @@ export function RestartSessionModal({
     if (selectedProviderModels.length > 0) return selectedProviderModels;
     return [{ id: "default", name: t("processInfoDefaultModel") }];
   }, [selectedProviderModels, t]);
-  const helperTargetModelOptions = useMemo(
-    () => helperTargetsToModelOptions(settings?.helperTargets),
-    [settings?.helperTargets],
-  );
   const helperSelectableModels = useMemo(
-    () => [...helperTargetModelOptions, ...modelOptions],
-    [helperTargetModelOptions, modelOptions],
+    () => [...modelOptions],
+    [modelOptions],
   );
   const [selectedModel, setSelectedModel] = useState<string>(
     getRestartDefaultModel({
@@ -337,6 +366,12 @@ export function RestartSessionModal({
       defaults: settings?.newSessionDefaults,
     }),
   );
+  const [recapAfterSeconds, setRecapAfterSeconds] = useState(() =>
+    normalizeRecapAfterSeconds(
+      settings?.newSessionDefaults?.recapAfterSeconds ??
+        DEFAULT_RECAP_AFTER_SECONDS,
+    ),
+  );
   const [selectedPromptSuggestionMode, setSelectedPromptSuggestionMode] =
     useState<PromptSuggestionMode>(() =>
       getRestartDefaultPromptSuggestionMode({
@@ -347,14 +382,20 @@ export function RestartSessionModal({
     );
   const [helperSideModel, setHelperSideModel] = useState<string>(() =>
     getRestartDefaultHelperSideModel({
+      provider: selectedProvider,
       models: helperSelectableModels,
       defaults: settings?.newSessionDefaults,
     }),
   );
   const hasUserSelectedHelperConfigRef = useRef(false);
   const initialThinking = useMemo(
-    () => parseThinkingOption(thinking),
-    [thinking],
+    () =>
+      getRestartDefaultThinking({
+        provider: selectedProvider,
+        defaults: settings?.newSessionDefaults,
+        currentThinking: thinking,
+      }),
+    [selectedProvider, settings?.newSessionDefaults, thinking],
   );
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(
     initialThinking.mode,
@@ -452,9 +493,15 @@ export function RestartSessionModal({
     );
     setHelperSideModel(
       getRestartDefaultHelperSideModel({
+        provider: selectedProvider,
         models: helperSelectableModels,
         defaults: settings?.newSessionDefaults,
       }),
+    );
+    setRecapAfterSeconds(
+      normalizeRecapAfterSeconds(
+        settings?.newSessionDefaults?.recapAfterSeconds,
+      ),
     );
   }, [
     helperSelectableModels,
@@ -462,6 +509,7 @@ export function RestartSessionModal({
     selectedProviderInfo,
     settings,
     settingsLoading,
+    selectedProvider,
   ]);
 
   useEffect(() => {
@@ -498,6 +546,7 @@ export function RestartSessionModal({
         provider: isFork ? provider : selectedProvider,
         executor,
         recapMode: selectedRecapMode,
+        recapAfterSeconds,
         promptSuggestionMode: selectedPromptSuggestionMode,
         helperSideModel,
         // For fork, the reason would become the forked session's first user
@@ -539,6 +588,13 @@ export function RestartSessionModal({
         defaults: settings?.newSessionDefaults,
       }),
     );
+    const nextThinking = getRestartDefaultThinking({
+      provider: providerName,
+      defaults: settings?.newSessionDefaults,
+      currentThinking: thinking,
+    });
+    setThinkingMode(nextThinking.mode);
+    setEffortLevel(nextThinking.effort);
     setSelectedRecapMode(
       getRestartDefaultRecapMode({
         provider: providerOptions.find((p) => p.name === providerName),
@@ -554,9 +610,15 @@ export function RestartSessionModal({
     );
     setHelperSideModel(
       getRestartDefaultHelperSideModel({
-        models: [...helperTargetModelOptions, ...nextModelOptions],
+        provider: providerName,
+        models: nextModelOptions,
         defaults: settings?.newSessionDefaults,
       }),
+    );
+    setRecapAfterSeconds(
+      normalizeRecapAfterSeconds(
+        settings?.newSessionDefaults?.recapAfterSeconds,
+      ),
     );
   };
 
@@ -574,6 +636,7 @@ export function RestartSessionModal({
     off: t("recapModeOff"),
     native: t("recapModeNative"),
     "side-session": t("recapModeSideSession"),
+    fork: t("recapModeFork"),
   };
   const promptSuggestionModeLabels: Record<PromptSuggestionMode, string> = {
     off: t("promptSuggestionModeOff"),
@@ -872,12 +935,31 @@ export function RestartSessionModal({
                     setSelectedRecapMode(recapMode);
                   }}
                   disabled={restarting || !isAvailable}
+                  title={getRecapModeDescription(
+                    recapMode,
+                    t,
+                    recapAfterSeconds,
+                  )}
                 >
                   <span>{recapModeLabels[recapMode]}</span>
                 </button>
               );
             })}
           </div>
+          {selectedRecapMode !== "off" && (
+            <RecapAfterSecondsControl
+              value={recapAfterSeconds}
+              disabled={restarting}
+              mode={selectedRecapMode}
+              onCommit={(seconds) => {
+                hasUserSelectedHelperConfigRef.current = true;
+                setRecapAfterSeconds(seconds);
+              }}
+            />
+          )}
+          <p className="recap-mode-caption">
+            {getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
+          </p>
         </section>
 
         <section className="model-switch-section">

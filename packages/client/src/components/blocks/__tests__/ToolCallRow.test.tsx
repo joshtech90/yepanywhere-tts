@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { setStableToolPreviewRenderingPreference } from "../../../hooks/useStableToolPreviewRendering";
 import { I18nProvider } from "../../../i18n";
+import { extractMarkdownSnippetsFromSelection } from "../../../lib/markdownSelectionCopy";
 import { UI_KEYS } from "../../../lib/storageKeys";
 import {
   DEFERRED_PREVIEW_HEIGHT,
@@ -18,9 +19,22 @@ vi.mock("../../../contexts/SchemaValidationContext", () => ({
   }),
 }));
 
+function selectElementText(element: Element) {
+  const textNode = document
+    .createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    .nextNode();
+  expect(textNode).toBeTruthy();
+  const range = document.createRange();
+  range.selectNodeContents(textNode as Node);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
 describe("ToolCallRow", () => {
   afterEach(() => {
     cleanup();
+    window.getSelection()?.removeAllRanges();
     Reflect.deleteProperty(window, "IntersectionObserver");
     setStableToolPreviewRenderingPreference(true);
     window.localStorage.removeItem(UI_KEYS.stableToolPreviewRendering);
@@ -176,7 +190,69 @@ describe("ToolCallRow", () => {
     ).toBeDefined();
   });
 
-  it("does not make empty completed Bash rows expandable", () => {
+  it("registers Ran command text as a quoteable selection source", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-quote-command"
+        toolName="Bash"
+        toolInput={{ command: "echo quote me" }}
+        toolResult={{
+          structured: {
+            stdout: "",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          },
+          content: "",
+          isError: false,
+        }}
+        status="complete"
+        sessionProvider="codex"
+      />,
+    );
+
+    selectElementText(screen.getByText("echo quote me"));
+
+    expect(extractMarkdownSnippetsFromSelection(container)).toMatchObject([
+      {
+        markdown: "echo quote me",
+        selectedText: "echo quote me",
+      },
+    ]);
+  });
+
+  it("registers Bash output previews as quoteable visible text", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-quote-output"
+        toolName="Bash"
+        toolInput={{ command: "printf red" }}
+        toolResult={{
+          structured: {
+            stdout: "\x1b[31mred quote\x1b[0m",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          },
+          content: "\x1b[31mred quote\x1b[0m",
+          isError: false,
+        }}
+        status="complete"
+        sessionProvider="codex"
+      />,
+    );
+
+    selectElementText(screen.getByText("red quote"));
+
+    expect(extractMarkdownSnippetsFromSelection(container)).toMatchObject([
+      {
+        markdown: "red quote",
+        selectedText: "red quote",
+      },
+    ]);
+  });
+
+  it("keeps no-output Bash rows collapsed but expandable to the command", () => {
     const { container } = render(
       <ToolCallRow
         id="tool-empty-bash"
@@ -199,9 +275,57 @@ describe("ToolCallRow", () => {
 
     expect(screen.getByText("Ran")).toBeDefined();
     expect(screen.getByText("true")).toBeDefined();
+    expect(screen.getByText("(no output)")).toBeDefined();
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
-    expect(container.querySelector(".expand-chevron")).toBeNull();
-    expect(screen.queryByRole("button", { name: /expand/i })).toBeNull();
+    expect(container.querySelector(".tool-row-content")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Show full command" }),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByText("true"));
+
+    const content = container.querySelector(".tool-row-content");
+    expect(content).not.toBeNull();
+    expect(content?.textContent).toBe("true");
+    expect(content?.querySelector(".code-block")?.textContent).toBe("true");
+    expect(content?.querySelector(".bash-empty")).toBeNull();
+    expect(content?.querySelector(".bash-inline-section-label")).toBeNull();
+    expect(screen.getByRole("button", { name: "Collapse" })).toBeDefined();
+  });
+
+  it("shows return code suffix for non-zero no-output Bash rows", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-empty-bash-error"
+        toolName="Bash"
+        toolInput={{ command: "false" }}
+        toolResult={{
+          structured: {
+            stdout: "",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            exitCode: 7,
+          },
+          content: "(no output)",
+          isError: true,
+        }}
+        status="error"
+        sessionProvider="codex"
+      />,
+    );
+
+    expect(screen.getByText("Ran")).toBeDefined();
+    expect(screen.getByText("false")).toBeDefined();
+    expect(screen.getByText("(no output)")).toBeDefined();
+    expect(screen.getByText("rc=7")).toBeDefined();
+    expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+
+    expect(
+      container.querySelector(".tool-row-content .code-block")?.textContent,
+    ).toBe("false");
   });
 
   it("expands Bash command text without toggling row details", () => {
@@ -226,15 +350,15 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    const commandButton = screen.getByRole("button", {
-      name: "Show full command",
-    });
-    expect(commandButton.textContent).toBe(command);
+    expect(
+      screen.queryByRole("button", { name: "Show full command" }),
+    ).toBeNull();
 
-    fireEvent.click(commandButton);
+    fireEvent.click(screen.getByText(command));
 
-    expect(commandButton.className).toContain("is-expanded");
-    expect(container.querySelector(".tool-row-content")).toBeNull();
+    expect(
+      container.querySelector(".tool-row-content .code-block")?.textContent,
+    ).toBe(command);
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
   });
 
@@ -262,23 +386,25 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    const commandButton = screen.getByRole("button", {
-      name: "Show full command",
-    });
-    expect(commandButton.textContent).toContain("printf first");
-    expect(commandButton.textContent).toContain("printf second");
-    expect(commandButton.textContent).not.toContain("printf third");
+    expect(
+      screen.queryByRole("button", { name: "Show full command" }),
+    ).toBeNull();
+    const commandText = container.querySelector(".tool-summary-command-text");
+    expect(commandText?.textContent).toContain("printf first");
+    expect(commandText?.textContent).toContain("printf second");
+    expect(commandText?.textContent).not.toContain("printf third");
 
     // The hidden-content badge sits on its own line under the Run/Ran
-    // label, not inside the command button.
+    // label, not inside a nested command button.
     const moreBadge = container.querySelector(".tool-summary-command-more");
     expect(moreBadge?.textContent).toContain("+1 line");
-    expect(commandButton.textContent).not.toContain("+1 line");
+    expect(commandText?.textContent).not.toContain("+1 line");
 
-    fireEvent.click(commandButton);
+    fireEvent.click(commandText as Element);
 
-    expect(commandButton.textContent).toContain("printf third");
-    expect(container.querySelector(".tool-summary-command-more")).toBeNull();
+    expect(
+      container.querySelector(".tool-row-content .code-block")?.textContent,
+    ).toBe(command);
   });
 
   it("uses the timeline dot to expand long Grep summaries", () => {

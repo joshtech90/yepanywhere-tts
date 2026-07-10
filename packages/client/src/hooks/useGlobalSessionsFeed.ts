@@ -1,0 +1,554 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  api,
+  type GlobalSessionItem,
+  type GlobalSessionsResponse,
+  type GlobalSessionStats,
+  type ProjectOption,
+} from "../api/client";
+import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { isRemoteClient } from "../lib/connection";
+import {
+  createClientQueryKey,
+  ensureClientQuery,
+  invalidateClientQuery,
+  retainClientQuery,
+} from "../lib/clientQueryController";
+import {
+  type ClientSummarySourceKey,
+  useSessionCollectionQueryRecords,
+  useSessionCollectionQueryState,
+} from "../lib/clientSummaryStore";
+import type { SessionCollectionQueryDescriptor } from "../lib/clientSummaryCollections";
+import { createGlobalSessionsCollectionQueryDescriptor } from "../lib/clientSummaryQueries";
+import {
+  type ProcessStateEvent,
+  type SessionCreatedEvent,
+  type SessionMetadataChangedEvent,
+  useFileActivity,
+} from "./useFileActivity";
+
+const REFETCH_DEBOUNCE_MS = 500;
+const GLOBAL_SESSIONS_DEFAULT_LIMIT = 100;
+const GLOBAL_SESSIONS_STALE_TIME_MS = 30_000;
+const GLOBAL_SESSION_STATS_STALE_TIME_MS = 30_000;
+const GLOBAL_SESSION_STATS_QUERY_KEY = createClientQueryKey({
+  endpoint: "global-session-stats",
+});
+
+export interface UseGlobalSessionsOptions {
+  projectId?: string | null;
+  searchQuery?: string;
+  limit?: number;
+  includeArchived?: boolean;
+  starred?: boolean;
+  includeStats?: boolean;
+}
+
+export interface UseGlobalSessionsFeedResult {
+  query: SessionCollectionQueryDescriptor;
+  ready: boolean;
+  loading: boolean;
+  error: Error | null;
+  hasMore: boolean;
+  loadMore: () => Promise<void>;
+  refetch: () => Promise<void>;
+  stats: GlobalSessionStats;
+  projects: ProjectOption[];
+}
+
+/** Default stats when no data loaded */
+export const DEFAULT_GLOBAL_SESSION_STATS: GlobalSessionStats = {
+  totalCount: 0,
+  unreadCount: 0,
+  starredCount: 0,
+  archivedCount: 0,
+  providerCounts: {},
+  executorCounts: {},
+};
+
+interface GlobalSessionsAuxiliaryState {
+  stats: GlobalSessionStats;
+  projects: ProjectOption[];
+}
+
+const DEFAULT_GLOBAL_SESSIONS_AUXILIARY: GlobalSessionsAuxiliaryState = {
+  stats: DEFAULT_GLOBAL_SESSION_STATS,
+  projects: [],
+};
+
+const globalSessionsAuxiliaryBySource = new Map<
+  ClientSummarySourceKey,
+  GlobalSessionsAuxiliaryState
+>();
+const globalSessionsAuxiliaryListeners = new Set<() => void>();
+
+function subscribeGlobalSessionsAuxiliary(listener: () => void): () => void {
+  globalSessionsAuxiliaryListeners.add(listener);
+  return () => {
+    globalSessionsAuxiliaryListeners.delete(listener);
+  };
+}
+
+function getGlobalSessionsAuxiliary(
+  sourceKey: ClientSummarySourceKey,
+): GlobalSessionsAuxiliaryState {
+  return (
+    globalSessionsAuxiliaryBySource.get(sourceKey) ??
+    DEFAULT_GLOBAL_SESSIONS_AUXILIARY
+  );
+}
+
+function updateGlobalSessionsAuxiliary(
+  sourceKey: ClientSummarySourceKey,
+  update: Partial<GlobalSessionsAuxiliaryState>,
+): void {
+  const current = getGlobalSessionsAuxiliary(sourceKey);
+  const next = {
+    stats: update.stats ?? current.stats,
+    projects: update.projects ?? current.projects,
+  };
+  if (next.stats === current.stats && next.projects === current.projects) {
+    return;
+  }
+
+  globalSessionsAuxiliaryBySource.set(sourceKey, next);
+  for (const listener of Array.from(globalSessionsAuxiliaryListeners)) {
+    listener();
+  }
+}
+
+function useGlobalSessionsAuxiliary(
+  sourceKey: ClientSummarySourceKey,
+): GlobalSessionsAuxiliaryState {
+  return useSyncExternalStore(
+    subscribeGlobalSessionsAuxiliary,
+    () => getGlobalSessionsAuxiliary(sourceKey),
+    () => DEFAULT_GLOBAL_SESSIONS_AUXILIARY,
+  );
+}
+
+function createGlobalSessionsControllerQueryKey(
+  descriptor: SessionCollectionQueryDescriptor,
+): string {
+  return createClientQueryKey({
+    endpoint: "global-sessions",
+    projectId: descriptor.projectId ?? null,
+    searchQuery: descriptor.searchQuery?.trim() || null,
+    includeArchived: descriptor.includeArchived === true,
+    starred: descriptor.starred === true,
+  });
+}
+
+export function resetGlobalSessionsFeedForTests(): void {
+  globalSessionsAuxiliaryBySource.clear();
+  globalSessionsAuxiliaryListeners.clear();
+}
+
+function shouldRefetchGlobalSessionsAfterProcessState(
+  event: ProcessStateEvent,
+  matched: boolean,
+): boolean {
+  return !matched || event.activity !== "in-turn";
+}
+
+function sessionCreatedEventToGlobalSessionItem(
+  event: SessionCreatedEvent,
+  projects: readonly ProjectOption[],
+): GlobalSessionItem {
+  const project = projects.find((p) => p.id === event.session.projectId);
+  const projectName = event.session.projectName ?? project?.name ?? "";
+
+  return {
+    id: event.session.id,
+    title: event.session.title,
+    fullTitle: event.session.fullTitle,
+    createdAt: event.session.createdAt,
+    updatedAt: event.session.updatedAt,
+    messageCount: event.session.messageCount,
+    provider: event.session.provider,
+    model: event.session.model,
+    projectId: event.session.projectId,
+    projectName,
+    ownership: event.session.ownership,
+    pendingInputType: event.session.pendingInputType,
+    activity: event.session.activity,
+    hasUnread: event.session.hasUnread,
+    customTitle: event.session.customTitle,
+    isArchived: event.session.isArchived,
+    isStarred: event.session.isStarred,
+    parentSessionId: event.session.parentSessionId,
+    initialPrompt: event.session.initialPrompt,
+    executor: event.session.executor,
+    lastAgentText: event.session.lastAgentText,
+  };
+}
+
+export function useGlobalSessionsFeed(
+  options: UseGlobalSessionsOptions = {},
+): UseGlobalSessionsFeedResult {
+  const {
+    projectId,
+    searchQuery,
+    limit,
+    includeArchived,
+    starred,
+    includeStats = false,
+  } = options;
+  const remoteConnection = useOptionalRemoteConnection();
+  const ready =
+    !isRemoteClient() ||
+    (remoteConnection !== null && remoteConnection.connection !== null);
+  const query = useMemo(
+    () =>
+      createGlobalSessionsCollectionQueryDescriptor({
+        projectId,
+        searchQuery,
+        includeArchived,
+        starred,
+      }),
+    [projectId, searchQuery, includeArchived, starred],
+  );
+  const queryKey = useMemo(
+    () => createGlobalSessionsControllerQueryKey(query),
+    [query],
+  );
+  const requestedRows = limit ?? GLOBAL_SESSIONS_DEFAULT_LIMIT;
+  const runtime = useCurrentSourceRuntime();
+  const sourceKey = runtime.sourceKey;
+  const sourceSummary = runtime.summary;
+  const sourceKeyRef = useRef(sourceKey);
+  sourceKeyRef.current = sourceKey;
+  const auxiliary = useGlobalSessionsAuxiliary(sourceKey);
+  const queryState = useSessionCollectionQueryState(query);
+  const queryRecords = useSessionCollectionQueryRecords(query);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const queryStateRef = useRef(queryState);
+  queryStateRef.current = queryState;
+  const queryRecordsRef = useRef(queryRecords);
+  queryRecordsRef.current = queryRecords;
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
+  const projectsRef = useRef<ProjectOption[]>([]);
+  projectsRef.current = auxiliary.projects;
+  const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSequenceRef = useRef(0);
+
+  useEffect(() => {
+    void sourceKey;
+    void queryKey;
+    requestSequenceRef.current += 1;
+    if (refetchTimerRef.current) {
+      clearTimeout(refetchTimerRef.current);
+      refetchTimerRef.current = null;
+    }
+    setError(null);
+    setLoading(!queryStateRef.current);
+  }, [sourceKey, queryKey]);
+
+  useEffect(
+    () =>
+      retainClientQuery({
+        sourceKey,
+        key: queryKey,
+      }),
+    [sourceKey, queryKey],
+  );
+
+  useEffect(() => {
+    if (!includeStats || projectId) {
+      return undefined;
+    }
+    return retainClientQuery({
+      sourceKey,
+      key: GLOBAL_SESSION_STATS_QUERY_KEY,
+    });
+  }, [includeStats, projectId, sourceKey]);
+
+  const fetch = useCallback(
+    async (fetchOptions: { force?: boolean } = {}) => {
+      if (!readyRef.current) {
+        if (!queryStateRef.current) {
+          setLoading(true);
+        }
+        return;
+      }
+
+      if (!queryStateRef.current || fetchOptions.force) {
+        setLoading(true);
+      }
+      setError(null);
+
+      const requestId = ++requestSequenceRef.current;
+      const queryForRequest = query;
+      const requestSourceKey = sourceKey;
+
+      try {
+        if (fetchOptions.force) {
+          invalidateClientQuery(requestSourceKey, queryKey);
+          if (includeStats && !projectId) {
+            invalidateClientQuery(
+              requestSourceKey,
+              GLOBAL_SESSION_STATS_QUERY_KEY,
+            );
+          }
+        }
+
+        const sessionsPromise = ensureClientQuery<GlobalSessionsResponse>({
+          sourceKey: requestSourceKey,
+          key: queryKey,
+          coverage: { minRows: requestedRows },
+          staleTimeMs: GLOBAL_SESSIONS_STALE_TIME_MS,
+          force: fetchOptions.force,
+          fetcher: () =>
+            api.getGlobalSessions({
+              project: projectId ?? undefined,
+              q: searchQuery || undefined,
+              limit,
+              includeArchived,
+              starred,
+              includeStats: false,
+            }),
+          applySnapshot: (data, context) => {
+            sourceSummary.reportGlobalSessionsCollectionSnapshot(
+              {
+                query: queryForRequest,
+                sessions: data.sessions,
+                hasMore: data.hasMore,
+                mode: "replace",
+              },
+              context.requestStartedAt,
+            );
+            updateGlobalSessionsAuxiliary(context.sourceKey, {
+              projects: data.projects,
+            });
+          },
+        });
+        const statsPromise =
+          includeStats && !projectId
+            ? ensureClientQuery<{ stats: GlobalSessionStats }>({
+                sourceKey: requestSourceKey,
+                key: GLOBAL_SESSION_STATS_QUERY_KEY,
+                coverage: { includeStats: true },
+                staleTimeMs: GLOBAL_SESSION_STATS_STALE_TIME_MS,
+                force: fetchOptions.force,
+                fetcher: () => api.getGlobalSessionStats(),
+                applySnapshot: (data, context) => {
+                  updateGlobalSessionsAuxiliary(context.sourceKey, {
+                    stats: data.stats,
+                  });
+                },
+              })
+            : Promise.resolve();
+
+        await Promise.all([sessionsPromise, statsPromise]);
+      } catch (err) {
+        if (requestId === requestSequenceRef.current) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+        }
+      } finally {
+        if (requestId === requestSequenceRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [
+      query,
+      queryKey,
+      projectId,
+      searchQuery,
+      limit,
+      includeArchived,
+      starred,
+      includeStats,
+      requestedRows,
+      sourceKey,
+      sourceSummary,
+    ],
+  );
+
+  const loadMore = useCallback(async () => {
+    if (!readyRef.current || !queryStateRef.current?.hasMore) {
+      return;
+    }
+
+    const records = queryRecordsRef.current;
+    const lastRecord = records[records.length - 1];
+    if (!lastRecord) {
+      return;
+    }
+    if (!lastRecord.updatedAt) {
+      await fetch({ force: true });
+      return;
+    }
+
+    const requestSourceKey = sourceKey;
+    try {
+      setError(null);
+      const requestStartedAt = Date.now();
+      const data = await api.getGlobalSessions({
+        project: projectId ?? undefined,
+        q: searchQuery || undefined,
+        limit,
+        after: lastRecord.updatedAt,
+        includeArchived,
+        starred,
+        includeStats: false,
+      });
+
+      sourceSummary.reportGlobalSessionsCollectionSnapshot(
+        {
+          query,
+          sessions: data.sessions,
+          hasMore: data.hasMore,
+          mode: "append",
+        },
+        requestStartedAt,
+      );
+      updateGlobalSessionsAuxiliary(requestSourceKey, {
+        projects: data.projects,
+      });
+    } catch (err) {
+      if (sourceKeyRef.current === requestSourceKey) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  }, [
+    fetch,
+    query,
+    projectId,
+    searchQuery,
+    limit,
+    includeArchived,
+    starred,
+    sourceKey,
+    sourceSummary,
+  ]);
+
+  const debouncedRefetch = useCallback(() => {
+    if (!readyRef.current) {
+      return;
+    }
+    if (refetchTimerRef.current) {
+      clearTimeout(refetchTimerRef.current);
+    }
+    refetchTimerRef.current = setTimeout(() => {
+      void fetch({ force: true });
+    }, REFETCH_DEBOUNCE_MS);
+  }, [fetch]);
+
+  const handleProcessStateChange = useCallback(
+    (event: ProcessStateEvent) => {
+      const currentlyMatched = queryRecordsRef.current.some(
+        (record) => record.id === event.sessionId,
+      );
+      if (
+        shouldRefetchGlobalSessionsAfterProcessState(event, currentlyMatched)
+      ) {
+        debouncedRefetch();
+      }
+    },
+    [debouncedRefetch],
+  );
+
+  const handleSessionCreated = useCallback(
+    (event: SessionCreatedEvent) => {
+      const observedAt = Date.now();
+      sourceSummary.reportSessionCollectionCreated(event, observedAt);
+
+      if (projectId && event.session.projectId !== projectId) return;
+      if (starred && !event.session.isStarred) return;
+      if (includeArchived !== true && event.session.isArchived) return;
+
+      if (searchQuery) {
+        debouncedRefetch();
+        return;
+      }
+
+      sourceSummary.reportGlobalSessionsCollectionSnapshot(
+        {
+          query,
+          sessions: [
+            sessionCreatedEventToGlobalSessionItem(event, projectsRef.current),
+          ],
+          hasMore: queryStateRef.current?.hasMore ?? false,
+          mode: "prepend",
+        },
+        observedAt,
+      );
+    },
+    [
+      projectId,
+      starred,
+      includeArchived,
+      searchQuery,
+      debouncedRefetch,
+      query,
+      sourceSummary,
+    ],
+  );
+
+  const handleSessionMetadataChange = useCallback(
+    (event: SessionMetadataChangedEvent) => {
+      sourceSummary.reportSessionCollectionMetadataChanged(event);
+
+      if (
+        searchQuery ||
+        (projectId &&
+          event.projectId !== undefined &&
+          event.projectId !== projectId)
+      ) {
+        debouncedRefetch();
+      }
+    },
+    [debouncedRefetch, projectId, searchQuery, sourceSummary],
+  );
+
+  useFileActivity({
+    maxEvents: 0,
+    onSessionCreated: handleSessionCreated,
+    onProcessStateChange: handleProcessStateChange,
+    onSessionMetadataChange: handleSessionMetadataChange,
+    onReconnect: () => {
+      void fetch({ force: true });
+    },
+  });
+
+  useEffect(() => {
+    if (ready) {
+      void fetch();
+    }
+  }, [fetch, ready]);
+
+  useEffect(() => {
+    return () => {
+      if (refetchTimerRef.current) {
+        clearTimeout(refetchTimerRef.current);
+      }
+    };
+  }, []);
+
+  return {
+    query,
+    ready,
+    loading: loading || (!ready && !queryState),
+    error,
+    hasMore: queryState?.hasMore ?? false,
+    loadMore,
+    refetch: () => fetch({ force: true }),
+    stats:
+      includeStats && !projectId ? auxiliary.stats : DEFAULT_GLOBAL_SESSION_STATS,
+    projects: auxiliary.projects,
+  };
+}

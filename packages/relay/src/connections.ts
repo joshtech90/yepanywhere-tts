@@ -52,6 +52,7 @@ export interface ActiveRelayServerSummary {
   appVersions: SummaryBucket<string>[];
   resumeProtocolVersions: SummaryBucket<number>[];
   renderProtocolVersions: SummaryBucket<number>[];
+  remoteCompatibilityLevels: SummaryBucket<number>[];
   capabilities: Array<{ capability: string; count: number }>;
 }
 
@@ -134,6 +135,7 @@ export class ConnectionManager {
       appVersion: metadata.appVersion,
       resumeProtocolVersion: metadata.resumeProtocolVersion,
       renderProtocolVersion: metadata.renderProtocolVersion,
+      remoteCompatibilityLevel: metadata.remoteCompatibilityLevel,
       capabilities: metadata.capabilities
         ? [...metadata.capabilities]
         : undefined,
@@ -276,10 +278,7 @@ export class ConnectionManager {
     return false;
   }
 
-  private findWaitingKeyForWs(
-    ws: WebSocket,
-    username?: string,
-  ): string | null {
+  private findWaitingKeyForWs(ws: WebSocket, username?: string): string | null {
     if (username) {
       for (const [key, waitingWs] of this.waiting.entries()) {
         if (waitingWs === ws && key.startsWith(`${username}\0`)) {
@@ -360,6 +359,10 @@ export class ConnectionManager {
       renderProtocolVersions: summarizeOptionalValues(
         activeServers,
         (server) => server.renderProtocolVersion ?? null,
+      ),
+      remoteCompatibilityLevels: summarizeOptionalValues(
+        activeServers,
+        (server) => server.remoteCompatibilityLevel ?? null,
       ),
       capabilities: summarizeCapabilities(activeServers),
     };

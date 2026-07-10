@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROJECT_QUEUE_CAPABILITY } from "../../lib/projectQueueVisibility";
 import { GlobalSessionsPage } from "../GlobalSessionsPage";
 
 const {
@@ -11,10 +12,23 @@ const {
   mockSetNewSessionPrefill,
   globalSessionsState,
   mockLoadMore,
+  mockUseProjectQueues,
+  sessionCollectionState,
+  versionState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockSetNewSessionPrefill: vi.fn(),
   mockLoadMore: vi.fn(),
+  mockUseProjectQueues: vi.fn(),
+  versionState: {
+    version: { capabilities: [] as string[] } as {
+      capabilities?: string[];
+    },
+  },
+  sessionCollectionState: {
+    records: [] as unknown[],
+    queuedSessionIds: new Set<string>(),
+  },
   globalSessionsState: {
     sessions: [] as unknown[],
     stats: {
@@ -42,9 +56,10 @@ const {
 }));
 
 vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual<typeof import("react-router-dom")>(
-    "react-router-dom",
-  );
+  const actual =
+    await vi.importActual<typeof import("react-router-dom")>(
+      "react-router-dom",
+    );
 
   return {
     ...actual,
@@ -73,15 +88,70 @@ vi.mock("../../components/PageHeader", () => ({
 }));
 
 vi.mock("../../components/SessionListItem", () => ({
-  SessionListItem: () => <div>session-item</div>,
+  SessionListItem: ({
+    sessionId,
+    title,
+    hasProjectQueue,
+  }: {
+    sessionId: string;
+    title: string;
+    hasProjectQueue?: boolean;
+  }) => (
+    <div data-testid={`session-${sessionId}`}>
+      {title}
+      {hasProjectQueue ? (
+        <span data-testid={`project-queue-${sessionId}`}>Q</span>
+      ) : null}
+    </div>
+  ),
 }));
 
-vi.mock("../../hooks/useDrafts", () => ({
-  useDrafts: () => new Set<string>(),
+vi.mock("../../hooks/useGlobalSessionsFeed", () => ({
+  useGlobalSessionsFeed: () => ({
+    query: { scope: "global-sessions" },
+    ...globalSessionsState,
+  }),
 }));
 
-vi.mock("../../hooks/useGlobalSessions", () => ({
-  useGlobalSessions: () => globalSessionsState,
+vi.mock("../../hooks/useProjectQueues", () => ({
+  useProjectQueues: (projectIds: string[]) => {
+    mockUseProjectQueues(projectIds);
+    return {
+      queuesByProject: {},
+      items: [],
+      projectStatusesByProject: {},
+      recoveredSessionQueues: [],
+      loading: false,
+      error: null,
+      mutatingItemId: null,
+      mutatingDispatchState: false,
+      mutatingPromoteItemId: null,
+      dispatchState: { status: "running" },
+      refetch: vi.fn(),
+      pauseDispatch: vi.fn(),
+      resumeDispatch: vi.fn(),
+      promoteNow: vi.fn(),
+      updateItem: vi.fn(),
+      deleteItem: vi.fn(),
+      retryItem: vi.fn(),
+      moveItemToTop: vi.fn(),
+    };
+  },
+}));
+
+vi.mock("../../hooks/useVersion", () => ({
+  useVersion: () => ({ version: versionState.version }),
+}));
+
+vi.mock("../../lib/clientSummaryStore", () => ({
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY: "local",
+  REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY: "remote:none",
+  getCurrentClientSummarySourceKey: () => "host:test",
+  setCurrentClientSummarySourceKey: vi.fn(),
+  useClientSummarySourceKey: () => "host:test",
+  useSessionCollectionQueryRecords: () => sessionCollectionState.records,
+  useProjectQueuedSessionIds: () => sessionCollectionState.queuedSessionIds,
+  useDraftSessionIds: () => new Set<string>(),
 }));
 
 vi.mock("../../hooks/useRemoteBasePath", () => ({
@@ -157,9 +227,33 @@ vi.mock("../../lib/newSessionPrefill", () => ({
   setNewSessionPrefill: mockSetNewSessionPrefill,
 }));
 
+function makeSessionRecord(
+  id: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    title: `Session ${id}`,
+    fullTitle: `Session ${id}`,
+    createdAt: "2026-04-21T00:00:00.000Z",
+    updatedAt: "2026-04-21T00:00:00.000Z",
+    messageCount: 1,
+    provider: "claude",
+    projectId: "project-1",
+    projectName: "Alpha",
+    ownership: { owner: "none" },
+    isArchived: false,
+    isStarred: false,
+    observedAt: 1,
+    ...overrides,
+  };
+}
+
 describe("GlobalSessionsPage", () => {
   beforeEach(() => {
     globalSessionsState.sessions = [];
+    sessionCollectionState.records = [];
+    sessionCollectionState.queuedSessionIds = new Set<string>();
     globalSessionsState.projects = [
       {
         id: "project-1",
@@ -173,9 +267,11 @@ describe("GlobalSessionsPage", () => {
     globalSessionsState.error = null;
     globalSessionsState.hasMore = false;
     globalSessionsState.loadMore = mockLoadMore;
+    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
     mockNavigate.mockReset();
     mockSetNewSessionPrefill.mockReset();
     mockLoadMore.mockReset();
+    mockUseProjectQueues.mockReset();
   });
 
   afterEach(() => {
@@ -226,9 +322,64 @@ describe("GlobalSessionsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New Session" }));
 
-    expect(mockSetNewSessionPrefill).toHaveBeenCalledWith("fix login flow");
+    expect(mockSetNewSessionPrefill).toHaveBeenCalledWith(
+      "host:test",
+      "fix login flow",
+    );
     expect(mockNavigate).toHaveBeenCalledWith(
       "/new-session?projectId=project-1",
     );
+  });
+
+  it("renders sessions from collection query records", () => {
+    globalSessionsState.sessions = [];
+    sessionCollectionState.records = [
+      makeSessionRecord("collection-only", {
+        title: "Collection row",
+        fullTitle: "Collection row",
+      }),
+    ];
+
+    renderPage("/sessions");
+
+    expect(screen.getByTestId("session-collection-only").textContent).toBe(
+      "Collection row",
+    );
+  });
+
+  it("marks sessions with project queue items from store decorations", () => {
+    sessionCollectionState.records = [
+      makeSessionRecord("queued-session", {
+        title: "Queued row",
+        fullTitle: "Queued row",
+      }),
+      makeSessionRecord("plain-session", {
+        title: "Plain row",
+        fullTitle: "Plain row",
+      }),
+    ];
+    sessionCollectionState.queuedSessionIds = new Set(["queued-session"]);
+
+    renderPage("/sessions");
+
+    expect(mockUseProjectQueues).toHaveBeenCalledWith(["project-1"]);
+    expect(screen.getByTestId("project-queue-queued-session")).toBeDefined();
+    expect(screen.queryByTestId("project-queue-plain-session")).toBe(null);
+  });
+
+  it("hides project queue decorations without the server capability", () => {
+    versionState.version = { capabilities: [] };
+    sessionCollectionState.records = [
+      makeSessionRecord("queued-session", {
+        title: "Queued row",
+        fullTitle: "Queued row",
+      }),
+    ];
+    sessionCollectionState.queuedSessionIds = new Set(["queued-session"]);
+
+    renderPage("/sessions");
+
+    expect(mockUseProjectQueues).toHaveBeenCalledWith([]);
+    expect(screen.queryByTestId("project-queue-queued-session")).toBe(null);
   });
 });

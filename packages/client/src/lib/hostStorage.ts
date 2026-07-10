@@ -26,6 +26,12 @@ export interface SavedHost {
   srpUsername: string;
   session?: StoredSession;
 
+  // Stable server-advertised identity, learned during auth/pairing. When
+  // present, source identity resolves to `server:<id>` so it survives
+  // direct/relay transport failover (see lib/sourceIdentity.ts). Not yet
+  // populated by any flow.
+  serverInstanceId?: string;
+
   // Metadata
   lastConnected?: string;
   createdAt: string;
@@ -164,6 +170,12 @@ export function getHostByRelayUsername(
 export function getHostById(id: string): SavedHost | undefined {
   const data = loadSavedHosts();
   return data.hosts.find((h) => h.id === id);
+}
+
+/** Find a direct host by WebSocket URL */
+export function getHostByDirectWsUrl(wsUrl: string): SavedHost | undefined {
+  const data = loadSavedHosts();
+  return data.hosts.find((h) => h.mode === "direct" && h.wsUrl === wsUrl);
 }
 
 /** Create a new relay host (doesn't save yet - call saveHost to persist) */

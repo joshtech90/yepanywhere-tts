@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_PROJECT_QUEUE_QUIET_SECONDS } from "@yep-anywhere/shared";
 import { createSettingsRoutes } from "../../src/routes/settings.js";
 import type { PublicShareService } from "../../src/services/PublicShareService.js";
 import type {
@@ -16,8 +17,10 @@ describe("Settings Routes", () => {
       serviceWorkerEnabled: true,
       persistRemoteSessionsToDisk: false,
       clientLogCollectionRequested: false,
+      approvalAuditLogEnabled: false,
       speechAudioRetention: DEFAULT_SERVER_SETTINGS.speechAudioRetention,
       publicSharesEnabled: false,
+      workstreamsEnabled: false,
     };
 
     mockServerSettingsService = {
@@ -251,6 +254,80 @@ describe("Settings Routes", () => {
       });
     });
 
+    it("accepts approval audit log settings", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approvalAuditLogEnabled: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        approvalAuditLogEnabled: true,
+      });
+    });
+
+    it("accepts the experimental workstreams gate", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workstreamsEnabled: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        workstreamsEnabled: true,
+      });
+    });
+
+    it("accepts Project Queue quiet-window settings", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectQueueQuietSeconds: 45,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        projectQueueQuietSeconds: 45,
+      });
+    });
+
+    it("rejects out-of-range Project Queue quiet-window settings", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectQueueQuietSeconds: MAX_PROJECT_QUEUE_QUIET_SECONDS + 1,
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("accepts Grok Build XAI_API_KEY opt-in setting", async () => {
       const onGrokBuildUseXaiApiKeyChanged = vi.fn();
       const routes = createSettingsRoutes({
@@ -330,9 +407,9 @@ describe("Settings Routes", () => {
           },
           busyComposerDefaultAction: "steer",
           collapsedComposerButton: "primary",
-          sessionToolbarVisibility: {
-            microphone: false,
-            queueControls: false,
+          sessionToolbarPresence: {
+            microphone: "hidden",
+            slashMenu: "hidden",
           },
         },
       };
@@ -353,12 +430,13 @@ describe("Settings Routes", () => {
                 timeoutMs: 10000,
               },
             },
-            sessionToolbarVisibility: {
-              microphone: true,
-              waveform: false,
+            sessionToolbarPresence: {
+              microphone: "pin",
+              waveform: "hidden",
             },
             busyComposerDefaultAction: "queue",
             collapsedComposerButton: "alternate",
+            projectQueueCtrlEnterEnabled: false,
           },
         }),
       });
@@ -377,10 +455,11 @@ describe("Settings Routes", () => {
           },
           busyComposerDefaultAction: "queue",
           collapsedComposerButton: "alternate",
-          sessionToolbarVisibility: {
-            microphone: true,
-            waveform: false,
-            queueControls: false,
+          projectQueueCtrlEnterEnabled: false,
+          sessionToolbarPresence: {
+            microphone: "pin",
+            waveform: "hidden",
+            slashMenu: "hidden",
           },
         },
       });
@@ -397,6 +476,66 @@ describe("Settings Routes", () => {
         body: JSON.stringify({
           clientDefaults: {
             collapsedComposerButton: "floating-action-button",
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toBe("Invalid clientDefaults setting");
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("merges server-learned session toolbar presence", async () => {
+      settings = {
+        ...settings,
+        clientDefaults: {
+          sessionToolbarPresence: {
+            modeSelector: "first",
+            shortcutsHelp: "last",
+          },
+        },
+      };
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientDefaults: {
+            sessionToolbarPresence: {
+              modeSelector: "hidden",
+              attachments: "pin",
+            },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        clientDefaults: {
+          sessionToolbarPresence: {
+            modeSelector: "hidden",
+            attachments: "pin",
+            shortcutsHelp: "last",
+          },
+        },
+      });
+    });
+
+    it("rejects an invalid session toolbar presence value", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientDefaults: {
+            sessionToolbarPresence: { modeSelector: "bogus" },
           },
         }),
       });
@@ -529,6 +668,168 @@ describe("Settings Routes", () => {
           },
         },
       });
+    });
+
+    it("accepts provider-scoped cache-billing freshness windows", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cacheMissBilling: {
+            enabled: true,
+            showToasts: true,
+            providerFreshWindowMinutes: {
+              claude: 60,
+              codex: 10,
+            },
+            minimumInputTokens: 100_000,
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        cacheMissBilling: {
+          enabled: true,
+          showToasts: true,
+          freshWindowMinutes: 60,
+          providerFreshWindowMinutes: {
+            claude: 60,
+            codex: 10,
+          },
+          minimumInputTokens: 100_000,
+        },
+      });
+    });
+
+    it("rejects invalid cache-billing freshness windows", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cacheMissBilling: {
+            providerFreshWindowMinutes: {
+              unknown: 10,
+            },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toContain("cacheMissBilling must use booleans");
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("accepts provider-scoped new-session defaults", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newSessionDefaults: {
+            provider: "codex",
+            model: "legacy-codex",
+            serviceTier: "legacy-priority",
+            providers: {
+              claude: {
+                model: "opus",
+                thinkingMode: "on",
+                effortLevel: "high",
+                helperSideModel: "haiku",
+              },
+              codex: {
+                model: "gpt-5.5",
+                serviceTier: "priority",
+                thinkingMode: "auto",
+                effortLevel: "xhigh",
+                helperSideModel: "helper-target:local-vllm",
+              },
+            },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        newSessionDefaults: {
+          provider: "codex",
+          model: "legacy-codex",
+          serviceTier: "legacy-priority",
+          providers: {
+            claude: {
+              model: "opus",
+              thinkingMode: "on",
+              effortLevel: "high",
+              helperSideModel: "haiku",
+            },
+            codex: {
+              model: "gpt-5.5",
+              serviceTier: "priority",
+              thinkingMode: "auto",
+              effortLevel: "xhigh",
+              helperSideModel: "helper-target:local-vllm",
+            },
+          },
+        },
+      });
+    });
+
+    it("rejects invalid provider-scoped helper model defaults", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newSessionDefaults: {
+            providers: {
+              claude: { helperSideModel: { id: "haiku" } },
+            },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toBe("Invalid newSessionDefaults setting");
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("rejects invalid provider-scoped new-session defaults", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newSessionDefaults: {
+            providers: {
+              claude: { effortLevel: "extreme" },
+            },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toBe("Invalid newSessionDefaults setting");
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
     it("rejects invalid prompt-cache keepalive settings", async () => {

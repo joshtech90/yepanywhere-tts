@@ -15,7 +15,8 @@ import { GrokSessionReader } from "./grok-reader.js";
 import { OPENCODE_STORAGE_DIR } from "./opencode-reader.js";
 import { PiSessionReader } from "./pi-reader.js";
 import { ClaudeSessionReader } from "./reader.js";
-import type { ISessionReader } from "./types.js";
+import type { SummaryParserWorkerMode } from "./summary-parser-worker-protocol.js";
+import type { GetSessionSummaryOptions, ISessionReader } from "./types.js";
 
 type ProviderGroup = "claude" | "codex" | "gemini" | "opencode" | "grok" | "pi";
 
@@ -37,6 +38,8 @@ export interface ProviderResolutionDeps {
   grokReaderFactory?: (projectPath: string) => GrokSessionReader;
   piSessionsDir?: string;
   piReaderFactory?: (projectPath: string) => PiSessionReader;
+  claudeSummaryParserWorkerMode?: SummaryParserWorkerMode;
+  codexSummaryParserWorkerMode?: SummaryParserWorkerMode;
 }
 
 export interface SessionSource {
@@ -130,6 +133,7 @@ function createCodexSource(
       ? new CodexSessionReader({
           sessionsDir: deps.codexSessionsDir,
           projectPath: project.path,
+          summaryParserWorkerMode: deps.codexSummaryParserWorkerMode,
         })
       : null);
   if (!reader) return null;
@@ -273,7 +277,7 @@ function getSourceForGroup(
   }
 }
 
-function getSessionSources(
+export function getSessionSources(
   project: Project,
   deps: ProviderResolutionDeps,
   preferredProvider?: ProviderName | string,
@@ -339,7 +343,10 @@ async function listSessionsForSource(
     normalizeProviderGroup(project.provider) === "claude"
   ) {
     for (const dir of project.mergedSessionDirs ?? []) {
-      const mergedReader = new ClaudeSessionReader({ sessionDir: dir });
+      const mergedReader = new ClaudeSessionReader({
+        sessionDir: dir,
+        summaryParserWorkerMode: deps.claudeSummaryParserWorkerMode,
+      });
       const merged = await deps.sessionIndexService.getSessionsWithCache(
         dir,
         project.id,
@@ -385,9 +392,33 @@ export async function findSessionSummaryAcrossProviders(
   projectId: UrlProjectId,
   deps: ProviderResolutionDeps,
   preferredProvider?: ProviderName | string,
+  options?: GetSessionSummaryOptions,
 ): Promise<ResolvedSessionSummary | null> {
   for (const source of getSessionSources(project, deps, preferredProvider)) {
-    const summary = await source.reader.getSessionSummary(sessionId, projectId);
+    if (deps.sessionIndexService && options?.readMode === "head") {
+      const cachedSummary =
+        await deps.sessionIndexService.getCachedSessionSummary(
+          source.sessionDir,
+          projectId,
+          sessionId,
+          source.reader,
+        );
+      if (cachedSummary) {
+        return { source, summary: cachedSummary };
+      }
+    }
+
+    const summary =
+      deps.sessionIndexService && options?.readMode !== "head"
+        ? await deps.sessionIndexService.getSessionSummaryWithCache(
+            source.sessionDir,
+            projectId,
+            sessionId,
+            source.reader,
+          )
+        : options
+          ? await source.reader.getSessionSummary(sessionId, projectId, options)
+          : await source.reader.getSessionSummary(sessionId, projectId);
     if (summary) {
       return { source, summary };
     }

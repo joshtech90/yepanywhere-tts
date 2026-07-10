@@ -1,10 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
+import {
+  type DraftAttachmentState,
+  draftStorageValueForAttachments,
+  draftStorageValueForText,
+  hasDraftContentValue,
+  readDraftAttachmentStateValue,
+  readDraftTextValue,
+} from "../lib/draftEnvelope";
+import {
+  createSessionDraftStorageKey,
+  removeSessionDraft,
+  saveSessionDraft,
+  updateSessionDraftIndex,
+} from "../lib/sessionDraftStorage";
 
 export interface DraftControls {
   /** Return the current in-memory draft value */
   getDraft: () => string;
+  /** Read the current staged attachment state from localStorage. */
+  getAttachmentState: () => DraftAttachmentState | null;
   /** Replace input state and localStorage immediately */
   setDraft: (value: string) => void;
+  /** Replace staged attachment state in the draft envelope. */
+  setAttachmentState: (value: DraftAttachmentState | null) => void;
+  /** Replace one draft range through the owning textarea when available. */
+  replaceDraftRangeUndoably?: (
+    start: number,
+    end: number,
+    replacement: string,
+  ) => string | null;
   /** Flush any pending draft write immediately */
   flushDraft: () => void;
   /** Clear input state only, keeping localStorage for failure recovery */
@@ -22,18 +47,119 @@ export interface DraftControls {
 export interface UseDraftPersistenceOptions {
   /** Keep the current in-memory draft when switching to a new storage key that has no draft yet. */
   preserveValueOnKeyChange?: boolean;
+  /** Source-scoped session draft metadata for efficient badge indexing. */
+  sessionDraft?: {
+    sourceKey: ClientSummarySourceKey;
+    sessionId: string;
+  };
 }
 
 /** Save a value to localStorage immediately */
-function saveToStorage(key: string, value: string): void {
+function saveToStorage(
+  key: string,
+  value: string,
+  sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
+): void {
+  if (sessionDraft) {
+    saveSessionDraft(sessionDraft, value);
+    return;
+  }
+
   try {
-    if (value) {
-      localStorage.setItem(key, value);
+    const nextValue = draftStorageValueForText(
+      value,
+      localStorage.getItem(key),
+    );
+    if (nextValue) {
+      localStorage.setItem(key, nextValue);
     } else {
       localStorage.removeItem(key);
     }
   } catch {
     // localStorage might be full or unavailable
+  }
+}
+
+function saveAttachmentStateToStorage(
+  key: string,
+  value: DraftAttachmentState | null,
+  sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
+): void {
+  const storageKey = sessionDraft
+    ? createSessionDraftStorageKey(sessionDraft)
+    : key;
+  let nextValue: string | null = null;
+
+  try {
+    nextValue = draftStorageValueForAttachments(
+      value,
+      localStorage.getItem(storageKey),
+    );
+    if (nextValue) {
+      localStorage.setItem(storageKey, nextValue);
+    } else {
+      localStorage.removeItem(storageKey);
+    }
+  } catch {
+    // localStorage might be full or unavailable.
+  }
+
+  if (sessionDraft) {
+    updateSessionDraftIndex(sessionDraft, nextValue);
+  }
+}
+
+function removeFromStorage(
+  key: string,
+  sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
+): void {
+  if (sessionDraft) {
+    removeSessionDraft(sessionDraft);
+    return;
+  }
+
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // localStorage might be unavailable.
+  }
+}
+
+function readStorageText(key: string): string {
+  try {
+    return readDraftTextValue(localStorage.getItem(key));
+  } catch {
+    return "";
+  }
+}
+
+function readStorageAttachmentState(key: string): DraftAttachmentState | null {
+  try {
+    return readDraftAttachmentStateValue(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
+function hasStorageDraftContent(key: string): boolean {
+  try {
+    return hasDraftContentValue(localStorage.getItem(key));
+  } catch {
+    return false;
+  }
+}
+
+function updateStoredSessionDraftIndex(
+  sessionDraft: UseDraftPersistenceOptions["sessionDraft"],
+): void {
+  if (!sessionDraft) return;
+  try {
+    updateSessionDraftIndex(
+      sessionDraft,
+      localStorage.getItem(createSessionDraftStorageKey(sessionDraft)),
+    );
+  } catch {
+    updateSessionDraftIndex(sessionDraft, "");
   }
 }
 
@@ -48,16 +174,24 @@ export function useDraftPersistence(
   key: string,
   options?: UseDraftPersistenceOptions,
 ): [string, (value: string) => void, DraftControls] {
-  const [value, setValueInternal] = useState(() => {
-    try {
-      return localStorage.getItem(key) ?? "";
-    } catch {
-      return "";
-    }
-  });
+  const [value, setValueInternal] = useState(() => readStorageText(key));
+  const preserveValueOnKeyChange = options?.preserveValueOnKeyChange ?? false;
+  const sessionDraftSourceKey = options?.sessionDraft?.sourceKey;
+  const sessionDraftSessionId = options?.sessionDraft?.sessionId;
+  const sessionDraft = useMemo(
+    () =>
+      sessionDraftSourceKey !== undefined && sessionDraftSessionId !== undefined
+        ? {
+            sourceKey: sessionDraftSourceKey,
+            sessionId: sessionDraftSessionId,
+          }
+        : undefined,
+    [sessionDraftSessionId, sessionDraftSourceKey],
+  );
 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyRef = useRef(key);
+  const sessionDraftRef = useRef(sessionDraft);
   // Track pending value so we can flush on unmount/beforeunload
   const pendingValueRef = useRef<string | null>(null);
   const valueRef = useRef(value);
@@ -69,36 +203,48 @@ export function useDraftPersistence(
   // Update keyRef when key changes
   useEffect(() => {
     const previousKey = keyRef.current;
+    const previousSessionDraft = sessionDraftRef.current;
     const previousValue = pendingValueRef.current ?? valueRef.current;
     const keyChanged = previousKey !== key;
+    const sessionDraftChanged =
+      previousSessionDraft?.sourceKey !== sessionDraft?.sourceKey ||
+      previousSessionDraft?.sessionId !== sessionDraft?.sessionId;
 
-    if (keyChanged && pendingValueRef.current !== null) {
-      saveToStorage(previousKey, pendingValueRef.current);
+    if (
+      (keyChanged || sessionDraftChanged) &&
+      pendingValueRef.current !== null
+    ) {
+      saveToStorage(previousKey, pendingValueRef.current, previousSessionDraft);
       pendingValueRef.current = null;
+    }
+    if (sessionDraftChanged && previousSessionDraft) {
+      updateStoredSessionDraftIndex(previousSessionDraft);
     }
 
     keyRef.current = key;
+    sessionDraftRef.current = sessionDraft;
 
     try {
-      const stored = localStorage.getItem(key);
+      const hasStoredDraft = hasStorageDraftContent(key);
       if (
-        keyChanged &&
-        options?.preserveValueOnKeyChange &&
+        (keyChanged || sessionDraftChanged) &&
+        preserveValueOnKeyChange &&
         previousValue &&
-        !stored
+        !hasStoredDraft
       ) {
-        saveToStorage(key, previousValue);
+        saveToStorage(key, previousValue, sessionDraft);
         valueRef.current = previousValue;
         setValueInternal(previousValue);
         return;
       }
-      valueRef.current = stored ?? "";
-      setValueInternal(stored ?? "");
+      const storedText = readStorageText(key);
+      valueRef.current = storedText;
+      setValueInternal(storedText);
     } catch {
       valueRef.current = "";
       setValueInternal("");
     }
-  }, [key, options?.preserveValueOnKeyChange]);
+  }, [key, preserveValueOnKeyChange, sessionDraft]);
 
   // Flush pending value to localStorage
   const flushPending = useCallback(() => {
@@ -107,7 +253,11 @@ export function useDraftPersistence(
       timeoutRef.current = null;
     }
     if (pendingValueRef.current !== null) {
-      saveToStorage(keyRef.current, pendingValueRef.current);
+      saveToStorage(
+        keyRef.current,
+        pendingValueRef.current,
+        sessionDraftRef.current,
+      );
       pendingValueRef.current = null;
     }
   }, []);
@@ -145,11 +295,16 @@ export function useDraftPersistence(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    saveToStorage(keyRef.current, newValue);
+    saveToStorage(keyRef.current, newValue, sessionDraftRef.current);
   }, []);
 
   // Read the current in-memory value for UI actions that append to the draft.
   const getDraft = useCallback(() => valueRef.current, []);
+
+  const getAttachmentState = useCallback(
+    () => readStorageAttachmentState(keyRef.current),
+    [],
+  );
 
   // Replace the draft immediately. This is used when another UI action, such
   // as editing a queued message, needs to take over the composer.
@@ -161,13 +316,28 @@ export function useDraftPersistence(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    saveToStorage(keyRef.current, newValue);
+    saveToStorage(keyRef.current, newValue, sessionDraftRef.current);
   }, []);
+
+  const setAttachmentState = useCallback(
+    (newValue: DraftAttachmentState | null) => {
+      saveAttachmentStateToStorage(
+        keyRef.current,
+        newValue,
+        sessionDraftRef.current,
+      );
+    },
+    [],
+  );
 
   // Clear input state only (for optimistic UI on submit)
   const clearInput = useCallback(() => {
     if (pendingValueRef.current !== null) {
-      saveToStorage(keyRef.current, pendingValueRef.current);
+      saveToStorage(
+        keyRef.current,
+        pendingValueRef.current,
+        sessionDraftRef.current,
+      );
     }
     valueRef.current = "";
     setValueInternal("");
@@ -188,24 +358,15 @@ export function useDraftPersistence(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    try {
-      localStorage.removeItem(keyRef.current);
-    } catch {
-      // Ignore errors
-    }
+    removeFromStorage(keyRef.current, sessionDraftRef.current);
   }, []);
 
   // Restore from localStorage (for failure recovery)
   const restoreFromStorage = useCallback(() => {
     try {
-      const stored = localStorage.getItem(keyRef.current);
-      if (stored) {
-        valueRef.current = stored;
-        setValueInternal(stored);
-      } else {
-        valueRef.current = "";
-        setValueInternal("");
-      }
+      const storedText = readStorageText(keyRef.current);
+      valueRef.current = storedText;
+      setValueInternal(storedText);
     } catch {
       // Ignore errors
     }
@@ -216,7 +377,11 @@ export function useDraftPersistence(
     return () => {
       // Flush any pending value before unmount (handles HMR and navigation)
       if (pendingValueRef.current !== null) {
-        saveToStorage(keyRef.current, pendingValueRef.current);
+        saveToStorage(
+          keyRef.current,
+          pendingValueRef.current,
+          sessionDraftRef.current,
+        );
       }
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
@@ -227,7 +392,9 @@ export function useDraftPersistence(
   const controls = useMemo(
     () => ({
       getDraft,
+      getAttachmentState,
       setDraft,
+      setAttachmentState,
       flushDraft: flushPending,
       clearInput,
       clearDraft,
@@ -235,7 +402,9 @@ export function useDraftPersistence(
     }),
     [
       getDraft,
+      getAttachmentState,
       setDraft,
+      setAttachmentState,
       flushPending,
       clearInput,
       clearDraft,

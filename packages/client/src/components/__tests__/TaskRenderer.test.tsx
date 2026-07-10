@@ -1,13 +1,31 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentContentProvider } from "../../contexts/AgentContentContext";
+import {
+  AgentContentProvider,
+  useAgentContent,
+} from "../../contexts/AgentContentContext";
 import { SchemaValidationProvider } from "../../contexts/SchemaValidationContext";
 import { SessionMetadataProvider } from "../../contexts/SessionMetadataContext";
 import { ToastProvider } from "../../contexts/ToastContext";
-import type { AgentContentMap } from "../../hooks/useSession";
+import type { AgentContent, AgentContentMap } from "../../hooks/useSession";
+import { I18nProvider } from "../../i18n";
 import { preprocessMessages } from "../../lib/preprocessMessages";
 import type { Message } from "../../types";
 import { RenderItemComponent } from "../RenderItemComponent";
+
+const apiMocks = vi.hoisted(() => ({
+  getAgentSession: vi.fn(),
+}));
+
+vi.mock("../../api/client", () => ({
+  api: apiMocks,
+}));
 
 // Sample agent messages for testing
 const sampleAgentMessages: Message[] = [
@@ -49,35 +67,54 @@ function TestWrapper({
   children,
   agentContent = {},
   toolUseToAgent = new Map(),
+  mergeLoadedAgentContent = () => {},
 }: {
   children: React.ReactNode;
   agentContent?: AgentContentMap;
   toolUseToAgent?: Map<string, string>;
+  mergeLoadedAgentContent?: (agentId: string, content: AgentContent) => void;
 }) {
   return (
-    <SessionMetadataProvider
-      projectId="proj-1"
-      projectPath="/test/project"
-      sessionId="session-1"
+    <I18nProvider>
+      <SessionMetadataProvider
+        projectId="proj-1"
+        projectPath="/test/project"
+        sessionId="session-1"
+      >
+        <ToastProvider>
+          <SchemaValidationProvider>
+            <AgentContentProvider
+              agentContent={agentContent}
+              mergeLoadedAgentContent={mergeLoadedAgentContent}
+              toolUseToAgent={toolUseToAgent}
+              projectId="proj-1"
+              sessionId="session-1"
+            >
+              {children}
+            </AgentContentProvider>
+          </SchemaValidationProvider>
+        </ToastProvider>
+      </SessionMetadataProvider>
+    </I18nProvider>
+  );
+}
+
+function LoadAgentContentButton({ agentId }: { agentId: string }) {
+  const context = useAgentContent();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void context.loadAgentContent("proj-1", "session-1", agentId);
+      }}
     >
-      <ToastProvider>
-        <SchemaValidationProvider>
-          <AgentContentProvider
-            agentContent={agentContent}
-            setAgentContent={() => {}}
-            toolUseToAgent={toolUseToAgent}
-            projectId="proj-1"
-            sessionId="session-1"
-          >
-            {children}
-          </AgentContentProvider>
-        </SchemaValidationProvider>
-      </ToastProvider>
-    </SessionMetadataProvider>
+      Load agent
+    </button>
   );
 }
 
 beforeEach(() => {
+  apiMocks.getAgentSession.mockReset();
   const store = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -140,6 +177,35 @@ describe("AgentContentProvider", () => {
 
     // Provider renders without error even with empty content
     expect(screen.getByText("Test")).toBeDefined();
+  });
+
+  it("routes lazy-loaded agent content through the merge wrapper", async () => {
+    const loadedContent: AgentContent = {
+      messages: sampleAgentMessages,
+      status: "completed",
+    };
+    apiMocks.getAgentSession.mockResolvedValueOnce(loadedContent);
+    const mergeLoadedAgentContent = vi.fn();
+
+    render(
+      <TestWrapper mergeLoadedAgentContent={mergeLoadedAgentContent}>
+        <LoadAgentContentButton agentId="agent-abc123" />
+      </TestWrapper>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load agent" }));
+
+    await waitFor(() =>
+      expect(mergeLoadedAgentContent).toHaveBeenCalledWith(
+        "agent-abc123",
+        loadedContent,
+      ),
+    );
+    expect(apiMocks.getAgentSession).toHaveBeenCalledWith(
+      "proj-1",
+      "session-1",
+      "agent-abc123",
+    );
   });
 });
 
@@ -348,5 +414,130 @@ describe("Task rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: /Thinking/i }));
 
     expect(screen.getByText("Checking the task result renderer")).toBeDefined();
+  });
+});
+
+describe("Codex spawn_agent rendering", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders spawn_agent rows as expandable subagent transcripts", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call-spawn-1",
+            name: "spawn_agent",
+            input: {
+              role: "reviewer",
+              prompt: "Inspect the implementation",
+            },
+          },
+        ],
+      },
+      {
+        id: "msg-2",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call-spawn-1",
+            content: JSON.stringify({
+              agent_id: "child-thread",
+              nickname: "Parfit",
+            }),
+          },
+        ],
+      },
+    ];
+    const [item] = preprocessMessages(messages);
+
+    expect(item?.type).toBe("tool_call");
+    if (item?.type !== "tool_call") {
+      throw new Error("Expected a tool_call render item");
+    }
+
+    render(
+      <TestWrapper
+        agentContent={{
+          "child-thread": {
+            messages: sampleAgentMessages,
+            status: "completed",
+          },
+        }}
+      >
+        <RenderItemComponent
+          item={item}
+          isStreaming={false}
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </TestWrapper>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Parfit/i }));
+
+    expect(screen.getByText("Searching for tree files...")).toBeDefined();
+  });
+
+  it("keeps failed spawn_agent rows non-expandable with raw output", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call-spawn-failed",
+            name: "spawn_agent",
+            input: {
+              agent_type: "worker",
+              message: "Demo subagent task",
+            },
+          },
+        ],
+      },
+      {
+        id: "msg-2",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call-spawn-failed",
+            content:
+              "Full-history forked agents inherit the parent agent type, model, and reasoning effort.",
+          },
+        ],
+      },
+    ];
+    const [item] = preprocessMessages(messages);
+
+    expect(item?.type).toBe("tool_call");
+    if (item?.type !== "tool_call") {
+      throw new Error("Expected a tool_call render item");
+    }
+
+    render(
+      <TestWrapper>
+        <RenderItemComponent
+          item={item}
+          isStreaming={false}
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </TestWrapper>,
+    );
+
+    expect(screen.queryByRole("button", { name: /Demo subagent task/i })).toBe(
+      null,
+    );
+    expect(
+      screen.getByText(/Full-history forked agents inherit/i),
+    ).toBeDefined();
+    expect(screen.queryByText("No agent session found")).toBe(null);
   });
 });

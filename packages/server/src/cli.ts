@@ -117,15 +117,28 @@ ENVIRONMENT VARIABLES:
   YEP_CODEX_DISABLE_LIVE_DELTAS
                                 Drop Codex live delta notifications before raw logging and client emit
   CODEX_WATCH_PERIODIC_RESCAN_MS
-                                Codex watcher fallback rescan interval in ms (default: 5000 on macOS, 0 elsewhere)
+                                Codex watcher fallback rescan minimum interval in ms; adapts upward when slow (default: 5000 on macOS/Windows, 0 elsewhere)
   SESSION_INDEX_FULL_VALIDATION_MS
                                 Session index full validation interval in ms (default: 30000, 0 = validate every request)
   SESSION_INDEX_WRITE_LOCK_TIMEOUT_MS
                                 Session index write lock timeout in ms (default: 2000)
   SESSION_INDEX_WRITE_LOCK_STALE_MS
                                 Session index stale lock threshold in ms (default: 10000)
+  SESSION_INDEX_SUMMARY_PARSE_CONCURRENCY
+                                Max concurrent session-summary parses during cold index fills (default: 1)
+  CLAUDE_SUMMARY_PARSER_WORKER  Claude summary parser child-process mode:
+                                off, on, or required (default: off)
+  CODEX_SUMMARY_PARSER_WORKER   Codex summary parser child-process mode:
+                                off, on, or required (default: on when unset;
+                                explicit blank/invalid values are off)
+  SESSION_INDEX_LOG_PERF
+                                Log session-index performance timings
+  CODEX_READER_LOG_PARSE
+                                Log Codex entry-read parse/cache timings and memory deltas
+  CLAUDE_READER_LOG_PARSE
+                                Log Claude summary stream timings and memory deltas
   SESSION_AUTO_ARCHIVE_DAYS
-                                Hide older sessions from default scans (default: 14, 0 = disable)
+                                Hide older sessions from default scans (default: 0 = disabled)
   PROJECT_SCAN_CACHE_TTL_MS
                                 Project scan cache TTL in ms (default: 5000, 0 = rescan every request)
 

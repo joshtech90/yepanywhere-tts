@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -13,7 +14,10 @@ import {
 import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { setInlineMediaExpandedPreference } from "../../../hooks/useInlineMedia";
 import { I18nProvider } from "../../../i18n";
-import { type Connection, setGlobalConnection } from "../../../lib/connection";
+import { asClientSummarySourceKey } from "../../../lib/clientSummaryStore";
+import type { YaSourceRuntime } from "../../../lib/sourceRuntime";
+import { SourceRuntimeProvider } from "../../../lib/sourceRuntimeReact";
+import { FakeSourceTransport } from "../../../lib/transport";
 import { TextBlock } from "../TextBlock";
 
 function GlobalRenderModeButton() {
@@ -34,22 +38,19 @@ vi.mock("../../../api/client", () => ({
   api: apiMocks,
 }));
 
-function mockRemoteConnection(
-  fetchBlob = vi.fn(
-    async () => new Blob(["remote file"], { type: "text/plain" }),
-  ),
-): Connection {
+function createRuntime(transport: FakeSourceTransport): YaSourceRuntime {
   return {
-    mode: "secure",
-    fetch: vi.fn(),
-    fetchBlob,
-  } as unknown as Connection;
+    sourceKey: asClientSummarySourceKey("test:text-block"),
+    transport,
+    api: {} as YaSourceRuntime["api"],
+    summary: {} as YaSourceRuntime["summary"],
+    sessionDetails: {} as YaSourceRuntime["sessionDetails"],
+  };
 }
 
 describe("TextBlock", () => {
   afterEach(() => {
     cleanup();
-    setGlobalConnection(null);
     setInlineMediaExpandedPreference(false);
     apiMocks.getFile.mockReset();
     apiMocks.getFileRawUrl.mockReset();
@@ -151,6 +152,94 @@ describe("TextBlock", () => {
     expect(
       container.querySelector(".local-media-inline-image-button"),
     ).toBeTruthy();
+  });
+
+  it("keeps inline media stable when paragraph quote buttons are disabled", async () => {
+    setInlineMediaExpandedPreference(true);
+    const fetchMock = vi.fn(
+      async () => new Response(new Blob(["png"], { type: "image/png" })),
+    );
+    const observe = vi.fn();
+    class ResizeObserverMock {
+      observe = observe;
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: vi.fn(() => "blob:preview"),
+      revokeObjectURL: vi.fn(),
+    });
+
+    render(
+      <I18nProvider>
+        <TextBlock
+          text="[trajectory](/tmp/trajectory.png)"
+          augmentHtml={
+            '<span class="local-media-link-group"><button type="button" class="local-media-inline-toggle" data-media-path="/tmp/trajectory.png" data-media-type="image" data-expanded="true" aria-label="Collapse image" aria-expanded="true" title="Collapse inline preview">-</button><a href="/api/local-image?path=%2Ftmp%2Ftrajectory.png" class="local-media-link" data-media-type="image">trajectory<span class="local-media-type">(image)</span></a></span><span class="local-media-inline-preview" data-media-path="/tmp/trajectory.png" data-media-type="image" data-expanded="true"></span>'
+          }
+          onQuoteBlock={() => {}}
+          paragraphQuoteCirclesEnabled={false}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByAltText("trajectory.png")).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(observe).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /Quote this paragraph/ }),
+    ).toBeTruthy();
+  });
+
+  it("keeps inline media stable across paragraph quote measurements", async () => {
+    setInlineMediaExpandedPreference(true);
+    const fetchMock = vi.fn(
+      async () => new Response(new Blob(["png"], { type: "image/png" })),
+    );
+    let resizeCallback: ResizeObserverCallback | null = null;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe = vi.fn();
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: vi.fn(() => "blob:preview"),
+      revokeObjectURL: vi.fn(),
+    });
+
+    const { container } = render(
+      <I18nProvider>
+        <TextBlock
+          text="[trajectory](/tmp/trajectory.png)"
+          augmentHtml={
+            '<p><span class="local-media-link-group"><button type="button" class="local-media-inline-toggle" data-media-path="/tmp/trajectory.png" data-media-type="image" data-expanded="true" aria-label="Collapse image" aria-expanded="true" title="Collapse inline preview">-</button><a href="/api/local-image?path=%2Ftmp%2Ftrajectory.png" class="local-media-link" data-media-type="image">trajectory<span class="local-media-type">(image)</span></a></span><span class="local-media-inline-preview" data-media-path="/tmp/trajectory.png" data-media-type="image" data-expanded="true"></span></p>'
+          }
+          onQuoteBlock={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByAltText("trajectory.png")).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(container.querySelector(".text-block-quote-paragraph")).toBeTruthy();
+    const preview = container.querySelector(".local-media-inline-preview");
+
+    await act(async () => {
+      resizeCallback?.([], {} as ResizeObserver);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".local-media-inline-preview")).toBe(
+      preview,
+    );
   });
 
   it("keeps local media previews collapsed by default until expanded", async () => {
@@ -337,7 +426,7 @@ describe("TextBlock", () => {
     expect(clickAllowed).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/local-file?path=%2Ftmp%2Fprobe.json",
-      { credentials: "include" },
+      { credentials: "include", headers: expect.any(Headers) },
     );
     expect(screen.getByRole("dialog").textContent).toContain("probe.json");
     expect(await screen.findByText(/"ok": true/)).toBeTruthy();
@@ -389,11 +478,93 @@ describe("TextBlock", () => {
       undefined,
       "full",
     );
-    expect(await screen.findByText("Project doc")).toBeTruthy();
+    expect(await screen.findByText(/Project doc/)).toBeTruthy();
     const overlay = document.body.querySelector(".modal-overlay");
     expect(overlay).toBeTruthy();
     expect(overlay?.parentElement).toBe(document.body);
     expect(container.contains(overlay)).toBe(false);
+  });
+
+  it("opens generated project-file links in FileViewer", async () => {
+    apiMocks.getFile.mockResolvedValueOnce({
+      content: "# Project doc\n\nRendered through FileViewer.",
+      metadata: {
+        isText: true,
+        mimeType: "text/markdown",
+        path: "docs/status.md",
+        size: 36,
+      },
+      rawUrl: "/api/projects/project-1/files/raw?path=docs%2Fstatus.md",
+      renderedMarkdownHtml: "<h1>Project doc</h1>",
+    });
+
+    render(
+      <I18nProvider>
+        <TextBlock
+          text="See docs/status.md"
+          augmentHtml={
+            '<p>See <a class="fixed-font-file-link" href="/projects/project-1/file?path=docs%2Fstatus.md&amp;line=8" data-ya-resource="project-file" data-ya-project-id="project-1" data-ya-path="docs/status.md" data-ya-line="8" data-ya-private-project-file-link="true">docs/status.md</a></p>'
+          }
+        />
+      </I18nProvider>,
+    );
+
+    const clickAllowed = fireEvent.click(
+      screen.getByRole("link", { name: "docs/status.md" }),
+    );
+
+    expect(clickAllowed).toBe(false);
+    expect(apiMocks.getFile).toHaveBeenCalledWith(
+      "project-1",
+      "docs/status.md",
+      true,
+      8,
+      undefined,
+      "full",
+    );
+    expect(await screen.findByText(/Project doc/)).toBeTruthy();
+  });
+
+  it("opens explicit project file viewer URLs in FileViewer", async () => {
+    apiMocks.getFile.mockResolvedValueOnce({
+      content: "# Explicit URL\n\nRendered through FileViewer.",
+      metadata: {
+        isText: true,
+        mimeType: "text/markdown",
+        path: "topics/route.md",
+        size: 41,
+      },
+      rawUrl: "/api/projects/project-1/files/raw?path=topics%2Froute.md",
+      renderedMarkdownHtml: "<h1>Explicit URL</h1>",
+    });
+
+    render(
+      <I18nProvider>
+        <TextBlock
+          text="See /projects/project-1/file?path=topics%2Froute.md"
+          augmentHtml={
+            '<p>See <a href="/projects/project-1/file?path=topics%2Froute.md&amp;line=12&amp;lineEnd=15">/projects/project-1/file?path=topics%2Froute.md</a></p>'
+          }
+        />
+      </I18nProvider>,
+    );
+
+    const clickAllowed = fireEvent.click(
+      screen.getByRole("link", {
+        name: "/projects/project-1/file?path=topics%2Froute.md",
+      }),
+    );
+
+    expect(clickAllowed).toBe(false);
+    expect(apiMocks.getFile).toHaveBeenCalledWith(
+      "project-1",
+      "topics/route.md",
+      true,
+      12,
+      15,
+      "full",
+    );
+    expect(await screen.findByText(/Explicit URL/)).toBeTruthy();
   });
 
   it("normalizes browser-style Windows drive local-file links under the active project", async () => {
@@ -480,16 +651,24 @@ describe("TextBlock", () => {
     const fetchBlob = vi.fn(
       async () => new Blob(["remote file"], { type: "text/plain" }),
     );
-    setGlobalConnection(mockRemoteConnection(fetchBlob));
+    const runtime = createRuntime(
+      new FakeSourceTransport({
+        kind: "secure",
+        capabilities: { sameOriginUrls: false },
+        fetchBlob,
+      }),
+    );
 
     render(
       <I18nProvider>
-        <TextBlock
-          text="[probe json](C:/tmp/probe.json)"
-          augmentHtml={
-            '<p><a href="/api/local-file?path=C%3A%2Ftmp%2Fprobe.json">probe json</a></p>'
-          }
-        />
+        <SourceRuntimeProvider runtime={runtime}>
+          <TextBlock
+            text="[probe json](C:/tmp/probe.json)"
+            augmentHtml={
+              '<p><a href="/api/local-file?path=C%3A%2Ftmp%2Fprobe.json">probe json</a></p>'
+            }
+          />
+        </SourceRuntimeProvider>
       </I18nProvider>,
     );
 
@@ -499,7 +678,7 @@ describe("TextBlock", () => {
 
     expect(clickAllowed).toBe(false);
     expect(fetchBlob).toHaveBeenCalledWith(
-      "/api/local-file?path=C%3A%2Ftmp%2Fprobe.json",
+      "/local-file?path=C%3A%2Ftmp%2Fprobe.json",
     );
     expect(await screen.findByText("remote file")).toBeTruthy();
   });
@@ -508,16 +687,24 @@ describe("TextBlock", () => {
     const fetchBlob = vi.fn(async () => {
       throw new Error("API error: 403: Path not in allowed directories");
     });
-    setGlobalConnection(mockRemoteConnection(fetchBlob));
+    const runtime = createRuntime(
+      new FakeSourceTransport({
+        kind: "secure",
+        capabilities: { sameOriginUrls: false },
+        fetchBlob,
+      }),
+    );
 
     render(
       <I18nProvider>
-        <TextBlock
-          text="[probe json](C:/tmp/probe.json)"
-          augmentHtml={
-            '<p><a href="/api/local-file?path=C%3A%2Ftmp%2Fprobe.json">probe json</a></p>'
-          }
-        />
+        <SourceRuntimeProvider runtime={runtime}>
+          <TextBlock
+            text="[probe json](C:/tmp/probe.json)"
+            augmentHtml={
+              '<p><a href="/api/local-file?path=C%3A%2Ftmp%2Fprobe.json">probe json</a></p>'
+            }
+          />
+        </SourceRuntimeProvider>
       </I18nProvider>,
     );
 

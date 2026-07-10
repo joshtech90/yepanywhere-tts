@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Message } from "../../types";
 import {
   hasEquivalentJsonlMessage,
+  reconcileClaudeQueueOperationEchoes,
   reconcileLinearMessages,
 } from "../linearMessageDedup";
 
@@ -87,6 +88,65 @@ describe("hasEquivalentJsonlMessage", () => {
       }),
     ).toBe(false);
   });
+
+  it("allows the opening user turn to cross the startup persistence gap", () => {
+    const existing: Message[] = [
+      {
+        uuid: "codex-2-2026-06-30T02:01:12.931Z",
+        type: "user",
+        timestamp: "2026-06-30T02:01:12.931Z",
+        _source: "jsonl",
+        message: {
+          role: "user",
+          content:
+            "source control seems sticky to the last created session's project?",
+        },
+      },
+    ];
+
+    expect(
+      hasEquivalentJsonlMessage(existing, {
+        uuid: "optimistic-opening-turn",
+        type: "user",
+        timestamp: "2026-06-30T02:01:07.884Z",
+        _source: "sdk",
+        message: {
+          role: "user",
+          content:
+            "source control seems sticky to the last created session's project?",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the tight window for repeated user turns after the opener", () => {
+    const existing: Message[] = [
+      {
+        uuid: "first-user",
+        type: "user",
+        timestamp: "2026-03-09T10:00:00.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: "Start." },
+      },
+      {
+        uuid: "second-user-jsonl",
+        type: "user",
+        timestamp: "2026-03-09T10:00:16.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: "Again." },
+      },
+    ];
+
+    expect(
+      hasEquivalentJsonlMessage(existing, {
+        uuid: "second-user-sdk",
+        type: "user",
+        timestamp: "2026-03-09T10:00:10.000Z",
+        _source: "sdk",
+        message: { role: "user", content: "Again." },
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("reconcileLinearMessages", () => {
@@ -114,6 +174,184 @@ describe("reconcileLinearMessages", () => {
     expect(result[0]?._source).toBe("jsonl");
     expect(result[0]?.uuid).toBe("jsonl-1");
     expect(result[0]?.timestamp).toBe("2026-03-09T10:00:00.800Z");
+  });
+
+  it("merges a first user turn across new-session startup delay", () => {
+    const messages: Message[] = [
+      {
+        uuid: "optimistic-opening-turn",
+        type: "user",
+        timestamp: "2026-06-30T02:01:07.884Z",
+        _source: "sdk",
+        message: {
+          role: "user",
+          content:
+            "source control seems sticky to the last created session's project?",
+        },
+      },
+      {
+        uuid: "codex-2-2026-06-30T02:01:12.931Z",
+        type: "user",
+        timestamp: "2026-06-30T02:01:12.931Z",
+        _source: "jsonl",
+        message: {
+          role: "user",
+          content:
+            "source control seems sticky to the last created session's project?",
+        },
+      },
+    ];
+
+    const result = reconcileLinearMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?._source).toBe("jsonl");
+    expect(result[0]?.uuid).toBe("codex-2-2026-06-30T02:01:12.931Z");
+  });
+
+  it("merges an attached opening turn by visible text and attachment identity", () => {
+    const prompt = "Please inspect this screenshot.";
+    const attachmentLine =
+      "- [image.png](</project/.attachments/session-a/image.png>) (42 kb, image/png, 321x460)";
+    const messages: Message[] = [
+      {
+        uuid: "live-opening",
+        type: "user",
+        timestamp: "2026-06-30T03:15:06.807Z",
+        _source: "sdk",
+        message: { role: "user", content: prompt },
+        attachments: [
+          {
+            id: "file-1",
+            originalName: "image.png",
+            path: "/project/.attachments/session-a/image.png",
+            size: 42_000,
+            mimeType: "image/png",
+          },
+        ],
+      },
+      {
+        uuid: "codex-2-2026-06-30T03:15:16.034Z",
+        type: "user",
+        timestamp: "2026-06-30T03:15:16.034Z",
+        _source: "jsonl",
+        message: {
+          role: "user",
+          content: `${prompt}\n\nUser uploaded files in .attachments:\n${attachmentLine}`,
+        },
+      },
+    ];
+
+    const result = reconcileLinearMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?._source).toBe("jsonl");
+    expect(result[0]?.uuid).toBe("codex-2-2026-06-30T03:15:16.034Z");
+  });
+
+  it("merges same-source live duplicates of the visible opening turn", () => {
+    const prompt = "Please inspect this screenshot.";
+    const expanded = `${prompt}\n\nUser uploaded files in .attachments:\n- [image.png](</project/.attachments/session-a/image.png>) (42 kb, image/png, 321x460)`;
+    const messages: Message[] = [
+      {
+        uuid: "ya-live-opening",
+        type: "user",
+        timestamp: "2026-06-30T03:15:06.807Z",
+        _source: "sdk",
+        message: { role: "user", content: expanded },
+      },
+      {
+        uuid: "codex-live-opening",
+        type: "user",
+        timestamp: "2026-06-30T03:15:16.034Z",
+        _source: "sdk",
+        message: { role: "user", content: expanded },
+      },
+    ];
+
+    const result = reconcileLinearMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.uuid).toBe("codex-live-opening");
+    expect(result[0]?._source).toBe("sdk");
+  });
+
+  it("does not use the startup window for later repeated user turns", () => {
+    const messages: Message[] = [
+      {
+        uuid: "first-user",
+        type: "user",
+        timestamp: "2026-03-09T10:00:00.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: "Start." },
+      },
+      {
+        uuid: "second-user-sdk",
+        type: "user",
+        timestamp: "2026-03-09T10:00:10.000Z",
+        _source: "sdk",
+        message: { role: "user", content: "Again." },
+      },
+      {
+        uuid: "second-user-jsonl",
+        type: "user",
+        timestamp: "2026-03-09T10:00:16.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: "Again." },
+      },
+    ];
+
+    const result = reconcileLinearMessages(messages);
+
+    expect(result.map((message) => message.uuid)).toEqual([
+      "first-user",
+      "second-user-sdk",
+      "second-user-jsonl",
+    ]);
+  });
+
+  it("keeps later repeated attached user turns separate", () => {
+    const prompt = "Please inspect this screenshot.";
+    const expanded = `${prompt}\n\nUser uploaded files in .attachments:\n- [image.png](</project/.attachments/session-a/image.png>) (42 kb, image/png, 321x460)`;
+    const messages: Message[] = [
+      {
+        uuid: "first-user",
+        type: "user",
+        timestamp: "2026-03-09T10:00:00.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: "Start." },
+      },
+      {
+        uuid: "assistant",
+        type: "assistant",
+        timestamp: "2026-03-09T10:00:02.000Z",
+        _source: "jsonl",
+        message: { role: "assistant", content: "Ready." },
+      },
+      {
+        uuid: "later-user-sdk",
+        type: "user",
+        timestamp: "2026-03-09T10:00:10.000Z",
+        _source: "sdk",
+        message: { role: "user", content: expanded },
+      },
+      {
+        uuid: "later-user-jsonl",
+        type: "user",
+        timestamp: "2026-03-09T10:00:16.000Z",
+        _source: "jsonl",
+        message: { role: "user", content: expanded },
+      },
+    ];
+
+    const result = reconcileLinearMessages(messages);
+
+    expect(result.map((message) => message.uuid)).toEqual([
+      "first-user",
+      "assistant",
+      "later-user-sdk",
+      "later-user-jsonl",
+    ]);
   });
 
   it("excludes tool messages from the backstop when excludeTools is set", () => {
@@ -337,5 +575,297 @@ describe("reconcileLinearMessages", () => {
     const result = reconcileLinearMessages(messages);
 
     expect(result).toHaveLength(2);
+  });
+});
+
+describe("reconcileClaudeQueueOperationEchoes", () => {
+  const STEER_TEXT =
+    "update task indicating the advisories you just mentioned all should be fixed, too";
+
+  function optimisticEcho(
+    overrides: Partial<Message> & { timestamp: string },
+  ): Message {
+    return {
+      uuid: "ya-queue-uuid-1",
+      type: "user",
+      tempId: "temp-1",
+      _source: "sdk",
+      message: { role: "user", content: STEER_TEXT },
+      ...overrides,
+    } as Message;
+  }
+
+  function queueOperationRow(
+    overrides: Partial<Message> & { timestamp: string },
+  ): Message {
+    return {
+      id: "queue-operation-217-2026-07-03T20:30:24.635Z",
+      type: "user",
+      role: "user",
+      content: STEER_TEXT,
+      deferred: true,
+      deferredSource: "queue-operation",
+      _source: "jsonl",
+      message: { role: "user", content: STEER_TEXT },
+      ...overrides,
+    } as Message;
+  }
+
+  it("merges the optimistic echo with the durable queue-operation row", () => {
+    const echo = optimisticEcho({ timestamp: "2026-07-03T20:30:24.500Z" });
+    const row = queueOperationRow({ timestamp: "2026-07-03T20:30:24.635Z" });
+
+    const result = reconcileClaudeQueueOperationEchoes([echo, row]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?._source).toBe("jsonl");
+    expect(result[0]?.deferredSource).toBe("queue-operation");
+  });
+
+  it("keeps the durable row when the echo replays after a reload", () => {
+    const row = queueOperationRow({ timestamp: "2026-07-03T20:30:24.635Z" });
+    const echo = optimisticEcho({ timestamp: "2026-07-03T20:30:24.500Z" });
+
+    const result = reconcileClaudeQueueOperationEchoes([row, echo]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?._source).toBe("jsonl");
+    expect(result[0]?.id).toBe("queue-operation-217-2026-07-03T20:30:24.635Z");
+  });
+
+  it("pairs two identical steers one-to-one", () => {
+    const echo1 = optimisticEcho({
+      uuid: "ya-queue-uuid-1",
+      timestamp: "2026-07-03T20:30:24.500Z",
+    });
+    const echo2 = optimisticEcho({
+      uuid: "ya-queue-uuid-2",
+      timestamp: "2026-07-03T20:30:30.000Z",
+    });
+    const row1 = queueOperationRow({
+      id: "queue-operation-217-a",
+      timestamp: "2026-07-03T20:30:24.635Z",
+    });
+    const row2 = queueOperationRow({
+      id: "queue-operation-218-b",
+      timestamp: "2026-07-03T20:30:30.100Z",
+    });
+
+    const result = reconcileClaudeQueueOperationEchoes([
+      echo1,
+      echo2,
+      row1,
+      row2,
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result.every((m) => m._source === "jsonl")).toBe(true);
+  });
+
+  it("does not pair outside the window or across different text", () => {
+    const staleEcho = optimisticEcho({ timestamp: "2026-07-03T20:00:00.000Z" });
+    const otherTextEcho = optimisticEcho({
+      uuid: "ya-queue-uuid-3",
+      timestamp: "2026-07-03T20:30:24.600Z",
+      message: { role: "user", content: "different message" },
+    });
+    const row = queueOperationRow({ timestamp: "2026-07-03T20:30:24.635Z" });
+
+    const result = reconcileClaudeQueueOperationEchoes([
+      staleEcho,
+      otherTextEcho,
+      row,
+    ]);
+    expect(result).toHaveLength(3);
+  });
+
+  it("prefers the nearest echo so direct sends keep their own copy", () => {
+    // An earlier direct send with identical text (dedups by uuid elsewhere).
+    const directEcho = optimisticEcho({
+      uuid: "direct-send-uuid",
+      timestamp: "2026-07-03T20:30:00.000Z",
+    });
+    const steerEcho = optimisticEcho({
+      uuid: "ya-queue-uuid-4",
+      timestamp: "2026-07-03T20:30:24.500Z",
+    });
+    const row = queueOperationRow({ timestamp: "2026-07-03T20:30:24.635Z" });
+
+    const result = reconcileClaudeQueueOperationEchoes([
+      directEcho,
+      steerEcho,
+      row,
+    ]);
+    expect(result).toHaveLength(2);
+    const remainingUuids = result.map((m) => m.uuid);
+    expect(remainingUuids).toContain("direct-send-uuid");
+    expect(remainingUuids).not.toContain("ya-queue-uuid-4");
+  });
+
+  it("is a no-op without queue-operation rows", () => {
+    const echo = optimisticEcho({ timestamp: "2026-07-03T20:30:24.500Z" });
+    const plain: Message = {
+      uuid: "assistant-1",
+      type: "assistant",
+      timestamp: "2026-07-03T20:30:25.000Z",
+      _source: "jsonl",
+      message: { role: "assistant", content: "ok" },
+    };
+    const input = [echo, plain];
+    expect(reconcileClaudeQueueOperationEchoes(input)).toBe(input);
+  });
+
+  // Interrupt/dequeue-path delivery: the CLI writes one real user row joining
+  // the dequeued texts with "\n" and no queue-operation row is served, so the
+  // echoes must pair against the durable turn itself (see the
+  // reconcileDequeueDeliveredTurns comment in linearMessageDedup.ts).
+  describe("dequeue-delivered turns", () => {
+    const STEER_1 = "ok, i suppose a fine tune with a large set of items";
+    const STEER_2 = "we would ALSO benefit from FTing on our prompt format";
+
+    function steerEcho(
+      overrides: Partial<Message> & { timestamp: string; uuid: string },
+    ): Message {
+      return {
+        type: "user",
+        tempId: `temp-${overrides.uuid}`,
+        _source: "sdk",
+        message: { role: "user", content: STEER_1 },
+        ...overrides,
+      } as Message;
+    }
+
+    function interruptMarker(timestamp: string): Message {
+      return {
+        uuid: "marker-1",
+        type: "user",
+        timestamp,
+        _source: "jsonl",
+        message: {
+          role: "user",
+          content: "[Request interrupted by user for tool use]",
+        },
+      };
+    }
+
+    function deliveredRow(
+      overrides: Partial<Message> & { timestamp: string },
+    ): Message {
+      return {
+        uuid: "cli-user-uuid-1",
+        type: "user",
+        parentUuid: "marker-1",
+        _source: "jsonl",
+        message: { role: "user", content: STEER_1 },
+        ...overrides,
+      } as Message;
+    }
+
+    it("relocates stranded echoes into the concatenated post-interrupt row", () => {
+      const echo1 = steerEcho({
+        uuid: "ya-uuid-1",
+        timestamp: "2026-07-04T04:59:17.000Z",
+      });
+      const echo2 = steerEcho({
+        uuid: "ya-uuid-2",
+        timestamp: "2026-07-04T05:02:42.000Z",
+        message: { role: "user", content: STEER_2 },
+      });
+      const marker = interruptMarker("2026-07-04T05:02:50.293Z");
+      const row = deliveredRow({
+        timestamp: "2026-07-04T05:02:50.302Z",
+        message: { role: "user", content: `${STEER_1}\n${STEER_2}` },
+      });
+
+      const result = reconcileClaudeQueueOperationEchoes([
+        echo1,
+        echo2,
+        marker,
+        row,
+      ]);
+      expect(result).toHaveLength(2);
+      expect(result[0]?.uuid).toBe("marker-1");
+      expect(result[1]?.uuid).toBe("cli-user-uuid-1");
+      expect(result[1]?._source).toBe("jsonl");
+      expect(result[1]?.tempIds).toEqual(["temp-ya-uuid-1", "temp-ya-uuid-2"]);
+    });
+
+    it("pairs a single-echo delivery by exact text", () => {
+      const echo = steerEcho({
+        uuid: "ya-uuid-1",
+        timestamp: "2026-07-04T05:33:46.000Z",
+      });
+      const marker = interruptMarker("2026-07-04T05:34:10.000Z");
+      const row = deliveredRow({ timestamp: "2026-07-04T05:34:10.100Z" });
+
+      const result = reconcileClaudeQueueOperationEchoes([echo, marker, row]);
+      expect(result).toHaveLength(2);
+      expect(result[1]?.uuid).toBe("cli-user-uuid-1");
+      expect(result[1]?.tempId).toBe("temp-ya-uuid-1");
+    });
+
+    it("leaves echoes alone when the row text is not their concatenation", () => {
+      const echo = steerEcho({
+        uuid: "ya-uuid-1",
+        timestamp: "2026-07-04T05:33:46.000Z",
+      });
+      const row = deliveredRow({
+        timestamp: "2026-07-04T05:34:10.100Z",
+        message: { role: "user", content: `${STEER_1} plus trailing extra` },
+      });
+
+      const result = reconcileClaudeQueueOperationEchoes([echo, row]);
+      expect(result).toHaveLength(2);
+      expect(result[0]?._source ?? "sdk").toBe("sdk");
+    });
+
+    it("ignores provider stream copies without a self-send marker", () => {
+      const streamCopy: Message = {
+        uuid: "cli-user-uuid-1",
+        type: "user",
+        timestamp: "2026-07-04T05:34:10.100Z",
+        _source: "sdk",
+        message: { role: "user", content: STEER_1 },
+      };
+      const row = deliveredRow({ timestamp: "2026-07-04T05:34:10.100Z" });
+
+      const input = [streamCopy, row];
+      expect(reconcileClaudeQueueOperationEchoes(input)).toBe(input);
+    });
+
+    it("does not consume an echo composed after the delivery", () => {
+      const lateEcho = steerEcho({
+        uuid: "ya-uuid-late",
+        timestamp: "2026-07-04T06:00:00.000Z",
+      });
+      const row = deliveredRow({ timestamp: "2026-07-04T05:34:10.100Z" });
+
+      const result = reconcileClaudeQueueOperationEchoes([row, lateEcho]);
+      expect(result).toHaveLength(2);
+    });
+
+    it("backtracks when a shorter echo shadows the matching one", () => {
+      const shortEcho = steerEcho({
+        uuid: "ya-uuid-short",
+        timestamp: "2026-07-04T05:33:40.000Z",
+        message: { role: "user", content: "deploy" },
+      });
+      const longEcho = steerEcho({
+        uuid: "ya-uuid-long",
+        timestamp: "2026-07-04T05:33:46.000Z",
+        message: { role: "user", content: "deploy\nthen verify" },
+      });
+      const row = deliveredRow({
+        timestamp: "2026-07-04T05:34:10.100Z",
+        message: { role: "user", content: "deploy\nthen verify" },
+      });
+
+      const result = reconcileClaudeQueueOperationEchoes([
+        shortEcho,
+        longEcho,
+        row,
+      ]);
+      expect(result).toHaveLength(2);
+      const remaining = result.map((m) => m.uuid);
+      expect(remaining).toContain("ya-uuid-short");
+      expect(remaining).not.toContain("ya-uuid-long");
+    });
   });
 });

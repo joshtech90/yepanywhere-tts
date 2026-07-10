@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  DurableRecapMessage,
   ProviderName,
   TranscriptDisplayObject,
   UrlProjectId,
@@ -15,6 +16,11 @@ import {
   createSessionsRoutes,
   type SessionsDeps,
 } from "../../src/routes/sessions.js";
+import {
+  type PersistedSessionQueuedMessage,
+  SessionQueuePersistenceService,
+} from "../../src/services/SessionQueuePersistenceService.js";
+import type { UserMessage } from "../../src/sdk/types.js";
 import type { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import type { GrokSessionReader } from "../../src/sessions/grok-reader.js";
 import type {
@@ -22,7 +28,11 @@ import type {
   LoadedSession,
 } from "../../src/sessions/types.js";
 import { ResumeCompactionError } from "../../src/supervisor/Supervisor.js";
-import type { Project, SessionSummary } from "../../src/supervisor/types.js";
+import type {
+  Message,
+  Project,
+  SessionSummary,
+} from "../../src/supervisor/types.js";
 
 function createProject(): Project {
   return {
@@ -62,6 +72,75 @@ function createLoadedCodexSession(): LoadedSession {
         entries: [],
       },
     },
+  };
+}
+
+function createLoadedGrokSession(
+  summaryOverrides: Partial<SessionSummary> = {},
+  messages: Message[] = [
+    {
+      uuid: "provider-1",
+      type: "assistant",
+      timestamp: "2026-03-10T09:46:00.000Z",
+      message: { role: "assistant", content: "Provider response." },
+    },
+  ],
+): LoadedSession {
+  return {
+    summary: {
+      ...createSummary(),
+      provider: "grok",
+      model: "grok-build",
+      ...summaryOverrides,
+    },
+    data: {
+      provider: "grok",
+      session: { messages },
+    },
+  };
+}
+
+async function withSessionQueuePersistence<T>(
+  fn: (service: SessionQueuePersistenceService) => Promise<T>,
+): Promise<T> {
+  const tempDir = await mkdtemp(join(tmpdir(), "ya-session-queue-route-"));
+  try {
+    const service = new SessionQueuePersistenceService({ dataDir: tempDir });
+    await service.initialize();
+    return await fn(service);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function createPersistedPatientQueueItem(
+  project: Project,
+  overrides: Partial<PersistedSessionQueuedMessage> = {},
+): PersistedSessionQueuedMessage {
+  const id = overrides.id ?? "queue-1";
+  const base: PersistedSessionQueuedMessage = {
+    id,
+    sessionId: "sess-1",
+    projectId: project.id,
+    projectPath: project.path,
+    provider: "claude",
+    kind: "patient",
+    message: {
+      text: "resume after restart",
+      tempId: `temp-${id}`,
+      metadata: { deliveryIntent: "patient" },
+    },
+    createdAt: "2026-06-30T09:00:00.000Z",
+    updatedAt: "2026-06-30T09:01:00.000Z",
+    queuedAt: "2026-06-30T09:00:00.000Z",
+    status: "paused-after-restart",
+    source: { tempId: `temp-${id}` },
+  };
+  return {
+    ...base,
+    ...overrides,
+    message: overrides.message ?? base.message,
+    source: overrides.source ?? base.source,
   };
 }
 
@@ -122,10 +201,44 @@ async function createGrokRedirectFixture(): Promise<{
 }
 
 describe("Sessions metadata route", () => {
+  it("redirects stale active-process detail links to the process project", async () => {
+    const wrongProject = {
+      ...createProject(),
+      id: encodeProjectId("/tmp/wrong-project"),
+    };
+    const rightProject = {
+      ...createProject(),
+      id: encodeProjectId("/tmp/right-project"),
+    };
+    const getOrCreateProject = vi.fn(async () => wrongProject);
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          projectId: rightProject.id,
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject,
+      } as unknown as SessionsDeps["scanner"],
+    });
+
+    const response = await routes.request(
+      `/projects/${wrongProject.id}/sessions/sess-1?tailCompactions=2`,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      `/api/projects/${rightProject.id}/sessions/sess-1?tailCompactions=2`,
+    );
+    expect(getOrCreateProject).not.toHaveBeenCalled();
+  });
+
   it("returns queue summaries after accepting a deferred message", async () => {
     const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
     const primeSupportedCommandsForMessage = vi.fn(async () => {});
     const setPermissionMode = vi.fn();
+    const waitForPatientQueuePersistenceIdle = vi.fn(async () => {});
     const getDeferredQueueSummary = vi.fn(() => [
       {
         tempId: "temp-queued",
@@ -141,6 +254,7 @@ describe("Sessions metadata route", () => {
           setPermissionMode,
           primeSupportedCommandsForMessage,
           deferMessage,
+          waitForPatientQueuePersistenceIdle,
           getDeferredQueueSummary,
         })),
       } as unknown as SessionsDeps["supervisor"],
@@ -194,6 +308,7 @@ describe("Sessions metadata route", () => {
       { promoteIfReady: true, placement: undefined },
     );
     expect(setPermissionMode).toHaveBeenCalledWith("default");
+    expect(waitForPatientQueuePersistenceIdle).toHaveBeenCalledTimes(1);
     await expect(response.json()).resolves.toMatchObject({
       queued: true,
       deferred: true,
@@ -214,6 +329,7 @@ describe("Sessions metadata route", () => {
       promoted: true,
       position: 0,
     }));
+    const waitForPatientQueuePersistenceIdle = vi.fn(async () => {});
     const getDeferredQueueSummary = vi.fn(() => []);
 
     const routes = createSessionsRoutes({
@@ -222,6 +338,7 @@ describe("Sessions metadata route", () => {
           isTerminated: false,
           primeSupportedCommandsForMessage,
           deferMessage,
+          waitForPatientQueuePersistenceIdle,
           getDeferredQueueSummary,
         })),
       } as unknown as SessionsDeps["supervisor"],
@@ -251,6 +368,7 @@ describe("Sessions metadata route", () => {
       }),
       { promoteIfReady: true, placement: undefined },
     );
+    expect(waitForPatientQueuePersistenceIdle).toHaveBeenCalledTimes(1);
     await expect(response.json()).resolves.toMatchObject({
       queued: true,
       deferred: false,
@@ -304,6 +422,565 @@ describe("Sessions metadata route", () => {
     expect(vi.mocked(codexReader.getSessionSummary)).toHaveBeenCalledWith(
       "sess-1",
       project.id,
+    );
+  });
+
+  it("returns paused recovered patient queue entries in metadata", async () => {
+    await withSessionQueuePersistence(async (sessionQueuePersistenceService) => {
+      const project = createProject();
+      const summary = createSummary();
+      await sessionQueuePersistenceService.replaceAll([
+        {
+          id: "queue-1",
+          sessionId: "sess-1",
+          projectId: project.id,
+          projectPath: project.path,
+          provider: "claude",
+          kind: "patient",
+          message: {
+            text: "resume after restart",
+            tempId: "temp-patient",
+            metadata: { deliveryIntent: "patient" },
+          },
+          createdAt: "2026-06-30T09:00:00.000Z",
+          updatedAt: "2026-06-30T09:01:00.000Z",
+          queuedAt: "2026-06-30T09:00:00.000Z",
+          status: "paused-after-restart",
+          source: { tempId: "temp-patient" },
+        },
+      ]);
+      const reader = {
+        getSessionSummary: vi.fn(async () => summary),
+      } as unknown as ISessionReader;
+
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => null),
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: vi.fn(async () => project),
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: vi.fn(() => reader),
+        sessionQueuePersistenceService,
+      });
+
+      const response = await routes.request(
+        `/projects/${project.id}/sessions/sess-1/metadata`,
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        deferredMessages: [
+          {
+            id: "queue-1",
+            tempId: "temp-patient",
+            content: "resume after restart",
+            kind: "patient",
+            status: "paused-after-restart",
+            sessionId: "sess-1",
+            projectId: project.id,
+            timestamp: "2026-06-30T09:00:00.000Z",
+            metadata: { deliveryIntent: "patient" },
+          },
+        ],
+      });
+    });
+  });
+
+  it("deletes a paused recovered patient queue entry by durable id", async () => {
+    await withSessionQueuePersistence(async (sessionQueuePersistenceService) => {
+      const project = createProject();
+      await sessionQueuePersistenceService.replaceAll([
+        {
+          id: "queue-1",
+          sessionId: "sess-1",
+          projectId: project.id,
+          projectPath: project.path,
+          provider: "claude",
+          kind: "patient",
+          message: {
+            text: "delete me",
+            tempId: "temp-patient",
+            metadata: { deliveryIntent: "patient" },
+          },
+          createdAt: "2026-06-30T09:00:00.000Z",
+          updatedAt: "2026-06-30T09:01:00.000Z",
+          queuedAt: "2026-06-30T09:00:00.000Z",
+          status: "paused-after-restart",
+        },
+      ]);
+
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => null),
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: vi.fn(async () => project),
+        } as unknown as SessionsDeps["scanner"],
+        sessionQueuePersistenceService,
+      });
+
+      const response = await routes.request(
+        "/sessions/sess-1/recovered-queue/queue-1",
+        { method: "DELETE" },
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        deleted: true,
+        deferredMessages: [],
+      });
+      expect(sessionQueuePersistenceService.listSession("sess-1")).toEqual([]);
+    });
+  });
+
+  it("resumes recovered patient queue entries through a non-head entry", async () => {
+    await withSessionQueuePersistence(
+      async (sessionQueuePersistenceService) => {
+        const project = createProject();
+        await sessionQueuePersistenceService.replaceAll([
+          createPersistedPatientQueueItem(project, {
+            id: "queue-1",
+            queuedAt: "2026-06-30T09:00:00.000Z",
+          }),
+          createPersistedPatientQueueItem(project, {
+            id: "queue-2",
+            queuedAt: "2026-06-30T09:05:00.000Z",
+          }),
+        ]);
+
+        const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
+        const process = {
+          id: "proc-1",
+          isTerminated: false,
+          state: { type: "idle" },
+          permissionMode: "default",
+          modeVersion: 0,
+          recapAfterSeconds: 300,
+          setPermissionMode: vi.fn(),
+          primeSupportedCommandsForMessage: vi.fn(async () => {}),
+          deferMessage,
+          waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
+          getDeferredQueueSummary: vi.fn(() => []),
+        };
+        const routes = createSessionsRoutes({
+          supervisor: {
+            getProcessForSession: vi.fn(() => null),
+            reactivateSession: vi.fn(async () => process),
+          } as unknown as SessionsDeps["supervisor"],
+          sessionQueuePersistenceService,
+        });
+
+        const response = await routes.request(
+          "/sessions/sess-1/recovered-queue/queue-2/resume",
+          { method: "POST" },
+        );
+
+        expect(response.status).toBe(200);
+        expect(deferMessage).toHaveBeenCalledTimes(2);
+        expect(deferMessage).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({ tempId: "temp-queue-1" }),
+          {
+            promoteIfReady: true,
+            persistedQueueId: "queue-1",
+            timestamp: "2026-06-30T09:00:00.000Z",
+          },
+        );
+        expect(deferMessage).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({ tempId: "temp-queue-2" }),
+          {
+            promoteIfReady: true,
+            persistedQueueId: "queue-2",
+            timestamp: "2026-06-30T09:05:00.000Z",
+          },
+        );
+        await expect(response.json()).resolves.toMatchObject({
+          resumed: true,
+          resumedCount: 2,
+          processId: "proc-1",
+        });
+      },
+    );
+  });
+
+  it("rejects recovered patient queue resume behind newer live patient work", async () => {
+    await withSessionQueuePersistence(
+      async (sessionQueuePersistenceService) => {
+        const project = createProject();
+        await sessionQueuePersistenceService.replaceAll([
+          createPersistedPatientQueueItem(project, {
+            id: "queue-1",
+            queuedAt: "2026-06-30T09:00:00.000Z",
+          }),
+        ]);
+        const getDeferredQueueSummary = vi.fn(() => [
+          {
+            tempId: "temp-newer",
+            content: "newer patient work",
+            timestamp: "2026-06-30T10:00:00.000Z",
+            metadata: { deliveryIntent: "patient" },
+          },
+        ]);
+
+        const routes = createSessionsRoutes({
+          supervisor: {
+            getProcessForSession: vi.fn(() => ({
+              isTerminated: false,
+              getDeferredQueueSummary,
+            })),
+          } as unknown as SessionsDeps["supervisor"],
+          sessionQueuePersistenceService,
+        });
+
+        const response = await routes.request(
+          "/sessions/sess-1/recovered-queue/queue-1/resume",
+          { method: "POST" },
+        );
+
+        expect(response.status).toBe(409);
+        await expect(response.json()).resolves.toMatchObject({
+          headQueueId: "queue-1",
+          deferredMessages: [
+            { id: "queue-1", status: "paused-after-restart" },
+            { tempId: "temp-newer", content: "newer patient work" },
+          ],
+        });
+        expect(
+          sessionQueuePersistenceService.listSession("sess-1")[0],
+        ).toMatchObject({
+          id: "queue-1",
+          status: "paused-after-restart",
+        });
+      },
+    );
+  });
+
+  it("resumes recovered patient work past newer regular queued work", async () => {
+    await withSessionQueuePersistence(
+      async (sessionQueuePersistenceService) => {
+        const project = createProject();
+        await sessionQueuePersistenceService.replaceAll([
+          createPersistedPatientQueueItem(project, {
+            id: "queue-1",
+            queuedAt: "2026-06-30T09:00:00.000Z",
+          }),
+        ]);
+        const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
+        const process = {
+          id: "proc-1",
+          isTerminated: false,
+          state: { type: "in-turn" },
+          permissionMode: "default",
+          modeVersion: 0,
+          recapAfterSeconds: 300,
+          setPermissionMode: vi.fn(),
+          primeSupportedCommandsForMessage: vi.fn(async () => {}),
+          deferMessage,
+          waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
+          // The regular deferred lane delivers on turn boundaries and may
+          // pass patient work by design, so it must not block resume.
+          getDeferredQueueSummary: vi.fn(() => [
+            {
+              tempId: "temp-regular",
+              content: "newer regular queued work",
+              timestamp: "2026-06-30T10:00:00.000Z",
+            },
+          ]),
+        };
+
+        const routes = createSessionsRoutes({
+          supervisor: {
+            getProcessForSession: vi.fn(() => process),
+          } as unknown as SessionsDeps["supervisor"],
+          sessionQueuePersistenceService,
+        });
+
+        const response = await routes.request(
+          "/sessions/sess-1/recovered-queue/queue-1/resume",
+          { method: "POST" },
+        );
+
+        expect(response.status).toBe(200);
+        expect(deferMessage).toHaveBeenCalledTimes(1);
+        await expect(response.json()).resolves.toMatchObject({
+          resumed: true,
+          resumedCount: 1,
+          processState: "in-turn",
+        });
+      },
+    );
+  });
+
+  it("steers recovered patient queue entries through the requested entry", async () => {
+    await withSessionQueuePersistence(
+      async (sessionQueuePersistenceService) => {
+        const project = createProject();
+        await sessionQueuePersistenceService.replaceAll([
+          createPersistedPatientQueueItem(project, {
+            id: "queue-1",
+            queuedAt: "2026-06-30T09:00:00.000Z",
+          }),
+          createPersistedPatientQueueItem(project, {
+            id: "queue-2",
+            queuedAt: "2026-06-30T09:05:00.000Z",
+          }),
+        ]);
+
+        const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
+        const steerPatientDeferredMessagesThrough = vi.fn(() => ({
+          success: true,
+          steered: 2,
+        }));
+        const process = {
+          id: "proc-1",
+          isTerminated: false,
+          state: { type: "in-turn" },
+          permissionMode: "default",
+          modeVersion: 0,
+          recapAfterSeconds: 300,
+          setPermissionMode: vi.fn(),
+          primeSupportedCommandsForMessage: vi.fn(async () => {}),
+          deferMessage,
+          steerPatientDeferredMessagesThrough,
+          waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
+          getDeferredQueueSummary: vi.fn(() => []),
+        };
+        const routes = createSessionsRoutes({
+          supervisor: {
+            getProcessForSession: vi.fn(() => null),
+            reactivateSession: vi.fn(async () => process),
+          } as unknown as SessionsDeps["supervisor"],
+          sessionQueuePersistenceService,
+        });
+
+        const response = await routes.request(
+          "/sessions/sess-1/recovered-queue/queue-2/steer",
+          { method: "POST" },
+        );
+
+        expect(response.status).toBe(200);
+        expect(deferMessage).toHaveBeenCalledTimes(2);
+        expect(deferMessage).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({ tempId: "temp-queue-1" }),
+          {
+            promoteIfReady: false,
+            persistedQueueId: "queue-1",
+            timestamp: "2026-06-30T09:00:00.000Z",
+          },
+        );
+        expect(steerPatientDeferredMessagesThrough).toHaveBeenCalledWith(
+          "temp-queue-2",
+        );
+        await expect(response.json()).resolves.toMatchObject({
+          steered: true,
+          count: 2,
+          processId: "proc-1",
+          processState: "in-turn",
+        });
+      },
+    );
+  });
+
+  it("resumes the head recovered patient queue entry into a live process", async () => {
+    await withSessionQueuePersistence(
+      async (sessionQueuePersistenceService) => {
+        const project = createProject();
+        const item = createPersistedPatientQueueItem(project, {
+          id: "queue-1",
+          message: {
+            text: "resume me",
+            tempId: "temp-recovered",
+            metadata: { deliveryIntent: "patient" },
+          },
+          queuedAt: "2026-06-30T09:00:00.000Z",
+          mode: "default",
+        });
+        await sessionQueuePersistenceService.replaceAll([item]);
+
+        const deferredMessages: {
+          tempId?: string;
+          content: string;
+          timestamp: string;
+          metadata?: UserMessage["metadata"];
+        }[] = [];
+        const persistenceWrites: Promise<unknown>[] = [];
+        const deferMessage = vi.fn(
+          (
+            message: UserMessage,
+            options?: {
+              persistedQueueId?: string;
+              timestamp?: string;
+            },
+          ) => {
+            deferredMessages.push({
+              tempId: message.tempId,
+              content: message.text,
+              timestamp: options?.timestamp ?? "missing-timestamp",
+              metadata: message.metadata,
+            });
+            persistenceWrites.push(
+              sessionQueuePersistenceService.upsertItem({
+                ...item,
+                id: options?.persistedQueueId ?? item.id,
+                message,
+                updatedAt: options?.timestamp ?? item.updatedAt,
+                queuedAt: options?.timestamp ?? item.queuedAt,
+                status: "queued",
+              }),
+            );
+            return { success: true, deferred: true };
+          },
+        );
+        const primeSupportedCommandsForMessage = vi.fn(async () => {});
+        const waitForPatientQueuePersistenceIdle = vi.fn(async () => {
+          await Promise.all(persistenceWrites);
+        });
+        const getDeferredQueueSummary = vi.fn(() => deferredMessages);
+        const process = {
+          id: "proc-1",
+          isTerminated: false,
+          state: { type: "idle" },
+          permissionMode: "default",
+          modeVersion: 0,
+          recapAfterSeconds: 300,
+          setPermissionMode: vi.fn(),
+          primeSupportedCommandsForMessage,
+          deferMessage,
+          waitForPatientQueuePersistenceIdle,
+          getDeferredQueueSummary,
+        };
+        const reactivateSession = vi.fn(async () => process);
+
+        const routes = createSessionsRoutes({
+          supervisor: {
+            getProcessForSession: vi.fn(() => null),
+            reactivateSession,
+          } as unknown as SessionsDeps["supervisor"],
+          sessionQueuePersistenceService,
+        });
+
+        const response = await routes.request(
+          "/sessions/sess-1/recovered-queue/queue-1/resume",
+          { method: "POST" },
+        );
+
+        expect(response.status).toBe(200);
+        expect(reactivateSession).toHaveBeenCalledWith(
+          project.path,
+          "sess-1",
+          "default",
+          expect.objectContaining({
+            providerName: "claude",
+          }),
+        );
+        expect(primeSupportedCommandsForMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: "resume me",
+            tempId: "temp-recovered",
+            metadata: { deliveryIntent: "patient" },
+          }),
+        );
+        expect(deferMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: "resume me",
+            tempId: "temp-recovered",
+            metadata: { deliveryIntent: "patient" },
+          }),
+          {
+            promoteIfReady: true,
+            persistedQueueId: "queue-1",
+            timestamp: "2026-06-30T09:00:00.000Z",
+          },
+        );
+        expect(waitForPatientQueuePersistenceIdle).toHaveBeenCalledTimes(1);
+        await expect(response.json()).resolves.toMatchObject({
+          resumed: true,
+          processId: "proc-1",
+          deferredMessages: [
+            {
+              tempId: "temp-recovered",
+              content: "resume me",
+              timestamp: "2026-06-30T09:00:00.000Z",
+            },
+          ],
+        });
+        expect(
+          sessionQueuePersistenceService.listSession("sess-1"),
+        ).toMatchObject([
+          {
+            id: "queue-1",
+            status: "queued",
+            queuedAt: "2026-06-30T09:00:00.000Z",
+          },
+        ]);
+      },
+    );
+  });
+
+  it("resolves agent content across providers for mixed-provider projects", async () => {
+    const project = createProject();
+    const summary = createSummary();
+    const childMessage: Message = {
+      id: "child-message-1",
+      role: "assistant",
+      content: [{ type: "text", text: "Child transcript" }],
+    };
+    const claudeReader = {
+      getSessionSummary: vi.fn(async () => null),
+      getAgentMappings: vi.fn(async () => []),
+      getAgentSession: vi.fn(async () => ({
+        messages: [],
+        status: "pending",
+      })),
+    } as unknown as ISessionReader;
+    const codexReader = {
+      getSessionSummary: vi.fn(async () => summary),
+      getAgentMappings: vi.fn(async () => [
+        { toolUseId: "call-spawn", agentId: "child-thread" },
+      ]),
+      getAgentSession: vi.fn(async () => ({
+        messages: [childMessage],
+        status: "completed",
+      })),
+    } as unknown as ISessionReader;
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => claudeReader),
+      codexSessionsDir: "/tmp/codex-sessions",
+      codexReaderFactory: vi.fn(
+        () => codexReader as unknown as CodexSessionReader,
+      ),
+    });
+
+    const mappingsResponse = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/agents`,
+    );
+    expect(mappingsResponse.status).toBe(200);
+    await expect(mappingsResponse.json()).resolves.toEqual({
+      mappings: [{ toolUseId: "call-spawn", agentId: "child-thread" }],
+    });
+
+    const contentResponse = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/agents/child-thread`,
+    );
+    expect(contentResponse.status).toBe(200);
+    await expect(contentResponse.json()).resolves.toMatchObject({
+      messages: [childMessage],
+      status: "completed",
+    });
+
+    expect(vi.mocked(claudeReader.getAgentMappings)).not.toHaveBeenCalled();
+    expect(vi.mocked(claudeReader.getAgentSession)).not.toHaveBeenCalled();
+    expect(vi.mocked(codexReader.getAgentMappings)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(codexReader.getAgentSession)).toHaveBeenCalledWith(
+      "child-thread",
     );
   });
 
@@ -642,6 +1319,157 @@ describe("Sessions metadata route", () => {
     }
   });
 
+  it("reclassifies a session without moving the provider transcript", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ya-reclassify-"));
+    const workingProjectPath = join(tempDir, "working-project");
+    await mkdir(workingProjectPath, { recursive: true });
+    await writeFile(join(workingProjectPath, "README.md"), "# Working\n");
+
+    const transcriptProject: Project = {
+      ...createProject(),
+      path: join(tempDir, "transcript-project"),
+      sessionDir: join(tempDir, "transcript-project", ".claude-sessions"),
+    };
+    const workingProject: Project = {
+      ...createProject(),
+      id: "proj-2" as UrlProjectId,
+      path: workingProjectPath,
+      name: "working-project",
+      sessionDir: join(workingProjectPath, ".claude-sessions"),
+    };
+    let metadata: {
+      workingProjectId?: UrlProjectId;
+      transcriptProjectId?: UrlProjectId;
+    } = {};
+    const setWorkingProject = vi.fn(
+      async (
+        _sessionId: string,
+        workingProjectId: UrlProjectId | undefined,
+        transcriptProjectId: UrlProjectId | undefined,
+      ) => {
+        metadata = { workingProjectId, transcriptProjectId };
+      },
+    );
+    const emit = vi.fn();
+    const reader = {
+      getSessionSummary: vi.fn(async (_sessionId: string, projectId) =>
+        projectId === transcriptProject.id ? createSummary() : null,
+      ),
+      getSession: vi.fn(async (_sessionId: string, projectId) =>
+        projectId === transcriptProject.id
+          ? createLoadedGrokSession({}, [
+              {
+                uuid: "assistant-1",
+                type: "assistant",
+                timestamp: "2026-03-10T09:46:00.000Z",
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "text",
+                      text: "See `README.md`.",
+                    },
+                  ],
+                },
+              },
+            ])
+          : null,
+      ),
+    } as unknown as ISessionReader;
+
+    try {
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => null),
+          wasEverOwned: vi.fn(() => false),
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: vi.fn(async (projectId: UrlProjectId) =>
+            projectId === workingProject.id
+              ? workingProject
+              : projectId === transcriptProject.id
+                ? transcriptProject
+                : null,
+          ),
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: vi.fn(() => reader),
+        eventBus: {
+          emit,
+        } as unknown as NonNullable<SessionsDeps["eventBus"]>,
+        sessionMetadataService: {
+          getMetadata: vi.fn(() => metadata),
+          getProvider: vi.fn(() => "grok"),
+          getRecapMessages: vi.fn(() => []),
+          setWorkingProject,
+        } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+      });
+
+      const moveResponse = await routes.request(
+        `/projects/${transcriptProject.id}/sessions/sess-1/project`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: workingProject.id }),
+        },
+      );
+      expect(moveResponse.status).toBe(200);
+      expect(await moveResponse.json()).toMatchObject({
+        updated: true,
+        projectId: workingProject.id,
+        transcriptProjectId: transcriptProject.id,
+      });
+      expect(setWorkingProject).toHaveBeenCalledWith(
+        "sess-1",
+        workingProject.id,
+        transcriptProject.id,
+      );
+      expect(emit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "session-metadata-changed",
+          sessionId: "sess-1",
+          projectId: workingProject.id,
+          transcriptProjectId: transcriptProject.id,
+        }),
+      );
+
+      const staleResponse = await routes.request(
+        `/projects/${transcriptProject.id}/sessions/sess-1`,
+      );
+      expect(staleResponse.status).toBe(307);
+      expect(staleResponse.headers.get("location")).toBe(
+        `/api/projects/${workingProject.id}/sessions/sess-1`,
+      );
+
+      const detailResponse = await routes.request(
+        `/projects/${workingProject.id}/sessions/sess-1`,
+      );
+      expect(detailResponse.status).toBe(200);
+      const detail = await detailResponse.json();
+      expect(detail.session).toMatchObject({
+        id: "sess-1",
+        projectId: workingProject.id,
+        workingProjectId: workingProject.id,
+        transcriptProjectId: transcriptProject.id,
+      });
+      expect(reader.getSessionSummary).toHaveBeenCalledWith(
+        "sess-1",
+        transcriptProject.id,
+        { readMode: "head" },
+      );
+      expect(reader.getSession).toHaveBeenCalledWith(
+        "sess-1",
+        transcriptProject.id,
+        undefined,
+        { includeOrphans: false },
+      );
+      expect(
+        detail.messages[0].message.content[0]._html as string,
+      ).toContain(`data-ya-project-id="${workingProject.id}"`);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps persisted provider when metadata refresh misses the session summary", async () => {
     const project = createProject();
 
@@ -654,6 +1482,7 @@ describe("Sessions metadata route", () => {
           state: { type: "idle", since: new Date("2026-03-10T09:47:00.000Z") },
           provider: "claude",
           supportsDynamicCommands: false,
+          getProviderRuntimeStatus: vi.fn(() => null),
         })),
       } as unknown as SessionsDeps["supervisor"],
       scanner: {
@@ -729,6 +1558,124 @@ describe("Sessions metadata route", () => {
         expect.objectContaining({ name: "goal" }),
       ]),
     );
+  });
+
+  it("computes detail unread from pre-overlay updatedAt so a recap never flips unread", async () => {
+    const project = { ...createProject(), provider: "grok" as const };
+    const recap: DurableRecapMessage = {
+      type: "system",
+      subtype: "away_summary",
+      content: "Fresh recap.",
+      timestamp: "2026-03-10T09:50:00.000Z",
+      uuid: "recap-1",
+      id: "recap-1",
+      yaRecapSource: "ya-synthetic",
+    };
+    // Session fully seen (09:49) after the last provider write (09:46);
+    // the recap (09:50) bumps display freshness but must not mark unread.
+    const lastSeenAt = "2026-03-10T09:49:00.000Z";
+    const hasUnread = vi.fn(
+      (_sessionId: string, updatedAt: string) => updatedAt > lastSeenAt,
+    );
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        wasEverOwned: vi.fn(() => false),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSession: vi.fn(async () =>
+              createLoadedGrokSession({
+                updatedAt: "2026-03-10T09:46:00.000Z",
+                messageCount: 1,
+              }),
+            ),
+          }) as unknown as ISessionReader,
+      ),
+      notificationService: {
+        getLastSeen: vi.fn(() => ({
+          sessionId: "sess-1",
+          timestamp: lastSeenAt,
+        })),
+        hasUnread,
+      } as unknown as NonNullable<SessionsDeps["notificationService"]>,
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+        getProvider: vi.fn(() => "grok"),
+        getRecapMessages: vi.fn(() => [recap]),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1`,
+    );
+    expect(response.status).toBe(200);
+
+    const json = await response.json();
+    expect(hasUnread).toHaveBeenCalledWith(
+      "sess-1",
+      "2026-03-10T09:46:00.000Z",
+    );
+    expect(json.session).toMatchObject({
+      updatedAt: recap.timestamp,
+      hasUnread: false,
+    });
+  });
+
+  it("handles durable recap ids as overlay cursors", async () => {
+    const project = { ...createProject(), provider: "grok" as const };
+    const recap: DurableRecapMessage = {
+      type: "system",
+      subtype: "away_summary",
+      content: "Fresh recap.",
+      timestamp: "2026-03-10T09:50:00.000Z",
+      uuid: "recap-1",
+      id: "recap-1",
+      yaRecapSource: "ya-synthetic",
+    };
+    const getSession = vi.fn(async () =>
+      createLoadedGrokSession({
+        updatedAt: "2026-03-10T09:46:00.000Z",
+        messageCount: 1,
+      }),
+    );
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        wasEverOwned: vi.fn(() => false),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSession,
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+        getProvider: vi.fn(() => "grok"),
+        getRecapMessages: vi.fn(() => [recap]),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1?afterMessageId=recap-1`,
+    );
+    expect(response.status).toBe(200);
+
+    expect(getSession).toHaveBeenCalledWith("sess-1", project.id, undefined, {
+      includeOrphans: false,
+    });
+    const json = await response.json();
+    expect(json.messages).toEqual([]);
   });
 
   it("prefers persisted provider over conflicting client resume provider", async () => {
@@ -1528,6 +2475,7 @@ describe("Sessions metadata route", () => {
     expect(setProvider).toHaveBeenCalledWith("sess-fork", "claude");
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork", {
       title: "Fork: Refactor session",
+      parentSessionId: "sess-1",
     });
   });
 
@@ -1582,7 +2530,7 @@ describe("Sessions metadata route", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           currentTitle: "old noisy title",
-          lengthTarget: 72,
+          lengthTarget: 132,
         }),
       },
     );
@@ -1606,7 +2554,7 @@ describe("Sessions metadata route", () => {
         generatorSessionId: "sess-retitle-generator",
         cwd: project.path,
         currentTitle: "old noisy title",
-        lengthTarget: 72,
+        lengthTarget: 132,
       }),
     );
     expect(updateMetadata).toHaveBeenCalledWith("sess-retitle-generator", {
@@ -1715,10 +2663,12 @@ describe("Sessions metadata route", () => {
     expect(primaryReader.getSessionSummary).toHaveBeenCalledWith(
       "sess-1",
       project.id,
+      { readMode: "head" },
     );
     expect(codexReader.getSessionSummary).toHaveBeenCalledWith(
       "sess-1",
       project.id,
+      { readMode: "head" },
     );
   });
 
@@ -1927,6 +2877,246 @@ describe("Sessions metadata route", () => {
         parentSessionId: "sess-1",
       }),
     );
+  });
+
+  it("keeps compact summaries in fork-after context without making them source turns", async () => {
+    const project = createProject();
+    const generateSummary = vi.fn(async () => ({
+      text: "Title: Compact continuation\n\nUse the compacted state.",
+    }));
+    const forkSession = vi
+      .fn()
+      .mockResolvedValueOnce({ sessionId: "sess-generator" })
+      .mockResolvedValueOnce({ sessionId: "sess-target" });
+    const resumeSession = vi.fn(async () => ({
+      id: "proc-target",
+      sessionId: "sess-target",
+      projectId: project.id,
+      provider: "claude",
+      model: "sonnet",
+      resolvedModel: "sonnet",
+      permissionMode: "default",
+      modeVersion: 0,
+      subscribe: vi.fn(() => vi.fn()),
+    }));
+    let transcriptDisplayObjects: TranscriptDisplayObject[] = [];
+    const addTranscriptDisplayObject = vi.fn(async (_sessionId, object) => {
+      transcriptDisplayObjects = [...transcriptDisplayObjects, object];
+    });
+    const updateTranscriptDisplayObject = vi.fn(
+      async (_sessionId, objectId, updater) => {
+        let updated: TranscriptDisplayObject | undefined;
+        transcriptDisplayObjects = transcriptDisplayObjects.map((object) => {
+          if (object.id !== objectId) return object;
+          updated = updater(object);
+          return updated;
+        });
+        return updated;
+      },
+    );
+    const getMessageHistory = vi.fn(() => [
+      {
+        type: "user",
+        uuid: "msg-user-initial",
+        message: { role: "user", content: "Start the task." },
+      },
+      {
+        type: "assistant",
+        uuid: "msg-assistant",
+        message: { role: "assistant", content: "Did the initial work." },
+      },
+      {
+        type: "system",
+        uuid: "compact-boundary",
+        subtype: "compact_boundary",
+        content: "Conversation compacted",
+      },
+      {
+        type: "user",
+        uuid: "compact-summary",
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+        message: {
+          role: "user",
+          content: "Provider compact summary text.",
+        },
+      },
+      {
+        type: "user",
+        uuid: "msg-user-next",
+        message: { role: "user", content: "Continue." },
+      },
+    ]);
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-source",
+          provider: "claude",
+          model: "sonnet",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory,
+        })),
+        supportsForkSession: vi.fn(() => true),
+        generateSummary,
+        forkSession,
+        resumeSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        getRequestedModel: vi.fn(() => "sonnet"),
+        getExecutor: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({})),
+        getTranscriptDisplayObjects: vi.fn(() => transcriptDisplayObjects),
+        addTranscriptDisplayObject,
+        updateTranscriptDisplayObject,
+        setProvider: vi.fn(async () => undefined),
+        setRequestedModel: vi.fn(async () => undefined),
+        updateMetadata: vi.fn(async () => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork-summary`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceMessageId: "msg-user-initial" }),
+      },
+    );
+
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(generateSummary).toHaveBeenCalledTimes(1);
+    });
+    expect(generateSummary).toHaveBeenCalledWith(
+      "claude",
+      expect.objectContaining({
+        afterTurnMessageId: "compact-summary",
+        afterTurnContext: "Provider compact summary text.",
+      }),
+    );
+    expect(forkSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        upToMessageId: "compact-summary",
+      }),
+    );
+  });
+
+  it("rejects compact summaries as fork-after source turns", async () => {
+    const project = createProject();
+    const forkSession = vi.fn();
+    const generateSummary = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-source",
+          provider: "claude",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => [
+            {
+              type: "user",
+              uuid: "compact-summary",
+              isCompactSummary: true,
+              isVisibleInTranscriptOnly: true,
+              message: {
+                role: "user",
+                content: "Provider compact summary text.",
+              },
+            },
+          ]),
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+        generateSummary,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        getTranscriptDisplayObjects: vi.fn(() => []),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork-summary`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceMessageId: "compact-summary" }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "sourceMessageId must identify a user-authored request",
+    });
+    expect(forkSession).not.toHaveBeenCalled();
+    expect(generateSummary).not.toHaveBeenCalled();
+  });
+
+  it("rejects slash-command skill bodies as fork-after source turns", async () => {
+    const project = createProject();
+    const forkSession = vi.fn();
+    const generateSummary = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-source",
+          provider: "claude",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => [
+            {
+              type: "user",
+              uuid: "skill-body",
+              isMeta: true,
+              message: {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      "Base directory for this skill: /home/graehl/.claude/skills/harsh-review\n\n" +
+                      "# Harsh review\n\nFirst classify each changed artifact.",
+                  },
+                ],
+              },
+            },
+          ]),
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+        generateSummary,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        getTranscriptDisplayObjects: vi.fn(() => []),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork-summary`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceMessageId: "skill-body" }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "sourceMessageId must identify a user-authored request",
+    });
+    expect(forkSession).not.toHaveBeenCalled();
+    expect(generateSummary).not.toHaveBeenCalled();
   });
 
   it("rejects an in-progress fork boundary before creating helper work", async () => {
@@ -2702,5 +3892,133 @@ describe("Sessions metadata route", () => {
     expect(interruptProcess).toHaveBeenCalledWith("proc-old");
     expect(cancelQueuedRequest).toHaveBeenCalledWith("queue-1");
     expect(abortProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("Session-keyed away-recap route", () => {
+  const projectId = encodeProjectId("/tmp/project");
+  const recapPath = `/projects/${projectId}/sessions/sess-1/recap`;
+
+  it("recaps a live process directly", async () => {
+    const requestRecap = vi.fn(async () => ({
+      supported: true,
+      emitted: true,
+      text: "live recap",
+    }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({ id: "p1", isTerminated: false })),
+        requestRecap,
+      } as unknown as SessionsDeps["supervisor"],
+    });
+
+    const response = await routes.request(recapPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hiddenSinceMs: 1000 }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      emitted: true,
+      text: "live recap",
+    });
+    expect(requestRecap).toHaveBeenCalledWith("p1", { sinceMs: 1000 });
+  });
+
+  it("revives a cold fork-mode session and recaps from the transcript", async () => {
+    const reactivateSession = vi.fn(async () => ({ id: "p-revived" }));
+    const requestRecap = vi.fn(async () => ({
+      supported: true,
+      emitted: true,
+      text: "revived recap",
+    }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        reactivateSession,
+        requestRecap,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => createProject()),
+      } as unknown as SessionsDeps["scanner"],
+      sessionMetadataService: {
+        getRecapMode: vi.fn(() => "fork"),
+        getMetadata: vi.fn(() => ({ provider: "claude" as ProviderName })),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(recapPath, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      emitted: true,
+      text: "revived recap",
+    });
+    expect(reactivateSession).toHaveBeenCalledWith(
+      "/tmp/project",
+      "sess-1",
+      undefined,
+      expect.objectContaining({ recapMode: "fork", providerName: "claude" }),
+      { preempt: false },
+    );
+    expect(requestRecap).toHaveBeenCalledWith("p-revived", {
+      sinceMs: null,
+      revived: true,
+    });
+  });
+
+  it("skips a cold session whose recap mode is not fork (no revival)", async () => {
+    const reactivateSession = vi.fn();
+    const requestRecap = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        reactivateSession,
+        requestRecap,
+      } as unknown as SessionsDeps["supervisor"],
+      sessionMetadataService: {
+        getRecapMode: vi.fn(() => "side-session"),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(recapPath, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ emitted: false });
+    expect(reactivateSession).not.toHaveBeenCalled();
+    expect(requestRecap).not.toHaveBeenCalled();
+  });
+
+  it("skips without preempting when revival hits worker capacity", async () => {
+    const reactivateSession = vi.fn(async () => {
+      throw new Error(
+        "Cannot reactivate: server is at worker capacity and no idle process can be preempted",
+      );
+    });
+    const requestRecap = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        reactivateSession,
+        requestRecap,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => createProject()),
+      } as unknown as SessionsDeps["scanner"],
+      sessionMetadataService: {
+        getRecapMode: vi.fn(() => "fork"),
+        getMetadata: vi.fn(() => ({ provider: "claude" as ProviderName })),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(recapPath, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      emitted: false,
+      reason: expect.stringContaining("capacity"),
+    });
+    expect(requestRecap).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,10 @@ across providers and across the SDK / TUI gap, since the SDK's
 `--print --output-format stream-json` mode does not run the TUI's
 idle-detection effect that triggers native recap emission.
 
+See also: [fork-recap.md](fork-recap.md) for the supervisor-level worker
+lifecycle of the `fork` recap strategy (dedup, in-turn deferral,
+cancellation on activity) and the current trigger/threshold gaps.
+
 ## Contracts
 
 - A recap is a server-emitted message with `type: "system"`, `subtype:
@@ -19,16 +23,38 @@ idle-detection effect that triggers native recap emission.
   need to know which side produced them.
 - Recaps must not become part of the provider's persisted transcript.
   The JSONL session file represents the underlying agent's
-  conversation; recaps are a viewer affordance and must be reproducible
-  from session state, not stored as user/assistant turns.
+  conversation; recaps are a viewer affordance and must not be stored as
+  user/assistant turns or fed into future provider context.
+- YA-synthesized recaps must be durable. They are persisted as YA-owned
+  metadata overlay rows (`SessionMetadataService.recapMessages`) and merged
+  into session detail/list reads. This makes them survive `reyep`, server
+  restart, and reopening the same session from another device without
+  polluting the provider transcript.
+- Provider-native recaps are preferred. In tailed and forked modes, YA waits
+  a bounded grace window for a native `system/away_summary`; if it arrives in
+  time, YA uses it, resets the fallback activity/return event, and suppresses
+  the synthetic fallback. Tailed/forked are therefore eventual-recap
+  guarantees, not native-recap replacements.
+- A live-observed provider-native recap may also be mirrored into the YA
+  metadata overlay as `provider-native`. This preserves the native-preferred
+  outcome across restart/reopen and is deduped against any provider row that
+  later appears in the persisted transcript.
 - Recap generation is the provider's responsibility. Providers that
   cannot generate one cheaply (no cache fork, no second model handy)
   may decline; YA surfaces this as a capability gap rather than
   silently doing nothing.
-- Triggering is YA's responsibility. The client signals "the user
-  returned after being away" (e.g., via `visibilitychange` after a
-  minimum hidden interval); the server decides whether the gap is large
-  enough and whether the session has anything new to summarize.
+- Triggering is YA's responsibility. The client arms an away timer when the
+  session view is hidden/left and fires it (session-keyed) after the
+  `recapAfterSeconds` threshold; the server decides whether the session has
+  anything new to summarize. Because the request is keyed by session, not
+  process, it survives a server restart: a *displayed* fork-mode session whose
+  process died is revived and recapped from its transcript (never preempting a
+  live worker). See [fork-recap.md](fork-recap.md) for the revive/no-preempt
+  lifecycle.
+- Recap configuration is durable. `recapAfterSeconds` and `recapMode` are
+  persisted in session metadata, so a session's recap preference survives a
+  process death / reactivation and is what tells a cold session whether and how
+  to recap.
 - The hint suffix the Claude TUI appends to its first few recaps —
   ` (disable recaps in /config)` — is provider-specific noise. YA must
   strip it before rendering so users do not see CLI-only configuration
@@ -42,17 +68,41 @@ idle-detection effect that triggers native recap emission.
 - One recap per "return event". Repeated visibility flips within a
   short window collapse to a single trigger; the user should not see a
   stack of recaps after wiggling focus.
-- A recap with no new agent work to describe (no assistant turns since
-  the user left) is suppressed. An empty or near-empty recap is worse
-  than no recap.
+- A recap with no new agent work to describe is suppressed. The freshness
+  floor is the *later* of the user's leave time and the last emitted recap
+  for the session (`Supervisor.recapFloorMs`): a return event with no
+  assistant output since the last recap would regenerate the same summary
+  from the same context — wasted work and a duplicate row. An empty or
+  near-empty recap is worse than no recap.
+- At most one recap row per transcript position. A newer recap supersedes
+  an older YA-overlay recap that has no provider content after it
+  (`mergeRecapMessages`); an older recap stays visible only when real
+  transcript content follows it, where it reads as a milestone marker at
+  the point it covered. Provider-emitted recap rows are never removed by
+  this supersede.
 - Recap text length is bounded by the provider's prompt (under ~40
   words for Claude-shape recaps); YA must not pad, decorate, or attach
   follow-up tool affordances that would invite further interaction with
   the recap message.
-- Recaps survive reload only as live state. They are not persisted to
-  YA's session metadata; on full page reload the recap area resets.
-- Recap rendering is read-only. There is no reply box, no thumbs, no
-  retry — clicking the recap row should not change provider state.
+- Recaps survive reload as viewer state. YA persists synthetic recaps, and
+  live-observed native recaps, in session metadata and overlays them into
+  the transcript view. The provider transcript remains the provider's record.
+- Session lists and hovercards treat a fresher recap as the current ending
+  text (`lastAgentText`) immediately on emission and after reload. A later
+  real assistant turn naturally supersedes it through the normal summary path.
+- A recap landing never flips its session unread. Recaps describe provider
+  content; they are not provider content. The overlay's `updatedAt` bump is
+  display/order freshness only — every server `hasUnread` computation compares
+  `lastSeen` against the pre-overlay (provider transcript) `updatedAt`, so a
+  fully-seen session stays unbolded in the sidebar/lists/inbox when its recap
+  arrives, while genuinely unseen provider output still marks unread on its
+  own. (This deliberately reverses the earlier overlaid-freshness unread
+  computation from "Tighten recap overlay cursor and freshness handling".)
+- Recap rendering is read-only. There is no recap-specific reply box,
+  thumbs, retry, or dedicated copy-to-composer action; clicking the recap row
+  should not change provider state. The recap body text still participates in
+  the ordinary selection quote-comment pipeline, so a selected recap span can
+  become a `>` quote in the composer like other transcript content.
 
 ## Configuration and Native Capability
 
@@ -81,11 +131,15 @@ the UI does not need to hard-code provider model names.
 
 The UI locations are:
 
-- New-session form: a `Recaps` control alongside provider/model/session
-  defaults. It chooses `Off`, provider-native recaps when supported, or
-  simulated recaps through the shared helper side session.
+- New-session form: a `Recaps` control in the all-provider defaults above the
+  AI Provider boundary. It chooses `Off`, provider-native recaps when supported,
+  or simulated recaps through the shared helper side session or forked fallback
+  path.
 - Settings -> Providers: the default recap mode for future sessions and the
-  shared helper side model, including `Same as main session`.
+  shared helper side model, including `Same as main session`. The helper model
+  selector is labeled `Tailed Recap Model` and appears for both direct tailed
+  recaps and forked recaps, because fork generation falls back to the tailed
+  helper path when the provider cannot fork or returns no fork summary.
 - Existing session menu: a `Recaps...` item for the active process. It changes
   future away-return triggers without restarting the parent session and without
   rewriting prior recap messages.
@@ -115,6 +169,75 @@ change recap configuration for future sessions.
 - Changing how the server records its "last user activity" timestamp,
   since the recap trigger depends on it.
 
+## Decision: Native-Preferred Fallback and Helper Placement
+
+This revises the original "native vs simulated" split into a user-facing
+"recaps on/off" contract with provider-owned recaps preferred.
+
+When recaps are on for a provider that emits `away_summary` natively, YA should
+first show provider-emitted recap rows when they arrive. If no native recap
+arrives by a bounded deadline for the return event, YA may run its own recap
+helper and emit the same `system` / `away_summary` shape. That fallback must be
+deduped against a late native row: one visible recap per return event, with the
+native row preferred when both exist.
+
+The fallback deadline is bounded, not an unbounded "wait and hope" state.
+The current server implementation waits a short post-return grace window for
+providers that advertise native recap support, checks again after helper
+generation, and suppresses the synthetic row if a native row arrived during
+that window.
+
+Current implementation facts:
+
+- Claude's cheap `side-session` recap strategy does **not** fork and does not
+  run an inline hidden turn. It starts a fresh SDK `query()` with
+  `persistSession: false`, feeds bounded recent assistant text into the prompt,
+  and emits the generated text as a synthetic recap.
+- Codex's cheap `side-session` recap strategy likewise starts an ephemeral
+  helper thread over copied recent assistant text, not a fork of the source
+  thread.
+- Retitle and fork-after-summary already use the high-fidelity fork-backed
+  `strategy: "fork"`: create a temporary real fork, run one helper turn there,
+  then archive/hide the generator so it does not clutter normal session lists.
+- The installed Claude SDK exposes `promptSuggestions` as a public query option
+  but no public `awaySummary` / `awaySummaryEnabled` query option. Its bundled
+  implementation contains an internal `awaySummaryEnabled` settings schema
+  entry, marked hidden from public SDK types. Treat any attempt to drive that
+  setting as a separate probe, not as an assumed API contract.
+
+Add a recap helper placement option for fallback generation:
+
+- **Recent-text helper**: the current cheap path. It copies bounded recent
+  assistant text into a fresh non-persisted helper session/thread. It is clean
+  and cheap but loses full provider context and prompt-cache warmth.
+- **Temporary fork helper**: create an archived/hidden generator fork, run the
+  recap prompt there, emit only the resulting recap to the source view, then
+  clean up or keep the generator hidden like retitle and fork-after-summary.
+  Prefer this when the provider supports real transcript forks and fidelity or
+  cache warmth matters.
+- **Inline hidden turn**: run the helper against the live/source provider
+  context only if the provider exposes a verified "hidden from transcript /
+  skip transcript" primitive. This could be fastest and most context faithful,
+  and arguably harmless to model context if truly hidden, but it is unsafe to
+  emulate with an ordinary visible user turn. For Claude SDK, no public
+  `skipTranscript` option is currently exposed; the TUI's native recap path may
+  use internal machinery that YA cannot assume.
+
+The default should be `auto`: prefer native provider rows; on fallback, prefer a
+temporary fork when the provider has a real fork primitive; otherwise use the
+current recent-text helper. Inline hidden turns require an explicit provider
+capability because a fake-hidden turn that reaches the persisted transcript or
+future model context violates the recap contract.
+
+Remaining probes:
+
+- Test whether the internal `awaySummaryEnabled` settings key can be supplied
+  through supported SDK settings plumbing, and whether it affects `--print`
+  / stream-json mode at all.
+- Measure a live native-on session: time from last activity to native recap,
+  from return/catch-up to display, and fallback behavior when the native row
+  never appears.
+
 ## Tests That Should Fail On Contract Regressions
 
 - A recap message is not written into the persisted Claude JSONL
@@ -123,10 +246,19 @@ change recap configuration for future sessions.
   most one recap.
 - A recap fired against a session that has had no assistant output
   since the user left does not surface in the message list.
+- A second return event with no assistant output since the last emitted
+  recap does not generate or surface a second recap.
+- Two persisted overlay recaps with no provider content between them
+  render as one row (the newest); with provider content between them,
+  both render, the older inline at the point it covered.
 - The trailing ` (disable recaps in /config)` text is stripped from
   rendered content but the rest of the text is preserved verbatim.
-- Recap rendering does not expose retry, copy-to-composer, or other
-  actions that would let the recap become an editable user prompt.
+- Recap rendering does not expose retry or recap-specific action chrome; the
+  only path that can move recap text into the composer is the shared
+  selection quote-comment path used for other transcript content.
+- A recap overlay newer than a fully-seen session's transcript leaves
+  `hasUnread` false in session detail, project lists, and global lists, while
+  the row's `updatedAt` still reflects the recap timestamp.
 
 ## Decision: YA synthesizes rather than passing through
 

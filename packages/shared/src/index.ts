@@ -45,6 +45,12 @@ export type {
   ProviderImageSizing,
   ModelInfo,
   RecapMode,
+  CacheMissBillingReason,
+  CacheMissBillingOutcome,
+  CacheMissBillingRecord,
+  CacheMissBillingSettings,
+  CacheMissBillingUsage,
+  ExpectedInputCostState,
   PromptCacheKeepaliveMode,
   PromptCacheKeepaliveProviderInfo,
   PromptCacheKeepaliveProviderSetting,
@@ -53,12 +59,15 @@ export type {
   HelperTargetConfig,
   SlashCommand,
   PermissionMode,
+  ProviderSessionDefaults,
   NewSessionDefaults,
   BusyComposerDefaultAction,
   ClientDefaults,
   CollapsedComposerButtonPreference,
   GrokSpeechAudioClientDefault,
-  SessionToolbarVisibilityClientDefaults,
+  SessionToolbarPresenceClientDefaults,
+  ToolbarControlPresence,
+  ToolbarNarrowingPriority,
   SpeechClientDefaults,
   SpeechSmartTurnClientDefault,
   ModelOption,
@@ -85,13 +94,58 @@ export {
   PROMPT_CACHE_KEEPALIVE_MODES,
   PROMPT_SUGGESTION_MODES,
   RECAP_MODES,
+  DEFAULT_RECAP_AFTER_SECONDS,
+  MAX_RECAP_AFTER_SECONDS,
+  MIN_RECAP_AFTER_SECONDS,
+  clampRecapAfterSeconds,
+  normalizeRecapAfterSeconds,
   thinkingOptionToConfig,
   resolveModel,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
+  DEFAULT_CACHE_MISS_BILLING_FRESH_WINDOW_MINUTES,
+  DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES,
+  DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS,
+  DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+  DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
 } from "./types.js";
 
-export type { GitStatusInfo, GitFileChange } from "./git-status.js";
+export type {
+  GitDiffPreviewSkipped,
+  GitDiffPreviewSkippedReason,
+  GitDiffResult,
+  GitFileChange,
+  GitIntegrationOptionReason,
+  GitIntegrationOptionsResult,
+  GitIntegrationOptionsStatus,
+  GitPullResult,
+  GitPullStatus,
+  GitPushResult,
+  GitPushStatus,
+  GitRecentCommit,
+  GitRemoteCheckResult,
+  GitRemoteCheckStatus,
+  GitStatusInfo,
+  GitUntrackedFolderInfo,
+} from "./git-status.js";
+
+export type {
+  SafeRestartBlocker,
+  SafeRestartBlockerType,
+  SafeRestartChangedEvent,
+  SafeRestartPreservedWork,
+  SafeRestartPreservedWorkType,
+  SafeRestartState,
+  SafeRestartStatus,
+} from "./safe-restart.js";
+export {
+  GIT_STATUS_CAPABILITY,
+  GIT_STATUS_ENHANCED_CAPABILITY,
+  GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
+  GIT_STATUS_PULL_CAPABILITY,
+  GIT_STATUS_PUSH_CAPABILITY,
+  GIT_STATUS_REMOTE_CHECK_CAPABILITY,
+} from "./git-status.js";
 
 export type {
   SessionActiveWorkKind,
@@ -157,6 +211,67 @@ export {
 } from "./projectId.js";
 
 export type {
+  CreateProjectQueueItemRequest,
+  ProjectQueueChangedEvent,
+  ProjectQueueClientSource,
+  ProjectQueueCreatedFrom,
+  ProjectQueueDispatchPauseReason,
+  ProjectQueueDispatchState,
+  ProjectQueueItem,
+  ProjectQueueItemStatus,
+  ProjectQueueItemSummary,
+  ProjectQueueListResponse,
+  ProjectQueueMessage,
+  ProjectQueueProjectState,
+  ProjectQueueProjectStatus,
+  ProjectQueuePromoteNowRequest,
+  ProjectQueuePromoteNowResponse,
+  ProjectQueuePromoteNowResult,
+  ProjectQueueRecoveredSessionQueueSummary,
+  ProjectQueueResponse,
+  ProjectQueueStagedAttachments,
+  ProjectQueueTarget,
+  UpdateProjectQueueItemRequest,
+} from "./project-queue.js";
+export {
+  DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  MAX_PROJECT_QUEUE_QUIET_SECONDS,
+  clampProjectQueueQuietSeconds,
+} from "./project-queue.js";
+export {
+  APPROVAL_AUDIT_LOG_CAPABILITY,
+  DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
+  DEVICE_BRIDGE_CAPABILITY,
+  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+  DEVICE_BRIDGE_UPDATE_CAPABILITY,
+  PROJECT_QUEUE_CAPABILITY,
+  SERVER_CAPABILITIES,
+  VOICE_INPUT_CAPABILITY,
+  serverHasCapability,
+  type ServerCapabilityDefinition,
+  type ServerCapabilityKey,
+  type ServerCapabilityKind,
+  type ServerCapabilityName,
+  type ServerCapabilitySource,
+} from "./server-capabilities.js";
+
+export type {
+  CreateProjectWorkstreamRequest,
+  CreateProjectWorkstreamResponse,
+  ProjectWorkstreamsResponse,
+  StoredWorkstream,
+  Workstream,
+  WorkstreamCheckoutPreviewResponse,
+  WorkstreamId,
+  WorkstreamKind,
+  WorkstreamStatus,
+  WorkstreamsChangedEvent,
+  WorkstreamsChangedReason,
+} from "./workstreams.js";
+export { isWorkstreamId, mainWorkstreamId } from "./workstreams.js";
+
+export type {
+  StagedAttachmentRef,
   UploadedFile,
   UploadStartMessage,
   UploadEndMessage,
@@ -222,15 +337,21 @@ export type {
   // Session types
   PendingInputType,
   AgentActivity,
+  ProviderRuntimeRetryReason,
+  ProviderRuntimeStatus,
   ContextUsage,
   SessionOwnership,
   SessionSandboxPolicy,
+  DurableRecapMessage,
   ForkSummaryTranscriptDisplayObject,
   TranscriptDisplayObject,
   AppSessionSummary,
   AppSession,
   SessionMetadataPayload,
   SessionMetadataResponse,
+  SessionQueuedMessageKind,
+  SessionQueuedMessageStatus,
+  SessionQueuedMessageSummary,
   // Agent session types
   AgentStatus,
   AgentSession,
@@ -248,6 +369,23 @@ export type {
   BrowserProfileInfo,
   BrowserProfilesResponse,
 } from "./app-types.js";
+
+export type {
+  ToolDisplayAction,
+  ToolDisplayListAction,
+  ToolDisplayReadAction,
+  ToolDisplaySearchAction,
+} from "./tool-display-actions.js";
+export type {
+  CodexToolCorrelationMetadata,
+  CodexToolCorrelationOrigin,
+} from "./codex-tool-correlation.js";
+export {
+  CODEX_TOOL_CORRELATION_FIELD,
+  createCodexToolCorrelation,
+  getCodexResponseItemTurnId,
+  getCodexToolCorrelation,
+} from "./codex-tool-correlation.js";
 export {
   isUserMessage,
   isAssistantMessage,
@@ -431,6 +569,7 @@ export type {
   RelayUnsubscribe,
   RelayEvent,
   RelayUploadStart,
+  RelayStagedUploadStart,
   RelayUploadChunk,
   RelayUploadEnd,
   RelayUploadProgress,

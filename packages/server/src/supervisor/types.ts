@@ -1,16 +1,19 @@
 import type {
   AgentActivity,
   ContextUsage,
+  DurableRecapMessage,
   EffortLevel,
   InputRequest,
   PendingInputType,
   PermissionRules,
   PromptSuggestionMode,
+  ProviderRuntimeStatus,
   ProviderName,
   RecapMode,
   ThinkingConfig,
   UrlProjectId,
   SessionLivenessSnapshot,
+  WorkstreamId,
 } from "@yep-anywhere/shared";
 import type { PermissionMode, SDKMessage } from "../sdk/types.js";
 
@@ -34,6 +37,7 @@ export interface Project {
   path: string; // absolute path
   name: string; // directory name
   sessionCount: number;
+  sessionCountsByProvider?: Partial<Record<ProviderName, number>>;
   sessionDir: string; // path to session directory (e.g., ~/.claude/projects/hostname/-encoded-path/)
   mergedSessionDirs?: string[]; // additional session dirs from cross-machine duplicates
   hasCodexSessions?: boolean; // whether this project also has Codex sessions
@@ -52,6 +56,7 @@ export type SessionOwnership =
       processId: string;
       permissionMode?: PermissionMode;
       modeVersion?: number;
+      recapAfterSeconds?: number;
     } // we control it
   | { owner: "external" }; // another process owns it
 
@@ -69,6 +74,8 @@ export interface SessionSandboxPolicy {
 export interface SessionSummary {
   id: string;
   projectId: UrlProjectId;
+  /** Human-readable project basename for display; projectId remains canonical. */
+  projectName?: string;
   title: string | null; // first 120 chars of first user message (truncated with ...)
   fullTitle: string | null; // complete first user message (for hover tooltip)
   createdAt: string; // ISO timestamp
@@ -106,11 +113,11 @@ export interface SessionSummary {
   /** Model used for this session (extracted from JSONL, e.g. "claude-opus-4-5-20251101") */
   model?: string;
   /**
-   * Excerpt of the most recent regular agent turn (last assistant message with
-   * prose), capped to the last few lines. Shown in the row hover card so a
-   * glance answers "where did this land?". A "⚙ <tool>" label when the latest
-   * turns are tool-only. Undefined when the provider's reader does not populate
-   * it yet, or there is no agent text. See
+   * Excerpt of the most recent visible regular agent turn or provider recap,
+   * capped to the last few lines. Shown in the row hover card so a glance
+   * answers "where did this land?". A "⚙ <tool>" label when the latest turns
+   * are tool-only. Hidden thinking does not populate this field. Undefined when
+   * the provider's reader does not populate it yet, or there is no agent text. See
    * topics/session-hovercard-recent-activity.md.
    */
   lastAgentText?: string;
@@ -124,6 +131,8 @@ export interface SessionSummary {
   approvalPolicy?: string;
   /** Sandbox policy from turn_context */
   sandboxPolicy?: SessionSandboxPolicy;
+  /** YA workstream lane for this session. Missing means the implicit main lane. */
+  workstreamId?: WorkstreamId;
 }
 
 /**
@@ -179,6 +188,14 @@ export interface Message {
   toolUseResult?: unknown;
   // Computed fields (added by SessionReader)
   orphanedToolUseIds?: string[];
+  /**
+   * YA-computed, Claude queue-operation rows only: when the queued message
+   * was delivered into the turn (the remove op's timestamp). The row keeps
+   * its enqueue-position lineIndex, so incremental afterMessageId slicing
+   * uses this to include rows that postdate a mid-turn anchor
+   * (sessions/pagination.ts).
+   */
+  queueDeliveredAt?: string;
   // Allow any additional fields from JSONL
   [key: string]: unknown;
 }
@@ -233,8 +250,12 @@ export interface ProcessInfo {
   pid?: number;
   /** Provider/session progress evidence, separate from transport liveness. */
   liveness?: SessionLivenessSnapshot;
+  /** Current provider retry/failure status for the live turn, when available. */
+  providerRuntimeStatus?: ProviderRuntimeStatus;
   /** Current recap behavior for this live process. */
   recapMode?: RecapMode;
+  /** Browser-away duration before YA asks this process for a recap. */
+  recapAfterSeconds?: number;
   /** Current prompt-suggestion behavior for this live process. */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */
@@ -246,6 +267,10 @@ export type ProcessEvent =
   | { type: "message"; message: SDKMessage }
   | { type: "state-change"; state: ProcessState }
   | { type: "liveness-update" }
+  | {
+      type: "provider-runtime-status-change";
+      status: ProviderRuntimeStatus;
+    }
   | { type: "mode-change"; mode: PermissionMode; version: number }
   | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
   | {
@@ -268,6 +293,16 @@ export type ProcessEvent =
       }[];
       reason?: "queued" | "cancelled" | "promoted";
       tempId?: string;
+    }
+  | {
+      type: "recap-result";
+      result: {
+        supported: boolean;
+        emitted: boolean;
+        reason?: string;
+        text?: string;
+        syntheticMessage?: DurableRecapMessage;
+      };
     };
 
 // Process options
@@ -290,6 +325,8 @@ export interface ProcessOptions {
   executor?: string;
   /** How this process should answer away-recap requests. */
   recapMode?: RecapMode;
+  /** Browser-away duration before YA asks this process for a recap. */
+  recapAfterSeconds?: number;
   /** How this process should request native prompt suggestions. */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */

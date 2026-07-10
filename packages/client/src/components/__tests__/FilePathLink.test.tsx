@@ -1,12 +1,24 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toUrlProjectId } from "@yep-anywhere/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PublicShareProvider } from "../../contexts/PublicShareContext";
+import { I18nProvider } from "../../i18n";
+import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
+import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import { FilePathLink } from "../FilePathLink";
 
 describe("FilePathLink", () => {
   afterEach(() => {
     cleanup();
+    sessionStorage.clear();
+    window.history.replaceState({}, "", "/");
+    vi.unstubAllGlobals();
   });
 
   it("renders a native link to the standalone file viewer", () => {
@@ -119,6 +131,150 @@ describe("FilePathLink", () => {
     expect(link.getAttribute("href")).toBe(
       `/projects/${projectId}/file?path=D%3A%5Cscratch%5Coutside.md&line=4`,
     );
+  });
+
+  it("renders a copy-path button that copies the path without bubbling", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const containerClick = vi.fn();
+
+    render(
+      // biome-ignore lint/a11y/noStaticElementInteractions: asserts non-bubbling
+      // biome-ignore lint/a11y/useKeyWithClickEvents: test-only wrapper
+      <div onClick={containerClick}>
+        <FilePathLink
+          projectId="project-id"
+          filePath="docs/guide.md"
+          lineNumber={12}
+          displayText="guide.md"
+        />
+      </div>,
+    );
+
+    const copyButton = screen.getByRole("button", { name: "Copy path" });
+    fireEvent.click(copyButton);
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith("docs/guide.md");
+    expect(containerClick).not.toHaveBeenCalled();
+  });
+
+  it("copies absolute paths under the project as project-relative", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const projectId = toUrlProjectId("/local/graehl/yepanywhere");
+
+    render(
+      <FilePathLink
+        projectId={projectId}
+        filePath="/local/graehl/yepanywhere/ui-report/README.md"
+        displayText="ui-report/README.md"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy path" }));
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith("ui-report/README.md");
+  });
+
+  it("copies paths outside the project verbatim", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const projectId = toUrlProjectId("/local/graehl/yepanywhere");
+
+    render(
+      <FilePathLink
+        projectId={projectId}
+        filePath="/home/graehl/.claude/CLAUDE.md"
+        displayText="CLAUDE.md"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy path" }));
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith("/home/graehl/.claude/CLAUDE.md");
+  });
+
+  it("omits the copy button when showCopyButton is false", () => {
+    render(
+      <FilePathLink
+        projectId="project-id"
+        filePath="docs/guide.md"
+        displayText="guide.md"
+        showCopyButton={false}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Copy path" })).toBeNull();
+  });
+
+  it("opens a context menu that can prefill a new session from the path", () => {
+    render(
+      <I18nProvider>
+        <FilePathLink
+          projectId="project-id"
+          filePath="docs/guide.md"
+          displayText="guide.md"
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: "guide.md" }), {
+      clientX: 20,
+      clientY: 30,
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "New session" }));
+
+    expect(getNewSessionPrefill(LOCAL_CLIENT_SUMMARY_SOURCE_KEY)).toBe(
+      "docs/guide.md",
+    );
+    expect(window.location.pathname).toBe("/new-session");
+    expect(window.location.search).toBe("?projectId=project-id");
+  });
+
+  it("copies file contents from the context menu", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            metadata: {
+              path: "docs/guide.md",
+              size: 9,
+              mimeType: "text/markdown",
+              isText: true,
+            },
+            rawUrl: "",
+            content: "# Guide\n",
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: 200,
+          },
+        );
+      }),
+    );
+
+    render(
+      <I18nProvider>
+        <FilePathLink
+          projectId="project-id"
+          filePath="docs/guide.md"
+          displayText="guide.md"
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: "guide.md" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy contents" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("# Guide\n");
+    });
   });
 
   it("uses share-scoped file routes when rendered in a public share", () => {

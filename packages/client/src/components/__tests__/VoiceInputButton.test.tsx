@@ -1,17 +1,29 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { VOICE_INPUT_CAPABILITY } from "@yep-anywhere/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UseSpeechRecognitionOptions } from "../../hooks/useSpeechRecognition";
 import { VoiceInputButton } from "../VoiceInputButton";
 
-const { connection, observedSpeechOptions, openSpeechSocket, speechState } =
+const {
+  observedSpeechOptions,
+  openSpeechSocket,
+  sourceTransport,
+  speechState,
+  versionState,
+} =
   vi.hoisted(() => {
     const openSpeechSocket = vi.fn();
     return {
-      connection: { openSpeechSocket },
       observedSpeechOptions: [] as UseSpeechRecognitionOptions[],
       openSpeechSocket,
+      sourceTransport: {
+        capabilities: {
+          sameOriginUrls: false,
+          speech: { open: openSpeechSocket },
+        },
+      },
       speechState: {
         isListening: false,
         status: "idle" as
@@ -24,11 +36,16 @@ const { connection, observedSpeechOptions, openSpeechSocket, speechState } =
           | "reconnecting"
           | "error",
       },
+      versionState: {
+        capabilities: [] as string[],
+      },
     };
   });
 
-vi.mock("../../hooks/useConnection", () => ({
-  useConnection: () => connection,
+vi.mock("../../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => ({
+    transport: sourceTransport,
+  }),
 }));
 
 vi.mock("../../hooks/useModelSettings", () => ({
@@ -82,7 +99,7 @@ vi.mock("../../hooks/useSpeechRecognition", () => ({
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
-      capabilities: ["voiceInput"],
+      capabilities: versionState.capabilities,
       voiceBackends: [],
       voiceBackendCapabilities: {},
     },
@@ -104,6 +121,10 @@ vi.mock("../../lib/deviceDetection", () => ({
 }));
 
 describe("VoiceInputButton", () => {
+  beforeEach(() => {
+    versionState.capabilities = [VOICE_INPUT_CAPABILITY];
+  });
+
   afterEach(() => {
     cleanup();
     observedSpeechOptions.length = 0;

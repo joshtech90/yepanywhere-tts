@@ -1,13 +1,18 @@
 import { planThumbnail, toUrlProjectId } from "@yep-anywhere/shared";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRemoteImage } from "../hooks/useRemoteImage";
 import { loadCachedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import { Modal } from "./ui/Modal";
 
+// Brief linger before a hover surfaces the full-size preview, so passing the
+// cursor over a chip on the way elsewhere does not flash the overlay.
+const HOVER_PREVIEW_LINGER_MS = 450;
+
 export interface AttachmentChipProps {
   attachmentId?: string;
   originalName: string;
-  path: string;
+  path?: string;
   mimeType: string;
   sizeLabel: string;
   imageWidth?: number;
@@ -58,7 +63,8 @@ export function formatAttachmentName(name: string): string {
   return `${trimmed.slice(0, ATTACHMENT_NAME_SOFT_LIMIT).replace(/[ -_]+$/u, "")}...`;
 }
 
-function getUploadUrl(filePath: string): string | null {
+function getUploadUrl(filePath: string | undefined): string | null {
+  if (!filePath) return null;
   const parts = filePath.split("/");
   if (parts.length < 3) return null;
 
@@ -81,7 +87,7 @@ function getUploadUrl(filePath: string): string | null {
 
 function useCachedAttachmentImage(
   attachmentId: string,
-  path: string,
+  path: string | undefined,
   remotePreviewEnabled: boolean,
   previewUrl?: string,
 ): {
@@ -117,6 +123,21 @@ function useCachedAttachmentImage(
     setCachePreviewHeight(null);
 
     if (previewUrl) {
+      setLoading(false);
+      setRemoteEnabled(false);
+      return () => {
+        if (previewUrlRef.current) {
+          URL.revokeObjectURL(previewUrlRef.current);
+          previewUrlRef.current = null;
+        }
+        if (fullUrlRef.current) {
+          URL.revokeObjectURL(fullUrlRef.current);
+          fullUrlRef.current = null;
+        }
+      };
+    }
+
+    if (!path) {
       setLoading(false);
       setRemoteEnabled(false);
       return () => {
@@ -208,7 +229,7 @@ function NonImageAttachmentChip({
       <span className="attachment-chip-icon" aria-hidden="true">
         📎
       </span>
-      <span className="attachment-name" title={path}>
+      <span className="attachment-name" title={path ?? originalName}>
         {formatAttachmentName(originalName)}
       </span>
       <span className="attachment-size">{sizeLabel}</span>
@@ -238,7 +259,9 @@ function ImageAttachmentChip({
   onRemove,
 }: AttachmentChipProps) {
   const [showModal, setShowModal] = useState(false);
-  const cacheKey = attachmentId ?? path;
+  const [showHoverPreview, setShowHoverPreview] = useState(false);
+  const hoverTimerRef = useRef<number | null>(null);
+  const cacheKey = attachmentId ?? path ?? originalName;
   const {
     previewUrl: imagePreviewUrl,
     fullUrl,
@@ -246,7 +269,34 @@ function ImageAttachmentChip({
     previewHeight,
     loading,
     error,
-  } = useCachedAttachmentImage(cacheKey, path, showModal, previewUrl);
+  } = useCachedAttachmentImage(
+    cacheKey,
+    path,
+    showModal || showHoverPreview,
+    previewUrl,
+  );
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  // Cancel a pending linger timer if the chip unmounts mid-hover.
+  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+
+  const handleHoverStart = () => {
+    clearHoverTimer();
+    hoverTimerRef.current = window.setTimeout(() => {
+      setShowHoverPreview(true);
+    }, HOVER_PREVIEW_LINGER_MS);
+  };
+
+  const handleHoverEnd = () => {
+    clearHoverTimer();
+    setShowHoverPreview(false);
+  };
   const previewPlan =
     previewWidth && previewHeight
       ? { width: previewWidth, height: previewHeight }
@@ -269,7 +319,13 @@ function ImageAttachmentChip({
         <button
           type="button"
           className="attachment-chip-main"
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            handleHoverEnd();
+            setShowModal(true);
+          }}
+          onMouseEnter={handleHoverStart}
+          onMouseLeave={handleHoverEnd}
+          onBlur={handleHoverEnd}
           aria-label={`Open ${originalName}`}
           title={`${mimeType}, ${sizeLabel}`}
         >
@@ -284,7 +340,7 @@ function ImageAttachmentChip({
               <span className="attachment-preview-fallback">📎</span>
             )}
           </span>
-          <span className="attachment-name" title={path}>
+          <span className="attachment-name" title={path ?? originalName}>
             {formatAttachmentName(originalName)}
           </span>
           <span className="attachment-size">{sizeLabel}</span>
@@ -300,6 +356,15 @@ function ImageAttachmentChip({
           </button>
         )}
       </div>
+      {showHoverPreview &&
+        !showModal &&
+        fullUrl &&
+        createPortal(
+          <div className="attachment-hover-preview" aria-hidden="true">
+            <img src={fullUrl} alt="" />
+          </div>,
+          document.body,
+        )}
       {showModal && (
         <Modal title={originalName} onClose={() => setShowModal(false)}>
           <div className="uploaded-image-modal">

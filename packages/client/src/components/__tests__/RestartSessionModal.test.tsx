@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ProviderInfo } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestartSessionModal } from "../RestartSessionModal";
@@ -13,9 +19,20 @@ const { mockRestartSession, serverSettingsState } = vi.hoisted(() => ({
         provider?: "claude" | "codex";
         model?: string;
         permissionMode?: "default";
-        recapMode?: "off" | "native" | "side-session";
+        recapMode?: "off" | "native" | "side-session" | "fork";
+        recapAfterSeconds?: number;
         promptSuggestionMode?: "off" | "native";
-        helperSideModel?: string;
+        providers?: Partial<
+          Record<
+            "claude" | "codex",
+            {
+              model?: string;
+              thinkingMode?: "off" | "auto" | "on";
+              effortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
+              helperSideModel?: string;
+            }
+          >
+        >;
       };
     } | null,
     isLoading: false,
@@ -105,7 +122,9 @@ describe("RestartSessionModal", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "sessionRestartStart" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sessionRestartStart" }),
+    );
 
     await waitFor(() => {
       expect(mockRestartSession).toHaveBeenCalledWith(
@@ -115,8 +134,58 @@ describe("RestartSessionModal", () => {
           provider: "codex",
           model: "gpt-5.5",
           recapMode: "off",
+          recapAfterSeconds: 300,
           promptSuggestionMode: "off",
           helperSideModel: "cheapest",
+        }),
+      );
+    });
+  });
+
+  it("uses provider-scoped model and thinking defaults for handoff", async () => {
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        permissionMode: "default",
+        providers: {
+          codex: {
+            model: "gpt-5.5",
+            thinkingMode: "auto",
+            effortLevel: "xhigh",
+          },
+        },
+      },
+    };
+
+    render(
+      <RestartSessionModal
+        projectId="proj-1"
+        sessionId="sess-1"
+        provider="codex"
+        models={[
+          { id: "gpt-5.4", name: "GPT-5.4" },
+          { id: "gpt-5.5", name: "GPT-5.5" },
+        ]}
+        currentModel="gpt-5.4"
+        mode="default"
+        thinking="off"
+        onRestarted={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "sessionRestartStart" }),
+    );
+
+    await waitFor(() => {
+      expect(mockRestartSession).toHaveBeenCalledWith(
+        "proj-1",
+        "sess-1",
+        expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.5",
+          thinking: "auto",
         }),
       );
     });
@@ -150,7 +219,9 @@ describe("RestartSessionModal", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
-    fireEvent.click(screen.getByRole("button", { name: "sessionRestartStart" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sessionRestartStart" }),
+    );
 
     await waitFor(() => {
       expect(mockRestartSession).toHaveBeenCalledWith(
@@ -171,7 +242,11 @@ describe("RestartSessionModal", () => {
         model: "sonnet",
         permissionMode: "default",
         recapMode: "side-session",
-        helperSideModel: "haiku",
+        providers: {
+          claude: {
+            helperSideModel: "haiku",
+          },
+        },
       },
     };
 
@@ -202,7 +277,9 @@ describe("RestartSessionModal", () => {
         .getAllByRole("button", { name: /Haiku/ })
         .some((button) => button.className.includes("active")),
     ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "sessionRestartStart" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sessionRestartStart" }),
+    );
 
     await waitFor(() => {
       expect(mockRestartSession).toHaveBeenCalledWith(
@@ -232,9 +309,7 @@ describe("RestartSessionModal", () => {
         projectId="proj-1"
         sessionId="sess-1"
         provider="claude"
-        providers={[
-          providerInfo("claude", [{ id: "sonnet", name: "Sonnet" }]),
-        ]}
+        providers={[providerInfo("claude", [{ id: "sonnet", name: "Sonnet" }])]}
         currentModel="sonnet"
         mode="default"
         thinking="off"
@@ -249,7 +324,9 @@ describe("RestartSessionModal", () => {
         .getAllByRole("button", { name: /promptSuggestionModeOff/ })
         .some((button) => button.className.includes("active")),
     ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "sessionRestartStart" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sessionRestartStart" }),
+    );
 
     await waitFor(() => {
       expect(mockRestartSession).toHaveBeenCalledWith(

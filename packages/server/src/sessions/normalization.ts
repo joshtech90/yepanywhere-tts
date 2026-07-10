@@ -16,6 +16,9 @@ import type {
   OpenCodeStoredPart,
 } from "@yep-anywhere/shared";
 import {
+  CODEX_TOOL_CORRELATION_FIELD,
+  createCodexToolCorrelation,
+  getCodexResponseItemTurnId,
   getGeminiUserMessageText,
   getMessageContent,
   isConversationEntry,
@@ -31,6 +34,7 @@ import {
   isCodexBackgroundProcessOutput,
   isCodexInterruptedToolOutput,
   normalizeCodexCommandExecutionOutput,
+  normalizeCodexCustomToolInvocation,
   normalizeCodexToolInvocation,
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
@@ -290,6 +294,9 @@ function convertCodexEntries(
         observeCodexToolLifecycleMessage(msg, openToolUses);
       }
     } else if (entry.type === "event_msg") {
+      if (entry.payload.type === "patch_apply_end") {
+        attachCodexCodeModePatchResult(entry.payload, toolCallContexts);
+      }
       const duplicateContextCompacted = isDuplicateCodexContextCompactedEvent(
         entry,
         compactedTimestampMs,
@@ -349,6 +356,34 @@ function convertCodexEntries(
     messages,
   });
   return messages;
+}
+
+function attachCodexCodeModePatchResult(
+  payload: Extract<CodexEventMsgEntry["payload"], { type: "patch_apply_end" }>,
+  toolCallContexts: Map<string, CodexToolCallContext>,
+): void {
+  const candidates = [...toolCallContexts.values()].filter(
+    (context) =>
+      context.toolName === "Edit" &&
+      isRecord(context.input) &&
+      typeof context.input._rawPatch === "string" &&
+      context.patchApplyResult === undefined,
+  );
+  if (candidates.length !== 1) return;
+
+  const context = candidates[0];
+  if (!context || !isRecord(context.input)) return;
+  context.patchApplyResult = {
+    success: payload.success,
+    ...(payload.stdout ? { stdout: payload.stdout } : {}),
+    ...(payload.stderr ? { stderr: payload.stderr } : {}),
+  };
+  if (payload.changes) {
+    context.input.changes = Object.entries(payload.changes).map(
+      ([path, change]) =>
+        isRecord(change) ? { path, ...change } : { path, change },
+    );
+  }
 }
 
 function isCodexToolLifecycleBoundary(entry: CodexSessionEntry): boolean {
@@ -526,12 +561,12 @@ function hasCodexResponseItemUserMessages(
   );
 }
 
-// Derive the durable message uuid for a Codex response item. Tool calls and
-// their outputs key on the globally-unique call_id (call -> call_id, result ->
-// `${call_id}-result`) so the durable backfill row shares a uuid with the live
-// stream and dedups by id. Messages and reasoning have no live-matching id, so
-// they keep the positional uuid and rely on the approx-dedup backstop. See
-// topics/stream-durable-id-dedup.md (Codex).
+// Derive the durable message uuid for a Codex response item. Calls and outputs
+// key on the globally-unique call_id. Native live tool items share that id;
+// nested code-mode commandExecution items do not, so their scoped client
+// reconciliation adopts this durable identity. Messages and reasoning retain
+// positional uuids and rely on the approximate backstop. See
+// topics/stream-durable-id-dedup.md.
 function codexDurableResponseItemUuid(
   payload: CodexResponseItemEntry["payload"],
   positionalUuid: string,
@@ -637,7 +672,17 @@ function convertCodexResponseItem(
         toolCallContexts.delete(customCallId);
         closedToolResultIds.add(customCallId);
       }
-      return message;
+      const turnId = getCodexResponseItemTurnId(payload);
+      return turnId
+        ? {
+            ...message,
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "custom_tool_call",
+              turnId,
+              customCallId,
+            ),
+          }
+        : message;
     }
 
     case "web_search_call":
@@ -664,9 +709,17 @@ function isCodexStartupInstructionMessage(
     )
     .join("");
 
+  return isCodexStartupInstructionText(text);
+}
+
+const CODEX_STARTUP_INSTRUCTIONS_RE =
+  /^(?:<recommended_plugins>[\s\S]*?<\/recommended_plugins>\s*)?# AGENTS\.md instructions for /u;
+
+export function isCodexStartupInstructionText(text: string): boolean {
+  const trimmed = text.trimStart();
   return (
-    text.startsWith("# AGENTS.md instructions for ") &&
-    text.includes("<INSTRUCTIONS>")
+    CODEX_STARTUP_INSTRUCTIONS_RE.test(trimmed) &&
+    trimmed.includes("<INSTRUCTIONS>")
   );
 }
 
@@ -837,6 +890,9 @@ function convertCodexFunctionCallPayload(
       id: payload.call_id,
       name: normalizedInvocation.toolName,
       input: normalizedInvocation.input,
+      ...(normalizedInvocation.displayActions
+        ? { _displayActions: normalizedInvocation.displayActions }
+        : {}),
     },
   ];
 
@@ -870,15 +926,15 @@ function convertCodexCustomToolCallPayload(
 ): CodexToolUseConversion {
   const callId = payload.call_id ?? payload.id ?? `${uuid}-custom-tool`;
   const rawToolName = payload.name ?? "custom_tool_call";
-  const canonicalToolName = canonicalizeCodexToolName(rawToolName);
   const rawInput =
     payload.input !== undefined
       ? payload.input
       : parseCodexToolArguments(payload.arguments);
-  const normalizedInvocation = normalizeCodexToolInvocation(
-    canonicalToolName,
+  const normalizedInvocation = normalizeCodexCustomToolInvocation(
+    rawToolName,
     rawInput,
   );
+  const turnId = getCodexResponseItemTurnId(payload);
 
   const content: ContentBlock[] = [
     {
@@ -886,6 +942,9 @@ function convertCodexCustomToolCallPayload(
       id: callId,
       name: normalizedInvocation.toolName,
       input: normalizedInvocation.input,
+      ...(normalizedInvocation.displayActions
+        ? { _displayActions: normalizedInvocation.displayActions }
+        : {}),
     },
   ];
 
@@ -897,6 +956,15 @@ function convertCodexCustomToolCallPayload(
       content,
     },
     codexToolName: rawToolName,
+    ...(turnId
+      ? {
+          [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+            "custom_tool_call",
+            turnId,
+            callId,
+          ),
+        }
+      : {}),
     timestamp,
   };
 

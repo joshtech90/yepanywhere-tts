@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { concatUserMessages } from "../src/sdk/messageQueue.js";
+import { MessageQueue, concatUserMessages } from "../src/sdk/messageQueue.js";
 import type { UserMessage } from "../src/sdk/types.js";
 
 const msg = (text: string, tempId?: string): UserMessage => ({
@@ -18,7 +18,9 @@ describe("concatUserMessages", () => {
     expect(combined.tempIds).toEqual(["temp-1", "temp-2", "temp-3"]);
     // first.tempId is still the single-id field for backward compatibility.
     expect(combined.tempId).toBe("temp-1");
-    expect(combined.text).toBe("first\n\n--------\n\nsecond\n\n--------\n\nthird");
+    expect(combined.text).toBe(
+      "first\n\n--------\n\nsecond\n\n--------\n\nthird",
+    );
   });
 
   it("omits tempIds entirely when no chunk carried one", () => {
@@ -43,5 +45,23 @@ describe("concatUserMessages", () => {
     ]);
 
     expect(combined.priority).toBe("now");
+  });
+});
+
+describe("MessageQueue", () => {
+  it("removes queued messages by temp id before they are yielded", () => {
+    const queue = new MessageQueue();
+    queue.push(msg("first", "temp-1"));
+    queue.push({ ...msg("bundled", "temp-bundle-head"), tempIds: ["temp-2"] });
+    queue.push(msg("third", "temp-3"));
+
+    expect(
+      queue.removeByTempId("temp-2").map((message) => message.text),
+    ).toEqual(["bundled"]);
+    expect(queue.depth).toBe(2);
+    expect(queue.drain().map((message) => message.tempId)).toEqual([
+      "temp-1",
+      "temp-3",
+    ]);
   });
 });

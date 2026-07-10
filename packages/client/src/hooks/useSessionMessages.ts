@@ -1,46 +1,79 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { type PaginationInfo, api } from "../api/client";
 import {
-  getMessageTimestampMs,
-  hasEquivalentJsonlMessage,
-  reconcileLinearMessages,
-} from "../lib/linearMessageDedup";
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { PaginationInfo } from "../api/client";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { getMessageId } from "../lib/mergeMessages";
+import type { SessionDetailRevealSnapshotResult } from "../lib/sessionDetail/revealSnapshot";
 import {
-  findMessageIndexById,
-  getMessageId,
-  mergeJSONLMessages,
-  mergeStreamMessage,
-} from "../lib/mergeMessages";
+  buildReturnedToolUseToAgent,
+  canRevealReturnedSessionDetail,
+  createStoreBackedSessionDetailSelector,
+  getReturnedAgentContent,
+  getReturnedSessionMessages,
+} from "../lib/sessionDetail/returnedDetail";
+import type {
+  SessionLoadProgress,
+  SessionLoadProgressStage,
+} from "../lib/sessionDetail/loadProgress";
+import {
+  createSessionDetailCoordinator,
+  type SessionDetailCoordinator,
+  type SessionDetailLoadCompleteResult,
+  type SessionDetailRevealSnapshotInput,
+} from "../lib/sessionDetail/sessionDetailCoordinator";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
-import { getProvider } from "../providers/registry";
+import {
+  getSessionScrollBehaviorMode,
+  getSessionTranscriptCacheEnabled,
+  recordLastSessionTranscriptBytes,
+} from "./useSessionPerformanceSettings";
 import { getStreamingEnabled } from "./useStreamingEnabled";
-import type { Message, SessionMetadata, SessionStatus } from "../types";
-
-/** Content from a subagent (Task tool) */
-export interface AgentContent {
-  messages: Message[];
-  status: "pending" | "running" | "completed" | "failed";
-  /** Real-time context usage from message_start events */
-  contextUsage?: {
-    inputTokens: number;
-    percentage: number;
-  };
-}
-
-/** Map of agentId → agent content */
-export type AgentContentMap = Record<string, AgentContent>;
+import { shouldRetainSessionScrollMemory } from "../lib/sessionScrollBehavior";
+import type { Message, SessionMetadata } from "../types";
+import {
+  isSessionDetailShadowDiagnosticsEnabled,
+  reportSessionDetailStoreDivergence,
+  type SessionDetailRuntimeStateInput,
+} from "../lib/sessionDetail/shadowDiagnostics";
+import {
+  selectSessionDetailLastMessageId,
+  selectSessionDetailRuntimeSnapshot,
+  selectSessionDetailSession,
+} from "../lib/sessionDetail/selectors";
+import {
+  clearDefaultSessionDetailMemoryCache,
+  type SessionDetailEntryKeyInput,
+} from "../lib/sessionDetail/sessionDetailStore";
+import type { GetSessionResult } from "../lib/sourceRuntime";
+import type {
+  AgentContent,
+  AgentContentMap,
+  AgentContextUsage,
+  SessionDetailAction,
+} from "../lib/sessionDetail/types";
+import type {
+  SessionRouteScrollSnapshot,
+  SessionRouteSnapshot,
+} from "../lib/sessionRouteSnapshots";
 
 /** Result from initial session load */
-export interface SessionLoadResult {
-  session: SessionMetadata;
-  status: SessionStatus;
-  pendingInputRequest?: unknown;
-  slashCommands?: Array<{
-    name: string;
-    description: string;
-    argumentHint?: string;
-  }> | null;
-}
+export type SessionLoadResult = SessionDetailLoadCompleteResult;
+export type { AgentContent, AgentContentMap } from "../lib/sessionDetail/types";
+
+const DEFAULT_INITIAL_TAIL_TURNS = 20;
+
+export type SessionMetadataUpdate =
+  | SessionMetadata
+  | null
+  | ((previous: SessionMetadata | null) => SessionMetadata | null);
+
+export type { SessionLoadProgress, SessionLoadProgressStage };
 
 /** Options for useSessionMessages */
 export interface UseSessionMessagesOptions {
@@ -48,6 +81,8 @@ export interface UseSessionMessagesOptions {
   sessionId: string;
   tailTurns?: number;
   tailFrom?: string;
+  /** Enable opt-in progress paint yields for large initial transcript loads */
+  detailedLoadingProgress?: boolean;
   /** Called when initial load completes with session data */
   onLoadComplete?: (result: SessionLoadResult) => void;
   /** Called on load error */
@@ -64,10 +99,12 @@ export interface UseSessionMessagesResult {
   toolUseToAgent: Map<string, string>;
   /** Whether initial load is in progress */
   loading: boolean;
+  /** Fine-grained initial load progress for opt-in display */
+  sessionLoadProgress: SessionLoadProgress;
   /** Session data from initial load */
   session: SessionMetadata | null;
-  /** Set session data (for stream connected event) */
-  setSession: React.Dispatch<React.SetStateAction<SessionMetadata | null>>;
+  /** Apply session metadata updates through the session detail action layer */
+  updateSession: (update: SessionMetadataUpdate) => void;
   /** Handle streaming content updates (for useStreamingContent) */
   handleStreamingUpdate: (message: Message, agentId?: string) => void;
   /** Handle stream message event (buffered until initial load completes) */
@@ -76,12 +113,19 @@ export interface UseSessionMessagesResult {
   handleStreamSubagentMessage: (incoming: Message, agentId: string) => void;
   /** Register toolUse → agent mapping */
   registerToolUseAgent: (toolUseId: string, agentId: string) => void;
-  /** Update agent content (for lazy loading) */
-  setAgentContent: React.Dispatch<React.SetStateAction<AgentContentMap>>;
-  /** Update toolUseToAgent mapping */
-  setToolUseToAgent: React.Dispatch<React.SetStateAction<Map<string, string>>>;
-  /** Direct messages setter (for clearing streaming placeholders) */
-  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  /** Merge loaded subagent content with any live content already seen */
+  mergeLoadedAgentContent: (agentId: string, content: AgentContent) => void;
+  /** Update agent context usage metadata */
+  updateAgentContextUsage: (
+    agentId: string,
+    contextUsage: AgentContextUsage,
+  ) => void;
+  /** Remove transient streaming placeholder rows from a subagent */
+  clearAgentStreamingPlaceholders: (agentId: string) => void;
+  /** Remove transient streaming placeholder rows from the main transcript */
+  clearStreamingPlaceholders: () => void;
+  /** Remove a local optimistic self-send that the server accepted cancelling */
+  removeUnconfirmedSelfSend: (tempId: string) => void;
   /** Fetch new messages incrementally (for file change events) */
   fetchNewMessages: () => Promise<void>;
   /** Fetch session metadata only */
@@ -92,173 +136,38 @@ export interface UseSessionMessagesResult {
   loadingOlder: boolean;
   /** Load the next chunk of older messages */
   loadOlderMessages: () => Promise<void>;
-}
-
-interface SessionLoadCacheEntry {
-  messages: Message[];
-  session: SessionMetadata;
-  pagination?: PaginationInfo;
-  agentContent: AgentContentMap;
-  toolUseToAgentEntries: Array<[string, string]>;
-  lastMessageId?: string;
-  maxPersistedTimestampMs: number;
-}
-
-interface SessionLoadCacheGlobal {
-  __YA_SESSION_LOAD_CACHE__?: Map<string, SessionLoadCacheEntry>;
-}
-
-type SessionLoadCacheEnv = Pick<
-  ImportMetaEnv,
-  "DEV" | "VITE_SESSION_LOAD_CACHE"
->;
-
-export function isSessionLoadCacheEnabled(
-  env: SessionLoadCacheEnv = import.meta.env,
-): boolean {
-  return env.DEV === true && env.VITE_SESSION_LOAD_CACHE === "true";
-}
-
-function cloneForCache<T>(value: T): T {
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function getSessionLoadCache(): Map<string, SessionLoadCacheEntry> {
-  const globalCache = globalThis as typeof globalThis & SessionLoadCacheGlobal;
-  if (!globalCache.__YA_SESSION_LOAD_CACHE__) {
-    globalCache.__YA_SESSION_LOAD_CACHE__ = new Map();
-  }
-  return globalCache.__YA_SESSION_LOAD_CACHE__;
-}
-
-function getSessionLoadCacheKey(projectId: string, sessionId: string): string {
-  return `${projectId}:${sessionId}`;
-}
-
-function getSessionLoadVariantKey(options: {
-  projectId: string;
-  sessionId: string;
-  tailTurns?: number;
-  tailFrom?: string;
-}): string {
-  const variant = [
-    options.tailTurns !== undefined ? `tailTurns=${options.tailTurns}` : "",
-    options.tailFrom ? `tailFrom=${options.tailFrom}` : "",
-  ]
-    .filter(Boolean)
-    .join("&");
-  return variant
-    ? `${options.projectId}:${options.sessionId}?${variant}`
-    : getSessionLoadCacheKey(options.projectId, options.sessionId);
+  /** Retained scroll anchor from the last same-tab route visit */
+  initialScrollSnapshot: SessionRouteScrollSnapshot | null;
+  /** Update the retained scroll anchor without re-rendering this hook */
+  updateRouteScrollSnapshot: (snapshot: SessionRouteScrollSnapshot) => void;
+  /** True when the initial render was hydrated from a retained route snapshot */
+  restoredFromSnapshot: boolean;
 }
 
 function readSessionLoadCache(
-  projectId: string,
-  sessionId: string,
-  tailTurns?: number,
-  tailFrom?: string,
-): SessionLoadCacheEntry | undefined {
-  if (!isSessionLoadCacheEnabled()) return undefined;
-  if (typeof window === "undefined") return undefined;
-  return getSessionLoadCache().get(
-    getSessionLoadVariantKey({ projectId, sessionId, tailTurns, tailFrom }),
-  );
-}
-
-function writeSessionLoadCache(
-  projectId: string,
-  sessionId: string,
-  entry: SessionLoadCacheEntry,
-  tailTurns?: number,
-  tailFrom?: string,
-): void {
-  if (!isSessionLoadCacheEnabled()) return;
-  if (typeof window === "undefined") return;
-  getSessionLoadCache().set(
-    getSessionLoadVariantKey({ projectId, sessionId, tailTurns, tailFrom }),
-    cloneForCache(entry),
-  );
-}
-
-function usesApproxMessageDedup(provider?: string): boolean {
-  return getProvider(provider).capabilities.needsApproxMessageDedup;
-}
-
-// Options for the approx-dedup backstop. Codex tool messages dedup by call_id,
-// so they are excluded here; the backstop keeps covering non-tool messages.
-function approxDedupOptions(provider?: string): { excludeTools: boolean } {
-  return {
-    excludeTools:
-      getProvider(provider).capabilities.approxDedupExcludesTools === true,
-  };
-}
-
-/**
- * Find the id of the newest JSONL-sourced message.
- *
- * The incremental-fetch cursor (afterMessageId) must only advance over
- * rows actually delivered from JSONL. Live stream rows also land in the
- * array (and get persisted to the file), so cursoring on the array tail
- * lets streaming advance the cursor past JSONL rows that were never
- * fetched — permanently skipping them, including chain connector rows
- * (attachment, system/api_error) that only exist in JSONL. Over-fetching
- * is safe (merge dedupes by uuid); gaps are not.
- */
-function findLastJsonlMessageId(messages: Message[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message && (message._source ?? "sdk") === "jsonl") {
-      return getMessageId(message);
-    }
-  }
-  return undefined;
-}
-
-function shouldSuppressLiveStreamingMessage(message: Message): boolean {
-  return message._isStreaming === true && !getStreamingEnabled();
-}
-
-function clearStreamingMessages(messages: Message[]): Message[] {
-  const filtered = messages.filter((message) => !message._isStreaming);
-  return filtered.length === messages.length ? messages : filtered;
-}
-
-function isEmptyAssistantContent(message: Message): boolean {
-  if (message.type !== "assistant") {
-    return false;
-  }
-
-  const content = message.message?.content;
-  if (typeof content === "string") {
-    return content.trim().length === 0;
-  }
-
-  if (!Array.isArray(content)) {
-    return false;
-  }
-
-  return content.every((block) => {
-    if (!block || typeof block !== "object") {
-      return true;
-    }
-
-    const typedBlock = block as Record<string, unknown>;
-    if (typedBlock.type === "text") {
-      return (
-        typeof typedBlock.text !== "string" || typedBlock.text.trim() === ""
-      );
-    }
-    if (typedBlock.type === "thinking") {
-      return (
-        typeof typedBlock.thinking !== "string" ||
-        typedBlock.thinking.trim() === ""
-      );
-    }
-    return false;
+  coordinator: SessionDetailCoordinator,
+): SessionRouteSnapshot | undefined {
+  return coordinator.readInitialRouteSnapshot({
+    enabled: getSessionTranscriptCacheEnabled() && typeof window !== "undefined",
   });
+}
+
+export function __resetSessionLoadCacheForTest(): void {
+  clearDefaultSessionDetailMemoryCache();
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+function yieldForSessionLoadingProgressPaint(
+  enabled: boolean | undefined,
+): Promise<void> {
+  if (!enabled) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /**
@@ -278,337 +187,590 @@ export function useSessionMessages(
     sessionId,
     tailTurns,
     tailFrom,
+    detailedLoadingProgress,
     onLoadComplete,
     onLoadError,
   } = options;
-  const cachedLoad = readSessionLoadCache(
-    projectId,
-    sessionId,
-    tailTurns,
-    tailFrom,
+  const effectiveTailTurns =
+    tailTurns ?? (tailFrom ? undefined : DEFAULT_INITIAL_TAIL_TURNS);
+  const runtime = useCurrentSourceRuntime();
+  const sourceKey = runtime.sourceKey;
+  const sourceSummary = runtime.summary;
+  const snapshotKey: SessionDetailEntryKeyInput = useMemo(
+    () => ({
+      sourceKey,
+      projectId,
+      sessionId,
+      tailTurns: effectiveTailTurns,
+      tailFrom,
+    }),
+    [effectiveTailTurns, projectId, sessionId, sourceKey, tailFrom],
   );
+  const coordinator = useMemo(
+    () => createSessionDetailCoordinator({ entryKey: snapshotKey, runtime }),
+    [runtime, snapshotKey],
+  );
+  const sourceApi = coordinator.api;
+  const snapshotKeyString = coordinator.entryKeyString;
+  const cachedLoadRef = useRef<{
+    key: string;
+    coordinator: SessionDetailCoordinator;
+    load: SessionRouteSnapshot | undefined;
+  } | null>(null);
+  if (
+    cachedLoadRef.current?.key !== snapshotKeyString ||
+    cachedLoadRef.current.coordinator !== coordinator
+  ) {
+    cachedLoadRef.current = {
+      key: snapshotKeyString,
+      coordinator,
+      load: readSessionLoadCache(coordinator),
+    };
+  }
+  const cachedLoad = cachedLoadRef.current.load;
 
   // Core state
-  const [messages, setMessages] = useState<Message[]>(
-    () => cachedLoad?.messages ?? [],
+  const [loading, setLoading] = useState(true);
+  const [revealedSnapshotKey, setRevealedSnapshotKey] = useState<string | null>(
+    null,
   );
-  const [agentContent, setAgentContent] = useState<AgentContentMap>(
-    () => cachedLoad?.agentContent ?? {},
-  );
-  const [toolUseToAgent, setToolUseToAgent] = useState<Map<string, string>>(
-    () => new Map(cachedLoad?.toolUseToAgentEntries ?? []),
-  );
-  const [loading, setLoading] = useState(!cachedLoad);
-  const [session, setSession] = useState<SessionMetadata | null>(
-    () => cachedLoad?.session ?? null,
-  );
-  const [pagination, setPagination] = useState<PaginationInfo | undefined>(
-    () => cachedLoad?.pagination,
-  );
+  const [sessionLoadProgress, setSessionLoadProgress] =
+    useState<SessionLoadProgress>(() => coordinator.buildLoadProgress("idle"));
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  // Buffering: queue stream messages until initial load completes
-  const streamBufferRef = useRef<
-    Array<
-      | { type: "message"; msg: Message }
-      | { type: "subagent"; msg: Message; agentId: string }
-    >
-  >([]);
-  const initialLoadCompleteRef = useRef(false);
-
-  // Track provider for DAG ordering decisions
-  const providerRef = useRef<string | undefined>(undefined);
-
-  // Track last message ID for incremental fetching
-  const lastMessageIdRef = useRef<string | undefined>(undefined);
-  // Highest timestamp observed from persisted JSONL messages.
-  // Used to suppress startup replay events that are already on disk.
-  const maxPersistedTimestampMsRef = useRef<number>(Number.NEGATIVE_INFINITY);
-
-  const updatePersistedTimestampWatermark = useCallback(
-    (persistedMessages: Message[]) => {
-      let maxMs = maxPersistedTimestampMsRef.current;
-      for (const message of persistedMessages) {
-        const ts = getMessageTimestampMs(message);
-        if (ts !== null && ts > maxMs) {
-          maxMs = ts;
-        }
-      }
-      maxPersistedTimestampMsRef.current = maxMs;
+  // Store-authoritative fields come from reducer-owned state. The remaining ref
+  // holds hook-only scroll bookkeeping, which is intentionally not reactive.
+  const scrollSnapshotRef = useRef<SessionRouteScrollSnapshot | undefined>(
+    shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())
+      ? cachedLoad?.scrollSnapshot
+      : undefined,
+  );
+  const dispatchSessionDetailAction = useCallback(
+    (action: SessionDetailAction) => {
+      coordinator.dispatch(action);
     },
-    [],
+    [coordinator],
   );
 
-  // Update lastMessageIdRef when messages change.
-  // Cursor on the newest JSONL-sourced row, not the array tail (see
-  // findLastJsonlMessageId).
-  useEffect(() => {
-    const lastJsonlId = findLastJsonlMessageId(messages);
-    if (lastJsonlId) {
-      lastMessageIdRef.current = lastJsonlId;
+  const readStoreSession = useCallback(
+    () => coordinator.readSelected(selectSessionDetailSession) ?? null,
+    [coordinator],
+  );
+
+  const readStoreLastMessageId = useCallback(
+    () => coordinator.readSelected(selectSessionDetailLastMessageId),
+    [coordinator],
+  );
+
+  const cleanupCurrentStoreRouteSnapshot = useCallback(() => {
+    return coordinator.cleanupCurrentRouteSnapshot({
+      enabled:
+        getSessionTranscriptCacheEnabled() && typeof window !== "undefined",
+      retainScrollSnapshot: shouldRetainSessionScrollMemory(
+        getSessionScrollBehaviorMode(),
+      ),
+      scrollSnapshot: scrollSnapshotRef.current,
+    });
+  }, [coordinator]);
+  const recordCurrentEntryBytes = useCallback(() => {
+    const bytes = coordinator.getEntryApproxBytes();
+    if (bytes) {
+      recordLastSessionTranscriptBytes(bytes);
     }
-  }, [messages]);
+  }, [coordinator]);
+  const resetSessionDetailState = useCallback(
+    (snapshot?: SessionRouteSnapshot) => {
+      if (snapshot) {
+        coordinator.replaceRouteSnapshot(snapshot);
+        return;
+      }
+      coordinator.resetEntryState();
+    },
+    [coordinator],
+  );
 
-  // Process a stream message event.
-  // When replaying buffered startup events for Codex, suppress entries that are
-  // semantically identical to already-loaded JSONL messages but have different UUIDs.
-  const processStreamMessage = useCallback(
-    (incoming: Message, fromBufferedReplay = false) => {
-      const provider = providerRef.current;
-      const isReplay = incoming.isReplay === true;
-      const shouldApplyReplayDedupe =
-        (fromBufferedReplay || isReplay) && usesApproxMessageDedup(provider);
-      const incomingTimestampMs = getMessageTimestampMs(incoming);
-      const isPersistedReplay =
-        isReplay &&
-        incomingTimestampMs !== null &&
-        incomingTimestampMs <= maxPersistedTimestampMsRef.current;
-      const suppressStreaming = shouldSuppressLiveStreamingMessage(incoming);
+  // Hold the store entry for the mounted session: retention protects it from
+  // TTL/LRU eviction, so incremental dispatches always land on real state.
+  useEffect(
+    () => coordinator.retain(),
+    [coordinator],
+  );
 
-      setMessages((prev) => {
-        if (suppressStreaming) {
-          return clearStreamingMessages(prev);
-        }
-
-        // Replay history from the stream should not re-add messages that are
-        // already persisted and loaded from JSONL.
-        if (isPersistedReplay) {
-          return prev;
-        }
-
-        if (shouldApplyReplayDedupe) {
-          if (isEmptyAssistantContent(incoming)) {
-            return prev;
-          }
-          if (
-            hasEquivalentJsonlMessage(
-              prev,
-              incoming,
-              approxDedupOptions(provider),
-            )
-          ) {
-            return prev;
-          }
-        }
-
-        const result = mergeStreamMessage(prev, incoming);
-        return usesApproxMessageDedup(provider)
-          ? reconcileLinearMessages(
-              result.messages,
-              approxDedupOptions(provider),
-            )
-          : result.messages;
+  const reportStoreDivergence = useCallback(
+    (
+      boundary: string,
+      livePatch: Partial<SessionDetailRuntimeStateInput> = {},
+    ) => {
+      if (!isSessionDetailShadowDiagnosticsEnabled()) {
+        return;
+      }
+      const store = coordinator.readSelected(selectSessionDetailRuntimeSnapshot);
+      if (!store) {
+        return;
+      }
+      // Session and pagination are store-authoritative, so their live values
+      // default to the store snapshot; only explicitly patched fields can
+      // still diverge here.
+      const liveSession = livePatch.session ?? store.session;
+      const live: SessionDetailRuntimeStateInput = {
+        messages: livePatch.messages ?? store.messages,
+        session: liveSession,
+        pagination: livePatch.pagination ?? store.pagination,
+        agentContent: livePatch.agentContent ?? store.agentContent,
+        toolUseToAgentEntries:
+          livePatch.toolUseToAgentEntries ?? store.toolUseToAgentEntries,
+      };
+      reportSessionDetailStoreDivergence({
+        boundary,
+        projectId,
+        sessionId,
+        live,
+        store,
       });
     },
-    [],
+    [coordinator, projectId, sessionId],
+  );
+
+  const updateSession = useCallback(
+    (update: SessionMetadataUpdate) => {
+      const previous = readStoreSession();
+      const next = typeof update === "function" ? update(previous) : update;
+      if (next === previous) {
+        return;
+      }
+      dispatchSessionDetailAction({ type: "setSessionMetadata", session: next });
+      reportStoreDivergence("session-metadata", {
+        session: next,
+      });
+    },
+    [dispatchSessionDetailAction, readStoreSession, reportStoreDivergence],
+  );
+
+  const warnSessionDetailStore = useCallback(
+    (payload: Record<string, unknown>) => {
+      if (!import.meta.env.DEV) {
+        return;
+      }
+      console.warn("[SessionDetailStore]", {
+        ...payload,
+        projectId,
+        sessionId,
+      });
+    },
+    [projectId, sessionId],
+  );
+
+  const warnMissingStoreBackedDetailAfterReveal = useCallback(() => {
+    warnSessionDetailStore({
+      event: "session-detail-store-missing-after-reveal",
+    });
+  }, [warnSessionDetailStore]);
+
+  const canRevealReturnedDetail = canRevealReturnedSessionDetail({
+    revealedSnapshotKey,
+    snapshotKeyString,
+    loading,
+  });
+  const selectStoreBackedDetail = useMemo(() => {
+    return createStoreBackedSessionDetailSelector(canRevealReturnedDetail);
+  }, [canRevealReturnedDetail]);
+  const storeBackedDetail = useSyncExternalStore(
+    useCallback(
+      (listener) => {
+        return coordinator.subscribe(selectStoreBackedDetail, listener);
+      },
+      [coordinator, selectStoreBackedDetail],
+    ),
+    useCallback(
+      () => coordinator.readSelected(selectStoreBackedDetail),
+      [coordinator, selectStoreBackedDetail],
+    ),
+    () => undefined,
+  );
+  const returnedMessages = getReturnedSessionMessages(storeBackedDetail);
+  const returnedAgentContent = getReturnedAgentContent(storeBackedDetail);
+  const returnedToolUseToAgentEntries =
+    storeBackedDetail?.revealed?.toolUseToAgentEntries;
+  const returnedToolUseToAgent = useMemo(
+    () => buildReturnedToolUseToAgent(returnedToolUseToAgentEntries),
+    [returnedToolUseToAgentEntries],
+  );
+  useEffect(() => {
+    if (!canRevealReturnedDetail || storeBackedDetail?.revealed) {
+      return;
+    }
+    warnMissingStoreBackedDetailAfterReveal();
+  }, [
+    canRevealReturnedDetail,
+    storeBackedDetail,
+    warnMissingStoreBackedDetailAfterReveal,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      recordCurrentEntryBytes();
+      cleanupCurrentStoreRouteSnapshot();
+    };
+  }, [
+    cleanupCurrentStoreRouteSnapshot,
+    recordCurrentEntryBytes,
+  ]);
+
+  // Process a stream message event.
+  const processStreamMessage = useCallback(
+    (incoming: Message, fromBufferedReplay = false) => {
+      const streamingEnabled = getStreamingEnabled();
+
+      dispatchSessionDetailAction({
+        type: "applyStreamMessage",
+        message: incoming,
+        fromBufferedReplay,
+        streamingEnabled,
+      });
+    },
+    [dispatchSessionDetailAction],
   );
 
   // Process a buffered stream subagent message
   const processStreamSubagentMessage = useCallback(
     (incoming: Message, agentId: string) => {
-      setAgentContent((prev) => {
-        const existing = prev[agentId] ?? {
-          messages: [],
-          status: "running" as const,
-        };
-        if (shouldSuppressLiveStreamingMessage(incoming)) {
-          const messages = clearStreamingMessages(existing.messages);
-          if (messages === existing.messages) {
-            return prev;
-          }
-          if (messages.length === 0 && existing.contextUsage === undefined) {
-            const next = { ...prev };
-            delete next[agentId];
-            return next;
-          }
-          return {
-            ...prev,
-            [agentId]: {
-              ...existing,
-              messages,
-            },
-          };
-        }
-        const incomingId = getMessageId(incoming);
-        if (findMessageIndexById(existing.messages, incomingId) !== -1) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [agentId]: {
-            ...existing,
-            messages: [...existing.messages, incoming],
-            status: "running",
-          },
-        };
+      const streamingEnabled = getStreamingEnabled();
+      dispatchSessionDetailAction({
+        type: "applyStreamSubagentMessage",
+        agentId,
+        message: incoming,
+        streamingEnabled,
       });
     },
-    [],
+    [dispatchSessionDetailAction],
   );
-
-  // Flush buffered stream messages after initial load
-  const flushBuffer = useCallback(() => {
-    const buffer = streamBufferRef.current;
-    streamBufferRef.current = [];
-    for (const item of buffer) {
-      if (item.type === "message") {
-        processStreamMessage(item.msg, true);
-      } else {
-        processStreamSubagentMessage(item.msg, item.agentId);
-      }
-    }
-  }, [processStreamMessage, processStreamSubagentMessage]);
 
   // Initial load. When a warm in-tab cache exists, the REST request is an
   // incremental refresh after the cached tail; merge that delta instead of
   // replacing the cached transcript.
   useEffect(() => {
-    const warmLoad = readSessionLoadCache(
-      projectId,
-      sessionId,
-      tailTurns,
-      tailFrom,
-    );
-    markReloadPerfPhase("session_initial_load_start", {
-      projectId,
-      sessionId,
-      tailCompactions: 2,
-      tailTurns,
-      tailFrom,
+    let cancelled = false;
+    let warmHydrated = false;
+    let pendingWarmData: GetSessionResult | null = null;
+    let pendingWarmError: Error | null = null;
+    let initialAfterMessageId: string | undefined;
+    const warmLoad = readSessionLoadCache(coordinator);
+    const initialLoad = coordinator.beginInitialLoad({
+      warmSnapshot: warmLoad,
     });
-    initialLoadCompleteRef.current = false;
-    streamBufferRef.current = [];
-    if (warmLoad) {
-      maxPersistedTimestampMsRef.current = warmLoad.maxPersistedTimestampMs;
-      providerRef.current = warmLoad.session.provider;
-      lastMessageIdRef.current = warmLoad.lastMessageId;
-      setMessages(warmLoad.messages);
-      setAgentContent(warmLoad.agentContent);
-      setToolUseToAgent(new Map(warmLoad.toolUseToAgentEntries));
-      setSession(warmLoad.session);
-      setPagination(warmLoad.pagination);
+
+    const notifyLoadComplete = (
+      data: GetSessionResult,
+    ) => {
+      sourceSummary.reportProviderRuntimeStatusSnapshot(
+        coordinator.buildProviderRuntimeStatusSnapshot(data),
+      );
+      onLoadComplete?.(coordinator.buildLoadCompleteResult(data));
+    };
+
+    const readRevealSnapshotAfterStoreUpdate = (
+      boundary: string,
+      fallback: SessionDetailRevealSnapshotInput,
+    ): SessionDetailRevealSnapshotResult => {
+      const reveal = coordinator.buildRevealSnapshot({
+        ...fallback,
+        scrollSnapshot: fallback.scrollSnapshot ?? scrollSnapshotRef.current,
+      });
+      if (!reveal.storeBacked) {
+        warnSessionDetailStore({
+          event: "session-detail-selector-missing-after-dispatch",
+          boundary,
+          selector: "runtimeSnapshot",
+        });
+      }
+      return reveal;
+    };
+
+    const applyRevealSnapshot = (snapshot: SessionRouteSnapshot) => {
+      scrollSnapshotRef.current = shouldRetainSessionScrollMemory(
+        getSessionScrollBehaviorMode(),
+      )
+        ? snapshot.scrollSnapshot
+        : undefined;
+      setRevealedSnapshotKey(snapshotKeyString);
+    };
+
+    const writeRevealSnapshotToLoadCache = (
+      reveal: SessionDetailRevealSnapshotResult,
+    ) => {
+      return coordinator.writeCacheableRevealSnapshot(reveal, {
+        enabled:
+          getSessionTranscriptCacheEnabled() && typeof window !== "undefined",
+        retainScrollSnapshot: shouldRetainSessionScrollMemory(
+          getSessionScrollBehaviorMode(),
+        ),
+      });
+    };
+
+    const completeInitialReveal = (options: {
+      snapshot: SessionRouteSnapshot;
+      sourceMessageCount: number;
+      provider?: string;
+      restoredFromSnapshot?: boolean;
+    }) => {
+      const completion = coordinator.buildInitialRevealCompletion(options);
+      const { snapshot } = completion;
+      applyRevealSnapshot(snapshot);
+      markReloadPerfPhase(
+        "session_initial_messages_state_queued",
+        completion.messagesQueuedPerfDetail,
+      );
+
+      // Mark ready and flush buffered stream events after the reveal snapshot
+      // has been queued so buffered events merge on top of loaded transcript.
+      initialLoad.completeReveal({
+        processMessage: processStreamMessage,
+        processSubagentMessage: processStreamSubagentMessage,
+      });
+
       setLoading(false);
-    } else {
-      maxPersistedTimestampMsRef.current = Number.NEGATIVE_INFINITY;
-      providerRef.current = undefined;
-      lastMessageIdRef.current = undefined;
+      setSessionLoadProgress(completion.loadCompleteProgress);
+      markReloadPerfPhase(
+        "session_initial_load_complete",
+        completion.loadCompletePerfDetail,
+      );
+    };
+
+    const finishWarmHydration = (options: {
+      loadedSession: SessionMetadata;
+      loadedPagination?: PaginationInfo;
+      sourceMessageCount: number;
+      provider?: string;
+      diagnosticBoundary: string;
+    }): SessionDetailRevealSnapshotResult => {
+      const reveal = readRevealSnapshotAfterStoreUpdate(
+        options.diagnosticBoundary,
+        {
+          session: options.loadedSession,
+          pagination: options.loadedPagination,
+          lastMessageId: readStoreLastMessageId(),
+          scrollSnapshot: scrollSnapshotRef.current,
+        },
+      );
+      const { snapshot } = reveal;
+      completeInitialReveal({
+        snapshot,
+        sourceMessageCount: options.sourceMessageCount,
+        provider: options.provider,
+        restoredFromSnapshot: true,
+      });
+      return reveal;
+    };
+
+    const applyWarmDataBeforeHydration = (
+      data: GetSessionResult,
+    ) => {
+      if (!warmLoad) return;
+      markReloadPerfPhase(
+        "session_initial_load_data_ready",
+        coordinator.buildInitialLoadDataReadyPerfDetail(data, {
+          restoredFromSnapshot: true,
+        }),
+      );
+      const applied = coordinator.applyWarmRefresh(data, {
+        warmSnapshot: warmLoad,
+        initialAfterMessageId,
+      });
+      setSessionLoadProgress(
+        coordinator.buildAppliedLoadProgress("rendering", applied),
+      );
+      const reveal = finishWarmHydration({
+        loadedSession: data.session,
+        loadedPagination: applied.pagination,
+        sourceMessageCount: applied.sourceMessageCount,
+        provider: data.session.provider,
+        diagnosticBoundary: "warm-catchup-before-hydration",
+      });
+      writeRevealSnapshotToLoadCache(reveal);
+      notifyLoadComplete(data);
+    };
+
+    const applyWarmDeltaAfterHydration = (
+      data: GetSessionResult,
+    ) => {
+      if (!warmLoad) return;
+      markReloadPerfPhase(
+        "session_initial_load_data_ready",
+        coordinator.buildInitialLoadDataReadyPerfDetail(data, {
+          restoredFromSnapshot: true,
+          appliedAfterSnapshotHydration: true,
+        }),
+      );
+      const applied = coordinator.applyWarmRefresh(data, {
+        warmSnapshot: warmLoad,
+        initialAfterMessageId,
+      });
+      const reveal = readRevealSnapshotAfterStoreUpdate(
+        "warm-catchup-after-hydration",
+        {
+          session: data.session,
+          pagination: applied.pagination,
+          lastMessageId: readStoreLastMessageId(),
+          scrollSnapshot: scrollSnapshotRef.current,
+        },
+      );
+      const { snapshot } = reveal;
+      applyRevealSnapshot(snapshot);
+      setSessionLoadProgress(
+        coordinator.buildRouteSnapshotLoadProgress("complete", snapshot, {
+          messageCount: snapshot.pagination?.returnedMessageCount,
+        }),
+      );
+      notifyLoadComplete(data);
+    };
+
+    markReloadPerfPhase(
+      "session_initial_load_start",
+      {
+        projectId,
+        sessionId,
+        tailCompactions: 2,
+        tailTurns: effectiveTailTurns,
+        tailFrom,
+        restoredFromSnapshot: initialLoad.restoredFromSnapshot,
+      },
+    );
+    scrollSnapshotRef.current = shouldRetainSessionScrollMemory(
+      getSessionScrollBehaviorMode(),
+    )
+      ? warmLoad?.scrollSnapshot
+      : undefined;
+    setRevealedSnapshotKey(null);
+    if (warmLoad) {
+      resetSessionDetailState(warmLoad);
+      setSessionLoadProgress(
+        coordinator.buildRouteSnapshotLoadProgress("fetching", warmLoad),
+      );
       setLoading(true);
-      setAgentContent({});
-      setToolUseToAgent(new Map());
-      setSession(null);
-      setPagination(undefined);
+      void (async () => {
+        setSessionLoadProgress(
+          coordinator.buildRouteSnapshotLoadProgress("rendering", warmLoad),
+        );
+        await yieldForSessionLoadingProgressPaint(true);
+        if (cancelled) return;
+        warmHydrated = true;
+        if (pendingWarmData) {
+          applyWarmDataBeforeHydration(pendingWarmData);
+          return;
+        }
+        finishWarmHydration({
+          loadedSession: warmLoad.session,
+          loadedPagination: warmLoad.pagination,
+          sourceMessageCount: warmLoad.messages.length,
+          provider: warmLoad.session.provider,
+          diagnosticBoundary: "warm-route-snapshot",
+        });
+        if (pendingWarmError) {
+          onLoadError?.(pendingWarmError);
+        }
+      })();
+    } else {
+      setSessionLoadProgress(coordinator.buildLoadProgress("fetching"));
+      resetSessionDetailState();
+      setLoading(true);
     }
 
-    api
-      .getSession(projectId, sessionId, lastMessageIdRef.current, {
+    initialAfterMessageId = readStoreLastMessageId();
+    sourceApi
+      .getSession({
+        projectId,
+        sessionId,
+        afterMessageId: initialAfterMessageId,
         tailCompactions: 2,
-        tailTurns,
+        tailTurns: effectiveTailTurns,
         tailFrom,
       })
-      .then((data) => {
-        markReloadPerfPhase("session_initial_load_data_ready", {
-          messages: data.messages.length,
-          provider: data.session.provider,
-          totalMessages: data.pagination?.totalMessageCount,
-          hasOlderMessages: data.pagination?.hasOlderMessages,
-        });
-        setSession(data.session);
-        providerRef.current = data.session.provider;
-
-        // Tag messages from JSONL as authoritative
-        const taggedMessages = data.messages.map((m) => ({
-          ...m,
-          _source: "jsonl" as const,
-        }));
-        updatePersistedTimestampWatermark(taggedMessages);
-        const warmMessages = warmLoad?.messages;
-        const shouldMergeWarmDelta =
-          warmMessages !== undefined && Boolean(lastMessageIdRef.current);
-        const loadedMessages = shouldMergeWarmDelta
-          ? (() => {
-              const result = mergeJSONLMessages(warmMessages, taggedMessages, {
-                skipDagOrdering: !getProvider(data.session.provider)
-                  .capabilities.supportsDag,
-              });
-              return usesApproxMessageDedup(data.session.provider)
-                ? reconcileLinearMessages(
-                    result.messages,
-                    approxDedupOptions(data.session.provider),
-                  )
-                : result.messages;
-            })()
-          : usesApproxMessageDedup(data.session.provider)
-            ? reconcileLinearMessages(
-                taggedMessages,
-                approxDedupOptions(data.session.provider),
-              )
-            : taggedMessages;
-        setMessages(loadedMessages);
-        setPagination(data.pagination ?? warmLoad?.pagination);
-        markReloadPerfPhase("session_initial_messages_state_queued", {
-          messages: taggedMessages.length,
-          totalMessages: loadedMessages.length,
-          provider: data.session.provider,
-        });
-
-        // Update lastMessageIdRef synchronously to avoid race condition:
-        // stream "connected" event calls fetchNewMessages() immediately, but the
-        // useEffect that normally updates lastMessageIdRef runs asynchronously.
-        // Without this, fetchNewMessages() would use undefined and refetch everything.
-        const lastJsonlId = findLastJsonlMessageId(loadedMessages);
-        if (lastJsonlId) {
-          lastMessageIdRef.current = lastJsonlId;
+      .then(async (data) => {
+        if (cancelled) return;
+        if (warmLoad) {
+          if (!warmHydrated) {
+            pendingWarmData = data;
+            return;
+          }
+          applyWarmDeltaAfterHydration(data);
+          return;
         }
-
-        // Mark ready and flush buffer
-        initialLoadCompleteRef.current = true;
-        flushBuffer();
-
-        setLoading(false);
-        markReloadPerfPhase("session_initial_load_complete", {
-          messages: taggedMessages.length,
-        });
-
-        writeSessionLoadCache(
-          projectId,
-          sessionId,
-          {
-            messages: loadedMessages,
-            session: data.session,
-            pagination: data.pagination ?? warmLoad?.pagination,
-            agentContent: {},
-            toolUseToAgentEntries: [],
-            lastMessageId: lastMessageIdRef.current,
-            maxPersistedTimestampMs: maxPersistedTimestampMsRef.current,
-          },
-          tailTurns,
-          tailFrom,
+        markReloadPerfPhase(
+          "session_initial_load_data_ready",
+          coordinator.buildInitialLoadDataReadyPerfDetail(data),
         );
+        setSessionLoadProgress(
+          coordinator.buildDataLoadProgress("rendering", data),
+        );
+        await yieldForSessionLoadingProgressPaint(detailedLoadingProgress);
+        if (cancelled) return;
 
-        // Notify parent
-        onLoadComplete?.({
-          session: data.session,
-          status: data.ownership,
-          pendingInputRequest: data.pendingInputRequest,
-          slashCommands: data.slashCommands,
+        const applied = coordinator.applyInitialLoad(data);
+        const reveal = readRevealSnapshotAfterStoreUpdate(
+          "initial-load",
+          {
+            session: data.session,
+            pagination: applied.pagination,
+            lastMessageId: readStoreLastMessageId(),
+            scrollSnapshot: scrollSnapshotRef.current,
+          },
+        );
+        const { snapshot } = reveal;
+        completeInitialReveal({
+          snapshot,
+          sourceMessageCount: applied.sourceMessageCount,
+          provider: data.session.provider,
         });
+
+        writeRevealSnapshotToLoadCache(reveal);
+
+        notifyLoadComplete(data);
       })
       .catch((err) => {
-        markReloadPerfPhase("session_initial_load_error", {
-          message: err instanceof Error ? err.message : String(err),
-        });
+        if (cancelled) return;
+        if (warmLoad) {
+          const error = toError(err);
+          markReloadPerfPhase(
+            "session_initial_load_error",
+            coordinator.buildInitialLoadErrorPerfDetail(error, {
+              restoredFromSnapshot: true,
+            }),
+          );
+          if (!warmHydrated) {
+            pendingWarmError = error;
+            return;
+          }
+          onLoadError?.(error);
+          return;
+        }
+        markReloadPerfPhase(
+          "session_initial_load_error",
+          coordinator.buildInitialLoadErrorPerfDetail(err),
+        );
+        setSessionLoadProgress(coordinator.buildLoadProgress("error"));
         setLoading(false);
         onLoadError?.(err);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [
     projectId,
     sessionId,
-    tailTurns,
+    effectiveTailTurns,
     tailFrom,
+    detailedLoadingProgress,
     onLoadComplete,
     onLoadError,
-    flushBuffer,
-    updatePersistedTimestampWatermark,
+    coordinator,
+    resetSessionDetailState,
+    processStreamMessage,
+    processStreamSubagentMessage,
+    readStoreLastMessageId,
+    snapshotKeyString,
+    sourceApi,
+    warnSessionDetailStore,
+    sourceSummary,
   ]);
 
   // Handle streaming content updates (from useStreamingContent)
@@ -617,220 +779,242 @@ export function useSessionMessages(
       const messageId = getMessageId(streamingMessage);
       if (!messageId) return;
 
-      if (agentId) {
-        // Route to agentContent
-        setAgentContent((prev) => {
-          const existing = prev[agentId] ?? {
-            messages: [],
-            status: "running" as const,
-          };
-          const existingIdx = findMessageIndexById(
-            existing.messages,
-            messageId,
-          );
-
-          if (existingIdx >= 0) {
-            const updated = [...existing.messages];
-            updated[existingIdx] = streamingMessage;
-            return { ...prev, [agentId]: { ...existing, messages: updated } };
-          }
-          return {
-            ...prev,
-            [agentId]: {
-              ...existing,
-              messages: [...existing.messages, streamingMessage],
-            },
-          };
-        });
-        return;
-      }
-
-      // Route to main messages
-      setMessages((prev) => {
-        const existingIdx = findMessageIndexById(prev, messageId);
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = streamingMessage;
-          return updated;
-        }
-        return [...prev, streamingMessage];
+      dispatchSessionDetailAction({
+        type: "upsertStreamingPlaceholder",
+        message: streamingMessage,
+        agentId,
       });
     },
-    [],
+    [dispatchSessionDetailAction],
   );
 
   // Handle stream message event (with buffering)
   const handleStreamMessageEvent = useCallback(
     (incoming: Message) => {
-      if (!initialLoadCompleteRef.current) {
-        streamBufferRef.current.push({ type: "message", msg: incoming });
-        return;
-      }
-      processStreamMessage(incoming);
+      coordinator.handleStreamMessage(incoming, processStreamMessage);
     },
-    [processStreamMessage],
+    [coordinator, processStreamMessage],
   );
 
   // Handle stream subagent message event (with buffering)
   const handleStreamSubagentMessage = useCallback(
     (incoming: Message, agentId: string) => {
-      if (!initialLoadCompleteRef.current) {
-        streamBufferRef.current.push({
-          type: "subagent",
-          msg: incoming,
-          agentId,
-        });
-        return;
-      }
-      processStreamSubagentMessage(incoming, agentId);
+      coordinator.handleStreamSubagentMessage(
+        incoming,
+        agentId,
+        processStreamSubagentMessage,
+      );
     },
-    [processStreamSubagentMessage],
+    [coordinator, processStreamSubagentMessage],
   );
 
   // Register toolUse → agent mapping
   const registerToolUseAgent = useCallback(
     (toolUseId: string, agentId: string) => {
-      setToolUseToAgent((prev) => {
-        if (prev.has(toolUseId)) return prev;
-        const next = new Map(prev);
-        next.set(toolUseId, agentId);
-        return next;
+      dispatchSessionDetailAction({
+        type: "registerToolUseAgent",
+        toolUseId,
+        agentId,
       });
     },
-    [],
+    [dispatchSessionDetailAction],
   );
 
-  const fetchNewMessagesInFlightRef = useRef<Promise<void> | null>(null);
+  const mergeLoadedAgentContent = useCallback(
+    (agentId: string, content: AgentContent) => {
+      dispatchSessionDetailAction({
+        type: "mergeLoadedAgentContent",
+        agentId,
+        content,
+      });
+    },
+    [dispatchSessionDetailAction],
+  );
+
+  const updateAgentContextUsage = useCallback(
+    (agentId: string, contextUsage: AgentContextUsage) => {
+      dispatchSessionDetailAction({
+        type: "updateAgentContextUsage",
+        agentId,
+        contextUsage,
+      });
+    },
+    [dispatchSessionDetailAction],
+  );
+
+  const clearAgentStreamingPlaceholders = useCallback(
+    (agentId: string) => {
+      dispatchSessionDetailAction({
+        type: "clearAgentStreamingPlaceholders",
+        agentId,
+      });
+    },
+    [dispatchSessionDetailAction],
+  );
+
+  const clearStreamingPlaceholders = useCallback(() => {
+    dispatchSessionDetailAction({ type: "clearStreamingPlaceholders" });
+  }, [dispatchSessionDetailAction]);
+
+  const removeUnconfirmedSelfSend = useCallback(
+    (tempId: string) => {
+      dispatchSessionDetailAction({
+        type: "removeUnconfirmedSelfSend",
+        tempId,
+      });
+    },
+    [dispatchSessionDetailAction],
+  );
 
   // Fetch new messages incrementally (for file change events)
   const fetchNewMessages = useCallback(() => {
-    if (fetchNewMessagesInFlightRef.current) {
-      return fetchNewMessagesInFlightRef.current;
-    }
-
-    const request = (async () => {
+    return coordinator.runExclusiveFetchNewMessages(async () => {
       try {
-        const data = await api.getSession(
-          projectId,
-          sessionId,
-          lastMessageIdRef.current,
+        const afterMessageId = readStoreLastMessageId();
+        const data = await sourceApi.getSession(
+          afterMessageId
+            ? {
+                projectId,
+                sessionId,
+                afterMessageId,
+              }
+            : {
+                projectId,
+                sessionId,
+                tailCompactions: 2,
+                tailTurns: effectiveTailTurns,
+                tailFrom,
+              },
         );
-        if (data.messages.length > 0) {
-          updatePersistedTimestampWatermark(data.messages);
-          setMessages((prev) => {
-            const result = mergeJSONLMessages(prev, data.messages, {
-              skipDagOrdering: !getProvider(data.session.provider).capabilities
-                .supportsDag,
-            });
-            return usesApproxMessageDedup(data.session.provider)
-              ? reconcileLinearMessages(
-                  result.messages,
-                  approxDedupOptions(data.session.provider),
-                )
-              : result.messages;
-          });
+        sourceSummary.reportProviderRuntimeStatusSnapshot(
+          coordinator.buildProviderRuntimeStatusSnapshot(data),
+        );
+        const applied = coordinator.applyIncrementalRefresh(data, {
+          afterMessageId,
+        });
+        if (applied.applied) {
+          reportStoreDivergence("catchup", { session: data.session });
         }
         // Update session metadata (including title, model, contextUsage) which may have changed
         // For new sessions, prev may be null if JSONL didn't exist on initial load
-        setSession((prev) =>
-          prev
-            ? { ...prev, ...data.session }
-            : data.session,
+        updateSession((prev) =>
+          prev ? { ...prev, ...data.session } : data.session,
         );
       } catch {
         // Silent fail for incremental updates
       }
-    })();
-
-    fetchNewMessagesInFlightRef.current = request;
-    void request.finally(() => {
-      if (fetchNewMessagesInFlightRef.current === request) {
-        fetchNewMessagesInFlightRef.current = null;
-      }
     });
-
-    return request;
   }, [
+    coordinator,
+    effectiveTailTurns,
     projectId,
     sessionId,
-    updatePersistedTimestampWatermark,
+    tailFrom,
+    readStoreLastMessageId,
+    reportStoreDivergence,
+    sourceApi,
+    sourceSummary,
+    updateSession,
   ]);
 
   // Load older messages (previous chunk before the current truncation point)
   const loadOlderMessages = useCallback(async () => {
-    if (!pagination?.hasOlderMessages || !pagination.truncatedBeforeMessageId) {
+    const request = coordinator.buildOlderPageRequest();
+    if (!request.requested) {
       return;
     }
     setLoadingOlder(true);
     try {
-      const data = await api.getSession(projectId, sessionId, undefined, {
-        tailCompactions: 2,
-        beforeMessageId: pagination.truncatedBeforeMessageId,
-      });
-      setMessages((prev) => {
-        const taggedOlder = data.messages.map((m) => ({
-          ...m,
-          _source: "jsonl" as const,
-        }));
-        updatePersistedTimestampWatermark(taggedOlder);
-        const combined = [...taggedOlder, ...prev];
-        return usesApproxMessageDedup(data.session.provider)
-          ? reconcileLinearMessages(
-              combined,
-              approxDedupOptions(data.session.provider),
-            )
-          : combined;
-      });
-      setPagination(data.pagination);
+      const data = await sourceApi.getSession(request.input);
+      sourceSummary.reportProviderRuntimeStatusSnapshot(
+        coordinator.buildProviderRuntimeStatusSnapshot(data),
+      );
+      coordinator.applyOlderPage(data);
+      reportStoreDivergence("older-page", { session: data.session });
     } catch {
       // Silent fail for loading older messages
     } finally {
       setLoadingOlder(false);
     }
   }, [
-    projectId,
-    sessionId,
-    pagination,
-    updatePersistedTimestampWatermark,
+    coordinator,
+    reportStoreDivergence,
+    sourceApi,
+    sourceSummary,
   ]);
+
+  const updateRouteScrollSnapshot = useCallback(
+    (snapshot: SessionRouteScrollSnapshot) => {
+      if (
+        !shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())
+      ) {
+        scrollSnapshotRef.current = undefined;
+        return;
+      }
+      scrollSnapshotRef.current = snapshot;
+      coordinator.patchScrollSnapshot(snapshot);
+    },
+    [coordinator],
+  );
 
   // Fetch session metadata only
   const fetchSessionMetadata = useCallback(async () => {
     try {
-      const data = await api.getSessionMetadata(projectId, sessionId);
+      const data = await sourceApi.getSessionMetadata({
+        projectId,
+        sessionId,
+      });
+      sourceSummary.reportProviderRuntimeStatusSnapshot(
+        coordinator.buildProviderRuntimeStatusSnapshot(data),
+      );
       const metadataSession = {
         ...data.session,
         ownership: data.ownership,
       };
       // For new sessions, prev may be null if JSONL didn't exist on initial load
-      setSession((prev) =>
-        prev
-          ? { ...prev, ...metadataSession }
-          : metadataSession,
+      updateSession((prev) =>
+        prev ? { ...prev, ...metadataSession } : metadataSession,
       );
     } catch {
       // Silent fail for metadata updates
     }
-  }, [projectId, sessionId]);
+  }, [
+    coordinator,
+    projectId,
+    sessionId,
+    sourceApi,
+    sourceSummary,
+    updateSession,
+  ]);
+  const selectedInitialScrollSnapshot =
+    shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())
+      ? (coordinator.readScrollSnapshot() ?? cachedLoad?.scrollSnapshot ?? null)
+      : null;
 
   return {
-    messages,
-    agentContent,
-    toolUseToAgent,
+    messages: returnedMessages,
+    agentContent: returnedAgentContent,
+    toolUseToAgent: returnedToolUseToAgent,
     loading,
-    session,
-    setSession,
+    sessionLoadProgress,
+    session: storeBackedDetail?.session ?? null,
+    updateSession,
     handleStreamingUpdate,
     handleStreamMessageEvent,
     handleStreamSubagentMessage,
     registerToolUseAgent,
-    setAgentContent,
-    setToolUseToAgent,
-    setMessages,
+    mergeLoadedAgentContent,
+    updateAgentContextUsage,
+    clearAgentStreamingPlaceholders,
+    clearStreamingPlaceholders,
+    removeUnconfirmedSelfSend,
     fetchNewMessages,
     fetchSessionMetadata,
-    pagination,
+    pagination: storeBackedDetail?.pagination,
     loadingOlder,
     loadOlderMessages,
+    initialScrollSnapshot: selectedInitialScrollSnapshot,
+    updateRouteScrollSnapshot,
+    restoredFromSnapshot: Boolean(cachedLoad),
   };
 }

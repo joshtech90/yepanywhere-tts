@@ -8,7 +8,11 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ClientDefaults } from "@yep-anywhere/shared";
+import {
+  PROJECT_QUEUE_CAPABILITY,
+  VOICE_INPUT_CAPABILITY,
+  type ClientDefaults,
+} from "@yep-anywhere/shared";
 import {
   type ComponentProps,
   useCallback,
@@ -17,6 +21,11 @@ import {
   useState,
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SESSION_TOOLBAR_PRIORITY } from "../../hooks/useSessionToolbarPresence";
+import {
+  getComposerToolbarOverflowLayoutSignature,
+  type ComposerToolbarOverflowLayoutSignatureInput,
+} from "../../hooks/useMessageInputToolbarLayout";
 import { SESSION_ISEARCH_GUIDE_EVENT } from "../../lib/sessionIsearchGuide";
 import {
   YA_GROK_BATCH_SPEECH_METHOD,
@@ -49,7 +58,7 @@ const {
       current: "test",
       latest: null,
       updateAvailable: false,
-      capabilities: ["voiceInput"],
+      capabilities: [] as string[],
       voiceBackends: [] as string[],
       voiceBackendCapabilities: {} as Record<
         string,
@@ -175,27 +184,36 @@ vi.mock("../../hooks/useModelSettings", () => ({
   }),
 }));
 
-vi.mock("../../hooks/useSessionToolbarVisibility", () => ({
-  useSessionToolbarVisibility: () => ({
-    visibility: {
-      modeSelector: true,
-      steerNow: true,
-      attachments: true,
-      slashMenu: true,
-      thinkingToggle: true,
-      renderMode: true,
-      microphone: true,
-      waveform: true,
-      shortcutsHelp: true,
-      contextUsage: true,
-      btw: true,
-      nudge: true,
-      sessionStatus: true,
-    },
-    setControlVisible: vi.fn(),
-    resetVisibility: vi.fn(),
-  }),
-}));
+vi.mock("../../hooks/useSessionToolbarPresence", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../hooks/useSessionToolbarPresence")
+  >("../../hooks/useSessionToolbarPresence");
+  return {
+    ...actual,
+    useSessionToolbarPresence: () => ({
+      presence: actual.DEFAULT_SESSION_TOOLBAR_PRIORITY,
+      visibility: {
+        modeSelector: true,
+        steerNow: true,
+        attachments: true,
+        slashMenu: true,
+        thinkingToggle: true,
+        renderMode: true,
+        microphone: true,
+        waveform: true,
+        shortcutsHelp: true,
+        contextUsage: true,
+        btw: true,
+        nudge: true,
+        sessionStatus: true,
+        projectQueue: true,
+      },
+      priority: actual.DEFAULT_SESSION_TOOLBAR_PRIORITY,
+      setControlPresence: vi.fn(),
+      resetPresence: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
@@ -204,6 +222,33 @@ vi.mock("../../hooks/useVersion", () => ({
     error: null,
     refetch: vi.fn(),
     refetchFresh: vi.fn(),
+  }),
+}));
+
+vi.mock("../../hooks/useProviders", () => ({
+  useProviders: () => ({
+    providers: [
+      {
+        name: "claude",
+        displayName: "Claude",
+        models: [{ id: "test-model", name: "Test Model" }],
+      },
+    ],
+  }),
+}));
+
+vi.mock("../../hooks/useServerSettings", () => ({
+  useServerSettings: () => ({
+    settings: {
+      clientDefaults: {
+        compactAtContextPercent: {},
+      },
+    },
+    isLoading: false,
+    error: null,
+    updateSettings: vi.fn(),
+    updateSetting: vi.fn(async () => undefined),
+    refetch: vi.fn(),
   }),
 }));
 
@@ -223,7 +268,29 @@ vi.mock("../../i18n", () => ({
           toolbarSteerNowTooltip:
             "Steer now interrupts in-flight generation without ending the turn.",
           toolbarOverflowMenu: "More toolbar controls",
+          toolbarThinkingTitle: `Click to choose thinking mode. Current: ${params?.current ?? ""}`,
+          toolbarThinkingAppliesNextTurn: "Applies next turn",
+          newSessionThinkingOff: "Thinking off",
+          newSessionThinkingAuto: "Thinking auto",
+          newSessionThinkingOn: `Thinking on ${params?.level ?? ""}`,
+          modelSettingsThinkingOffLabel: "Off",
+          modelSettingsThinkingAutoLabel: "Auto",
+          modelSettingsThinkingOnLabel: "On",
+          effortLevelLowLabel: "Low",
+          effortLevelMediumLabel: "Medium",
+          effortLevelHighLabel: "High",
+          effortLevelMaxLabel: "Max",
+          effortLevelExtraHighShortLabel: "XHigh",
+          effortLevelLowDescription: "Fastest responses",
+          effortLevelMediumDescription: "Moderate reasoning",
+          effortLevelHighDescription: "Deep reasoning",
+          effortLevelMaxDescription: "Maximum effort",
           toolbarQueuePrimaryActionLabel: "Queue from primary action",
+          toolbarProjectQueueLabel: "Queue for Project Queue",
+          toolbarProjectQueueTooltip:
+            "Send after all sessions in this project are idle",
+          toolbarProjectQueueTooltipWithShortcut:
+            "Send after all sessions in this project are idle\nCtrl+Enter",
           toolbarLivenessVerifiedProgress: "Verified progress",
           toolbarLivenessVerifiedIdle: "Verified idle",
           toolbarRelativeAgeNow: "now",
@@ -234,6 +301,8 @@ vi.mock("../../i18n", () => ({
           }`,
           toolbarLastActivityAria: "Session last activity",
           toolbarLastActivityAge: `Last activity ${params?.age ?? ""}`,
+          toolbarPositionAge: `at ${params?.age ?? ""}`,
+          toolbarPositionAgeAria: "Transcript position age",
           toolbarBtwChildSessionTitle:
             "Viewing a /btw child session; click to return to Mother (Ctrl+B)",
           toolbarBtwFocusedFooterTitle:
@@ -258,6 +327,7 @@ vi.mock("../../i18n", () => ({
             "Full-session reverse search",
           toolbarShortcutSteerCurrentTurn: "Steer current turn",
           toolbarShortcutQueueCurrentTurn: "Queue message",
+          toolbarShortcutProjectQueue: "Queue for Project Queue",
           toolbarShortcutForkAfterSummary:
             "Fork after initial turn with summary",
           toolbarShortcutSend: "Send",
@@ -445,6 +515,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   btw: false,
   nudge: false,
   sessionStatus: false,
+  projectQueue: false,
 };
 
 const toolbarT = ((key: string, params?: Record<string, string>) => {
@@ -461,9 +532,26 @@ const toolbarT = ((key: string, params?: Record<string, string>) => {
     toolbarKeyboardShortcutsAria: "Session keyboard shortcuts",
     toolbarQueueLabel: "Queue message",
     toolbarQueueTooltip: "Queue for the next regular delivery\nCtrl+Enter",
+    toolbarProjectQueueLabel: "Queue for Project Queue",
+    toolbarProjectQueueTooltip:
+      "Send after all sessions in this project are idle",
+    toolbarProjectQueueTooltipWithShortcut:
+      "Send after all sessions in this project are idle\nCtrl+Enter",
+    toolbarSteerNowLabel: "Steer now",
+    toolbarSteerNowShortLabel: "Now",
+    toolbarSteerNowTooltip: "Steer current turn now",
     toolbarSteerTooltip: "Steer current turn\nEnter",
     toolbarSend: "Send",
     toolbarOverflowMenu: "More toolbar controls",
+    toolbarRelativeAgeNow: "now",
+    toolbarRelativeAgePast: `${params?.age ?? ""} ago`,
+    toolbarPositionAge: `at ${params?.age ?? ""}`,
+    toolbarPositionAgeAria: "Transcript position age",
+    toolbarLastActivityAria: "Session last activity",
+    toolbarLastActivityAge: `Last activity ${params?.age ?? ""}`,
+    toolbarProviderRuntimeAria: `Provider runtime status: ${
+      params?.summary ?? ""
+    }`,
   };
   return translations[key] ?? key;
 }) as MessageInputToolbarViewProps["t"];
@@ -511,7 +599,7 @@ describe("MessageInput", () => {
       current: "test",
       latest: null,
       updateAvailable: false,
-      capabilities: ["voiceInput"],
+      capabilities: [VOICE_INPUT_CAPABILITY, PROJECT_QUEUE_CAPABILITY],
       voiceBackends: [],
       voiceBackendCapabilities: {},
       clientDefaults: undefined,
@@ -736,6 +824,32 @@ describe("MessageInput", () => {
     expect(onToggleEnabled).toHaveBeenCalledTimes(1);
   });
 
+  it("uses live thinking selection instead of stored defaults in the toolbar", () => {
+    const onSetMode = vi.fn();
+    renderMessageInput(vi.fn(), {
+      supportsThinkingToggle: true,
+      thinkingProvider: "claude",
+      thinkingModel: "test-model",
+      liveThinkingSelection: {
+        mode: "on",
+        level: "xhigh",
+        onSetMode,
+        onSetEffort: vi.fn(),
+      },
+    });
+
+    const button = screen.getByRole("button", {
+      name: /Current: Thinking on/i,
+    });
+    expect(button.textContent).toContain("XHigh");
+
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Auto" }));
+
+    expect(onSetMode).toHaveBeenCalledWith("auto");
+    expect(mockSetThinkingMode).not.toHaveBeenCalled();
+  });
+
   it("selects direct Grok streaming by default when Grok STT is enabled", () => {
     versionState.version = {
       ...versionState.version,
@@ -751,12 +865,12 @@ describe("MessageInput", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
     expect(
       screen.getByRole("radio", {
-        name: /^Grok STT through YA Browser streams PCM audio through YA to xAI\.$/,
+        name: "Grok STT through YA",
       }),
     ).toBeDefined();
     expect(
       screen.queryByRole("radio", {
-        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+        name: "Grok STT through YA batch",
       }),
     ).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: /Deepgram STT/ }));
@@ -778,7 +892,7 @@ describe("MessageInput", () => {
     );
     expect(
       screen.getByRole("radio", {
-        name: /^Grok STT direct Browser streams PCM audio directly to xAI\.$/,
+        name: "Grok STT direct",
       }),
     ).toBeDefined();
     expect(
@@ -1503,13 +1617,13 @@ describe("MessageInput", () => {
     fireEvent.contextMenu(screen.getByRole("button", { name: "voice" }));
     expect(
       screen.queryByRole("radio", {
-        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+        name: "Grok STT through YA batch",
       }),
     ).toBeNull();
     expect(
       screen
         .getByRole("radio", {
-          name: /^Grok STT direct Browser streams PCM audio directly to xAI\.$/,
+          name: "Grok STT direct",
         })
         .getAttribute("aria-checked"),
     ).toBe("true");
@@ -1517,7 +1631,7 @@ describe("MessageInput", () => {
 
     fireEvent.click(
       screen.getByRole("radio", {
-        name: /^Grok STT through YA Browser streams PCM audio through YA to xAI\.$/,
+        name: "Grok STT through YA",
       }),
     );
     expect(mockSetSpeechMethod).toHaveBeenCalledWith("ya-grok");
@@ -1564,7 +1678,7 @@ describe("MessageInput", () => {
 
     expect(
       screen.queryByRole("radio", {
-        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+        name: "Grok STT through YA batch",
       }),
     ).toBeNull();
   });
@@ -1617,6 +1731,41 @@ describe("MessageInput", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(textarea.value).toBe("/compact ");
+  });
+
+  it("hides slash suggestions once the command is completely typed", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: ["clear", "compact"],
+        onCustomCommand: vi.fn(() => false),
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "/clear" } });
+
+    expect(screen.queryByRole("menuitem", { name: "/clear" })).toBeNull();
+  });
+
+  it("submits a completed slash suggestion without the inserted space", async () => {
+    const restoreMatchMedia = installDesktopMatchMedia();
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onSend,
+        slashCommands: ["clear"],
+        onCustomCommand: vi.fn(() => false),
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "/cl" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(textarea.value).toBe("/clear "));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expectSubmission(onSend, "/clear", "direct");
+    restoreMatchMedia();
   });
 
   it("shows the isearch key guide on shortcut help hover while search is active", async () => {
@@ -1699,6 +1848,23 @@ describe("MessageInput", () => {
     );
 
     expect(keys).toEqual(["Ctrl", "Alt", "S"]);
+  });
+
+  it("shows the Project Queue Ctrl+Enter binding in shortcut help", async () => {
+    renderMessageInput(vi.fn(), { onProjectQueue: vi.fn(), onQueue: vi.fn() });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Session keyboard shortcuts" }),
+    );
+
+    const row = screen
+      .getByText("Queue for Project Queue")
+      .closest(".session-shortcuts-row");
+    const keys = Array.from(row?.querySelectorAll("kbd") ?? []).map(
+      (key) => key.textContent,
+    );
+
+    expect(keys).toEqual(["Ctrl", "Enter"]);
   });
 
   it("hides stop while a running composer has queued text", () => {
@@ -1974,6 +2140,38 @@ describe("MessageInput", () => {
     expect(screen.queryByText("Last activity 8m ago")).toBeNull();
   });
 
+  it("shows transcript position age even when session activity age is fresh", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-26T12:04:00.000Z"));
+
+    renderMessageInput(
+      vi.fn(() => true),
+      {
+        lastActivityAt: "2026-04-26T12:03:00.000Z",
+        positionTimestampMs: new Date("2026-04-26T11:54:00.000Z").getTime(),
+      },
+    );
+
+    expect(screen.getByText("at 10m ago")).toBeTruthy();
+    expect(screen.queryByText("1m ago")).toBeNull();
+  });
+
+  it("suppresses transcript position age when it matches session activity age", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-26T12:06:30.000Z"));
+
+    renderMessageInput(
+      vi.fn(() => true),
+      {
+        lastActivityAt: "2026-04-26T12:00:30.000Z",
+        positionTimestampMs: new Date("2026-04-26T12:00:00.000Z").getTime(),
+      },
+    );
+
+    expect(screen.getByText("6m ago")).toBeTruthy();
+    expect(screen.queryByText("at 6m ago")).toBeNull();
+  });
+
   it("keeps long-form last activity wording after 30 minutes", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-26T12:35:00.000Z"));
@@ -2027,6 +2225,230 @@ describe("MessageInput", () => {
     ).toBeNull();
     expect(screen.queryByText("Verified progress 5m")).toBeNull();
     expect(screen.getByText("6m ago")).toBeTruthy();
+  });
+
+  it("floats freshness and position age over the composer when compact, even with session status disabled", () => {
+    const nowMs = new Date("2026-04-26T12:06:00.000Z").getTime();
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        isCompactStatusMode={true}
+        attachmentControl={{ attachmentCount: 0 }}
+        statusControl={{
+          // Mirrors the parent when sessionStatus is off: inline gates false,
+          // but the ages are present and float in compact mode.
+          showToolbarStatus: false,
+          showLivenessChip: false,
+          livenessDisplay: null,
+          livenessSummary: null,
+          nowMs,
+          showLastActivityChip: false,
+          showLastActivityPrefix: false,
+          lastActivityMs: nowMs - 6 * 60 * 1000,
+          lastActivityIsPast: true,
+          positionTimestampMs: nowMs - 10 * 60 * 1000,
+          showPositionTimestamp: false,
+          hasPositionAge: true,
+          hasLastActivityAge: true,
+        }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    expect(screen.getByText("at 10m ago")).toBeTruthy();
+    expect(screen.getByText("6m ago")).toBeTruthy();
+    // The decoupled float carries only the ages, never the liveness chip.
+    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+  });
+
+  it("floats the freshness/position age over the composer even when not compact if session status is disabled", () => {
+    // Wide screen + Session Status toggle off: the ages still float (same as
+    // narrow), instead of vanishing. Matches the all-widths-when-disabled rule.
+    const nowMs = new Date("2026-04-26T12:06:00.000Z").getTime();
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        isCompactStatusMode={false}
+        attachmentControl={{ attachmentCount: 0 }}
+        statusControl={{
+          showToolbarStatus: false,
+          showLivenessChip: false,
+          livenessDisplay: null,
+          livenessSummary: null,
+          nowMs,
+          showLastActivityChip: false,
+          showLastActivityPrefix: false,
+          lastActivityMs: nowMs - 6 * 60 * 1000,
+          lastActivityIsPast: true,
+          positionTimestampMs: nowMs - 10 * 60 * 1000,
+          showPositionTimestamp: false,
+          hasPositionAge: true,
+          hasLastActivityAge: true,
+        }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    expect(screen.getByText("at 10m ago")).toBeTruthy();
+    expect(screen.getByText("6m ago")).toBeTruthy();
+    // Still the floating presentation (not the inline row) and ages only.
+    expect(container.querySelector(".status-floats")).toBeTruthy();
+    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+  });
+
+  it("keeps the liveness chip out of the float even when it would show inline", () => {
+    // Compact + sessionStatus on: the parent still asks for the liveness
+    // chip, but the float carries only the two ages — floated, the liveness
+    // time degrades to a context-free "now" pill over the composer.
+    const nowMs = new Date("2026-04-26T12:06:00.000Z").getTime();
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        isCompactStatusMode={true}
+        attachmentControl={{ attachmentCount: 0 }}
+        statusControl={{
+          showToolbarStatus: true,
+          showLivenessChip: true,
+          livenessDisplay: {
+            prefix: "Verified progress",
+            timestampMs: nowMs - 30_000,
+            tone: "ok",
+            title: "status: verified-progressing",
+          },
+          livenessSummary: "Verified progress now",
+          nowMs,
+          showLastActivityChip: true,
+          showLastActivityPrefix: false,
+          lastActivityMs: nowMs - 6 * 60 * 1000,
+          lastActivityIsPast: true,
+          positionTimestampMs: nowMs - 10 * 60 * 1000,
+          showPositionTimestamp: true,
+          hasPositionAge: true,
+          hasLastActivityAge: true,
+        }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+    expect(screen.queryByText("now")).toBeNull();
+    expect(screen.getByText("at 10m ago")).toBeTruthy();
+    expect(screen.getByText("6m ago")).toBeTruthy();
+  });
+
+  it("shows provider runtime status in the compact status float", () => {
+    const nowMs = new Date("2026-04-26T12:06:00.000Z").getTime();
+    const { container } = render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        isCompactStatusMode={true}
+        attachmentControl={{ attachmentCount: 0 }}
+        statusControl={{
+          showToolbarStatus: true,
+          showLivenessChip: false,
+          livenessDisplay: null,
+          livenessSummary: null,
+          providerRuntimeDisplay: {
+            label: "Claude rate limited",
+            summary: "Claude rate limited - retry at 5:20 PM",
+            retryAtMs: nowMs + 60_000,
+            tone: "warn",
+            title: "Claude rate limited",
+          },
+          nowMs,
+          showLastActivityChip: false,
+          showLastActivityPrefix: false,
+          lastActivityMs: null,
+          lastActivityIsPast: false,
+          positionTimestampMs: null,
+          showPositionTimestamp: false,
+          hasPositionAge: false,
+          hasLastActivityAge: false,
+        }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    expect(
+      screen.getByText("Claude rate limited - retry at 5:20 PM"),
+    ).toBeTruthy();
+    expect(
+      container.querySelector(".composer-provider-runtime-status"),
+    ).toBeTruthy();
+    expect(container.querySelector(".composer-liveness-status")).toBeNull();
+  });
+
+  it("never shows a current position age, even without a freshness label", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-26T12:06:00.000Z"));
+
+    renderMessageInput(
+      vi.fn(() => true),
+      {
+        // No lastActivityAt: the duplicate-label guard alone would let a
+        // current position through; "now" must count as duplicating the
+        // (hidden-as-current) freshness.
+        positionTimestampMs: Date.now() - 30_000,
+      },
+    );
+
+    expect(screen.queryByText("at now")).toBeNull();
   });
 
   it("keeps a send affordance visible when the composer is collapsed", () => {
@@ -2365,6 +2787,79 @@ describe("MessageInput", () => {
     expectSubmission(onQueue, "claude patient queue", "patient");
   });
 
+  it("uses Ctrl+Enter for Project Queue when that action is visible", () => {
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: { patientQueueDefault: true },
+    };
+    const onQueue = vi.fn();
+    const onProjectQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        supportsSteering: true,
+        onQueue,
+        onProjectQueue,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "project quiet later" } });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+
+    expectSubmission(onProjectQueue, "project quiet later", "deferred");
+    expect(onQueue).not.toHaveBeenCalled();
+  });
+
+  it("falls back to patient queue when the Project Queue shortcut is disabled", () => {
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: {
+        patientQueueDefault: true,
+        projectQueueCtrlEnterEnabled: false,
+      },
+    };
+    const onQueue = vi.fn();
+    const onProjectQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        supportsSteering: true,
+        onQueue,
+        onProjectQueue,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "patient fallback" } });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+
+    expect(onProjectQueue).not.toHaveBeenCalled();
+    expectSubmission(onQueue, "patient fallback", "patient");
+  });
+
+  it("does not steal Ctrl+Enter from queue when Project Queue is unsupported", () => {
+    versionState.version = {
+      ...versionState.version,
+      capabilities: [VOICE_INPUT_CAPABILITY],
+      clientDefaults: { patientQueueDefault: true },
+    };
+    const onQueue = vi.fn();
+    const onProjectQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        supportsSteering: true,
+        onQueue,
+        onProjectQueue,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "unsupported fallback" } });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+
+    expect(onProjectQueue).not.toHaveBeenCalled();
+    expectSubmission(onQueue, "unsupported fallback", "patient");
+  });
+
   it("keeps queue available when the primary steer action downgrades", () => {
     const onQueue = vi.fn();
     const textarea = renderMessageInput(
@@ -2401,6 +2896,156 @@ describe("MessageInput", () => {
 
     expect(onSend).not.toHaveBeenCalled();
     expectSubmission(onQueue, "queue from primary", "deferred");
+  });
+
+  it("routes the explicit project queue action with deferred metadata", () => {
+    const onProjectQueue = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), { onProjectQueue });
+
+    fireEvent.change(textarea, { target: { value: "project-wide later" } });
+    expect(
+      screen
+        .getByRole("button", { name: "Queue for Project Queue" })
+        .getAttribute("title"),
+    ).toBe("Send after all sessions in this project are idle\nCtrl+Enter");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Queue for Project Queue" }),
+    );
+
+    expectSubmission(onProjectQueue, "project-wide later", "deferred");
+  });
+
+  it("hides the project queue action without server capability", () => {
+    versionState.version = {
+      ...versionState.version,
+      capabilities: [VOICE_INPUT_CAPABILITY],
+    };
+    const onProjectQueue = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), { onProjectQueue });
+
+    fireEvent.change(textarea, { target: { value: "project-wide later" } });
+
+    expect(
+      screen.queryByRole("button", { name: "Queue for Project Queue" }),
+    ).toBe(null);
+  });
+
+  it("keeps the project queue toolbar action hidden by visibility", () => {
+    render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{ ...toolbarVisibility, projectQueue: false }}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "send",
+            primaryActionLabel: "Send",
+            tooltip: "Send",
+            icon: "↑",
+          },
+          projectQueue: {
+            onProjectQueue: vi.fn(),
+            canSend: true,
+            tooltip: "Project Queue",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Queue for Project Queue" }),
+    ).toBe(null);
+  });
+
+  it("renders the project queue toolbar action when visible", () => {
+    const onProjectQueue = vi.fn();
+    render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{ ...toolbarVisibility, projectQueue: true }}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "send",
+            primaryActionLabel: "Send",
+            tooltip: "Send",
+            icon: "↑",
+          },
+          projectQueue: {
+            onProjectQueue,
+            canSend: true,
+            tooltip: "Project Queue",
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Queue for Project Queue" }),
+    );
+
+    expect(onProjectQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the render mode toolbar action hidden by visibility", () => {
+    render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{ ...toolbarVisibility, renderMode: false }}
+        attachmentControl={{ attachmentCount: 0 }}
+        renderModeControl={{
+          state: "rendered",
+          title: "Show source",
+          onToggle: vi.fn(),
+        }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Show source" })).toBe(null);
   });
 
   it("renders context usage as passive status chrome", () => {
@@ -2514,8 +3159,11 @@ describe("MessageInput", () => {
     const onRenderToggle = vi.fn();
     const onNudgeClick = vi.fn();
     const setShortcutsOpen = vi.fn();
+    const onBtwClick = vi.fn();
+    const onToggleSteerNow = vi.fn();
+    const onProjectQueue = vi.fn();
 
-    render(
+    const { container } = render(
       <MessageInputToolbarView
         t={toolbarT}
         visibility={{
@@ -2523,7 +3171,17 @@ describe("MessageInput", () => {
           thinkingToggle: false,
           renderMode: true,
           shortcutsHelp: true,
+          contextUsage: true,
+          btw: true,
           nudge: true,
+          projectQueue: true,
+        }}
+        priority={{
+          ...DEFAULT_SESSION_TOOLBAR_PRIORITY,
+          contextUsage: "first",
+          btw: "first",
+          steerNow: "first",
+          projectQueue: "first",
         }}
         attachmentControl={{ attachmentCount: 0 }}
         renderModeControl={{
@@ -2554,6 +3212,22 @@ describe("MessageInput", () => {
           queueShortcutLabel: "Queue while agent runs",
         }}
         actionsControl={{
+          contextUsage: {
+            inputTokens: 42_000,
+            percentage: 42,
+            contextWindow: 100_000,
+          },
+          btw: {
+            onClick: onBtwClick,
+            pressed: false,
+            mode: "start",
+            title: "Start /btw aside",
+          },
+          projectQueue: {
+            onProjectQueue,
+            canSend: true,
+            tooltip: "Queue for Project Queue",
+          },
           send: {
             onSend: vi.fn(),
             canSend: true,
@@ -2561,6 +3235,9 @@ describe("MessageInput", () => {
             primaryActionLabel: "Send",
             tooltip: "Send",
             icon: "↑",
+            showSteerNowMode: true,
+            steerNowEnabled: false,
+            onToggleSteerNow,
           },
         }}
       />,
@@ -2581,9 +3258,222 @@ describe("MessageInput", () => {
     fireEvent.click(
       screen.getAllByLabelText("Session keyboard shortcuts").at(-1)!,
     );
+    fireEvent.click(screen.getAllByLabelText("Start /btw aside").at(-1)!);
+    fireEvent.click(screen.getAllByLabelText("Steer now").at(-1)!);
+    fireEvent.click(screen.getAllByLabelText("Queue for Project Queue").at(-1)!);
 
     expect(onRenderToggle).toHaveBeenCalledTimes(1);
     expect(onNudgeClick).toHaveBeenCalledTimes(1);
     expect(setShortcutsOpen).toHaveBeenCalledTimes(1);
+    expect(onBtwClick).toHaveBeenCalledTimes(1);
+    expect(onToggleSteerNow).toHaveBeenCalledTimes(1);
+    expect(onProjectQueue).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelectorAll(
+        ".composer-bottom-overflow-menu .context-toolbar-control",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("tracks toolbar overflow layout membership in a pure signature", () => {
+    const baseInput: ComposerToolbarOverflowLayoutSignatureInput = {
+      modeSelector: "first",
+      attachments: "first",
+      slashMenu: "mid",
+      thinkingToggle: "mid",
+      renderMode: "last",
+      nudge: "last",
+      sessionStatus: "pin",
+      shortcutsHelp: "last",
+      contextUsage: "pin",
+      btw: "pin",
+      steerNow: "pin",
+      projectQueue: "pin",
+      microphone: "live",
+      waveform: true,
+      send: "send",
+      queue: "off",
+      alternate: false,
+      stop: false,
+      pending: "off",
+    };
+
+    const signature = getComposerToolbarOverflowLayoutSignature(baseInput);
+
+    expect(signature).toContain("modeSelector:first");
+    expect(signature).toContain("attachments:first");
+    expect(
+      getComposerToolbarOverflowLayoutSignature({
+        ...baseInput,
+        attachments: "off",
+      }),
+    ).not.toBe(signature);
+    expect(
+      getComposerToolbarOverflowLayoutSignature({
+        ...baseInput,
+        queue: "send:true:false",
+      }),
+    ).not.toBe(signature);
+  });
+
+  it("relaxes bottom-row overflow when visible controls shrink", () => {
+    const originalResizeObserver = window.ResizeObserver;
+    let resizeCallback: ResizeObserverCallback | null = null;
+    class CapturingResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: CapturingResizeObserver,
+    });
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    const currentTier = (
+      element: Element,
+    ): "none" | "early" | "medium" | "late" => {
+      const toolbar = element.closest(".message-input-toolbar");
+      if (!toolbar) return "none";
+      if (toolbar.classList.contains("overflow-tier-late")) return "late";
+      if (toolbar.classList.contains("overflow-tier-medium")) return "medium";
+      if (toolbar.classList.contains("overflow-tier-early")) return "early";
+      return "none";
+    };
+    const inlineHidden = (element: Element): boolean => {
+      if (!element.classList.contains("composer-bottom-overflow-inline")) {
+        return false;
+      }
+      const tier = currentTier(element);
+      return (
+        (element.classList.contains("composer-bottom-overflow-early") &&
+          tier !== "none") ||
+        (element.classList.contains("composer-bottom-overflow-medium") &&
+          (tier === "medium" || tier === "late")) ||
+        (element.classList.contains("composer-bottom-overflow-late") &&
+          tier === "late")
+      );
+    };
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      const hidden = inlineHidden(element);
+      return {
+        display: hidden ? "none" : "block",
+        position: "static",
+        columnGap: "0px",
+        gap: "0px",
+      } as CSSStyleDeclaration;
+    });
+    const rect = (width: number): DOMRect =>
+      ({
+        top: 0,
+        bottom: 32,
+        left: 0,
+        right: width,
+        width,
+        height: 32,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getToolbarTestRect(this: HTMLElement) {
+        if (this.classList.contains("message-input-toolbar")) return rect(100);
+        if (
+          this.classList.contains("message-input-left") ||
+          this.classList.contains("message-input-actions")
+        ) {
+          return rect(1);
+        }
+        if (this.classList.contains("composer-bottom-overflow")) return rect(24);
+        if (this.classList.contains("attach-button")) return rect(80);
+        if (this.classList.contains("send-button-with-help")) return rect(40);
+        if (
+          this.classList.contains("composer-bottom-overflow-inline") &&
+          this.querySelector(".mode-selector-container")
+        ) {
+          return rect(40);
+        }
+        return rect(0);
+      },
+    );
+
+    const shortcutsControl: MessageInputToolbarViewProps["shortcutsControl"] = {
+      open: false,
+      isearchScope: null,
+      setOpen:
+        vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+      settingsOpen: false,
+      setSettingsOpen:
+        vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+      hasDualActions: false,
+      enterActionKind: "send",
+      canSwapEnterAction: false,
+      queueShortcutLabel: "Queue while agent runs",
+    };
+    const renderMeasuredToolbar = (showAttachments: boolean) => (
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{
+          ...toolbarVisibility,
+          modeSelector: true,
+          attachments: showAttachments,
+          steerNow: false,
+          thinkingToggle: false,
+        }}
+        modeControl={{
+          mode: "default",
+          onModeChange: vi.fn(),
+          modes: ["default"],
+        }}
+        attachmentControl={{ attachmentCount: 0, canAttach: true }}
+        shortcutsControl={shortcutsControl}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "send",
+            primaryActionLabel: "Send",
+            tooltip: "Send",
+            icon: "↑",
+          },
+        }}
+      />
+    );
+    const resizeEntry = (target: Element, width: number): ResizeObserverEntry =>
+      ({
+        target,
+        contentRect: { width } as DOMRectReadOnly,
+        borderBoxSize: [],
+        contentBoxSize: [],
+        devicePixelContentBoxSize: [],
+      }) as ResizeObserverEntry;
+
+    try {
+      const { container, rerender } = render(renderMeasuredToolbar(true));
+      const toolbar = () =>
+        container.querySelector(".message-input-toolbar") as HTMLElement;
+      act(() => {
+        resizeCallback?.([resizeEntry(toolbar(), 100)], {} as ResizeObserver);
+      });
+      expect(toolbar().classList.contains("overflow-tier-early")).toBe(true);
+
+      rerender(renderMeasuredToolbar(false));
+      act(() => {
+        resizeCallback?.([resizeEntry(toolbar(), 100)], {} as ResizeObserver);
+      });
+
+      expect(toolbar().classList.contains("overflow-tier-none")).toBe(true);
+    } finally {
+      Object.defineProperty(window, "ResizeObserver", {
+        configurable: true,
+        value: originalResizeObserver,
+      });
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
-import { makeDisplayPath } from "../lib/text";
-import { FilePathLink } from "./FilePathLink";
+import { getProjectRelativePath, makeDisplayPath } from "../lib/text";
+import { FilePathCopyButton, FilePathLink } from "./FilePathLink";
 import type { FileViewerMode } from "./FileViewer";
 import { FilePathDisplay } from "./ui/FilePathDisplay";
 
@@ -11,6 +11,7 @@ export function SessionFilePathLink({
   lineNumber,
   showLineSuffix,
   viewMode,
+  showCopyButton = true,
 }: {
   displayPath?: string;
   filePath: string;
@@ -18,6 +19,8 @@ export function SessionFilePathLink({
   lineNumber?: number;
   showLineSuffix?: boolean;
   viewMode?: FileViewerMode;
+  /** Set false where the same path already carries a copy button nearby */
+  showCopyButton?: boolean;
 }) {
   const sessionMetadata = useOptionalSessionMetadata();
   const resolvedDisplayPath =
@@ -32,8 +35,23 @@ export function SessionFilePathLink({
         lineNumber={lineNumber}
         showLineSuffix={showLineSuffix}
         viewMode={viewMode}
+        showCopyButton={showCopyButton}
       />
     );
   }
-  return <FilePathDisplay displayPath={resolvedDisplayPath} />;
+  return (
+    <>
+      <FilePathDisplay displayPath={resolvedDisplayPath} />
+      {showCopyButton && (
+        <FilePathCopyButton
+          filePath={
+            // Relative when under the project; verbatim otherwise. Not the
+            // display path, which may be a caller label or ~-shortened.
+            getProjectRelativePath(filePath, sessionMetadata?.projectPath) ??
+            filePath
+          }
+        />
+      )}
+    </>
+  );
 }

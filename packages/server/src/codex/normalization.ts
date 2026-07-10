@@ -1,3 +1,19 @@
+import type { ToolDisplayAction } from "@yep-anywhere/shared";
+import {
+  createCodexCodeModeGroupInput,
+  extractCodexCodeModeCalls,
+  extractCodexCodeModeTextOutput,
+} from "./codeModeExec.js";
+import {
+  analyzeCodexCommand,
+  type CodexReadShellInfo,
+  stripOuterQuotes,
+  toToolDisplayActions,
+  unwrapCodexShellLauncherCommand,
+} from "./displayActions.js";
+
+export type { CodexReadShellInfo } from "./displayActions.js";
+
 export const CODEX_TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "Bash",
   exec_command: "Bash",
@@ -7,13 +23,6 @@ export const CODEX_TOOL_NAME_ALIASES: Record<string, string> = {
   web_search_call: "WebSearch",
   search_query: "WebSearch",
 };
-
-export interface CodexReadShellInfo {
-  filePath: string;
-  startLine?: number;
-  endLine?: number;
-  stripLineNumbers: boolean;
-}
 
 export interface CodexWriteShellInfo {
   filePath: string;
@@ -25,11 +34,17 @@ export interface CodexToolCallContext {
   input: unknown;
   readShellInfo?: CodexReadShellInfo;
   writeShellInfo?: CodexWriteShellInfo;
+  patchApplyResult?: {
+    stderr?: string;
+    stdout?: string;
+    success: boolean;
+  };
 }
 
 export interface NormalizedCodexToolInvocation {
   toolName: string;
   input: unknown;
+  displayActions?: ToolDisplayAction[];
   readShellInfo?: CodexReadShellInfo;
   writeShellInfo?: CodexWriteShellInfo;
 }
@@ -45,7 +60,6 @@ interface NormalizedCodexToolOutputWithExitCode
   exitCode?: number;
 }
 
-const SHELL_EXECUTABLES = new Set(["bash", "sh", "zsh", "dash"]);
 const INLINE_IMAGE_DATA_URL_PREFIX_RE =
   /^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?,/i;
 const INLINE_IMAGE_DATA_URL_GLOBAL_RE =
@@ -96,23 +110,44 @@ export function normalizeCodexToolInvocation(
   if (!command) {
     return { toolName: "Bash", input: normalizedInput };
   }
-  const normalizedCommand = unwrapShellLauncherCommand(command);
-
-  const readShellInfo = parseReadShellCommand(normalizedCommand);
-  if (readShellInfo) {
-    return {
-      toolName: "Read",
-      input: createReadToolInput(readShellInfo),
-      readShellInfo,
-    };
-  }
-
-  const grepInput = parseRipgrepCommand(normalizedCommand);
-  if (grepInput) {
-    return {
-      toolName: "Grep",
-      input: grepInput,
-    };
+  const normalizedCommand = unwrapCodexShellLauncherCommand(command);
+  const workingDirectory = isRecord(normalizedInput)
+    ? (getStringField(normalizedInput, "workdir") ??
+      getStringField(normalizedInput, "cwd"))
+    : undefined;
+  const commandAnalysis = analyzeCodexCommand(command, workingDirectory);
+  const displayActions = commandAnalysis
+    ? toToolDisplayActions(commandAnalysis.actions)
+    : undefined;
+  if (commandAnalysis?.actions.length === 1) {
+    const action = commandAnalysis.actions[0];
+    if (action?.kind === "read") {
+      const readShellInfo: CodexReadShellInfo = {
+        filePath: action.filePath,
+        ...(action.startLine !== undefined
+          ? { startLine: action.startLine }
+          : {}),
+        ...(action.endLine !== undefined ? { endLine: action.endLine } : {}),
+        stripLineNumbers: action.stripLineNumbers,
+      };
+      return {
+        toolName: "Read",
+        input: createReadToolInput(readShellInfo),
+        displayActions,
+        readShellInfo,
+      };
+    }
+    if (action?.kind === "search") {
+      return {
+        toolName: "Grep",
+        input: {
+          pattern: action.query,
+          output_mode: "content",
+          ...(action.path ? { path: action.path } : {}),
+        },
+        displayActions,
+      };
+    }
   }
 
   const writeShellInfo = parseHeredocWriteShellCommand(normalizedCommand);
@@ -124,7 +159,53 @@ export function normalizeCodexToolInvocation(
     };
   }
 
-  return { toolName: "Bash", input: normalizedInput };
+  return {
+    toolName: "Bash",
+    input: normalizedInput,
+    ...(displayActions ? { displayActions } : {}),
+  };
+}
+
+export function normalizeCodexCustomToolInvocation(
+  rawToolName: string,
+  rawInput: unknown,
+): NormalizedCodexToolInvocation {
+  const codeModeCalls =
+    rawToolName === "exec" ? extractCodexCodeModeCalls(rawInput) : [];
+  if (codeModeCalls.length === 1) {
+    const nestedCall = codeModeCalls[0];
+    if (nestedCall) {
+      return normalizeCodexToolInvocation(
+        canonicalizeCodexToolName(nestedCall.toolName),
+        nestedCall.input,
+      );
+    }
+  }
+  if (codeModeCalls.length > 1 && typeof rawInput === "string") {
+    const normalizedCalls = codeModeCalls.map((call) =>
+      normalizeCodexToolInvocation(
+        canonicalizeCodexToolName(call.toolName),
+        call.input,
+      ),
+    );
+    const displayActions = normalizedCalls.every(
+      (call) => call.displayActions && call.displayActions.length > 0,
+    )
+      ? normalizedCalls.flatMap((call) => call.displayActions ?? [])
+      : undefined;
+    return {
+      toolName: "Exec",
+      input: createCodexCodeModeGroupInput(rawInput, codeModeCalls),
+      ...(displayActions ? { displayActions } : {}),
+    };
+  }
+
+  const canonicalToolName = canonicalizeCodexToolName(rawToolName);
+  const normalizedInput =
+    canonicalToolName === "Edit" && typeof rawInput === "string"
+      ? { _rawPatch: rawInput }
+      : rawInput;
+  return normalizeCodexToolInvocation(canonicalToolName, normalizedInput);
 }
 
 export function normalizeCodexToolOutputWithContext(
@@ -181,7 +262,17 @@ export function normalizeCodexToolOutputWithContext(
       isError,
       backgroundTaskId,
       interrupted,
+      // Carry a recoverable exit code so reloaded (function_call_output-only)
+      // Bash results match the live-stream structured result. Equivalence is a
+      // contract — see topics/stream-persisted-render-parity.md.
+      exitCode,
     );
+  } else if (context?.toolName === "Edit" && context.patchApplyResult) {
+    const patchOutput = context.patchApplyResult.success
+      ? context.patchApplyResult.stdout
+      : context.patchApplyResult.stderr || context.patchApplyResult.stdout;
+    if (patchOutput) content = patchOutput;
+    isError = !context.patchApplyResult.success;
   }
 
   return { content, structured, isError };
@@ -250,7 +341,13 @@ export function normalizeCodexCommandExecutionOutput(
   ) {
     structured = normalizeWriteOutput(context.writeShellInfo);
   } else if (context?.toolName === "Bash" && execution.status !== "declined") {
-    structured = createBashToolResult(baseOutput, isError);
+    structured = createBashToolResult(
+      baseOutput,
+      isError,
+      undefined,
+      false,
+      execution.exitCode,
+    );
   }
 
   return { content, structured, isError };
@@ -265,180 +362,6 @@ function extractBashCommand(input: unknown): string {
     return input.cmd.trim();
   }
   return "";
-}
-
-function tokenizeShellCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaping = false;
-
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-    if (!char) continue;
-
-    if (escaping) {
-      current += char;
-      escaping = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-
-    if (/\s/.test(char)) {
-      if (current.length > 0) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-
-    current += char;
-  }
-
-  if (current.length > 0) {
-    tokens.push(current);
-  }
-
-  return tokens;
-}
-
-function getExecutableName(token: string): string {
-  const normalized = token.replace(/\\/g, "/");
-  return (normalized.split("/").pop() || token).toLowerCase();
-}
-
-function isShellExecutable(token: string): boolean {
-  return SHELL_EXECUTABLES.has(getExecutableName(token));
-}
-
-function getShellLauncherPrefixLength(tokens: string[]): number {
-  if (tokens.length < 3) {
-    return 0;
-  }
-
-  const first = tokens[0] || "";
-  const second = tokens[1] || "";
-  const third = tokens[2] || "";
-
-  // /usr/bin/env bash -lc "command"
-  if (
-    getExecutableName(first) === "env" &&
-    isShellExecutable(second) &&
-    third === "-lc" &&
-    tokens.length >= 4
-  ) {
-    return 3;
-  }
-
-  // /bin/bash -lc "command"
-  if (isShellExecutable(first) && second === "-lc" && tokens.length >= 3) {
-    return 2;
-  }
-
-  return 0;
-}
-
-function unwrapShellLauncherCommand(command: string): string {
-  let normalized = command.trim();
-
-  // Allow nested wrappers, e.g. `bash -lc "env bash -lc \"...\""`
-  for (let i = 0; i < 3; i++) {
-    const tokens = tokenizeShellCommand(normalized);
-    const launcherPrefixLength = getShellLauncherPrefixLength(tokens);
-    if (launcherPrefixLength === 0 || tokens.length <= launcherPrefixLength) {
-      break;
-    }
-    normalized = tokens.slice(launcherPrefixLength).join(" ").trim();
-  }
-
-  return normalized;
-}
-
-function parseLineRangeToken(
-  token: string,
-): { startLine: number; endLine: number } | null {
-  const match = token.match(/^(\d+)(?:,(\d+))?p$/);
-  if (!match?.[1]) return null;
-
-  const startLine = Number.parseInt(match[1], 10);
-  const endLine = match[2] ? Number.parseInt(match[2], 10) : startLine;
-  if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) {
-    return null;
-  }
-
-  return {
-    startLine,
-    endLine: Math.max(startLine, endLine),
-  };
-}
-
-function parseReadShellCommand(command: string): CodexReadShellInfo | null {
-  const tokens = tokenizeShellCommand(command);
-  if (tokens.length === 0) return null;
-
-  if (tokens[0] === "cat" && tokens.length === 2) {
-    const filePath = tokens[1];
-    if (!filePath || filePath.startsWith("-")) {
-      return null;
-    }
-    return {
-      filePath,
-      stripLineNumbers: false,
-    };
-  }
-
-  if (tokens[0] === "sed" && tokens[1] === "-n" && tokens.length === 4) {
-    const range = parseLineRangeToken(tokens[2] ?? "");
-    const filePath = tokens[3];
-    if (!range || !filePath || filePath.startsWith("-")) {
-      return null;
-    }
-    return {
-      filePath,
-      startLine: range.startLine,
-      endLine: range.endLine,
-      stripLineNumbers: false,
-    };
-  }
-
-  const isNlSedCommand =
-    tokens[0] === "nl" &&
-    tokens[1] === "-ba" &&
-    tokens[3] === "|" &&
-    tokens[4] === "sed" &&
-    tokens[5] === "-n" &&
-    tokens.length === 7;
-  if (isNlSedCommand) {
-    const filePath = tokens[2];
-    const range = parseLineRangeToken(tokens[6] ?? "");
-    if (!filePath || !range) return null;
-    return {
-      filePath,
-      startLine: range.startLine,
-      endLine: range.endLine,
-      stripLineNumbers: true,
-    };
-  }
-
-  return null;
 }
 
 function parseHeredocWriteShellCommand(
@@ -526,105 +449,16 @@ function createWriteToolInput(
   };
 }
 
-function parseRipgrepCommand(command: string): Record<string, unknown> | null {
-  const tokens = tokenizeShellCommand(command);
-  if (tokens[0] !== "rg" || tokens.length < 2) {
-    return null;
-  }
-
-  if (
-    tokens.some((token) => token === "|" || token === "&&" || token === ";")
-  ) {
-    return null;
-  }
-
-  const flagsWithValue = new Set([
-    "-g",
-    "--glob",
-    "-e",
-    "--regexp",
-    "-f",
-    "--file",
-    "-m",
-    "--max-count",
-    "-A",
-    "--after-context",
-    "-B",
-    "--before-context",
-    "-C",
-    "--context",
-    "-t",
-    "--type",
-    "-T",
-    "--type-not",
-  ]);
-
-  let pattern = "";
-  const searchPaths: string[] = [];
-
-  for (let i = 1; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (!token) continue;
-
-    if (token === "--") {
-      const rest = tokens.slice(i + 1).filter(Boolean);
-      if (!pattern && rest[0]) {
-        pattern = rest[0];
-      }
-      if (pattern) {
-        searchPaths.push(...rest.slice(1));
-      }
-      break;
-    }
-
-    if (token === "-e" || token === "--regexp") {
-      const next = tokens[i + 1];
-      if (next && !pattern) {
-        pattern = next;
-      }
-      i += 1;
-      continue;
-    }
-
-    if (flagsWithValue.has(token)) {
-      i += 1;
-      continue;
-    }
-
-    if (token.startsWith("--glob=") || token.startsWith("--regexp=")) {
-      if (token.startsWith("--regexp=") && !pattern) {
-        pattern = token.slice("--regexp=".length);
-      }
-      continue;
-    }
-
-    if (token.startsWith("-")) {
-      continue;
-    }
-
-    if (!pattern) {
-      pattern = token;
-    } else {
-      searchPaths.push(token);
-    }
-  }
-
-  if (!pattern) {
-    return null;
-  }
-
-  const input: Record<string, unknown> = {
-    pattern,
-    output_mode: "content",
-  };
-  if (searchPaths.length > 0) {
-    input.path = searchPaths.join(" ");
-  }
-  return input;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getStringField(
+  record: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const value = record[field];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function getGrepPattern(input: unknown): string | undefined {
@@ -728,6 +562,11 @@ function extractSessionIdFromText(output: string): number | undefined {
 function normalizeCodexToolOutput(
   output: unknown,
 ): NormalizedCodexToolOutputWithExitCode {
+  const codeModeText = extractCodexCodeModeTextOutput(output);
+  if (codeModeText !== undefined) {
+    return normalizeCodexToolOutput(codeModeText);
+  }
+
   if (typeof output === "string") {
     let structured: unknown;
     let isError = false;
@@ -927,12 +766,14 @@ function createBashToolResult(
   isError: boolean,
   backgroundTaskId?: string,
   interrupted = false,
+  exitCode?: number,
 ): {
   stdout: string;
   stderr: string;
   interrupted: boolean;
   isImage: false;
   backgroundTaskId?: string;
+  exitCode?: number;
 } {
   return {
     stdout: interrupted || isError ? "" : output,
@@ -940,6 +781,7 @@ function createBashToolResult(
     interrupted,
     isImage: false,
     ...(backgroundTaskId ? { backgroundTaskId } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
   };
 }
 
@@ -1151,18 +993,4 @@ function countContentLines(content: string): number {
     lines.pop();
   }
   return lines.length;
-}
-
-function stripOuterQuotes(value: string): string {
-  if (value.length < 2) {
-    return value;
-  }
-
-  const first = value[0];
-  const last = value[value.length - 1];
-  if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
-    return value.slice(1, -1);
-  }
-
-  return value;
 }

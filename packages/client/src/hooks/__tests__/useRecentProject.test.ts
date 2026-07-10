@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BROWSER_LOCAL_KEYS } from "../../lib/storageKeys";
 import {
-  SERVER_SCOPED_KEYS,
-  serverKey,
-  setCurrentInstallId,
-} from "../../lib/storageKeys";
-import { resolvePreferredProjectId } from "../useRecentProject";
+  extractProjectIdFromPath,
+  getProjectIdFromLocation,
+  resolvePreferredProjectId,
+} from "../useRecentProject";
 
 describe("resolvePreferredProjectId", () => {
   const projects = [{ id: "jstorrent" }, { id: "webvam" }];
@@ -26,27 +26,20 @@ describe("resolvePreferredProjectId", () => {
         }),
       },
     });
-    setCurrentInstallId("test-install");
   });
 
   afterEach(() => {
     localStorage.clear();
   });
 
-  it("prefers the valid recent project from scoped localStorage", () => {
-    localStorage.setItem(
-      serverKey("test-install", SERVER_SCOPED_KEYS.recentProject),
-      "webvam",
-    );
+  it("prefers the valid recent project from browser-local localStorage", () => {
+    localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, "webvam");
 
     expect(resolvePreferredProjectId(projects, "jstorrent")).toBe("webvam");
   });
 
   it("falls back to the caller-provided project when the recent project is stale", () => {
-    localStorage.setItem(
-      serverKey("test-install", SERVER_SCOPED_KEYS.recentProject),
-      "missing-project",
-    );
+    localStorage.setItem(BROWSER_LOCAL_KEYS.recentProject, "missing-project");
 
     expect(resolvePreferredProjectId(projects, "jstorrent")).toBe("jstorrent");
   });
@@ -59,5 +52,34 @@ describe("resolvePreferredProjectId", () => {
 
   it("returns null when no projects are available", () => {
     expect(resolvePreferredProjectId([], "jstorrent")).toBeNull();
+  });
+});
+
+describe("project context extraction", () => {
+  it("extracts a project from direct and relay route paths", () => {
+    expect(extractProjectIdFromPath("/projects/alpha/sessions/session-1")).toBe(
+      "alpha",
+    );
+    expect(
+      extractProjectIdFromPath("/remote/test/projects/beta/sessions/session-2"),
+    ).toBe("beta");
+  });
+
+  it("prefers explicit query project context over path context", () => {
+    expect(
+      getProjectIdFromLocation("/projects/path-project/sessions/session-1", ""),
+    ).toBe("path-project");
+    expect(
+      getProjectIdFromLocation("/sessions", "?project=filter-project"),
+    ).toBe("filter-project");
+    expect(
+      getProjectIdFromLocation("/git-status", "?projectId=source-project"),
+    ).toBe("source-project");
+    expect(
+      getProjectIdFromLocation(
+        "/projects/path-project/sessions/session-1",
+        "?projectId=query-project",
+      ),
+    ).toBe("query-project");
   });
 });

@@ -8,6 +8,10 @@ import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "./defaults.js";
 import { captureStartupEnvSettings } from "./envSettings.js";
 import { getDefaultCodexSessionsDir } from "./projects/codex-scanner.js";
 import type { PermissionMode } from "./sdk/types.js";
+import {
+  parseSummaryParserWorkerMode,
+  type SummaryParserWorkerMode,
+} from "./sessions/summary-parser-worker-protocol.js";
 import { getModuleEnv, harvestYaModuleEnv } from "./yaModuleEnv.js";
 
 /**
@@ -48,9 +52,11 @@ export interface Config {
   geminiSessionsDir: string;
   /** Codex sessions directory (~/.codex/sessions) */
   codexSessionsDir: string;
+  /** pi sessions directory (~/.pi/agent/sessions) */
+  piSessionsDir: string;
   /**
-   * Periodic full-tree rescan interval for codex session watcher (ms).
-   * Helps recover from missed fs.watch events on macOS. 0 disables it.
+   * Minimum periodic full-tree rescan interval for codex session watcher (ms).
+   * The watcher backs off above this floor when rescans are slow. 0 disables it.
    */
   codexWatchPeriodicRescanMs: number;
   /**
@@ -62,6 +68,12 @@ export interface Config {
   sessionIndexWriteLockTimeoutMs: number;
   /** Session index lock staleness threshold (ms). */
   sessionIndexWriteLockStaleMs: number;
+  /** Max concurrent summary parses across all session-index scopes. */
+  sessionIndexSummaryParseConcurrency: number;
+  /** Claude summary parser worker mode. Default off. */
+  claudeSummaryParserWorkerMode: SummaryParserWorkerMode;
+  /** Codex summary parser worker mode. Default on when unset. */
+  codexSummaryParserWorkerMode: SummaryParserWorkerMode;
   /** Default active session window in days. 0 disables auto-archiving. */
   sessionAutoArchiveDays: number;
   /** Project scanner cache TTL (ms). 0 = rescan every request. */
@@ -227,6 +239,9 @@ export function loadConfig(): Config {
     path.join(os.homedir(), ".gemini", "tmp");
   const codexSessionsDir =
     process.env.CODEX_SESSIONS_DIR ?? getDefaultCodexSessionsDir();
+  const piSessionsDir =
+    process.env.PI_SESSIONS_DIR ??
+    path.join(os.homedir(), ".pi", "agent", "sessions");
   // Enable periodic rescan on macOS (fs.watch misses deep file writes)
   // and Windows (fs.watch({ recursive: true }) can be unreliable for deep trees)
   const defaultCodexWatchPeriodicRescanMs =
@@ -250,13 +265,24 @@ export function loadConfig(): Config {
     1000,
     parseIntOrDefault(process.env.SESSION_INDEX_WRITE_LOCK_STALE_MS, 10000),
   );
+  const sessionIndexSummaryParseConcurrency = Math.max(
+    1,
+    parseIntOrDefault(process.env.SESSION_INDEX_SUMMARY_PARSE_CONCURRENCY, 1),
+  );
+  const claudeSummaryParserWorkerMode = parseSummaryParserWorkerMode(
+    process.env.CLAUDE_SUMMARY_PARSER_WORKER,
+  );
+  const codexSummaryParserWorkerMode =
+    process.env.CODEX_SUMMARY_PARSER_WORKER === undefined
+      ? "on"
+      : parseSummaryParserWorkerMode(process.env.CODEX_SUMMARY_PARSER_WORKER);
   const projectScanCacheTtlMs = Math.max(
     0,
     parseIntOrDefault(process.env.PROJECT_SCAN_CACHE_TTL_MS, 5000),
   );
   const sessionAutoArchiveDays = Math.max(
     0,
-    parseIntOrDefault(process.env.SESSION_AUTO_ARCHIVE_DAYS, 14),
+    parseIntOrDefault(process.env.SESSION_AUTO_ARCHIVE_DAYS, 0),
   );
   const managedUploadsDir = path.join(dataDir, "uploads");
   const extraAllowedImagePaths =
@@ -282,15 +308,21 @@ export function loadConfig(): Config {
     claudeSessionsDir,
     geminiSessionsDir,
     codexSessionsDir,
+    piSessionsDir,
     codexWatchPeriodicRescanMs,
     sessionIndexFullValidationMs,
     sessionIndexWriteLockTimeoutMs,
     sessionIndexWriteLockStaleMs,
+    sessionIndexSummaryParseConcurrency,
+    claudeSummaryParserWorkerMode,
+    codexSummaryParserWorkerMode,
     sessionAutoArchiveDays,
     projectScanCacheTtlMs,
     idleTimeoutMs:
-      parseIntOrDefault(process.env.IDLE_TIMEOUT, DEFAULT_IDLE_TIMEOUT_SECONDS) *
-      1000,
+      parseIntOrDefault(
+        process.env.IDLE_TIMEOUT,
+        DEFAULT_IDLE_TIMEOUT_SECONDS,
+      ) * 1000,
     defaultPermissionMode: parsePermissionMode(process.env.PERMISSION_MODE),
     port: parseIntOrDefault(process.env.PORT, 3400),
     portFile: process.env.PORT_FILE ?? null,

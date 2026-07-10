@@ -9,6 +9,7 @@ import {
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { useOutputToolPreviewLineCount } from "../../../hooks/useOutputAppearance";
+import { useQuoteableTextSource } from "../../../hooks/useQuoteableTextSource";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
@@ -295,11 +296,13 @@ function ContentView({
   const needsCollapse = lines.length > MAX_LINES_COLLAPSED;
   const displayLines =
     needsCollapse && !isExpanded ? lines.slice(0, MAX_LINES_COLLAPSED) : lines;
+  const displayContent = displayLines.join("\n");
+  const contentRef = useQuoteableTextSource<HTMLPreElement>(displayContent);
 
   return (
     <>
-      <pre className="grep-content code-block">
-        <code>{displayLines.join("\n")}</code>
+      <pre ref={contentRef} className="grep-content code-block">
+        <code>{displayContent}</code>
       </pre>
       {needsCollapse && (
         <button
@@ -362,9 +365,7 @@ function GrepCollapsedPreview({
               ? `${match.lineNumber}:${match.columnNumber}`
               : match.lineNumber}
           </span>
-          <span className="grep-preview-text">
-            {renderHighlightedText(match.text, match.ranges, input?.pattern)}
-          </span>
+          <GrepPreviewMatchText match={match} pattern={input?.pattern} />
         </div>
       ))}
       {hiddenMatchCount > 0 && (
@@ -373,6 +374,21 @@ function GrepCollapsedPreview({
         </div>
       )}
     </div>
+  );
+}
+
+function GrepPreviewMatchText({
+  match,
+  pattern,
+}: {
+  match: GrepMatch;
+  pattern?: string;
+}) {
+  const ref = useQuoteableTextSource<HTMLSpanElement>(match.text);
+  return (
+    <span ref={ref} className="grep-preview-text">
+      {renderHighlightedText(match.text, match.ranges, pattern)}
+    </span>
   );
 }
 
@@ -585,12 +601,14 @@ function GrepSummaryPattern({
 }) {
   const summary = getGrepUseSummary(input, projectPath);
   const scope = getGrepScope(input, projectPath);
+  const scopeValue = scope?.value ?? "";
   const rowRef = useRef<HTMLSpanElement | null>(null);
   const scopeRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [displayPattern, setDisplayPattern] = useState(input.pattern);
 
   useLayoutEffect(() => {
+    void scopeValue;
     const updateDisplayPattern = () => {
       if (expanded) {
         setDisplayPattern(input.pattern);
@@ -644,7 +662,7 @@ function GrepSummaryPattern({
       resizeObserver.observe(scopeRef.current);
     }
     return () => resizeObserver.disconnect();
-  }, [expanded, input.pattern, projectPath, scope?.value]);
+  }, [expanded, input.pattern, scopeValue]);
 
   const clipClassName = `grep-summary-pattern-clip${onToggle ? " grep-summary-pattern-action" : ""}`;
   const clipContent = onToggle ? (

@@ -8,9 +8,7 @@ export const INTERRUPT_PREAMBLE = "interrupt resumable after:";
 /** Claude CLI command-queue lanes, most to least urgent. */
 const PRIORITY_RANK = { now: 0, next: 1, later: 2 } as const;
 
-function mostUrgentPriority(
-  messages: UserMessage[],
-): UserMessage["priority"] {
+function mostUrgentPriority(messages: UserMessage[]): UserMessage["priority"] {
   let result: UserMessage["priority"];
   for (const msg of messages) {
     if (!msg.priority) continue;
@@ -207,6 +205,28 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
    */
   drain(): UserMessage[] {
     return this.queue.splice(0);
+  }
+
+  /**
+   * Remove queued messages matching a client temp id before the SDK iterator
+   * has yielded them to the provider.
+   */
+  removeByTempId(tempId: string): UserMessage[] {
+    const removed: UserMessage[] = [];
+    const kept: UserMessage[] = [];
+    for (const message of this.queue) {
+      const matches =
+        message.tempId === tempId || message.tempIds?.includes(tempId) === true;
+      if (matches) {
+        removed.push(message);
+      } else {
+        kept.push(message);
+      }
+    }
+    if (removed.length > 0) {
+      this.queue = kept;
+    }
+    return removed;
   }
 
   /* ------------------------------------------------------------------ */

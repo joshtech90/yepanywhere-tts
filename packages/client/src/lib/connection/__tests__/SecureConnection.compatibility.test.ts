@@ -64,11 +64,155 @@ function srpVerifyServerInfoProof(params: {
 }
 
 describe("SecureConnection protocol compatibility", () => {
-  it("rejects full SRP when server omits the transport nonce", async () => {
+  it("does not tear down an in-flight ensureConnected recovery", async () => {
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
       "test-password",
+    ) as unknown as {
+      ws: {
+        close: ReturnType<typeof vi.fn>;
+        onclose: unknown;
+        onerror: unknown;
+        onmessage: unknown;
+      } | null;
+      connectionState: string;
+      ensureConnected: () => Promise<void>;
+      forceReconnect: () => Promise<void>;
+      connectAndAuthenticate: ReturnType<typeof vi.fn>;
+      protocol: {
+        rejectAllPending: ReturnType<typeof vi.fn>;
+        notifySubscriptionsClosed: ReturnType<typeof vi.fn>;
+      };
+    };
+
+    let resolveConnect!: () => void;
+    conn.connectAndAuthenticate = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConnect = () => {
+            conn.connectionState = "authenticated";
+            resolve();
+          };
+        }),
+    );
+    const close = vi.fn();
+    conn.ws = {
+      close,
+      onclose: vi.fn(),
+      onerror: vi.fn(),
+      onmessage: vi.fn(),
+    };
+    conn.protocol = {
+      rejectAllPending: vi.fn(),
+      notifySubscriptionsClosed: vi.fn(),
+    };
+
+    const recovery = conn.ensureConnected();
+    await Promise.resolve();
+
+    const forced = conn.forceReconnect();
+    await Promise.resolve();
+
+    expect(conn.connectAndAuthenticate).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(conn.protocol.rejectAllPending).not.toHaveBeenCalled();
+    expect(conn.protocol.notifySubscriptionsClosed).not.toHaveBeenCalled();
+
+    resolveConnect();
+
+    await expect(recovery).resolves.toBeUndefined();
+    await expect(forced).resolves.toBeUndefined();
+    expect(conn.connectAndAuthenticate).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh forced reconnect if in-flight recovery fails", async () => {
+    const conn = new SecureConnection(
+      "ws://localhost:3400/api/ws",
+      "test-user",
+      "test-password",
+    ) as unknown as {
+      ws: {
+        close: ReturnType<typeof vi.fn>;
+        onclose: unknown;
+        onerror: unknown;
+        onmessage: unknown;
+      } | null;
+      connectionState: string;
+      ensureConnected: () => Promise<void>;
+      forceReconnect: () => Promise<void>;
+      connectAndAuthenticate: ReturnType<typeof vi.fn>;
+      protocol: {
+        rejectAllPending: ReturnType<typeof vi.fn>;
+        notifySubscriptionsClosed: ReturnType<typeof vi.fn>;
+      };
+    };
+
+    let rejectFirst!: (error: Error) => void;
+    let resolveSecond!: () => void;
+    conn.connectAndAuthenticate = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = () => {
+              conn.connectionState = "authenticated";
+              resolve();
+            };
+          }),
+      );
+    const close = vi.fn();
+    conn.ws = {
+      close,
+      onclose: vi.fn(),
+      onerror: vi.fn(),
+      onmessage: vi.fn(),
+    };
+    conn.protocol = {
+      rejectAllPending: vi.fn(),
+      notifySubscriptionsClosed: vi.fn(),
+    };
+
+    const recovery = conn.ensureConnected();
+    await Promise.resolve();
+
+    const forced = conn.forceReconnect();
+    await Promise.resolve();
+
+    expect(conn.connectAndAuthenticate).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+
+    const recoveryError = new Error("resume failed");
+    rejectFirst(recoveryError);
+
+    await expect(recovery).rejects.toBe(recoveryError);
+    await vi.waitFor(() =>
+      expect(conn.connectAndAuthenticate).toHaveBeenCalledTimes(2),
+    );
+
+    expect(conn.protocol.rejectAllPending).toHaveBeenCalledTimes(1);
+    expect(conn.protocol.notifySubscriptionsClosed).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+
+    resolveSecond();
+
+    await expect(forced).resolves.toBeUndefined();
+  });
+
+  it("rejects full SRP when server omits the transport nonce", async () => {
+    const onAuthenticated = vi.fn();
+    const conn = new SecureConnection(
+      "ws://localhost:3400/api/ws",
+      "test-user",
+      "test-password",
+      { onAuthenticated },
     ) as unknown as {
       ws: {
         readyState: number;
@@ -115,6 +259,7 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.connectionState).toBe("failed");
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(onAuthenticated).not.toHaveBeenCalled();
   });
 
   it("accepts protocol 2 full SRP during the grace period", async () => {
@@ -183,10 +328,12 @@ describe("SecureConnection protocol compatibility", () => {
   });
 
   it("uses sequenced binary encrypted envelopes on current servers", async () => {
+    const onAuthenticated = vi.fn();
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
       "test-password",
+      { onAuthenticated },
     ) as unknown as {
       ws: { readyState: number; send: ReturnType<typeof vi.fn> };
       srpSession: {
@@ -232,6 +379,7 @@ describe("SecureConnection protocol compatibility", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(reject).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledTimes(1);
+    expect(onAuthenticated).toHaveBeenCalledTimes(1);
 
     const sent = send.mock.calls[0]?.[0];
     expect(sent).toBeInstanceOf(ArrayBuffer);
@@ -253,7 +401,7 @@ describe("SecureConnection protocol compatibility", () => {
       "ws://localhost:3400/api/ws",
       "test-user",
       "test-password",
-      vi.fn(),
+      { onSessionEstablished: vi.fn() },
     ) as unknown as {
       ws: { readyState: number; send: ReturnType<typeof vi.fn> };
       srpSession: {
@@ -508,11 +656,12 @@ describe("SecureConnection protocol compatibility", () => {
 
   it("accepts protocol 2 resume during grace when transport nonce is present", async () => {
     const onSessionEstablished = vi.fn();
+    const onAuthenticated = vi.fn();
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
       "",
-      onSessionEstablished,
+      { onSessionEstablished, onAuthenticated },
     ) as unknown as {
       ws: {
         readyState: number;
@@ -573,6 +722,7 @@ describe("SecureConnection protocol compatibility", () => {
     expect(onSessionEstablished).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId, resumeProtocolVersion: 2 }),
     );
+    expect(onAuthenticated).toHaveBeenCalledTimes(1);
 
     const sent = send.mock.calls[0]?.[0];
     expect(sent).toBeInstanceOf(ArrayBuffer);
@@ -586,6 +736,106 @@ describe("SecureConnection protocol compatibility", () => {
     };
     expect(parsed.seq).toBe(0);
     expect(parsed.msg.type).toBe("client_capabilities");
+  });
+
+  it("waits for fallback SRP before notifying after invalid resume", async () => {
+    const onAuthenticated = vi.fn();
+    const conn = new SecureConnection(
+      "ws://localhost:3400/api/ws",
+      "test-user",
+      "test-password",
+      { onAuthenticated },
+    ) as unknown as {
+      ws: {
+        readyState: number;
+        send: ReturnType<typeof vi.fn>;
+        close: ReturnType<typeof vi.fn>;
+      };
+      storedSession: {
+        wsUrl: string;
+        username: string;
+        sessionId: string;
+        sessionKey: string;
+        resumeProtocolVersion?: number;
+      } | null;
+      srpSession: {
+        verifyServer: (m2: string) => Promise<boolean>;
+        getSessionKey: () => Uint8Array;
+      };
+      connectionState: string;
+      sessionKey: Uint8Array | null;
+      startFullSrpHandshake: (
+        reject: (err: Error) => void,
+      ) => Promise<void>;
+      handleSrpResumeResponse: (
+        data: string,
+        resolve: () => void,
+        reject: (err: Error) => void,
+      ) => Promise<void>;
+      handleSrpVerify: (
+        data: string,
+        resolve: () => void,
+        reject: (err: Error) => void,
+      ) => Promise<void>;
+    };
+
+    const send = vi.fn();
+    conn.ws = { readyState: 1, send, close: vi.fn() };
+    conn.storedSession = {
+      wsUrl: "ws://localhost:3400/api/ws",
+      username: "test-user",
+      sessionId: "sess-invalid-resume",
+      sessionKey: bytesBase64(generateRandomKey()),
+      resumeProtocolVersion: 3,
+    };
+    conn.startFullSrpHandshake = vi.fn(async () => {
+      conn.connectionState = "srp_hello_sent";
+    });
+
+    const resumeResolve = vi.fn();
+    const resumeReject = vi.fn();
+    await conn.handleSrpResumeResponse(
+      JSON.stringify({ type: "srp_invalid", reason: "expired" }),
+      resumeResolve,
+      resumeReject,
+    );
+
+    expect(conn.startFullSrpHandshake).toHaveBeenCalledTimes(1);
+    expect(resumeResolve).not.toHaveBeenCalled();
+    expect(resumeReject).not.toHaveBeenCalled();
+    expect(onAuthenticated).not.toHaveBeenCalled();
+
+    const rawKey = generateRandomKey();
+    const baseSessionKey = deriveSecretboxKey(rawKey);
+    const sessionId = "sess-fallback-srp";
+    const transportNonce = nonceBase64(19);
+    conn.srpSession = {
+      verifyServer: vi.fn().mockResolvedValue(true),
+      getSessionKey: vi.fn().mockReturnValue(rawKey),
+    };
+
+    const verifyResolve = vi.fn();
+    const verifyReject = vi.fn();
+    await conn.handleSrpVerify(
+      JSON.stringify({
+        type: "srp_verify",
+        M2: "abc123",
+        sessionId,
+        transportNonce,
+        serverInfoProof: srpVerifyServerInfoProof({
+          sessionId,
+          transportNonce,
+          key: baseSessionKey,
+        }),
+      }),
+      verifyResolve,
+      verifyReject,
+    );
+
+    expect(verifyResolve).toHaveBeenCalledTimes(1);
+    expect(verifyReject).not.toHaveBeenCalled();
+    expect(onAuthenticated).toHaveBeenCalledTimes(1);
+    expect(conn.sessionKey).not.toBeNull();
   });
 
   it("records unstamped stored sessions as protocol 2 after grace resume", async () => {

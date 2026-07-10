@@ -114,9 +114,8 @@ metadata-only parts.
 
 A provider review against opencode 1.17.9 (the prior tables were sampled vs
 1.15.13) closed most rendering/interaction gaps. See
-[`opencode-copilot.md`](opencode-copilot.md) and the gitignored
-`tasks/030-opencode-provider-element-review.md` for the full element list;
-key shape correction and closures:
+[`opencode-copilot.md`](opencode-copilot.md) for the review plan and the full
+element list. Key shape correction and closures:
 
 - **Unified tool part.** 1.16+ streams a tool as a single `type:"tool"` part
   (`callID` + nested `state.{status,input,output,error}`), confirmed via a live
@@ -342,6 +341,9 @@ the existing `asOpenCodeMessage` / `asOpenCodeStoredPart` validators):
 - Change detection: `getSessionSummaryIfChanged` should compare the session
   row's `time_updated` (and a message-count) rather than only the db-file
   mtime, since every session shares one db file (coarse mtime over-triggers).
+  The index side of this contract (the `sharedFilePath` enumeration flag and
+  the terminal "unchanged" rule that keeps validation off the CLI) lives in
+  [`session-index-validation.md`](session-index-validation.md).
 - Enumeration: `listSessions` / `listSessionFiles` should prefer DB rows
   (`SELECT id, time_updated FROM session WHERE project_id = ?`) over the CLI
   `session list`, keeping the CLI only as the legacy fallback.
@@ -374,12 +376,10 @@ length at the source.
 Independently, the client gate matters: `effectiveShowThinking` resolves the
 "default" Show-thinking preference to **off** for every provider except Codex
 (`packages/client/src/lib/showThinking.ts`), so opencode thinking is hidden
-unless the user sets the toggle to "on". That preference is server-scoped and
-was **not surviving reload** — a provider-agnostic race: `useModelSettings`
-reads it synchronously at mount, before the async `/api/server-info` install-id
-fetch resolves, and `showThinking` has no legacy-key fallback, so it defaulted
-every reload. Fixed by re-reading once the install-id lands (unless changed
-in-session).
+unless the user sets the toggle to "on". That preference is browser-local under
+`yep-anywhere-show-thinking` (`BROWSER_LOCAL_KEYS.showThinking`), so it survives
+reloads in the same browser profile; there is no client install-id scoping or
+async `/api/server-info` dependency in the settings path.
 
 ## Gaps To Close
 

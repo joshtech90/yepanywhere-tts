@@ -161,6 +161,8 @@ describe("PushService", () => {
         toolApproval: true,
         userQuestion: true,
         sessionHalted: false,
+        projectInactive: false,
+        yaInactive: false,
       });
       expect(pushService.isNotificationTypeEnabled("sessionHalted")).toBe(
         false,
@@ -177,6 +179,57 @@ describe("PushService", () => {
       await newService.initialize();
 
       expect(newService.isNotificationTypeEnabled("sessionHalted")).toBe(true);
+    });
+
+    it("merges new default settings into older persisted settings", async () => {
+      await fs.writeFile(
+        path.join(tempDir, "push-subscriptions.json"),
+        JSON.stringify(
+          {
+            version: 1,
+            subscriptions: {},
+            settings: {
+              toolApproval: false,
+              userQuestion: true,
+              sessionHalted: false,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      const newService = new PushService({
+        dataDir: tempDir,
+        vapidKeys,
+      });
+      await newService.initialize();
+
+      expect(newService.getNotificationSettings()).toEqual({
+        toolApproval: false,
+        userQuestion: true,
+        sessionHalted: false,
+        projectInactive: false,
+        yaInactive: false,
+      });
+    });
+
+    it("persists explicit inactivity settings", async () => {
+      await pushService.setNotificationSettings({
+        projectInactive: true,
+        yaInactive: true,
+      });
+
+      const newService = new PushService({
+        dataDir: tempDir,
+        vapidKeys,
+      });
+      await newService.initialize();
+
+      expect(newService.isNotificationTypeEnabled("projectInactive")).toBe(
+        true,
+      );
+      expect(newService.isNotificationTypeEnabled("yaInactive")).toBe(true);
     });
   });
 
@@ -274,6 +327,41 @@ describe("PushService", () => {
       expect(webPush.sendNotification).toHaveBeenCalledWith(
         mockSubscription,
         expect.stringContaining('"type":"session-halted"'),
+        { urgency: "high" },
+      );
+    });
+
+    it("should request high urgency delivery for inactivity notifications", async () => {
+      vi.mocked(webPush.sendNotification).mockResolvedValue({
+        statusCode: 201,
+        body: "",
+        headers: {},
+      });
+
+      await pushService.subscribe("profile-1", mockSubscription);
+
+      await pushService.sendToBrowserProfile("profile-1", {
+        type: "project-inactive",
+        projectId: "project-1",
+        projectName: "Project",
+        timestamp: new Date().toISOString(),
+      });
+
+      expect(webPush.sendNotification).toHaveBeenCalledWith(
+        mockSubscription,
+        expect.stringContaining('"type":"project-inactive"'),
+        { urgency: "high" },
+      );
+
+      await pushService.sendToBrowserProfile("profile-1", {
+        type: "ya-inactive",
+        projectCount: 1,
+        timestamp: new Date().toISOString(),
+      });
+
+      expect(webPush.sendNotification).toHaveBeenCalledWith(
+        mockSubscription,
+        expect.stringContaining('"type":"ya-inactive"'),
         { urgency: "high" },
       );
     });

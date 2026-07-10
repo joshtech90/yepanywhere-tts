@@ -1,10 +1,22 @@
 # Provider and model compact glyphs (top-right status)
 
+> Compact provider and model glyphs preserve recognizable provider/model
+> identity on status surfaces where full names are too wide.
+
+Topic: provider-model-glyphs
+
 ## Goal
 
 Replace the verbose provider + model text in the composer header badge with
 something that still communicates provider identity at a glance without
 occupying as much horizontal space.
+
+`ProviderBadge` surfaces have grown beyond the session header: the New
+Session model picker options and its below-composer chip, and the floating
+composer's default-model chip render the same badge, so the compactness
+constraints here apply to all of them. (A session-composer top-right float
+shipped briefly and was removed as redundant with the header badge —
+2026-07-03.)
 
 ## Current implementation (unicode symbols) — not good enough
 
@@ -57,12 +69,15 @@ disambiguates within-color cases.
 
 Model sub-family abbreviations (appended after provider abbrev):
 
-| Model family | Short | Compact rendering (claude) |
+| Model family | Short | Compact rendering |
 |--------------|-------|---------------------------|
 | sonnet       | `S`   | `Cl S4.6`                 |
 | opus         | `Op`  | `Cl Op4`                  |
 | haiku        | `Hk`  | `Cl Hk3`                  |
 | (unknown)    | —     | `Cl 4.6` (version only)   |
+| gpt-5.6-sol  | `☀`   | `Cd ☀`                    |
+| gpt-5.6-terra| `♁`   | `Cd ♁`                    |
+| gpt-5.6-luna | `☾`   | `Cd ☾`                    |
 | gpt-5.4-spark | `⚡`   | `Cd ⚡`                    |
 | gpt-5.4-codex-spark | `⚡`   | `Cd ⚡`                |
 | gpt-5.3-codex-spark | `⚡`   | `Cd ⚡`                |
@@ -74,6 +89,9 @@ Model sub-family abbreviations (appended after provider abbrev):
 
 The pattern is: provider abbrev + space + model short. Fits in ~6–8 chars
 for all common cases. Tooltip shows the raw full model ID (already wired).
+Named variants use a recognizable semantic glyph where the name supplies one;
+the GPT-5.6 Sol/Terra/Luna family is the current example. Sol's `☀` is
+deliberately a sun-with-rays glyph that remains legible at status-badge size.
 
 ## SVG option (medium effort, higher quality)
 

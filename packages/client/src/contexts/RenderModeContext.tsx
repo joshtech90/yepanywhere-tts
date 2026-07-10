@@ -27,6 +27,7 @@ interface UseRenderModeToggleOptions {
 }
 
 const RenderModeContext = createContext<RenderModeContextValue | null>(null);
+const EMPTY_RESET_DEPENDENCIES: readonly unknown[] = [];
 
 export function RenderModeProvider({ children }: { children: ReactNode }) {
   const [globalMode, setGlobalMode] = useState<RenderMode>("rendered");
@@ -50,7 +51,9 @@ export function RenderModeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toggleGlobalMode = useCallback(() => {
-    setGlobalMode((current) => (current === "rendered" ? "source" : "rendered"));
+    setGlobalMode((current) =>
+      current === "rendered" ? "source" : "rendered",
+    );
     setOverrideIds(() => new Set());
     setResetVersion((current) => current + 1);
   }, []);
@@ -84,10 +87,20 @@ export function RenderModeProvider({ children }: { children: ReactNode }) {
       toggleGlobalMode,
       setOverrideActive,
     }),
-    [globalMode, overrideIds.size, resetVersion, setOverrideActive, toggleGlobalMode],
+    [
+      globalMode,
+      overrideIds.size,
+      resetVersion,
+      setOverrideActive,
+      toggleGlobalMode,
+    ],
   );
 
-  return <RenderModeContext.Provider value={value}>{children}</RenderModeContext.Provider>;
+  return (
+    <RenderModeContext.Provider value={value}>
+      {children}
+    </RenderModeContext.Provider>
+  );
 }
 
 export function useOptionalRenderModeContext() {
@@ -105,11 +118,14 @@ export function useRenderModeToggle(
   const resetVersion =
     participateInGlobalMode && context ? context.resetVersion : 0;
   const renderWhenDisabled = options.renderWhenDisabled ?? true;
-  const resetDependencies = options.resetDependencies ?? [];
+  const resetDependencies =
+    options.resetDependencies ?? EMPTY_RESET_DEPENDENCIES;
   const registrationId = useId();
   const [overrideMode, setOverrideMode] = useState<RenderMode | null>(null);
 
   useEffect(() => {
+    void canToggle;
+    void resetVersion;
     setOverrideMode(null);
   }, [canToggle, resetVersion, ...resetDependencies]);
 
@@ -143,7 +159,8 @@ export function useRenderModeToggle(
 
     setOverrideMode((current) => {
       const effectiveMode = current ?? globalMode;
-      const nextMode: RenderMode = effectiveMode === "rendered" ? "source" : "rendered";
+      const nextMode: RenderMode =
+        effectiveMode === "rendered" ? "source" : "rendered";
       return nextMode === globalMode ? null : nextMode;
     });
   }, [canToggle, globalMode]);

@@ -8,9 +8,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
+  type CacheMissBillingRecord,
+  type DurableRecapMessage,
   type ProviderName,
   type PromptSuggestionMode,
+  type RecapMode,
   type TranscriptDisplayObject,
+  type UrlProjectId,
+  type WorkstreamId,
+  normalizeRecapAfterSeconds,
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
 
@@ -25,6 +31,10 @@ export interface SessionMetadata {
   parentSessionId?: string;
   /** Saved viewer-only objects placed in the transcript. */
   transcriptDisplayObjects?: TranscriptDisplayObject[];
+  /** Durable YA-owned recap rows merged into the transcript view only. */
+  recapMessages?: DurableRecapMessage[];
+  /** Provider usage evidence for warm/forked prefix cache hits and recomputes. */
+  cacheMissBillingEvents?: CacheMissBillingRecord[];
   /**
    * YA model id (launch alias, e.g. "opus"/"default") chosen when YA started
    * this session. Persisted so per-model settings still key by the requested
@@ -48,6 +58,21 @@ export interface SessionMetadata {
   heartbeatForceAfterMinutes?: number | null;
   /** Per-session prompt-suggestion preference (off | native) */
   promptSuggestionMode?: PromptSuggestionMode;
+  /** Browser-away duration before YA asks the live process for a recap. */
+  recapAfterSeconds?: number;
+  /**
+   * Per-session recap strategy (off | native | side-session | fork). Durable
+   * so a process-dead session still knows whether/how to recap — required to
+   * revive a cold fork-mode session on the away trigger. See
+   * topics/fork-recap.md.
+   */
+  recapMode?: RecapMode;
+  /** YA's effective project/working directory for this session. */
+  workingProjectId?: UrlProjectId;
+  /** Provider transcript project when it differs from the effective project. */
+  transcriptProjectId?: UrlProjectId;
+  /** YA workstream lane for this session. Missing means the implicit main lane. */
+  workstreamId?: WorkstreamId;
 }
 
 export interface SessionMetadataState {
@@ -58,6 +83,8 @@ export interface SessionMetadataState {
 }
 
 const CURRENT_VERSION = 2;
+const MAX_RECAP_MESSAGES_PER_SESSION = 200;
+const MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION = 100;
 
 export interface SessionMetadataServiceOptions {
   /** Directory to store metadata state (defaults to ~/.yep-anywhere) */
@@ -161,6 +188,60 @@ export class SessionMetadataService {
     return [
       ...(this.state.sessions[sessionId]?.transcriptDisplayObjects ?? []),
     ];
+  }
+
+  getRecapMessages(sessionId: string): DurableRecapMessage[] {
+    return [...(this.state.sessions[sessionId]?.recapMessages ?? [])];
+  }
+
+  getCacheMissBillingEvents(limit = 200): CacheMissBillingRecord[] {
+    const safeLimit = Math.max(0, Math.min(500, Math.floor(limit)));
+    if (safeLimit === 0) {
+      return [];
+    }
+    return Object.values(this.state.sessions)
+      .flatMap((metadata) => metadata.cacheMissBillingEvents ?? [])
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      .slice(0, safeLimit);
+  }
+
+  async addCacheMissBillingEvent(
+    sessionId: string,
+    event: CacheMissBillingRecord,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      cacheMissBillingEvents: [
+        ...(metadata.cacheMissBillingEvents ?? []),
+        event,
+      ].slice(-MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION),
+    }));
+    await this.save();
+  }
+
+  async addRecapMessage(
+    sessionId: string,
+    message: DurableRecapMessage,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => {
+      const existing = metadata.recapMessages ?? [];
+      const duplicate = existing.some(
+        (candidate) =>
+          candidate.uuid === message.uuid ||
+          (candidate.content === message.content &&
+            candidate.timestamp === message.timestamp),
+      );
+      const nextMessages = duplicate
+        ? existing.map((candidate) =>
+            candidate.uuid === message.uuid ? message : candidate,
+          )
+        : [...existing, message];
+      return {
+        ...metadata,
+        recapMessages: nextMessages.slice(-MAX_RECAP_MESSAGES_PER_SESSION),
+      };
+    });
+    await this.save();
   }
 
   async addTranscriptDisplayObject(
@@ -310,6 +391,41 @@ export class SessionMetadataService {
   }
 
   /**
+   * Set YA's effective project for a session without modifying provider state.
+   *
+   * `transcriptProjectId` is only needed when the provider transcript still
+   * lives under a different project than `workingProjectId`.
+   */
+  async setWorkingProject(
+    sessionId: string,
+    workingProjectId: UrlProjectId | undefined,
+    transcriptProjectId: UrlProjectId | undefined,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      workingProjectId,
+      transcriptProjectId: workingProjectId ? transcriptProjectId : undefined,
+    }));
+    await this.save();
+  }
+
+  /**
+   * Set YA's workstream lane for a session without modifying provider state.
+   *
+   * Undefined means the implicit main workstream for the effective project.
+   */
+  async setWorkstream(
+    sessionId: string,
+    workstreamId: WorkstreamId | undefined,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      workstreamId,
+    }));
+    await this.save();
+  }
+
+  /**
    * Get the provider for a session.
    * Returns undefined if the provider was never explicitly saved.
    */
@@ -339,6 +455,23 @@ export class SessionMetadataService {
    */
   getPromptSuggestionMode(sessionId: string): PromptSuggestionMode | undefined {
     return this.state.sessions[sessionId]?.promptSuggestionMode;
+  }
+
+  /**
+   * Get the persisted away-recap timing preference for a session.
+   * Returns undefined if it was never explicitly saved (use default).
+   */
+  getRecapAfterSeconds(sessionId: string): number | undefined {
+    return this.state.sessions[sessionId]?.recapAfterSeconds;
+  }
+
+  /**
+   * Get the persisted recap strategy for a session, or undefined if it was
+   * never explicitly saved (use default). Used to decide whether a cold
+   * (process-dead) session should be revived for a forked recap.
+   */
+  getRecapMode(sessionId: string): RecapMode | undefined {
+    return this.state.sessions[sessionId]?.recapMode;
   }
 
   /**
@@ -373,6 +506,8 @@ export class SessionMetadataService {
       heartbeatTurnText?: string | null;
       heartbeatForceAfterMinutes?: number | null;
       promptSuggestionMode?: PromptSuggestionMode | null;
+      recapAfterSeconds?: number | null;
+      recapMode?: RecapMode | null;
     },
   ): Promise<void> {
     this.updateSessionMetadata(sessionId, (metadata) => {
@@ -424,6 +559,19 @@ export class SessionMetadataService {
         result.promptSuggestionMode = updates.promptSuggestionMode ?? undefined;
       }
 
+      if (updates.recapAfterSeconds !== undefined) {
+        result.recapAfterSeconds =
+          updates.recapAfterSeconds === null
+            ? undefined
+            : normalizeRecapAfterSeconds(updates.recapAfterSeconds);
+      }
+
+      // null clears (revert to default); "off" is meaningful-stored — it must
+      // override the default on resume — so it is not collapsed away.
+      if (updates.recapMode !== undefined) {
+        result.recapMode = updates.recapMode ?? undefined;
+      }
+
       return result;
     });
     await this.save();
@@ -449,6 +597,12 @@ export class SessionMetadataService {
     if (updated.transcriptDisplayObjects?.length) {
       cleaned.transcriptDisplayObjects = updated.transcriptDisplayObjects;
     }
+    if (updated.recapMessages?.length) {
+      cleaned.recapMessages = updated.recapMessages;
+    }
+    if (updated.cacheMissBillingEvents?.length) {
+      cleaned.cacheMissBillingEvents = updated.cacheMissBillingEvents;
+    }
     if (updated.requestedModel) cleaned.requestedModel = updated.requestedModel;
     if (updated.provider) cleaned.provider = updated.provider;
     if (updated.executor) cleaned.executor = updated.executor;
@@ -467,6 +621,21 @@ export class SessionMetadataService {
     }
     if (updated.promptSuggestionMode) {
       cleaned.promptSuggestionMode = updated.promptSuggestionMode;
+    }
+    if (updated.recapAfterSeconds !== undefined) {
+      cleaned.recapAfterSeconds = updated.recapAfterSeconds;
+    }
+    if (updated.recapMode) {
+      cleaned.recapMode = updated.recapMode;
+    }
+    if (updated.workingProjectId) {
+      cleaned.workingProjectId = updated.workingProjectId;
+    }
+    if (updated.transcriptProjectId) {
+      cleaned.transcriptProjectId = updated.transcriptProjectId;
+    }
+    if (updated.workstreamId) {
+      cleaned.workstreamId = updated.workstreamId;
     }
 
     if (Object.keys(cleaned).length === 0) {

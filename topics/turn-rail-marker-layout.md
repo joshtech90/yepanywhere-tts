@@ -57,3 +57,79 @@ dash, dot, hit target, and preview label all use it, so they stay aligned.
 `MARKER_SPREAD_PX`, `MARKER_HIT_MIN_PX`, `MARKER_HIT_MAX_PX` are internal tuning
 constants in `UserTurnNavigator.tsx`, **not** user-facing settings. If a setting
 is ever wanted, expose `MARKER_SPREAD_PX` (0 → max) as the one knob.
+
+## Search preview hover stability
+
+Ctrl-S search mode renders match-preview excerpts beside the turn rail, and
+hovering a preview may expand it into a richer multi-line facsimile. Expansion
+must keep the preview's right edge anchored: the visual card may grow leftward,
+but it must not translate its hitbox horizontally away from the pointer. A
+horizontal shift makes pointer-leave collapse the preview, which moves it back
+under the pointer and creates a hover/collapse loop.
+
+Preview-label hover is presentation-only: it may expand the hovered card, but it
+must not recenter or page the preview window, because moving the label stack
+under the pointer causes the same hover/collapse loop. The right-side rail
+markers may still recenter/page the preview window on hover, since their hit
+targets stay fixed while the text labels move. A click on either a marker or a
+preview label is a committed jump target; closing search after that jump should
+leave the full transcript centered on the clicked row rather than restoring the
+pre-search scroll position.
+
+Marker-hover paging is sticky within a horizontal band. Once a hashmark owns the
+preview window, entering another marker at the same pointer Y must not page the
+window; the user may move horizontally between the rail marks and their preview
+text without a flicker. Paging to a different marker happens when the pointer
+actually moves up/down to another band, or after the pointer fully leaves and the
+preview state clears.
+
+Active search previews at the rail edges anchor inside the rail instead of
+remaining vertically centered. A first-turn / top-edge hit uses the rail top as
+the preview top, and a bottom-edge hit uses the rail bottom as the preview
+bottom, so at least the hit line remains visible instead of slipping under the
+session header or footer chrome. Non-active hover expansion keeps the existing
+center position so hovering a preview label remains presentation-only.
+
+Pre-hover search previews, including the active hit, are dense one-line hit
+summaries rather than mini cards. The collapsed box height must be large enough
+for one readable text line, and the layout pitch should leave only about a
+one-pixel visual gap between boxes; do not reclaim height by clipping the text
+line into a hairline. Their displayed text is re-excerpted around the first
+match so every shown label exposes the needle on its single visible line. Hover
+expansion may still show the richer multi-line context from the search
+projection.
+
+Follow-up wish: restore the older pointer-driven rail browse behavior where
+moving the mouse near the right-side turn rail shifts which turn previews are
+shown, without requiring a committed scroll/jump first. Combine that with the
+dense preview contract above: before mouseover/focus each candidate stays a
+single first-match line rather than a whole-turn card; mouseover/focus expands
+only that candidate to richer whole-turn or multi-line context. The preview
+window may follow vertical pointer bands near the rail, but the marker hit
+targets stay fixed and must not reintroduce the hover/collapse loops above.
+
+## Bottom-bar position age
+
+The composer bottom bar may show a contextual turn-position age immediately to
+the left of the session last-activity age. The contract is narrow:
+
+- A hovered/focused turn-rail marker owns the contextual age while its preview
+  tooltip is active.
+- Otherwise, when the transcript is not following the live tail, ordinary
+  scrollbar movement owns the contextual age. Use the most recent visible turn
+  end; if no turn end is visible because the viewport is inside a long turn,
+  fall back to the timestamp nearest the middle of the visible transcript.
+- Hover/focus wins over scroll position. The contextual age clears when the
+  preview clears, the rail unmounts, or the transcript returns to follow mode.
+- Marker-hover age comes from the marker anchor's message timestamp, not from
+  rendered DOM text or the preview label. Normal turn notches use the user
+  prompt's timestamp; search-mode anchors may use the row they target.
+  Scrollbar-position age comes from the visible transcript rows and their
+  source message timestamps.
+- The bottom bar renders the contextual age as its own neighbor chip. It is not
+  gated by the ordinary session last-activity chip's stale threshold; compare
+  against the session last-activity compact label even when that label is
+  hidden, and suppress the contextual chip only when the two labels match.
+- The chip is informational only: noninteractive, muted relative to warning
+  liveness/status chips, and formatted as `at X ago` so it reads as a position
+  qualifier for the adjacent session activity age.

@@ -51,7 +51,7 @@ export function QuestionAnswerPanel({
 
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<SelectedAnswers>({});
-  // Persist "Other" text inputs to localStorage keyed by sessionId
+  // Persist "Other" text inputs to source-scoped localStorage.
   const [otherTexts, setOtherText, clearOtherTexts] =
     useQuestionOtherDrafts(sessionId);
   const [submitting, setSubmitting] = useState(false);
@@ -214,7 +214,6 @@ export function QuestionAnswerPanel({
   }, [
     submitting,
     currentQuestionAnswered,
-    currentQuestion,
     isLastQuestion,
     allAnswered,
     isOtherSelected,

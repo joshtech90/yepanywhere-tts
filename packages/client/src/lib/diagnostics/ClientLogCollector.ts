@@ -1,5 +1,7 @@
 import { fetchJSON } from "../../api/client";
-import { connectionManager } from "../connection";
+import { subscribeClientSummarySourceKey } from "../clientSummaryStore";
+import { getSessionTranscriptMemoryStats } from "../sessionDetail/sessionDetailStore";
+import { getSourceRuntimeRegistry } from "../sourceRuntime";
 import { generateUUID } from "../uuid";
 import {
   countEntries,
@@ -52,7 +54,8 @@ export class ClientLogCollector {
   private _origLog: typeof console.log | null = null;
   private _origWarn: typeof console.warn | null = null;
   private _origError: typeof console.error | null = null;
-  private _unsubscribeState: (() => void) | null = null;
+  private _unsubscribeStatus: (() => void) | null = null;
+  private _unsubscribeSourceKey: (() => void) | null = null;
   private _errorHandler: ((e: ErrorEvent) => void) | null = null;
   private _rejectionHandler: ((e: PromiseRejectionEvent) => void) | null = null;
   private _flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -89,14 +92,13 @@ export class ClientLogCollector {
     this._writeTelemetryEntry();
     this._startTelemetry();
 
-    this._unsubscribeState = connectionManager.on("stateChange", (state) => {
-      if (state === "connected") {
-        this.flush();
-      }
+    this._subscribeCurrentTransportStatus();
+    this._unsubscribeSourceKey = subscribeClientSummarySourceKey(() => {
+      this._subscribeCurrentTransportStatus();
     });
 
     // Flush immediately if already connected (e.g. setting enabled mid-session)
-    if (connectionManager.state === "connected") {
+    if (this._isCurrentTransportReady()) {
       this.flush();
     }
   }
@@ -107,10 +109,10 @@ export class ClientLogCollector {
 
     this._restoreConsole();
 
-    if (this._unsubscribeState) {
-      this._unsubscribeState();
-      this._unsubscribeState = null;
-    }
+    this._unsubscribeStatus?.();
+    this._unsubscribeStatus = null;
+    this._unsubscribeSourceKey?.();
+    this._unsubscribeSourceKey = null;
     this._clearScheduledFlush();
     this._stopTelemetry();
 
@@ -203,7 +205,7 @@ export class ClientLogCollector {
   }
 
   private _scheduleFlush(): void {
-    if (!this._started || connectionManager.state !== "connected") return;
+    if (!this._started || !this._isCurrentTransportReady()) return;
     if (this._flushTimer) return;
     this._flushTimer = setTimeout(() => {
       this._flushTimer = null;
@@ -228,6 +230,28 @@ export class ClientLogCollector {
     if (!this._telemetryTimer) return;
     clearInterval(this._telemetryTimer);
     this._telemetryTimer = null;
+  }
+
+  private _subscribeCurrentTransportStatus(): void {
+    this._unsubscribeStatus?.();
+    this._unsubscribeStatus = null;
+    if (!this._started) return;
+
+    const transport = getSourceRuntimeRegistry().getCurrentSourceRuntime()
+      .transport;
+    this._unsubscribeStatus = transport.status.subscribe(() => {
+      if (this._isCurrentTransportReady()) {
+        this.flush();
+      }
+    });
+  }
+
+  private _isCurrentTransportReady(): boolean {
+    return (
+      getSourceRuntimeRegistry()
+        .getCurrentSourceRuntime()
+        .transport.status.getSnapshot().state === "ready"
+    );
   }
 
   private _writeTelemetryEntry(): void {
@@ -255,13 +279,16 @@ export class ClientLogCollector {
         typeof document !== "undefined"
           ? {
               nodes: document.getElementsByTagName("*").length,
-              messageRows:
-                document.querySelectorAll(".message-render-row").length,
+              messageRows: document.querySelectorAll(".message-render-row")
+                .length,
               streamingBlocks:
                 document.querySelectorAll(".streaming-block").length,
               toolRows: document.querySelectorAll(".tool-row").length,
             }
           : null,
+      // Attributes multi-day heap growth to transcript-store retention vs
+      // DOM/other without needing a live heap snapshot from the device.
+      transcriptMemory: getSessionTranscriptMemoryStats(),
     };
     this._writeEntry(
       "info",

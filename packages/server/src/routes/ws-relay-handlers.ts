@@ -14,8 +14,10 @@ import type {
   BinaryFormatValue,
   OriginMetadata,
   RelayRequest,
+  RelayUploadError,
   RelaySpeechEvent,
   RelaySubscribe,
+  RelayStagedUploadStart,
   RelayUnsubscribe,
   RelayUploadChunk,
   RelayUploadEnd,
@@ -54,6 +56,7 @@ import {
   createActivitySubscription,
   createSessionSubscription,
 } from "../subscriptions.js";
+import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { UploadManager } from "../uploads/manager.js";
 import type { EventBus, FocusedSessionWatchManager } from "../watcher/index.js";
@@ -159,6 +162,8 @@ export interface ConnectionState {
 export interface RelayUploadState {
   /** Client-provided upload ID */
   clientUploadId: string;
+  /** Upload storage backend */
+  uploadKind: "session" | "draft-staging";
   /** Server-generated upload ID from UploadManager */
   serverUploadId: string;
   /** Expected total size */
@@ -187,6 +192,27 @@ export interface WSAdapter {
  */
 export type SendFn = (msg: YepMessage) => void;
 
+function relayUploadErrorCode(error: unknown): string | undefined {
+  if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOSPC") {
+    return "DISK_FULL";
+  }
+  return undefined;
+}
+
+function relayUploadError(
+  uploadId: string,
+  error: string,
+  cause: unknown,
+): RelayUploadError {
+  const code = relayUploadErrorCode(cause);
+  return {
+    type: "upload_error",
+    uploadId,
+    error,
+    ...(code ? { code } : {}),
+  };
+}
+
 /**
  * Dependencies for relay handlers.
  */
@@ -201,6 +227,8 @@ export interface RelayHandlerDeps {
   eventBus: EventBus;
   /** Upload manager for handling file uploads */
   uploadManager: UploadManager;
+  /** Attachment staging service for draft-staged uploads */
+  attachmentStagingService?: AttachmentStagingService;
   /** Remote access service for SRP authentication (optional for direct, required for relay) */
   remoteAccessService?: RemoteAccessService;
   /** Remote session service for session persistence (optional for direct, required for relay) */
@@ -660,6 +688,35 @@ export function handleUnsubscribe(
   }
 }
 
+async function writeRelayUploadChunk(
+  state: RelayUploadState,
+  chunk: Buffer,
+  uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
+): Promise<number> {
+  if (state.uploadKind === "draft-staging") {
+    if (!attachmentStagingService) {
+      throw new Error("Attachment staging is unavailable");
+    }
+    return attachmentStagingService.writeChunk(state.serverUploadId, chunk);
+  }
+
+  return uploadManager.writeChunk(state.serverUploadId, chunk);
+}
+
+async function cancelRelayUpload(
+  state: RelayUploadState,
+  uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
+): Promise<void> {
+  if (state.uploadKind === "draft-staging") {
+    await attachmentStagingService?.cancelUpload(state.serverUploadId);
+    return;
+  }
+
+  await uploadManager.cancelUpload(state.serverUploadId);
+}
+
 /**
  * Handle upload_start message.
  */
@@ -704,6 +761,7 @@ export async function handleUploadStart(
 
     uploads.set(uploadId, {
       clientUploadId: uploadId,
+      uploadKind: "session",
       serverUploadId,
       expectedSize: size,
       bytesReceived: 0,
@@ -719,7 +777,69 @@ export async function handleUploadStart(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to start upload";
-    send({ type: "upload_error", uploadId, error: message });
+    send(relayUploadError(uploadId, message, err));
+  }
+}
+
+/**
+ * Handle staged_upload_start message.
+ */
+export async function handleStagedUploadStart(
+  uploads: Map<string, RelayUploadState>,
+  msg: RelayStagedUploadStart,
+  send: SendFn,
+  attachmentStagingService?: AttachmentStagingService,
+): Promise<void> {
+  const { uploadId, batchId, filename, size, mimeType, width, height } = msg;
+
+  if (uploads.has(uploadId)) {
+    send({
+      type: "upload_error",
+      uploadId,
+      error: "Upload ID already in use",
+    });
+    return;
+  }
+
+  if (!attachmentStagingService) {
+    send({
+      type: "upload_error",
+      uploadId,
+      error: "Attachment staging is unavailable",
+    });
+    return;
+  }
+
+  try {
+    const { uploadId: serverUploadId } =
+      await attachmentStagingService.startDraftUpload({
+        batchId,
+        originalName: filename,
+        size,
+        mimeType,
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {}),
+      });
+
+    uploads.set(uploadId, {
+      clientUploadId: uploadId,
+      uploadKind: "draft-staging",
+      serverUploadId,
+      expectedSize: size,
+      bytesReceived: 0,
+      lastProgressReport: 0,
+      pendingWrites: [],
+    });
+
+    send({ type: "upload_progress", uploadId, bytesReceived: 0 });
+
+    console.log(
+      `[WS Relay] Staged upload started: ${uploadId} (${filename}, ${size} bytes)`,
+    );
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to start staged upload";
+    send(relayUploadError(uploadId, message, err));
   }
 }
 
@@ -731,6 +851,7 @@ export async function handleUploadChunk(
   msg: RelayUploadChunk,
   send: SendFn,
   uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
 ): Promise<void> {
   const { uploadId, offset, data } = msg;
 
@@ -758,9 +879,11 @@ export async function handleUploadChunk(
 
   try {
     const chunk = Buffer.from(data, "base64");
-    const bytesReceived = await uploadManager.writeChunk(
-      state.serverUploadId,
+    const bytesReceived = await writeRelayUploadChunk(
+      state,
       chunk,
+      uploadManager,
+      attachmentStagingService,
     );
 
     state.bytesReceived = bytesReceived;
@@ -775,10 +898,10 @@ export async function handleUploadChunk(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to write chunk";
-    send({ type: "upload_error", uploadId, error: message });
+    send(relayUploadError(uploadId, message, err));
     uploads.delete(uploadId);
     try {
-      await uploadManager.cancelUpload(state.serverUploadId);
+      await cancelRelayUpload(state, uploadManager, attachmentStagingService);
     } catch {
       // Ignore cleanup errors
     }
@@ -796,6 +919,7 @@ export async function handleBinaryUploadChunk(
   payload: Uint8Array,
   send: SendFn,
   uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
 ): Promise<void> {
   let uploadId: string;
   let offset: number;
@@ -840,9 +964,11 @@ export async function handleBinaryUploadChunk(
   state.pendingWrites.push(writeTracker);
 
   try {
-    const bytesReceived = await uploadManager.writeChunk(
-      state.serverUploadId,
+    const bytesReceived = await writeRelayUploadChunk(
+      state,
       Buffer.from(data),
+      uploadManager,
+      attachmentStagingService,
     );
 
     state.bytesReceived = bytesReceived;
@@ -857,10 +983,10 @@ export async function handleBinaryUploadChunk(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to write chunk";
-    send({ type: "upload_error", uploadId, error: message });
+    send(relayUploadError(uploadId, message, err));
     uploads.delete(uploadId);
     try {
-      await uploadManager.cancelUpload(state.serverUploadId);
+      await cancelRelayUpload(state, uploadManager, attachmentStagingService);
     } catch {
       // Ignore cleanup errors
     }
@@ -877,6 +1003,7 @@ export async function handleUploadEnd(
   msg: RelayUploadEnd,
   send: SendFn,
   uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
 ): Promise<void> {
   const { uploadId } = msg;
 
@@ -890,6 +1017,26 @@ export async function handleUploadEnd(
   await Promise.all(state.pendingWrites);
 
   try {
+    if (state.uploadKind === "draft-staging") {
+      if (!attachmentStagingService) {
+        throw new Error("Attachment staging is unavailable");
+      }
+      const stagedRef = await attachmentStagingService.completeUpload(
+        state.serverUploadId,
+      );
+      uploads.delete(uploadId);
+      send({
+        type: "upload_complete",
+        uploadId,
+        stagedRef,
+        batchId: stagedRef.batchId,
+      });
+      getLogger().debug(
+        `[WS Relay] Staged upload complete: ${uploadId} (${stagedRef.size} bytes)`,
+      );
+      return;
+    }
+
     const file = await uploadManager.completeUpload(state.serverUploadId);
     uploads.delete(uploadId);
     send({ type: "upload_complete", uploadId, file });
@@ -899,10 +1046,10 @@ export async function handleUploadEnd(
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to complete upload";
-    send({ type: "upload_error", uploadId, error: message });
+    send(relayUploadError(uploadId, message, err));
     uploads.delete(uploadId);
     try {
-      await uploadManager.cancelUpload(state.serverUploadId);
+      await cancelRelayUpload(state, uploadManager, attachmentStagingService);
     } catch {
       // Ignore cleanup errors
     }
@@ -915,10 +1062,11 @@ export async function handleUploadEnd(
 export async function cleanupUploads(
   uploads: Map<string, RelayUploadState>,
   uploadManager: UploadManager,
+  attachmentStagingService?: AttachmentStagingService,
 ): Promise<void> {
   for (const [clientId, state] of uploads) {
     try {
-      await uploadManager.cancelUpload(state.serverUploadId);
+      await cancelRelayUpload(state, uploadManager, attachmentStagingService);
       console.log(`[WS Relay] Cancelled upload on disconnect: ${clientId}`);
     } catch (err) {
       console.error(`[WS Relay] Error cancelling upload ${clientId}:`, err);
@@ -962,6 +1110,7 @@ export async function handleMessage(
     supervisor,
     eventBus,
     uploadManager,
+    attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
   } = deps;
@@ -1041,8 +1190,15 @@ export async function handleMessage(
 
   const routeClientMessage = async (msg: RemoteClientMessage): Promise<void> =>
     routeClientMessageSafely(msg, send, {
-      onRequest: async (requestMsg) =>
-        handleRequest(requestMsg, send, app, baseUrl, connState),
+      onRequest: async (requestMsg) => {
+        // Tunneled HTTP requests are independent: each carries its own id and
+        // handleRequest always answers (it never throws). Do not await here —
+        // the per-connection message queue must keep decrypt/auth/route order,
+        // but a slow request (e.g. a session index revalidation behind
+        // /api/sessions) must not head-of-line block later tunneled requests
+        // the way it never would over plain HTTP.
+        void handleRequest(requestMsg, send, app, baseUrl, connState);
+      },
       onSubscribe: async (subscribeMsg) =>
         handleSubscribe(
           subscriptions,
@@ -1058,10 +1214,29 @@ export async function handleMessage(
         handleUnsubscribe(subscriptions, unsubscribeMsg),
       onUploadStart: async (uploadStartMsg) =>
         handleUploadStart(uploads, uploadStartMsg, send, uploadManager),
+      onStagedUploadStart: async (uploadStartMsg) =>
+        handleStagedUploadStart(
+          uploads,
+          uploadStartMsg,
+          send,
+          attachmentStagingService,
+        ),
       onUploadChunk: async (uploadChunkMsg) =>
-        handleUploadChunk(uploads, uploadChunkMsg, send, uploadManager),
+        handleUploadChunk(
+          uploads,
+          uploadChunkMsg,
+          send,
+          uploadManager,
+          attachmentStagingService,
+        ),
       onUploadEnd: async (uploadEndMsg) =>
-        handleUploadEnd(uploads, uploadEndMsg, send, uploadManager),
+        handleUploadEnd(
+          uploads,
+          uploadEndMsg,
+          send,
+          uploadManager,
+          attachmentStagingService,
+        ),
       onPing: async (pingMsg) => send({ type: "pong", id: pingMsg.id }),
       onSpeechControl: async (speechMsg) => {
         const session = getSpeechSession();
@@ -1103,6 +1278,7 @@ export async function handleMessage(
       uploads,
       send,
       uploadManager,
+      attachmentStagingService,
       routeClientMessage,
       handleSpeechAudio: async (payload) => {
         const session = getSpeechSession();

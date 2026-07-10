@@ -517,6 +517,86 @@ describe("Supervisor", () => {
 
       await supervisor.abortProcess(process.id);
     });
+
+    it("refuses to preempt a live worker when preempt:false", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            yield {
+              type: "result",
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+            supportedCommands: async () => [],
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      // Capacity 1, and idle workers preemptable immediately (threshold 0) so
+      // the only thing stopping eviction is the preempt:false flag itself.
+      const supervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 60000,
+        maxWorkers: 1,
+        idlePreemptThresholdMs: 0,
+      });
+
+      const first = await supervisor.reactivateSession(
+        "/tmp/test",
+        "session-a",
+        undefined,
+        { providerName: "claude" },
+      );
+      await vi.waitFor(() => expect(first.state.type).toBe("idle"));
+
+      // A background recap revives with preempt:false: at capacity it must
+      // refuse rather than evict the idle session-a.
+      await expect(
+        supervisor.reactivateSession(
+          "/tmp/test",
+          "session-b",
+          undefined,
+          { providerName: "claude" },
+          { preempt: false },
+        ),
+      ).rejects.toThrow(/worker capacity/);
+      expect(supervisor.getProcessForSession("session-a")).toBe(first);
+      expect(first.isTerminated).toBe(false);
+
+      await supervisor.abortProcess(first.id);
+    });
   });
 
   describe("getProcess", () => {
@@ -917,6 +997,361 @@ describe("Supervisor", () => {
       expect(replacement?.id).not.toBe(process.id);
 
       await replacement?.abort();
+    });
+  });
+
+  describe("recaps", () => {
+    it("falls back to tailed recap generation when forked recap cannot fork", async () => {
+      const generateSummary = vi.fn(async (request) => ({
+        text:
+          request.strategy === "side-session"
+            ? request.recentAssistantText.join(" | ")
+            : "",
+      }));
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "recap-fallback-session",
+            };
+            yield {
+              type: "assistant" as const,
+              message: { content: "assistant after start" },
+            };
+            yield {
+              type: "result" as const,
+              session_id: options.resumeSessionId ?? "recap-fallback-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        supportsRecaps: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+        generateSummary,
+      };
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+      });
+
+      const process = await supervisorWithProvider.startSession(
+        "/tmp/test",
+        { text: "hi" },
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      if (!("id" in process)) {
+        throw new Error("expected immediate process");
+      }
+      await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+
+      const result = await (
+        supervisorWithProvider as unknown as {
+          requestForkedRecap: (
+            process: typeof process,
+            provider: AgentProvider,
+            sinceMs: number | null,
+          ) => Promise<{
+            supported: boolean;
+            emitted: boolean;
+            text?: string;
+          }>;
+        }
+      ).requestForkedRecap(process, provider, Date.now() - 1_000);
+
+      expect(result).toMatchObject({
+        supported: true,
+        emitted: true,
+        text: "assistant after start",
+      });
+      expect(generateSummary).toHaveBeenCalledWith({
+        purpose: "recap",
+        strategy: "side-session",
+        recentAssistantText: ["assistant after start"],
+        model: "cheapest",
+      });
+      await process.abort();
+    });
+
+    it("bypasses the recent-text gate for a revived process (forks from transcript)", async () => {
+      const generateSummary = vi.fn(async (request) => ({
+        text: request.strategy === "fork" ? "forked summary" : "",
+      }));
+      const forkSession = vi.fn(async () => ({
+        sessionId: "revived-recap-fork",
+      }));
+      // Message-less resume: yields init then idles, so nothing streams and the
+      // in-memory recap buffer stays empty (as for a process revived for recap).
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "revived-session",
+            };
+            yield {
+              type: "result" as const,
+              session_id: options.resumeSessionId ?? "revived-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+            supportedCommands: async () => [],
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        supportsRecaps: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+        generateSummary,
+        forkSession,
+      };
+      const supervisor = new Supervisor({ provider, idleTimeoutMs: 60000 });
+
+      const process = await supervisor.reactivateSession(
+        "/tmp/test",
+        "revived-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+      // The in-memory recap buffer is empty for a freshly revived process.
+      expect(process.getRecentAssistantText(null)).toEqual([]);
+
+      const callForked = (revived?: boolean) =>
+        (
+          supervisor as unknown as {
+            requestForkedRecap: (
+              p: typeof process,
+              prov: AgentProvider,
+              since: number | null,
+              opts?: { revived?: boolean },
+            ) => Promise<{
+              supported: boolean;
+              emitted: boolean;
+              reason?: string;
+              text?: string;
+            }>;
+          }
+        ).requestForkedRecap(
+          process,
+          provider,
+          null,
+          revived === undefined ? undefined : { revived },
+        );
+
+      // Without the flag, the empty buffer suppresses the recap.
+      await expect(callForked()).resolves.toMatchObject({ emitted: false });
+      expect(forkSession).not.toHaveBeenCalled();
+
+      // With revived:true, the fork runs and emits the transcript summary.
+      await expect(callForked(true)).resolves.toMatchObject({
+        emitted: true,
+        text: "forked summary",
+      });
+      expect(forkSession).toHaveBeenCalled();
+
+      await process.abort();
+    });
+
+    it("suppresses a recap with no assistant text since the last emitted recap", async () => {
+      const generateSummary = vi.fn(async (request) => ({
+        text: request.strategy === "fork" ? "forked summary" : "",
+      }));
+      const forkSession = vi.fn(async () => ({
+        sessionId: "since-last-recap-fork",
+      }));
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "since-last-recap",
+            };
+            yield {
+              type: "assistant" as const,
+              message: { content: "assistant after start" },
+            };
+            yield {
+              type: "result" as const,
+              session_id: options.resumeSessionId ?? "since-last-recap",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: false,
+        supportsRecaps: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+        generateSummary,
+        forkSession,
+      };
+      // Only the recap floor and the fork-archival path touch the metadata
+      // service here; back the stub with a swappable recap row list.
+      let persistedRecaps: unknown[] = [];
+      const metadataStub = {
+        getRecapMessages: () => [...persistedRecaps],
+        updateMetadata: async () => {},
+        setProvider: async () => {},
+        setExecutor: async () => {},
+        setRequestedModel: async () => {},
+        addRecapMessage: async () => {},
+      } as unknown as ConstructorParameters<
+        typeof Supervisor
+      >[0]["sessionMetadataService"];
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        sessionMetadataService: metadataStub,
+      });
+
+      const process = await supervisorWithMetadata.startSession(
+        "/tmp/test",
+        { text: "hi" },
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      if (!("id" in process)) {
+        throw new Error("expected immediate process");
+      }
+      await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+
+      const callForked = () =>
+        (
+          supervisorWithMetadata as unknown as {
+            requestForkedRecap: (
+              p: typeof process,
+              prov: AgentProvider,
+              since: number | null,
+            ) => Promise<{
+              supported: boolean;
+              emitted: boolean;
+              reason?: string;
+            }>;
+          }
+        ).requestForkedRecap(process, provider, null);
+
+      // A persisted recap newer than all buffered assistant text raises the
+      // floor past the buffer: nothing new to say, so no second recap.
+      persistedRecaps = [
+        {
+          type: "system",
+          subtype: "away_summary",
+          content: "Already recapped.",
+          timestamp: new Date(Date.now() + 60_000).toISOString(),
+          uuid: "recap-after",
+          id: "recap-after",
+          yaRecapSource: "ya-synthetic",
+        },
+      ];
+      await expect(callForked()).resolves.toMatchObject({
+        supported: true,
+        emitted: false,
+        reason: "no recent assistant activity to summarize",
+      });
+      expect(forkSession).not.toHaveBeenCalled();
+
+      // A recap older than the buffered assistant text does not block a new one.
+      persistedRecaps = [
+        {
+          type: "system",
+          subtype: "away_summary",
+          content: "Stale recap.",
+          timestamp: new Date(Date.now() - 60_000).toISOString(),
+          uuid: "recap-before",
+          id: "recap-before",
+          yaRecapSource: "ya-synthetic",
+        },
+      ];
+      await expect(callForked()).resolves.toMatchObject({
+        supported: true,
+        emitted: true,
+        text: "forked summary",
+      });
+      expect(forkSession).toHaveBeenCalled();
+
+      await process.abort();
     });
   });
 
@@ -1442,6 +1877,7 @@ describe("Supervisor", () => {
         );
         expect(supervisorWithHeartbeat.getWorkerActivity()).toMatchObject({
           activeWorkers: 1,
+          interruptibleSessionCount: 1,
           hasActiveWork: true,
         });
 
@@ -2490,6 +2926,72 @@ describe("Supervisor", () => {
         expect(refreshPromptCache).toHaveBeenCalledTimes(1);
 
         const abortPromise = supervisorWithProvider.abortProcess(created.id);
+        await vi.advanceTimersByTimeAsync(5000);
+        await expect(abortPromise).resolves.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not count idle owned sessions as interruptible restart work", async () => {
+      vi.useFakeTimers();
+      try {
+        let aborted = false;
+
+        const realSdk: RealClaudeSDKInterface = {
+          startSession: async () => {
+            async function* iterator() {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "idle-owned-safe-restart-session",
+              };
+              yield {
+                type: "result",
+                session_id: "idle-owned-safe-restart-session",
+              };
+
+              while (!aborted) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+            }
+
+            return {
+              iterator: iterator(),
+              queue: new MessageQueue(),
+              abort: () => {
+                aborted = true;
+              },
+              isProcessAlive: () => !aborted,
+            };
+          },
+        };
+
+        const supervisorWithIdleProcess = new Supervisor({
+          realSdk,
+          idleTimeoutMs: 10 * 60 * 1000,
+        });
+
+        const process = await supervisorWithIdleProcess.startSession(
+          "/tmp/test",
+          {
+            text: "finish and stay idle",
+          },
+        );
+        if (!("id" in process)) {
+          throw new Error("expected process");
+        }
+
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(process.state.type).toBe("idle");
+        expect(supervisorWithIdleProcess.getWorkerActivity()).toMatchObject({
+          activeWorkers: 1,
+          interruptibleSessionCount: 0,
+          hasActiveWork: false,
+        });
+
+        const abortPromise = supervisorWithIdleProcess.abortProcess(process.id);
         await vi.advanceTimersByTimeAsync(5000);
         await expect(abortPromise).resolves.toBe(true);
       } finally {

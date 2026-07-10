@@ -27,6 +27,7 @@ import { ensureSelfSignedCertificate } from "./https/self-signed.js";
 import { SessionIndexService } from "./indexes/index.js";
 import {
   getLogFilePath,
+  getLogger,
   initLogger,
   interceptConsole,
 } from "./logging/index.js";
@@ -39,10 +40,7 @@ import {
   SessionMetadataService,
 } from "./metadata/index.js";
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
-import {
-  initFileAccess,
-  updateFileAccess,
-} from "./middleware/file-access.js";
+import { initFileAccess, updateFileAccess } from "./middleware/file-access.js";
 import { NotificationService } from "./notifications/index.js";
 import { CodexSessionScanner } from "./projects/codex-scanner.js";
 import { GeminiSessionScanner } from "./projects/gemini-scanner.js";
@@ -68,11 +66,14 @@ import {
   InstallService,
   ModelInfoService,
   NetworkBindingService,
+  ProjectQueueService,
   PublicShareService,
   RelayClientService,
   ServerSettingsService,
+  SessionQueuePersistenceService,
   SharingService,
   TtsService,
+  WorkstreamService,
 } from "./services/index.js";
 import {
   type SpeechRegistryInitOptions,
@@ -81,6 +82,7 @@ import {
   registerSpeechBackends,
 } from "./services/voice/registry.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
+import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import { UploadManager } from "./uploads/manager.js";
 import {
   EventBus,
@@ -122,12 +124,17 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const config = loadConfig();
+const ATTACHMENT_STAGING_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // Track services for graceful shutdown (set after createApp)
 let supervisorForShutdown:
   | Awaited<ReturnType<typeof createApp>>["supervisor"]
   | null = null;
+let disposeAppForShutdown:
+  | Awaited<ReturnType<typeof createApp>>["disposeSessionReaders"]
+  | null = null;
 let deviceBridgeForShutdown: DeviceBridgeService | null = null;
+let attachmentStagingCleanupTimer: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
 
 /**
@@ -142,6 +149,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
   isShuttingDown = true;
 
   console.log(`[Shutdown] Received ${signal}, cleaning up...`);
+
+  if (attachmentStagingCleanupTimer) {
+    clearInterval(attachmentStagingCleanupTimer);
+    attachmentStagingCleanupTimer = null;
+  }
 
   if (supervisorForShutdown) {
     const processes = supervisorForShutdown.getAllProcesses();
@@ -162,6 +174,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
           }
         }),
       );
+    }
+  }
+
+  if (disposeAppForShutdown) {
+    try {
+      await disposeAppForShutdown();
+      console.log("[Shutdown] Session readers disposed");
+    } catch (error) {
+      console.error("[Shutdown] Error disposing session readers:", error);
     }
   }
 
@@ -210,6 +231,18 @@ if (config.desktopRuntime) {
 if (config.codexCliPath) {
   console.log(`[Config] Codex CLI path: ${config.codexCliPath}`);
 }
+getLogger().info(
+  {
+    event: "summary_parser_worker_config",
+    claudeSummaryParserWorkerMode: config.claudeSummaryParserWorkerMode,
+    codexSummaryParserWorkerMode: config.codexSummaryParserWorkerMode,
+    claudeSummaryParserWorkerEnv:
+      process.env.CLAUDE_SUMMARY_PARSER_WORKER ?? null,
+    codexSummaryParserWorkerEnv:
+      process.env.CODEX_SUMMARY_PARSER_WORKER ?? null,
+  },
+  "SUMMARY_PARSER_WORKER: evaluated config",
+);
 
 // Check for Claude CLI (optional - warn if not found)
 const cliInfo = detectClaudeCli();
@@ -302,7 +335,7 @@ const fileWatchers: FileWatcher[] = [];
 // Helper to create watcher if directory exists
 function createWatcherIfExists(
   watchDir: string,
-  provider: "claude" | "gemini" | "codex",
+  provider: "claude" | "gemini" | "codex" | "pi",
 ): void {
   if (fs.existsSync(watchDir)) {
     const periodicRescanMs =
@@ -327,6 +360,7 @@ function createWatcherIfExists(
 createWatcherIfExists(config.claudeSessionsDir, "claude");
 createWatcherIfExists(config.geminiSessionsDir, "gemini");
 createWatcherIfExists(config.codexSessionsDir, "codex");
+createWatcherIfExists(config.piSessionsDir, "pi");
 
 // When running without tsx watch (NO_BACKEND_RELOAD=true), start source watcher
 // to notify the UI when server code changes and needs manual reload
@@ -346,17 +380,28 @@ const sessionMetadataService = new SessionMetadataService({
 const projectMetadataService = new ProjectMetadataService({
   dataDir: config.dataDir,
 });
+const projectQueueService = new ProjectQueueService({
+  dataDir: config.dataDir,
+  eventBus,
+});
+const sessionQueuePersistenceService = new SessionQueuePersistenceService({
+  dataDir: config.dataDir,
+  eventBus,
+});
 const sessionIndexService = new SessionIndexService({
   projectsDir: config.claudeProjectsDir,
   dataDir: path.join(config.dataDir, "indexes"),
   fullValidationIntervalMs: config.sessionIndexFullValidationMs,
   writeLockTimeoutMs: config.sessionIndexWriteLockTimeoutMs,
   writeLockStaleMs: config.sessionIndexWriteLockStaleMs,
+  summaryParseConcurrency: config.sessionIndexSummaryParseConcurrency,
   eventBus,
 });
 const pushService = new PushService({ dataDir: config.dataDir });
 const browserProfileService = new BrowserProfileService({
   dataDir: config.dataDir,
+  getProtectedBrowserProfileIds: () =>
+    Object.keys(pushService.getSubscriptions()),
 });
 const recentsService = new RecentsService({ dataDir: config.dataDir });
 const authService = new AuthService({
@@ -388,6 +433,10 @@ const serverSettingsService = new ServerSettingsService({
 const ttsService = new TtsService({
   dataDir: config.dataDir,
 });
+const workstreamService = new WorkstreamService({
+  dataDir: config.dataDir,
+  eventBus,
+});
 const sharingService = new SharingService({
   dataDir: config.dataDir,
 });
@@ -395,6 +444,20 @@ const publicShareService = new PublicShareService({
   dataDir: config.dataDir,
 });
 const modelInfoService = new ModelInfoService({ dataDir: config.dataDir });
+const attachmentStagingService = new AttachmentStagingService({
+  dataDir: config.dataDir,
+  maxUploadSizeBytes: config.maxUploadSizeBytes,
+});
+
+function startAttachmentStagingCleanup(): void {
+  if (attachmentStagingCleanupTimer) return;
+  attachmentStagingCleanupTimer = setInterval(() => {
+    attachmentStagingService.cleanupStaleDraftAttachments().catch((error) => {
+      console.error("[AttachmentStagingService] TTL cleanup failed:", error);
+    });
+  }, ATTACHMENT_STAGING_CLEANUP_INTERVAL_MS);
+  attachmentStagingCleanupTimer.unref?.();
+}
 
 async function startServer() {
   const startupStart = Date.now();
@@ -455,6 +518,13 @@ async function startServer() {
   markStartup("sessionMetadataService initialized");
   await projectMetadataService.initialize();
   markStartup("projectMetadataService initialized");
+  await projectQueueService.initialize();
+  markStartup("projectQueueService initialized");
+  await sessionQueuePersistenceService.initialize();
+  markStartup("sessionQueuePersistenceService initialized");
+  await attachmentStagingService.initialize();
+  startAttachmentStagingCleanup();
+  markStartup("attachmentStagingService initialized");
   await sessionIndexService.initialize();
   markStartup("sessionIndexService initialized");
   await pushService.initialize();
@@ -473,6 +543,8 @@ async function startServer() {
   markStartup("serverSettingsService initialized");
   await ttsService.initialize();
   markStartup("ttsService initialized");
+  await workstreamService.initialize();
+  markStartup("workstreamService initialized");
   await sharingService.initialize();
   markStartup("sharingService initialized");
   // Loading persisted public shares is not required to bind the listening
@@ -630,7 +702,7 @@ async function startServer() {
 
   // Create the app first (without WebSocket support initially)
   // We'll add WebSocket routes after setting up WebSocket support
-  const { app, supervisor, scanner } = createApp({
+  const { app, supervisor, scanner, disposeSessionReaders } = createApp({
     realSdk,
     projectsDir: config.claudeProjectsDir,
     idleTimeoutMs: config.idleTimeoutMs,
@@ -640,6 +712,8 @@ async function startServer() {
     notificationService,
     sessionMetadataService,
     projectMetadataService,
+    projectQueueService,
+    sessionQueuePersistenceService,
     sessionIndexService,
     projectScanCacheTtlMs: config.projectScanCacheTtlMs,
     sessionAutoArchiveDays: config.sessionAutoArchiveDays,
@@ -659,17 +733,21 @@ async function startServer() {
     serverPort: effectiveServerPort,
     installId: installService.getInstallId(),
     dataDir: config.dataDir,
+    attachmentStagingService,
     networkBindingService,
     networkBindingCallbackHolder,
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
     serverSettingsService,
     ttsService,
+    workstreamService,
     sharingService,
     publicShareService,
     deviceBridgeService,
     modelInfoService,
     enabledProviders: config.enabledProviders,
+    claudeSummaryParserWorkerMode: config.claudeSummaryParserWorkerMode,
+    codexSummaryParserWorkerMode: config.codexSummaryParserWorkerMode,
     codexCliPath: config.codexCliPath,
     voiceInputEnabled: config.voiceInputEnabled,
     speechBackendRegistry,
@@ -678,11 +756,13 @@ async function startServer() {
     allowedImagePaths: config.allowedImagePaths,
   });
   markStartup("app created");
+  disposeAppForShutdown = disposeSessionReaders;
 
   const focusedSessionWatchManager = new FocusedSessionWatchManager({
     scanner,
     codexScanner: new CodexSessionScanner({
       sessionsDir: config.codexSessionsDir,
+      dataDir: config.dataDir,
     }),
     geminiScanner: new GeminiSessionScanner({
       sessionsDir: config.geminiSessionsDir,
@@ -702,7 +782,10 @@ async function startServer() {
       const projects = await scanner.listProjects();
       const project = projects.find((p) => p.path === projectPath);
       if (project?.provider !== "claude") return null;
-      return new ClaudeSessionReader({ sessionDir: project.sessionDir });
+      return new ClaudeSessionReader({
+        sessionDir: project.sessionDir,
+        summaryParserWorkerMode: config.claudeSummaryParserWorkerMode,
+      });
     },
   });
 
@@ -717,6 +800,7 @@ async function startServer() {
     scanner,
     upgradeWebSocket,
     maxUploadSizeBytes: config.maxUploadSizeBytes,
+    attachmentStagingService,
   });
   app.route("/api", uploadRoutes);
   markStartup("upload routes mounted");
@@ -747,6 +831,7 @@ async function startServer() {
     supervisor,
     eventBus,
     uploadManager: wsRelayUploadManager,
+    attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
     connectedBrowsers: connectedBrowsersService,
@@ -767,6 +852,7 @@ async function startServer() {
     supervisor,
     eventBus,
     uploadManager: wsRelayUploadManager,
+    attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
     connectedBrowsers: connectedBrowsersService,
@@ -798,6 +884,7 @@ async function startServer() {
         appVersion: compatibility.appVersion,
         resumeProtocolVersion: compatibility.resumeProtocolVersion,
         renderProtocolVersion: compatibility.renderProtocolVersion,
+        remoteCompatibilityLevel: compatibility.remoteCompatibilityLevel,
         capabilities: compatibility.capabilities,
         onRelayConnection: acceptRelayConnection,
         onStatusChange: (status) => {
@@ -813,6 +900,7 @@ async function startServer() {
           appVersion: compatibility.appVersion,
           resumeProtocolVersion: compatibility.resumeProtocolVersion,
           renderProtocolVersion: compatibility.renderProtocolVersion,
+          remoteCompatibilityLevel: compatibility.remoteCompatibilityLevel,
           capabilities: compatibility.capabilities,
           onRelayConnection: acceptRelayConnection,
           onStatusChange: (status) => {

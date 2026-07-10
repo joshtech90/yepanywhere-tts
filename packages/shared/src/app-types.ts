@@ -20,8 +20,13 @@ import type {
   PermissionMode,
   PromptSuggestionMode,
   ProviderName,
+  RecapMode,
   SlashCommand,
 } from "./types.js";
+import type { ToolDisplayAction } from "./tool-display-actions.js";
+import type { UploadedFile } from "./upload.js";
+import type { UserMessageMetadata } from "./user-message-metadata.js";
+import type { WorkstreamId } from "./workstreams.js";
 
 // =============================================================================
 // App Message Extensions
@@ -42,6 +47,8 @@ export interface AppContentBlock {
   id?: string;
   name?: string;
   input?: unknown;
+  /** YA-derived presentation semantics; recomputed rather than persisted. */
+  _displayActions?: ToolDisplayAction[];
   // tool_result block
   tool_use_id?: string;
   content?: string | AppContentBlock[];
@@ -165,6 +172,30 @@ export type PendingInputType = "tool-approval" | "user-question";
 
 /** Agent activity - what the agent is doing */
 export type AgentActivity = "in-turn" | "idle" | "waiting-input" | "terminated";
+
+export type ProviderRuntimeRetryReason =
+  | "rate_limit"
+  | "overloaded"
+  | "server_error"
+  | "network"
+  | "unknown";
+
+export type ProviderRuntimeStatus =
+  | {
+      kind: "retrying";
+      provider: ProviderName;
+      reason: ProviderRuntimeRetryReason;
+      httpStatus?: number;
+      startedAt: string;
+      lastSeenAt: string;
+      retryAt?: string;
+      retryDelayMs?: number;
+      attempt?: number;
+      maxRetries?: number | "unbounded";
+      eventCount: number;
+      source: string;
+    }
+  | null;
 
 /** Context usage information extracted from the last assistant message */
 export interface ContextUsage {
@@ -305,6 +336,10 @@ export type SessionOwnership =
       processId: string;
       permissionMode?: PermissionMode;
       modeVersion?: number;
+      recapAfterSeconds?: number;
+      /** Recap strategy of the live process; lets the client suppress the
+       * away-recap POST when recaps are off for the session. */
+      recapMode?: RecapMode;
     } // we control it
   | { owner: "external" }; // another process owns it
 
@@ -353,6 +388,18 @@ export interface ForkSummaryTranscriptDisplayObject {
 
 export type TranscriptDisplayObject = ForkSummaryTranscriptDisplayObject;
 
+export interface DurableRecapMessage extends AppMessageExtensions {
+  type: "system";
+  subtype: "away_summary";
+  content: string;
+  timestamp: string;
+  uuid: string;
+  session_id?: string;
+  isMeta?: boolean;
+  isSynthetic?: boolean;
+  yaRecapSource: "provider-native" | "ya-synthetic";
+}
+
 /**
  * Session summary for list views.
  * Contains metadata without full message content.
@@ -360,6 +407,8 @@ export type TranscriptDisplayObject = ForkSummaryTranscriptDisplayObject;
 export interface AppSessionSummary {
   id: string;
   projectId: UrlProjectId;
+  /** Human-readable project basename for display; projectId remains canonical. */
+  projectName?: string;
   title: string | null;
   fullTitle: string | null;
   createdAt: string;
@@ -385,7 +434,7 @@ export interface AppSessionSummary {
   transcriptDisplayObjects?: TranscriptDisplayObject[];
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
-  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
   contextUsage?: ContextUsage;
   /** SSH host alias for remote execution (undefined = local) */
@@ -400,6 +449,12 @@ export interface AppSessionSummary {
   approvalPolicy?: string;
   /** Sandbox policy from turn_context */
   sandboxPolicy?: SessionSandboxPolicy;
+  /** YA's effective project/working directory for this session. */
+  workingProjectId?: UrlProjectId;
+  /** Provider transcript project when it differs from the effective project. */
+  transcriptProjectId?: UrlProjectId;
+  /** YA workstream lane for this session. Missing means the implicit main lane. */
+  workstreamId?: WorkstreamId;
 }
 
 /**
@@ -421,6 +476,43 @@ export interface SessionMetadataPayload
   heartbeatForceAfterMinutes?: number;
   /** Per-session prompt-suggestion preference (off | native) */
   promptSuggestionMode?: PromptSuggestionMode;
+  /** Browser-away duration before YA asks the live process for a recap. */
+  recapAfterSeconds?: number;
+  /** YA's effective project/working directory for this session. */
+  workingProjectId?: UrlProjectId;
+  /** Provider transcript project when it differs from the effective project. */
+  transcriptProjectId?: UrlProjectId;
+  /** YA workstream lane for this session. Missing means the implicit main lane. */
+  workstreamId?: WorkstreamId;
+}
+
+export type SessionQueuedMessageKind = "deferred" | "patient";
+
+export type SessionQueuedMessageStatus =
+  | "queued"
+  | "paused-after-restart";
+
+/**
+ * Server-owned queued-message summary for the session UI.
+ *
+ * Live entries use `tempId` for the existing in-process cancel route. Recovered
+ * restart-paused entries additionally use durable `id` for delete/resume APIs.
+ */
+export interface SessionQueuedMessageSummary {
+  id?: string;
+  tempId?: string;
+  content: string;
+  timestamp: string;
+  attachments?: UploadedFile[];
+  attachmentCount?: number;
+  metadata?: UserMessageMetadata;
+  kind?: SessionQueuedMessageKind;
+  status?: SessionQueuedMessageStatus;
+  sessionId?: string;
+  projectId?: UrlProjectId;
+  queuedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /**
@@ -430,8 +522,10 @@ export interface SessionMetadataResponse {
   session: SessionMetadataPayload;
   ownership: SessionOwnership;
   processState: AgentActivity | null;
+  providerRuntimeStatus?: ProviderRuntimeStatus;
   pendingInputRequest?: InputRequest | null;
   slashCommands?: SlashCommand[] | null;
+  deferredMessages?: SessionQueuedMessageSummary[];
 }
 
 // =============================================================================

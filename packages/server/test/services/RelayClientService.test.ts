@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SPEECH_RELAY_CHANNEL } from "@yep-anywhere/shared";
+import {
+  DEVICE_BRIDGE_CAPABILITY,
+  GIT_STATUS_CAPABILITY,
+  SPEECH_RELAY_CHANNEL,
+} from "@yep-anywhere/shared";
 
 // Create the mock class and instances array in hoisted scope
 // Using a simple callback-based event emitter to avoid import issues
@@ -139,7 +143,8 @@ describe("RelayClientService", () => {
         appVersion: "1.2.3",
         resumeProtocolVersion: 2,
         renderProtocolVersion: 1,
-        capabilities: ["git-status", "deviceBridge"],
+        remoteCompatibilityLevel: 10,
+        capabilities: [GIT_STATUS_CAPABILITY, DEVICE_BRIDGE_CAPABILITY],
         onRelayConnection: mockOnRelayConnection,
       });
 
@@ -153,7 +158,8 @@ describe("RelayClientService", () => {
         appVersion: "1.2.3",
         resumeProtocolVersion: 2,
         renderProtocolVersion: 1,
-        capabilities: ["git-status", "deviceBridge"],
+        remoteCompatibilityLevel: 10,
+        capabilities: [GIT_STATUS_CAPABILITY, DEVICE_BRIDGE_CAPABILITY],
       });
     });
 

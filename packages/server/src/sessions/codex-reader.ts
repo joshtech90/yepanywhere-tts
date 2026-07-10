@@ -11,6 +11,7 @@
  * Unlike Claude's DAG structure, Codex sessions are linear.
  */
 
+import { createHash, randomUUID } from "node:crypto";
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -22,17 +23,44 @@ import {
   parseCodexSessionEntry,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
-import { canonicalizeProjectPath } from "../projects/paths.js";
+import type { SessionDiscoveryIndex } from "../indexes/SessionDiscoveryIndex.js";
+import { getLogger } from "../logging/logger.js";
+import {
+  canonicalizeProjectPath,
+  getProjectIdentityKey,
+} from "../projects/paths.js";
 import type {
   ContextUsage,
   Message,
   SessionSummary,
 } from "../supervisor/types.js";
-import { readFirstLine, readJsonlLines } from "../utils/jsonl.js";
+import {
+  codexRolloutRepresentation,
+  isCodexRolloutFileName,
+  preferPlainCodexRollouts,
+} from "../utils/codexRolloutFiles.js";
+import { iterateJsonlLines, readJsonlLines } from "../utils/jsonl.js";
+import {
+  type CodexRolloutDiscoveryStats,
+  createCodexSessionDiscoveryIndex,
+  createCodexRolloutDiscoveryStats,
+  readCodexRolloutMetadata,
+} from "./codex-discovery.js";
+import {
+  isCodexStartupInstructionText,
+  normalizeSession,
+} from "./normalization.js";
+import { SummaryParserClient } from "./summary-parser-worker-client.js";
 import type {
+  SummaryParserWorkerMode,
+  SummaryParserWorkerRequest,
+} from "./summary-parser-worker-protocol.js";
+import type {
+  GetSessionSummaryOptions,
   GetSessionOptions,
   ISessionReader,
   LoadedSession,
+  SessionSummaryReadMode,
 } from "./types.js";
 
 export interface CodexSessionReaderOptions {
@@ -46,6 +74,11 @@ export interface CodexSessionReaderOptions {
    * Only sessions with this cwd will be listed.
    */
   projectPath?: string;
+  dataDir?: string;
+  discoveryIndex?: SessionDiscoveryIndex;
+  slowLogThresholdMs?: number;
+  summaryParserWorkerMode?: SummaryParserWorkerMode;
+  summaryParserClient?: SummaryParserClient;
 }
 
 interface CodexSessionFile {
@@ -58,8 +91,16 @@ interface CodexSessionFile {
   isSubagent: boolean;
 }
 
-const CODEX_META_READ_MAX_BYTES = 1024 * 1024;
 const CODEX_SCAN_CACHE_TTL_MS = 5000;
+const DEFAULT_SLOW_LOG_THRESHOLD_MS = 250;
+const CODEX_HEAD_SUMMARY_MAX_LINES = 200;
+const CODEX_HEAD_SUMMARY_MAX_BYTES = 1024 * 1024;
+const CODEX_FULL_SUMMARY_CACHE_MAX_ENTRIES = 256;
+const LOG_ENTRY_READS = process.env.CODEX_READER_LOG_PARSE === "true";
+
+function isCompressedCodexSessionFile(filePath: string): boolean {
+  return filePath.endsWith(".jsonl.zst");
+}
 
 interface CodexScanOptions {
   activeAfterMs?: number;
@@ -73,12 +114,189 @@ interface CodexSharedScanCacheEntry {
 
 const codexSharedScanCache = new Map<string, CodexSharedScanCacheEntry>();
 
+interface CodexFullSummaryCacheEntry {
+  promise: Promise<SessionSummary | null>;
+  lastAccessedAt: number;
+}
+
+const codexFullSummaryCache = new Map<string, CodexFullSummaryCacheEntry>();
+
+function getCodexFullSummaryCacheKey(
+  filePath: string,
+  stats: Awaited<ReturnType<typeof stat>>,
+): string {
+  return `${filePath}\0${Number(stats.mtimeMs)}\0${Number(stats.size)}`;
+}
+
+function cloneSessionSummary(
+  summary: SessionSummary | null,
+): SessionSummary | null {
+  if (!summary) return null;
+  return {
+    ...summary,
+    ownership: { ...summary.ownership },
+    ...(summary.contextUsage
+      ? { contextUsage: { ...summary.contextUsage } }
+      : {}),
+  };
+}
+
+function trimCodexFullSummaryCache(): void {
+  if (codexFullSummaryCache.size <= CODEX_FULL_SUMMARY_CACHE_MAX_ENTRIES) {
+    return;
+  }
+
+  const entriesToDelete = Array.from(codexFullSummaryCache.entries())
+    .sort((left, right) => left[1].lastAccessedAt - right[1].lastAccessedAt)
+    .slice(
+      0,
+      codexFullSummaryCache.size - CODEX_FULL_SUMMARY_CACHE_MAX_ENTRIES,
+    );
+  for (const [cacheKey] of entriesToDelete) {
+    codexFullSummaryCache.delete(cacheKey);
+  }
+}
+
+export type CodexSessionReaderScanCacheStatus = "hit" | "in-flight" | "miss";
+
+export interface CodexSessionReaderScanMetrics {
+  sessionsDir: string;
+  projectPath?: string;
+  activeAfterMs?: number;
+  cacheKey: string;
+  sharedCacheStatus: CodexSessionReaderScanCacheStatus;
+  durationMs: number;
+  sessionsDirExists: boolean;
+  directoriesVisited: number;
+  directoryReadErrors: number;
+  rolloutFilesFound: number;
+  rolloutFilesAfterPrecedence: number;
+  plainRolloutFiles: number;
+  compressedRolloutFiles: number;
+  precedenceSkippedCompressed: number;
+  sessionsParsed: number;
+  failedFiles: number;
+  subagentSessionsSkipped: number;
+  sessionsReturned: number;
+  discovery: CodexRolloutDiscoveryStats;
+}
+
 interface CodexEntryCache {
   filePath: string;
   mtimeMs: number;
   size: number;
   entries: CodexSessionEntry[];
   partialLine: string;
+}
+
+type CodexEntryReadPurpose =
+  | "summary"
+  | "detail"
+  | "agent-mapping"
+  | "subagent";
+
+interface CodexReadEntriesOptions {
+  purpose: CodexEntryReadPurpose;
+  cache?: boolean;
+}
+
+export interface CodexEntryCacheStats {
+  sessions: number;
+  entries: number;
+  sourceBytes: number;
+  partialLineBytes: number;
+}
+
+interface CodexEntryReadMetrics {
+  event: "codex_entry_read";
+  sessionsDir: string;
+  projectPath?: string;
+  sessionId: string;
+  filePath: string;
+  purpose: CodexEntryReadPurpose;
+  cacheMode: "read-write" | "read-only";
+  cacheStatus: "hit" | "append" | "miss";
+  fileSize: number;
+  fileMtimeMs: number;
+  durationMs: number;
+  readLinesMs?: number;
+  parseMs?: number;
+  dedupeMs?: number;
+  cacheStoreMs?: number;
+  lineCount?: number;
+  parsedEntries?: number;
+  dedupedEntries?: number;
+  maxLineLength?: number;
+  heapUsedBefore: number;
+  heapUsedAfter: number;
+  rssBefore: number;
+  rssAfter: number;
+  heapUsedDelta: number;
+  rssDelta: number;
+  entryCache: CodexEntryCacheStats;
+}
+
+export interface CodexSummaryStreamMetrics {
+  event: "codex_summary_stream";
+  readMode: SessionSummaryReadMode;
+  sessionsDir: string;
+  projectPath?: string;
+  sessionId: string;
+  filePath: string;
+  fileSize: number;
+  fileMtimeMs: number;
+  compressed: boolean;
+  durationMs: number;
+  parseMs: number;
+  lineCount: number;
+  parsedEntries: number;
+  dedupedEntries: number;
+  skippedDuplicateEntries: number;
+  maxLineLength: number;
+  stoppedEarly: boolean;
+  stopReason: "eof" | "head_complete" | "line_budget" | "byte_budget";
+  heapUsedBefore: number;
+  heapUsedAfter: number;
+  rssBefore: number;
+  rssAfter: number;
+  heapUsedDelta: number;
+  rssDelta: number;
+  entryCache: CodexEntryCacheStats;
+}
+
+interface CodexSummaryTitleCandidate {
+  title: string | null;
+  fullTitle: string | null;
+}
+
+interface CodexSummaryContextCandidate {
+  inputTokens: number;
+  contextWindow?: number;
+}
+
+interface CodexSummaryState {
+  metaEntry?: CodexSessionMetaEntry;
+  firstTurnContext?: CodexTurnContextEntry;
+  firstEventUserTitle?: CodexSummaryTitleCandidate;
+  firstResponseUserTitle?: CodexSummaryTitleCandidate;
+  sawResponseItemUser: boolean;
+  eventUserMessageCount: number;
+  responseMessageCount: number;
+  model?: string;
+  contextCandidate?: CodexSummaryContextCandidate;
+}
+
+interface CodexSummaryStreamRead {
+  state: CodexSummaryState;
+  lineCount: number;
+  parsedEntries: number;
+  dedupedEntries: number;
+  skippedDuplicateEntries: number;
+  maxLineLength: number;
+  parseMs: number;
+  readMode: SessionSummaryReadMode;
+  stoppedEarly: boolean;
+  stopReason: CodexSummaryStreamMetrics["stopReason"];
 }
 
 function parseCodexJsonlChunk(
@@ -138,9 +356,54 @@ function getCodexEntryDedupeKey(entry: CodexSessionEntry): string | null {
   return null;
 }
 
-function dedupeCodexEntries(
-  entries: CodexSessionEntry[],
-): CodexSessionEntry[] {
+function getCodexSummaryDedupeKey(entry: CodexSessionEntry): string | null {
+  if (entry.type === "response_item") {
+    const { payload } = entry;
+    if (payload.type !== "message") {
+      return null;
+    }
+
+    const hash = createHash("sha256");
+    hash.update(entry.type);
+    hash.update("\0");
+    hash.update(entry.timestamp);
+    hash.update("\0");
+    hash.update(payload.type);
+    hash.update("\0");
+    hash.update(payload.role);
+    hash.update("\0");
+    payload.content.forEach((block, index) => {
+      if (index > 0) hash.update("\n");
+      hash.update(
+        "text" in block && typeof block.text === "string"
+          ? block.text
+          : block.type,
+      );
+    });
+    return hash.digest("base64url");
+  }
+
+  if (entry.type === "event_msg") {
+    const { payload } = entry;
+    if (payload.type !== "user_message" && payload.type !== "agent_message") {
+      return null;
+    }
+
+    const hash = createHash("sha256");
+    hash.update(entry.type);
+    hash.update("\0");
+    hash.update(entry.timestamp);
+    hash.update("\0");
+    hash.update(payload.type);
+    hash.update("\0");
+    hash.update(payload.message);
+    return hash.digest("base64url");
+  }
+
+  return null;
+}
+
+function dedupeCodexEntries(entries: CodexSessionEntry[]): CodexSessionEntry[] {
   const seen = new Set<string>();
   let deduped: CodexSessionEntry[] | null = null;
 
@@ -173,6 +436,14 @@ function dedupeCodexEntries(
 export class CodexSessionReader implements ISessionReader {
   private sessionsDir: string;
   private projectPath?: string;
+  private projectIdentityKey?: string;
+  private dataDir?: string;
+  private discoveryIndex?: SessionDiscoveryIndex;
+  private slowLogThresholdMs: number;
+  private summaryParserWorkerMode: SummaryParserWorkerMode;
+  private summaryParserClient?: SummaryParserClient;
+  private lastScanMetrics: CodexSessionReaderScanMetrics | null = null;
+  private lastSummaryStreamMetrics: CodexSummaryStreamMetrics | null = null;
 
   // Cache of session ID -> file path for quick lookups
   private sessionFileCache: Map<string, CodexSessionFile> = new Map();
@@ -183,6 +454,25 @@ export class CodexSessionReader implements ISessionReader {
     this.projectPath = options.projectPath
       ? canonicalizeProjectPath(options.projectPath)
       : undefined;
+    this.projectIdentityKey = this.projectPath
+      ? getProjectIdentityKey(this.projectPath)
+      : undefined;
+    this.dataDir = options.dataDir;
+    this.discoveryIndex =
+      options.discoveryIndex ??
+      createCodexSessionDiscoveryIndex(options.dataDir, this.sessionsDir);
+    this.slowLogThresholdMs = Math.max(
+      0,
+      options.slowLogThresholdMs ?? DEFAULT_SLOW_LOG_THRESHOLD_MS,
+    );
+    this.summaryParserWorkerMode = options.summaryParserWorkerMode ?? "off";
+    this.summaryParserClient = options.summaryParserClient;
+  }
+
+  async close(): Promise<void> {
+    const client = this.summaryParserClient;
+    this.summaryParserClient = undefined;
+    await client?.close();
   }
 
   invalidateCache(): void {
@@ -195,6 +485,37 @@ export class CodexSessionReader implements ISessionReader {
     }
   }
 
+  getLastScanMetrics(): CodexSessionReaderScanMetrics | null {
+    return this.lastScanMetrics
+      ? cloneCodexSessionReaderScanMetrics(this.lastScanMetrics)
+      : null;
+  }
+
+  getEntryCacheStats(): CodexEntryCacheStats {
+    let entries = 0;
+    let sourceBytes = 0;
+    let partialLineBytes = 0;
+
+    for (const cached of this.entryCache.values()) {
+      entries += cached.entries.length;
+      sourceBytes += cached.size;
+      partialLineBytes += cached.partialLine.length;
+    }
+
+    return {
+      sessions: this.entryCache.size,
+      entries,
+      sourceBytes,
+      partialLineBytes,
+    };
+  }
+
+  getLastSummaryStreamMetrics(): CodexSummaryStreamMetrics | null {
+    return this.lastSummaryStreamMetrics
+      ? { ...this.lastSummaryStreamMetrics }
+      : null;
+  }
+
   async listSessions(projectId: UrlProjectId): Promise<SessionSummary[]> {
     const summaries: SessionSummary[] = [];
     const sessions = await this.scanSessions();
@@ -202,13 +523,15 @@ export class CodexSessionReader implements ISessionReader {
     for (const session of sessions) {
       // Filter by project path if set
       if (
-        this.projectPath &&
-        canonicalizeProjectPath(session.cwd) !== this.projectPath
+        this.projectIdentityKey &&
+        getProjectIdentityKey(session.cwd) !== this.projectIdentityKey
       ) {
         continue;
       }
 
-      const summary = await this.getSessionSummary(session.id, projectId);
+      const summary = await this.getSessionSummary(session.id, projectId, {
+        readMode: "head",
+      });
       if (summary) {
         summaries.push(summary);
       }
@@ -226,64 +549,75 @@ export class CodexSessionReader implements ISessionReader {
   async getSessionSummary(
     sessionId: string,
     projectId: UrlProjectId,
+    options?: GetSessionSummaryOptions,
   ): Promise<SessionSummary | null> {
     const sessionFile = await this.findSessionFile(sessionId);
     if (!sessionFile) return null;
 
     try {
-      const entries = await this.readEntries(sessionId, sessionFile.filePath);
+      const inProcessParser = () =>
+        this.buildSessionSummaryFromStream(
+          sessionId,
+          projectId,
+          sessionFile.filePath,
+          options,
+        );
 
-      if (entries.length === 0) return null;
+      if (
+        options?.readMode === "head" ||
+        this.summaryParserWorkerMode === "off"
+      ) {
+        if (options?.readMode === "head") {
+          return await inProcessParser();
+        }
 
-      // Extract session metadata from first entry
-      const metaEntry = entries.find((e) => e.type === "session_meta") as
-        | CodexSessionMetaEntry
-        | undefined;
-      if (!metaEntry) return null;
+        const stats = await stat(sessionFile.filePath);
+        return await this.getCoalescedFullSessionSummary(
+          sessionFile.filePath,
+          stats,
+          () =>
+            this.buildSessionSummaryFromKnownStats(
+              sessionId,
+              projectId,
+              sessionFile.filePath,
+              stats,
+              options,
+            ),
+        );
+      }
 
       const stats = await stat(sessionFile.filePath);
-      const { title, fullTitle } = this.extractTitle(entries);
-      const messageCount = this.countMessages(entries);
-      const model = this.extractModel(entries);
-      const provider = this.determineProvider(metaEntry, model);
-      const turnContext = this.extractTurnContext(entries);
-      const contextUsage = this.extractContextUsage(entries, model, provider);
-      const parentSessionId =
-        typeof metaEntry.payload.forked_from_id === "string"
-          ? metaEntry.payload.forked_from_id
-          : undefined;
-
-      // Skip sessions with no actual conversation messages
-      if (messageCount === 0) return null;
-
-      return {
-        id: sessionId,
-        projectId,
-        title,
-        fullTitle,
-        createdAt: metaEntry.payload.timestamp,
-        updatedAt: stats.mtime.toISOString(),
-        messageCount,
-        ownership: { owner: "none" },
-        contextUsage,
-        provider,
-        model,
-        parentSessionId,
-        originator: metaEntry.payload.originator,
-        cliVersion: metaEntry.payload.cli_version,
-        source: metaEntry.payload.source,
-        approvalPolicy: turnContext?.payload.approval_policy,
-        sandboxPolicy: turnContext?.payload.sandbox_policy
-          ? {
-              type: turnContext.payload.sandbox_policy.type,
-              networkAccess: turnContext.payload.sandbox_policy.network_access,
-              excludeTmpdirEnvVar:
-                turnContext.payload.sandbox_policy.exclude_tmpdir_env_var,
-              excludeSlashTmp:
-                turnContext.payload.sandbox_policy.exclude_slash_tmp,
-            }
-          : undefined,
-      };
+      return await this.getCoalescedFullSessionSummary(
+        sessionFile.filePath,
+        stats,
+        async () => {
+          const request: SummaryParserWorkerRequest = {
+            type: "parse",
+            requestId: randomUUID(),
+            provider: "codex",
+            filePath: sessionFile.filePath,
+            sessionId,
+            projectId,
+            stats: {
+              size: Number(stats.size),
+              mtimeMs: Number(stats.mtimeMs),
+              mtimeIso: stats.mtime.toISOString(),
+            },
+            sourceHints: {
+              codex: {
+                sessionsDir: this.sessionsDir,
+                ...(this.projectPath ? { projectPath: this.projectPath } : {}),
+                ...(this.dataDir ? { dataDir: this.dataDir } : {}),
+              },
+            },
+          };
+          const result = await this.getSummaryParserClient().parse(
+            request,
+            inProcessParser,
+          );
+          return result.summary;
+        },
+      );
     } catch {
       return null;
     }
@@ -295,32 +629,43 @@ export class CodexSessionReader implements ISessionReader {
     afterMessageId?: string,
     _options?: GetSessionOptions,
   ): Promise<LoadedSession | null> {
-    const summary = await this.getSessionSummary(sessionId, projectId);
-    if (!summary) return null;
-
     const sessionFile = await this.findSessionFile(sessionId);
     if (!sessionFile) return null;
 
-    const entries = await this.readEntries(sessionId, sessionFile.filePath);
+    try {
+      const entries = await this.readEntries(sessionId, sessionFile.filePath, {
+        purpose: "detail",
+        cache: true,
+      });
+      const summary = await this.buildSessionSummaryFromEntries(
+        sessionId,
+        projectId,
+        sessionFile,
+        entries,
+      );
+      if (!summary) return null;
 
-    // Filter entries if needed (for incremental fetching)
-    // Note: Codex entries are not 1:1 with messages, so standard ID filtering is tricky
-    // with raw format. We return all entries for now.
-    // Ideally the client handles diffing/appending.
-    const finalEntries = entries;
-    if (afterMessageId) {
-      // Logic to filter entries would go here if strict incremental loading is needed
-    }
+      // Filter entries if needed (for incremental fetching)
+      // Note: Codex entries are not 1:1 with messages, so standard ID filtering is tricky
+      // with raw format. We return all entries for now.
+      // Ideally the client handles diffing/appending.
+      const finalEntries = entries;
+      if (afterMessageId) {
+        // Logic to filter entries would go here if strict incremental loading is needed
+      }
 
-    return {
-      summary,
-      data: {
-        provider: this.determineProviderFromEntries(entries),
-        session: {
-          entries: finalEntries,
+      return {
+        summary,
+        data: {
+          provider: this.determineProviderFromEntries(entries),
+          session: {
+            entries: finalEntries,
+          },
         },
-      },
-    };
+      };
+    } catch {
+      return null;
+    }
   }
 
   async getSessionSummaryIfChanged(
@@ -351,22 +696,106 @@ export class CodexSessionReader implements ISessionReader {
     }
   }
 
-  /**
-   * Codex doesn't have subagent sessions like Claude.
-   * Returns empty array for compatibility.
-   */
   async getAgentMappings(): Promise<{ toolUseId: string; agentId: string }[]> {
-    return [];
+    const sessions = await this.scanSessions();
+    const mappings: { toolUseId: string; agentId: string }[] = [];
+    const seenToolUseIds = new Set<string>();
+
+    for (const session of sessions) {
+      if (
+        this.projectIdentityKey &&
+        getProjectIdentityKey(session.cwd) !== this.projectIdentityKey
+      ) {
+        continue;
+      }
+
+      const entries = await this.readEntries(session.id, session.filePath, {
+        purpose: "agent-mapping",
+        cache: false,
+      });
+      const spawnAgentCallIds = new Set<string>();
+
+      for (const entry of entries) {
+        if (entry.type !== "response_item") {
+          continue;
+        }
+
+        const payload = entry.payload;
+        if (
+          payload.type === "function_call" &&
+          payload.name === "spawn_agent"
+        ) {
+          spawnAgentCallIds.add(payload.call_id);
+          continue;
+        }
+
+        if (
+          payload.type !== "function_call_output" ||
+          !spawnAgentCallIds.has(payload.call_id) ||
+          seenToolUseIds.has(payload.call_id)
+        ) {
+          continue;
+        }
+
+        const agentId = parseCodexSpawnAgentOutput(payload.output);
+        if (!agentId) {
+          continue;
+        }
+
+        mappings.push({ toolUseId: payload.call_id, agentId });
+        seenToolUseIds.add(payload.call_id);
+      }
+    }
+
+    return mappings;
   }
 
-  /**
-   * Codex doesn't have subagent sessions like Claude.
-   * Returns null for compatibility.
-   */
   async getAgentSession(
-    _agentId: string,
+    agentId: string,
   ): Promise<{ messages: Message[]; status: string } | null> {
-    return null;
+    const sessionFile = await this.findSessionFile(agentId);
+    if (!sessionFile) return null;
+
+    const entries = await this.readEntries(agentId, sessionFile.filePath, {
+      purpose: "subagent",
+      cache: true,
+    });
+    if (entries.length === 0) return null;
+
+    const metaEntry = entries.find((e) => e.type === "session_meta") as
+      | CodexSessionMetaEntry
+      | undefined;
+    if (!metaEntry) return null;
+
+    const { title, fullTitle } = this.extractTitle(entries);
+    const provider = this.determineProviderFromEntries(entries);
+    const summary: SessionSummary = {
+      id: agentId,
+      projectId: "codex-subagent" as UrlProjectId,
+      title,
+      fullTitle,
+      createdAt: metaEntry.payload.timestamp,
+      updatedAt: sessionFile.timestamp,
+      messageCount: this.countMessages(entries),
+      ownership: { owner: "none" },
+      provider,
+    };
+    const loaded: LoadedSession = {
+      summary,
+      data: {
+        provider,
+        session: { entries },
+      },
+    };
+    const session = normalizeSession(loaded);
+
+    return {
+      messages: session.messages.map((message) => ({
+        ...message,
+        isSubagent: true,
+      })),
+      status: inferCodexAgentStatus(entries),
+    };
   }
 
   /**
@@ -380,16 +809,44 @@ export class CodexSessionReader implements ISessionReader {
     const now = Date.now();
 
     if (cached && now - cached.timestamp < CODEX_SCAN_CACHE_TTL_MS) {
+      const metrics = createCodexSessionReaderScanMetrics({
+        sessionsDir: this.sessionsDir,
+        projectPath: this.projectPath,
+        activeAfterMs: options?.activeAfterMs,
+        cacheKey,
+        sharedCacheStatus: cached.inFlight ? "in-flight" : "hit",
+      });
+      const startedAt = Date.now();
       if (cached.inFlight) {
         const sessions = await cached.inFlight;
         this.hydrateSessionFileCache(sessions);
-        return sessions.filter((session) => !session.isSubagent);
+        const visibleSessions = this.filterVisibleSessionsForScanMetrics(
+          sessions,
+          metrics,
+        );
+        metrics.durationMs = Date.now() - startedAt;
+        this.recordScanMetrics(metrics);
+        return visibleSessions;
       }
       this.hydrateSessionFileCache(cached.sessions);
-      return cached.sessions.filter((session) => !session.isSubagent);
+      const visibleSessions = this.filterVisibleSessionsForScanMetrics(
+        cached.sessions,
+        metrics,
+      );
+      metrics.durationMs = Date.now() - startedAt;
+      this.recordScanMetrics(metrics);
+      return visibleSessions;
     }
 
-    const inFlight = this.scanSessionsUncached(options);
+    const metrics = createCodexSessionReaderScanMetrics({
+      sessionsDir: this.sessionsDir,
+      projectPath: this.projectPath,
+      activeAfterMs: options?.activeAfterMs,
+      cacheKey,
+      sharedCacheStatus: "miss",
+    });
+    const startedAt = Date.now();
+    const inFlight = this.scanSessionsUncached(options, metrics);
     codexSharedScanCache.set(cacheKey, {
       timestamp: now,
       sessions: [],
@@ -403,8 +860,16 @@ export class CodexSessionReader implements ISessionReader {
         sessions,
       });
       this.hydrateSessionFileCache(sessions);
-      return sessions.filter((session) => !session.isSubagent);
+      const visibleSessions = this.filterVisibleSessionsForScanMetrics(
+        sessions,
+        metrics,
+      );
+      metrics.durationMs = Date.now() - startedAt;
+      this.recordScanMetrics(metrics);
+      return visibleSessions;
     } catch (error) {
+      metrics.durationMs = Date.now() - startedAt;
+      this.recordScanMetrics(metrics);
       const entry = codexSharedScanCache.get(cacheKey);
       if (entry?.inFlight === inFlight) {
         codexSharedScanCache.delete(cacheKey);
@@ -423,17 +888,63 @@ export class CodexSessionReader implements ISessionReader {
     }
   }
 
+  private filterVisibleSessionsForScanMetrics(
+    sessions: CodexSessionFile[],
+    metrics: CodexSessionReaderScanMetrics,
+  ): CodexSessionFile[] {
+    const visibleSessions = sessions.filter((session) => {
+      if (session.isSubagent) {
+        metrics.subagentSessionsSkipped += 1;
+        return false;
+      }
+      return true;
+    });
+    metrics.sessionsReturned = visibleSessions.length;
+    return visibleSessions;
+  }
+
+  private recordScanMetrics(metrics: CodexSessionReaderScanMetrics): void {
+    this.lastScanMetrics = cloneCodexSessionReaderScanMetrics(metrics);
+    const payload = {
+      event: "codex_reader_scan",
+      ...metrics,
+    };
+    if (metrics.durationMs >= this.slowLogThresholdMs) {
+      getLogger().warn(payload, "CODEX_READER: slow scan");
+      return;
+    }
+    getLogger().debug(payload, "CODEX_READER: scan complete");
+  }
+
   private async scanSessionsUncached(
     options?: CodexScanOptions,
+    metrics?: CodexSessionReaderScanMetrics,
   ): Promise<CodexSessionFile[]> {
     const sessions: CodexSessionFile[] = [];
-    const files = await this.findJsonlFiles(this.sessionsDir);
+    try {
+      await stat(this.sessionsDir);
+      if (metrics) metrics.sessionsDirExists = true;
+    } catch {
+      return sessions;
+    }
+
+    const files = await this.findJsonlFiles(this.sessionsDir, metrics);
 
     for (const filePath of files) {
-      const session = await this.readSessionMeta(filePath, options);
+      const activeWindowSkipsBefore = metrics?.discovery.activeWindowSkips ?? 0;
+      const session = await this.readSessionMeta(filePath, options, metrics);
       if (session) {
         sessions.push(session);
+      } else if (
+        metrics &&
+        metrics.discovery.activeWindowSkips === activeWindowSkipsBefore
+      ) {
+        metrics.failedFiles += 1;
       }
+    }
+    await this.discoveryIndex?.flush();
+    if (metrics) {
+      metrics.sessionsParsed = sessions.length;
     }
 
     return sessions;
@@ -445,7 +956,7 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   getIndexScopeKey(sessionDir: string): string {
-    return `codex::${sessionDir}::${this.projectPath ?? "*"}`;
+    return `codex::${sessionDir}::${this.projectIdentityKey ?? "*"}`;
   }
 
   async listSessionFiles(
@@ -457,8 +968,8 @@ export class CodexSessionReader implements ISessionReader {
     return sessions
       .filter(
         (session) =>
-          (!this.projectPath ||
-            canonicalizeProjectPath(session.cwd) === this.projectPath) &&
+          (!this.projectIdentityKey ||
+            getProjectIdentityKey(session.cwd) === this.projectIdentityKey) &&
           (!options?.activeAfterMs || session.mtime >= options.activeAfterMs),
       )
       .map((session) => ({
@@ -485,7 +996,12 @@ export class CodexSessionReader implements ISessionReader {
   private async readEntries(
     sessionId: string,
     filePath: string,
+    options?: CodexReadEntriesOptions,
   ): Promise<CodexSessionEntry[]> {
+    const purpose = options?.purpose ?? "detail";
+    const shouldWriteCache = options?.cache ?? true;
+    const startedAt = Date.now();
+    const memoryBefore = process.memoryUsage();
     const stats = await stat(filePath);
     const cached = this.entryCache.get(sessionId);
 
@@ -496,44 +1012,678 @@ export class CodexSessionReader implements ISessionReader {
       cached.mtimeMs === stats.mtimeMs
     ) {
       cached.entries = dedupeCodexEntries(cached.entries);
+      this.recordEntryReadMetrics({
+        startedAt,
+        memoryBefore,
+        sessionId,
+        filePath,
+        purpose,
+        cacheMode: shouldWriteCache ? "read-write" : "read-only",
+        cacheStatus: "hit",
+        stats,
+        parsedEntries: cached.entries.length,
+        dedupedEntries: cached.entries.length,
+      });
       return cached.entries.slice();
     }
 
-    if (cached && cached.filePath === filePath && cached.size < stats.size) {
+    if (
+      shouldWriteCache &&
+      cached &&
+      cached.filePath === filePath &&
+      !isCompressedCodexSessionFile(filePath) &&
+      cached.size < stats.size
+    ) {
+      const readStartedAt = Date.now();
       const appended = await this.readFileRange(
         filePath,
         cached.size,
         stats.size - cached.size,
       );
+      const readLinesMs = Date.now() - readStartedAt;
+      const parseStartedAt = Date.now();
       const { entries, partialLine } = parseCodexJsonlChunk(
         cached.partialLine + appended,
         stats.size > cached.size,
       );
+      const parseMs = Date.now() - parseStartedAt;
+      const dedupeStartedAt = Date.now();
       cached.entries.push(...entries);
       cached.entries = dedupeCodexEntries(cached.entries);
+      const dedupeMs = Date.now() - dedupeStartedAt;
       cached.partialLine = partialLine;
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
+      this.recordEntryReadMetrics({
+        startedAt,
+        memoryBefore,
+        sessionId,
+        filePath,
+        purpose,
+        cacheMode: "read-write",
+        cacheStatus: "append",
+        stats,
+        readLinesMs,
+        parseMs,
+        dedupeMs,
+        lineCount: entries.length,
+        parsedEntries: entries.length,
+        dedupedEntries: cached.entries.length,
+      });
       return cached.entries.slice();
     }
 
+    const readStartedAt = Date.now();
     const lines = await readJsonlLines(filePath);
+    const readLinesMs = Date.now() - readStartedAt;
     const entries: CodexSessionEntry[] = [];
+    let maxLineLength = 0;
+    const parseStartedAt = Date.now();
     for (const line of lines) {
+      maxLineLength = Math.max(maxLineLength, line.length);
       const entry = parseCodexSessionEntry(line);
       if (entry) {
         entries.push(entry);
       }
     }
+    const parseMs = Date.now() - parseStartedAt;
+    const dedupeStartedAt = Date.now();
     const dedupedEntries = dedupeCodexEntries(entries);
-    this.entryCache.set(sessionId, {
+    const dedupeMs = Date.now() - dedupeStartedAt;
+    let cacheStoreMs = 0;
+    if (shouldWriteCache) {
+      const cacheStoreStartedAt = Date.now();
+      this.entryCache.set(sessionId, {
+        filePath,
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+        entries: dedupedEntries,
+        partialLine: "",
+      });
+      cacheStoreMs = Date.now() - cacheStoreStartedAt;
+    }
+    this.recordEntryReadMetrics({
+      startedAt,
+      memoryBefore,
+      sessionId,
       filePath,
-      mtimeMs: stats.mtimeMs,
-      size: stats.size,
-      entries: dedupedEntries,
-      partialLine: "",
+      purpose,
+      cacheMode: shouldWriteCache ? "read-write" : "read-only",
+      cacheStatus: "miss",
+      stats,
+      readLinesMs,
+      parseMs,
+      dedupeMs,
+      cacheStoreMs,
+      lineCount: lines.length,
+      parsedEntries: entries.length,
+      dedupedEntries: dedupedEntries.length,
+      maxLineLength,
     });
     return dedupedEntries.slice();
+  }
+
+  async getSessionSummaryFromFile(
+    sessionId: string,
+    projectId: UrlProjectId,
+    filePath: string,
+    options?: GetSessionSummaryOptions,
+  ): Promise<SessionSummary | null> {
+    return this.buildSessionSummaryFromStream(
+      sessionId,
+      projectId,
+      filePath,
+      options,
+    );
+  }
+
+  private async buildSessionSummaryFromStream(
+    sessionId: string,
+    projectId: UrlProjectId,
+    filePath: string,
+    options?: GetSessionSummaryOptions,
+  ): Promise<SessionSummary | null> {
+    const stats = await stat(filePath);
+    return this.buildSessionSummaryFromKnownStats(
+      sessionId,
+      projectId,
+      filePath,
+      stats,
+      options,
+    );
+  }
+
+  private async buildSessionSummaryFromKnownStats(
+    sessionId: string,
+    projectId: UrlProjectId,
+    filePath: string,
+    stats: Awaited<ReturnType<typeof stat>>,
+    options?: GetSessionSummaryOptions,
+  ): Promise<SessionSummary | null> {
+    const read = await this.readSummaryStream(
+      sessionId,
+      filePath,
+      stats,
+      options?.readMode ?? "full",
+    );
+    return this.buildSessionSummaryFromState(
+      sessionId,
+      projectId,
+      stats,
+      read.state,
+    );
+  }
+
+  private async getCoalescedFullSessionSummary(
+    filePath: string,
+    stats: Awaited<ReturnType<typeof stat>>,
+    parse: () => Promise<SessionSummary | null>,
+  ): Promise<SessionSummary | null> {
+    const cacheKey = getCodexFullSummaryCacheKey(filePath, stats);
+    const cached = codexFullSummaryCache.get(cacheKey);
+    if (cached) {
+      cached.lastAccessedAt = Date.now();
+      return cloneSessionSummary(await cached.promise);
+    }
+
+    const promise = parse();
+    codexFullSummaryCache.set(cacheKey, {
+      promise,
+      lastAccessedAt: Date.now(),
+    });
+    trimCodexFullSummaryCache();
+
+    try {
+      return cloneSessionSummary(await promise);
+    } catch (error) {
+      if (codexFullSummaryCache.get(cacheKey)?.promise === promise) {
+        codexFullSummaryCache.delete(cacheKey);
+      }
+      throw error;
+    }
+  }
+
+  private getSummaryParserClient(): SummaryParserClient {
+    this.summaryParserClient ??= new SummaryParserClient({
+      mode: this.summaryParserWorkerMode,
+    });
+    return this.summaryParserClient;
+  }
+
+  private async readSummaryStream(
+    sessionId: string,
+    filePath: string,
+    stats: Awaited<ReturnType<typeof stat>>,
+    readMode: SessionSummaryReadMode,
+  ): Promise<CodexSummaryStreamRead> {
+    const startedAt = Date.now();
+    const memoryBefore = process.memoryUsage();
+    const state: CodexSummaryState = {
+      sawResponseItemUser: false,
+      eventUserMessageCount: 0,
+      responseMessageCount: 0,
+    };
+    const seenDedupeKeys = new Set<string>();
+    let lineCount = 0;
+    let parsedEntries = 0;
+    let dedupedEntries = 0;
+    let skippedDuplicateEntries = 0;
+    let maxLineLength = 0;
+    let bytesRead = 0;
+    let stoppedEarly = false;
+    let stopReason: CodexSummaryStreamMetrics["stopReason"] = "eof";
+
+    const parseStartedAt = Date.now();
+    const headBudgetStopReason = ():
+      | Exclude<CodexSummaryStreamMetrics["stopReason"], "eof">
+      | null => {
+      if (readMode !== "head") return null;
+      if (lineCount >= CODEX_HEAD_SUMMARY_MAX_LINES) {
+        return "line_budget";
+      }
+      if (bytesRead >= CODEX_HEAD_SUMMARY_MAX_BYTES) {
+        return "byte_budget";
+      }
+      return null;
+    };
+    const stopEarly = (
+      reason: Exclude<CodexSummaryStreamMetrics["stopReason"], "eof">,
+    ) => {
+      stoppedEarly = true;
+      stopReason = reason;
+    };
+
+    for await (const line of iterateJsonlLines(filePath)) {
+      lineCount += 1;
+      maxLineLength = Math.max(maxLineLength, line.length);
+      bytesRead += Buffer.byteLength(line) + 1;
+      const trimmed = line.trim();
+      if (!trimmed) {
+        const budgetReason = headBudgetStopReason();
+        if (budgetReason) {
+          stopEarly(budgetReason);
+          break;
+        }
+        continue;
+      }
+
+      const entry = parseCodexSessionEntry(trimmed);
+      if (!entry) {
+        const budgetReason = headBudgetStopReason();
+        if (budgetReason) {
+          stopEarly(budgetReason);
+          break;
+        }
+        continue;
+      }
+
+      parsedEntries += 1;
+      const dedupeKey = getCodexSummaryDedupeKey(entry);
+      if (dedupeKey) {
+        if (seenDedupeKeys.has(dedupeKey)) {
+          skippedDuplicateEntries += 1;
+          continue;
+        }
+        seenDedupeKeys.add(dedupeKey);
+      }
+
+      dedupedEntries += 1;
+      this.applySummaryEntry(state, entry);
+      if (readMode === "head" && this.hasHeadSummary(state)) {
+        stopEarly("head_complete");
+        break;
+      }
+      const budgetReason = headBudgetStopReason();
+      if (budgetReason) {
+        stopEarly(budgetReason);
+        break;
+      }
+    }
+    const parseMs = Date.now() - parseStartedAt;
+
+    const read = {
+      state,
+      lineCount,
+      parsedEntries,
+      dedupedEntries,
+      skippedDuplicateEntries,
+      maxLineLength,
+      parseMs,
+      readMode,
+      stoppedEarly,
+      stopReason,
+    };
+    this.recordSummaryStreamMetrics({
+      startedAt,
+      memoryBefore,
+      sessionId,
+      filePath,
+      stats,
+      read,
+    });
+    return read;
+  }
+
+  private hasHeadSummary(state: CodexSummaryState): boolean {
+    return !!(
+      state.metaEntry &&
+      (state.firstResponseUserTitle || state.firstEventUserTitle)
+    );
+  }
+
+  private applySummaryEntry(
+    state: CodexSummaryState,
+    entry: CodexSessionEntry,
+  ): void {
+    if (entry.type === "session_meta") {
+      state.metaEntry ??= entry;
+      return;
+    }
+
+    if (entry.type === "turn_context") {
+      state.firstTurnContext ??= entry;
+      if (entry.payload.model) {
+        state.model = entry.payload.model;
+      }
+      return;
+    }
+
+    if (entry.type === "event_msg") {
+      if (entry.payload.type === "user_message") {
+        state.eventUserMessageCount += 1;
+        if (!state.firstEventUserTitle) {
+          const fullTitle = entry.payload.message.trim();
+          if (!this.isSystemPromptUserMessage(fullTitle)) {
+            state.firstEventUserTitle = {
+              title: truncateSessionTitle(fullTitle) || null,
+              fullTitle,
+            };
+          }
+        }
+        return;
+      }
+
+      if (entry.payload.type === "token_count") {
+        const info = entry.payload.info;
+        const usage = info?.last_token_usage ?? info?.total_token_usage;
+        const inputTokens = usage?.input_tokens ?? 0;
+        if (inputTokens > 0) {
+          state.contextCandidate = {
+            inputTokens,
+            ...(info?.model_context_window && info.model_context_window > 0
+              ? { contextWindow: info.model_context_window }
+              : {}),
+          };
+        }
+      }
+      return;
+    }
+
+    if (entry.type !== "response_item") {
+      return;
+    }
+
+    const payload = entry.payload;
+    if (payload.type !== "message") {
+      return;
+    }
+
+    if (payload.role === "user" || payload.role === "assistant") {
+      state.responseMessageCount += 1;
+    }
+
+    if (payload.role !== "user") {
+      return;
+    }
+
+    state.sawResponseItemUser = true;
+    if (state.firstResponseUserTitle) {
+      return;
+    }
+
+    const fullTitle = payload.content
+      .map((content) =>
+        "text" in content && typeof content.text === "string"
+          ? content.text
+          : "",
+      )
+      .join("\n")
+      .trim();
+    if (fullTitle && !this.isSystemPromptUserMessage(fullTitle)) {
+      state.firstResponseUserTitle = {
+        title: truncateSessionTitle(fullTitle) || null,
+        fullTitle,
+      };
+    }
+  }
+
+  private buildSessionSummaryFromState(
+    sessionId: string,
+    projectId: UrlProjectId,
+    stats: Awaited<ReturnType<typeof stat>>,
+    state: CodexSummaryState,
+  ): SessionSummary | null {
+    const metaEntry = state.metaEntry;
+    if (!metaEntry) return null;
+
+    const messageCount =
+      state.responseMessageCount +
+      (state.sawResponseItemUser ? 0 : state.eventUserMessageCount);
+    if (messageCount === 0) return null;
+
+    const model = state.model;
+    const provider = this.determineProvider(metaEntry, model);
+    const contextUsage = this.contextUsageFromSummaryCandidate(
+      state.contextCandidate,
+      model,
+      provider,
+    );
+    const title =
+      (state.sawResponseItemUser
+        ? state.firstResponseUserTitle
+        : state.firstEventUserTitle) ?? {
+        title: null,
+        fullTitle: null,
+      };
+    const parentSessionId =
+      typeof metaEntry.payload.forked_from_id === "string"
+        ? metaEntry.payload.forked_from_id
+        : undefined;
+
+    return {
+      id: sessionId,
+      projectId,
+      title: title.title,
+      fullTitle: title.fullTitle,
+      createdAt: metaEntry.payload.timestamp,
+      updatedAt: stats.mtime.toISOString(),
+      messageCount,
+      ownership: { owner: "none" },
+      contextUsage,
+      provider,
+      model,
+      parentSessionId,
+      originator: metaEntry.payload.originator,
+      cliVersion: metaEntry.payload.cli_version,
+      source: codexSessionSourceLabel(metaEntry.payload.source),
+      approvalPolicy: state.firstTurnContext?.payload.approval_policy,
+      sandboxPolicy: state.firstTurnContext?.payload.sandbox_policy
+        ? {
+            type: state.firstTurnContext.payload.sandbox_policy.type,
+            networkAccess:
+              state.firstTurnContext.payload.sandbox_policy.network_access,
+            excludeTmpdirEnvVar:
+              state.firstTurnContext.payload.sandbox_policy
+                .exclude_tmpdir_env_var,
+            excludeSlashTmp:
+              state.firstTurnContext.payload.sandbox_policy.exclude_slash_tmp,
+          }
+        : undefined,
+    };
+  }
+
+  private contextUsageFromSummaryCandidate(
+    candidate: CodexSummaryContextCandidate | undefined,
+    model: string | undefined,
+    provider: "codex" | "codex-oss",
+  ): ContextUsage | undefined {
+    if (!candidate) {
+      return undefined;
+    }
+
+    const contextWindow =
+      candidate.contextWindow ?? getModelContextWindow(model, provider);
+    const percentage = Math.min(
+      100,
+      Math.round((candidate.inputTokens / contextWindow) * 100),
+    );
+    return {
+      inputTokens: candidate.inputTokens,
+      percentage,
+      contextWindow,
+    };
+  }
+
+  private async buildSessionSummaryFromEntries(
+    sessionId: string,
+    projectId: UrlProjectId,
+    sessionFile: CodexSessionFile,
+    entries: CodexSessionEntry[],
+  ): Promise<SessionSummary | null> {
+    if (entries.length === 0) return null;
+
+    const metaEntry = entries.find((e) => e.type === "session_meta") as
+      | CodexSessionMetaEntry
+      | undefined;
+    if (!metaEntry) return null;
+
+    const stats = await stat(sessionFile.filePath);
+    const { title, fullTitle } = this.extractTitle(entries);
+    const messageCount = this.countMessages(entries);
+    const model = this.extractModel(entries);
+    const provider = this.determineProvider(metaEntry, model);
+    const turnContext = this.extractTurnContext(entries);
+    const contextUsage = this.extractContextUsage(entries, model, provider);
+    const parentSessionId =
+      typeof metaEntry.payload.forked_from_id === "string"
+        ? metaEntry.payload.forked_from_id
+        : undefined;
+
+    if (messageCount === 0) return null;
+
+    return {
+      id: sessionId,
+      projectId,
+      title,
+      fullTitle,
+      createdAt: metaEntry.payload.timestamp,
+      updatedAt: stats.mtime.toISOString(),
+      messageCount,
+      ownership: { owner: "none" },
+      contextUsage,
+      provider,
+      model,
+      parentSessionId,
+      originator: metaEntry.payload.originator,
+      cliVersion: metaEntry.payload.cli_version,
+      source: codexSessionSourceLabel(metaEntry.payload.source),
+      approvalPolicy: turnContext?.payload.approval_policy,
+      sandboxPolicy: turnContext?.payload.sandbox_policy
+        ? {
+            type: turnContext.payload.sandbox_policy.type,
+            networkAccess: turnContext.payload.sandbox_policy.network_access,
+            excludeTmpdirEnvVar:
+              turnContext.payload.sandbox_policy.exclude_tmpdir_env_var,
+            excludeSlashTmp:
+              turnContext.payload.sandbox_policy.exclude_slash_tmp,
+          }
+        : undefined,
+    };
+  }
+
+  private recordEntryReadMetrics(options: {
+    startedAt: number;
+    memoryBefore: NodeJS.MemoryUsage;
+    sessionId: string;
+    filePath: string;
+    purpose: CodexEntryReadPurpose;
+    cacheMode: CodexEntryReadMetrics["cacheMode"];
+    cacheStatus: CodexEntryReadMetrics["cacheStatus"];
+    stats: Awaited<ReturnType<typeof stat>>;
+    readLinesMs?: number;
+    parseMs?: number;
+    dedupeMs?: number;
+    cacheStoreMs?: number;
+    lineCount?: number;
+    parsedEntries?: number;
+    dedupedEntries?: number;
+    maxLineLength?: number;
+  }): void {
+    const durationMs = Date.now() - options.startedAt;
+    if (!LOG_ENTRY_READS && durationMs < this.slowLogThresholdMs) {
+      return;
+    }
+
+    const memoryAfter = process.memoryUsage();
+    const payload: CodexEntryReadMetrics = {
+      event: "codex_entry_read",
+      sessionsDir: this.sessionsDir,
+      ...(this.projectPath ? { projectPath: this.projectPath } : {}),
+      sessionId: options.sessionId,
+      filePath: options.filePath,
+      purpose: options.purpose,
+      cacheMode: options.cacheMode,
+      cacheStatus: options.cacheStatus,
+      fileSize: Number(options.stats.size),
+      fileMtimeMs: Number(options.stats.mtimeMs),
+      durationMs,
+      ...(options.readLinesMs !== undefined
+        ? { readLinesMs: options.readLinesMs }
+        : {}),
+      ...(options.parseMs !== undefined ? { parseMs: options.parseMs } : {}),
+      ...(options.dedupeMs !== undefined
+        ? { dedupeMs: options.dedupeMs }
+        : {}),
+      ...(options.cacheStoreMs !== undefined
+        ? { cacheStoreMs: options.cacheStoreMs }
+        : {}),
+      ...(options.lineCount !== undefined
+        ? { lineCount: options.lineCount }
+        : {}),
+      ...(options.parsedEntries !== undefined
+        ? { parsedEntries: options.parsedEntries }
+        : {}),
+      ...(options.dedupedEntries !== undefined
+        ? { dedupedEntries: options.dedupedEntries }
+        : {}),
+      ...(options.maxLineLength !== undefined
+        ? { maxLineLength: options.maxLineLength }
+        : {}),
+      heapUsedBefore: options.memoryBefore.heapUsed,
+      heapUsedAfter: memoryAfter.heapUsed,
+      rssBefore: options.memoryBefore.rss,
+      rssAfter: memoryAfter.rss,
+      heapUsedDelta: memoryAfter.heapUsed - options.memoryBefore.heapUsed,
+      rssDelta: memoryAfter.rss - options.memoryBefore.rss,
+      entryCache: this.getEntryCacheStats(),
+    };
+
+    if (durationMs >= this.slowLogThresholdMs) {
+      getLogger().warn(payload, "CODEX_READER: slow entry read");
+      return;
+    }
+    getLogger().debug(payload, "CODEX_READER: entry read");
+  }
+
+  private recordSummaryStreamMetrics(options: {
+    startedAt: number;
+    memoryBefore: NodeJS.MemoryUsage;
+    sessionId: string;
+    filePath: string;
+    stats: Awaited<ReturnType<typeof stat>>;
+    read: Omit<CodexSummaryStreamRead, "state">;
+  }): void {
+    const durationMs = Date.now() - options.startedAt;
+    const memoryAfter = process.memoryUsage();
+    const payload: CodexSummaryStreamMetrics = {
+      event: "codex_summary_stream",
+      sessionsDir: this.sessionsDir,
+      ...(this.projectPath ? { projectPath: this.projectPath } : {}),
+      sessionId: options.sessionId,
+      filePath: options.filePath,
+      fileSize: Number(options.stats.size),
+      fileMtimeMs: Number(options.stats.mtimeMs),
+      compressed: isCompressedCodexSessionFile(options.filePath),
+      durationMs,
+      parseMs: options.read.parseMs,
+      lineCount: options.read.lineCount,
+      parsedEntries: options.read.parsedEntries,
+      dedupedEntries: options.read.dedupedEntries,
+      skippedDuplicateEntries: options.read.skippedDuplicateEntries,
+      maxLineLength: options.read.maxLineLength,
+      readMode: options.read.readMode,
+      stoppedEarly: options.read.stoppedEarly,
+      stopReason: options.read.stopReason,
+      heapUsedBefore: options.memoryBefore.heapUsed,
+      heapUsedAfter: memoryAfter.heapUsed,
+      rssBefore: options.memoryBefore.rss,
+      rssAfter: memoryAfter.rss,
+      heapUsedDelta: memoryAfter.heapUsed - options.memoryBefore.heapUsed,
+      rssDelta: memoryAfter.rss - options.memoryBefore.rss,
+      entryCache: this.getEntryCacheStats(),
+    };
+
+    this.lastSummaryStreamMetrics = payload;
+
+    if (!LOG_ENTRY_READS && durationMs < this.slowLogThresholdMs) {
+      return;
+    }
+
+    if (durationMs >= this.slowLogThresholdMs) {
+      getLogger().warn(payload, "CODEX_READER: slow summary stream");
+      return;
+    }
+    getLogger().debug(payload, "CODEX_READER: summary stream");
   }
 
   private async readFileRange(
@@ -556,28 +1706,52 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   /**
-   * Recursively find all .jsonl files in a directory.
+   * Recursively find all Codex rollout files in a directory.
    */
-  private async findJsonlFiles(dir: string): Promise<string[]> {
+  private async findJsonlFiles(
+    dir: string,
+    metrics?: CodexSessionReaderScanMetrics,
+  ): Promise<string[]> {
     const files: string[] = [];
+    await this.collectJsonlFiles(dir, files, metrics);
+    const preferredFiles = preferPlainCodexRollouts(files);
+    if (metrics) {
+      metrics.rolloutFilesAfterPrecedence = preferredFiles.length;
+      metrics.precedenceSkippedCompressed =
+        files.length - preferredFiles.length;
+    }
+    return preferredFiles;
+  }
 
+  private async collectJsonlFiles(
+    dir: string,
+    files: string[],
+    metrics?: CodexSessionReaderScanMetrics,
+  ): Promise<void> {
     try {
+      if (metrics) metrics.directoriesVisited += 1;
       const entries = await readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
         const fullPath = join(dir, entry.name);
         if (entry.isDirectory()) {
-          const subFiles = await this.findJsonlFiles(fullPath);
-          files.push(...subFiles);
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+          await this.collectJsonlFiles(fullPath, files, metrics);
+        } else if (entry.isFile() && isCodexRolloutFileName(entry.name)) {
           files.push(fullPath);
+          if (metrics) {
+            metrics.rolloutFilesFound += 1;
+            if (codexRolloutRepresentation(fullPath) === "zstd") {
+              metrics.compressedRolloutFiles += 1;
+            } else {
+              metrics.plainRolloutFiles += 1;
+            }
+          }
         }
       }
     } catch {
+      if (metrics) metrics.directoryReadErrors += 1;
       // Ignore errors (permission denied, etc.)
     }
-
-    return files;
   }
 
   /**
@@ -586,60 +1760,31 @@ export class CodexSessionReader implements ISessionReader {
   private async readSessionMeta(
     filePath: string,
     options?: CodexScanOptions,
+    metrics?: CodexSessionReaderScanMetrics,
   ): Promise<CodexSessionFile | null> {
     try {
-      const stats = await stat(filePath);
-      if (options?.activeAfterMs && stats.mtimeMs < options.activeAfterMs) {
-        return null;
-      }
-
-      const firstLine = await readFirstLine(
+      const session = await readCodexRolloutMetadata({
+        sessionsDir: this.sessionsDir,
         filePath,
-        CODEX_META_READ_MAX_BYTES,
-      );
-
-      if (!firstLine) return null;
-
-      const entry = parseCodexSessionEntry(firstLine);
-      if (entry?.type !== "session_meta") return null;
-
-      const meta = entry.payload;
-
+        ...(this.discoveryIndex ? { discoveryIndex: this.discoveryIndex } : {}),
+        ...(options?.activeAfterMs !== undefined
+          ? { activeAfterMs: options.activeAfterMs }
+          : {}),
+        ...(metrics ? { metrics: metrics.discovery } : {}),
+      });
+      if (!session) return null;
       return {
-        id: meta.id,
+        id: session.id,
         filePath,
-        cwd: meta.cwd,
-        timestamp: meta.timestamp,
-        mtime: stats.mtimeMs,
-        size: stats.size,
-        isSubagent: this.isSubagentSessionMeta(meta),
+        cwd: session.cwd,
+        timestamp: session.timestamp,
+        mtime: session.mtime,
+        size: session.size,
+        isSubagent: session.isSubagent,
       };
     } catch {
       return null;
     }
-  }
-
-  private isSubagentSessionMeta(
-    meta: CodexSessionMetaEntry["payload"],
-  ): boolean {
-    if (
-      !("forked_from_id" in meta) ||
-      typeof meta.forked_from_id !== "string"
-    ) {
-      return false;
-    }
-
-    const source = meta.source;
-    if (!source || typeof source !== "object") return false;
-
-    const subagentSource = source as {
-      subagent?: { thread_spawn?: { parent_thread_id?: string } };
-    };
-
-    return (
-      typeof subagentSource.subagent?.thread_spawn?.parent_thread_id ===
-      "string"
-    );
   }
 
   /**
@@ -694,7 +1839,7 @@ export class CodexSessionReader implements ISessionReader {
   private isSystemPromptUserMessage(text: string): boolean {
     const trimmed = text.trimStart();
     return (
-      trimmed.startsWith("# AGENTS.md instructions") ||
+      isCodexStartupInstructionText(trimmed) ||
       trimmed.startsWith("<environment_context>")
     );
   }
@@ -880,4 +2025,159 @@ export class CodexSessionReader implements ISessionReader {
         entry.payload.role === "user",
     );
   }
+}
+
+function createCodexSessionReaderScanMetrics(options: {
+  sessionsDir: string;
+  projectPath?: string;
+  activeAfterMs?: number;
+  cacheKey: string;
+  sharedCacheStatus: CodexSessionReaderScanCacheStatus;
+}): CodexSessionReaderScanMetrics {
+  return {
+    sessionsDir: options.sessionsDir,
+    ...(options.projectPath ? { projectPath: options.projectPath } : {}),
+    ...(options.activeAfterMs !== undefined
+      ? { activeAfterMs: options.activeAfterMs }
+      : {}),
+    cacheKey: options.cacheKey,
+    sharedCacheStatus: options.sharedCacheStatus,
+    durationMs: 0,
+    sessionsDirExists: false,
+    directoriesVisited: 0,
+    directoryReadErrors: 0,
+    rolloutFilesFound: 0,
+    rolloutFilesAfterPrecedence: 0,
+    plainRolloutFiles: 0,
+    compressedRolloutFiles: 0,
+    precedenceSkippedCompressed: 0,
+    sessionsParsed: 0,
+    failedFiles: 0,
+    subagentSessionsSkipped: 0,
+    sessionsReturned: 0,
+    discovery: createCodexRolloutDiscoveryStats(),
+  };
+}
+
+function codexSessionSourceLabel(source: unknown): string | undefined {
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    return trimmed || undefined;
+  }
+
+  if (isRecord(source) && isRecord(source.subagent)) {
+    return "subagent";
+  }
+
+  return undefined;
+}
+
+function parseCodexSpawnAgentOutput(output: unknown): string | null {
+  const text = codexToolOutputText(output);
+  if (!text) {
+    return null;
+  }
+
+  const parsed = parseJsonRecord(text);
+  const agentId =
+    stringField(parsed, "agent_id") ?? stringField(parsed, "agentId");
+  if (agentId) {
+    return agentId;
+  }
+
+  return (
+    text.match(/"agent_id"\s*:\s*"([^"]+)"/)?.[1] ??
+    text.match(/"agentId"\s*:\s*"([^"]+)"/)?.[1] ??
+    null
+  );
+}
+
+function codexToolOutputText(output: unknown): string {
+  if (typeof output === "string") {
+    return output.trim();
+  }
+
+  if (!Array.isArray(output)) {
+    return "";
+  }
+
+  return output
+    .map((item) =>
+      isRecord(item) && typeof item.text === "string" ? item.text : "",
+    )
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function parseJsonRecord(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringField(
+  record: Record<string, unknown> | null | undefined,
+  field: string,
+): string | undefined {
+  const value = record?.[field];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function inferCodexAgentStatus(
+  entries: CodexSessionEntry[],
+): "pending" | "running" | "completed" | "failed" {
+  let sawTaskStarted = false;
+  let sawTaskComplete = false;
+  let sawTurnAborted = false;
+  let sawAssistantMessage = false;
+
+  for (const entry of entries) {
+    if (entry.type === "event_msg") {
+      if (entry.payload.type === "task_started") {
+        sawTaskStarted = true;
+        sawTaskComplete = false;
+      } else if (entry.payload.type === "task_complete") {
+        sawTaskComplete = true;
+      } else if (entry.payload.type === "turn_aborted") {
+        sawTurnAborted = true;
+      }
+      continue;
+    }
+
+    if (
+      entry.type === "response_item" &&
+      entry.payload.type === "message" &&
+      entry.payload.role === "assistant"
+    ) {
+      sawAssistantMessage = true;
+    }
+  }
+
+  if (sawTurnAborted) {
+    return "failed";
+  }
+  if (sawTaskStarted && !sawTaskComplete) {
+    return "running";
+  }
+  if (sawTaskComplete || sawAssistantMessage) {
+    return "completed";
+  }
+  return "pending";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneCodexSessionReaderScanMetrics(
+  metrics: CodexSessionReaderScanMetrics,
+): CodexSessionReaderScanMetrics {
+  return {
+    ...metrics,
+    discovery: { ...metrics.discovery },
+  };
 }

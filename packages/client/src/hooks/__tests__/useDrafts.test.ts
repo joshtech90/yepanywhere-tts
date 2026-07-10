@@ -1,10 +1,24 @@
 // @vitest-environment jsdom
 
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setsEqual, useNewSessionDraft } from "../useDrafts";
+import {
+  createNewSessionDraftKey,
+  createQuestionOtherDraftKey,
+  createToolApprovalFeedbackDraftKey,
+  setsEqual,
+  useNewSessionDraft,
+  useQuestionOtherDrafts,
+  useToolApprovalFeedbackDraft,
+} from "../useDrafts";
+import {
+  createClientSummaryHostSourceKey,
+  resetClientSummaryStoreForTests,
+  setCurrentClientSummarySourceKey,
+} from "../../lib/clientSummaryStore";
 
 beforeEach(() => {
+  resetClientSummaryStoreForTests();
   const store = new Map<string, string>();
   const localStorageMock = {
     get length() {
@@ -34,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetClientSummaryStoreForTests();
   vi.clearAllMocks();
 });
 
@@ -94,19 +109,208 @@ describe("setsEqual", () => {
 });
 
 describe("useNewSessionDraft", () => {
-  it("detects the shared new-session draft key", () => {
-    localStorage.setItem("draft-new-session", "draft the migration plan");
+  it("detects the current source's shared new-session draft key", () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+    localStorage.setItem(
+      createNewSessionDraftKey(macbook),
+      "draft the migration plan",
+    );
 
     const { result } = renderHook(() => useNewSessionDraft());
 
     expect(result.current).toBe(true);
   });
 
-  it("still detects legacy project-scoped new-session draft keys", () => {
-    localStorage.setItem("draft-new-session-project-1", "draft the fix");
+  it("keeps new-session drafts invisible across source switches", () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    const winnative = createClientSummaryHostSourceKey("winnative");
+    localStorage.setItem(createNewSessionDraftKey(macbook), "mac draft");
+
+    act(() => {
+      setCurrentClientSummarySourceKey(winnative);
+    });
+
+    const { result } = renderHook(() => useNewSessionDraft());
+
+    expect(result.current).toBe(false);
+
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+
+    expect(result.current).toBe(true);
+  });
+
+  it("detects project-scoped new-session draft keys within the current source", () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+    localStorage.setItem(
+      createNewSessionDraftKey(macbook, "project-1"),
+      "draft the fix",
+    );
 
     const { result } = renderHook(() => useNewSessionDraft("project-1"));
 
     expect(result.current).toBe(true);
+  });
+
+  it("detects attachment-only new-session draft envelopes", () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+    localStorage.setItem(
+      createNewSessionDraftKey(macbook),
+      JSON.stringify({
+        version: 1,
+        text: "",
+        attachments: {
+          batchId: "batch-a",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+          refs: [
+            {
+              id: "file-a",
+              batchId: "batch-a",
+              originalName: "screenshot.png",
+              name: "uuid_screenshot.png",
+              size: 123,
+              mimeType: "image/png",
+              createdAt: "2026-06-28T00:00:00.000Z",
+              updatedAt: "2026-06-28T00:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+
+    const { result } = renderHook(() => useNewSessionDraft());
+
+    expect(result.current).toBe(true);
+  });
+
+  it("ignores malformed new-session draft envelopes", () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+    localStorage.setItem(createNewSessionDraftKey(macbook), '{"version":1,');
+
+    const { result } = renderHook(() => useNewSessionDraft());
+
+    expect(result.current).toBe(false);
+  });
+});
+
+describe("useToolApprovalFeedbackDraft", () => {
+  it("keeps feedback drafts invisible across source switches", async () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    const winnative = createClientSummaryHostSourceKey("winnative");
+    const sessionId = "session-1";
+    localStorage.setItem(
+      createToolApprovalFeedbackDraftKey(macbook, sessionId),
+      "mac feedback",
+    );
+
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+
+    const { result } = renderHook(() =>
+      useToolApprovalFeedbackDraft(sessionId),
+    );
+
+    expect(result.current[0]).toBe("mac feedback");
+
+    act(() => {
+      setCurrentClientSummarySourceKey(winnative);
+    });
+
+    await waitFor(() => {
+      expect(result.current[0]).toBe("");
+    });
+
+    act(() => {
+      result.current[1]("win feedback");
+    });
+
+    expect(
+      localStorage.getItem(
+        createToolApprovalFeedbackDraftKey(winnative, sessionId),
+      ),
+    ).toBe("win feedback");
+    expect(
+      localStorage.getItem(
+        createToolApprovalFeedbackDraftKey(macbook, sessionId),
+      ),
+    ).toBe("mac feedback");
+
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+
+    await waitFor(() => {
+      expect(result.current[0]).toBe("mac feedback");
+    });
+  });
+});
+
+describe("useQuestionOtherDrafts", () => {
+  it("keeps question other drafts invisible across source switches", async () => {
+    const macbook = createClientSummaryHostSourceKey("macbook");
+    const winnative = createClientSummaryHostSourceKey("winnative");
+    const sessionId = "session-1";
+    localStorage.setItem(
+      createQuestionOtherDraftKey(macbook, sessionId),
+      JSON.stringify({ "Choose deployment": "mac answer" }),
+    );
+
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+
+    const { result } = renderHook(() => useQuestionOtherDrafts(sessionId));
+
+    expect(result.current[0]).toEqual({ "Choose deployment": "mac answer" });
+
+    act(() => {
+      setCurrentClientSummarySourceKey(winnative);
+    });
+
+    await waitFor(() => {
+      expect(result.current[0]).toEqual({});
+    });
+
+    act(() => {
+      result.current[1]("Choose deployment", "win answer");
+    });
+
+    expect(
+      JSON.parse(
+        localStorage.getItem(
+          createQuestionOtherDraftKey(winnative, sessionId),
+        ) ?? "{}",
+      ),
+    ).toEqual({ "Choose deployment": "win answer" });
+    expect(
+      JSON.parse(
+        localStorage.getItem(createQuestionOtherDraftKey(macbook, sessionId)) ??
+          "{}",
+      ),
+    ).toEqual({ "Choose deployment": "mac answer" });
+
+    act(() => {
+      setCurrentClientSummarySourceKey(macbook);
+    });
+
+    await waitFor(() => {
+      expect(result.current[0]).toEqual({
+        "Choose deployment": "mac answer",
+      });
+    });
   });
 });

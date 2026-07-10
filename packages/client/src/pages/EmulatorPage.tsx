@@ -1,4 +1,9 @@
-import type { DeviceInfo } from "@yep-anywhere/shared";
+import {
+  DEVICE_BRIDGE_CAPABILITY,
+  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+  type DeviceInfo,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { EmulatorNavButtons } from "../components/EmulatorNavButtons";
@@ -174,6 +179,17 @@ function DeviceList({
       })}
     </div>
   );
+}
+
+function firstStreamableDevice(devices: DeviceInfo[]): DeviceInfo | undefined {
+  for (const type of DEVICE_TYPE_ORDER) {
+    const device = devices.find(
+      (candidate) =>
+        candidate.type === type && hasAction(candidate, "stream"),
+    );
+    if (device) return device;
+  }
+  return devices.find((device) => hasAction(device, "stream"));
 }
 
 function StreamView({
@@ -452,12 +468,11 @@ export function EmulatorPage() {
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
   const { version: versionInfo, refetch: refetchVersion } = useVersion();
-  const capabilities = versionInfo?.capabilities ?? [];
   const bridgeRuntimeMode =
     versionInfo?.deviceBridgeState === "update-available"
       ? "update"
-      : capabilities.includes("deviceBridge-download") &&
-          !capabilities.includes("deviceBridge")
+      : serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY) &&
+          !serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY)
         ? "download"
         : null;
   const needsDownload = bridgeRuntimeMode !== null;
@@ -466,12 +481,12 @@ export function EmulatorPage() {
     useEmulators({ enabled: !needsDownload });
   const [activeDevice, setActiveDevice] = useState<DeviceInfo | null>(null);
 
-  // ?auto — auto-connect to the first streamable running device.
+  // ?auto — auto-connect to the first streamable running device in UI order.
   useEffect(() => {
     if (activeDevice || loading || needsDownload) return;
     const params = new URLSearchParams(window.location.search);
     if (!params.has("auto")) return;
-    const streamable = emulators.find((d) => hasAction(d, "stream"));
+    const streamable = firstStreamableDevice(emulators);
     if (streamable) setActiveDevice(streamable);
   }, [emulators, loading, activeDevice, needsDownload]);
 

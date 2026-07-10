@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import type { SafeRestartState } from "@yep-anywhere/shared";
 import { fetchJSON } from "../api/client";
 import {
   type SourceChangeEvent,
   type WorkerActivityEvent,
   activityBus,
+  getInterruptibleSessionCount,
 } from "../lib/activityBus";
 
 // Re-export for consumers
@@ -24,6 +26,30 @@ interface DevStatus {
 }
 
 export const FRONTEND_RELOAD_QUERY_PARAM = "__ya_reload";
+
+const IDLE_SAFE_RESTART_STATE: SafeRestartState = {
+  status: "idle",
+  blockers: [],
+  canRestartNow: true,
+  updatedAt: "",
+};
+
+export function getVisibleReloadBanners(
+  isManualReloadMode: boolean,
+  pendingReloads: PendingReloads,
+  options: { backendReloadSafetyKnown?: boolean } = {},
+): PendingReloads {
+  if (!isManualReloadMode) {
+    return { backend: false, frontend: false };
+  }
+  if (pendingReloads.backend) {
+    if (options.backendReloadSafetyKnown === false) {
+      return { backend: false, frontend: false };
+    }
+    return { backend: true, frontend: false };
+  }
+  return { backend: false, frontend: pendingReloads.frontend };
+}
 
 function toReloadUrl(currentUrl: string | URL): URL {
   return new URL(
@@ -60,15 +86,36 @@ export function useReloadNotifications() {
     backend: false,
     frontend: false,
   });
+  const [dismissedReloads, setDismissedReloads] = useState<PendingReloads>({
+    backend: false,
+    frontend: false,
+  });
   const [devStatus, setDevStatus] = useState<DevStatus | null>(null);
   const [connected, setConnected] = useState(activityBus.connected);
+  const [safeRestartState, setSafeRestartState] =
+    useState<SafeRestartState>(IDLE_SAFE_RESTART_STATE);
+  const [safeRestartLoaded, setSafeRestartLoaded] = useState(false);
+  const [safeRestartMutating, setSafeRestartMutating] = useState(false);
+  const [workerActivityLoaded, setWorkerActivityLoaded] = useState(false);
   const [workerActivity, setWorkerActivity] = useState<WorkerActivityEvent>({
     type: "worker-activity-changed",
     activeWorkers: 0,
+    interruptibleSessionCount: 0,
     queueLength: 0,
+    queuedSessionMessageCount: 0,
     hasActiveWork: false,
     timestamp: "",
   });
+
+  const showReloadIfNotDismissed = useCallback(
+    (target: "backend" | "frontend") => {
+      setPendingReloads((prev) => {
+        if (dismissedReloads[target]) return prev;
+        return { ...prev, [target]: true };
+      });
+    },
+    [dismissedReloads],
+  );
 
   // Sync dev status and worker activity from server
   const syncFromServer = useCallback(() => {
@@ -81,6 +128,8 @@ export function useReloadNotifications() {
       .then((data) => {
         if (data && !data.backendDirty) {
           setPendingReloads((prev) => ({ ...prev, backend: false }));
+        } else if (data?.backendDirty) {
+          showReloadIfNotDismissed("backend");
         }
       })
       .catch(() => {
@@ -90,12 +139,27 @@ export function useReloadNotifications() {
     // Sync worker activity
     fetchJSON<WorkerActivityEvent>("/status/workers")
       .then((data) => {
-        if (data) setWorkerActivity(data);
+        if (!data) return;
+        setWorkerActivity(data);
+        setWorkerActivityLoaded(true);
       })
       .catch(() => {
         // Ignore errors
       });
-  }, []);
+
+    fetchJSON<SafeRestartState>("/dev/safe-restart")
+      .then((data) => {
+        if (!data) return;
+        setSafeRestartState(data);
+        setSafeRestartLoaded(true);
+        if (data.status !== "idle") {
+          showReloadIfNotDismissed("backend");
+        }
+      })
+      .catch(() => {
+        // Ignore errors
+      });
+  }, [showReloadIfNotDismissed]);
 
   // Check if server is in dev mode and get persisted dirty state
   useEffect(() => {
@@ -107,13 +171,13 @@ export function useReloadNotifications() {
       .then((data) => {
         setDevStatus(data);
         if (data.backendDirty) {
-          setPendingReloads((prev) => ({ ...prev, backend: true }));
+          showReloadIfNotDismissed("backend");
         }
       })
       .catch(() => {
         setDevStatus(null);
       });
-  }, []);
+  }, [showReloadIfNotDismissed]);
 
   // Clean the cache-busting reload param back out after the fresh document loads
   // so copied/shared URLs do not retain reload-only query state.
@@ -131,22 +195,32 @@ export function useReloadNotifications() {
 
     unsubscribers.push(
       activityBus.on("source-change", (data: SourceChangeEvent) => {
-        setPendingReloads((prev) => ({
-          ...prev,
-          [data.target]: true,
-        }));
+        showReloadIfNotDismissed(data.target);
       }),
     );
 
     unsubscribers.push(
       activityBus.on("backend-reloaded", () => {
         setPendingReloads((prev) => ({ ...prev, backend: false }));
+        setSafeRestartState(IDLE_SAFE_RESTART_STATE);
+        setSafeRestartLoaded(true);
       }),
     );
 
     unsubscribers.push(
       activityBus.on("worker-activity-changed", (data: WorkerActivityEvent) => {
         setWorkerActivity(data);
+        setWorkerActivityLoaded(true);
+      }),
+    );
+
+    unsubscribers.push(
+      activityBus.on("safe-restart-changed", (data) => {
+        setSafeRestartState(data.state);
+        setSafeRestartLoaded(true);
+        if (data.state.status !== "idle") {
+          showReloadIfNotDismissed("backend");
+        }
       }),
     );
 
@@ -170,7 +244,7 @@ export function useReloadNotifications() {
         unsub();
       }
     };
-  }, [syncFromServer]);
+  }, [showReloadIfNotDismissed, syncFromServer]);
 
   // Sync connected state with bus
   useEffect(() => {
@@ -200,6 +274,31 @@ export function useReloadNotifications() {
     }
   }, []);
 
+  const scheduleSafeRestart = useCallback(async () => {
+    setSafeRestartMutating(true);
+    try {
+      const state = await fetchJSON<SafeRestartState>("/dev/safe-restart", {
+        method: "POST",
+      });
+      setSafeRestartState(state);
+      setPendingReloads((prev) => ({ ...prev, backend: true }));
+    } finally {
+      setSafeRestartMutating(false);
+    }
+  }, []);
+
+  const cancelSafeRestart = useCallback(async () => {
+    setSafeRestartMutating(true);
+    try {
+      const state = await fetchJSON<SafeRestartState>("/dev/safe-restart", {
+        method: "DELETE",
+      });
+      setSafeRestartState(state);
+    } finally {
+      setSafeRestartMutating(false);
+    }
+  }, []);
+
   // Reload the frontend (browser refresh)
   const reloadFrontend = useCallback(() => {
     const reloadUrl = buildFrontendReloadUrl(
@@ -220,6 +319,10 @@ export function useReloadNotifications() {
 
   // Dismiss a pending reload notification
   const dismiss = useCallback((target: "backend" | "frontend") => {
+    setDismissedReloads((prev) => ({
+      ...prev,
+      [target]: true,
+    }));
     setPendingReloads((prev) => ({
       ...prev,
       [target]: false,
@@ -228,6 +331,7 @@ export function useReloadNotifications() {
 
   // Dismiss all
   const dismissAll = useCallback(() => {
+    setDismissedReloads({ backend: true, frontend: true });
     setPendingReloads({ backend: false, frontend: false });
   }, []);
 
@@ -247,6 +351,13 @@ export function useReloadNotifications() {
   // Check if manual reload mode is active at all
   const isManualReloadMode =
     devStatus?.noBackendReload || devStatus?.noFrontendReload;
+  const interruptibleSessionCount =
+    getInterruptibleSessionCount(workerActivity);
+  const queuedSessionMessageCount = Math.max(
+    0,
+    workerActivity.queuedSessionMessageCount ?? workerActivity.queueLength,
+  );
+  const backendReloadSafetyKnown = workerActivityLoaded && safeRestartLoaded;
 
   return {
     isManualReloadMode,
@@ -255,9 +366,17 @@ export function useReloadNotifications() {
     reloadBackend,
     reloadFrontend,
     reload,
+    scheduleSafeRestart,
+    cancelSafeRestart,
     dismiss,
     dismissAll,
     workerActivity,
-    unsafeToRestart: workerActivity.hasActiveWork,
+    interruptibleSessionCount,
+    queuedSessionMessageCount,
+    safeRestartState,
+    safeRestartMutating,
+    backendReloadSafetyKnown,
+    unsafeToRestart:
+      interruptibleSessionCount > 0 || queuedSessionMessageCount > 0,
   };
 }

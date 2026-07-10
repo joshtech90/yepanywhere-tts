@@ -1,13 +1,25 @@
-import { Fragment, memo, type ReactNode, useMemo, useState } from "react";
+import {
+  Fragment,
+  memo,
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useQuoteableTextSource } from "../hooks/useQuoteableTextSource";
+import { LinkifiedText } from "./ui/LinkifiedText";
 
 interface ThinkingTextProps {
   text: string;
+  isStreaming?: boolean;
 }
 
 interface ThinkingSection {
   key: string;
   heading: string;
   blocks: ThinkingContentBlock[];
+  startOffset: number;
 }
 
 type ThinkingContentBlock =
@@ -15,11 +27,43 @@ type ThinkingContentBlock =
   | { type: "code"; text: string };
 
 const thinkingHeadingPattern = /^\s*\*\*(.+?)\*\*\s*$/;
+const htmlCommentOnlyLinePattern = /^\s*<!--[\s\S]*-->\s*$/;
 
 function getThinkingHeading(line: string): string | null {
   const match = thinkingHeadingPattern.exec(line);
   const heading = match?.[1]?.trim();
   return heading ? heading : null;
+}
+
+function isDisplayOnlyPlaceholderLine(line: string): boolean {
+  return htmlCommentOnlyLinePattern.test(line);
+}
+
+function stripDisplayOnlyPlaceholderLines(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const keptLines: string[] = [];
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isFence = trimmed.startsWith("```");
+    const isIndentedCode = line.startsWith("    ") || line.startsWith("\t");
+    if (
+      !inFence &&
+      !isFence &&
+      !isIndentedCode &&
+      isDisplayOnlyPlaceholderLine(line)
+    ) {
+      continue;
+    }
+
+    keptLines.push(line);
+    if (isFence) {
+      inFence = !inFence;
+    }
+  }
+
+  return keptLines.join("\n");
 }
 
 function splitThinkingBlocks(lines: string[]): ThinkingContentBlock[] {
@@ -64,6 +108,11 @@ function splitThinkingBlocks(lines: string[]): ThinkingContentBlock[] {
       continue;
     }
 
+    if (isDisplayOnlyPlaceholderLine(line)) {
+      flushParagraph();
+      continue;
+    }
+
     if (line.trim() === "") {
       flushParagraph();
       continue;
@@ -75,17 +124,46 @@ function splitThinkingBlocks(lines: string[]): ThinkingContentBlock[] {
   return blocks;
 }
 
-function parseThinkingOutline(text: string): ThinkingSection[] | null {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const firstHeading = getThinkingHeading(lines[0] ?? "");
-  if (!firstHeading) return null;
+interface ThinkingLine {
+  text: string;
+  startOffset: number;
+}
+
+interface ThinkingOutlineCache {
+  text: string;
+  sections: ThinkingSection[] | null;
+}
+
+function splitThinkingLines(text: string): ThinkingLine[] {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const rawLines = normalized.split("\n");
+  let offset = 0;
+  return rawLines.map((line) => {
+    const result = { text: line, startOffset: offset };
+    offset += line.length + 1;
+    return result;
+  });
+}
+
+function parseThinkingOutlineFragment(
+  text: string,
+  options: { keyOffset?: number; startOffset?: number } = {},
+): ThinkingSection[] {
+  const lines = splitThinkingLines(text);
+  const keyOffset = options.keyOffset ?? 0;
+  const startOffset = options.startOffset ?? 0;
 
   const sections: Array<{
     heading: string;
     bodyLines: string[];
+    startOffset: number;
   }> = [];
 
-  let current: { heading: string; bodyLines: string[] } | null = null;
+  let current: {
+    heading: string;
+    bodyLines: string[];
+    startOffset: number;
+  } | null = null;
 
   const flush = () => {
     if (current) {
@@ -95,24 +173,90 @@ function parseThinkingOutline(text: string): ThinkingSection[] | null {
   };
 
   for (const line of lines) {
-    const heading = getThinkingHeading(line);
+    const heading = getThinkingHeading(line.text);
     if (heading) {
       flush();
-      current = { heading, bodyLines: [] };
+      current = {
+        heading,
+        bodyLines: [],
+        startOffset: startOffset + line.startOffset,
+      };
       continue;
     }
 
     if (!current) continue;
-    if (current.bodyLines.length === 0 && line.trim() === "") continue;
-    current.bodyLines.push(line);
+    if (
+      current.bodyLines.length === 0 &&
+      (line.text.trim() === "" || isDisplayOnlyPlaceholderLine(line.text))
+    ) {
+      continue;
+    }
+    current.bodyLines.push(line.text);
   }
   flush();
 
   return sections.map((section, index) => ({
-    key: `${index}:${section.heading}`,
+    key: `${keyOffset + index}:${section.heading}`,
     heading: section.heading,
     blocks: splitThinkingBlocks(section.bodyLines),
+    startOffset: section.startOffset,
   }));
+}
+
+function parseThinkingOutline(text: string): ThinkingSection[] | null {
+  const firstHeading = getThinkingHeading(
+    splitThinkingLines(text)[0]?.text ?? "",
+  );
+  if (!firstHeading) return null;
+  return parseThinkingOutlineFragment(text);
+}
+
+function updateStreamingThinkingOutline(
+  previous: ThinkingOutlineCache | null,
+  text: string,
+): ThinkingOutlineCache {
+  const previousSections = previous?.sections;
+  if (
+    !previous ||
+    !previousSections ||
+    previousSections.length === 0 ||
+    !text.startsWith(previous.text)
+  ) {
+    return { text, sections: parseThinkingOutline(text) };
+  }
+
+  const reparseStart =
+    previousSections[previousSections.length - 1]?.startOffset ?? 0;
+  const stableSections = previousSections.slice(0, -1);
+  const reparsedSections = parseThinkingOutlineFragment(
+    text.slice(reparseStart),
+    {
+      keyOffset: stableSections.length,
+      startOffset: reparseStart,
+    },
+  );
+  return { text, sections: [...stableSections, ...reparsedSections] };
+}
+
+function useThinkingOutline(
+  text: string,
+  isStreaming: boolean,
+): ThinkingSection[] | null {
+  const streamingCacheRef = useRef<ThinkingOutlineCache | null>(null);
+  return useMemo(() => {
+    if (!isStreaming) {
+      const sections = parseThinkingOutline(text);
+      streamingCacheRef.current = { text, sections };
+      return sections;
+    }
+
+    const next = updateStreamingThinkingOutline(
+      streamingCacheRef.current,
+      text,
+    );
+    streamingCacheRef.current = next;
+    return next.sections;
+  }, [isStreaming, text]);
 }
 
 function renderThinkingInline(text: string): ReactNode {
@@ -147,65 +291,100 @@ function renderThinkingInline(text: string): ReactNode {
 
   return nodes.map((node, nodeIndex) => (
     <Fragment key={typeof node === "string" ? `text-${nodeIndex}` : nodeIndex}>
-      {node}
+      {typeof node === "string" ? <LinkifiedText text={node} /> : node}
     </Fragment>
   ));
 }
 
+const ThinkingOutlineSection = memo(function ThinkingOutlineSection({
+  section,
+  isOpen,
+  onSectionToggle,
+}: {
+  section: ThinkingSection;
+  isOpen: boolean;
+  onSectionToggle: (sectionKey: string, isOpen: boolean) => void;
+}) {
+  return (
+    <details
+      className="thinking-outline-section"
+      key={section.key}
+      open={isOpen}
+      onToggle={(event) => {
+        onSectionToggle(section.key, event.currentTarget.open);
+      }}
+    >
+      <summary className="thinking-outline-heading">
+        <span className="thinking-outline-dot" aria-hidden="true" />
+        <strong>{renderThinkingInline(section.heading)}</strong>
+      </summary>
+      {section.blocks.length > 0 && (
+        <div className="thinking-outline-body">
+          {section.blocks.map((block, index) => (
+            <Fragment key={index}>
+              {block.type === "code" ? (
+                <pre className="thinking-code-block">
+                  <code>{block.text}</code>
+                </pre>
+              ) : (
+                <p>{renderThinkingInline(block.text)}</p>
+              )}
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+});
+
 export const ThinkingText = memo(function ThinkingText({
   text,
+  isStreaming = false,
 }: ThinkingTextProps) {
-  const outline = useMemo(() => parseThinkingOutline(text), [text]);
+  const displayText = useMemo(
+    () => stripDisplayOnlyPlaceholderLines(text),
+    [text],
+  );
+  const outline = useThinkingOutline(displayText, isStreaming);
+  const plainRef = useQuoteableTextSource<HTMLSpanElement>(displayText);
+  const outlineRef = useQuoteableTextSource<HTMLDivElement>(displayText);
   const [closedSections, setClosedSections] = useState<Set<string>>(
     () => new Set(),
   );
+  const handleSectionToggle = useCallback(
+    (sectionKey: string, nextOpen: boolean) => {
+      setClosedSections((current) => {
+        const next = new Set(current);
+        if (nextOpen) {
+          next.delete(sectionKey);
+        } else {
+          next.add(sectionKey);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   if (!outline) {
-    return <span className="thinking-text thinking-text-plain">{text}</span>;
+    return (
+      <span ref={plainRef} className="thinking-text thinking-text-plain">
+        <LinkifiedText text={displayText} />
+      </span>
+    );
   }
 
   return (
-    <div className="thinking-text thinking-outline">
+    <div ref={outlineRef} className="thinking-text thinking-outline">
       {outline.map((section) => {
         const isOpen = !closedSections.has(section.key);
         return (
-          <details
-            className="thinking-outline-section"
+          <ThinkingOutlineSection
             key={section.key}
-            open={isOpen}
-            onToggle={(event) => {
-              const nextOpen = event.currentTarget.open;
-              setClosedSections((current) => {
-                const next = new Set(current);
-                if (nextOpen) {
-                  next.delete(section.key);
-                } else {
-                  next.add(section.key);
-                }
-                return next;
-              });
-            }}
-          >
-            <summary className="thinking-outline-heading">
-              <span className="thinking-outline-dot" aria-hidden="true" />
-              <strong>{renderThinkingInline(section.heading)}</strong>
-            </summary>
-            {section.blocks.length > 0 && (
-              <div className="thinking-outline-body">
-                {section.blocks.map((block, index) => (
-                  <Fragment key={index}>
-                    {block.type === "code" ? (
-                      <pre className="thinking-code-block">
-                        <code>{block.text}</code>
-                      </pre>
-                    ) : (
-                      <p>{renderThinkingInline(block.text)}</p>
-                    )}
-                  </Fragment>
-                ))}
-              </div>
-            )}
-          </details>
+            section={section}
+            isOpen={isOpen}
+            onSectionToggle={handleSectionToggle}
+          />
         );
       })}
     </div>

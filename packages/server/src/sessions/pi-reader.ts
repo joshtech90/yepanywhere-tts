@@ -27,6 +27,7 @@ import type { UrlProjectId } from "@yep-anywhere/shared";
 import {
   PI_SESSIONS_DIR,
   canonicalizeProjectPath,
+  getProjectIdentityKey,
   readCwdFromSessionFile,
 } from "../projects/paths.js";
 import {
@@ -46,6 +47,7 @@ import type {
   ISessionReader,
   LoadedSession,
 } from "./types.js";
+import { extractLastAgentExcerpt } from "./agent-excerpt.js";
 
 export interface PiSessionReaderOptions {
   /** Override for testing (defaults to ~/.pi/agent/sessions) */
@@ -111,6 +113,7 @@ interface PiParsedSession {
 export class PiSessionReader implements ISessionReader {
   private sessionsDir: string;
   private projectPath?: string;
+  private projectIdentityKey?: string;
 
   private sessionCache: Map<string, PiSessionInfo> = new Map();
   private cacheTimestamp = 0;
@@ -123,6 +126,9 @@ export class PiSessionReader implements ISessionReader {
     this.sessionsDir = options.sessionsDir ?? PI_SESSIONS_DIR;
     this.projectPath = options.projectPath
       ? canonicalizeProjectPath(options.projectPath)
+      : undefined;
+    this.projectIdentityKey = this.projectPath
+      ? getProjectIdentityKey(this.projectPath)
       : undefined;
   }
 
@@ -153,7 +159,7 @@ export class PiSessionReader implements ISessionReader {
       return [];
     }
 
-    const targetCwd = this.projectPath;
+    const targetCwd = this.projectIdentityKey;
 
     for (const encoded of cwdDirs) {
       const cwdDir = join(this.sessionsDir, encoded);
@@ -176,7 +182,9 @@ export class PiSessionReader implements ISessionReader {
         if (!cwd) continue;
 
         const normalized = canonicalizeProjectPath(cwd);
-        if (targetCwd && normalized !== targetCwd) continue;
+        if (targetCwd && getProjectIdentityKey(normalized) !== targetCwd) {
+          continue;
+        }
 
         try {
           const st = await stat(filePath);
@@ -414,6 +422,7 @@ export class PiSessionReader implements ISessionReader {
   ): SessionSummary {
     const title = this.deriveTitle(parsed);
     const updatedAt = new Date(info.mtime).toISOString();
+    const lastAgentText = extractLastAgentExcerpt(this.buildMessages(parsed));
     return {
       id: info.id,
       projectId,
@@ -425,6 +434,7 @@ export class PiSessionReader implements ISessionReader {
       messageCount: parsed.messageNodes.length,
       provider: "pi",
       model: parsed.model ?? "default",
+      lastAgentText,
     };
   }
 
@@ -522,6 +532,16 @@ export class PiSessionReader implements ISessionReader {
     return this.findSessionInfo(sessions, sessionId)?.filePath ?? null;
   }
 
+  async getLastAgentExcerpt(sessionId: string): Promise<string | undefined> {
+    const sessions = await this.scanSessions();
+    const info = this.findSessionInfo(sessions, sessionId);
+    if (!info) return undefined;
+    const parsed = await this.parseSession(info);
+    return parsed
+      ? extractLastAgentExcerpt(this.buildMessages(parsed))
+      : undefined;
+  }
+
   async listSessionFiles(
     _sessionDir: string,
     _options?: { activeAfterMs?: number },
@@ -537,6 +557,6 @@ export class PiSessionReader implements ISessionReader {
   }
 
   getIndexScopeKey(sessionDir: string): string {
-    return `pi::${sessionDir}::${this.projectPath ?? "*"}`;
+    return `pi::${sessionDir}::${this.projectIdentityKey ?? "*"}`;
   }
 }

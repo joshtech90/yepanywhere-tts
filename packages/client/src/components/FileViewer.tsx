@@ -6,6 +6,7 @@ import {
 import {
   memo,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -13,10 +14,12 @@ import {
   useState,
 } from "react";
 import { api } from "../api/client";
-import { useConnection } from "../hooks/useConnection";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
+import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
 import { getEmbeddedFileMediaBlob } from "../lib/embeddedFileMedia";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import { compactShikiLineBreaks } from "../lib/shikiHtml";
@@ -33,6 +36,10 @@ import {
   useLocalMediaInlinePreviews,
   useLocalResourceClick,
 } from "./LocalMediaModal";
+import {
+  FilePathContextMenu,
+  useStartNewSessionFromFile,
+} from "./FileResourceActions";
 import {
   combineDensityOffsets,
   FILE_MARKDOWN_PREVIEW_BASE_DENSITY,
@@ -239,10 +246,8 @@ const DEFAULT_FILE_VIEWER_SOURCE: FileViewerSource = {
     api.getFile(projectId, filePath, highlight, lineNumber, lineEnd, viewMode),
   getRawFileUrl: (projectId, filePath, download) =>
     api.getFileRawUrl(projectId, filePath, download),
-  // Fetch raw bytes through the active connection so images and downloads work
-  // in remote (relay) mode. A direct <img src="/api/..."> hits the static relay
-  // origin and 404s; fetchMediaBlob routes through connection.fetchBlob when
-  // remote and a credentialed fetch when direct.
+  // Fetch raw bytes through the active source transport so images and downloads
+  // work when same-origin /api URLs cannot address the source.
   fetchRawFileBlob: (fileData, _filePath, download) => {
     const { rawUrl } = fileData;
     if (!rawUrl) {
@@ -315,7 +320,9 @@ export const FileViewer = memo(function FileViewer({
   viewMode = "full",
 }: FileViewerProps) {
   const { t } = useI18n();
-  const connection = useConnection();
+  const transport = useCurrentSourceRuntime().transport;
+  const publicShareContext = usePublicShareContext();
+  const sameOriginUrls = transport.capabilities.sameOriginUrls;
   const basePath = useRemoteBasePath();
   const [fileData, setFileData] = useState<FileContentResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -323,6 +330,10 @@ export const FileViewer = memo(function FileViewer({
   const [copied, setCopied] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [imageObjectUrl, setImageObjectUrl] = useState<string | null>(null);
   const [highlightedLineRef, setHighlightedLineRef] =
     useState<HTMLElement | null>(null);
@@ -343,9 +354,11 @@ export const FileViewer = memo(function FileViewer({
     localFileModal,
     projectFileModal,
     handleClick: handleLocalResourceClick,
+    handleContextMenu: handleLocalResourceContextMenu,
     closeModal: closeLocalMediaModal,
     closeLocalFileModal,
     closeProjectFileModal,
+    contextMenuElement: localResourceContextMenu,
   } = useLocalResourceClick();
   const handleLocalResourceKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -389,6 +402,9 @@ export const FileViewer = memo(function FileViewer({
     showPreview ? renderedMarkdownHtml : null,
     mediaSource,
   );
+  const highlightRenderKey = showPreview
+    ? renderedMarkdownHtml
+    : highlightedHtml;
 
   useEffect(() => {
     let cancelled = false;
@@ -469,7 +485,7 @@ export const FileViewer = memo(function FileViewer({
 
   // Scroll to highlighted line when it's rendered
   useEffect(() => {
-    if (lineNumber === undefined) {
+    if (lineNumber === undefined || !highlightRenderKey) {
       return;
     }
     const highlightedLine =
@@ -486,18 +502,28 @@ export const FileViewer = memo(function FileViewer({
         );
       });
     }
-  }, [fileData, highlightedLineRef, lineEnd, lineNumber, showPreview]);
+  }, [highlightRenderKey, highlightedLineRef, lineNumber]);
 
   const handleCopy = useCallback(async () => {
     if (fileData?.content === undefined) return;
     try {
-      await navigator.clipboard.writeText(fileData.content);
+      const success = await writeClipboardText(fileData.content);
+      if (!success) {
+        throw new Error("Clipboard write failed");
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 3000);
     } catch (err) {
       console.error("Failed to copy:", err);
     }
   }, [fileData?.content]);
+  const handleCopyContentsFromMenu = useCallback(() => {
+    void writeClipboardTextLater(
+      source
+        .loadFile(projectId, filePath, false)
+        .then((file) => file.content ?? ""),
+    );
+  }, [filePath, projectId, source]);
 
   const projectPath = useMemo(() => getProjectPath(projectId), [projectId]);
   const displayPath = useMemo(
@@ -506,6 +532,19 @@ export const FileViewer = memo(function FileViewer({
   );
   const fileName = getPathBasename(filePath);
   const language = getLanguageFromPath(filePath);
+  const loadedIsImage = fileData
+    ? isImageFile(fileData.metadata.mimeType)
+    : false;
+  const rawFileUrl = fileData
+    ? (source.getRawFileUrl?.(projectId, filePath, false) ?? fileData.rawUrl)
+    : null;
+  const imageOpenUrl = loadedIsImage
+    ? sameOriginUrls && rawFileUrl
+      ? rawFileUrl
+      : (imageObjectUrl ?? (!source.fetchRawFileBlob ? rawFileUrl : null))
+    : null;
+  const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
+  const startNewSession = useStartNewSessionFromFile(projectId, filePath);
 
   const handleDownload = useCallback(() => {
     if (!fileData) return;
@@ -520,7 +559,7 @@ export const FileViewer = memo(function FileViewer({
     }
 
     const params = new URLSearchParams({ path: filePath, download: "true" });
-    void connection
+    void transport
       .fetchBlob(`/projects/${projectId}/files/raw?${params}`)
       .then((blob) => downloadBlob(blob, fileName))
       .catch((err) => {
@@ -528,11 +567,15 @@ export const FileViewer = memo(function FileViewer({
           err instanceof Error ? err.message : "Failed to download file",
         );
       });
-  }, [connection, fileData, fileName, filePath, projectId, source]);
+  }, [fileData, fileName, filePath, projectId, source, transport]);
 
   const handleOpenInNewTab = useCallback(() => {
+    if (imageOpenUrl) {
+      window.open(imageOpenUrl, "_blank", "noopener");
+      return;
+    }
     if (openInNewTabUrl) {
-      window.open(openInNewTabUrl, "_blank");
+      window.open(openInNewTabUrl, "_blank", "noopener");
       return;
     }
     const searchParams = new URLSearchParams({ path: filePath });
@@ -548,16 +591,23 @@ export const FileViewer = memo(function FileViewer({
     const url = toBrowserAppHref(
       `${basePath}/projects/${projectId}/file?${searchParams}`,
     );
-    window.open(url, "_blank");
+    window.open(url, "_blank", "noopener");
   }, [
     basePath,
     projectId,
     filePath,
     lineNumber,
     lineEnd,
+    imageOpenUrl,
     openInNewTabUrl,
     viewMode,
   ]);
+  const handlePathContextMenu = useCallback((event: ReactMouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY });
+  }, []);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   // Render loading state
   if (loading) {
@@ -581,10 +631,8 @@ export const FileViewer = memo(function FileViewer({
     );
   }
 
-  const { metadata, content, rawUrl } = fileData;
-  const isImage = isImageFile(metadata.mimeType);
-  const rawFileUrl =
-    source.getRawFileUrl?.(projectId, filePath, false) ?? rawUrl;
+  const { metadata, content } = fileData;
+  const isImage = loadedIsImage;
   const canDownload = Boolean(source.fetchRawFileBlob || rawFileUrl);
   const hasMarkdownPreview =
     content !== undefined &&
@@ -596,10 +644,20 @@ export const FileViewer = memo(function FileViewer({
     // Image files
     if (isImage) {
       const imageUrl = source.fetchRawFileBlob ? imageObjectUrl : rawFileUrl;
+      const imageLinkUrl = imageOpenUrl ?? imageUrl;
       return (
         <div className="file-viewer-image">
-          {imageUrl ? (
-            <img src={imageUrl} alt={fileName} />
+          {imageUrl && imageLinkUrl ? (
+            <a
+              className="file-viewer-image-link"
+              href={imageLinkUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={openImageInNewTabLabel}
+              aria-label={openImageInNewTabLabel}
+            >
+              <img src={imageUrl} alt={fileName} />
+            </a>
           ) : (
             <div className="file-viewer-loading">
               {t("fileViewerLoading" as never, { name: fileName })}
@@ -619,6 +677,7 @@ export const FileViewer = memo(function FileViewer({
             density={markdownDensity}
             ariaLabel={t("fileViewerPreview" as never)}
             onClick={handleLocalResourceClick}
+            onContextMenu={handleLocalResourceContextMenu}
             onKeyDown={handleLocalResourceKeyDown}
             ref={markdownPreviewRef}
           />
@@ -744,7 +803,12 @@ export const FileViewer = memo(function FileViewer({
   const header = (
     <div className="file-viewer-header">
       <div className="file-viewer-info">
-        <span className="file-viewer-path" title={filePath}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
+        <span
+          className="file-viewer-path"
+          title={filePath}
+          onContextMenu={handlePathContextMenu}
+        >
           {displayPath}
         </span>
         <span className="file-viewer-meta">
@@ -798,12 +862,26 @@ export const FileViewer = memo(function FileViewer({
             {copied ? <CheckIcon /> : <CopyIcon />}
           </button>
         )}
+        {publicShareContext === null && (
+          <button
+            type="button"
+            className="file-viewer-action file-viewer-new-session"
+            onClick={startNewSession}
+            title={t("fileViewerNewSession" as never)}
+          >
+            <PlusCircleIcon />
+          </button>
+        )}
         {!standalone && (
           <button
             type="button"
             className="file-viewer-action"
             onClick={handleOpenInNewTab}
-            title={t("fileViewerOpenNewTab" as never)}
+            title={
+              imageOpenUrl
+                ? openImageInNewTabLabel
+                : t("fileViewerOpenNewTab" as never)
+            }
           >
             <ExternalLinkIcon />
           </button>
@@ -856,6 +934,19 @@ export const FileViewer = memo(function FileViewer({
   return (
     <div className={viewerClass}>
       {header}
+      {contextMenu && (
+        <FilePathContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          canStartNewSession={publicShareContext === null}
+          onClose={closeContextMenu}
+          onView={handleOpenInNewTab}
+          onStartNewSession={startNewSession}
+          onCopyPath={() => void writeClipboardText(filePath)}
+          onCopyContents={handleCopyContentsFromMenu}
+        />
+      )}
+      {localResourceContextMenu}
       <div className="file-viewer-body" ref={fileViewerBodyRef}>
         {renderContent()}
       </div>
@@ -925,6 +1016,25 @@ function CheckIcon() {
       aria-hidden="true"
     >
       <path d="M3 8.5L6.5 12L13 4" />
+    </svg>
+  );
+}
+
+function PlusCircleIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 5v6M5 8h6" />
     </svg>
   );
 }

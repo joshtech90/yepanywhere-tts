@@ -1,18 +1,50 @@
+import {
+  DEVICE_BRIDGE_CAPABILITY,
+  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+  GIT_STATUS_ENHANCED_CAPABILITY,
+  type ProjectQueueItemSummary,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { GlobalSessionItem } from "../api/client";
-import { useInboxContext } from "../contexts/InboxContext";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
-import { useDrafts, useNewSessionDraft } from "../hooks/useDrafts";
-import { useGlobalSessions } from "../hooks/useGlobalSessions";
+import { useNewSessionDraft } from "../hooks/useDrafts";
+import { useProjectQueues } from "../hooks/useProjectQueues";
+import { useProjects } from "../hooks/useProjects";
+import {
+  getProjectIdFromLocation,
+  resolvePreferredProjectId,
+} from "../hooks/useRecentProject";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useSidebarDuplicateHiding } from "../hooks/useSidebarDuplicateHiding";
+import {
+  SIDEBAR_SESSION_FEED_LIMIT,
+  useSidebarSessionFeeds,
+} from "../hooks/useSidebarSessionFeeds";
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../hooks/useSidebarWidth";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import { isNearScrollEnd } from "../lib/predictiveScroll";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+import { sessionCollectionRecordToGlobalSessionItem } from "../lib/sessionCollectionRecords";
+import type { SessionCollectionRecord } from "../lib/clientSummaryCollections";
+import {
+  selectOlderSessionRecordsFromRecords,
+  selectRecentSessionRecordsFromRecords,
+} from "../lib/clientSummaryQueries";
+import {
+  useDraftSessionIds,
+  useInboxCounts,
+  useKnownProjectQueueItems,
+  useProjectQueuedSessionIds,
+  useProjectQueueSidebarCount,
+  useSessionCollectionQueryRecords,
+  useStarredSessionRecords,
+} from "../lib/clientSummaryStore";
 import { UI_KEYS } from "../lib/storageKeys";
 import { getSessionDisplayTitle } from "../utils";
 import { AgentsNavItem } from "./AgentsNavItem";
@@ -27,24 +59,148 @@ import { YepAnywhereLogo } from "./YepAnywhereLogo";
 
 const SWIPE_THRESHOLD = 50; // Minimum distance to trigger close
 const SWIPE_ENGAGE_THRESHOLD = 15; // Minimum horizontal distance before swipe engages
-const SIDEBAR_SESSION_PAGE_SIZE = 50;
 
 const DEFAULT_SECTION_EXPANSION = {
+  projectQueue: true,
   starred: true,
   recentDay: true,
   older: true,
 };
 
+type SidebarPendingProjectQueueItem = ProjectQueueItemSummary & {
+  target: Extract<ProjectQueueItemSummary["target"], { type: "new-session" }>;
+};
+
+type SidebarSessionItem = GlobalSessionItem & {
+  activityInferredFromInboxTier?: boolean;
+};
+
+const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
+const EMPTY_PROJECT_QUEUE_PROJECTS: readonly {
+  id: string;
+  projectQueueCount?: number;
+  snapshotObservedAt?: number;
+}[] = [];
+const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
+
 /**
  * A session is "active" while its agent is mid-turn or waiting on input. Active
- * sessions are pinned above idle rows and are deliberately never sorted or
- * deduped: their updatedAt churns every few seconds during a turn, so any
- * recency sort would reshuffle them constantly. They instead ride the stable
- * order that useGlobalSessions already preserves across refetches.
+ * sessions are pinned above idle rows and are deliberately sorted by the time
+ * they became active rather than by updatedAt. Their updatedAt churns every few
+ * seconds during a turn, so recency ordering would reshuffle them constantly.
  */
 function isActiveSession(session: GlobalSessionItem): boolean {
+  return session.activity === "in-turn" || session.activity === "waiting-input";
+}
+
+function sessionCollectionRecordsToSidebarSessionItems(
+  records: readonly SessionCollectionRecord[],
+): SidebarSessionItem[] {
+  const sessions: SidebarSessionItem[] = [];
+  for (const record of records) {
+    const session = sessionCollectionRecordToGlobalSessionItem(record);
+    if (!session) continue;
+    sessions.push({
+      ...session,
+      activityInferredFromInboxTier: record.activityInferredFromInboxTier,
+    });
+  }
+  return sessions;
+}
+
+function getSidebarRowActivity(
+  session: SidebarSessionItem,
+): GlobalSessionItem["activity"] {
+  if (session.activityInferredFromInboxTier) {
+    return undefined;
+  }
+  return session.activity;
+}
+
+function duplicateGroupingTitle(session: GlobalSessionItem): string {
   return (
-    session.activity === "in-turn" || session.activity === "waiting-input"
+    session.customTitle ??
+    session.fullTitle ??
+    session.title ??
+    session.initialPrompt ??
+    ""
+  );
+}
+
+function duplicateGroupingKey(session: GlobalSessionItem): string | null {
+  const title = duplicateGroupingTitle(session).trim();
+  if (!title) return null;
+  const normalizedTitle = title.replace(/\s+/g, " ").toLowerCase();
+  return `${session.provider || "unknown"}|${session.projectId}|${normalizedTitle}`;
+}
+
+function updatedAtMs(session: GlobalSessionItem): number {
+  return new Date(session.updatedAt).getTime();
+}
+
+function duplicateRepresentativeRank(session: GlobalSessionItem): number {
+  if (session.isArchived) return 0;
+  if (session.isStarred) return 3;
+  if (session.ownership?.owner === "external") return 2;
+  return 1;
+}
+
+function compareDuplicateRepresentative(
+  a: GlobalSessionItem,
+  b: GlobalSessionItem,
+): number {
+  const rankDiff =
+    duplicateRepresentativeRank(b) - duplicateRepresentativeRank(a);
+  if (rankDiff !== 0) return rankDiff;
+  const messageCountDiff = (b.messageCount || 0) - (a.messageCount || 0);
+  if (messageCountDiff !== 0) return messageCountDiff;
+  return updatedAtMs(b) - updatedAtMs(a);
+}
+
+// Named with a `debugLog` prefix so the console-chatter scanner treats its
+// console.debug sites as dev-gated (topics/console-chatter.md); the call site
+// still guards on import.meta.env.DEV so nothing runs in production.
+function debugLogSidebarDuplicates(sessions: SidebarSessionItem[]): void {
+  const idCounts = new Map<string, number>();
+  for (const session of sessions) {
+    idCounts.set(session.id, (idCounts.get(session.id) ?? 0) + 1);
+  }
+  const repeatedIds = [...idCounts].filter(([, count]) => count > 1);
+  if (repeatedIds.length > 0) {
+    console.debug("[Sidebar] repeated session ids in recent list", repeatedIds);
+  }
+  const groups = new Map<string, SidebarSessionItem[]>();
+  for (const session of sessions) {
+    const key = duplicateGroupingKey(session);
+    if (!key) continue;
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
+    }
+    group.push(session);
+  }
+  for (const [key, arr] of groups) {
+    if (arr.length <= 1) continue;
+    console.debug(
+      `[Sidebar] duplicate-title group (${arr.length}) ${key}`,
+      arr.map((session) => ({
+        id: session.id,
+        activity: session.activity,
+        updatedAt: session.updatedAt,
+        owner: session.ownership?.owner,
+        messageCount: session.messageCount,
+      })),
+    );
+  }
+}
+
+function isSidebarPendingProjectQueueItem(
+  item: ProjectQueueItemSummary,
+): item is SidebarPendingProjectQueueItem {
+  return (
+    item.target.type === "new-session" &&
+    (item.status === "queued" || item.status === "failed")
   );
 }
 
@@ -74,6 +230,10 @@ function loadSidebarSectionExpansion(): SidebarSectionExpansion {
     }
     const value = parsed as Partial<Record<SidebarSectionKey, unknown>>;
     return {
+      projectQueue:
+        typeof value.projectQueue === "boolean"
+          ? value.projectQueue
+          : DEFAULT_SECTION_EXPANSION.projectQueue,
       starred:
         typeof value.starred === "boolean"
           ? value.starred
@@ -183,7 +343,9 @@ export function Sidebar({
   const { t } = useI18n();
   // Get base path for relay mode (e.g., "/remote/my-server")
   const basePath = useRemoteBasePath();
+  const { sidebarDuplicateHidingEnabled } = useSidebarDuplicateHiding();
   const navigate = useNavigate();
+  const location = useLocation();
   const remoteConnection = useOptionalRemoteConnection();
   const { settings: serverSettings } = useServerSettings();
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
@@ -192,38 +354,54 @@ export function Sidebar({
   });
   const publicShareControlsVisible = publicShareStatus?.canCreate ?? false;
 
-  // Fetch global sessions for sidebar (non-starred only for recent/older sections)
   const {
-    sessions: globalSessions,
-    loading: globalLoading,
-    hasMore: hasMoreGlobalSessions,
-    loadMore: loadMoreGlobalSessions,
-  } = useGlobalSessions({
-    limit: SIDEBAR_SESSION_PAGE_SIZE,
-    includeStats: false,
-  });
+    globalQuery,
+    loading: sessionsLoading,
+    hasMoreGlobalSessions,
+    loadMoreGlobalSessions,
+    hasMoreStarredSessions,
+    loadMoreStarredSessions,
+  } = useSidebarSessionFeeds(SIDEBAR_SESSION_FEED_LIMIT);
 
-  // Fetch starred sessions separately to ensure we get ALL starred sessions
-  const {
-    sessions: starredSessions,
-    loading: starredLoading,
-    hasMore: hasMoreStarredSessions,
-    loadMore: loadMoreStarredSessions,
-  } = useGlobalSessions({
-    starred: true,
-    limit: SIDEBAR_SESSION_PAGE_SIZE,
-    includeStats: false,
-  });
+  const globalQueryRecords = useSessionCollectionQueryRecords(globalQuery);
+  const starredSessionRecords = useStarredSessionRecords();
+  const recentSessionRecords = useMemo(
+    () => selectRecentSessionRecordsFromRecords(globalQueryRecords),
+    [globalQueryRecords],
+  );
+  const olderSessionRecords = useMemo(
+    () => selectOlderSessionRecordsFromRecords(globalQueryRecords),
+    [globalQueryRecords],
+  );
 
-  const sessionsLoading = globalLoading || starredLoading;
   const hasNewSessionDraft = useNewSessionDraft();
 
   // Server capabilities for feature gating
   const { version: versionInfo } = useVersion();
-  const capabilities = versionInfo?.capabilities ?? [];
+  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const supportsSourceControl = serverHasCapability(
+    versionInfo,
+    GIT_STATUS_ENHANCED_CAPABILITY,
+  );
+  const supportsDeviceBridgeNav =
+    serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY) ||
+    serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY);
 
   // Global inbox count. Title badge updates are owned by the app shell.
-  const { totalNeedsAttention: inboxCount } = useInboxContext();
+  const { needsAttention: inboxCount } = useInboxCounts();
+  const { projects } = useProjects();
+  const sourceControlProjectId = useMemo(
+    () =>
+      getProjectIdFromLocation(location.pathname, location.search) ??
+      resolvePreferredProjectId(projects),
+    [location.pathname, location.search, projects],
+  );
+  const sourceControlPath = sourceControlProjectId
+    ? `/git-status?projectId=${encodeURIComponent(sourceControlProjectId)}`
+    : "/git-status";
+  const projectQueueSidebarCount = useProjectQueueSidebarCount(
+    supportsProjectQueue ? projects : EMPTY_PROJECT_QUEUE_PROJECTS,
+  );
   const newSessionPath = "/new-session";
   const newSessionHref = `${basePath}${newSessionPath}`;
   const expandedSidebarNewSessionHref = toBrowserAppHref(
@@ -242,6 +420,7 @@ export function Sidebar({
   const [sectionExpansion, setSectionExpansion] = useState(
     loadSidebarSectionExpansion,
   );
+  const projectQueueExpanded = sectionExpansion.projectQueue;
   const starredExpanded = sectionExpansion.starred;
   const recentDayExpanded = sectionExpansion.recentDay;
   const olderExpanded = sectionExpansion.older;
@@ -296,17 +475,20 @@ export function Sidebar({
     void maybeLoadMoreGlobalSessions();
     void maybeLoadMoreStarredSessions();
   }, [maybeLoadMoreGlobalSessions, maybeLoadMoreStarredSessions]);
-
-  useEffect(() => {
-    maybeLoadMoreSidebarSessions();
-  }, [
-    maybeLoadMoreSidebarSessions,
-    starredSessions.length,
-    globalSessions.length,
+  const sidebarLoadMoreKey = [
+    starredSessionRecords.length,
+    recentSessionRecords.length,
+    olderSessionRecords.length,
+    projectQueueExpanded,
     starredExpanded,
     recentDayExpanded,
     olderExpanded,
-  ]);
+  ].join("\0");
+
+  useEffect(() => {
+    void sidebarLoadMoreKey;
+    maybeLoadMoreSidebarSessions();
+  }, [maybeLoadMoreSidebarSessions, sidebarLoadMoreKey]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0]?.clientX ?? null;
@@ -437,152 +619,304 @@ export function Sidebar({
     [expandedSidebarNewSessionHref],
   );
 
-  // Starred sessions come from dedicated fetch (filtered by server)
-  // Filter out archived just in case
-  const filteredStarredSessions = useMemo(() => {
-    return starredSessions.filter((s) => !s.isArchived);
-  }, [starredSessions]);
+  const filteredStarredSessions = useMemo(
+    () => sessionCollectionRecordsToSidebarSessionItems(starredSessionRecords),
+    [starredSessionRecords],
+  );
 
-  // Sessions updated in the last 24 hours (non-starred, non-archived)
-  const recentDaySessions = useMemo(() => {
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const isWithinLastDay = (date: Date) => date.getTime() >= oneDayAgo;
+  const recentDaySessions = useMemo(
+    () => sessionCollectionRecordsToSidebarSessionItems(recentSessionRecords),
+    [recentSessionRecords],
+  );
 
-    return globalSessions.filter(
-      (s) =>
-        !s.isStarred && !s.isArchived && isWithinLastDay(new Date(s.updatedAt)),
-    );
-  }, [globalSessions]);
+  const olderSessions = useMemo(
+    () => sessionCollectionRecordsToSidebarSessionItems(olderSessionRecords),
+    [olderSessionRecords],
+  );
 
-  // Older sessions (non-starred, non-archived, NOT in last 24 hours)
-  const olderSessions = useMemo(() => {
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const isOlderThanOneDay = (date: Date) => date.getTime() < oneDayAgo;
+  const sidebarProjectIds = useMemo(
+    () => [
+      ...new Set(
+        [...filteredStarredSessions, ...recentDaySessions, ...olderSessions]
+          .map((session) => session.projectId)
+          .filter(Boolean),
+      ),
+    ],
+    [filteredStarredSessions, recentDaySessions, olderSessions],
+  );
+  const projectQueueProjectIds = useMemo(
+    () =>
+      projects
+        .filter((project) => (project.projectQueueCount ?? 0) > 0)
+        .map((project) => project.id),
+    [projects],
+  );
+  const sidebarQueueProjectIds = useMemo(
+    () => [...new Set([...sidebarProjectIds, ...projectQueueProjectIds])],
+    [projectQueueProjectIds, sidebarProjectIds],
+  );
+  const supportedSidebarQueueProjectIds = supportsProjectQueue
+    ? sidebarQueueProjectIds
+    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
+  const supportedSidebarProjectIds = supportsProjectQueue
+    ? sidebarProjectIds
+    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
+  // Keep the queue feed mounted for visible session rows and projects that
+  // report queue work. Badge rendering itself uses the shared count selector.
+  const projectQueues = useProjectQueues(supportedSidebarQueueProjectIds);
+  const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
+    supportedSidebarProjectIds,
+  );
+  const projectQueuedSessionIds = supportsProjectQueue
+    ? rawProjectQueuedSessionIds
+    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
+  const knownProjectQueueItems = useKnownProjectQueueItems();
+  const projectNameById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project.name])),
+    [projects],
+  );
+  const pendingProjectQueueItems = useMemo(
+    () =>
+      supportsProjectQueue
+        ? knownProjectQueueItems.filter(isSidebarPendingProjectQueueItem)
+        : [],
+    [knownProjectQueueItems, supportsProjectQueue],
+  );
+  const handlePendingProjectQueueClick = useCallback(
+    async (
+      event: React.MouseEvent<HTMLAnchorElement>,
+      item: SidebarPendingProjectQueueItem,
+    ) => {
+      const targetPath = `${basePath}/projects?queueItem=${encodeURIComponent(
+        item.id,
+      )}`;
+      const isPlainLeftClick =
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey;
+      if (!isPlainLeftClick || item.status !== "queued") {
+        onNavigate();
+        return;
+      }
 
-    return globalSessions.filter(
-      (s) =>
-        !s.isStarred &&
-        !s.isArchived &&
-        isOlderThanOneDay(new Date(s.updatedAt)),
-    );
-  }, [globalSessions]);
+      event.preventDefault();
+      try {
+        const result = await projectQueues.promoteNow(item.projectId, item.id);
+        if (result.promoted && result.sessionId) {
+          navigate(
+            `${basePath}/projects/${encodeURIComponent(
+              item.projectId,
+            )}/sessions/${encodeURIComponent(result.sessionId)}`,
+          );
+        } else {
+          navigate(targetPath);
+        }
+      } catch {
+        navigate(targetPath);
+      }
+      onNavigate();
+    },
+    [basePath, navigate, onNavigate, projectQueues.promoteNow],
+  );
 
-  // Client-side heuristic for "obvious duplicate title" sessions (general, no hardcoded strings).
-  // Within each section we group by (provider, project, normalized title).
-  // In a dup cluster, we keep the *best* one visible (prefer higher messageCount, then more recent activity)
-  // and hide the rest behind a "(N hidden)" expander. This avoids hiding the substantive version of a
-  // repeated title while still decluttering obvious resume/handoff/research dups of the same name.
+  // Client-side duplicate-title hiding is deliberately fail-open. It only
+  // hides unrelated exact-title idle rows when a user-facing representative is
+  // also visible in this section.
   const [showHiddenRecent, setShowHiddenRecent] = useState(false);
   const [showHiddenOlder, setShowHiddenOlder] = useState(false);
 
   const groupDuplicateSessions = useCallback(
-    (sessions: GlobalSessionItem[]) => {
-      const groups = new Map<string, GlobalSessionItem[]>();
+    (sessions: SidebarSessionItem[]) => {
+      const groups = new Map<string, SidebarSessionItem[]>();
       for (const s of sessions) {
-        const normTitle = (s.title || s.fullTitle || s.initialPrompt || "")
-          .trim()
-          .toLowerCase()
-          .slice(0, 120);
-        const key = `${s.provider || "unknown"}|${s.projectId}|${normTitle}`;
+        const key = duplicateGroupingKey(s);
+        if (!key) continue;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key)?.push(s);
       }
 
-      const visible: GlobalSessionItem[] = [];
+      const visibleIds = new Set<string>();
       const hidden: GlobalSessionItem[] = [];
-      for (const arr of groups.values()) {
-        if (arr.length === 1) {
-          const only = arr[0];
-          if (only) visible.push(only);
-        } else {
-          // Keep the best: highest messageCount wins (do not hide the one with more work).
-          // On tie (or no counts), prefer the one with more recent activity.
-          arr.sort((a, b) => {
-            const mcA = a.messageCount || 0;
-            const mcB = b.messageCount || 0;
-            if (mcB !== mcA) return mcB - mcA;
-            return (
-              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-            );
-          });
-          const selected = arr[0];
-          if (!selected) continue;
-          visible.push(selected);
-          hidden.push(...arr.slice(1));
+      for (const s of sessions) {
+        const key = duplicateGroupingKey(s);
+        const group = key ? groups.get(key) : undefined;
+        if (!group || group.length === 1) {
+          visibleIds.add(s.id);
         }
       }
 
-      visible.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
-      hidden.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
+      for (const arr of groups.values()) {
+        if (arr.length <= 1) continue;
+
+        const groupSessionIds = new Set(arr.map((session) => session.id));
+        const parentIdsInGroup = new Set(
+          arr
+            .map((session) => session.parentSessionId)
+            .filter(
+              (id): id is string =>
+                typeof id === "string" && groupSessionIds.has(id),
+            ),
+        );
+        const protectedRows = arr.filter(
+          (session) =>
+            session.id === currentSessionId ||
+            session.ownership?.owner === "self" ||
+            Boolean(session.parentSessionId) ||
+            parentIdsInGroup.has(session.id),
+        );
+        for (const session of protectedRows) {
+          visibleIds.add(session.id);
+        }
+
+        const hidable = arr.filter((session) => !visibleIds.has(session.id));
+        if (hidable.length <= 1) {
+          for (const session of hidable) {
+            visibleIds.add(session.id);
+          }
+          continue;
+        }
+
+        const sorted = [...hidable].sort(compareDuplicateRepresentative);
+        const selected = sorted[0];
+        if (!selected) continue;
+        visibleIds.add(selected.id);
+        hidden.push(...sorted.slice(1));
+      }
+
+      const visible = sessions.filter((session) => visibleIds.has(session.id));
+      visible.sort((a, b) => updatedAtMs(b) - updatedAtMs(a));
+      hidden.sort((a, b) => updatedAtMs(b) - updatedAtMs(a));
       return { visible, hidden };
     },
-    [],
+    [currentSessionId],
   );
 
-  // Active sessions are pinned above idle rows and never deduped or sorted —
-  // see isActiveSession. filter() preserves the hook's stable order, so a
-  // session that is already active stays put; only a brand-new session (which
-  // the hook prepends) can appear at the top.
-  const recentActive = useMemo(
-    () => recentDaySessions.filter(isActiveSession),
-    [recentDaySessions],
+  // Active/queued rows are pinned above idle rows. They used to bypass duplicate
+  // collapsing entirely, so a single conversation whose SDK session id had
+  // rotated (each resume/fork mints a new id under the same title, and the stale
+  // ids keep a live-state activity) showed one pinned row per id. Run the pinned
+  // set through the same conservative collapser as idle rows: it protects the
+  // current, self-owned, and lineage rows the contract requires to stay visible
+  // (topics/session-list-hidden-duplicates.md), so only rotated ghosts (owner
+  // "none"/"external", no live supervision) fold away. Preserve the pinned
+  // ordering by filtering the original list rather than taking the collapser's
+  // recency-sorted output; collapsed rows join the recent section's hidden-
+  // duplicates disclosure. Queue membership is only an ordering signal here.
+  const recentPinnedAll = useMemo(
+    () =>
+      recentDaySessions.filter(
+        (session) =>
+          isActiveSession(session) || projectQueuedSessionIds.has(session.id),
+      ),
+    [projectQueuedSessionIds, recentDaySessions],
   );
+
+  const { recentPinned, hiddenPinned } = useMemo(() => {
+    if (!sidebarDuplicateHidingEnabled) {
+      return {
+        recentPinned: recentPinnedAll,
+        hiddenPinned: [] as SidebarSessionItem[],
+      };
+    }
+    const { hidden } = groupDuplicateSessions(recentPinnedAll);
+    if (hidden.length === 0) {
+      return { recentPinned: recentPinnedAll, hiddenPinned: [] };
+    }
+    const hiddenIds = new Set(hidden.map((session) => session.id));
+    return {
+      recentPinned: recentPinnedAll.filter(
+        (session) => !hiddenIds.has(session.id),
+      ),
+      hiddenPinned: recentPinnedAll.filter((session) =>
+        hiddenIds.has(session.id),
+      ),
+    };
+  }, [groupDuplicateSessions, recentPinnedAll, sidebarDuplicateHidingEnabled]);
 
   const { visibleRecent, hiddenRecent } = useMemo(() => {
-    const idle = recentDaySessions.filter((s) => !isActiveSession(s));
+    const idle = recentDaySessions.filter(
+      (session) =>
+        !isActiveSession(session) && !projectQueuedSessionIds.has(session.id),
+    );
+    if (!sidebarDuplicateHidingEnabled) {
+      return { visibleRecent: idle, hiddenRecent: [] };
+    }
     const { visible, hidden } = groupDuplicateSessions(idle);
     return { visibleRecent: visible, hiddenRecent: hidden };
-  }, [groupDuplicateSessions, recentDaySessions]);
+  }, [
+    groupDuplicateSessions,
+    projectQueuedSessionIds,
+    recentDaySessions,
+    sidebarDuplicateHidingEnabled,
+  ]);
 
   const { visibleOlder, hiddenOlder } = useMemo(() => {
+    if (!sidebarDuplicateHidingEnabled) {
+      return { visibleOlder: olderSessions, hiddenOlder: [] };
+    }
     const { visible, hidden } = groupDuplicateSessions(olderSessions);
     return { visibleOlder: visible, hiddenOlder: hidden };
-  }, [groupDuplicateSessions, olderSessions]);
+  }, [groupDuplicateSessions, olderSessions, sidebarDuplicateHidingEnabled]);
 
-  // Track which sessions have unsent drafts in localStorage
-  const drafts = useDrafts();
+  // Duplicates collapsed out of the pinned set share the recent section's
+  // hidden-duplicates disclosure, freshest first.
+  const hiddenRecentAll = useMemo(() => {
+    if (hiddenPinned.length === 0) return hiddenRecent;
+    return [...hiddenPinned, ...hiddenRecent].sort(
+      (a, b) => updatedAtMs(b) - updatedAtMs(a),
+    );
+  }, [hiddenPinned, hiddenRecent]);
+
+  // Dev-only: surface how a single logical conversation fans out across rotated
+  // session ids (and flag any true repeated id, which the collapse cannot fix).
+  useEffect(() => {
+    if (import.meta.env.DEV) debugLogSidebarDuplicates(recentDaySessions);
+  }, [recentDaySessions]);
+
+  const drafts = useDraftSessionIds();
 
   // Single source of truth for a compact sidebar session row, so the six
   // section render sites (starred / recent / older, each with a hidden-dups
   // sublist) stay identical. `createdAt` + `model` + `lastAgentText` feed the
   // hover card.
-  const renderCompactSession = (session: GlobalSessionItem) => (
-    <SessionListItem
-      key={session.id}
-      sessionId={session.id}
-      projectId={session.projectId}
-      title={getSessionDisplayTitle(session)}
-      fullTitle={session.fullTitle ?? getSessionDisplayTitle(session)}
-      initialPrompt={session.initialPrompt}
-      lastAgentText={session.lastAgentText}
-      provider={session.provider}
-      model={session.model}
-      createdAt={session.createdAt}
-      updatedAt={session.updatedAt}
-      parentSessionId={session.parentSessionId}
-      status={session.ownership}
-      pendingInputType={session.pendingInputType}
-      hasUnread={session.hasUnread}
-      isStarred={session.isStarred}
-      isArchived={session.isArchived}
-      mode="compact"
-      isCurrent={session.id === currentSessionId}
-      activity={session.activity}
-      onNavigate={onNavigate}
-      showProjectName
-      projectName={session.projectName}
-      basePath={basePath}
-      messageCount={session.messageCount}
-      hasDraft={drafts.has(session.id)}
-      publicShareControlsVisible={publicShareControlsVisible}
-    />
-  );
+  const renderCompactSession = (session: SidebarSessionItem) => {
+    const hasProjectQueue = projectQueuedSessionIds.has(session.id);
+    return (
+      <SessionListItem
+        key={session.id}
+        sessionId={session.id}
+        projectId={session.projectId}
+        title={getSessionDisplayTitle(session)}
+        fullTitle={session.fullTitle ?? getSessionDisplayTitle(session)}
+        initialPrompt={session.initialPrompt}
+        hasCustomTitle={!!session.customTitle}
+        lastAgentText={session.lastAgentText}
+        provider={session.provider}
+        model={session.model}
+        createdAt={session.createdAt}
+        updatedAt={session.updatedAt}
+        parentSessionId={session.parentSessionId}
+        status={session.ownership}
+        pendingInputType={session.pendingInputType}
+        hasUnread={session.hasUnread}
+        isStarred={session.isStarred}
+        isArchived={session.isArchived}
+        mode="compact"
+        isCurrent={session.id === currentSessionId}
+        activity={getSidebarRowActivity(session)}
+        onNavigate={onNavigate}
+        showProjectName
+        projectName={session.projectName}
+        basePath={basePath}
+        messageCount={session.messageCount}
+        hasDraft={drafts.has(session.id)}
+        hasProjectQueue={hasProjectQueue}
+        publicShareControlsVisible={publicShareControlsVisible}
+      />
+    );
+  };
 
   // In desktop mode, always render. In mobile mode, only render when open.
   if (!isDesktop && !isOpen) return null;
@@ -725,20 +1059,24 @@ export function Sidebar({
               to="/projects"
               icon={SidebarIcons.projects}
               label={t("sidebarProjects")}
+              badge={supportsProjectQueue ? projectQueueSidebarCount : 0}
+              badgeVariant="projectQueue"
+              badgeTitle={t("projectCardQueueCount", {
+                count: projectQueueSidebarCount,
+              })}
               onClick={onNavigate}
               basePath={basePath}
             />
-            {capabilities.includes("git-status") && (
+            {supportsSourceControl && (
               <SidebarNavItem
-                to="/git-status"
+                to={sourceControlPath}
                 icon={SidebarIcons.sourceControl}
                 label={t("sidebarSourceControl")}
                 onClick={onNavigate}
                 basePath={basePath}
               />
             )}
-            {(capabilities.includes("deviceBridge") ||
-              capabilities.includes("deviceBridge-download")) && (
+            {supportsDeviceBridgeNav && (
               <SidebarNavItem
                 to="/devices"
                 icon={SidebarIcons.emulator}
@@ -783,6 +1121,65 @@ export function Sidebar({
             )}
           </SidebarNavSection>
 
+          {supportsProjectQueue && pendingProjectQueueItems.length > 0 && (
+            <div className="sidebar-section">
+              <SidebarSectionHeader
+                title={t("sidebarSectionPendingSessions")}
+                expanded={projectQueueExpanded}
+                onToggle={() =>
+                  setSidebarSectionExpanded("projectQueue", (prev) => !prev)
+                }
+                controlsId="sidebar-project-queue-list"
+                expandLabel={t("sidebarSectionExpand")}
+                collapseLabel={t("sidebarSectionCollapse")}
+              />
+              {projectQueueExpanded && (
+                <ul
+                  id="sidebar-project-queue-list"
+                  className="sidebar-project-queue-list"
+                >
+                  {pendingProjectQueueItems.map((item) => {
+                    const itemTitle =
+                      item.target.title ||
+                      item.messagePreview ||
+                      t("projectQueueTargetNewSession");
+                    const projectName =
+                      projectNameById.get(item.projectId) ??
+                      t("projectQueueUnknownProject");
+                    return (
+                      <li key={item.id}>
+                        <Link
+                          to={`${basePath}/projects?queueItem=${encodeURIComponent(
+                            item.id,
+                          )}`}
+                          className={`sidebar-project-queue-item sidebar-project-queue-item--${item.status}`}
+                          onClick={(event) =>
+                            void handlePendingProjectQueueClick(event, item)
+                          }
+                          title={itemTitle}
+                        >
+                          <span className="sidebar-project-queue-item__main">
+                            <span className="sidebar-project-queue-item__title">
+                              {itemTitle}
+                            </span>
+                            <span className="sidebar-project-queue-item__project">
+                              {projectName}
+                            </span>
+                          </span>
+                          <span className="sidebar-project-queue-item__status">
+                            {item.status === "failed"
+                              ? t("projectQueueStatusFailed")
+                              : t("projectQueueStatusQueued")}
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
           {/* Global sessions list */}
           {filteredStarredSessions.length > 0 && (
             <div className="sidebar-section">
@@ -804,7 +1201,7 @@ export function Sidebar({
             </div>
           )}
 
-          {(recentActive.length > 0 || visibleRecent.length > 0) && (
+          {(recentPinned.length > 0 || visibleRecent.length > 0) && (
             <div className="sidebar-section">
               <SidebarSectionHeader
                 title={t("sidebarSectionLast24Hours")}
@@ -821,9 +1218,9 @@ export function Sidebar({
                   id="sidebar-last-24-hours-list"
                   className="sidebar-session-list"
                 >
-                  {recentActive.map(renderCompactSession)}
+                  {recentPinned.map(renderCompactSession)}
                   {visibleRecent.map(renderCompactSession)}
-                  {hiddenRecent.length > 0 && (
+                  {hiddenRecentAll.length > 0 && (
                     <li className="sidebar-hidden-dups">
                       <button
                         type="button"
@@ -831,12 +1228,14 @@ export function Sidebar({
                         onClick={() => setShowHiddenRecent((v) => !v)}
                         aria-expanded={showHiddenRecent}
                       >
-                        {showHiddenRecent ? "−" : "+"} {hiddenRecent.length}{" "}
-                        hidden (duplicate titles)
+                        {showHiddenRecent ? "−" : "+"}{" "}
+                        {t("sidebarHiddenDuplicateSessions", {
+                          count: hiddenRecentAll.length,
+                        })}
                       </button>
                       {showHiddenRecent && (
                         <ul className="sidebar-session-list sidebar-hidden-sublist">
-                          {hiddenRecent.map(renderCompactSession)}
+                          {hiddenRecentAll.map(renderCompactSession)}
                         </ul>
                       )}
                     </li>
@@ -869,8 +1268,10 @@ export function Sidebar({
                         onClick={() => setShowHiddenOlder((v) => !v)}
                         aria-expanded={showHiddenOlder}
                       >
-                        {showHiddenOlder ? "−" : "+"} {hiddenOlder.length}{" "}
-                        hidden (duplicate titles)
+                        {showHiddenOlder ? "−" : "+"}{" "}
+                        {t("sidebarHiddenDuplicateSessions", {
+                          count: hiddenOlder.length,
+                        })}
                       </button>
                       {showHiddenOlder && (
                         <ul className="sidebar-session-list sidebar-hidden-sublist">
@@ -885,7 +1286,8 @@ export function Sidebar({
           )}
 
           {filteredStarredSessions.length === 0 &&
-            recentActive.length === 0 &&
+            pendingProjectQueueItems.length === 0 &&
+            recentPinned.length === 0 &&
             visibleRecent.length === 0 &&
             visibleOlder.length === 0 && (
               <p className="sidebar-empty">

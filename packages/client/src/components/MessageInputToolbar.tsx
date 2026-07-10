@@ -1,8 +1,14 @@
 import type {
   ModelInfo,
+  ProviderRuntimeStatus,
   ProviderName,
   SessionLivenessSnapshot,
   ShowThinking,
+} from "@yep-anywhere/shared";
+import {
+  DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
+  VOICE_INPUT_CAPABILITY,
+  serverHasCapability,
 } from "@yep-anywhere/shared";
 import type { MouseEvent, RefObject, TouchEvent } from "react";
 import {
@@ -22,12 +28,21 @@ import {
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
+import {
+  getComposerToolbarOverflowLayoutSignature,
+  type MessageInputToolbarLayoutRefs,
+  useMeasuredComposerOverflow,
+} from "../hooks/useMessageInputToolbarLayout";
 import { useProviders } from "../hooks/useProviders";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import {
+  DEFAULT_SESSION_TOOLBAR_PRIORITY,
+  type SessionToolbarPriority,
   type SessionToolbarVisibility,
-  useSessionToolbarVisibility,
-} from "../hooks/useSessionToolbarVisibility";
+  type SessionToolbarVisibilityKey,
+  type ToolbarNarrowingPriority,
+  useSessionToolbarPresence,
+} from "../hooks/useSessionToolbarPresence";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
@@ -46,7 +61,12 @@ import {
   parseTimestampMs,
 } from "../lib/messageAge";
 import { normalizeProviderKey } from "../lib/modelIndicatorText";
+import {
+  describeProviderRuntimeStatus,
+  type ProviderRuntimeDisplay,
+} from "../lib/providerRuntimeStatus";
 import { getPermissionModeOptions } from "../lib/permissionModes";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import {
   SESSION_ISEARCH_GUIDE_EVENT,
   type SessionIsearchGuideState,
@@ -85,43 +105,20 @@ import {
 
 type ToolbarTranslate = ReturnType<typeof useI18n>["t"];
 
-type ComposerOverflowTier = "none" | "early" | "medium" | "late";
-const COMPOSER_OVERFLOW_TIERS: ComposerOverflowTier[] = [
-  "none",
-  "early",
-  "medium",
-  "late",
-];
-
-function getFlexGapPx(element: HTMLElement): number {
-  const style = getComputedStyle(element);
-  return Number.parseFloat(style.columnGap || style.gap) || 0;
-}
-
-function getVisibleControlWidth(element: HTMLElement): number {
-  if (element.dataset.composerElastic === "true") {
-    return 0;
+// Maps a control's narrowing priority to its overflow-tier CSS class. `first`
+// collapses first (early), `mid` next, `last` collapses last; `pin` yields no
+// tier class (and its menu copy stays hidden) so the control never collapses.
+function priorityToTierClass(priority: ToolbarNarrowingPriority): string {
+  switch (priority) {
+    case "first":
+      return "composer-bottom-overflow-early";
+    case "mid":
+      return "composer-bottom-overflow-medium";
+    case "last":
+      return "composer-bottom-overflow-late";
+    default:
+      return "";
   }
-  const style = getComputedStyle(element);
-  if (style.display === "none" || style.position === "absolute") {
-    return 0;
-  }
-  return element.getBoundingClientRect().width;
-}
-
-function getControlListWidth(element: HTMLElement): number {
-  const childWidths = Array.from(element.children)
-    .filter((child): child is HTMLElement => child instanceof HTMLElement)
-    .map(getVisibleControlWidth)
-    .filter((width) => width > 0);
-  if (childWidths.length === 0) {
-    return 0;
-  }
-  const gap = getFlexGapPx(element);
-  return (
-    childWidths.reduce((total, width) => total + width, 0) +
-    gap * (childWidths.length - 1)
-  );
 }
 
 function getIsearchPreviousKeys(scope: SessionIsearchScope): string[] {
@@ -212,6 +209,13 @@ export interface MessageInputToolbarProps {
   /** Provider/model context used by the thinking effort chooser. */
   thinkingProvider?: string;
   thinkingModel?: string;
+  /** Live process thinking selection for owned active sessions. */
+  liveThinkingSelection?: {
+    mode: ThinkingMode;
+    level: EffortLevel;
+    onSetMode: (mode: ThinkingMode) => void;
+    onSetEffort: (level: EffortLevel) => void;
+  };
   /**
    * YA model id (launch alias) used to key the context quick-edit's per-model
    * compaction threshold. Distinct from `thinkingModel` (the reported model);
@@ -228,8 +232,12 @@ export interface MessageInputToolbarProps {
   contextUsage?: ContextUsage;
   /** Last session activity timestamp for stale composer liveness display. */
   lastActivityAt?: string | null;
+  /** Hovered or scrolled transcript position timestamp for the status line. */
+  positionTimestampMs?: number | null;
   /** Server-derived provider/session liveness evidence. */
   sessionLiveness?: SessionLivenessSnapshot | null;
+  /** Provider-owned retry/failure status for the active turn. */
+  providerRuntimeStatus?: ProviderRuntimeStatus;
   /** Whether the provider exposes a soft-immediate steer lane. */
   showSteerNowMode?: boolean;
   /** Whether steering uses the soft-immediate lane for future sends. */
@@ -250,6 +258,8 @@ export interface MessageInputToolbarProps {
   onSend?: () => void;
   /** Queue a deferred message. Only provided when agent is running. */
   onQueue?: () => void;
+  /** Queue through the project-level idle gate. Hidden unless opted in. */
+  onProjectQueue?: () => void;
   /** Steer the current turn. Used as the alternate action when Enter queues. */
   onSteer?: () => void;
   primaryActionKind?: "send" | "steer" | "queue";
@@ -413,6 +423,10 @@ function isBtwPressed(mode: BtwToolbarMode): boolean {
 const LAST_ACTIVITY_TEXT_PREFIX_THRESHOLD_MS = 30 * 60 * 1000;
 const COMPACT_STATUS_QUERY = "(max-width: 600px)";
 
+// Widening headroom required before measured-compact status mode releases;
+// see updateCompactStatusMode for why exiting needs more than merely fitting.
+const COMPACT_STATUS_EXIT_SLACK_PX = 72;
+
 function getCompactStatusMatchMedia() {
   if (
     typeof window === "undefined" ||
@@ -424,13 +438,6 @@ function getCompactStatusMatchMedia() {
 }
 
 type ToolbarRenderModeState = "rendered" | "source" | "mixed";
-
-interface ToolbarRefs {
-  toolbar?: RefObject<HTMLDivElement | null>;
-  left?: RefObject<HTMLDivElement | null>;
-  status?: RefObject<HTMLDivElement | null>;
-  actions?: RefObject<HTMLDivElement | null>;
-}
 
 interface ToolbarModeControl {
   mode: PermissionMode;
@@ -458,6 +465,7 @@ interface ToolbarThinkingControl {
   effortOptions: EffortLevelOption[];
   onSetMode: (mode: ThinkingMode) => void;
   onSetEffort: (level: EffortLevel) => void;
+  onSetEffortMode?: (level: EffortLevel) => void;
   onToggleEnabled: () => void;
   /** "Show thinking" preference (default/on/off); all providers. */
   showThinking: ShowThinking;
@@ -524,11 +532,18 @@ interface ToolbarStatusControl {
   showLivenessChip: boolean;
   livenessDisplay: LivenessDisplay | null;
   livenessSummary: string | null;
+  providerRuntimeDisplay?: ProviderRuntimeDisplay | null;
   nowMs: number;
   showLastActivityChip: boolean;
   showLastActivityPrefix: boolean;
   lastActivityMs: number | null;
   lastActivityIsPast: boolean;
+  positionTimestampMs: number | null;
+  showPositionTimestamp: boolean;
+  /** Position age present regardless of the sessionStatus toggle (compact float). */
+  hasPositionAge: boolean;
+  /** Last-activity freshness present regardless of the sessionStatus toggle. */
+  hasLastActivityAge: boolean;
 }
 
 interface ToolbarShortcutsControl {
@@ -579,6 +594,12 @@ interface ToolbarSendControl {
   };
 }
 
+interface ToolbarProjectQueueControl {
+  onProjectQueue: () => void;
+  canSend?: boolean;
+  tooltip: string;
+}
+
 interface ToolbarStopControl {
   onStop: () => void;
   title: string;
@@ -594,13 +615,16 @@ interface ToolbarActionsControl {
   contextWindow?: number;
   btw?: ToolbarBtwControl | null;
   stop?: ToolbarStopControl | null;
+  projectQueue?: ToolbarProjectQueueControl | null;
   send?: ToolbarSendControl | null;
 }
 
 export interface MessageInputToolbarViewProps {
   t: ToolbarTranslate;
-  refs?: ToolbarRefs;
+  refs?: MessageInputToolbarLayoutRefs;
   visibility: SessionToolbarVisibility;
+  /** Per-control narrowing priority; defaults to the built-in tiers when absent. */
+  priority?: SessionToolbarPriority;
   isCompactStatusMode?: boolean;
   modeControl?: ToolbarModeControl | null;
   attachmentControl: ToolbarAttachmentControl;
@@ -781,6 +805,7 @@ function ThinkingToolbarControl({
             level={control.level}
             effortOptions={control.effortOptions}
             onSetEffort={control.onSetEffort}
+            onSetEffortMode={control.onSetEffortMode}
             showThinking={control.showThinking}
             onSetShowThinking={control.onSetShowThinking}
             provider={control.provider}
@@ -801,6 +826,7 @@ export function MessageInputToolbarView({
   t,
   refs,
   visibility,
+  priority,
   isCompactStatusMode = false,
   modeControl,
   attachmentControl,
@@ -815,14 +841,68 @@ export function MessageInputToolbarView({
   shortcutsControl,
   actionsControl,
 }: MessageInputToolbarViewProps) {
+  const controlPriority = priority ?? DEFAULT_SESSION_TOOLBAR_PRIORITY;
+  // Inline copy always carries `-inline`; append the priority-derived tier (or
+  // nothing when pinned). Menu copy carries just the tier. Both mirror each
+  // other so a control's inline and menu presentations stay mutually exclusive.
+  const inlineTierClass = (
+    key: SessionToolbarVisibilityKey,
+    ...extra: string[]
+  ): string =>
+    [
+      ...extra,
+      "composer-bottom-overflow-inline",
+      priorityToTierClass(controlPriority[key]),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  const menuTierClass = (
+    key: SessionToolbarVisibilityKey,
+    ...extra: string[]
+  ): string => {
+    const tierClass = priorityToTierClass(controlPriority[key]);
+    return [...extra, tierClass || "composer-bottom-overflow-pinned"]
+      .filter(Boolean)
+      .join(" ");
+  };
+  const isPriorityCollapsible = (key: SessionToolbarVisibilityKey): boolean =>
+    controlPriority[key] !== "pin";
   const shortcutsPopoverOpen = shortcutsControl.open;
-  const showToolbarStatus =
-    visibility.sessionStatus && (statusControl?.showToolbarStatus ?? false);
-  const showLivenessChip = statusControl?.showLivenessChip ?? false;
+  const shortcutSettings =
+    shortcutsControl.canSwapEnterAction && shortcutsControl.onSwapEnterAction
+      ? { onSwapEnterAction: shortcutsControl.onSwapEnterAction }
+      : null;
+  // The status ages float whenever the inline expanded row is unavailable:
+  // compact viewport, mobile layout, or the sessionStatus toggle off.
+  const statusFloats = isCompactStatusMode || !visibility.sessionStatus;
+  // The float carries only the two ages. The liveness chip is inline-only:
+  // floated it degrades to a bare "now"/"5m" pill with none of the liveness
+  // framing the inline row gives it.
+  const showLivenessChip =
+    !statusFloats && (statusControl?.showLivenessChip ?? false);
   const livenessDisplay = statusControl?.livenessDisplay ?? null;
-  const showLastActivityChip = statusControl?.showLastActivityChip ?? false;
+  const providerRuntimeDisplay = statusControl?.providerRuntimeDisplay ?? null;
+  const showPositionChip =
+    (statusControl?.showPositionTimestamp ?? false) ||
+    (statusFloats && (statusControl?.hasPositionAge ?? false));
+  const showLastActivityChip =
+    (statusControl?.showLastActivityChip ?? false) ||
+    (statusFloats && (statusControl?.hasLastActivityAge ?? false));
+  const showProviderRuntimeChip = !!providerRuntimeDisplay;
+  const showToolbarStatus =
+    showProviderRuntimeChip ||
+    showLivenessChip ||
+    showPositionChip ||
+    showLastActivityChip;
+  // The floating presentation needs `.status-floats` so the ages anchor over
+  // the composer; wide+enabled keeps the inline row's positioning context.
+  const applyStatusFloats =
+    isCompactStatusMode || (statusFloats && showToolbarStatus);
   const showSendButton = !!actionsControl.send?.onSend;
   const showStopButton = !!actionsControl.stop;
+  const showProjectQueueButton = !!(
+    visibility.projectQueue && actionsControl.projectQueue?.onProjectQueue
+  );
   const selectedSpeechMethod = speechControl?.selectedMethod;
   const queueControl = actionsControl.send?.queue;
   const canToggleSteerNow = !!(
@@ -830,131 +910,289 @@ export function MessageInputToolbarView({
     actionsControl.send?.showSteerNowMode &&
     actionsControl.send.onToggleSteerNow
   );
-  const hasBottomOverflowControls = !!(
-    (visibility.modeSelector && modeControl) ||
-    visibility.attachments ||
-    (visibility.slashMenu && slashControl) ||
-    (visibility.thinkingToggle && thinkingControl) ||
-    (visibility.renderMode && renderModeControl) ||
-    (visibility.nudge && nudgeControl) ||
-    visibility.shortcutsHelp
-  );
-  const [bottomOverflowOpen, setBottomOverflowOpen] = useState(false);
-  const [bottomOverflowTier, setBottomOverflowTier] =
-    useState<ComposerOverflowTier>(() =>
-      typeof ResizeObserver === "undefined" ? "late" : "none",
+  const showActionsControl =
+    showProjectQueueButton || showSendButton || canToggleSteerNow;
+  const renderStatusAges = (
+    className: string,
+    ref?: RefObject<HTMLDivElement | null>,
+  ) => {
+    if (!showToolbarStatus || !statusControl) {
+      return null;
+    }
+
+    return (
+      <div ref={ref} className={className}>
+        {showLivenessChip && livenessDisplay && (
+          <div
+            className={`composer-status-chip composer-liveness-status is-${livenessDisplay.tone}`}
+            role="status"
+            aria-label={t("toolbarLivenessAria", {
+              summary: statusControl.livenessSummary ?? "",
+            })}
+            title={livenessDisplay.title}
+          >
+            {livenessDisplay.timestampMs !== null ? (
+              <time
+                className="composer-liveness-time"
+                dateTime={new Date(livenessDisplay.timestampMs).toISOString()}
+                title={`${formatAbsoluteTimestamp(livenessDisplay.timestampMs)}\n${livenessDisplay.title}`}
+              >
+                {formatLivenessAge(
+                  t,
+                  livenessDisplay.timestampMs,
+                  statusControl.nowMs,
+                )}
+              </time>
+            ) : (
+              <span className="composer-liveness-time">
+                {livenessDisplay.prefix}
+              </span>
+            )}
+          </div>
+        )}
+        {showProviderRuntimeChip && providerRuntimeDisplay && (
+          <div
+            className={`composer-status-chip composer-provider-runtime-status is-${providerRuntimeDisplay.tone}`}
+            role="status"
+            aria-label={t("toolbarProviderRuntimeAria", {
+              summary: providerRuntimeDisplay.summary,
+            })}
+            title={providerRuntimeDisplay.title}
+          >
+            {providerRuntimeDisplay.retryAtMs !== null ? (
+              <time
+                className="composer-provider-runtime-time"
+                dateTime={new Date(
+                  providerRuntimeDisplay.retryAtMs,
+                ).toISOString()}
+              >
+                {providerRuntimeDisplay.summary}
+              </time>
+            ) : (
+              <span className="composer-provider-runtime-time">
+                {providerRuntimeDisplay.summary}
+              </span>
+            )}
+          </div>
+        )}
+        {showPositionChip && (
+          <div
+            className="composer-status-chip composer-position-age composer-activity-age--compact"
+            role="status"
+            aria-label={t("toolbarPositionAgeAria")}
+          >
+            <MessageAge
+              timestampMs={statusControl.positionTimestampMs}
+              nowMs={statusControl.nowMs}
+              className="composer-position-age-time"
+              formatLabel={(label) => {
+                const localizedLabel =
+                  label === "now"
+                    ? t("toolbarRelativeAgeNow")
+                    : t("toolbarRelativeAgePast", { age: label });
+                return t("toolbarPositionAge", { age: localizedLabel });
+              }}
+            />
+          </div>
+        )}
+        {showLastActivityChip && (
+          <div
+            className={`composer-status-chip composer-activity-age${
+              statusControl.showLastActivityPrefix
+                ? ""
+                : " composer-activity-age--compact"
+            }`}
+            role="status"
+            aria-label={t("toolbarLastActivityAria")}
+          >
+            <MessageAge
+              timestampMs={statusControl.lastActivityMs}
+              nowMs={statusControl.nowMs}
+              className="composer-activity-age-time"
+              formatLabel={(label) => {
+                const localizedLabel =
+                  label === "now" ? t("toolbarRelativeAgeNow") : label;
+                if (statusControl.showLastActivityPrefix) {
+                  return t("toolbarLastActivityAge", {
+                    age: localizedLabel,
+                  });
+                }
+                return statusControl.lastActivityIsPast
+                  ? t("toolbarRelativeAgePast", { age: localizedLabel })
+                  : localizedLabel;
+              }}
+            />
+          </div>
+        )}
+      </div>
     );
-  const toolbarRef = useRef<HTMLDivElement | null>(null);
-  const lastToolbarWidthRef = useRef(0);
+  };
+  const renderContextUsage = (className: string) => {
+    if (!visibility.contextUsage || !actionsControl.contextUsage) {
+      return null;
+    }
+    return (
+      <span className={className}>
+        <ContextThresholdQuickEdit
+          usage={actionsControl.contextUsage}
+          model={actionsControl.contextModel}
+          contextWindow={actionsControl.contextWindow}
+          size={16}
+        />
+      </span>
+    );
+  };
+  const renderBtwButton = (className: string, menu = false) => {
+    if (!visibility.btw || !actionsControl.btw) {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        className={className}
+        onClick={actionsControl.btw.onClick}
+        disabled={actionsControl.disabled || actionsControl.voiceDisabled}
+        aria-label={actionsControl.btw.title}
+        aria-pressed={actionsControl.btw.pressed}
+        title={actionsControl.btw.title}
+        role={menu ? "menuitem" : undefined}
+      >
+        /btw
+      </button>
+    );
+  };
+  const renderSteerNowToggle = (className: string) => {
+    if (!canToggleSteerNow || !actionsControl.send) {
+      return null;
+    }
+    return (
+      <label className={className} title={t("toolbarSteerNowTooltip")}>
+        <input
+          type="checkbox"
+          checked={!!actionsControl.send.steerNowEnabled}
+          onChange={actionsControl.send.onToggleSteerNow}
+          disabled={actionsControl.disabled}
+          aria-label={t("toolbarSteerNowLabel")}
+        />
+        <span>{t("toolbarSteerNowShortLabel")}</span>
+      </label>
+    );
+  };
+  const renderProjectQueueButton = (className: string, menu = false) => {
+    if (
+      !showProjectQueueButton ||
+      !actionsControl.projectQueue ||
+      !actionsControl.send
+    ) {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        onClick={actionsControl.projectQueue.onProjectQueue}
+        disabled={
+          actionsControl.disabled || !actionsControl.projectQueue.canSend
+        }
+        className={className}
+        aria-label={t("toolbarProjectQueueLabel")}
+        title={actionsControl.projectQueue.tooltip}
+        role={menu ? "menuitem" : undefined}
+      >
+        <span className="send-icon">⇥</span>
+      </button>
+    );
+  };
+  const hasBottomOverflowControls = !!(
+    (visibility.modeSelector &&
+      modeControl &&
+      isPriorityCollapsible("modeSelector")) ||
+    (visibility.attachments && isPriorityCollapsible("attachments")) ||
+    (visibility.slashMenu &&
+      slashControl &&
+      isPriorityCollapsible("slashMenu")) ||
+    (visibility.thinkingToggle &&
+      thinkingControl &&
+      isPriorityCollapsible("thinkingToggle")) ||
+    (visibility.renderMode &&
+      renderModeControl &&
+      isPriorityCollapsible("renderMode")) ||
+    (visibility.nudge && nudgeControl && isPriorityCollapsible("nudge")) ||
+    (visibility.sessionStatus &&
+      showToolbarStatus &&
+      statusControl &&
+      isPriorityCollapsible("sessionStatus")) ||
+    (visibility.shortcutsHelp && isPriorityCollapsible("shortcutsHelp")) ||
+    (visibility.contextUsage &&
+      actionsControl.contextUsage &&
+      isPriorityCollapsible("contextUsage")) ||
+    (visibility.btw && actionsControl.btw && isPriorityCollapsible("btw")) ||
+    (canToggleSteerNow && isPriorityCollapsible("steerNow")) ||
+    (showProjectQueueButton &&
+      actionsControl.send &&
+      isPriorityCollapsible("projectQueue"))
+  );
+  const bottomOverflowLayoutKey = getComposerToolbarOverflowLayoutSignature({
+    modeSelector:
+      visibility.modeSelector && modeControl
+        ? controlPriority.modeSelector
+        : "off",
+    attachments: visibility.attachments ? controlPriority.attachments : "off",
+    slashMenu:
+      visibility.slashMenu && slashControl ? controlPriority.slashMenu : "off",
+    thinkingToggle:
+      visibility.thinkingToggle && thinkingControl
+        ? controlPriority.thinkingToggle
+        : "off",
+    renderMode:
+      visibility.renderMode && renderModeControl
+        ? controlPriority.renderMode
+        : "off",
+    nudge: visibility.nudge && nudgeControl ? controlPriority.nudge : "off",
+    sessionStatus:
+      visibility.sessionStatus && showToolbarStatus && statusControl
+        ? controlPriority.sessionStatus
+        : "off",
+    shortcutsHelp: visibility.shortcutsHelp
+      ? controlPriority.shortcutsHelp
+      : "off",
+    contextUsage:
+      visibility.contextUsage && actionsControl.contextUsage
+        ? controlPriority.contextUsage
+        : "off",
+    btw: visibility.btw && actionsControl.btw ? controlPriority.btw : "off",
+    steerNow: canToggleSteerNow ? controlPriority.steerNow : "off",
+    projectQueue:
+      showProjectQueueButton && actionsControl.send
+        ? controlPriority.projectQueue
+        : "off",
+    microphone:
+      visibility.microphone && selectedSpeechMethod && speechControl?.voiceButton
+        ? speechControl.voiceButton.kind
+        : "off",
+    waveform: speechWaveformActive,
+    send: showSendButton ? actionsControl.send?.primaryActionKind : "off",
+    queue:
+      queueControl?.hasDualActions
+        ? [
+            actionsControl.send?.primaryActionKind,
+            !!queueControl.onQueue,
+            !!queueControl.onSteer,
+          ].join(":")
+        : "off",
+    alternate: !!actionsControl.send?.alternate,
+    stop: showStopButton,
+    pending: pendingApproval?.type ?? "off",
+  });
+  const [bottomOverflowOpen, setBottomOverflowOpen] = useState(false);
+  const { tier: bottomOverflowTier, setToolbarRef } =
+    useMeasuredComposerOverflow({
+      layoutKey: bottomOverflowLayoutKey,
+      hasControls: hasBottomOverflowControls,
+      refs,
+    });
   const shortcutsLongPressTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const setToolbarRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      toolbarRef.current = node;
-      if (refs?.toolbar) {
-        refs.toolbar.current = node;
-      }
-    },
-    [refs?.toolbar],
-  );
-
-  useLayoutEffect(() => {
-    const toolbar = toolbarRef.current;
-    if (!toolbar || !hasBottomOverflowControls) {
-      if (bottomOverflowTier !== "none") {
-        setBottomOverflowTier("none");
-      }
-      return;
-    }
-
-    let frameId: number | null = null;
-    const measure = () => {
-      frameId = null;
-      const left =
-        refs?.left?.current ?? toolbar.querySelector(".message-input-left");
-      const actions =
-        refs?.actions?.current ??
-        toolbar.querySelector(".message-input-actions");
-      if (!(left instanceof HTMLElement) || !(actions instanceof HTMLElement)) {
-        return;
-      }
-      const leftRect = left.getBoundingClientRect();
-      const actionsRect = actions.getBoundingClientRect();
-      if (leftRect.width === 0 && actionsRect.width === 0) {
-        setBottomOverflowTier("late");
-        return;
-      }
-      const leftWidth = getControlListWidth(left);
-      const actionsWidth = getControlListWidth(actions);
-      const overflow = toolbar.querySelector(".composer-bottom-overflow");
-      const overflowWidth =
-        overflow instanceof HTMLElement ? getVisibleControlWidth(overflow) : 0;
-      const visibleSectionCount = [
-        leftWidth,
-        overflowWidth,
-        actionsWidth,
-      ].filter((width) => width > 0).length;
-      const totalWidth =
-        leftWidth +
-        overflowWidth +
-        actionsWidth +
-        getFlexGapPx(toolbar) * Math.max(0, visibleSectionCount - 1);
-      const availableWidth = toolbar.getBoundingClientRect().width;
-      if (totalWidth <= availableWidth + 0.5) {
-        return;
-      }
-      setBottomOverflowTier((tier) => {
-        const tierIndex = COMPOSER_OVERFLOW_TIERS.indexOf(tier);
-        return (
-          COMPOSER_OVERFLOW_TIERS[
-            Math.min(tierIndex + 1, COMPOSER_OVERFLOW_TIERS.length - 1)
-          ] ?? "late"
-        );
-      });
-    };
-    const scheduleMeasure = () => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
-      frameId = requestAnimationFrame(measure);
-    };
-    const handleResize: ResizeObserverCallback = (entries) => {
-      const toolbarEntry = entries.find((entry) => entry.target === toolbar);
-      if (toolbarEntry) {
-        const nextWidth = toolbarEntry.contentRect.width;
-        if (nextWidth > lastToolbarWidthRef.current + 1) {
-          setBottomOverflowTier("none");
-        }
-        lastToolbarWidthRef.current = nextWidth;
-      }
-      scheduleMeasure();
-    };
-
-    scheduleMeasure();
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(handleResize);
-      resizeObserver.observe(toolbar);
-      if (refs?.left?.current) {
-        resizeObserver.observe(refs.left.current);
-      }
-      if (refs?.actions?.current) {
-        resizeObserver.observe(refs.actions.current);
-      }
-    }
-    return () => {
-      resizeObserver?.disconnect();
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
-    };
-  }, [
-    bottomOverflowTier,
-    hasBottomOverflowControls,
-    refs?.actions,
-    refs?.left,
-  ]);
 
   const openShortcutSettings = () => {
     shortcutsControl.setOpen(true);
@@ -977,11 +1215,11 @@ export function MessageInputToolbarView({
   return (
     <div
       ref={setToolbarRef}
-      className={`message-input-toolbar${isCompactStatusMode ? " status-floats" : ""} overflow-tier-${bottomOverflowTier}`}
+      className={`message-input-toolbar${applyStatusFloats ? " status-floats" : ""} overflow-tier-${bottomOverflowTier}`}
     >
       <div ref={refs?.left} className="message-input-left">
         {visibility.modeSelector && modeControl && (
-          <span className="composer-bottom-overflow-inline composer-bottom-overflow-early">
+          <span className={inlineTierClass("modeSelector")}>
             <ModeSelector
               mode={modeControl.mode}
               onModeChange={modeControl.onModeChange}
@@ -993,7 +1231,7 @@ export function MessageInputToolbarView({
         {visibility.attachments && (
           <button
             type="button"
-            className="attach-button composer-bottom-overflow-inline composer-bottom-overflow-early"
+            className={inlineTierClass("attachments", "attach-button")}
             onClick={attachmentControl.onAttachClick}
             disabled={!attachmentControl.canAttach}
             title={
@@ -1021,7 +1259,7 @@ export function MessageInputToolbarView({
           </button>
         )}
         {visibility.slashMenu && slashControl && (
-          <span className="composer-bottom-overflow-inline composer-bottom-overflow-medium">
+          <span className={inlineTierClass("slashMenu")}>
             <SlashCommandButton
               commands={slashControl.commands}
               onSelectCommand={slashControl.onSelectCommand}
@@ -1030,20 +1268,22 @@ export function MessageInputToolbarView({
           </span>
         )}
         {visibility.thinkingToggle && thinkingControl && (
-          <span className="composer-bottom-overflow-inline composer-bottom-overflow-medium">
+          <span className={inlineTierClass("thinkingToggle")}>
             <ThinkingToolbarControl control={thinkingControl} t={t} />
           </span>
         )}
         {visibility.renderMode && renderModeControl && (
           <button
             type="button"
-            className={`render-mode-toolbar-button composer-bottom-overflow-inline composer-bottom-overflow-late ${
+            className={inlineTierClass(
+              "renderMode",
+              "render-mode-toolbar-button",
               renderModeControl.state === "rendered"
                 ? "is-rendered"
                 : renderModeControl.state === "mixed"
                   ? "is-mixed"
-                  : ""
-            }`}
+                  : "",
+            )}
             onClick={renderModeControl.onToggle}
             title={renderModeControl.title}
             aria-label={renderModeControl.title}
@@ -1059,7 +1299,11 @@ export function MessageInputToolbarView({
         {visibility.nudge && nudgeControl && (
           <button
             type="button"
-            className={`heartbeat-toolbar-button composer-bottom-overflow-inline composer-bottom-overflow-late ${nudgeControl.enabled ? "active" : ""}`}
+            className={inlineTierClass(
+              "nudge",
+              "heartbeat-toolbar-button",
+              nudgeControl.enabled ? "active" : "",
+            )}
             onClick={nudgeControl.onClick}
             onContextMenu={nudgeControl.onContextMenu}
             onTouchStart={nudgeControl.onTouchStart}
@@ -1175,66 +1419,11 @@ export function MessageInputToolbarView({
           )}
         {speechWaveformActive && <SpeechWaveform />}
       </div>
-      {showToolbarStatus && statusControl && (
-        <div ref={refs?.status} className="composer-status-ages">
-          {showLivenessChip && livenessDisplay && (
-            <div
-              className={`composer-status-chip composer-liveness-status is-${livenessDisplay.tone}`}
-              role="status"
-              aria-label={t("toolbarLivenessAria", {
-                summary: statusControl.livenessSummary ?? "",
-              })}
-              title={livenessDisplay.title}
-            >
-              {livenessDisplay.timestampMs !== null ? (
-                <time
-                  className="composer-liveness-time"
-                  dateTime={new Date(livenessDisplay.timestampMs).toISOString()}
-                  title={`${formatAbsoluteTimestamp(livenessDisplay.timestampMs)}\n${livenessDisplay.title}`}
-                >
-                  {formatLivenessAge(
-                    t,
-                    livenessDisplay.timestampMs,
-                    statusControl.nowMs,
-                  )}
-                </time>
-              ) : (
-                <span className="composer-liveness-time">
-                  {livenessDisplay.prefix}
-                </span>
-              )}
-            </div>
-          )}
-          {showLastActivityChip && (
-            <div
-              className={`composer-status-chip composer-activity-age${
-                statusControl.showLastActivityPrefix
-                  ? ""
-                  : " composer-activity-age--compact"
-              }`}
-              role="status"
-              aria-label={t("toolbarLastActivityAria")}
-            >
-              <MessageAge
-                timestampMs={statusControl.lastActivityMs}
-                nowMs={statusControl.nowMs}
-                className="composer-activity-age-time"
-                formatLabel={(label) => {
-                  const localizedLabel =
-                    label === "now" ? t("toolbarRelativeAgeNow") : label;
-                  if (statusControl.showLastActivityPrefix) {
-                    return t("toolbarLastActivityAge", {
-                      age: localizedLabel,
-                    });
-                  }
-                  return statusControl.lastActivityIsPast
-                    ? t("toolbarRelativeAgePast", { age: localizedLabel })
-                    : localizedLabel;
-                }}
-              />
-            </div>
-          )}
-        </div>
+      {renderStatusAges(
+        visibility.sessionStatus
+          ? inlineTierClass("sessionStatus", "composer-status-ages")
+          : "composer-status-ages",
+        refs?.status,
       )}
       {hasBottomOverflowControls && bottomOverflowTier !== "none" && (
         <div
@@ -1254,18 +1443,23 @@ export function MessageInputToolbarView({
           {bottomOverflowOpen && (
             <div className="composer-bottom-overflow-menu" role="menu">
               <div className="composer-bottom-overflow-menu-group composer-bottom-overflow-menu-left">
-                {visibility.modeSelector && modeControl && (
-                  <ModeSelector
-                    mode={modeControl.mode}
-                    onModeChange={modeControl.onModeChange}
-                    modes={modeControl.modes}
-                    changesApplyNextTurn={modeControl.changesApplyNextTurn}
-                  />
+                {visibility.modeSelector &&
+                  modeControl &&
+                  isPriorityCollapsible("modeSelector") && (
+                  <span className={menuTierClass("modeSelector")}>
+                    <ModeSelector
+                      mode={modeControl.mode}
+                      onModeChange={modeControl.onModeChange}
+                      modes={modeControl.modes}
+                      changesApplyNextTurn={modeControl.changesApplyNextTurn}
+                    />
+                  </span>
                 )}
-                {visibility.attachments && (
+                {visibility.attachments &&
+                  isPriorityCollapsible("attachments") && (
                   <button
                     type="button"
-                    className="attach-button"
+                    className={menuTierClass("attachments", "attach-button")}
                     onClick={attachmentControl.onAttachClick}
                     disabled={!attachmentControl.canAttach}
                     title={
@@ -1293,10 +1487,21 @@ export function MessageInputToolbarView({
                     )}
                   </button>
                 )}
+                {visibility.sessionStatus &&
+                  isPriorityCollapsible("sessionStatus") &&
+                  renderStatusAges(
+                    menuTierClass(
+                      "sessionStatus",
+                      "composer-status-ages",
+                      "composer-status-ages--menu",
+                    ),
+                  )}
               </div>
               <div className="composer-bottom-overflow-menu-group composer-bottom-overflow-menu-right">
-                {visibility.slashMenu && slashControl && (
-                  <span className="composer-bottom-overflow-medium">
+                {visibility.slashMenu &&
+                  slashControl &&
+                  isPriorityCollapsible("slashMenu") && (
+                  <span className={menuTierClass("slashMenu")}>
                     <SlashCommandButton
                       commands={slashControl.commands}
                       onSelectCommand={slashControl.onSelectCommand}
@@ -1304,21 +1509,27 @@ export function MessageInputToolbarView({
                     />
                   </span>
                 )}
-                {visibility.thinkingToggle && thinkingControl && (
-                  <span className="composer-bottom-overflow-medium">
+                {visibility.thinkingToggle &&
+                  thinkingControl &&
+                  isPriorityCollapsible("thinkingToggle") && (
+                  <span className={menuTierClass("thinkingToggle")}>
                     <ThinkingToolbarControl control={thinkingControl} t={t} />
                   </span>
                 )}
-                {visibility.renderMode && renderModeControl && (
+                {visibility.renderMode &&
+                  renderModeControl &&
+                  isPriorityCollapsible("renderMode") && (
                   <button
                     type="button"
-                    className={`render-mode-toolbar-button composer-bottom-overflow-late ${
+                    className={menuTierClass(
+                      "renderMode",
+                      "render-mode-toolbar-button",
                       renderModeControl.state === "rendered"
                         ? "is-rendered"
                         : renderModeControl.state === "mixed"
                           ? "is-mixed"
-                          : ""
-                    }`}
+                          : "",
+                    )}
                     onClick={renderModeControl.onToggle}
                     title={renderModeControl.title}
                     aria-label={renderModeControl.title}
@@ -1332,10 +1543,16 @@ export function MessageInputToolbarView({
                     <RenderModeGlyph />
                   </button>
                 )}
-                {visibility.nudge && nudgeControl && (
+                {visibility.nudge &&
+                  nudgeControl &&
+                  isPriorityCollapsible("nudge") && (
                   <button
                     type="button"
-                    className={`heartbeat-toolbar-button composer-bottom-overflow-late ${nudgeControl.enabled ? "active" : ""}`}
+                    className={menuTierClass(
+                      "nudge",
+                      "heartbeat-toolbar-button",
+                      nudgeControl.enabled ? "active" : "",
+                    )}
                     onClick={nudgeControl.onClick}
                     onContextMenu={nudgeControl.onContextMenu}
                     onTouchStart={nudgeControl.onTouchStart}
@@ -1367,10 +1584,14 @@ export function MessageInputToolbarView({
                     </svg>
                   </button>
                 )}
-                {visibility.shortcutsHelp && (
+                {visibility.shortcutsHelp &&
+                  isPriorityCollapsible("shortcutsHelp") && (
                   <button
                     type="button"
-                    className="session-shortcuts-help-button composer-bottom-overflow-late"
+                    className={menuTierClass(
+                      "shortcutsHelp",
+                      "session-shortcuts-help-button",
+                    )}
                     aria-label={t("toolbarKeyboardShortcutsAria")}
                     aria-expanded={shortcutsPopoverOpen}
                     onClick={() => shortcutsControl.setOpen((open) => !open)}
@@ -1387,6 +1608,35 @@ export function MessageInputToolbarView({
                     ?
                   </button>
                 )}
+                {isPriorityCollapsible("contextUsage") &&
+                  renderContextUsage(
+                    menuTierClass("contextUsage", "context-toolbar-control"),
+                  )}
+                {isPriorityCollapsible("btw") &&
+                  renderBtwButton(
+                    menuTierClass(
+                      "btw",
+                      "btw-toolbar-button",
+                      actionsControl.btw?.pressed ? "active" : "",
+                      actionsControl.btw?.mode === "focus-existing"
+                        ? "has-asides"
+                        : "",
+                    ),
+                    true,
+                  )}
+                {isPriorityCollapsible("steerNow") &&
+                  renderSteerNowToggle(
+                    menuTierClass("steerNow", "steer-now-toggle"),
+                  )}
+                {isPriorityCollapsible("projectQueue") &&
+                  renderProjectQueueButton(
+                    menuTierClass(
+                      "projectQueue",
+                      "send-button",
+                      "project-queue-button",
+                    ),
+                    true,
+                  )}
               </div>
             </div>
           )}
@@ -1415,7 +1665,10 @@ export function MessageInputToolbarView({
         {visibility.shortcutsHelp && (
           // biome-ignore lint/a11y/noStaticElementInteractions: pointer leave only hides the adjacent shortcuts popover
           <div
-            className="session-shortcuts-help composer-bottom-overflow-inline composer-bottom-overflow-late"
+            className={inlineTierClass(
+              "shortcutsHelp",
+              "session-shortcuts-help",
+            )}
             onMouseLeave={() => {
               shortcutsControl.setOpen(false);
               shortcutsControl.setSettingsOpen(false);
@@ -1596,35 +1849,35 @@ export function MessageInputToolbarView({
                         <span>{t("toolbarShortcutForkAfterSummary")}</span>
                       </div>
                     )}
-                    <div className="session-shortcuts-row session-shortcuts-row-muted">
-                      <span className="session-shortcuts-keys">
-                        {t("toolbarShortcutRightClickLongPress")}
-                      </span>
-                      <span>{t("toolbarShortcutChangeKeys")}</span>
-                    </div>
-                    {shortcutsControl.settingsOpen &&
-                      shortcutsControl.canSwapEnterAction &&
-                      shortcutsControl.onSwapEnterAction && (
-                        <div className="session-shortcuts-settings">
-                          <div className="session-shortcuts-row">
-                            <span className="session-shortcuts-keys">
-                              <kbd>Enter</kbd>
-                            </span>
-                            <span>
-                              {shortcutsControl.enterActionKind === "queue"
-                                ? t("toolbarShortcutQueueCurrentTurn")
-                                : t("toolbarShortcutSteerCurrentTurn")}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            className="session-shortcuts-action"
-                            onClick={shortcutsControl.onSwapEnterAction}
-                          >
-                            {t("toolbarShortcutSwapEnterCtrlEnter")}
-                          </button>
+                    {shortcutSettings && (
+                      <div className="session-shortcuts-row session-shortcuts-row-muted">
+                        <span className="session-shortcuts-keys">
+                          {t("toolbarShortcutRightClickLongPress")}
+                        </span>
+                        <span>{t("toolbarShortcutChangeKeys")}</span>
+                      </div>
+                    )}
+                    {shortcutsControl.settingsOpen && shortcutSettings && (
+                      <div className="session-shortcuts-settings">
+                        <div className="session-shortcuts-row">
+                          <span className="session-shortcuts-keys">
+                            <kbd>Enter</kbd>
+                          </span>
+                          <span>
+                            {shortcutsControl.enterActionKind === "queue"
+                              ? t("toolbarShortcutQueueCurrentTurn")
+                              : t("toolbarShortcutSteerCurrentTurn")}
+                          </span>
                         </div>
-                      )}
+                        <button
+                          type="button"
+                          className="session-shortcuts-action"
+                          onClick={shortcutSettings.onSwapEnterAction}
+                        >
+                          {t("toolbarShortcutSwapEnterCtrlEnter")}
+                        </button>
+                      </div>
+                    )}
                     <div className="session-shortcuts-row">
                       <span className="session-shortcuts-keys">
                         <kbd>Ctrl</kbd>
@@ -1691,28 +1944,16 @@ export function MessageInputToolbarView({
             )}
           </div>
         )}
-        {visibility.contextUsage && (
-          <ContextThresholdQuickEdit
-            usage={actionsControl.contextUsage}
-            model={actionsControl.contextModel}
-            contextWindow={actionsControl.contextWindow}
-            size={16}
-          />
+        {renderContextUsage(
+          inlineTierClass("contextUsage", "context-toolbar-control"),
         )}
-        {visibility.btw && actionsControl.btw && (
-          <button
-            type="button"
-            className={`btw-toolbar-button ${actionsControl.btw.pressed ? "active" : ""} ${
-              actionsControl.btw.mode === "focus-existing" ? "has-asides" : ""
-            }`}
-            onClick={actionsControl.btw.onClick}
-            disabled={actionsControl.disabled || actionsControl.voiceDisabled}
-            aria-label={actionsControl.btw.title}
-            aria-pressed={actionsControl.btw.pressed}
-            title={actionsControl.btw.title}
-          >
-            /btw
-          </button>
+        {renderBtwButton(
+          inlineTierClass(
+            "btw",
+            "btw-toolbar-button",
+            actionsControl.btw?.pressed ? "active" : "",
+            actionsControl.btw?.mode === "focus-existing" ? "has-asides" : "",
+          ),
         )}
         {showStopButton && actionsControl.stop && (
           <button
@@ -1725,22 +1966,10 @@ export function MessageInputToolbarView({
             <span className="stop-icon" />
           </button>
         )}
-        {showSendButton && actionsControl.send ? (
+        {showActionsControl && actionsControl.send ? (
           <>
-            {canToggleSteerNow && actionsControl.send && (
-              <label
-                className="steer-now-toggle"
-                title={t("toolbarSteerNowTooltip")}
-              >
-                <input
-                  type="checkbox"
-                  checked={!!actionsControl.send.steerNowEnabled}
-                  onChange={actionsControl.send.onToggleSteerNow}
-                  disabled={actionsControl.disabled}
-                  aria-label={t("toolbarSteerNowLabel")}
-                />
-                <span>{t("toolbarSteerNowShortLabel")}</span>
-              </label>
+            {renderSteerNowToggle(
+              inlineTierClass("steerNow", "steer-now-toggle"),
             )}
             {queueControl?.hasDualActions &&
               actionsControl.send.primaryActionKind !== "queue" &&
@@ -1778,7 +2007,9 @@ export function MessageInputToolbarView({
               <button
                 type="button"
                 onClick={actionsControl.send.alternate.onClick}
-                disabled={actionsControl.disabled || !actionsControl.send.canSend}
+                disabled={
+                  actionsControl.disabled || !actionsControl.send.canSend
+                }
                 className="send-button fork-summary-no-summary-button"
                 aria-label={actionsControl.send.alternate.label}
                 title={actionsControl.send.alternate.tooltip}
@@ -1788,20 +2019,31 @@ export function MessageInputToolbarView({
                 </span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={actionsControl.send?.onSend}
-              disabled={actionsControl.disabled || !actionsControl.send.canSend}
-              className={`send-button send-button-with-help ${
-                actionsControl.send.primaryActionKind === "queue"
-                  ? "queue-mode"
-                  : ""
-              }`}
-              aria-label={actionsControl.send.primaryActionLabel}
-              data-tooltip={actionsControl.send.tooltip}
-            >
-              <span className="send-icon">{actionsControl.send.icon}</span>
-            </button>
+            {renderProjectQueueButton(
+              inlineTierClass(
+                "projectQueue",
+                "send-button",
+                "project-queue-button",
+              ),
+            )}
+            {showSendButton && (
+              <button
+                type="button"
+                onClick={actionsControl.send?.onSend}
+                disabled={
+                  actionsControl.disabled || !actionsControl.send.canSend
+                }
+                className={`send-button send-button-with-help ${
+                  actionsControl.send.primaryActionKind === "queue"
+                    ? "queue-mode"
+                    : ""
+                }`}
+                aria-label={actionsControl.send.primaryActionLabel}
+                data-tooltip={actionsControl.send.tooltip}
+              >
+                <span className="send-icon">{actionsControl.send.icon}</span>
+              </button>
+            )}
           </>
         ) : null}
       </div>
@@ -1835,13 +2077,16 @@ export function MessageInputToolbar({
   btwToolbarMode,
   thinkingProvider,
   thinkingModel,
+  liveThinkingSelection,
   contextRequestedModel,
   heartbeatEnabled = false,
   onToggleHeartbeat,
   onConfigureHeartbeat,
   contextUsage,
   lastActivityAt,
+  positionTimestampMs,
   sessionLiveness,
+  providerRuntimeStatus,
   showSteerNowMode = false,
   steerNowEnabled = false,
   onToggleSteerNow,
@@ -1853,6 +2098,7 @@ export function MessageInputToolbar({
   onStop,
   onSend,
   onQueue,
+  onProjectQueue,
   onSteer,
   primaryActionKind,
   sendOverride,
@@ -1878,8 +2124,10 @@ export function MessageInputToolbar({
     setSpeechSmartTurnSettings,
   } = useModelSettings();
   const { version: versionInfo } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
   const { providers } = useProviders();
-  const { visibility: toolbarVisibility } = useSessionToolbarVisibility();
+  const { visibility: toolbarVisibility, priority: toolbarPriority } =
+    useSessionToolbarPresence();
   const renderMode = useOptionalRenderModeContext();
   const nowMs = useRelativeNow();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -1894,6 +2142,12 @@ export function MessageInputToolbar({
   const toolbarLeftRef = useRef<HTMLDivElement | null>(null);
   const toolbarStatusRef = useRef<HTMLDivElement | null>(null);
   const toolbarActionsRef = useRef<HTMLDivElement | null>(null);
+  const selectedThinkingMode = liveThinkingSelection?.mode ?? thinkingMode;
+  const selectedThinkingLevel = liveThinkingSelection?.level ?? thinkingLevel;
+  const setSelectedThinkingMode =
+    liveThinkingSelection?.onSetMode ?? setThinkingMode;
+  const setSelectedEffortLevel =
+    liveThinkingSelection?.onSetEffort ?? setEffortLevel;
   const [isCompactStatusMode, setIsCompactStatusMode] = useState(() =>
     typeof window === "undefined"
       ? false
@@ -1934,8 +2188,9 @@ export function MessageInputToolbar({
     ],
   );
   const effectiveThinkingLevel = useMemo(
-    () => resolveSupportedEffortLevel(thinkingLevel, thinkingEffortOptions),
-    [thinkingEffortOptions, thinkingLevel],
+    () =>
+      resolveSupportedEffortLevel(selectedThinkingLevel, thinkingEffortOptions),
+    [selectedThinkingLevel, thinkingEffortOptions],
   );
   const thinkingModeOptions = useMemo(
     () =>
@@ -1954,8 +2209,9 @@ export function MessageInputToolbar({
     ],
   );
   const effectiveThinkingMode = useMemo(
-    () => resolveSupportedThinkingMode(thinkingMode, thinkingModeOptions),
-    [thinkingMode, thinkingModeOptions],
+    () =>
+      resolveSupportedThinkingMode(selectedThinkingMode, thinkingModeOptions),
+    [selectedThinkingMode, thinkingModeOptions],
   );
   const permissionModeOptions = useMemo(
     () =>
@@ -1972,9 +2228,11 @@ export function MessageInputToolbar({
   const showLastActivityAge = isStaleTimestamp(lastActivityMs, nowMs);
   const lastActivityAgeMs =
     lastActivityMs === null ? null : nowMs - lastActivityMs;
+  // Keep the long "Last activity 35m" prefix exclusive to the inline row.
+  const statusFloats = isCompactStatusMode || !toolbarVisibility.sessionStatus;
   const showLastActivityPrefix =
     showLastActivityAge &&
-    !isCompactStatusMode &&
+    !statusFloats &&
     lastActivityAgeMs !== null &&
     lastActivityAgeMs >= LAST_ACTIVITY_TEXT_PREFIX_THRESHOLD_MS;
   const lastActivityIsPast =
@@ -1982,11 +2240,41 @@ export function MessageInputToolbar({
     !showLastActivityPrefix &&
     lastActivityMs !== null &&
     formatCompactRelativeAge(lastActivityMs, nowMs) !== "now";
+  const positionAgeLabel =
+    positionTimestampMs === null || positionTimestampMs === undefined
+      ? null
+      : formatCompactRelativeAge(positionTimestampMs, nowMs);
+  const lastActivityAgeLabel =
+    lastActivityMs === null
+      ? null
+      : formatCompactRelativeAge(lastActivityMs, nowMs);
+  // Age *content* independent of the sessionStatus toggle. The compact
+  // "float over the composer" presentation reuses these so width-constrained
+  // clients (mobile defaults sessionStatus off) still get the ages; the
+  // sessionStatus toggle gates only the inline row + liveness chip.
+  // "at N ago" stays follow-mode-safe: positionTimestampMs is null at the
+  // scroll bottom (MessageList), so hasPositionAge is false in follow mode.
+  // A current position ("now") always counts as duplicating the session
+  // freshness, even when the freshness label is missing or suppressed as
+  // current, so it never earns a chip.
+  const hasPositionAge =
+    positionTimestampMs !== null &&
+    positionTimestampMs !== undefined &&
+    positionAgeLabel !== null &&
+    positionAgeLabel !== "now" &&
+    positionAgeLabel !== lastActivityAgeLabel;
+  const showPositionTimestamp =
+    toolbarVisibility.sessionStatus && hasPositionAge;
   const livenessDisplay = sessionLiveness
     ? describeSessionLiveness(sessionLiveness, t)
     : null;
+  const providerRuntimeDisplay = describeProviderRuntimeStatus(
+    providerRuntimeStatus ?? null,
+    t,
+  );
   const showLivenessChip =
     toolbarVisibility.sessionStatus &&
+    !providerRuntimeDisplay &&
     !!livenessDisplay &&
     !(
       showLastActivityAge &&
@@ -2015,6 +2303,15 @@ export function MessageInputToolbar({
     (effectivePrimaryActionKind === "steer" ||
       effectivePrimaryActionKind === "queue");
   const queueActionTooltip = t("toolbarQueueTooltip");
+  const projectQueueCtrlEnterEnabled =
+    versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
+    DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
+  const showProjectQueueShortcut = Boolean(
+    supportsProjectQueue &&
+      toolbarVisibility.projectQueue &&
+      onProjectQueue &&
+      projectQueueCtrlEnterEnabled,
+  );
   const sendTooltip = sendOverride
     ? sendOverride.tooltip
     : effectivePrimaryActionKind === "steer"
@@ -2023,8 +2320,11 @@ export function MessageInputToolbar({
         ? queueActionTooltip
         : t("toolbarSendTooltip");
   const queueTooltip = queueActionTooltip;
-  const queueShortcutLabel =
-    canSwapEnterAction && effectivePrimaryActionKind === "queue"
+  const canSwapDisplayedEnterAction =
+    canSwapEnterAction && !showProjectQueueShortcut;
+  const queueShortcutLabel = showProjectQueueShortcut
+    ? t("toolbarShortcutProjectQueue")
+    : canSwapDisplayedEnterAction && effectivePrimaryActionKind === "queue"
       ? t("toolbarShortcutSteerCurrentTurn")
       : t("toolbarShortcutQueueCurrentTurn");
   const effectiveBtwToolbarMode =
@@ -2052,7 +2352,9 @@ export function MessageInputToolbar({
   const showStopButton = !!(isRunning && onStop && isThinking && !canSend);
   const showSendButton = !!(onSend && (!showStopButton || canSend));
   const serverVoiceEnabled =
-    versionInfo?.capabilities?.includes("voiceInput") ?? true;
+    versionInfo?.capabilities === undefined
+      ? true
+      : serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
   const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
   const speechMethodOptions = useMemo((): FilterOption<SpeechMethodId>[] => {
     const serverBackends = versionInfo?.voiceBackends ?? [];
@@ -2106,9 +2408,24 @@ export function MessageInputToolbar({
     selectedSpeechMethodCapabilities.smartTurn === true;
   const activeSpeechSmartTurnSettings: SpeechSmartTurnSettings | undefined =
     supportsSelectedSpeechSmartTurn ? speechSmartTurnSettings : undefined;
+  const hasLastActivityAge = showLastActivityAge;
   const showLastActivityChip =
-    toolbarVisibility.sessionStatus && showLastActivityAge;
-  const showToolbarStatus = showLivenessChip || showLastActivityChip;
+    toolbarVisibility.sessionStatus && hasLastActivityAge;
+  const showToolbarStatus =
+    showLivenessChip || showLastActivityChip || showPositionTimestamp;
+  const compactStatusLayoutKey = [
+    livenessDisplay?.prefix ?? "",
+    livenessDisplay?.timestampMs ?? "",
+    livenessDisplay?.tone ?? "",
+    nowMs,
+    showLastActivityAge,
+    showLastActivityChip,
+    showLivenessChip,
+    showToolbarStatus,
+    showPositionTimestamp,
+    showStopButton,
+    showSendButton,
+  ].join("\0");
 
   useEffect(() => {
     if (effectiveThinkingMode !== "off") {
@@ -2122,10 +2439,24 @@ export function MessageInputToolbar({
     )
       ? lastNonOffThinkingModeRef.current
       : (thinkingModeOptions.find((option) => option !== "off") ?? "auto");
-    setThinkingMode(effectiveThinkingMode === "off" ? nextEnabledMode : "off");
-  }, [effectiveThinkingMode, setThinkingMode, thinkingModeOptions]);
+    setSelectedThinkingMode(
+      effectiveThinkingMode === "off" ? nextEnabledMode : "off",
+    );
+  }, [effectiveThinkingMode, setSelectedThinkingMode, thinkingModeOptions]);
+  const setSelectedThinkingEffortMode = useCallback(
+    (level: EffortLevel) => {
+      if (liveThinkingSelection) {
+        liveThinkingSelection.onSetEffort(level);
+        return;
+      }
+      setSelectedEffortLevel(level);
+      setSelectedThinkingMode("on");
+    },
+    [liveThinkingSelection, setSelectedEffortLevel, setSelectedThinkingMode],
+  );
 
   useLayoutEffect(() => {
+    void compactStatusLayoutKey;
     const compactStatusQuery = getCompactStatusMatchMedia();
     const toolbar = toolbarRef.current;
     const left = toolbarLeftRef.current;
@@ -2143,6 +2474,39 @@ export function MessageInputToolbar({
       return Number.isFinite(parsed) ? parsed : 0;
     };
 
+    // Content demand of a toolbar section, immune to flex stretching. A
+    // stretched section reports its grown size through scrollWidth:
+    // .message-input-left is flex: 1, so once the status floats (leaving the
+    // row) the left section absorbs the freed room, and measuring rendered
+    // sizes feeds that growth back into requiredWidth — compact mode then
+    // stays latched at any window width. Children that are themselves
+    // stretchy fillers (flex-grow, e.g. the speech waveform) count as their
+    // flex basis.
+    const sectionDemand = (section: HTMLElement) => {
+      const styles = getComputedStyle(section);
+      const gap = pxOrZero(styles.columnGap || styles.gap);
+      let width = 0;
+      let inFlow = 0;
+      for (const child of Array.from(section.children)) {
+        if (!(child instanceof HTMLElement)) {
+          continue;
+        }
+        const childStyles = getComputedStyle(child);
+        if (
+          childStyles.display === "none" ||
+          childStyles.position === "absolute"
+        ) {
+          continue;
+        }
+        inFlow += 1;
+        width +=
+          pxOrZero(childStyles.flexGrow) > 0
+            ? pxOrZero(childStyles.flexBasis)
+            : child.getBoundingClientRect().width;
+      }
+      return width + gap * Math.max(0, inFlow - 1);
+    };
+
     const updateCompactStatusMode = () => {
       const status = toolbarStatusRef.current;
       const viewportCompact = compactStatusQuery?.matches ?? false;
@@ -2155,13 +2519,27 @@ export function MessageInputToolbar({
       const toolbarStyles = getComputedStyle(toolbar);
       const gap = pxOrZero(toolbarStyles.columnGap || toolbarStyles.gap);
       const requiredWidth =
-        left.scrollWidth + status.scrollWidth + actions.scrollWidth + gap * 2;
-      const nextCompact =
-        viewportCompact || requiredWidth > toolbar.clientWidth + 1;
+        sectionDemand(left) +
+        sectionDemand(status) +
+        sectionDemand(actions) +
+        gap * 2;
 
-      setIsCompactStatusMode((current) =>
-        current === nextCompact ? current : nextCompact,
-      );
+      setIsCompactStatusMode((current) => {
+        if (viewportCompact || requiredWidth > toolbar.clientWidth + 1) {
+          return true;
+        }
+        if (!current) {
+          return false;
+        }
+        // Exiting compact needs slack beyond merely fitting: the float omits
+        // the liveness chip and restyles the ages, so demand measured while
+        // floating understates the inline row it would return to. Without
+        // the slack the mode can oscillate at the boundary.
+        return requiredWidth + COMPACT_STATUS_EXIT_SLACK_PX >
+          toolbar.clientWidth
+          ? current
+          : false;
+      });
     };
 
     const scheduleCompactStatusUpdate = () => {
@@ -2193,18 +2571,7 @@ export function MessageInputToolbar({
         scheduleCompactStatusUpdate,
       );
     };
-  }, [
-    livenessDisplay?.prefix,
-    livenessDisplay?.timestampMs,
-    livenessDisplay?.tone,
-    nowMs,
-    showLastActivityAge,
-    showLastActivityChip,
-    showLivenessChip,
-    showToolbarStatus,
-    showStopButton,
-    showSendButton,
-  ]);
+  }, [compactStatusLayoutKey]);
 
   useEffect(() => {
     const handleIsearchGuide = (event: Event) => {
@@ -2285,6 +2652,7 @@ export function MessageInputToolbar({
         actions: toolbarActionsRef,
       }}
       visibility={toolbarVisibility}
+      priority={toolbarPriority}
       isCompactStatusMode={isCompactStatusMode}
       modeControl={
         onModeChange && supportsPermissionMode
@@ -2317,8 +2685,9 @@ export function MessageInputToolbar({
               modeOptions: thinkingModeOptions,
               level: effectiveThinkingLevel,
               effortOptions: thinkingEffortOptions,
-              onSetMode: setThinkingMode,
-              onSetEffort: setEffortLevel,
+              onSetMode: setSelectedThinkingMode,
+              onSetEffort: setSelectedEffortLevel,
+              onSetEffortMode: setSelectedThinkingEffortMode,
               onToggleEnabled: toggleThinkingEnabled,
               showThinking,
               onSetShowThinking: setShowThinking ?? (() => {}),
@@ -2390,11 +2759,16 @@ export function MessageInputToolbar({
         showLivenessChip,
         livenessDisplay,
         livenessSummary,
+        providerRuntimeDisplay,
         nowMs,
         showLastActivityChip,
         showLastActivityPrefix,
         lastActivityMs,
         lastActivityIsPast,
+        positionTimestampMs: positionTimestampMs ?? null,
+        showPositionTimestamp,
+        hasPositionAge,
+        hasLastActivityAge,
       }}
       pendingApproval={pendingApproval}
       shortcutsControl={{
@@ -2405,7 +2779,7 @@ export function MessageInputToolbar({
         setSettingsOpen: setShortcutSettingsOpen,
         hasDualActions,
         enterActionKind: enterActionKind ?? effectivePrimaryActionKind,
-        canSwapEnterAction,
+        canSwapEnterAction: canSwapDisplayedEnterAction,
         onSwapEnterAction,
         queueShortcutLabel,
         canForkAfterSummary,
@@ -2451,6 +2825,16 @@ export function MessageInputToolbar({
               alternate: sendAlternate,
             }
           : null,
+        projectQueue:
+          supportsProjectQueue && onProjectQueue
+            ? {
+                onProjectQueue,
+                canSend,
+                tooltip: showProjectQueueShortcut
+                  ? t("toolbarProjectQueueTooltipWithShortcut")
+                  : t("toolbarProjectQueueTooltip"),
+              }
+            : null,
       }}
     />
   );

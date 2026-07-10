@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import { useI18n } from "../i18n";
+import { activityBus } from "../lib/activityBus";
 import { toBrowserAppHref } from "../lib/appHref";
 import { formatBriefAge } from "../lib/sessionAge";
 import {
@@ -39,6 +40,8 @@ interface SessionListItemProps {
   // Optional display data
   fullTitle?: string | null;
   initialPrompt?: string | null;
+  /** True when title is a user-provided override rather than the first turn. */
+  hasCustomTitle?: boolean;
   /** Capped excerpt of the most recent regular agent turn, for the hover card. */
   lastAgentText?: string | null;
   projectName?: string;
@@ -62,6 +65,7 @@ interface SessionListItemProps {
   showTimestamp?: boolean;
   showContextUsage?: boolean;
   showStatusBadge?: boolean;
+  showActivityIndicator?: boolean;
 
   // Custom badge (for Inbox)
   customBadge?: { label: string; className: string } | null;
@@ -83,6 +87,7 @@ interface SessionListItemProps {
 
   // For sidebar compact mode
   hasDraft?: boolean;
+  hasProjectQueue?: boolean;
 
   /** Base path prefix for relay mode (e.g., "/remote/my-server") */
   basePath?: string;
@@ -138,6 +143,7 @@ export function SessionListItem({
   // Optional display data
   fullTitle,
   initialPrompt,
+  hasCustomTitle = false,
   lastAgentText,
   projectName,
   updatedAt,
@@ -156,6 +162,7 @@ export function SessionListItem({
   showTimestamp = true,
   showContextUsage = true,
   showStatusBadge = true,
+  showActivityIndicator = false,
   // Custom badge
   customBadge,
   // Actions
@@ -173,6 +180,7 @@ export function SessionListItem({
   onNavigate,
   // Sidebar
   hasDraft = false,
+  hasProjectQueue = false,
   // Relay mode
   basePath = "",
   // New session detection
@@ -238,8 +246,11 @@ export function SessionListItem({
     !localTitle &&
     !title &&
     (messageCount === 0 || (messageCount == null && activity === "in-turn"));
+  const showCardThinkingIndicator =
+    isNewSession || (showActivityIndicator && activity === "in-turn");
   const displayTitle =
     localTitle ?? title ?? (isNewSession ? "New session" : "Untitled session");
+  const hasEffectiveCustomTitle = !!localTitle || hasCustomTitle;
   const isBtwAsideSession =
     !!parentSessionId ||
     isBtwAsideSessionTitle(displayTitle) ||
@@ -271,6 +282,12 @@ export function SessionListItem({
     setLocalIsStarred(newStarred);
     try {
       await api.updateSessionMetadata(sessionId, { starred: newStarred });
+      activityBus.emitLocal("session-metadata-changed", {
+        type: "session-metadata-changed",
+        sessionId,
+        starred: newStarred,
+        timestamp: new Date().toISOString(),
+      });
       onToggleStar?.();
     } catch (err) {
       console.error("Failed to update star status:", err);
@@ -283,6 +300,12 @@ export function SessionListItem({
     setLocalIsArchived(newArchived);
     try {
       await api.updateSessionMetadata(sessionId, { archived: newArchived });
+      activityBus.emitLocal("session-metadata-changed", {
+        type: "session-metadata-changed",
+        sessionId,
+        archived: newArchived,
+        timestamp: new Date().toISOString(),
+      });
       onToggleArchive?.();
     } catch (err) {
       console.error("Failed to update archive status:", err);
@@ -320,8 +343,9 @@ export function SessionListItem({
   };
 
   const handleSaveRename = async () => {
-    if (!renameValue.trim() || isSaving) return;
-    if (renameValue.trim() === displayTitle) {
+    const trimmedTitle = renameValue.trim();
+    if (!trimmedTitle || isSaving) return;
+    if (trimmedTitle === displayTitle) {
       handleCancelEditing();
       return;
     }
@@ -329,9 +353,15 @@ export function SessionListItem({
     setIsSaving(true);
     try {
       await api.updateSessionMetadata(sessionId, {
-        title: renameValue.trim(),
+        title: trimmedTitle,
       });
-      setLocalTitle(renameValue.trim());
+      setLocalTitle(trimmedTitle);
+      activityBus.emitLocal("session-metadata-changed", {
+        type: "session-metadata-changed",
+        sessionId,
+        title: trimmedTitle,
+        timestamp: new Date().toISOString(),
+      });
       setIsEditing(false);
       onRename?.();
     } catch (err) {
@@ -426,7 +456,14 @@ export function SessionListItem({
 
   // The full first user turn (body) and the most recent agent turn (reply)
   // shown in the replacement tooltip.
-  const hoverPrompt = (initialPrompt || fullTitle || displayTitle || "").trim();
+  const titleTooltip = hasEffectiveCustomTitle
+    ? displayTitle
+    : fullTitle || displayTitle;
+  const hoverPrompt = (
+    hasEffectiveCustomTitle
+      ? displayTitle
+      : initialPrompt || fullTitle || displayTitle || ""
+  ).trim();
   const hoverLastAgent = lastAgentText?.trim() || undefined;
 
   // Recompute an idle session's stale preview once on the server; the result
@@ -545,6 +582,23 @@ export function SessionListItem({
     clearPreview();
   }, [clearPreview]);
 
+  const isOwnHoverCardTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    const hoverCardId = hoverCardIdRef.current;
+    if (!hoverCardId) return false;
+    return (
+      target.closest(`[data-session-hovercard-id="${hoverCardId}"]`) !== null
+    );
+  }, []);
+
+  const handlePreviewLeave = useCallback(
+    (e: React.MouseEvent) => {
+      if (isOwnHoverCardTarget(e.relatedTarget)) return;
+      handlePreviewCancel();
+    },
+    [handlePreviewCancel, isOwnHoverCardTarget],
+  );
+
   // The ... menu opening dismisses the card and, while open, suppresses new
   // shows so cursor moves over the row/menu do not pop cards. Hovering the
   // trigger itself no longer cancels — the card sits under the menu anyway.
@@ -644,6 +698,10 @@ export function SessionListItem({
     [sessionHref],
   );
 
+  const handleOpenNewTab = useCallback(() => {
+    window.open(toBrowserAppHref(sessionHref), "_blank", "noopener");
+  }, [sessionHref]);
+
   // Star icon SVG
   const StarIcon = ({
     filled,
@@ -672,7 +730,7 @@ export function SessionListItem({
       className={liClasses}
       onMouseEnter={showHoverCard ? handlePreviewEnter : undefined}
       onMouseMove={showHoverCard ? handlePreviewMove : undefined}
-      onMouseLeave={showHoverCard ? handlePreviewCancel : undefined}
+      onMouseLeave={showHoverCard ? handlePreviewLeave : undefined}
       onWheel={showHoverCard ? handlePreviewCancel : undefined}
     >
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
@@ -704,7 +762,7 @@ export function SessionListItem({
           onClick={handleSessionClick}
           onMouseDown={handleSessionMouseDown}
           onAuxClick={handleSessionAuxClick}
-          title={showHoverCard ? undefined : fullTitle || displayTitle}
+          title={showHoverCard ? undefined : titleTooltip}
           className="session-list-item__link"
         >
           {mode === "card" ? (
@@ -712,7 +770,7 @@ export function SessionListItem({
             <>
               <strong className="session-list-item__title">
                 {isStarred && <StarIcon filled size={12} />}
-                {isNewSession && <ThinkingIndicator />}
+                {showCardThinkingIndicator && <ThinkingIndicator />}
                 {isBtwAsideSession && (
                   // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                   <span
@@ -732,6 +790,14 @@ export function SessionListItem({
                 )}
                 {visibleTitle}
                 {hasDraft && <span className="session-draft-badge">Draft</span>}
+                {hasProjectQueue && (
+                  <span
+                    className="session-project-queue-badge"
+                    title={t("projectQueueSidebarBadge")}
+                  >
+                    Q
+                  </span>
+                )}
                 {isArchived && (
                   <span className="session-archived-badge">Archived</span>
                 )}
@@ -819,6 +885,14 @@ export function SessionListItem({
                   {visibleTitle}
                 </span>
                 {hasDraft && <span className="session-draft-badge">Draft</span>}
+                {hasProjectQueue && (
+                  <span
+                    className="session-project-queue-badge"
+                    title={t("projectQueueSidebarBadge")}
+                  >
+                    Q
+                  </span>
+                )}
               </span>
               {showProjectName && projectName && (
                 <span className="session-list-item__project-compact">
@@ -848,6 +922,7 @@ export function SessionListItem({
             setIsEditing(true);
           }}
           onCopyPrompt={copyPromptText ? handleCopyPrompt : undefined}
+          onOpenNewTab={handleOpenNewTab}
           onShare={
             publicShareControlsVisible
               ? () => setShowShareModal(true)
@@ -872,6 +947,7 @@ export function SessionListItem({
 
       {showHoverCard && provider && previewPos && (
         <SessionHoverCard
+          hoverCardId={hoverCardIdRef.current!}
           anchor={previewPos}
           prompt={hoverPrompt}
           lastAgentText={hoverLastAgent}
@@ -884,6 +960,7 @@ export function SessionListItem({
           hasUnread={hasUnread}
           activity={activity}
           maxHeightPx={hoverCardMaxHeightPx}
+          onMouseLeave={handlePreviewCancel}
         />
       )}
     </li>

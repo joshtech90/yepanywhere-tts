@@ -10,8 +10,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { toUrlProjectId } from "@yep-anywhere/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toUrlProjectId, type UrlProjectId } from "@yep-anywhere/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionIndexService } from "../../src/indexes/SessionIndexService.js";
 import { GrokSessionReader } from "../../src/sessions/grok-reader.js";
 import { SessionReader } from "../../src/sessions/reader.js";
@@ -26,7 +26,7 @@ describe("SessionIndexService", () => {
   let sessionDir: string;
   let service: SessionIndexService;
   let reader: SessionReader;
-  let projectId: string;
+  let projectId: UrlProjectId;
 
   beforeEach(async () => {
     testDir = join(tmpdir(), `claude-index-test-${randomUUID()}`);
@@ -51,14 +51,28 @@ describe("SessionIndexService", () => {
   async function createSession(
     sessionId: string,
     content: string,
+    timestamp = new Date(),
   ): Promise<void> {
     const jsonl = JSON.stringify({
       type: "user",
       message: { content },
       uuid: `msg-${sessionId}`,
-      timestamp: new Date().toISOString(),
+      timestamp: timestamp.toISOString(),
     });
     await writeFile(join(sessionDir, `${sessionId}.jsonl`), `${jsonl}\n`);
+  }
+
+  async function waitForCondition(
+    predicate: () => boolean,
+    message: string,
+    timeoutMs = 500,
+  ): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(message);
   }
 
   describe("initialization", () => {
@@ -97,6 +111,69 @@ describe("SessionIndexService", () => {
       );
       expect(sessions2).toHaveLength(1);
       expect(sessions2[0]?.id).toBe("session-1");
+    });
+
+    it("returns a single cached summary when mtime/size match", async () => {
+      await createSession("session-1", "Hello world");
+      const getSessionSummary = vi.spyOn(reader, "getSessionSummary");
+
+      const first = await service.getSessionSummaryWithCache(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+
+      expect(first?.id).toBe("session-1");
+      expect(first?.title).toBe("Hello world");
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+
+      const second = await service.getSessionSummaryWithCache(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+
+      expect(second?.id).toBe("session-1");
+      expect(second?.title).toBe("Hello world");
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns fresh cached summaries without parsing", async () => {
+      await createSession("session-1", "Hello world");
+      const getSessionSummary = vi.spyOn(reader, "getSessionSummary");
+
+      await service.getSessionSummaryWithCache(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+
+      const cached = await service.getCachedSessionSummary(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+
+      expect(cached?.id).toBe("session-1");
+      expect(cached?.title).toBe("Hello world");
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+
+      await createSession("session-1", "Changed content");
+
+      const changed = await service.getCachedSessionSummary(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+
+      expect(changed).toBeNull();
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -301,6 +378,198 @@ describe("SessionIndexService", () => {
       expect(result3.length).toBe(3);
       expect(service.getDebugStats().requests).toBe(1);
     });
+
+    it("limits concurrent summary parses across validation scopes", async () => {
+      const queuedService = new SessionIndexService({
+        dataDir: join(testDir, "queued-indexes"),
+        projectsDir,
+        summaryParseConcurrency: 1,
+      });
+      await queuedService.initialize();
+
+      const dirA = join(projectsDir, "queued-a");
+      const dirB = join(projectsDir, "queued-b");
+      await mkdir(dirA, { recursive: true });
+      await mkdir(dirB, { recursive: true });
+      const fileA = join(dirA, "session-a.jsonl");
+      const fileB = join(dirB, "session-b.jsonl");
+      await writeFile(fileA, "A\n");
+      await writeFile(fileB, "B\n");
+
+      let activeParses = 0;
+      let maxActiveParses = 0;
+      let parseStarts = 0;
+      let releaseFirstParse: (() => void) | null = null;
+      const firstParseHeld = new Promise<void>((resolve) => {
+        releaseFirstParse = resolve;
+      });
+      let firstParseStarted: (() => void) | null = null;
+      const firstParseStartedPromise = new Promise<void>((resolve) => {
+        firstParseStarted = resolve;
+      });
+
+      const createQueuedReader = (
+        dir: string,
+        sessionId: string,
+        filePath: string,
+      ): ISessionReader => ({
+        listSessionFiles: async () => [{ sessionId, filePath }],
+        getSessionSummary: async (
+          currentSessionId: string,
+          currentProjectId: string,
+        ): Promise<SessionSummary> => {
+          parseStarts += 1;
+          activeParses += 1;
+          maxActiveParses = Math.max(maxActiveParses, activeParses);
+          if (parseStarts === 1) {
+            firstParseStarted?.();
+            await firstParseHeld;
+          }
+          const fileStats = await stat(filePath);
+          activeParses -= 1;
+          return {
+            id: currentSessionId,
+            projectId: currentProjectId,
+            title: currentSessionId,
+            fullTitle: currentSessionId,
+            createdAt: new Date(fileStats.mtimeMs).toISOString(),
+            updatedAt: new Date(fileStats.mtimeMs).toISOString(),
+            messageCount: 1,
+            ownership: { owner: "none" },
+            provider: "claude",
+          };
+        },
+        getAgentMappings: async () => [],
+        getAgentSession: async () => null,
+        getIndexScopeKey: () => dir,
+      });
+
+      const requestA = queuedService.getSessionsWithCache(
+        dirA,
+        toUrlProjectId("/queued/a"),
+        createQueuedReader(dirA, "session-a", fileA),
+      );
+      const requestB = queuedService.getSessionsWithCache(
+        dirB,
+        toUrlProjectId("/queued/b"),
+        createQueuedReader(dirB, "session-b", fileB),
+      );
+
+      await firstParseStartedPromise;
+      await waitForCondition(
+        () => queuedService.getWarmupStatus().queuedParses === 1,
+        "second summary parse did not queue behind the active parse",
+      );
+
+      const activeStatus = queuedService.getWarmupStatus();
+      expect(activeStatus.summaryParseConcurrency).toBe(1);
+      expect(activeStatus.activeParses).toBe(1);
+      expect(activeStatus.queuedParses).toBe(1);
+      expect(activeStatus.activeJobs).toHaveLength(2);
+
+      releaseFirstParse?.();
+      const [sessionsA, sessionsB] = await Promise.all([requestA, requestB]);
+
+      expect(sessionsA.map((session) => session.id)).toEqual(["session-a"]);
+      expect(sessionsB.map((session) => session.id)).toEqual(["session-b"]);
+      expect(parseStarts).toBe(2);
+      expect(maxActiveParses).toBe(1);
+
+      const completedStatus = queuedService.getWarmupStatus();
+      expect(completedStatus.activeParses).toBe(0);
+      expect(completedStatus.queuedParses).toBe(0);
+      expect(completedStatus.activeJobs).toHaveLength(0);
+      expect(completedStatus.recentJobs).toHaveLength(2);
+      expect(
+        completedStatus.recentJobs.every((job) => job.status === "completed"),
+      ).toBe(true);
+    });
+  });
+
+  describe("shared-file validation", () => {
+    it("validates shared-container sessions via the reader, not file stats", async () => {
+      // Models an OpenCode-style reader: every session anchors to one shared
+      // database file, and change detection is a cheap row-level check.
+      const rows = new Map<string, { mtime: number; size: number; title: string }>([
+        ["ses-shared", { mtime: 1000, size: 2, title: "row v1" }],
+      ]);
+      const summaryFor = (
+        id: string,
+        row: { mtime: number; size: number; title: string },
+      ): SessionSummary => ({
+        id,
+        projectId: projectId as UrlProjectId,
+        title: row.title,
+        fullTitle: row.title,
+        createdAt: new Date(row.mtime).toISOString(),
+        updatedAt: new Date(row.mtime).toISOString(),
+        messageCount: row.size,
+        ownership: { owner: "none" },
+        provider: "opencode",
+      });
+      const getSessionSummary = vi.fn();
+      const getSessionSummaryIfChanged = vi.fn(
+        async (
+          id: string,
+          _projectId: string,
+          cachedMtime: number,
+          cachedSize: number,
+        ) => {
+          const row = rows.get(id);
+          if (!row) return null;
+          if (row.mtime === cachedMtime && row.size === cachedSize) {
+            return null;
+          }
+          return { summary: summaryFor(id, row), mtime: row.mtime, size: row.size };
+        },
+      );
+      const sharedReader = {
+        listSessionFiles: async () =>
+          Array.from(rows.keys()).map((sessionId) => ({
+            sessionId,
+            filePath: "/nonexistent/opencode.db",
+            sharedFilePath: true,
+          })),
+        getSessionSummary,
+        getSessionSummaryIfChanged,
+        getAgentMappings: async () => [],
+        getAgentSession: async () => null,
+        getIndexScopeKey: () => "shared-file-test",
+      } as unknown as ISessionReader;
+
+      const first = await service.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        sharedReader,
+      );
+      expect(first.map((s) => s.title)).toEqual(["row v1"]);
+
+      // Unchanged rows: the next full validation must be pure cache hits —
+      // no summary parses, and no stat of the shared container file.
+      const second = await service.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        sharedReader,
+      );
+      expect(second.map((s) => s.title)).toEqual(["row v1"]);
+      expect(getSessionSummaryIfChanged).toHaveBeenLastCalledWith(
+        "ses-shared",
+        projectId,
+        1000,
+        2,
+      );
+      expect(getSessionSummary).not.toHaveBeenCalled();
+
+      // A changed row re-summarizes through the same cheap check.
+      rows.set("ses-shared", { mtime: 2000, size: 3, title: "row v2" });
+      const third = await service.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        sharedReader,
+      );
+      expect(third.map((s) => s.title)).toEqual(["row v2"]);
+      expect(getSessionSummary).not.toHaveBeenCalled();
+    });
   });
 
   describe("fast path", () => {
@@ -346,6 +615,251 @@ describe("SessionIndexService", () => {
         reader,
       );
       expect(third[0]?.title).toBe("Updated content");
+    });
+  });
+
+  describe("stale-while-revalidate", () => {
+    async function overwriteSession(
+      sessionId: string,
+      content: string,
+    ): Promise<void> {
+      const jsonl = JSON.stringify({
+        type: "user",
+        message: { content },
+        uuid: `msg-${sessionId}-updated`,
+        timestamp: new Date().toISOString(),
+      });
+      await writeFile(join(sessionDir, `${sessionId}.jsonl`), `${jsonl}\n`);
+    }
+
+    it("serves stale summaries after the TTL and emits session-updated from the background walk", async () => {
+      const eventBus = new EventBus();
+      const events: Array<{ type: string; sessionId?: string; title?: string | null }> = [];
+      eventBus.subscribe((event) => {
+        if (event.type === "session-updated") {
+          events.push({
+            type: event.type,
+            sessionId: event.sessionId,
+            title: event.title,
+          });
+        }
+      });
+      const swrService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        eventBus,
+        fullValidationIntervalMs: 40,
+      });
+      await swrService.initialize();
+
+      await createSession("session-1", "Original content");
+      const first = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(first[0]?.title).toBe("Original content");
+
+      // Change the file without watcher events, then let the TTL lapse.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await overwriteSession("session-1", "Updated content in background");
+
+      // TTL expired: the response is the stale cached summary, not a blocking
+      // re-validation.
+      const second = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(second[0]?.title).toBe("Original content");
+
+      await waitForCondition(
+        () =>
+          events.some(
+            (e) =>
+              e.sessionId === "session-1" &&
+              e.title === "Updated content in background",
+          ),
+        "expected background validation to emit session-updated",
+      );
+
+      // The background walk refreshed the index: next call serves it fresh.
+      const third = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(third[0]?.title).toBe("Updated content in background");
+    });
+
+    it("emits session-created for sessions found only by the background walk", async () => {
+      const eventBus = new EventBus();
+      const created: string[] = [];
+      eventBus.subscribe((event) => {
+        if (event.type === "session-created") {
+          created.push(event.session.id);
+        }
+      });
+      const swrService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        eventBus,
+        fullValidationIntervalMs: 40,
+      });
+      await swrService.initialize();
+
+      await createSession("session-1", "First session");
+      await swrService.getSessionsWithCache(sessionDir, projectId, reader);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await createSession("session-2", "Second session");
+
+      // Stale serve: the new file is not in the response yet.
+      const stale = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(stale.map((s) => s.id)).toEqual(["session-1"]);
+
+      await waitForCondition(
+        () => created.includes("session-2"),
+        "expected background validation to emit session-created",
+      );
+
+      const fresh = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(fresh.map((s) => s.id).sort()).toEqual([
+        "session-1",
+        "session-2",
+      ]);
+    });
+
+    it("does not emit for sessions the background walk found unchanged", async () => {
+      const eventBus = new EventBus();
+      const updated: string[] = [];
+      const created: string[] = [];
+      eventBus.subscribe((event) => {
+        if (event.type === "session-updated") {
+          updated.push(event.sessionId);
+        }
+        if (event.type === "session-created") {
+          created.push(event.session.id);
+        }
+      });
+      const swrService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        eventBus,
+        fullValidationIntervalMs: 40,
+      });
+      await swrService.initialize();
+
+      await createSession("session-1", "Unchanged content");
+      await createSession("session-2", "Original content");
+      await swrService.getSessionsWithCache(sessionDir, projectId, reader);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await overwriteSession("session-2", "Changed in background");
+
+      await swrService.getSessionsWithCache(sessionDir, projectId, reader);
+      await waitForCondition(
+        () => updated.includes("session-2"),
+        "expected background validation to emit for the changed session",
+      );
+
+      // Pins the invariant emitBackgroundIndexChanges relies on: the walk
+      // reassigns only changed rows, so untouched sessions keep identity and
+      // must produce no events (a map-rebuilding refactor would fail this by
+      // spamming session-updated for every session).
+      expect(updated).toEqual(["session-2"]);
+      expect(created).toEqual([]);
+    });
+
+    it("serves a persisted index immediately after a service restart", async () => {
+      const firstRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await firstRun.initialize();
+      await createSession("session-1", "Persisted content");
+      await firstRun.getSessionsWithCache(sessionDir, projectId, reader);
+      // The first validation persists the index before returning.
+      await readFile(firstRun.getIndexPath(sessionDir), "utf-8");
+
+      const secondRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await secondRun.initialize();
+      const freshReader = new SessionReader({ sessionDir });
+      const parseSpy = vi.spyOn(freshReader, "getSessionSummary");
+
+      const sessions = await secondRun.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        freshReader,
+      );
+      expect(sessions[0]?.title).toBe("Persisted content");
+      // Served from the persisted index without a blocking re-parse.
+      expect(parseSpy).not.toHaveBeenCalled();
+    });
+
+    it("persists an empty index so restarts serve the scope without blocking", async () => {
+      const firstRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await firstRun.initialize();
+      // No session files in the scope: validation finds nothing to change,
+      // but the index must still be persisted.
+      const empty = await firstRun.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(empty).toEqual([]);
+      await readFile(firstRun.getIndexPath(sessionDir), "utf-8");
+
+      const secondRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await secondRun.initialize();
+      const sessions = await secondRun.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(sessions).toEqual([]);
+      // Served via stale-while-revalidate (a fast hit), not a blocking scan.
+      // The background walk may or may not have run yet, so only the
+      // synchronous fast-hit count is asserted.
+      expect(secondRun.getDebugStats().fastHits).toBe(1);
+    });
+
+    it("still blocks on first-ever scans with no usable index", async () => {
+      const swrService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await swrService.initialize();
+
+      await createSession("session-1", "Cold scan content");
+      const sessions = await swrService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+      expect(sessions[0]?.title).toBe("Cold scan content");
     });
   });
 
@@ -474,6 +988,146 @@ describe("SessionIndexService", () => {
       );
       expect(refreshed[0]?.title).toBe("Updated title");
     });
+
+    it("targets loaded codex scopes by rollout session id", async () => {
+      const eventBus = new EventBus();
+      const codexService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        eventBus,
+        fullValidationIntervalMs: 60000,
+      });
+      await codexService.initialize();
+
+      const codexSessionDir = join(testDir, "codex-sessions");
+      const projectAPath = "/tmp/codex-project-a";
+      const projectBPath = "/tmp/codex-project-b";
+      const projectAId = toUrlProjectId(projectAPath);
+      const projectBId = toUrlProjectId(projectBPath);
+      const sessionA = randomUUID();
+      const sessionB = randomUUID();
+      const relativeA = `2026/07/01/rollout-2026-07-01T09-00-00-${sessionA}.jsonl`;
+      const relativeB = `2026/07/01/rollout-2026-07-01T09-01-00-${sessionB}.jsonl`;
+      const fileA = join(codexSessionDir, ...relativeA.split("/"));
+      const fileB = join(codexSessionDir, ...relativeB.split("/"));
+
+      const writeCodexFile = async (filePath: string, title: string) => {
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(filePath, `${title}\n`);
+      };
+      await writeCodexFile(fileA, "Project A original");
+      await writeCodexFile(fileB, "Project B original");
+
+      const makeCodexReader = (
+        projectPath: string,
+        sessionId: string,
+        filePath: string,
+      ): ISessionReader => {
+        const getSummary = async (
+          requestedSessionId: string,
+          requestedProjectId: UrlProjectId,
+        ): Promise<SessionSummary> => {
+          const title = (await readFile(filePath, "utf-8")).trim();
+          const stats = await stat(filePath);
+          return {
+            id: requestedSessionId,
+            projectId: requestedProjectId,
+            title,
+            fullTitle: title,
+            createdAt: new Date(stats.mtimeMs).toISOString(),
+            updatedAt: new Date(stats.mtimeMs).toISOString(),
+            messageCount: 1,
+            ownership: { owner: "none" },
+            provider: "codex",
+          };
+        };
+
+        return {
+          getIndexScopeKey: (sessionDir) =>
+            `codex::${sessionDir}::${projectPath}`,
+          listSessionFiles: async () => [{ sessionId, filePath }],
+          getSessionSummary: getSummary,
+          getSessionSummaryIfChanged: async (
+            requestedSessionId: string,
+            requestedProjectId: UrlProjectId,
+            cachedMtime: number,
+            cachedSize: number,
+          ) => {
+            const stats = await stat(filePath);
+            if (stats.mtimeMs === cachedMtime && stats.size === cachedSize) {
+              return null;
+            }
+            return {
+              summary: await getSummary(requestedSessionId, requestedProjectId),
+              mtime: stats.mtimeMs,
+              size: stats.size,
+            };
+          },
+          getSessionFilePath: async () => filePath,
+          listSessions: async (requestedProjectId: UrlProjectId) => [
+            await getSummary(sessionId, requestedProjectId),
+          ],
+          getSession: async () => null,
+          getAgentMappings: async () => [],
+          getAgentSession: async () => null,
+        };
+      };
+
+      const readerA = makeCodexReader(projectAPath, sessionA, fileA);
+      const readerB = makeCodexReader(projectBPath, sessionB, fileB);
+
+      const firstA = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectAId,
+        readerA,
+      );
+      const firstB = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectBId,
+        readerB,
+      );
+      expect(firstA[0]?.title).toBe("Project A original");
+      expect(firstB[0]?.title).toBe("Project B original");
+
+      await writeCodexFile(fileA, "Project A updated");
+      await writeCodexFile(fileB, "Project B updated");
+
+      const staleA = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectAId,
+        readerA,
+      );
+      const staleB = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectBId,
+        readerB,
+      );
+      expect(staleA[0]?.title).toBe("Project A original");
+      expect(staleB[0]?.title).toBe("Project B original");
+
+      eventBus.emit({
+        type: "file-change",
+        provider: "codex",
+        path: fileA,
+        relativePath: relativeA,
+        changeType: "modify",
+        timestamp: new Date().toISOString(),
+        fileType: "session",
+      });
+
+      const refreshedA = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectAId,
+        readerA,
+      );
+      const stillCachedB = await codexService.getSessionsWithCache(
+        codexSessionDir,
+        projectBId,
+        readerB,
+      );
+      expect(refreshedA[0]?.title).toBe("Project A updated");
+      expect(stillCachedB[0]?.title).toBe("Project B original");
+    });
   });
 
   describe("logical provider scopes", () => {
@@ -533,28 +1187,23 @@ describe("SessionIndexService", () => {
         projectAId,
         projectAReader,
       );
-      expect(projectASessions.map((session) => session.id)).toEqual([
-        "grok-a",
-      ]);
+      expect(projectASessions.map((session) => session.id)).toEqual(["grok-a"]);
 
       const projectBSessions = await grokService.getSessionsWithCache(
         grokSessionsDir,
         projectBId,
         projectBReader,
       );
-      expect(projectBSessions.map((session) => session.id)).toEqual([
-        "grok-b",
-      ]);
+      expect(projectBSessions.map((session) => session.id)).toEqual(["grok-b"]);
       expect(projectBSessions[0]?.projectId).toBe(projectBId);
     });
   });
 
   describe("active window", () => {
     it("filters cached summaries by activeAfter without deleting archive entries", async () => {
-      await createSession("session-old", "Old session");
-      await createSession("session-new", "New session");
-
       const oldTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      await createSession("session-old", "Old session", oldTime);
+      await createSession("session-new", "New session");
       await utimes(join(sessionDir, "session-old.jsonl"), oldTime, oldTime);
 
       const activeAfterMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
@@ -714,6 +1363,78 @@ describe("SessionIndexService", () => {
       );
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.title).toBe("Persistent session");
+    });
+
+    it("preserves parentSessionId on fast path and after restart", async () => {
+      const lineageService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await lineageService.initialize();
+
+      const forkFile = join(sessionDir, "fork-session.jsonl");
+      await writeFile(forkFile, "Fork summary\n");
+      const forkStats = await stat(forkFile);
+      let parseCount = 0;
+      const lineageReader: ISessionReader = {
+        listSessions: async () => [],
+        listSessionFiles: async () => [
+          { sessionId: "fork-session", filePath: forkFile },
+        ],
+        getSessionSummary: async (
+          sessionId: string,
+          projectId: string,
+        ): Promise<SessionSummary> => {
+          parseCount += 1;
+          return {
+            id: sessionId,
+            projectId,
+            title: "Fork summary",
+            fullTitle: "Fork summary",
+            createdAt: new Date(forkStats.mtimeMs).toISOString(),
+            updatedAt: new Date(forkStats.mtimeMs).toISOString(),
+            messageCount: 2,
+            ownership: { owner: "none" },
+            provider: "codex",
+            parentSessionId: "source-session",
+          };
+        },
+        getSession: async () => null,
+        getSessionSummaryIfChanged: async () => null,
+        getAgentMappings: async () => [],
+        getAgentSession: async () => null,
+      };
+
+      const first = await lineageService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        lineageReader,
+      );
+      expect(first[0]?.parentSessionId).toBe("source-session");
+      expect(parseCount).toBe(1);
+
+      const fastPath = await lineageService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        lineageReader,
+      );
+      expect(fastPath[0]?.parentSessionId).toBe("source-session");
+      expect(parseCount).toBe(1);
+
+      const restartedService = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await restartedService.initialize();
+      const afterRestart = await restartedService.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        lineageReader,
+      );
+      expect(afterRestart[0]?.parentSessionId).toBe("source-session");
+      expect(parseCount).toBe(1);
     });
 
     it("writes index atomically without leftover temp files", async () => {

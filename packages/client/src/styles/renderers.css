@@ -449,8 +449,13 @@
 
 .assistant-turn .text-block-assistant {
   --text-block-flow-gutter: clamp(0.45rem, 1.6vw, 0.95rem);
+  --text-block-quote-lane: 34px;
+  --text-block-quote-lane-gap: 0.35rem;
   display: flow-root;
-  padding-right: var(--text-block-flow-gutter);
+  padding-right: calc(
+    var(--text-block-quote-lane) +
+    var(--text-block-quote-lane-gap)
+  );
   font-family: var(--output-prose-font-family);
   font-optical-sizing: var(--output-prose-font-optical-sizing);
   font-variation-settings: var(--output-prose-font-variation-settings);
@@ -483,6 +488,7 @@
 @media (max-width: 700px) {
   .assistant-turn .text-block-assistant {
     --text-block-flow-gutter: 0.35rem;
+    --text-block-quote-lane: 30px;
     display: grid;
     grid-template-areas:
       "content"
@@ -583,21 +589,31 @@
   background: var(--bg-tertiary, #444);
 }
 
-/* Per-paragraph quote circles: an overlay rail over the whole text block, with
-   one circle parked at the end (bottom-right) of each rendered paragraph. The
+/* Per-paragraph quote circles sit in their own reserved right-side lane. The
    rail itself never intercepts pointer events; each circle re-enables them only
    while revealed (hover/focus/always-visible), so text selection is unaffected. */
 .text-block-quote-rail {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--text-block-quote-lane, 34px);
   pointer-events: none;
   z-index: 2;
 }
 
-.text-block-quote-paragraph {
+.text-block-quote-paragraph,
+.text-block-quote-fallback {
   position: absolute;
-  right: 2px;
+  right: 0;
+}
+
+.text-block-quote-paragraph {
   transform: translateY(-100%);
+}
+
+.text-block-quote-fallback {
+  top: 0;
 }
 
 .text-block-copy:focus,
@@ -633,7 +649,12 @@
 }
 
 ::highlight(comment-tint) {
-  background: color-mix(in srgb, var(--app-yep-green) 24%, transparent);
+  background-color: rgba(5, 150, 105, 0.18);
+  background-color: color-mix(
+    in srgb,
+    var(--app-yep-green, #059669) 18%,
+    transparent
+  );
   color: inherit;
 }
 
@@ -990,6 +1011,18 @@
   max-height: 80vh;
   object-fit: contain;
   border-radius: var(--radius-md);
+}
+
+.local-media-image-link {
+  display: flex;
+  max-width: 100%;
+  max-height: 80vh;
+  cursor: zoom-in;
+}
+
+.local-media-image-link:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent-color));
+  outline-offset: 3px;
 }
 
 .local-media-player {
@@ -2485,10 +2518,14 @@ details[open] .collapsible__icon {
 }
 
 .model-switch-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   gap: 0.25rem;
   margin-bottom: 0.6rem;
   border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface);
 }
 
 .model-switch-tab {
@@ -2509,11 +2546,6 @@ details[open] .collapsible__icon {
 .model-switch-tab.active {
   color: var(--text-primary);
   border-bottom-color: var(--accent-color);
-}
-
-.model-switch-info-pane {
-  max-height: min(60vh, 32rem);
-  overflow-y: auto;
 }
 
 .model-switch-activate {
@@ -3747,6 +3779,14 @@ details[open] .collapsible__icon {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.task-inline-header.noninteractive {
+  cursor: default;
+}
+
+.task-inline-header.noninteractive:hover {
+  background: transparent;
+}
+
 .task-inline-header:focus {
   outline: none;
   background: rgba(255, 255, 255, 0.03);
@@ -4573,6 +4613,15 @@ details[open] .collapsible__icon {
   color: var(--success-color);
 }
 
+.file-viewer-action.file-viewer-new-session {
+  color: var(--success-color);
+}
+
+.file-viewer-action.file-viewer-new-session:hover {
+  background: color-mix(in srgb, var(--success-color) 14%, transparent);
+  color: var(--success-color);
+}
+
 .file-viewer-density-controls {
   display: inline-flex;
   align-items: center;
@@ -4641,7 +4690,10 @@ details[open] .collapsible__icon {
   --file-viewer-wrap-columns: 156ch;
 
   font-family: "SF Mono", Monaco, "Cascadia Code", "Consolas", monospace;
-  font-size: calc(var(--font-size-sm) + var(--source-font-size-offset, 0px));
+  font-size: max(
+    9px,
+    calc(var(--fixed-font-size-sm-raw) + var(--source-font-size-offset, 0px))
+  );
   line-height: var(--file-viewer-code-line-box);
   letter-spacing: 0;
   background: var(--bg-code);
@@ -4885,6 +4937,18 @@ pre.code-highlighter-plain code {
   border-radius: 4px;
 }
 
+.file-viewer-image-link {
+  display: flex;
+  max-width: 100%;
+  max-height: 80vh;
+  cursor: zoom-in;
+}
+
+.file-viewer-image-link:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent-color));
+  outline-offset: 3px;
+}
+
 /* Binary file display */
 .file-viewer-binary {
   display: flex;
@@ -4947,6 +5011,10 @@ pre.code-highlighter-plain code {
   max-height: calc(100vh - 50px);
 }
 
+.file-viewer-fullscreen .file-viewer-image-link {
+  max-height: calc(100vh - 50px);
+}
+
 /* ==========================================================================
    File Path Link
    ========================================================================== */
@@ -4978,6 +5046,77 @@ pre.code-highlighter-plain code {
 .file-path-link-line {
   color: var(--text-muted);
   text-decoration: none;
+}
+
+.file-path-context-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+
+.file-path-context-menu {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: var(--space-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+
+.file-path-context-menu button {
+  appearance: none;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.file-path-context-menu button:hover,
+.file-path-context-menu button:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* Faint copy-path affordance after pathnames (tool headers, path displays).
+   Deliberately small and low-contrast until hovered; copied state flashes
+   the check via CopyTextButton's .copied class. */
+.file-path-copy {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  padding: 0 0.1rem;
+  margin-left: 0.15rem;
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: opacity 0.15s;
+}
+
+.file-path-copy:hover {
+  opacity: 1;
+}
+
+.file-path-copy.copied {
+  opacity: 1;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.file-path-copy svg {
+  width: 11px;
+  height: 11px;
 }
 
 /* Server-rendered file links (from markdown augments) */
@@ -5122,7 +5261,10 @@ pre.code-highlighter-plain code {
   .file-viewer-code {
     min-width: max-content;
     width: max-content;
-    font-size: calc(var(--font-size-sm) + var(--source-font-size-offset, 0px));
+    font-size: max(
+      9px,
+      calc(var(--fixed-font-size-sm-raw) + var(--source-font-size-offset, 0px))
+    );
   }
 
   .file-viewer-code-highlighted .shiki-container pre.shiki,
@@ -5418,11 +5560,7 @@ pre.code-highlighter-plain,
 .file-viewer-code {
   font-size: max(
     9px,
-    calc(
-      var(--font-size-sm) +
-      var(--source-font-size-offset, 0px) +
-      var(--fixed-font-size-offset)
-    )
+    calc(var(--fixed-font-size-sm-raw) + var(--source-font-size-offset, 0px))
   );
 }
 

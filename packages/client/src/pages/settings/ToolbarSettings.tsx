@@ -1,15 +1,24 @@
 import type {
   BusyComposerDefaultAction,
   CollapsedComposerButtonPreference,
+  ToolbarControlPresence,
+  ToolbarNarrowingPriority,
 } from "@yep-anywhere/shared";
-import { useCallback, useMemo } from "react";
-import { SessionToolbarPreview } from "../../components/SessionToolbarPreview";
+import { useCallback, useMemo, useState } from "react";
+import {
+  SessionToolbarPreview,
+  ToolbarControlPreview,
+} from "../../components/SessionToolbarPreview";
+import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import {
   type SessionToolbarVisibilityKey,
-  useSessionToolbarVisibility,
-} from "../../hooks/useSessionToolbarVisibility";
+  useSessionToolbarPresence,
+} from "../../hooks/useSessionToolbarPresence";
 import { useServerSettings } from "../../hooks/useServerSettings";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { serverSupportsProjectQueue } from "../../lib/projectQueueVisibility";
+import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 const BUSY_COMPOSER_DEFAULT_ACTIONS: BusyComposerDefaultAction[] = [
@@ -23,26 +32,156 @@ const COLLAPSED_COMPOSER_BUTTON_OPTIONS: CollapsedComposerButtonPreference[] = [
   "microphone",
 ];
 
+type ToolbarSide = "left" | "right";
+
+interface ToolbarControlMeta {
+  key: SessionToolbarVisibilityKey;
+  title: string;
+  description: string;
+  side: ToolbarSide;
+  canSetPriority: boolean;
+}
+
+const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
+  "modeSelector",
+  "attachments",
+  "slashMenu",
+  "thinkingToggle",
+  "renderMode",
+  "nudge",
+  "sessionStatus",
+  "shortcutsHelp",
+  "contextUsage",
+  "btw",
+  "steerNow",
+  "projectQueue",
+]);
+
+// Presence-slider notch order above the Hide notch (0): rightward notches
+// survive narrowing longer, ending at "show always" (pin).
+const PRESENCE_SLIDER_PRIORITIES: readonly ToolbarNarrowingPriority[] = [
+  "first",
+  "mid",
+  "last",
+  "pin",
+];
+
+function presenceSliderId(key: SessionToolbarVisibilityKey): string {
+  return `session-toolbar-presence-${key}`;
+}
+
+function presenceCaptionKey(canSetPriority: boolean, notch: number) {
+  if (notch <= 0) return "appearanceToolbarPresenceHiddenCaption" as const;
+  if (!canSetPriority) return "appearanceToolbarPresenceShownCaption" as const;
+  switch (PRESENCE_SLIDER_PRIORITIES[notch - 1]) {
+    case "first":
+      return "appearanceToolbarPresenceFirstCaption" as const;
+    case "mid":
+      return "appearanceToolbarPresenceMidCaption" as const;
+    case "last":
+      return "appearanceToolbarPresenceLastCaption" as const;
+    default:
+      return "appearanceToolbarPresencePinCaption" as const;
+  }
+}
+
+interface ControlPresenceSliderProps {
+  control: ToolbarControlMeta;
+  presence: ToolbarControlPresence;
+  onCommitNotch: (control: ToolbarControlMeta, notch: number) => void;
+}
+
+// One slider per control editing its single presence value: hidden or a
+// narrowing-priority tier. Controls outside the overflow engine get only the
+// two end notches, since first/mid/last would not map to real runtime
+// behavior.
+function ControlPresenceSlider({
+  control,
+  presence,
+  onCommitNotch,
+}: ControlPresenceSliderProps) {
+  const { t } = useI18n();
+  const [draftNotch, setDraftNotch] = useState<number | null>(null);
+  const max = control.canSetPriority ? PRESENCE_SLIDER_PRIORITIES.length : 1;
+  const notch =
+    presence === "hidden"
+      ? 0
+      : control.canSetPriority
+        ? 1 + Math.max(0, PRESENCE_SLIDER_PRIORITIES.indexOf(presence))
+        : 1;
+  const shownNotch = draftNotch ?? notch;
+  const caption = t(presenceCaptionKey(control.canSetPriority, shownNotch));
+  const inputId = presenceSliderId(control.key);
+  const captionId = `${inputId}-caption`;
+  const clearDraft = () => setDraftNotch(null);
+  return (
+    <span className="session-toolbar-presence">
+      <CommittedRangeInput
+        id={inputId}
+        className="session-toolbar-presence-range"
+        min={0}
+        max={max}
+        step={1}
+        value={notch}
+        onDraftChange={setDraftNotch}
+        onCommit={(next) => {
+          setDraftNotch(null);
+          onCommitNotch(control, next);
+        }}
+        onBlur={clearDraft}
+        onKeyUp={clearDraft}
+        onPointerUp={clearDraft}
+        onPointerCancel={clearDraft}
+        aria-label={t("appearanceToolbarPresenceAria", {
+          control: control.title,
+        })}
+        aria-valuetext={caption}
+        aria-describedby={captionId}
+      />
+      <span className="session-toolbar-presence-ticks" aria-hidden="true">
+        {Array.from({ length: max + 1 }, (_, tick) => (
+          <span
+            key={tick}
+            className={`session-toolbar-presence-tick${
+              tick <= shownNotch ? " is-reached" : ""
+            }`}
+          />
+        ))}
+      </span>
+      <span className="session-toolbar-presence-labels" aria-hidden="true">
+        <span>{t("appearanceToolbarHide")}</span>
+        <span>{t("appearanceToolbarShowAlways")}</span>
+      </span>
+      <span className="session-toolbar-presence-caption" id={captionId}>
+        {caption}
+      </span>
+    </span>
+  );
+}
+
 export function ToolbarSettings() {
   const { t } = useI18n();
+  useSettingsPaneTitle(t("appearanceSessionToolbarTitle"));
   const {
-    visibility: toolbarVisibility,
-    setControlVisible,
-    resetVisibility,
-  } = useSessionToolbarVisibility();
+    presence: toolbarPresence,
+    setControlPresence,
+    resetPresence,
+  } = useSessionToolbarPresence();
+  const [placementPresence] = useState(() => ({ ...toolbarPresence }));
   const { settings, error, updateSettings } = useServerSettings();
+  const { version } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(version);
 
   const busyComposerDefaultAction =
     settings?.clientDefaults?.busyComposerDefaultAction ?? "steer";
   const collapsedComposerButton =
     settings?.clientDefaults?.collapsedComposerButton ?? "primary";
 
-  // Header undo: snapshot the visibility map at pane open.
   const undoState = useMemo(
     () =>
       settings
         ? {
-            toolbarVisibility,
+            toolbarPresence,
             busyComposerDefaultAction,
             collapsedComposerButton,
           }
@@ -51,14 +190,14 @@ export function ToolbarSettings() {
       busyComposerDefaultAction,
       collapsedComposerButton,
       settings,
-      toolbarVisibility,
+      toolbarPresence,
     ],
   );
   const restoreUndoState = useCallback(
     (snapshot: typeof undoState) => {
       if (!snapshot) return;
-      for (const [key, visible] of Object.entries(snapshot.toolbarVisibility)) {
-        setControlVisible(key as SessionToolbarVisibilityKey, visible);
+      for (const [key, value] of Object.entries(snapshot.toolbarPresence)) {
+        setControlPresence(key as SessionToolbarVisibilityKey, value);
       }
       void updateSettings({
         clientDefaults: {
@@ -69,85 +208,193 @@ export function ToolbarSettings() {
         // surfaced via the hook's error state
       });
     },
-    [setControlVisible, updateSettings],
+    [setControlPresence, updateSettings],
   );
   useSettingsUndoBaseline(undoState, restoreUndoState);
 
-  const toolbarControls: Array<{
-    key: SessionToolbarVisibilityKey;
-    title: string;
-    description: string;
-  }> = [
-    {
-      key: "modeSelector",
-      title: t("appearanceToolbarModeTitle"),
-      description: t("appearanceToolbarModeDescription"),
-    },
-    {
-      key: "attachments",
-      title: t("appearanceToolbarAttachmentsTitle"),
-      description: t("appearanceToolbarAttachmentsDescription"),
-    },
-    {
-      key: "slashMenu",
-      title: t("appearanceToolbarSlashTitle"),
-      description: t("appearanceToolbarSlashDescription"),
-    },
-    {
-      key: "thinkingToggle",
-      title: t("appearanceToolbarThinkingTitle"),
-      description: t("appearanceToolbarThinkingDescription"),
-    },
-    {
-      key: "renderMode",
-      title: t("appearanceToolbarRenderModeTitle"),
-      description: t("appearanceToolbarRenderModeDescription"),
-    },
-    {
-      key: "nudge",
-      title: t("appearanceToolbarNudgeTitle"),
-      description: t("appearanceToolbarNudgeDescription"),
-    },
-    {
-      key: "microphone",
-      title: t("appearanceToolbarMicrophoneTitle"),
-      description: t("appearanceToolbarMicrophoneDescription"),
-    },
-    {
-      key: "waveform",
-      title: t("appearanceToolbarWaveformTitle"),
-      description: t("appearanceToolbarWaveformDescription"),
-    },
-    {
-      key: "sessionStatus",
-      title: t("appearanceToolbarStatusTitle"),
-      description: t("appearanceToolbarStatusDescription"),
-    },
-    {
-      key: "shortcutsHelp",
-      title: t("appearanceToolbarShortcutsTitle"),
-      description: t("appearanceToolbarShortcutsDescription"),
-    },
-    {
-      key: "contextUsage",
-      title: t("appearanceToolbarContextTitle"),
-      description: t("appearanceToolbarContextDescription"),
-    },
-    {
-      key: "btw",
-      title: t("appearanceToolbarBtwTitle"),
-      description: t("appearanceToolbarBtwDescription"),
-    },
-    {
-      key: "steerNow",
-      title: t("appearanceToolbarSteerNowTitle"),
-      description: t("appearanceToolbarSteerNowDescription"),
-    },
+  const controlMeta = (
+    key: SessionToolbarVisibilityKey,
+    title: string,
+    description: string,
+    side: ToolbarSide,
+  ): ToolbarControlMeta => ({
+    key,
+    title,
+    description,
+    side,
+    canSetPriority: PRIORITY_EDITABLE_CONTROLS.has(key),
+  });
+
+  const toolbarControls: ToolbarControlMeta[] = [
+    controlMeta(
+      "modeSelector",
+      t("appearanceToolbarModeTitle"),
+      t("appearanceToolbarModeDescription"),
+      "left",
+    ),
+    controlMeta(
+      "attachments",
+      t("appearanceToolbarAttachmentsTitle"),
+      t("appearanceToolbarAttachmentsDescription"),
+      "left",
+    ),
+    controlMeta(
+      "slashMenu",
+      t("appearanceToolbarSlashTitle"),
+      t("appearanceToolbarSlashDescription"),
+      "left",
+    ),
+    controlMeta(
+      "thinkingToggle",
+      t("appearanceToolbarThinkingTitle"),
+      t("appearanceToolbarThinkingDescription"),
+      "left",
+    ),
+    controlMeta(
+      "renderMode",
+      t("appearanceToolbarRenderModeTitle"),
+      t("appearanceToolbarRenderModeDescription"),
+      "left",
+    ),
+    controlMeta(
+      "nudge",
+      t("appearanceToolbarNudgeTitle"),
+      t("appearanceToolbarNudgeDescription"),
+      "left",
+    ),
+    controlMeta(
+      "microphone",
+      t("appearanceToolbarMicrophoneTitle"),
+      t("appearanceToolbarMicrophoneDescription"),
+      "left",
+    ),
+    controlMeta(
+      "waveform",
+      t("appearanceToolbarWaveformTitle"),
+      t("appearanceToolbarWaveformDescription"),
+      "left",
+    ),
+    controlMeta(
+      "sessionStatus",
+      t("appearanceToolbarStatusTitle"),
+      t("appearanceToolbarStatusDescription"),
+      "right",
+    ),
+    controlMeta(
+      "shortcutsHelp",
+      t("appearanceToolbarShortcutsTitle"),
+      t("appearanceToolbarShortcutsDescription"),
+      "right",
+    ),
+    controlMeta(
+      "contextUsage",
+      t("appearanceToolbarContextTitle"),
+      t("appearanceToolbarContextDescription"),
+      "right",
+    ),
+    controlMeta(
+      "btw",
+      t("appearanceToolbarBtwTitle"),
+      t("appearanceToolbarBtwDescription"),
+      "right",
+    ),
+    controlMeta(
+      "steerNow",
+      t("appearanceToolbarSteerNowTitle"),
+      t("appearanceToolbarSteerNowDescription"),
+      "right",
+    ),
   ];
+  if (supportsProjectQueue) {
+    toolbarControls.push(
+      controlMeta(
+        "projectQueue",
+        t("appearanceToolbarProjectQueueTitle"),
+        t("appearanceToolbarProjectQueueDescription"),
+        "right",
+      ),
+    );
+  }
+
+  const hiddenLeft = toolbarControls.filter(
+    (control) =>
+      placementPresence[control.key] === "hidden" && control.side === "left",
+  );
+  const hiddenRight = toolbarControls.filter(
+    (control) =>
+      placementPresence[control.key] === "hidden" && control.side === "right",
+  );
+  const shownControls = toolbarControls.filter(
+    (control) => placementPresence[control.key] !== "hidden",
+  );
+
+  const commitPresenceNotch = useCallback(
+    (control: ToolbarControlMeta, notch: number) => {
+      const next: ToolbarControlPresence =
+        notch <= 0
+          ? "hidden"
+          : control.canSetPriority
+            ? (PRESENCE_SLIDER_PRIORITIES[notch - 1] ?? "pin")
+            : "pin";
+      if (toolbarPresence[control.key] !== next) {
+        setControlPresence(control.key, next);
+      }
+    },
+    [setControlPresence, toolbarPresence],
+  );
+
+  const renderControlRow = (
+    control: ToolbarControlMeta,
+    placement: "hidden" | "shown",
+  ) => (
+    <div
+      className={`session-toolbar-control-row is-${placement} ${
+        toolbarPresence[control.key] === "hidden"
+          ? "is-currently-hidden"
+          : "is-currently-shown"
+      }`}
+      key={control.key}
+    >
+      <span className="session-toolbar-control-preview-cell">
+        <ToolbarControlPreview
+          activationLabel={t("appearanceToolbarActivateControl", {
+            control: control.title,
+          })}
+          controlKey={control.key}
+          onActivate={() => {
+            document.getElementById(presenceSliderId(control.key))?.focus();
+          }}
+        />
+      </span>
+      <span className="session-toolbar-control-copy">
+        <strong>{control.title}</strong>
+        <span>{control.description}</span>
+      </span>
+      <span className="session-toolbar-control-actions">
+        <ControlPresenceSlider
+          control={control}
+          presence={toolbarPresence[control.key]}
+          onCommitNotch={commitPresenceNotch}
+        />
+      </span>
+    </div>
+  );
+
+  const renderHiddenGroup = (label: string, controls: ToolbarControlMeta[]) => (
+    <div className="session-toolbar-hidden-group">
+      <div className="session-toolbar-hidden-group-title">{label}</div>
+      {controls.length === 0 ? (
+        <p className="session-toolbar-hidden-empty">
+          {t("appearanceToolbarSideNoneHidden")}
+        </p>
+      ) : (
+        controls.map((control) => renderControlRow(control, "hidden"))
+      )}
+    </div>
+  );
 
   return (
     <section className="settings-section">
-      <h2>{t("appearanceSessionToolbarTitle")}</h2>
       <p className="settings-section-description">
         {t("appearanceSessionToolbarDescription")}
       </p>
@@ -216,32 +463,36 @@ export function ToolbarSettings() {
         <div className="settings-item session-toolbar-settings">
           <SessionToolbarPreview />
 
-          <div className="session-toolbar-control-list">
-            {toolbarControls.map((control) => (
-              <label className="session-toolbar-control" key={control.key}>
-                <span className="session-toolbar-control-copy">
-                  <strong>{control.title}</strong>
-                  <span>{control.description}</span>
-                </span>
-                <span className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={toolbarVisibility[control.key]}
-                    onChange={(e) =>
-                      setControlVisible(control.key, e.target.checked)
-                    }
-                  />
-                  <span className="toggle-slider" />
-                </span>
-              </label>
-            ))}
+          <div className="session-toolbar-zone">
+            <div className="session-toolbar-zone-heading">
+              <strong>{t("appearanceToolbarHiddenHeading")}</strong>
+              <span>{t("appearanceToolbarHiddenDescription")}</span>
+            </div>
+            <div className="session-toolbar-hidden-groups">
+              {renderHiddenGroup(t("appearanceToolbarSideLeft"), hiddenLeft)}
+              {renderHiddenGroup(t("appearanceToolbarSideRight"), hiddenRight)}
+            </div>
+          </div>
+
+          <div className="session-toolbar-zone-separator" />
+
+          <div className="session-toolbar-zone">
+            <div className="session-toolbar-zone-heading">
+              <strong>{t("appearanceToolbarShownHeading")}</strong>
+              <span>{t("appearanceToolbarShownDescription")}</span>
+            </div>
+            <div className="session-toolbar-control-list">
+              {shownControls.map((control) => renderControlRow(control, "shown"))}
+            </div>
           </div>
 
           <div className="settings-item-actions">
             <button
               type="button"
               className="settings-button settings-button-secondary"
-              onClick={resetVisibility}
+              onClick={() => {
+                resetPresence();
+              }}
             >
               {t("appearanceSessionToolbarReset")}
             </button>

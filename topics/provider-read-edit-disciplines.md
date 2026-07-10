@@ -12,7 +12,9 @@ boundary principle this normalization obeys),
 (per-backend tool normalization), [`codex-api-provider.md`](codex-api-provider.md)
 (Codex protocol), [`relative-filenames.md`](relative-filenames.md) (file-path
 display these blocks feed), [`collapse-expand-mode.md`](collapse-expand-mode.md)
-(outline grouping that consumes this canonical mapping).
+(outline grouping that consumes this canonical mapping), and
+[`codex-code-mode-render-convergence.md`](codex-code-mode-render-convergence.md)
+(the planned one-command-to-many-actions extension for Codex code mode).
 
 Topic: provider-read-edit-disciplines
 
@@ -142,6 +144,45 @@ reloaded history agree:
   `oldString`→`old_string`, `newString`→`new_string`, `replaceAll`→`replace_all`)
   — the complete name+field shape that pi still defers. Shared by the live
   provider and the durable reader so both render identically.
+
+### Exploration-kind classification
+
+A second, weaker client normalization sits beside the renderer aliases in the
+same module (`renderers/tools/index.tsx`): `getExplorationKind` classifies
+tool names as `read`/`search`/`list`-shaped actions so the transcript can fold
+consecutive exploration calls into one "Explored" group
+(`ExploredToolGroup`, `sessionDetail/exploration`).
+
+The two tables are deliberately separate because they assert different
+strengths of claim:
+
+- A `TOOL_NAME_ALIASES` entry routes the tool to a canonical renderer, which
+  is only safe when the input schema matches that renderer's expectations;
+  otherwise the honest raw-JSON fallback is better than a misrendered card.
+- An `EXPLORATION_TOOL_KINDS` entry claims only "this action reads/searches/
+  lists" — safe for any input schema — so provider names like `grep_search`
+  or `list_dir` can group as exploration while still rendering through the
+  fallback.
+
+Rule: both tables live in the registry module as the single owner of client
+tool-name normalization; classify a new provider's tool names there (not in a
+consumer), and keep each normalization site commented with a pointer to this
+section.
+
+`sessionDetail/explorationProjection.ts` is the next, presentation-only layer.
+It adapts either a canonical exploration tool or a parent carrying
+provider-neutral `displayActions` into ordered entries while retaining the
+original `ToolCallItem` as the sole status/result/raw-detail owner. Entries use
+parent id plus source-order index and never become synthetic transcript tools
+or result owners. This is what lets several canonical parents with one action
+and one code-mode parent with several actions share the same explored model.
+`buildAssistantRenderSegments` and `ExploredToolGroup` consume that projection;
+the component shows semantic rows by default and nests the unchanged parent
+tool renderer only when raw command details are requested.
+`sessionDetail/explorationPresentation.ts` owns the next semantic presentation
+step: entry labels, compact/search text, and explored-row height estimates.
+Search entry ids remain presentation anchors targeting the stable group; only
+real parent ids participate in transcript row and scroll-snapshot identity.
 
 ### The uniform diff augment
 

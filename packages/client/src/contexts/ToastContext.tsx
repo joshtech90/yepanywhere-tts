@@ -3,6 +3,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useState,
 } from "react";
 import { ToastContainer } from "../components/Toast";
@@ -24,7 +25,9 @@ interface ToastProviderProps {
   children: ReactNode;
 }
 
-const TOAST_TIMEOUT_MS = 3000;
+// Keep in sync with the --toast-fade-duration values in Toast.tsx and the
+// .toast animation fallback in styles/index.css.
+const TOAST_TIMEOUT_MS = 4500;
 const ACTION_TOAST_TIMEOUT_MS = 7000;
 
 export function ToastProvider({ children }: ToastProviderProps) {
@@ -48,8 +51,13 @@ export function ToastProvider({ children }: ToastProviderProps) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const value = useMemo<ToastContextValue>(
+    () => ({ showToast, dismissToast }),
+    [dismissToast, showToast],
+  );
+
   return (
-    <ToastContext.Provider value={{ showToast, dismissToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </ToastContext.Provider>

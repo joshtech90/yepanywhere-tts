@@ -54,6 +54,7 @@ Rationale:
 | Any busy non-steering path where queue exists | Queue action | `deferred` | Keep the active turn untouched; append to the deferred queue. |
 | Any queue path | Route | `deferred` | Messages are inserted through YA-managed deferred delivery, not as direct steering. |
 | `Ctrl+Enter` alternate send | opposite of the visible Enter/default action | `steer` or `deferred` | In active steering sessions, Enter and `Ctrl+Enter` are complementary: one steers now, the other regular-queues. Patient is not the alternate-send shortcut. |
+| `Ctrl+Enter` with visible Project Queue action and enabled Project Queue shortcut | Project Queue | `deferred` metadata on a Project Queue item | Project Queue is a higher-level backlog. When the user has exposed that action and enabled its shortcut, `Ctrl+Enter` chooses the project-level queue instead of per-session queue/steer. |
 | Patient queue setting enabled for a new queued item | Queue action | `patient` | Per-item patient intent waits for the quiet/verified-idle patience threshold before delivery. This is a super-delay queue option, independent of provider steering support. |
 | Queued chip on steering-capable active turn | `Steer now` | `steer` | User explicitly overrides queued/patient waiting and injects the queued item into the active turn. |
 | `/btw` explicit route | Aside control | separate aside session | Not a queue path and not `steer`. |
@@ -93,17 +94,37 @@ Rationale:
 
 ### Patient countdown and promotion proposal
 
-Status: proposal.
+Status: promotion landed 2026-07-03; countdown still a proposal.
 
 - When a session is idle and patient queued rows are counting toward autosend,
   patient rows should show a countdown to the quiet-threshold send time.
-- Patient rows should expose an explicit promote/send-now action.
+  (Still open.)
+- Patient rows should expose an explicit promote/send-now action. Landed: each
+  live patient chip has a `Steer now` action
+  (`POST /sessions/:id/deferred/:tempId/steer`,
+  `Process.steerPatientDeferredMessagesThrough`).
 - Promoting a lower patient row should promote all patient rows above it, because
   that preserves typed order within the patient lane and avoids sending a later
-  patient thought while earlier patient context remains delayed.
+  patient thought while earlier patient context remains delayed. Landed: the
+  action steers the clicked entry plus every patient entry ahead of it; when
+  the queued-send batching window (`deferredJoinWindowSeconds`) is enabled they
+  deliver as one concatenated steering turn, otherwise as separate steers in
+  queue order. Each steered message drops one recognized patient prefix and
+  switches to the steer intent (Claude `priority: "next"`); regular deferred
+  entries keep their queue positions.
 - This is distinct from regular queued rows jumping ahead during active work:
   promotion is a user override of patient waiting, not a change to the ordinary
   regular-vs-patient delivery ordering.
+- Restart-recovered (`paused-after-restart`) patient chips carry the same
+  `Steer now` action (`POST /sessions/:id/recovered-queue/:queueId/steer`,
+  2026-07-03): the clicked entry and every recovered entry before it rejoin
+  the live queue, then steer through as above. This is the direct unlock for
+  preserved work — no resume-first step. Both recovered steer and recovered
+  resume reject only when a *newer* live patient entry exists (delivering the
+  older recovered content behind it would break compose order); resume of a
+  non-head recovered entry resumes every recovered entry before it instead of
+  erroring. See [queued-messages.md](queued-messages.md) § Patient
+  persistence revision.
 
 Narrow bottom-row overflow is tracked in
 [`composer-bottom-bar-overflow.md`](composer-bottom-bar-overflow.md).
@@ -183,6 +204,21 @@ advance it past never-fetched connector rows.
 
 ## Deferred queue reconciliation note (known desync)
 
+Delivered-turn bubbles now carry this contract's spirit: a self-sent
+turn renders as "sent" — fainter, with a margin "sent" tag — until its
+durable transcript copy merges in, then confirms. Mechanism and the
+Claude queue-operation pairing behind it:
+[stream-durable-id-dedup.md](stream-durable-id-dedup.md) §Claude.
+
+A delivered steering turn renders at its delivery point, not its send
+point. In particular, when pending steers are delivered by an interrupt
+(Claude rejects the running tool and consumes the queue), the turn must
+read immediately after the `[Request interrupted…]` marker — one turn, no
+stale "sent" copy left above the interrupt — so the reader can see what
+the agent's next response is responding to (2026-07-04 request; dequeue
+pairing in [stream-durable-id-dedup.md](stream-durable-id-dedup.md)
+§Claude).
+
 Deferred rows should be treated as optimistic until the provider proves delivery.
 For both Claude and Codex, there are observed cases where local queue state drifts:
 
@@ -197,6 +233,12 @@ rather than implying a firm `"sent"` or `"queued"` terminal state.
 Suggested reconciliation contract:
 
 - prefer `tempId` match to mark definitive delivery,
+- a self-sent steering turn that is still only an optimistic `sent` echo and
+  has not been consumed by the provider must expose Cancel. Cancel is
+  conditional: if the provider input queue still holds that `tempId`, remove the
+  provider-queue entry and the local echo; if the provider has already acted on
+  it, leave the row in place and report failure/refresh rather than pretending
+  the message was cancelled.
 - a bundled delivery is reconciled by identity, not text: when a queued batch is
   merged into one provider turn, the bundle records every chunk's `tempId`
   (`concatUserMessages` -> `UserMessage.tempIds`) and the delivered-turn echo

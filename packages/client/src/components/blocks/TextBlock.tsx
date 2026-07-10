@@ -75,6 +75,22 @@ function htmlToText(html: string): string {
   return template.content.textContent ?? "";
 }
 
+const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
+  className,
+  html,
+}: {
+  className?: string;
+  html: string;
+}) {
+  return (
+    <div
+      className={className}
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered or local trusted HTML
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+});
+
 interface Props {
   text: string;
   isStreaming?: boolean;
@@ -82,6 +98,7 @@ interface Props {
   augmentHtml?: string;
   onQuoteBlock?: (anchor: CommentAnchor) => void;
   alwaysShowQuoteCircle?: boolean;
+  paragraphQuoteCirclesEnabled?: boolean;
 }
 
 export const TextBlock = memo(function TextBlock({
@@ -90,6 +107,7 @@ export const TextBlock = memo(function TextBlock({
   augmentHtml,
   onQuoteBlock,
   alwaysShowQuoteCircle = false,
+  paragraphQuoteCirclesEnabled = true,
 }: Props) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -226,9 +244,11 @@ export const TextBlock = memo(function TextBlock({
     localFileModal,
     projectFileModal,
     handleClick,
+    handleContextMenu,
     closeModal,
     closeLocalFileModal,
     closeProjectFileModal,
+    contextMenuElement,
   } = useLocalResourceClick();
   useLocalMediaInlinePreviews(copySourceRef);
 
@@ -249,14 +269,22 @@ export const TextBlock = memo(function TextBlock({
   // Always render streaming container when isStreaming so refs are attached
   // before first augment arrives. Hidden until useStreamingContent becomes true.
   const renderStreamingContainer = isStreaming;
+  const paragraphLayoutKey = [showRendered, text, augmentHtml ?? ""].join("\0");
 
   // Measure each rendered top-level block so a per-paragraph quote circle can
   // sit at its end. Skipped while streaming (paragraph boundaries are still
   // moving); re-measured on reflow via ResizeObserver.
   useEffect(() => {
+    void paragraphLayoutKey;
     const content = copySourceRef.current;
     const block = textBlockRef.current;
-    if (!onQuoteBlock || !content || !block || showStreamingContent) {
+    if (
+      !onQuoteBlock ||
+      !paragraphQuoteCirclesEnabled ||
+      !content ||
+      !block ||
+      showStreamingContent
+    ) {
       // Clear without churning state when already empty: the no-quote path must
       // render identically to a TextBlock without quote circles. A stray extra
       // render here disturbs other post-render content effects (inline media).
@@ -283,42 +311,48 @@ export const TextBlock = memo(function TextBlock({
     const observer = new ResizeObserver(measure);
     observer.observe(content);
     return () => observer.disconnect();
-  }, [onQuoteBlock, showStreamingContent, showRendered, text, augmentHtml]);
+  }, [
+    onQuoteBlock,
+    paragraphLayoutKey,
+    paragraphQuoteCirclesEnabled,
+    showStreamingContent,
+  ]);
 
   return (
     <div
       ref={textBlockRef}
       className={`text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
     >
-      {onQuoteBlock && paragraphTargets.length > 0 && (
-        <div className="text-block-quote-rail" aria-hidden="true">
-          {paragraphTargets.map((target, index) => (
+      {onQuoteBlock && (
+        <div className="text-block-quote-rail">
+          {paragraphQuoteCirclesEnabled && paragraphTargets.length > 0 ? (
+            paragraphTargets.map((target, index) => (
+              <button
+                key={index}
+                type="button"
+                className={`text-block-quote text-block-quote-paragraph ${alwaysShowQuoteCircle ? "always-visible" : ""}`}
+                style={{ top: `${target.top + target.height}px` }}
+                onClick={() => quoteParagraph(index)}
+                title={t("sessionQuoteBlock")}
+                aria-label={t("sessionQuoteBlock")}
+              >
+                &gt;
+              </button>
+            ))
+          ) : (
             <button
-              key={index}
               type="button"
-              className={`text-block-quote text-block-quote-paragraph ${alwaysShowQuoteCircle ? "always-visible" : ""}`}
-              style={{ top: `${target.top + target.height}px` }}
-              onClick={() => quoteParagraph(index)}
+              className={`text-block-quote text-block-quote-fallback ${alwaysShowQuoteCircle ? "always-visible" : ""}`}
+              onClick={handleQuoteBlock}
               title={t("sessionQuoteBlock")}
               aria-label={t("sessionQuoteBlock")}
             >
               &gt;
             </button>
-          ))}
+          )}
         </div>
       )}
       <div className="text-block-actions">
-        {onQuoteBlock && paragraphTargets.length === 0 && (
-          <button
-            type="button"
-            className={`text-block-quote ${alwaysShowQuoteCircle ? "always-visible" : ""}`}
-            onClick={handleQuoteBlock}
-            title={t("sessionQuoteBlock")}
-            aria-label={t("sessionQuoteBlock")}
-          >
-            &gt;
-          </button>
-        )}
         {canToggleRendered && (
           <button
             type="button"
@@ -364,6 +398,7 @@ export const TextBlock = memo(function TextBlock({
         ref={copySourceRef}
         className="text-block-content"
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
       >
         {/* Always render streaming elements when streaming so refs are ready for augments */}
         {renderStreamingContainer && (
@@ -388,13 +423,11 @@ export const TextBlock = memo(function TextBlock({
         {/* Show fallback content when not actively streaming */}
         {!showStreamingContent &&
           (showRendered && augmentHtml ? (
-            // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
-            <div dangerouslySetInnerHTML={{ __html: augmentHtml }} />
+            <RenderedHtmlIsland html={augmentHtml} />
           ) : showRendered && localMathPreview.changed ? (
-            <div
+            <RenderedHtmlIsland
               className="text-block-local-rendered"
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-              dangerouslySetInnerHTML={{ __html: localMathPreview.html }}
+              html={localMathPreview.html}
             />
           ) : (
             <pre className="text-block-source">
@@ -427,6 +460,7 @@ export const TextBlock = memo(function TextBlock({
           onClose={closeProjectFileModal}
         />
       )}
+      {contextMenuElement}
     </div>
   );
 });

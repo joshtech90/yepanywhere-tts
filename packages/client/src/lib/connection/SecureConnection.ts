@@ -20,6 +20,7 @@ import type {
   SrpClientProof,
   SrpSessionResume,
   SrpSessionResumeInit,
+  StagedAttachmentRef,
   UploadedFile,
   YepMessage,
 } from "@yep-anywhere/shared";
@@ -42,6 +43,7 @@ import {
 } from "@yep-anywhere/shared";
 import { getRelayDebugEnabled } from "../../hooks/useDeveloperMode";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
+import type { ConnectionManager } from "./ConnectionManager";
 import { RelayProtocol } from "./RelayProtocol";
 import {
   decrypt,
@@ -85,6 +87,10 @@ const CURRENT_RESUME_PROTOCOL_VERSION = 3;
 const UPLOAD_BUFFER_HIGH_WATER_BYTES = 512 * 1024;
 const UPLOAD_BUFFER_LOW_WATER_BYTES = 256 * 1024;
 const UPLOAD_BUFFER_POLL_MS = 16;
+// WebSocket readyState constants are spec-defined. Using local constants keeps
+// node-environment unit tests independent of host WebSocket globals.
+const WEBSOCKET_OPEN_STATE = 1;
+const WEBSOCKET_CLOSED_STATE = 3;
 
 /** Stored session for resumption (persisted to localStorage) */
 export interface StoredSession {
@@ -104,6 +110,15 @@ interface RelayConnectionConfig {
   relayUrl: string;
   relayUsername: string;
   channel?: RelayChannel;
+}
+
+export interface SecureConnectionCallbacks {
+  /** Session established (for storing session data). */
+  onSessionEstablished?: (session: StoredSession) => void;
+  /** Connection lost (for UI state updates). */
+  onDisconnect?: (error: Error) => void;
+  /** SRP authentication or resumption succeeded. */
+  onAuthenticated?: () => void;
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
@@ -144,12 +159,15 @@ export class SecureConnection implements Connection {
   private sessionId: string | null = null;
   private connectionState: ConnectionState = "disconnected";
   private connectionPromise: Promise<void> | null = null;
+  private forceReconnectPromise: Promise<void> | null = null;
   private protocol: RelayProtocol;
   private nextOutboundSeq = 0;
   private lastInboundSeq: number | null = null;
   private pendingResumeClientNonce: string | null = null;
   private pendingResumeServerNonce: string | null = null;
   private minimumResumeProtocolVersion: number | null = null;
+  private connectionManager: ConnectionManager | null = null;
+  private externalOnPong: ((id: string) => void) | undefined;
 
   // Credentials for authentication
   private username: string;
@@ -173,6 +191,9 @@ export class SecureConnection implements Connection {
   // Callback when connection is lost (for UI state updates)
   private onDisconnect?: (error: Error) => void;
 
+  // Callback when SRP authentication or resumption succeeds
+  private onAuthenticated?: () => void;
+
   /**
    * Create a new secure connection with password authentication.
    */
@@ -180,21 +201,21 @@ export class SecureConnection implements Connection {
     wsUrl: string,
     username: string,
     password: string,
-    onSessionEstablished?: (session: StoredSession) => void,
-    onDisconnect?: (error: Error) => void,
+    callbacks: SecureConnectionCallbacks = {},
   ) {
     this.wsUrl = wsUrl;
     this.username = username;
     this.password = password;
-    this.onSessionEstablished = onSessionEstablished;
-    this.onDisconnect = onDisconnect;
+    this.onSessionEstablished = callbacks.onSessionEstablished;
+    this.onDisconnect = callbacks.onDisconnect;
+    this.onAuthenticated = callbacks.onAuthenticated;
 
     this.protocol = new RelayProtocol(
       {
         sendMessage: (msg) => this.send(msg),
         sendUploadChunk: async (id, offset, chunk) => {
           const payload = encodeUploadChunkPayload(id, offset, chunk);
-          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+          if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
             throw new Error("WebSocket not connected");
           }
           if (!this.sessionKey) {
@@ -211,12 +232,31 @@ export class SecureConnection implements Connection {
         ensureConnected: () => this.ensureConnected(),
         isConnected: () =>
           this.connectionState === "authenticated" &&
-          this.ws?.readyState === WebSocket.OPEN,
+          this.ws?.readyState === WEBSOCKET_OPEN_STATE,
       },
       {
         debugEnabled: () => getRelayDebugEnabled(),
         logPrefix: "[SecureConnection]",
       },
+    );
+  }
+
+  setConnectionManager(manager: ConnectionManager | null): void {
+    this.connectionManager = manager;
+    this.updateProtocolPongHandler();
+    this.protocol.setOnInboundEvent(
+      manager
+        ? (event) => {
+            if (event.eventType === "heartbeat") {
+              manager.recordHeartbeat();
+            } else {
+              manager.recordEvent();
+            }
+          }
+        : undefined,
+    );
+    this.protocol.setBeginCriticalOperation(
+      manager ? (label) => manager.beginCriticalOperation(label) : undefined,
     );
   }
 
@@ -227,15 +267,13 @@ export class SecureConnection implements Connection {
   static fromStoredSession(
     storedSession: StoredSession,
     password: string,
-    onSessionEstablished?: (session: StoredSession) => void,
-    onDisconnect?: (error: Error) => void,
+    callbacks: SecureConnectionCallbacks = {},
   ): SecureConnection {
     const conn = new SecureConnection(
       storedSession.wsUrl,
       storedSession.username,
       password,
-      onSessionEstablished,
-      onDisconnect,
+      callbacks,
     );
     conn.storedSession = storedSession;
     conn.minimumResumeProtocolVersion =
@@ -250,15 +288,13 @@ export class SecureConnection implements Connection {
    */
   static forResumeOnly(
     storedSession: StoredSession,
-    onSessionEstablished?: (session: StoredSession) => void,
-    onDisconnect?: (error: Error) => void,
+    callbacks: SecureConnectionCallbacks = {},
   ): SecureConnection {
     const conn = new SecureConnection(
       storedSession.wsUrl,
       storedSession.username,
       "", // No password - resume only
-      onSessionEstablished,
-      onDisconnect,
+      callbacks,
     );
     conn.storedSession = storedSession;
     conn.password = null; // Mark as resume-only
@@ -275,16 +311,14 @@ export class SecureConnection implements Connection {
   static async forResumeOnlyWithSocket(
     ws: WebSocket,
     storedSession: StoredSession,
-    onSessionEstablished?: (session: StoredSession) => void,
+    callbacks: SecureConnectionCallbacks = {},
     relayConfig?: RelayConnectionConfig,
-    onDisconnect?: (error: Error) => void,
   ): Promise<SecureConnection> {
     const conn = new SecureConnection(
       "", // No URL needed - socket already connected
       storedSession.username,
       "", // No password - resume only
-      onSessionEstablished,
-      onDisconnect,
+      callbacks,
     );
     conn.ws = ws;
     conn.storedSession = storedSession;
@@ -309,7 +343,7 @@ export class SecureConnection implements Connection {
    */
   private resumeOnExistingSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
         reject(new Error("WebSocket is not open"));
         return;
       }
@@ -429,10 +463,7 @@ export class SecureConnection implements Connection {
     );
   }
 
-  private decryptProofEnvelope(
-    proof: string,
-    key: Uint8Array,
-  ): string | null {
+  private decryptProofEnvelope(proof: string, key: Uint8Array): string | null {
     try {
       const proofEnvelope = JSON.parse(proof) as {
         nonce?: unknown;
@@ -566,9 +597,7 @@ export class SecureConnection implements Connection {
     }
   }
 
-  private acceptGraceProtocolVersion(
-    resumeProtocolVersion: number,
-  ): boolean {
+  private acceptGraceProtocolVersion(resumeProtocolVersion: number): boolean {
     return this.acceptAuthenticatedResumeProtocolVersion(
       resumeProtocolVersion,
       GRACE_FULL_SRP_PROTOCOL_VERSION,
@@ -679,7 +708,8 @@ export class SecureConnection implements Connection {
           return;
         }
         const transportNonce = msg.transportNonce;
-        let authenticatedResumeProtocolVersion = GRACE_FULL_SRP_PROTOCOL_VERSION;
+        let authenticatedResumeProtocolVersion =
+          GRACE_FULL_SRP_PROTOCOL_VERSION;
         if (msg.serverProof) {
           const proofProtocolVersion = this.verifyResumeServerProof({
             serverProof: msg.serverProof,
@@ -689,9 +719,7 @@ export class SecureConnection implements Connection {
           });
           if (
             proofProtocolVersion === null ||
-            !this.acceptAuthenticatedResumeProtocolVersion(
-              proofProtocolVersion,
-            )
+            !this.acceptAuthenticatedResumeProtocolVersion(proofProtocolVersion)
           ) {
             console.error("[SecureConnection] Resume server proof failed");
             this.connectionState = "failed";
@@ -728,6 +756,8 @@ export class SecureConnection implements Connection {
 
         this.onSessionEstablished?.(this.storedSession);
         this.sendCapabilities();
+        this.connectionManager?.markConnected();
+        this.onAuthenticated?.();
         resolve();
         return;
       }
@@ -783,7 +813,7 @@ export class SecureConnection implements Connection {
    */
   private async ensureConnected(): Promise<void> {
     if (
-      this.ws?.readyState === WebSocket.OPEN &&
+      this.ws?.readyState === WEBSOCKET_OPEN_STATE &&
       this.connectionState === "authenticated"
     ) {
       return;
@@ -825,6 +855,7 @@ export class SecureConnection implements Connection {
       authRejectHandler?.(closeError);
     } else {
       this.connectionState = "disconnected";
+      this.connectionManager?.handleClose(closeError);
       this.onDisconnect?.(closeError);
     }
 
@@ -1061,7 +1092,11 @@ export class SecureConnection implements Connection {
       JSON.stringify(
         channel === DEFAULT_RELAY_CHANNEL
           ? { type: "client_connect", username: relayUsername }
-          : { type: "client_connect_channel", username: relayUsername, channel },
+          : {
+              type: "client_connect_channel",
+              username: relayUsername,
+              channel,
+            },
       ),
     );
 
@@ -1300,6 +1335,8 @@ export class SecureConnection implements Connection {
       this.onSessionEstablished?.(this.storedSession);
 
       this.sendCapabilities();
+      this.connectionManager?.markConnected();
+      this.onAuthenticated?.();
 
       console.log("[SecureConnection] Authentication complete");
       resolve();
@@ -1383,9 +1420,7 @@ export class SecureConnection implements Connection {
    * Send an encrypted message over the WebSocket.
    */
   private send(msg: RemoteClientMessage): void {
-    const websocketOpenState =
-      typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1;
-    if (!this.ws || this.ws.readyState !== websocketOpenState) {
+    if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
       throw new Error("WebSocket not connected");
     }
     if (!this.sessionKey) {
@@ -1413,13 +1448,12 @@ export class SecureConnection implements Connection {
     const connection = await SecureConnection.forResumeOnlyWithSocket(
       ws,
       this.storedSession,
-      undefined,
+      { onDisconnect: (error) => socket?.handleDisconnect(error) },
       {
         relayUrl: this.relayUrl,
         relayUsername: this.relayUsername,
         channel: SPEECH_RELAY_CHANNEL,
       },
-      (error) => socket?.handleDisconnect(error),
     );
     socket = new SecureConnectionSpeechSocket(connection);
     return socket;
@@ -1429,12 +1463,8 @@ export class SecureConnection implements Connection {
     this.send({ type: "speech_control", message });
   }
 
-  sendSpeechAudioFrame(
-    data: ArrayBuffer | Uint8Array | ArrayBufferView,
-  ): void {
-    const websocketOpenState =
-      typeof WebSocket !== "undefined" ? WebSocket.OPEN : 1;
-    if (!this.ws || this.ws.readyState !== websocketOpenState) {
+  sendSpeechAudioFrame(data: ArrayBuffer | Uint8Array | ArrayBufferView): void {
+    if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
       throw new Error("WebSocket not connected");
     }
     if (!this.sessionKey) {
@@ -1456,8 +1486,7 @@ export class SecureConnection implements Connection {
   }
 
   getSpeechSocketReadyState(): number {
-    const closedState = typeof WebSocket !== "undefined" ? WebSocket.CLOSED : 3;
-    return this.ws?.readyState ?? closedState;
+    return this.ws?.readyState ?? WEBSOCKET_CLOSED_STATE;
   }
 
   getSpeechSocketBufferedAmount(): number {
@@ -1546,6 +1575,13 @@ export class SecureConnection implements Connection {
     return this.protocol.upload(projectId, sessionId, file, options);
   }
 
+  async uploadStagedAttachment(
+    file: File,
+    options?: UploadOptions & { batchId?: string },
+  ): Promise<StagedAttachmentRef> {
+    return this.protocol.uploadStagedAttachment(file, options);
+  }
+
   /**
    * Send a keepalive ping to verify the connection is alive.
    */
@@ -1557,7 +1593,21 @@ export class SecureConnection implements Connection {
    * Register a callback for pong responses.
    */
   setOnPong(cb: (id: string) => void): void {
-    this.protocol.setOnPong(cb);
+    this.externalOnPong = cb;
+    this.updateProtocolPongHandler();
+  }
+
+  private updateProtocolPongHandler(): void {
+    const manager = this.connectionManager;
+    const externalOnPong = this.externalOnPong;
+    this.protocol.setOnPong(
+      manager || externalOnPong
+        ? (id) => {
+            manager?.receivePong(id);
+            externalOnPong?.(id);
+          }
+        : undefined,
+    );
   }
 
   sendMessage(msg: RemoteClientMessage): void {
@@ -1570,17 +1620,17 @@ export class SecureConnection implements Connection {
 
   private async waitForUploadBackpressure(): Promise<void> {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WEBSOCKET_OPEN_STATE) return;
     if (ws.bufferedAmount <= UPLOAD_BUFFER_HIGH_WATER_BYTES) return;
 
     while (
-      ws.readyState === WebSocket.OPEN &&
+      ws.readyState === WEBSOCKET_OPEN_STATE &&
       ws.bufferedAmount > UPLOAD_BUFFER_LOW_WATER_BYTES
     ) {
       await wait(UPLOAD_BUFFER_POLL_MS);
     }
 
-    if (ws.readyState !== WebSocket.OPEN) {
+    if (ws.readyState !== WEBSOCKET_OPEN_STATE) {
       throw new Error("WebSocket not connected");
     }
   }
@@ -1606,9 +1656,37 @@ export class SecureConnection implements Connection {
    * ConnectionManager handles re-subscription; this just tears down and rebuilds the transport.
    */
   async forceReconnect(): Promise<void> {
+    if (this.forceReconnectPromise) {
+      return this.forceReconnectPromise;
+    }
+
+    const promise = this.performForceReconnect();
+    this.forceReconnectPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.forceReconnectPromise === promise) {
+        this.forceReconnectPromise = null;
+      }
+    }
+  }
+
+  private async performForceReconnect(): Promise<void> {
     console.log(
       `[SecureConnection] Force reconnecting... wsState=${this.ws?.readyState}, connState=${this.connectionState}, isRelay=${this.isRelayConnection}`,
     );
+
+    const activeConnectionAttempt = this.connectionPromise;
+    if (activeConnectionAttempt) {
+      // A lazy fetch/subscribe recovery is already rebuilding the same secure
+      // transport. Let it finish so forceReconnect does not orphan its promise.
+      try {
+        await activeConnectionAttempt;
+        return;
+      } catch {
+        // The active recovery failed; fall through to a forced reconnect.
+      }
+    }
 
     if (this.ws) {
       this.ws.onclose = null;
@@ -1649,16 +1727,14 @@ export class SecureConnection implements Connection {
     ws: WebSocket,
     username: string,
     password: string,
-    onSessionEstablished?: (session: StoredSession) => void,
+    callbacks: SecureConnectionCallbacks = {},
     relayConfig?: RelayConnectionConfig,
-    onDisconnect?: (error: Error) => void,
   ): Promise<SecureConnection> {
     const conn = new SecureConnection(
       "", // No URL needed - socket already connected
       username,
       password,
-      onSessionEstablished,
-      onDisconnect,
+      callbacks,
     );
     conn.ws = ws;
     conn.isRelayConnection = true;
@@ -1678,7 +1754,7 @@ export class SecureConnection implements Connection {
    */
   private authenticateOnExistingSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
         reject(new Error("WebSocket is not open"));
         return;
       }

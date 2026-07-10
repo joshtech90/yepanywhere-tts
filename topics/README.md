@@ -5,6 +5,7 @@
 - Pluggable speech recognition providers
 - Browser-load session UI reliability
 - Public read-only session shares
+- Public share content censorship
 - Approval and local access security hardening
 - Security trust boundaries
 - Trusted client packaging for signed/local app installs
@@ -22,6 +23,7 @@
 - Emulated slash commands
 - Provider-agnostic /btw asides
 - Side session configuration
+- OpenAI-compatible helper sessions
 - Prompt suggestions
 - Session liveness and queue intent
 - Provider process state machine
@@ -33,10 +35,13 @@
 - Codex API provider as a future API-key-backed backend
 - Pixel-scale icon aesthetics
 - UI testing and screenshot regression checks
+- Mobile transcript horizontal overflow (outer session scrollbar above
+  composer when wide Grep/tool content leaks past local scrollers)
 - Provider/model compact glyph vocabulary (top-right status)
 - Claude API failures and auto-retry (transient 5xx/overload evidence)
 - Media rendering and routing (image/video/file surfaces, the relay fetch rule, serving doors)
 - Sidebar session ordering (active rows pinned and stable, idle rows deduped by recency)
+- Session list hidden duplicates (conservative duplicate-title hiding, fork/helper lineage, current/source session safety)
 - Deferred & tactical roadmap (prioritized: backgrounded-jobs badge, `Task*` list rendering, queue-across-compaction, rich-text gaps, OpenCode/pi provider fleshout)
 - pi provider (Zechner's pi-mono as agnostic backend: integration plan + periodic progress tracking)
 - Provider read/edit disciplines (native edit formats vs YA's one canonical Read/Edit/Write presentation)
@@ -44,3 +49,14 @@
 - Session hover card recent activity (add last regular agent turn excerpt to the row tooltip; fire it on all-sessions + search too)
 - Turn-notch actions / fork-from-turn (fork already exists; proposal: expose fork/copy/trim from scrollbar notches + seed compose with the forked turn)
 - Turn-rail marker layout (hit targets sized to neighbor gaps; optional PAVA de-cluster spread behind one off-by-default constant)
+- Client global store (coarse normalized sessions/projects/project queues/inbox summary cache, not transcript state)
+- Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)
+- Session media handles (problem statement for lazy transcript image/blob
+  payloads behind authenticated server media IDs)
+- Session exit navigation latency (large transcript should not delay first
+  paint of Settings/other lightweight routes)
+- Workstreams (lane-aware Project Queue; each lane is a real checkout of the
+  repository syncing through the shared upstream)
+- Module boundary refactor discipline (move-only slices, naming and
+  coordination rules, tripwire matrix, and verification tiers for the
+  large-file extraction campaign)

@@ -47,6 +47,10 @@ export function getOutputProseFontLabel(
   switch (font) {
     case "system":
       return t("outputProseFontSystem");
+    case "inter":
+      return t("outputProseFontInter");
+    case "alegreya-sans":
+      return t("outputProseFontAlegreyaSans");
     case "source-serif-4":
       return t("outputProseFontSourceSerif4");
   }
@@ -63,6 +67,8 @@ export function getOutputFixedFontLabel(
       return t("outputFixedFontIosevka");
     case "ibm-plex-mono":
       return t("outputFixedFontIbmPlexMono");
+    case "fira-mono":
+      return t("outputFixedFontFiraMono");
   }
 }
 
@@ -98,6 +104,11 @@ export function getSettingsCategories(
       id: "appearance",
       label: t("settingsAppearanceTitle"),
       description: t("settingsAppearanceDescription"),
+    },
+    {
+      id: "performance",
+      label: t("settingsPerformanceTitle"),
+      description: t("settingsPerformanceDescription"),
     },
     {
       id: "toolbar",
@@ -148,6 +159,11 @@ export function getSettingsCategories(
       id: "providers",
       label: t("settingsProvidersTitle"),
       description: t("settingsProvidersDescription"),
+    },
+    {
+      id: "cache-miss-billing",
+      label: t("settingsCacheMissBillingTitle"),
+      description: t("settingsCacheMissBillingDescription"),
     },
     {
       id: "speech",

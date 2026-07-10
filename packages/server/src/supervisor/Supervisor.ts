@@ -1,25 +1,39 @@
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  type CacheMissBillingSettings,
   type EffortLevel,
   type PermissionRules,
   type PromptSuggestionMode,
   type ProviderName,
+  type ProviderRuntimeStatus,
   type RecapMode,
   type SessionLivenessProbeStatus,
   type SessionLivenessSnapshot,
   type ThinkingConfig,
   type UrlProjectId,
+  type WorkstreamId,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
+import type { SessionMetadataService } from "../metadata/index.js";
+import { getProjectName } from "../projects/paths.js";
 import { getProvider } from "../sdk/providers/index.js";
+import { CacheMissBillingMonitor } from "../services/CacheMissBillingMonitor.js";
+import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import type {
   AgentProvider,
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "../sdk/providers/types.js";
+import { formatAgentRecapExcerpt } from "../sessions/agent-excerpt.js";
+import {
+  isAwaySummaryMessage,
+  latestRecapMessage,
+  messageTimestampMs,
+  toDurableRecapMessage,
+} from "../sessions/recap-overlays.js";
 import { normalizeSlashCommandName } from "../sdk/slashCommandEmulation.js";
 import type {
   ClaudeSDK,
@@ -32,13 +46,19 @@ import type {
   EventBus,
   ProcessStateEvent,
   ProcessTerminatedEvent,
+  ProviderRuntimeStatusChangedEvent,
   SessionAbortedEvent,
   SessionCreatedEvent,
   SessionStatusEvent,
   SessionUpdatedEvent,
   WorkerActivityEvent,
 } from "../watcher/EventBus.js";
-import { Process, type ProcessConstructorOptions } from "./Process.js";
+import {
+  NATIVE_RECAP_FALLBACK_GRACE_MS,
+  Process,
+  type ProcessConstructorOptions,
+  type RecapRequestResult,
+} from "./Process.js";
 import {
   type QueuedRequestInfo,
   type QueuedResponse,
@@ -321,7 +341,7 @@ export interface ModelSettings {
   model?: string;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
-  /** Thinking configuration. undefined = thinking disabled */
+  /** Thinking configuration. undefined = thinking disabled for new sessions. */
   thinking?: ThinkingConfig;
   /** Effort level for response quality. undefined = SDK default */
   effort?: EffortLevel;
@@ -342,6 +362,8 @@ export interface ModelSettings {
   permissions?: PermissionRules;
   /** How this session should answer away-recap requests. */
   recapMode?: RecapMode;
+  /** Browser-away duration before YA asks this process for a recap. */
+  recapAfterSeconds?: number;
   /** How this session should request native prompt suggestions. */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */
@@ -367,6 +389,13 @@ export interface ModelSettings {
    * undefined and ignores always-1M for opus/sonnet.
    */
   compactAtContextWindow?: number;
+}
+
+export interface SessionLaunchOptions {
+  /** Canonical YA project id when the provider cwd is a checkout lane. */
+  projectId?: UrlProjectId;
+  /** YA workstream lane to persist once a queued launch starts. */
+  workstreamId?: WorkstreamId;
 }
 
 /** Error response when queue is full */
@@ -453,8 +482,14 @@ export interface SupervisorOptions {
   getPromptCacheKeepaliveSettings?: (
     provider: ProviderName,
   ) => PromptCacheKeepaliveSettings | undefined;
+  /** Callback to read live cache-miss billing monitor settings. */
+  getCacheMissBillingSettings?: () => CacheMissBillingSettings | undefined;
   /** Maximum time to wait for a graceful provider interrupt before hard abort. */
   interruptTimeoutMs?: number;
+  /** Metadata service used to hide/archive server-owned helper forks. */
+  sessionMetadataService?: SessionMetadataService;
+  /** Durable store for long-lived patient queued messages. */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
 }
 
 export class Supervisor {
@@ -490,6 +525,7 @@ export class Supervisor {
   private getPromptCacheKeepaliveSettings?: (
     provider: ProviderName,
   ) => PromptCacheKeepaliveSettings | undefined;
+  private cacheMissBillingMonitor: CacheMissBillingMonitor;
   private heartbeatTurnInFlight = false;
   private heartbeatTurnTimer: ReturnType<typeof setInterval>;
   private livenessProbeTimer: ReturnType<typeof setInterval>;
@@ -499,6 +535,14 @@ export class Supervisor {
    */
   private patientCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private interruptTimeoutMs: number;
+  private sessionMetadataService?: SessionMetadataService;
+  private sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  // In-flight forked recaps, keyed by process id. The AbortController cancels
+  // the generator-fork helper turn when the parent becomes active again, so a
+  // returning user's new turn is never shadowed by a stale recap. See
+  // topics/recaps.md.
+  private forkedRecapInFlight = new Map<string, AbortController>();
+  private pendingForkedRecapRequests = new Map<string, number | null>();
 
   constructor(options: SupervisorOptions) {
     this.provider = options.provider ?? null;
@@ -521,8 +565,16 @@ export class Supervisor {
     this.getHeartbeatTurnCandidates = options.getHeartbeatTurnCandidates;
     this.getPromptCacheKeepaliveSettings =
       options.getPromptCacheKeepaliveSettings;
+    this.cacheMissBillingMonitor = new CacheMissBillingMonitor({
+      eventBus: options.eventBus,
+      sessionMetadataService: options.sessionMetadataService,
+      getSettings: options.getCacheMissBillingSettings,
+    });
     this.interruptTimeoutMs =
       options.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
+    this.sessionMetadataService = options.sessionMetadataService;
+    this.sessionQueuePersistenceService =
+      options.sessionQueuePersistenceService;
     this.staleCheckTimer = setInterval(
       () => this.terminateStaleProcesses(),
       STALE_CHECK_INTERVAL_MS,
@@ -629,8 +681,9 @@ export class Supervisor {
     message: UserMessage,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
-    const projectId = encodeProjectId(projectPath);
+    const projectId = launchOptions?.projectId ?? encodeProjectId(projectPath);
 
     // Check if at capacity
     if (this.isAtCapacity()) {
@@ -645,6 +698,7 @@ export class Supervisor {
           type: "new-session",
           projectPath,
           projectId,
+          workstreamId: launchOptions?.workstreamId,
           message,
           permissionMode,
           modelSettings,
@@ -706,8 +760,9 @@ export class Supervisor {
     projectPath: string,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
-    const projectId = encodeProjectId(projectPath);
+    const projectId = launchOptions?.projectId ?? encodeProjectId(projectPath);
 
     // Check if at capacity
     if (this.isAtCapacity()) {
@@ -722,6 +777,7 @@ export class Supervisor {
           type: "new-session",
           projectPath,
           projectId,
+          workstreamId: launchOptions?.workstreamId,
           message: { text: "" }, // Placeholder, will be replaced when first message sent
           permissionMode,
           modelSettings,
@@ -783,6 +839,7 @@ export class Supervisor {
     resumeSessionId: string,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    options?: { preempt?: boolean },
   ): Promise<Process> {
     const existing = this.getProcessForSession(resumeSessionId);
     if (existing) {
@@ -808,10 +865,13 @@ export class Supervisor {
       }
 
       if (this.isAtCapacity()) {
-        const preemptable = this.findPreemptableWorker();
+        const preemptable =
+          options?.preempt === false ? undefined : this.findPreemptableWorker();
         if (preemptable) {
           await this.preemptWorker(preemptable);
         } else {
+          // A background away-recap passes preempt:false: it should never evict
+          // a live worker just to revive a different session for a recap.
           throw new Error(
             "Cannot reactivate: server is at worker capacity and no idle process can be preempted",
           );
@@ -912,6 +972,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
+      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -938,6 +999,7 @@ export class Supervisor {
       executor: modelSettings?.executor,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
+      recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
     };
@@ -1378,6 +1440,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
+      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1404,6 +1467,7 @@ export class Supervisor {
       executor: modelSettings?.executor,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
+      recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
     };
@@ -1507,6 +1571,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
+      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1536,6 +1601,7 @@ export class Supervisor {
       executor: modelSettings?.executor,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
+      recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
     };
@@ -1634,6 +1700,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
+      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1663,6 +1730,7 @@ export class Supervisor {
       executor: modelSettings?.executor,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
+      recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
     };
@@ -2034,6 +2102,291 @@ export class Supervisor {
     return provider.generateSummary(request);
   }
 
+  private async archiveHelperFork(
+    childSessionId: string,
+    parentSessionId: string,
+    title: string,
+    providerName: ProviderName,
+    process: Process,
+  ): Promise<void> {
+    if (!this.sessionMetadataService) {
+      return;
+    }
+    await this.sessionMetadataService.updateMetadata(childSessionId, {
+      title,
+      archived: true,
+      parentSessionId,
+    });
+    await this.sessionMetadataService.setProvider(childSessionId, providerName);
+    await this.sessionMetadataService.setExecutor(
+      childSessionId,
+      process.executor,
+    );
+    await this.sessionMetadataService.setRequestedModel(
+      childSessionId,
+      process.requestedModel,
+    );
+  }
+
+  private publishRecapListUpdate(
+    process: Process,
+    text: string,
+    timestamp = new Date().toISOString(),
+  ): void {
+    if (!this.eventBus) {
+      return;
+    }
+    const lastAgentText = formatAgentRecapExcerpt(text);
+    if (!lastAgentText) {
+      return;
+    }
+    const event: SessionUpdatedEvent = {
+      type: "session-updated",
+      sessionId: process.sessionId,
+      projectId: process.projectId,
+      updatedAt: timestamp,
+      lastAgentText,
+      timestamp: new Date().toISOString(),
+    };
+    this.eventBus.emit(event);
+  }
+
+  private async persistRecapOverlay(
+    process: Process,
+    message: NonNullable<RecapRequestResult["syntheticMessage"]>,
+  ): Promise<void> {
+    if (!this.sessionMetadataService) {
+      return;
+    }
+    try {
+      await this.sessionMetadataService.addRecapMessage(
+        process.sessionId,
+        message,
+      );
+    } catch (error) {
+      getLogger().warn(
+        {
+          event: "session_recap_overlay_persist_failed",
+          sessionId: process.sessionId,
+          processId: process.id,
+          projectId: process.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        `Failed to persist recap overlay: ${process.sessionId}`,
+      );
+    }
+  }
+
+  private async handleRecapResult(
+    process: Process,
+    result: RecapRequestResult,
+  ): Promise<void> {
+    if (result.syntheticMessage) {
+      await this.persistRecapOverlay(process, result.syntheticMessage);
+    }
+    if (result.emitted && result.text) {
+      this.publishRecapListUpdate(
+        process,
+        result.text,
+        result.syntheticMessage?.timestamp,
+      );
+    }
+  }
+
+  /**
+   * Raise a recap's "summarize since" floor to the latest already-emitted
+   * recap for the session. A recap covers the transcript through (about) its
+   * own timestamp, so a second return event with no assistant output after
+   * the last recap has nothing new to say — regenerating the same summary
+   * from the same context is wasted work and stacks duplicate recap rows.
+   */
+  private recapFloorMs(sessionId: string, sinceMs: number | null): number | null {
+    const recaps = this.sessionMetadataService?.getRecapMessages(sessionId);
+    const latest = recaps ? latestRecapMessage(recaps) : undefined;
+    const lastRecapMs = latest ? messageTimestampMs(latest) : null;
+    if (lastRecapMs === null) {
+      return sinceMs;
+    }
+    return sinceMs === null ? lastRecapMs : Math.max(sinceMs, lastRecapMs);
+  }
+
+  private async requestForkedRecap(
+    process: Process,
+    provider: AgentProvider,
+    sinceMs: number | null,
+    options?: { revived?: boolean },
+  ): Promise<RecapRequestResult> {
+    if (!provider.supportsRecaps || !provider.generateSummary) {
+      return {
+        supported: false,
+        emitted: false,
+        reason: "provider does not support recaps",
+      };
+    }
+    sinceMs = this.recapFloorMs(process.sessionId, sinceMs);
+    if (typeof provider.forkSession !== "function") {
+      return process.requestTailedRecapFallback(provider, { sinceMs });
+    }
+    if (this.forkedRecapInFlight.has(process.id)) {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recap already in flight",
+      };
+    }
+    if (process.state.type === "in-turn") {
+      this.pendingForkedRecapRequests.set(process.id, sinceMs);
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recap deferred until turn completes",
+      };
+    }
+
+    // A process freshly revived for this recap has an empty in-memory recap
+    // buffer (it never streamed) and will not emit a native away_summary on its
+    // own, so the native wait and the recent-text emptiness gate below would
+    // both wrongly suppress. Skip them: the fork reads the transcript from disk,
+    // and its own empty-text fallback handles a genuinely empty transcript.
+    if (options?.revived !== true) {
+      const nativeRecap = await process.waitForNativeRecapSince(
+        sinceMs,
+        provider.supportsNativeRecaps ? NATIVE_RECAP_FALLBACK_GRACE_MS : 0,
+      );
+      if (nativeRecap) {
+        return {
+          supported: true,
+          emitted: true,
+          reason: "native recap emitted",
+          text: nativeRecap.text,
+        };
+      }
+
+      const recent = process.getRecentAssistantText(sinceMs);
+      if (recent.length === 0) {
+        return {
+          supported: true,
+          emitted: false,
+          reason: "no recent assistant activity to summarize",
+        };
+      }
+    }
+
+    const abortController = new AbortController();
+    this.forkedRecapInFlight.set(process.id, abortController);
+    let generatorSessionId: string | undefined;
+    try {
+      const generator = await this.forkSession({
+        sessionId: process.sessionId,
+        projectPath: process.projectPath,
+        providerName: process.provider,
+        title: "Recap generator",
+      });
+      generatorSessionId = generator.sessionId;
+      await this.archiveHelperFork(
+        generator.sessionId,
+        process.sessionId,
+        "Recap generator",
+        process.provider,
+        process,
+      );
+      const text = (
+        await provider.generateSummary({
+          purpose: "recap",
+          strategy: "fork",
+          generatorSessionId: generator.sessionId,
+          cwd: process.projectPath,
+          signal: abortController.signal,
+        })
+      ).text.trim();
+      if (!text) {
+        return process.requestTailedRecapFallback(provider, { sinceMs });
+      }
+      const lateNativeRecap = process.getNativeRecapSince(sinceMs);
+      if (lateNativeRecap) {
+        return {
+          supported: true,
+          emitted: true,
+          reason: "native recap emitted",
+          text: lateNativeRecap.text,
+        };
+      }
+      const syntheticMessage = process.emitSyntheticSystemMessage(
+        "away_summary",
+        text,
+      );
+      return { supported: true, emitted: true, text, syntheticMessage };
+    } catch (error) {
+      // Cancellation on parent activity is expected, not a failure.
+      if (abortController.signal.aborted) {
+        const nativeRecap = process.getNativeRecapSince(sinceMs);
+        if (nativeRecap) {
+          return {
+            supported: true,
+            emitted: true,
+            reason: "native recap emitted",
+            text: nativeRecap.text,
+          };
+        }
+        return {
+          supported: true,
+          emitted: false,
+          reason: "recap cancelled by new activity",
+        };
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      getLogger().warn(
+        {
+          event: "session_forked_recap_failed",
+          sessionId: process.sessionId,
+          processId: process.id,
+          projectId: process.projectId,
+          providerName: process.provider,
+          generatorSessionId,
+          error: reason,
+        },
+        `Forked recap generation failed: ${reason}`,
+      );
+      return process.requestTailedRecapFallback(provider, { sinceMs });
+    } finally {
+      this.forkedRecapInFlight.delete(process.id);
+    }
+  }
+
+  /**
+   * Parent became active again: abort any in-flight forked recap (cancelling
+   * the generator-fork helper turn) and drop a not-yet-started deferred
+   * request, so a returning user's new turn is never shadowed by a stale
+   * recap. See topics/fork-recap.md.
+   */
+  private cancelInFlightForkedRecap(process: Process): void {
+    const abortController = this.forkedRecapInFlight.get(process.id);
+    if (abortController && !abortController.signal.aborted) {
+      abortController.abort();
+    }
+    this.pendingForkedRecapRequests.delete(process.id);
+  }
+
+  private flushPendingForkedRecapRequest(process: Process): void {
+    if (
+      process.recapMode !== "fork" ||
+      process.state.type !== "idle" ||
+      this.forkedRecapInFlight.has(process.id) ||
+      !this.pendingForkedRecapRequests.has(process.id)
+    ) {
+      return;
+    }
+    const sinceMs = this.pendingForkedRecapRequests.get(process.id) ?? null;
+    this.pendingForkedRecapRequests.delete(process.id);
+    const provider = getProvider(process.provider);
+    if (!provider) {
+      return;
+    }
+    void this.requestForkedRecap(process, provider, sinceMs).then((result) =>
+      this.handleRecapResult(process, result),
+    );
+  }
+
   getProcess(processId: string): Process | undefined {
     return this.processes.get(processId);
   }
@@ -2103,6 +2456,7 @@ export class Supervisor {
       providerName: process.provider,
       executor: process.executor,
       recapMode: process.recapMode,
+      recapAfterSeconds: process.recapAfterSeconds,
       promptSuggestionMode: process.promptSuggestionMode,
       helperSideModel: process.helperSideModel,
     };
@@ -2122,13 +2476,24 @@ export class Supervisor {
 
   configureProcessRecaps(
     processId: string,
-    config: { recapMode?: RecapMode; helperSideModel?: string },
+    config: {
+      recapMode?: RecapMode;
+      recapAfterSeconds?: number;
+      helperSideModel?: string;
+    },
   ): Process | null {
     const process = this.getProcess(processId);
     if (!process || process.isTerminated) {
       return null;
     }
     process.setRecapConfig(config);
+    this.emitOwnershipChange(process.sessionId, process.projectId, {
+      owner: "self",
+      processId: process.id,
+      permissionMode: process.permissionMode,
+      modeVersion: process.modeVersion,
+      recapAfterSeconds: process.recapAfterSeconds,
+    });
     return process;
   }
 
@@ -2169,12 +2534,19 @@ export class Supervisor {
     const isActiveSteeringMessage =
       message.metadata?.deliveryIntent === "steer" &&
       process.state.type === "in-turn";
+    const hasExplicitThinkingSettings =
+      modelSettings?.thinking !== undefined ||
+      modelSettings?.effort !== undefined;
     const requestedThinking = isActiveSteeringMessage
       ? process.thinking
-      : modelSettings?.thinking;
+      : hasExplicitThinkingSettings
+        ? modelSettings?.thinking
+        : process.thinking;
     const requestedEffort = isActiveSteeringMessage
       ? process.effort
-      : modelSettings?.effort;
+      : hasExplicitThinkingSettings
+        ? modelSettings?.effort
+        : process.effort;
     const requestedServiceTier = isActiveSteeringMessage
       ? process.serviceTier
       : (modelSettings?.serviceTier ?? process.serviceTier);
@@ -2243,6 +2615,8 @@ export class Supervisor {
           ...modelSettings,
           serviceTier: requestedServiceTier,
           recapMode: modelSettings?.recapMode ?? process.recapMode,
+          recapAfterSeconds:
+            modelSettings?.recapAfterSeconds ?? process.recapAfterSeconds,
           promptSuggestionMode:
             modelSettings?.promptSuggestionMode ?? process.promptSuggestionMode,
           helperSideModel:
@@ -2865,7 +3239,7 @@ export class Supervisor {
 
   async requestRecap(
     processId: string,
-    options?: { sinceMs?: number | null },
+    options?: { sinceMs?: number | null; revived?: boolean },
   ): Promise<{
     supported: boolean;
     emitted: boolean;
@@ -2890,22 +3264,24 @@ export class Supervisor {
       };
     }
 
-    const result = await process.requestRecap(provider, options);
-    // A fresh recap is newer than any prior turn, so surface it as the
-    // session's current agent line in lists/hovers via the live update path
-    // (it is intentionally not persisted; the next real turn overwrites it
-    // from the JSONL). See topics/session-hovercard-recent-activity.md.
-    if (result.emitted && result.text && this.eventBus) {
-      const event: SessionUpdatedEvent = {
-        type: "session-updated",
-        sessionId: process.sessionId,
-        projectId: process.projectId,
-        lastAgentText: result.text,
-        timestamp: new Date().toISOString(),
-      };
-      this.eventBus.emit(event);
-    }
-    return result;
+    const result =
+      process.recapMode === "fork"
+        ? await this.requestForkedRecap(
+            process,
+            provider,
+            options?.sinceMs ?? null,
+            { revived: options?.revived === true },
+          )
+        : await process.requestRecap(provider, {
+            ...options,
+            sinceMs: this.recapFloorMs(
+              process.sessionId,
+              options?.sinceMs ?? null,
+            ),
+          });
+    await this.handleRecapResult(process, result);
+    const { syntheticMessage: _syntheticMessage, ...publicResult } = result;
+    return publicResult;
   }
 
   private async interruptProcessWithTimeout(
@@ -3009,6 +3385,7 @@ export class Supervisor {
         providerName,
         executor: sourceProcess.executor,
         permissions: sourceProcess.permissions,
+        recapAfterSeconds: sourceProcess.recapAfterSeconds,
       },
     );
 
@@ -3071,6 +3448,28 @@ export class Supervisor {
         this.emitSessionAborted(process.sessionId, process.projectId);
       } else if (event.type === "complete") {
         this.unregisterProcess(process);
+      } else if (event.type === "message") {
+        this.cacheMissBillingMonitor.observeMessage(process, event.message);
+        if (
+          isAwaySummaryMessage(event.message) &&
+          event.message.isSynthetic !== true
+        ) {
+          const durable = toDurableRecapMessage(
+            event.message,
+            "provider-native",
+          );
+          if (durable) {
+            void this.persistRecapOverlay(process, durable);
+            this.publishRecapListUpdate(
+              process,
+              durable.content,
+              durable.timestamp,
+            );
+            this.cancelInFlightForkedRecap(process);
+          }
+        }
+      } else if (event.type === "recap-result") {
+        void this.handleRecapResult(process, event.result);
       } else if (event.type === "context-window-observed") {
         this.onContextWindowObserved?.(
           event.model,
@@ -3123,6 +3522,7 @@ export class Supervisor {
           processId: process.id,
           permissionMode: process.permissionMode,
           modeVersion: process.modeVersion,
+          recapAfterSeconds: process.recapAfterSeconds,
         };
         this.emitOwnershipChange(
           event.newSessionId,
@@ -3153,10 +3553,16 @@ export class Supervisor {
                 ? "tool-approval"
                 : "user-question";
           }
+          // A turn that settles to idle while the provider still has background
+          // work retained should report as active, not idle.
+          const activity: AgentActivity =
+            event.state.type === "idle" && process.isRetainingProviderWork()
+              ? "in-turn"
+              : event.state.type;
           this.emitAgentActivityChange(
             process.sessionId,
             process.projectId,
-            event.state.type,
+            activity,
             pendingInputType,
           );
         }
@@ -3171,6 +3577,14 @@ export class Supervisor {
         ) {
           this.schedulePatientDeferredCheck(process, 250);
         }
+        if (event.state.type === "idle") {
+          this.flushPendingForkedRecapRequest(process);
+        }
+        // Parent started a new turn: cancel any in-flight/deferred forked recap
+        // so a returning user's live turn is not shadowed by a stale recap.
+        if (event.state.type === "in-turn") {
+          this.cancelInFlightForkedRecap(process);
+        }
       } else if (event.type === "deferred-queue") {
         if (
           event.reason === "queued" &&
@@ -3179,6 +3593,7 @@ export class Supervisor {
         ) {
           this.schedulePatientDeferredCheck(process, 250);
         }
+        this.emitWorkerActivity();
       } else if (event.type === "terminated") {
         this.emitProcessTerminated(
           process.sessionId,
@@ -3186,6 +3601,12 @@ export class Supervisor {
           process.id,
           process.provider,
           event.reason,
+        );
+      } else if (event.type === "provider-runtime-status-change") {
+        this.emitProviderRuntimeStatusChange(
+          process.sessionId,
+          process.projectId,
+          event.status,
         );
       }
     });
@@ -3217,6 +3638,7 @@ export class Supervisor {
       processId: process.id,
       permissionMode: process.permissionMode,
       modeVersion: process.modeVersion,
+      recapAfterSeconds: process.recapAfterSeconds,
     };
 
     // Emit session created event for new sessions
@@ -3258,6 +3680,10 @@ export class Supervisor {
 
   private unregisterProcess(process: Process): void {
     this.observedProcessIds.delete(process.id);
+    this.cacheMissBillingMonitor.forgetProcess(process.id);
+    this.pendingForkedRecapRequests.delete(process.id);
+    this.forkedRecapInFlight.get(process.id)?.abort();
+    this.forkedRecapInFlight.delete(process.id);
     const patientTimer = this.patientCheckTimers.get(process.id);
     if (patientTimer) {
       clearTimeout(patientTimer);
@@ -3377,6 +3803,7 @@ export class Supervisor {
     const session: SessionSummary = {
       id: process.sessionId,
       projectId: process.projectId,
+      projectName: getProjectName(process.projectPath),
       title: optimistic.title,
       fullTitle: optimistic.fullTitle,
       createdAt: now,
@@ -3494,11 +3921,39 @@ export class Supervisor {
     this.eventBus.emit(event);
   }
 
+  private emitProviderRuntimeStatusChange(
+    sessionId: string,
+    projectId: UrlProjectId,
+    providerRuntimeStatus: ProviderRuntimeStatus,
+  ): void {
+    if (!this.eventBus) return;
+
+    const event: ProviderRuntimeStatusChangedEvent = {
+      type: "provider-runtime-status-changed",
+      sessionId,
+      projectId,
+      providerRuntimeStatus,
+      timestamp: new Date().toISOString(),
+    };
+    this.eventBus.emit(event);
+  }
+
   private handleProviderRetentionChanged(processHolder: {
     process: Process | null;
   }): void {
-    processHolder.process?.handleProviderRetentionChanged();
+    const process = processHolder.process;
+    process?.handleProviderRetentionChanged();
     this.emitWorkerActivity();
+    // Background work starting/finishing flips an idle session between active
+    // and truly idle without a state-change event. Surface that so inbox/sidebar
+    // activity indicators update live rather than only on the next refresh.
+    if (process && process.state.type === "idle") {
+      this.emitAgentActivityChange(
+        process.sessionId,
+        process.projectId,
+        process.isRetainingProviderWork() ? "in-turn" : "idle",
+      );
+    }
   }
 
   private processHasActiveWork(process: Process): boolean {
@@ -3521,18 +3976,61 @@ export class Supervisor {
   private emitWorkerActivity(): void {
     if (!this.eventBus) return;
 
-    const hasActiveWork = Array.from(this.processes.values()).some((p) =>
-      this.processHasActiveWork(p),
-    );
+    const interruptibleSessionCount = Array.from(
+      this.processes.values(),
+    ).filter((p) => this.processHasActiveWork(p)).length;
+    const queuedSessionMessageCount = this.getQueuedSessionMessageCount();
 
     const event: WorkerActivityEvent = {
       type: "worker-activity-changed",
       activeWorkers: this.processes.size,
+      interruptibleSessionCount,
       queueLength: this.workerQueue.length,
-      hasActiveWork,
+      queuedSessionMessageCount,
+      hasActiveWork: interruptibleSessionCount > 0,
       timestamp: new Date().toISOString(),
     };
     this.eventBus.emit(event);
+  }
+
+  private getQueuedSessionMessageCount(): number {
+    let count = this.workerQueue.length;
+    for (const process of this.processes.values()) {
+      count += process.queueDepth;
+      count += process.getDeferredQueueSummary().length;
+    }
+    return count;
+  }
+
+  async preserveRestartablePatientQueuesForRestart(): Promise<number> {
+    if (!this.sessionQueuePersistenceService || this.workerQueue.length > 0) {
+      return 0;
+    }
+
+    const processes = Array.from(this.processes.values()).filter(
+      (process) => !process.isTerminated,
+    );
+    if (processes.some((process) => this.processHasActiveWork(process))) {
+      return 0;
+    }
+    if (
+      processes.some(
+        (process) =>
+          process.queueDepth > 0 || process.hasVolatileDeferredMessages(),
+      )
+    ) {
+      return 0;
+    }
+
+    let preservedCount = 0;
+    for (const process of processes) {
+      preservedCount +=
+        await process.preservePatientDeferredMessagesForRestart();
+    }
+    if (preservedCount > 0) {
+      this.emitWorkerActivity();
+    }
+    return preservedCount;
   }
 
   // ============ Staleness Detection ============
@@ -3684,6 +4182,13 @@ export class Supervisor {
           process = result;
         }
 
+        if (request.workstreamId) {
+          await this.sessionMetadataService?.setWorkstream(
+            process.sessionId,
+            request.workstreamId,
+          );
+        }
+
         // Emit queue removed event
         this.eventBus?.emit({
           type: "queue-request-removed",
@@ -3798,16 +4303,20 @@ export class Supervisor {
    */
   getWorkerActivity(): {
     activeWorkers: number;
+    interruptibleSessionCount: number;
     queueLength: number;
+    queuedSessionMessageCount: number;
     hasActiveWork: boolean;
   } {
-    const hasActiveWork = Array.from(this.processes.values()).some((p) =>
-      this.processHasActiveWork(p),
-    );
+    const interruptibleSessionCount = Array.from(
+      this.processes.values(),
+    ).filter((p) => this.processHasActiveWork(p)).length;
     return {
       activeWorkers: this.processes.size,
+      interruptibleSessionCount,
       queueLength: this.workerQueue.length,
-      hasActiveWork,
+      queuedSessionMessageCount: this.getQueuedSessionMessageCount(),
+      hasActiveWork: interruptibleSessionCount > 0,
     };
   }
 }

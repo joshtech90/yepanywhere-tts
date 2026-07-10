@@ -1,5 +1,7 @@
 import { memo, type ReactNode, useState } from "react";
 import { useI18n } from "../../i18n";
+import { useQuoteableTextSource } from "../../hooks/useQuoteableTextSource";
+import type { UserPromptDeliveryState } from "../../lib/deliveryState";
 import {
   type UploadedFileInfo,
   getFilename,
@@ -8,6 +10,7 @@ import {
 import type { ContentBlock } from "../../types";
 import { AttachmentChip } from "../AttachmentChip";
 import { CopyTextButton } from "../ui/CopyTextButton";
+import { LinkifiedText } from "../ui/LinkifiedText";
 
 const MAX_LINES = 12;
 const MAX_CHARS = MAX_LINES * 100;
@@ -16,10 +19,18 @@ const STACK_ACTIONS_MIN_CHARS = 80;
 interface Props {
   content: string | ContentBlock[];
   onCorrect?: () => void;
+  onCancelUnconfirmed?: () => void;
   onTrimBefore?: () => void;
   /** Fork the session from just before this turn (real prefix fork only). */
   onForkBefore?: () => void;
   extraActions?: ReactNode;
+  /**
+   * "sent" while the turn exists only as the optimistic echo (not yet proven
+   * in the durable transcript); rendered fainter with a small "sent" tag in
+   * the bubble's right margin. Absent or "confirmed" renders the normal
+   * bubble. See lib/deliveryState.ts.
+   */
+  deliveryState?: UserPromptDeliveryState;
 }
 
 interface InputImageBlock extends ContentBlock {
@@ -44,8 +55,7 @@ function parseCorrectionDisplay(text: string): CorrectionDisplay | null {
 
   const body = text.slice(CORRECTION_PREFIX.length);
   const changeIndex = body.indexOf(CORRECTION_CHANGE_SEPARATOR);
-  const correctedText =
-    changeIndex === -1 ? body : body.slice(0, changeIndex);
+  const correctedText = changeIndex === -1 ? body : body.slice(0, changeIndex);
   const change =
     changeIndex === -1
       ? undefined
@@ -275,11 +285,23 @@ function CollapsibleText({ text }: { text: string }) {
   const exceedsLines = lines.length > MAX_LINES;
   const exceedsChars = text.length > MAX_CHARS;
   const needsTruncation = exceedsLines || exceedsChars;
+  const fullTextRef = useQuoteableTextSource<HTMLDivElement>(text);
+
+  // Truncate by lines first, then by characters if still too long
+  let truncatedText = exceedsLines
+    ? lines.slice(0, MAX_LINES).join("\n")
+    : text;
+  if (truncatedText.length > MAX_CHARS) {
+    truncatedText = truncatedText.slice(0, MAX_CHARS);
+  }
+  const truncatedRef = useQuoteableTextSource<HTMLDivElement>(truncatedText);
 
   if (!needsTruncation || isExpanded) {
     return (
       <div className="text-block">
-        {text}
+        <div ref={fullTextRef}>
+          <LinkifiedText text={text} />
+        </div>
         {isExpanded && needsTruncation && (
           <button
             type="button"
@@ -293,18 +315,11 @@ function CollapsibleText({ text }: { text: string }) {
     );
   }
 
-  // Truncate by lines first, then by characters if still too long
-  let truncatedText = exceedsLines
-    ? lines.slice(0, MAX_LINES).join("\n")
-    : text;
-  if (truncatedText.length > MAX_CHARS) {
-    truncatedText = truncatedText.slice(0, MAX_CHARS);
-  }
-
   return (
     <div className="text-block collapsible-text">
-      <div className="truncated-content">
-        {truncatedText}
+      <div ref={truncatedRef} className="truncated-content">
+        {/* A char-level cut can land mid-URL; don't link a truncated target. */}
+        <LinkifiedText text={truncatedText} suppressTrailingUrl={true} />
         <div className="fade-overlay" />
       </div>
       <button
@@ -320,12 +335,14 @@ function CollapsibleText({ text }: { text: string }) {
 
 function UserPromptActionButtons({
   onCorrect,
+  onCancelUnconfirmed,
   onTrimBefore,
   onForkBefore,
   copyText,
   extraActions,
 }: {
   onCorrect?: () => void;
+  onCancelUnconfirmed?: () => void;
   onTrimBefore?: () => void;
   onForkBefore?: () => void;
   copyText?: string;
@@ -335,6 +352,7 @@ function UserPromptActionButtons({
 
   if (
     !onCorrect &&
+    !onCancelUnconfirmed &&
     !onTrimBefore &&
     !onForkBefore &&
     !copyText &&
@@ -374,6 +392,30 @@ function UserPromptActionButtons({
             <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
           </svg>
           <span className="user-prompt-correct-label">Edit</span>
+        </button>
+      )}
+      {onCancelUnconfirmed && (
+        <button
+          type="button"
+          className="user-prompt-action user-prompt-action-cancel-sent"
+          onClick={onCancelUnconfirmed}
+          aria-label={t("userPromptCancelUnconfirmedAction")}
+          title={t("userPromptCancelUnconfirmedAction")}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
         </button>
       )}
       {onForkBefore && (
@@ -435,6 +477,46 @@ function UserPromptActionButtons({
   );
 }
 
+/**
+ * Small "sent" tag in the bubble's right margin while the turn is
+ * server-accepted but not yet proven in the durable transcript; disappears
+ * entirely on confirmation so the steady state stays unadorned. Hover shows
+ * the short explanation (title); click/tap toggles a popover with the full
+ * one, since touch devices never see the title.
+ */
+function DeliveryStateMarker({
+  deliveryState,
+}: {
+  deliveryState?: UserPromptDeliveryState;
+}) {
+  const { t } = useI18n();
+  const [showDetail, setShowDetail] = useState(false);
+  if (deliveryState !== "sent") return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="user-prompt-delivery-marker"
+        title={t("userPromptDeliverySent")}
+        aria-label={t("userPromptDeliverySent")}
+        aria-expanded={showDetail}
+        onClick={() => setShowDetail((open) => !open)}
+        onBlur={() => setShowDetail(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setShowDetail(false);
+        }}
+      >
+        {t("userPromptDeliverySentLabel")}
+      </button>
+      {showDetail && (
+        <span className="user-prompt-delivery-popover" role="status">
+          {t("userPromptDeliverySentDetail")}
+        </span>
+      )}
+    </>
+  );
+}
+
 function UserPromptText({ text }: { text: string }) {
   const correction = parseCorrectionDisplay(text);
   if (!correction) {
@@ -447,7 +529,7 @@ function UserPromptText({ text }: { text: string }) {
       <CollapsibleText text={correction.correctedText} />
       {correction.change && (
         <div className="user-prompt-correction-change">
-          Change: {correction.change}
+          Change: <LinkifiedText text={correction.change} />
         </div>
       )}
     </div>
@@ -457,10 +539,17 @@ function UserPromptText({ text }: { text: string }) {
 export const UserPromptBlock = memo(function UserPromptBlock({
   content,
   onCorrect,
+  onCancelUnconfirmed,
   onTrimBefore,
   onForkBefore,
   extraActions,
+  deliveryState,
 }: Props) {
+  const unconfirmedClass =
+    deliveryState === "sent" ? " user-prompt-unconfirmed" : "";
+  const actionClass = onCancelUnconfirmed
+    ? " has-cancel-unconfirmed-action"
+    : "";
   if (typeof content === "string") {
     const { text, openedFiles, uploadedFiles } = parseUserPrompt(content);
 
@@ -477,18 +566,20 @@ export const UserPromptBlock = memo(function UserPromptBlock({
 
     return (
       <div
-        className={`user-prompt-container ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
+        className={`user-prompt-container${actionClass} ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
       >
         <div
-          className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}`}
+          className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}${unconfirmedClass}`}
         >
           <div className="message-content">
             <UserPromptText text={text} />
+            <DeliveryStateMarker deliveryState={deliveryState} />
             <UploadedFilesMetadata files={uploadedFiles} />
           </div>
         </div>
         <UserPromptActionButtons
           onCorrect={onCorrect}
+          onCancelUnconfirmed={onCancelUnconfirmed}
           onTrimBefore={onTrimBefore}
           onForkBefore={onForkBefore}
           copyText={getUserPromptCopyText(text)}
@@ -532,18 +623,20 @@ export const UserPromptBlock = memo(function UserPromptBlock({
 
   return (
     <div
-      className={`user-prompt-container ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
+      className={`user-prompt-container${actionClass} ${shouldStackUserPromptActions(text) ? "has-stacked-actions" : ""}`}
     >
       <div
-        className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}`}
+        className={`message message-user-prompt ${onCorrect ? "user-prompt-correctable" : ""}${unconfirmedClass}`}
       >
         <div className="message-content">
           <UserPromptText text={text} />
+          <DeliveryStateMarker deliveryState={deliveryState} />
           <UploadedFilesMetadata files={allUploadedFiles} />
         </div>
       </div>
       <UserPromptActionButtons
         onCorrect={onCorrect}
+        onCancelUnconfirmed={onCancelUnconfirmed}
         onTrimBefore={onTrimBefore}
         onForkBefore={onForkBefore}
         copyText={getUserPromptCopyText(text)}

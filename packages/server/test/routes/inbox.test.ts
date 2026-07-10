@@ -1,4 +1,7 @@
-import type { UrlProjectId } from "@yep-anywhere/shared";
+import type {
+  ProjectQueueItemSummary,
+  UrlProjectId,
+} from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionIndexService } from "../../src/indexes/index.js";
 import type { NotificationService } from "../../src/notifications/index.js";
@@ -59,23 +62,57 @@ function createProject(id: string, name: string, sessionDir: string): Project {
   };
 }
 
+function createExistingSessionProjectQueueItem(
+  id: string,
+  projectId: string,
+  sessionId: string,
+  status: ProjectQueueItemSummary["status"] = "queued",
+): ProjectQueueItemSummary {
+  return {
+    id,
+    projectId: projectId as UrlProjectId,
+    target: { type: "existing-session", sessionId },
+    messagePreview: `Queued ${id}`,
+    message: { text: `Queued ${id}` },
+    createdAt: hoursAgo(1),
+    updatedAt: hoursAgo(1),
+    status,
+    attachmentCount: 0,
+  };
+}
+
 describe("Inbox Routes", () => {
   let mockScanner: ProjectScanner;
   let mockReaderFactory: (project: Project) => ISessionReader;
   let mockSupervisor: Supervisor;
   let mockNotificationService: NotificationService;
   let mockSessionIndexService: SessionIndexService;
+  let mockSessionMetadataService: NonNullable<
+    InboxDeps["sessionMetadataService"]
+  >;
+  let mockProjectQueueService: NonNullable<InboxDeps["projectQueueService"]>;
   let sessionsByDir: Map<string, SessionSummary[]>;
   let codexSessionsByPath: Map<string, SessionSummary[]>;
+  let metadataMap: Map<
+    string,
+    { customTitle?: string; isArchived?: boolean; isStarred?: boolean }
+  >;
+  let projectQueueItems: ProjectQueueItemSummary[];
   let processMap: Map<
     string,
-    { getPendingInputRequest: () => unknown; state: { type: string } }
+    {
+      getPendingInputRequest: () => unknown;
+      state: { type: string };
+      isRetainingProviderWork?: () => boolean;
+    }
   >;
   let unreadMap: Map<string, boolean>;
 
   beforeEach(() => {
     sessionsByDir = new Map();
     codexSessionsByPath = new Map();
+    metadataMap = new Map();
+    projectQueueItems = [];
     processMap = new Map();
     unreadMap = new Map();
 
@@ -120,6 +157,14 @@ describe("Inbox Routes", () => {
         },
       ),
     } as unknown as SessionIndexService;
+
+    mockSessionMetadataService = {
+      getMetadata: vi.fn((sessionId: string) => metadataMap.get(sessionId)),
+    } as unknown as NonNullable<InboxDeps["sessionMetadataService"]>;
+
+    mockProjectQueueService = {
+      listAll: vi.fn(() => projectQueueItems),
+    };
   });
 
   async function makeRequest(deps: InboxDeps): Promise<InboxResponse> {
@@ -186,6 +231,129 @@ describe("Inbox Routes", () => {
       expect(result.active).toHaveLength(1);
       expect(result.active[0].sessionId).toBe("sess1");
       expect(result.active[0].activity).toBe("in-turn");
+    });
+
+    it("categorizes idle process retaining provider background work into active", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      // Updated recently enough that, without the retention check, it would
+      // otherwise fall into recentActivity.
+      const session = createSession("sess1", "proj1", minutesAgo(2));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+
+      // Idle process, but the provider is still keeping background work alive.
+      processMap.set("sess1", {
+        getPendingInputRequest: () => null,
+        state: { type: "idle" },
+        isRetainingProviderWork: () => true,
+      });
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+      });
+
+      expect(result.active).toHaveLength(1);
+      expect(result.active[0].sessionId).toBe("sess1");
+      expect(result.active[0].activity).toBe("in-turn");
+      expect(result.recentActivity).toHaveLength(0);
+    });
+
+    it("categorizes idle process without provider retention into recentActivity", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(2));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+
+      // Idle process with no retained background work stays inactive.
+      processMap.set("sess1", {
+        getPendingInputRequest: () => null,
+        state: { type: "idle" },
+        isRetainingProviderWork: () => false,
+      });
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+      });
+
+      expect(result.active).toHaveLength(0);
+      expect(result.recentActivity).toHaveLength(1);
+      expect(result.recentActivity[0].sessionId).toBe("sess1");
+      expect(result.recentActivity[0].activity).toBeUndefined();
+    });
+
+    it("categorizes existing-session Project Queue targets into active", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", hoursAgo(30));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      projectQueueItems = [
+        createExistingSessionProjectQueueItem("queue-1", "proj1", "sess1"),
+      ];
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+        projectQueueService: mockProjectQueueService,
+      });
+
+      expect(result.active).toHaveLength(1);
+      expect(result.active[0].sessionId).toBe("sess1");
+      expect(result.recentActivity).toHaveLength(0);
+      expect(result.unread24h).toHaveLength(0);
+    });
+
+    it("does not promote failed or new-session Project Queue items", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const failedSession = createSession("failed-sess", "proj1", hoursAgo(30));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [failedSession]);
+      projectQueueItems = [
+        createExistingSessionProjectQueueItem(
+          "queue-failed",
+          "proj1",
+          "failed-sess",
+          "failed",
+        ),
+        {
+          id: "queue-new",
+          projectId: "proj1" as UrlProjectId,
+          target: { type: "new-session", title: "Queued new session" },
+          messagePreview: "Queued new session",
+          message: { text: "Queued new session" },
+          createdAt: hoursAgo(1),
+          updatedAt: hoursAgo(1),
+          status: "queued",
+          attachmentCount: 0,
+        },
+      ];
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+        projectQueueService: mockProjectQueueService,
+      });
+
+      expect(result.active).toHaveLength(0);
+      expect(result.recentActivity).toHaveLength(0);
+      expect(result.unread24h).toHaveLength(0);
     });
 
     it("categorizes session updated in last 30 minutes into recentActivity", async () => {
@@ -279,6 +447,37 @@ describe("Inbox Routes", () => {
 
       expect(result.needsAttention).toHaveLength(0);
       expect(result.active).toHaveLength(0);
+      expect(result.recentActivity).toHaveLength(0);
+      expect(result.unread8h).toHaveLength(0);
+      expect(result.unread24h).toHaveLength(0);
+    });
+
+    it("does not treat a later storage touch as recent or unread", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const contentUpdatedAt = hoursAgo(2);
+      const lastSeenAt = hoursAgo(1);
+      const storageTouchedAt = minutesAgo(5);
+      const session = createSession("sess1", "proj1", contentUpdatedAt);
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      vi.mocked(mockNotificationService.hasUnread).mockImplementation(
+        (_sessionId: string, updatedAt: string) => updatedAt > lastSeenAt,
+      );
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+      });
+
+      expect(storageTouchedAt > lastSeenAt).toBe(true);
+      expect(mockNotificationService.hasUnread).toHaveBeenCalledWith(
+        "sess1",
+        contentUpdatedAt,
+      );
       expect(result.recentActivity).toHaveLength(0);
       expect(result.unread8h).toHaveLength(0);
       expect(result.unread24h).toHaveLength(0);
@@ -568,6 +767,26 @@ describe("Inbox Routes", () => {
       });
 
       expect(result.recentActivity[0].sessionTitle).toBe("My Custom Title");
+    });
+
+    it("includes starred metadata in inbox items", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(10));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      metadataMap.set("sess1", { isStarred: true });
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+        sessionMetadataService: mockSessionMetadataService,
+      });
+
+      expect(result.recentActivity[0].isStarred).toBe(true);
     });
   });
 

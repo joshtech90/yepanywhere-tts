@@ -39,11 +39,92 @@ interrupted to deliver a queued steer is double-displayed."
    that risk large). Deterministic alignment carries the load; this only
    catches the residue. The optional capability `approxDedupExcludesTools`
    (codex, codex-oss) removes tool_use/tool_result messages from this
-   backstop entirely: their uuids are deterministic (call_id), so the
-   backstop is redundant for them and would otherwise be the one place a
-   legitimately-repeated identical tool call could be wrongly merged. The
-   `excludeTools` option on both backstop functions implements this; OpenCode
-   leaves it off.
+   backstop entirely: native tool uuids are deterministic (`call_id`), while
+   the code-mode `commandExecution` exception uses a separately scoped exact
+   turn/semantics reconciliation. The broad backstop would otherwise be the
+   one place a legitimately repeated identical tool call could be wrongly
+   merged. The `excludeTools` option on both backstop functions implements
+   this; OpenCode leaves it off.
+   The one deliberately wider exception is the **first plain user turn**:
+   new-session startup can show the optimistic user echo before Codex has
+   finished thread setup and written the durable response-item user row. That
+   first-turn pair gets a 30s startup window, but only when no earlier user
+   turn exists; later repeated user turns, assistant text, and tool rows still
+   use the 2s backstop. This is a merge-layer backstop, not the whole UI
+   contract: the rendered transcript still must not show two adjacent copies of
+   the same visible first user turn while startup is settling.
+
+## Claude (busy-path sends)
+
+Claude dedups by id for ordinary traffic — direct sends round-trip YA's queue
+uuid into the durable user row — but **busy-path sends do not**. Verified on a
+real session (af737e0c, 2026-07-03): a steer/queued delivery while the CLI is
+in-turn is persisted as a `queue-operation`/`enqueue` row (**no uuid**, text +
+enqueue timestamp) plus, at delivery, `queued_command` attachment rows and a
+paired `queue-operation`/`remove`. YA's uuid/tempId appear nowhere, so the
+optimistic echo (uuid = YA queue uuid, also replayed from the SSE buckets while
+the process lives) and the reader's normalized row (positional id
+`queue-operation-{index}-{ts}`, `deferredSource: "queue-operation"`) can never
+merge by id. With `needsApproxMessageDedup` deliberately false for Claude,
+every durable merge while the echo was live double-rendered the send — the
+"duplicate sent messages while Claude is busy" report. Deterministic alignment
+is impossible here: the CLI drops the supplied uuid on its queue path.
+
+- **Scoped pairing (landed).** Capability `dedupQueueOperationEchoes`
+  (claude, claude-ollama) enables `reconcileClaudeQueueOperationEchoes`
+  (`linearMessageDedup.ts`): durable `deferredSource: "queue-operation"` user
+  rows pair one-to-one against sdk-source plain user turns with identical
+  normalized text, nearest timestamp first, within 60s. Both sides are stamped
+  at enqueue time on the same machine (observed ms apart; the slack absorbs
+  CLI stdin lag), and the structural scoping — only queue-op rows, only
+  sdk echoes, one-to-one — is what makes the wide window safe where the
+  general backstop must stay at 2s. The merged message keeps the **row's**
+  identity (`queue-operation-…` id, not the echo uuid) so later durable
+  fetches keep deduping by id; echo-only fields (tempId, metadata) survive.
+- **Dequeue-path pairing (landed 2026-07-04).** The CLI has a second delivery
+  shape the row pairing cannot see. On interrupt (verified on ac165df3: user
+  rejects a long-running tool with steers pending) — and on some end-of-turn
+  deliveries — it *dequeues* every pending queued message: content-less
+  `queue-operation`/`dequeue` rows the reader never surfaces, plus **one real
+  user row** (its own uuid, parented on the `[Request interrupted by user…]`
+  marker) whose text is the dequeued texts joined by `"\n"`. With no
+  queue-op row to pair against, the echoes stranded as perpetual "sent"
+  copies above the interrupt while the durable turn rendered again below it —
+  so the post-interrupt response appeared to follow the interrupt with its
+  actual prompt sitting misplaced above. `reconcileDequeueDeliveredTurns`
+  (same entry point, same capability) pairs a durable plain user row with the
+  in-order run of unconfirmed self-send echoes (tempId/messageMetadata
+  required — provider stream copies carry neither) whose concatenation
+  reproduces its text exactly. The **durable position wins**: the turn reads
+  at its delivery point, immediately after the interrupt marker, matching how
+  remove-path deliveries read. Exact-concatenation matching replaces a tight
+  timestamp window (enqueue→delivery can span a long tool run); the only time
+  constraint is that no consumed echo postdates delivery beyond 60s skew.
+- **Late-delivered entries vs incremental fetch (landed).** The normalized
+  queue entry keeps its enqueue *position* but only becomes visible at
+  delivery, so a purely positional `afterMessageId` slice can sit past it and
+  never send it. The reader stamps `queueDeliveredAt` (the remove op's
+  timestamp, `claude-messages.ts`), and `sliceAfterMessageIdWithMatch`
+  (`pagination.ts`) additionally returns pre-anchor entries whose delivery
+  postdates the anchor row. Re-sends merge idempotently by id client-side.
+- **Delivery-state feedback (landed, default-on).** The pairing doubles as
+  the send-confirmation signal: a self-sent turn (tempId/messageMetadata on
+  the echo) renders fainter with a light "sent" tag in the bubble's right
+  margin (hover title + tap popover explain it) while sdk-source-only —
+  server-accepted but not yet proven durable, exactly the copy a process kill
+  could lose — and flips to the ordinary unadorned bubble when the durable
+  copy merges (`lib/deliveryState.ts`, `UserPromptBlock`). A ✓ glyph was
+  rejected: it reads as confirmed/seen, the opposite of the state it marks. Owned sessions normally skip
+  file-change fetches; while unconfirmed sends exist they fetch incrementally
+  so confirmation lands mid-turn (`useSession.handleFileChange`).
+
+Residual gaps: two identical busy sends >60s apart whose CLI enqueue lagged
+that far (pairing misses; duplicate returns), and pre-delivery steers show
+"sent" until the CLI delivers them (the enqueue row exists but the reader
+only surfaces delivered entries). The dequeue pairing adds one more: its
+exact-text match can absorb the stranded echo of a steer the CLI *lost*
+into a later identical-text direct send's durable row — the text still
+renders once, but the visible evidence that a send went missing is gone.
 
 ## OpenCode
 
@@ -94,7 +175,8 @@ splits by item class (verified in `references/codex`
 
 | Item | Live thread `item.id` | Durable rollout id | Aligned? |
 |---|---|---|---|
-| Tool calls/results | `payload.call_id` (`id: payload.call_id.clone()`) | `call_id` on the response item | **Yes** — both key on `call_id` |
+| Native tool calls/results | `payload.call_id` (`id: payload.call_id.clone()`) | `call_id` on the response item | **Yes** — both key on `call_id` |
+| Code-mode nested command | inner `commandExecution` id (`exec-*`) | outer `custom_tool_call.call_id` (`call_*`) | **No direct id** — scoped reconciliation below |
 | User turns | counter `item-{N}` + separate `client_id` | event_msg `client_id` (null until YA sends it); also a positional response-item copy | Deferred (see below) |
 | Assistant / reasoning | counter `item-{N}` (`next_item_id()`) | `response_item.payload.id` — **null in practice** | **No** — no shared id; backstop only |
 
@@ -104,18 +186,20 @@ side** — the live id is a synthetic per-thread counter and the rollout's
 `payload.id` is null (confirmed on a real 2026-06 rollout: 13 assistant
 items, all `payload.id == null`). So the "Assistant w/ `ResponseItem.id`"
 class does not occur, and *all* assistant messages fall to the
-content+timestamp backstop. Only **tool calls** are cleanly alignable.
+content+timestamp backstop. Only **native tool calls** are cleanly alignable by
+provider id. Code-mode adds the bounded exception below.
 
-### Done: tool-call id alignment
+### Done: native tool-call id alignment and code-mode reconciliation
 
-Both sides now key the rendered message uuid on `call_id` (call →
-`call_id`, result → `${call_id}-result`), independent of turn — `call_id`
-is globally unique, so no turn scoping is needed:
+For directly alignable native tools, both sides key the rendered message uuid
+on `call_id` (call → `call_id`, result → `${call_id}-result`), independent of
+turn — `call_id` is globally unique, so no turn scoping is needed:
 - Live (`codex.ts`): `convertItemToSDKMessages` routes tool-backed thread
   items (`isToolBackedThreadItem`) through `buildItemToolUuid(item.id)` /
   `buildItemResultUuid(callId)`; message/reasoning items keep
-  `${itemId}-${turnId}`. The streaming-result and (opt-in) rawResponse
-  paths use the same helpers.
+  `${itemId}-${turnId}`. A code-mode command temporarily uses its inner
+  `exec-*` item id until the scoped reconciliation below. The streaming-result
+  and (opt-in) rawResponse paths use the same helpers.
 - Durable (`normalization.ts`): `codexDurableResponseItemUuid` maps
   `function_call`/`custom_tool_call`/`web_search_call` →
   `call_id`, `*_output` → `${call_id}-result`; the `exec_command_end`
@@ -126,8 +210,22 @@ is globally unique, so no turn scoping is needed:
   across stream and durable sources" asserts uuid equality per `call_id`,
   and "dedups Codex tool messages by id … with the backstop off" proves the
   ids carry tool dedup without `reconcileLinearMessages`.
-- Backstop excluded for tools: with the ids deterministic, the approx-dedup
-  backstop no longer runs over Codex tool messages
+- Code-mode exception (verified 2026-07-10): a real multi-read execution used
+  live id `exec-f6e9…` and durable outer id `call_FE1X…`; the raw SDK log had
+  no `rawResponseItem/completed` bridge for that turn. Both paths did expose
+  the same rollout turn id and normalized to the same `Bash` input/action
+  vector. Server normalization now attaches ephemeral
+  `_codexToolCorrelation` metadata to those live and durable-shaped messages.
+  `codexToolReconciliation.ts` pairs only opposite origins in the same turn
+  with exactly equal normalized name/input/actions, one-to-one by nearest
+  timestamp within 10s, then adopts `call_*` / `call_*-result` as canonical.
+  The durable row remains authoritative and no YA record is persisted.
+- Multi-nested code mode fails closed: several inner `commandExecution`
+  parents cannot be assigned safely to one outer call by id. The explored
+  projection may make their default visual group converge, but raw parent
+  structure and active-tail collapse identity may replace once rollout lands.
+- Backstop excluded for tools: native ids plus the scoped code-mode reconciler
+  carry the known cases, so the approximate backstop does not run over tools
   (`approxDedupExcludesTools`); it stays on only for the residual non-tool
   messages. See the Two-layer remedy note above.
 
@@ -144,6 +242,65 @@ durable double-source: when response-item user messages exist (the norm),
 that carries `client_id`. Aligning requires either correlating the two or
 flipping that gate — entangled, and low marginal value over the 2s
 backstop (the residue is only two identical steers <2s apart). Not done.
+
+The first user turn has one additional startup wrinkle: YA may render the
+optimistic opening turn before the Codex thread has finished startup and before
+the durable first user row appears. A real report on 2026-06-30
+(`019f1642-3917-7052-aa32-1262257ec3f1`) had the session meta at
+`02:01:07.884Z` and the durable visible user row at `02:01:12.931Z`, outside
+the general 2s window. The fix is a first-plain-user-turn-only 30s window in
+`linearMessageDedup`, not a looser general Codex backstop.
+
+### Re-reported first-turn duplicate with attachments
+
+On 2026-06-30, session `019f1685-f1c8-7171-b056-e9b3f2f6be61` showed the
+opening prompt twice as two normal user bubbles. That session was created from
+`NewSessionForm` with an attachment. Evidence bounds the root cause:
+
+- The REST session detail had one visible opening user row:
+  `codex-2-2026-06-30T03:15:16.034Z`.
+- A fresh headless load of the same URL rendered one opening user prompt, so the
+  duplicate was not persisted in the durable transcript and was not produced by
+  a clean initial load.
+- The attached-new-session path is two-phase: create an empty session,
+  materialize the attachments, then call `api.queueMessage(...)` for the first
+  turn with `tempId` intentionally `undefined`. That removes the strongest
+  client identity hook and lengthens the startup window before the durable row
+  exists.
+- During that window, the client can hold more than one live/user copy: YA's own
+  queued echo and Codex's later thread-item user echo, or a stale in-memory
+  stream copy plus a later durable backfill. The current backstop handles
+  cross-source same-fingerprint pairs, and exact same-source repeats only when
+  timestamps are identical; it does not enforce a user-visible "one first turn"
+  invariant across all startup sources.
+
+The UI contract should be stronger than "the right source eventually wins":
+before rendering the main transcript, the first visible user turn may appear at
+most once. For the startup window, compare the user-visible prompt text after
+stripping YA's uploaded-files metadata into the same attachment model the UI
+renders, plus the rendered attachment identity set. If two adjacent user rows
+match that visible identity, collapse them and prefer the authoritative durable
+row when present, otherwise prefer the metadata-rich/latest live row. Do not
+extend this to arbitrary later repeated user turns; a user really can resend the
+same text later.
+
+Landed fix:
+
+- `linearMessageDedup` now computes an attachment-bearing visible first-user
+  fingerprint: rendered prompt text after removing YA's uploaded-files metadata,
+  plus attachment paths from either the metadata section or message attachment
+  fields.
+- The guard merges SDK/JSONL first-turn copies and same-source SDK startup
+  copies when that visible attachment fingerprint matches inside the existing
+  30s first-turn window. It still leaves text-only same-source repeats on the
+  previous strict rule, because two text-only first messages can be real user
+  actions.
+- Regression coverage pins the attached new-session cases above and confirms a
+  later identical attached prompt remains two turns.
+
+Still deferred: thread a client user message id through the attached-new-session
+two-phase path too; that removes the need for this safety net on the opening
+turn instead of only masking it.
 
 ### Pitfalls that turned out fine (for the deferred user-turn work)
 

@@ -99,6 +99,12 @@ export function createSessionSubscription(
     if (augmenter) return augmenter;
     if (!augmenterPromise) {
       augmenterPromise = createStreamAugmenter({
+        safeMarkdownOptions: {
+          projectFileLinks: {
+            projectId: process.projectId,
+            projectPath: process.projectPath,
+          },
+        },
         onMarkdownAugment: (data) => {
           if (!completed) emit("markdown-augment", data);
         },
@@ -113,6 +119,16 @@ export function createSessionSubscription(
     }
     augmenter = await augmenterPromise;
     return augmenter;
+  };
+
+  const emitStatus = (state: Process["state"]) => {
+    emit("status", {
+      sessionId: process.sessionId,
+      state: state.type,
+      liveness: process.getLivenessSnapshot(),
+      providerRuntimeStatus: process.getProviderRuntimeStatus(),
+      ...(state.type === "waiting-input" ? { request: state.request } : {}),
+    });
   };
 
   // Heartbeat
@@ -171,26 +187,15 @@ export function createSessionSubscription(
         }
 
         case "state-change":
-          emit("status", {
-            state: event.state.type,
-            liveness: process.getLivenessSnapshot(),
-            ...(event.state.type === "waiting-input"
-              ? { request: event.state.request }
-              : {}),
-          });
+          emitStatus(event.state);
           break;
 
-        case "liveness-update": {
-          const currentState = process.state;
-          emit("status", {
-            state: currentState.type,
-            liveness: process.getLivenessSnapshot(),
-            ...(currentState.type === "waiting-input"
-              ? { request: currentState.request }
-              : {}),
-          });
+        // Both refresh the same status payload from current process state;
+        // the changed value is read back off the process at emit time.
+        case "liveness-update":
+        case "provider-runtime-status-change":
+          emitStatus(process.state);
           break;
-        }
 
         case "mode-change":
           emit("mode-change", {
@@ -222,7 +227,10 @@ export function createSessionSubscription(
           if (augmenter) {
             await augmenter.flush();
           }
-          emit("complete", { timestamp: new Date().toISOString() });
+          emit("complete", {
+            sessionId: process.sessionId,
+            timestamp: new Date().toISOString(),
+          });
           completed = true;
           clearInterval(heartbeatInterval);
           break;
@@ -241,9 +249,12 @@ export function createSessionSubscription(
     state: currentState.type,
     permissionMode: process.permissionMode,
     modeVersion: process.modeVersion,
+    recapAfterSeconds: process.recapAfterSeconds,
+    recapMode: process.recapMode,
     provider: process.provider,
     model: process.resolvedModel,
     liveness: process.getLivenessSnapshot(),
+    providerRuntimeStatus: process.getProviderRuntimeStatus(),
     ...(currentState.type === "waiting-input"
       ? { request: currentState.request }
       : {}),

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { WorkstreamId } from "@yep-anywhere/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 
 describe("SessionMetadataService", () => {
@@ -110,9 +111,18 @@ describe("SessionMetadataService", () => {
         join(testDir, "session-metadata.json"),
         "not valid json{{{",
       );
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       // Should not throw
-      await service.initialize();
+      try {
+        await service.initialize();
+        expect(warnSpy).toHaveBeenCalledWith(
+          "[SessionMetadataService] Failed to load state, starting fresh:",
+          expect.any(SyntaxError),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
 
       // Should start fresh
       expect(service.getAllMetadata()).toEqual({});
@@ -417,6 +427,98 @@ describe("SessionMetadataService", () => {
 
       expect(newService.getPromptSuggestionMode("session-1")).toBe("off");
     });
+
+    it("stores an explicit recap mode, including 'off'", async () => {
+      await service.initialize();
+
+      await service.updateMetadata("session-1", { recapMode: "fork" });
+      expect(service.getRecapMode("session-1")).toBe("fork");
+
+      // "off" is meaningful-stored: it must override the default on resume, so
+      // it survives the prune block even as the only field.
+      await service.updateMetadata("session-2", { recapMode: "off" });
+      expect(service.getMetadata("session-2")).toEqual({ recapMode: "off" });
+      expect(service.getRecapMode("session-2")).toBe("off");
+    });
+
+    it("clears the recap mode when set to null", async () => {
+      await service.initialize();
+
+      await service.updateMetadata("session-1", { recapMode: "fork" });
+      expect(service.getRecapMode("session-1")).toBe("fork");
+
+      await service.updateMetadata("session-1", { recapMode: null });
+      expect(service.getMetadata("session-1")).toBeUndefined();
+      expect(service.getRecapMode("session-1")).toBeUndefined();
+    });
+
+    it("persists the recap mode across restarts", async () => {
+      await service.initialize();
+      await service.updateMetadata("session-1", { recapMode: "fork" });
+
+      const newService = new SessionMetadataService({ dataDir: testDir });
+      await newService.initialize();
+
+      expect(newService.getRecapMode("session-1")).toBe("fork");
+    });
+  });
+
+  describe("recapMessages", () => {
+    it("persists durable recap overlay rows across restarts", async () => {
+      await service.initialize();
+
+      await service.addRecapMessage("session-1", {
+        type: "system",
+        subtype: "away_summary",
+        content: "Finished the smoke test.",
+        timestamp: "2026-06-24T00:00:00.000Z",
+        uuid: "recap-1",
+        id: "recap-1",
+        isSynthetic: true,
+        yaRecapSource: "ya-synthetic",
+      });
+
+      const newService = new SessionMetadataService({ dataDir: testDir });
+      await newService.initialize();
+
+      expect(newService.getRecapMessages("session-1")).toEqual([
+        expect.objectContaining({
+          content: "Finished the smoke test.",
+          uuid: "recap-1",
+          yaRecapSource: "ya-synthetic",
+        }),
+      ]);
+    });
+
+    it("dedupes durable recap overlay rows by uuid", async () => {
+      await service.initialize();
+
+      await service.addRecapMessage("session-1", {
+        type: "system",
+        subtype: "away_summary",
+        content: "First text.",
+        timestamp: "2026-06-24T00:00:00.000Z",
+        uuid: "recap-1",
+        id: "recap-1",
+        yaRecapSource: "provider-native",
+      });
+      await service.addRecapMessage("session-1", {
+        type: "system",
+        subtype: "away_summary",
+        content: "Updated text.",
+        timestamp: "2026-06-24T00:00:01.000Z",
+        uuid: "recap-1",
+        id: "recap-1",
+        yaRecapSource: "provider-native",
+      });
+
+      expect(service.getRecapMessages("session-1")).toEqual([
+        expect.objectContaining({
+          content: "Updated text.",
+          uuid: "recap-1",
+        }),
+      ]);
+    });
   });
 
   describe("clearSession", () => {
@@ -448,6 +550,34 @@ describe("SessionMetadataService", () => {
       await service.clearSession("nonexistent-session");
 
       expect(service.getMetadata("nonexistent-session")).toBeUndefined();
+    });
+  });
+
+  describe("setWorkstream", () => {
+    it("sets and clears workstream identity", async () => {
+      await service.initialize();
+
+      await service.setWorkstream("session-1", "ws-feature" as WorkstreamId);
+
+      expect(service.getMetadata("session-1")).toEqual({
+        workstreamId: "ws-feature",
+      });
+
+      await service.setWorkstream("session-1", undefined);
+
+      expect(service.getMetadata("session-1")).toBeUndefined();
+    });
+
+    it("preserves other metadata when updating workstream identity", async () => {
+      await service.initialize();
+      await service.setTitle("session-1", "My Title");
+
+      await service.setWorkstream("session-1", "ws-feature" as WorkstreamId);
+
+      expect(service.getMetadata("session-1")).toEqual({
+        customTitle: "My Title",
+        workstreamId: "ws-feature",
+      });
     });
   });
 

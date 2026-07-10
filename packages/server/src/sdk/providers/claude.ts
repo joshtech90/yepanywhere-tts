@@ -397,21 +397,31 @@ async function* withCleanup<T>(
 }
 
 /**
- * Opus always runs with the 1M-token context window: Opus 4.8's 1M is
- * standard-priced (no per-token premium), so bare `opus` is normalized to the
- * extended-context alias at every launch/setModel chokepoint and surfaced with
- * the 1M window in the exposed model list.
+ * Opus and Sonnet both run with the 1M-token context window: their 1M is
+ * standard-priced (no per-token premium), so bare `opus`/`sonnet` are
+ * normalized to the extended-context alias at every launch/setModel chokepoint
+ * and surfaced with the 1M window in the exposed model list.
  *
- * Sonnet is deliberately NOT extended. Its 1M window requires paid usage
- * credits — launching it as `sonnet[1m]` errors with "Usage credits required
- * for 1M context" — so Sonnet keeps its standard 200K window. See tasks/029.
+ * Sonnet's 1M was previously credit-gated (launching `sonnet[1m]` errored with
+ * "Usage credits required for 1M context"), so it once kept a separate 200K
+ * entry. Sonnet 5 lifted that gate: a live probe on this account runs
+ * `--model sonnet` as `claude-sonnet-5[1m]` at a 1,000,000 window on the
+ * standard tier with no error. The "Sonnet 5" label is pinned in the
+ * description (the name stays the generic "Sonnet") rather than taken from the
+ * SDK, because `supportedModels()` still reports the `sonnet` alias as
+ * "Sonnet 4.6" even though it routes to Sonnet 5 at runtime; that pin will
+ * drift once the SDK catalog catches up, and we accept it. See
+ * topics/claude-1m-context.md.
  */
 const ALWAYS_EXTENDED_CONTEXT_ALIASES: Record<string, string> = {
   opus: "opus[1m]",
+  sonnet: "sonnet[1m]",
 };
 
 const ALWAYS_EXTENDED_DESCRIPTIONS: Record<string, string> = {
   opus: "Opus 4.8 with the full 1M-token context window",
+  sonnet:
+    "Sonnet 5 with the full 1M-token context window · newer tokenizer bills ~30% more tokens",
 };
 
 /** Normalize the opus alias to its always-on 1M variant at launch. */
@@ -425,15 +435,17 @@ export function withExtendedClaudeContext(
 const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
     id: "default",
-    name: "Default (recommended)",
-    description: "Claude Code chooses the recommended model for your account",
+    name: "Default",
+    description:
+      "Claude Code chooses the recommended model for your account (probably Sonnet)",
     contextWindow: getModelContextWindow("default", "claude"),
   },
   {
     id: "best",
     name: "Best",
-    description: "Highest-capability Claude Code alias for complex work",
-    contextWindow: getModelContextWindow("best", "claude"),
+    description:
+      "Highest-capability Claude Code alias (probably Opus 4.8, full 1M context)",
+    contextWindow: getModelContextWindow("opus[1m]", "claude"),
   },
   {
     id: "fable",
@@ -451,13 +463,7 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
     id: "sonnet",
     name: "Sonnet",
-    description: "Standard-context Sonnet for everyday coding tasks",
-    contextWindow: getModelContextWindow("sonnet", "claude"),
-  },
-  {
-    id: "sonnet[1m]",
-    name: "Sonnet 1M",
-    description: "Sonnet with 1M context for long sessions and large codebases",
+    description: ALWAYS_EXTENDED_DESCRIPTIONS.sonnet,
     contextWindow: getModelContextWindow("sonnet[1m]", "claude"),
   },
   {
@@ -564,21 +570,31 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
     .map((id) => byId.get(id))
     .filter((model): model is ModelInfo => model !== undefined);
 
-  // Opus always uses the 1M window (withExtendedClaudeContext), so drop the
-  // redundant "opus[1m]" entry and surface the 1M window + label on the base
-  // alias — including when the SDK probe supplies a 200K window. Sonnet keeps
-  // both a standard "sonnet" and an explicit credit-gated "sonnet[1m]" entry.
+  // Opus and Sonnet always use the 1M window (withExtendedClaudeContext), so
+  // drop the redundant "opus[1m]"/"sonnet[1m]" entries and surface the 1M
+  // window + label on the base alias — including when the SDK probe supplies a
+  // 200K window. Sonnet also forces its description (not its name) because the
+  // SDK catalog still reports the alias as "Sonnet 4.6" while it routes to
+  // Sonnet 5.
   return merged
-    .filter((model) => model.id !== "opus[1m]")
-    .map((model) =>
-      model.id === "opus"
-        ? {
-            ...model,
-            contextWindow: getModelContextWindow("opus[1m]", "claude"),
-            description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
-          }
-        : model,
-    );
+    .filter((model) => model.id !== "opus[1m]" && model.id !== "sonnet[1m]")
+    .map((model) => {
+      if (model.id === "opus") {
+        return {
+          ...model,
+          contextWindow: getModelContextWindow("opus[1m]", "claude"),
+          description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
+        };
+      }
+      if (model.id === "sonnet") {
+        return {
+          ...model,
+          contextWindow: getModelContextWindow("sonnet[1m]", "claude"),
+          description: ALWAYS_EXTENDED_DESCRIPTIONS.sonnet,
+        };
+      }
+      return model;
+    });
 }
 
 /** Cached models from SDK probe */
@@ -669,6 +685,14 @@ export class ClaudeProvider implements AgentProvider {
   readonly supportsSteering = true;
   readonly supportsSteerNow = true;
   readonly supportsRecaps = true;
+  // Intentionally false. Claude emits native away_summary recaps only in the
+  // interactive TUI (entrypoint:cli), which writes them to the session JSONL
+  // after idle; YA reads and shows those regardless of recap mode. YA drives
+  // Claude via the TS SDK (entrypoint:sdk-ts), and there is no known way to
+  // make an SDK/YA-owned session emit native recaps, so a "native" choice here
+  // is a no-op (and would make fork/tailed wait a pointless native grace
+  // window). Do not re-enable on the basis of seeing CLI recaps in the JSONL.
+  readonly supportsNativeRecaps = false;
   readonly supportsNativePromptSuggestions = true;
   readonly promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo = {
     supportsNoContextPollutionNudge: true,
@@ -1108,7 +1132,9 @@ export class ClaudeProvider implements AgentProvider {
     const userPrompt =
       request.purpose === "session-retitle"
         ? this.createSessionRetitlePrompt(request)
-        : this.createForkAfterSummaryPrompt(request);
+        : request.purpose === "recap"
+          ? this.createForkedRecapPrompt()
+          : this.createForkAfterSummaryPrompt(request);
     const abortController = new AbortController();
     const abortFromJob = () => abortController.abort();
     if (request.signal?.aborted) {
@@ -1151,7 +1177,9 @@ export class ClaudeProvider implements AgentProvider {
           systemPrompt:
             request.purpose === "session-retitle"
               ? "You are a title helper. Reply with the session title only, no preamble."
-              : "You are a handoff summary helper. Reply with the summary text only, no preamble.",
+              : request.purpose === "recap"
+                ? "You are a recap helper. Reply with the recap text only, no preamble."
+                : "You are a handoff summary helper. Reply with the summary text only, no preamble.",
         },
       });
 
@@ -1207,6 +1235,15 @@ export class ClaudeProvider implements AgentProvider {
     ]
       .filter((part): part is string => part !== undefined)
       .join("\n");
+  }
+
+  private createForkedRecapPrompt(): string {
+    return [
+      "The user stepped away and is coming back.",
+      "Recap the current session state in under 40 words, 1-2 plain sentences, no markdown.",
+      "Lead with what the assistant did or is doing; mention any pending next action.",
+      "Do not greet, do not ask a question, do not add a sign-off.",
+    ].join("\n");
   }
 
   private createSessionRetitlePrompt(

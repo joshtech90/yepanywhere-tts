@@ -1,13 +1,25 @@
-import { useState } from "react";
+import type { ProjectQueueItemSummary } from "@yep-anywhere/shared";
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { type InboxItem, useInboxContext } from "../contexts/InboxContext";
-import { useDrafts } from "../hooks/useDrafts";
+import { useProjectQueues } from "../hooks/useProjectQueues";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
+import {
+  useDraftSessionIds,
+  useProjectQueuedSessionIds,
+} from "../lib/clientSummaryStore";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import type { Project } from "../types";
+import { getSessionDisplayTitle } from "../utils";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import { SessionListItem } from "./SessionListItem";
+
+const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
+const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
 
 /**
  * Tier configuration for visual styling.
@@ -63,29 +75,151 @@ const TIER_CONFIGS: TierConfig[] = [
   },
 ];
 
+type Translate = ReturnType<typeof useI18n>["t"];
+
+type PendingNewSessionProjectQueueItem = ProjectQueueItemSummary & {
+  target: Extract<ProjectQueueItemSummary["target"], { type: "new-session" }>;
+};
+
+function isPendingNewSessionProjectQueueItem(
+  item: ProjectQueueItemSummary,
+): item is PendingNewSessionProjectQueueItem {
+  return (
+    item.target.type === "new-session" &&
+    (item.status === "queued" ||
+      item.status === "dispatching" ||
+      item.status === "failed")
+  );
+}
+
+function projectQueueStatusLabel(
+  status: ProjectQueueItemSummary["status"],
+  t: Translate,
+): string {
+  switch (status) {
+    case "dispatching":
+      return t("projectQueueStatusDispatching");
+    case "failed":
+      return t("projectQueueStatusFailed");
+    case "queued":
+      return t("projectQueueStatusQueued");
+  }
+}
+
+function formatProjectQueueAge(timestamp: string, t: Translate): string {
+  const then = new Date(timestamp).getTime();
+  if (!Number.isFinite(then)) return "";
+  const diffMs = Math.max(0, Date.now() - then);
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return t("projectQueueAgeJustNow");
+  if (diffMins < 60) return t("projectQueueAgeMinutes", { count: diffMins });
+  if (diffHours < 24) return t("projectQueueAgeHours", { count: diffHours });
+  if (diffDays < 7) return t("projectQueueAgeDays", { count: diffDays });
+  return new Date(timestamp).toLocaleDateString();
+}
+
 interface InboxSectionProps {
   config: TierConfig;
   items: InboxItem[];
+  projectQueueItems?: PendingNewSessionProjectQueueItem[];
+  projectNameById: ReadonlyMap<string, string>;
   /** When true, hides project name (for single-project inbox) */
   hideProjectName?: boolean;
   /** Base path prefix for relay mode (e.g., "/remote/my-server") */
   basePath?: string;
   /** Set of session IDs that have unsent drafts */
-  drafts: Set<string>;
+  drafts: ReadonlySet<string>;
+  /** Set of session IDs targeted by Project Queue items */
+  projectQueuedSessionIds: ReadonlySet<string>;
   /** Whether public share creation controls should be exposed */
   publicShareControlsVisible: boolean;
+}
+
+interface InboxProjectQueueItemProps {
+  item: PendingNewSessionProjectQueueItem;
+  projectName: string;
+  basePath?: string;
+  hideProjectName?: boolean;
+}
+
+function InboxProjectQueueItem({
+  item,
+  projectName,
+  basePath = "",
+  hideProjectName = false,
+}: InboxProjectQueueItemProps) {
+  const { t } = useI18n();
+  const prompt = item.messagePreview.trim() || t("projectQueueAttachmentOnly");
+  const targetTitle = item.target.title?.trim();
+  const title = targetTitle || prompt;
+  const showPromptPreview = !!targetTitle && targetTitle !== prompt;
+  const age = formatProjectQueueAge(item.createdAt, t);
+  const href = `${basePath}/projects?queueItem=${encodeURIComponent(item.id)}`;
+
+  return (
+    <li
+      className={`inbox-project-queue-item inbox-project-queue-item--${item.status}`}
+      data-inbox-project-queue-item-id={item.id}
+    >
+      <Link className="inbox-project-queue-item__link" to={href}>
+        <span className="inbox-project-queue-item__title-row">
+          <strong className="inbox-project-queue-item__title">{title}</strong>
+          <span
+            className="session-project-queue-badge"
+            title={t("projectQueueSidebarBadge")}
+          >
+            Q
+          </span>
+        </span>
+        {showPromptPreview && (
+          <span className="inbox-project-queue-item__preview">{prompt}</span>
+        )}
+        <span className="inbox-project-queue-item__meta">
+          {!hideProjectName && (
+            <span className="inbox-project-queue-item__project">
+              {projectName}
+            </span>
+          )}
+          <span>{t("projectQueueTargetNewSession")}</span>
+          {age && <span>{age}</span>}
+          <span
+            className={`inbox-project-queue-item__status inbox-project-queue-item__status--${item.status}`}
+          >
+            {projectQueueStatusLabel(item.status, t)}
+          </span>
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+function getInboxRowActivity(
+  item: InboxItem,
+  tierKey: string,
+): InboxItem["activity"] {
+  if (tierKey === "active" && item.activityInferredFromInboxTier) {
+    return undefined;
+  }
+  return item.activity;
 }
 
 function InboxSection({
   config,
   items,
+  projectQueueItems = [],
+  projectNameById,
   hideProjectName,
   basePath = "",
   drafts,
+  projectQueuedSessionIds,
   publicShareControlsVisible,
 }: InboxSectionProps) {
   const { t } = useI18n();
-  const isEmpty = items.length === 0;
+  const sectionCount = items.length + projectQueueItems.length;
+  const isEmpty = sectionCount === 0;
 
   return (
     <section
@@ -93,35 +227,55 @@ function InboxSection({
     >
       <h2 className="inbox-section-header">
         {t(config.titleKey as never)}
-        <span className="inbox-section-count">{items.length}</span>
+        <span className="inbox-section-count">{sectionCount}</span>
       </h2>
       {isEmpty ? (
         <p className="inbox-section-empty-message">{t("inboxNoSessions")}</p>
       ) : (
         <ul className="sessions-list">
+          {projectQueueItems.map((item) => (
+            <InboxProjectQueueItem
+              key={item.id}
+              item={item}
+              projectName={
+                projectNameById.get(item.projectId) ??
+                t("projectQueueUnknownProject")
+              }
+              hideProjectName={hideProjectName}
+              basePath={basePath}
+            />
+          ))}
           {items.map((item) => {
             const badge = config.getBadge?.(item);
+            const activity = getInboxRowActivity(item, config.key);
             return (
               <SessionListItem
                 key={item.sessionId}
                 sessionId={item.sessionId}
                 projectId={item.projectId}
-                title={item.sessionTitle}
+                title={getSessionDisplayTitle({
+                  customTitle: item.customTitle,
+                  title: item.sessionTitle,
+                })}
+                hasCustomTitle={!!item.customTitle}
                 projectName={item.projectName}
                 updatedAt={item.updatedAt}
                 hasUnread={item.hasUnread}
-                activity={config.key === "active" ? "in-turn" : item.activity}
+                isStarred={item.isStarred}
+                activity={activity}
                 pendingInputType={item.pendingInputType}
                 mode="card"
                 showProjectName={!hideProjectName}
                 showTimestamp
                 showContextUsage={false}
                 showStatusBadge={false}
+                showActivityIndicator={config.key === "active"}
                 customBadge={
                   badge ? { ...badge, label: t(badge.label as never) } : null
                 }
                 basePath={basePath}
                 hasDraft={drafts.has(item.sessionId)}
+                hasProjectQueue={projectQueuedSessionIds.has(item.sessionId)}
                 publicShareControlsVisible={publicShareControlsVisible}
               />
             );
@@ -165,6 +319,8 @@ export function InboxContent({
   const { t } = useI18n();
   const basePath = useRemoteBasePath();
   const { settings: serverSettings } = useServerSettings();
+  const { version } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(version);
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -188,7 +344,7 @@ export function InboxContent({
   const unread8h = filterByProject(allUnread8h, projectId);
   const unread24h = filterByProject(allUnread24h, projectId);
 
-  const totalItems =
+  const totalSessionItems =
     needsAttention.length +
     active.length +
     recentActivity.length +
@@ -212,10 +368,87 @@ export function InboxContent({
     unread24h,
   };
 
-  const isEmpty = totalItems === 0 && !loading;
+  const visibleSessionProjectIds = useMemo(
+    () => [
+      ...new Set(
+        [
+          ...needsAttention,
+          ...active,
+          ...recentActivity,
+          ...unread8h,
+          ...unread24h,
+        ]
+          .map((item) => item.projectId)
+          .filter(Boolean),
+      ),
+    ],
+    [needsAttention, active, recentActivity, unread8h, unread24h],
+  );
+  const queueFeedProjectIds = useMemo(() => {
+    if (projectId) return [projectId];
+    if (projects && projects.length > 0) {
+      return [...new Set(projects.map((project) => project.id))];
+    }
+    return visibleSessionProjectIds;
+  }, [projectId, projects, visibleSessionProjectIds]);
+  const projectNameById = useMemo(() => {
+    const names = new Map(
+      (projects ?? []).map((project) => [project.id, project.name]),
+    );
+    for (const item of [
+      ...needsAttention,
+      ...active,
+      ...recentActivity,
+      ...unread8h,
+      ...unread24h,
+    ]) {
+      if (!names.has(item.projectId)) {
+        names.set(item.projectId, item.projectName);
+      }
+    }
+    return names;
+  }, [
+    projects,
+    needsAttention,
+    active,
+    recentActivity,
+    unread8h,
+    unread24h,
+  ]);
+  // Keep the queue feed mounted for known inbox projects. Badge rendering
+  // reads from the shared client summary store selector below, while new-session
+  // queue items render as pending Active rows because they have no session yet.
+  const projectQueues = useProjectQueues(
+    supportsProjectQueue
+      ? queueFeedProjectIds
+      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+  );
+  const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
+    supportsProjectQueue
+      ? visibleSessionProjectIds
+      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+  );
+  const projectQueuedSessionIds = supportsProjectQueue
+    ? rawProjectQueuedSessionIds
+    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
+  const pendingNewSessionQueueItems = useMemo(
+    () =>
+      supportsProjectQueue
+        ? projectQueues.items.filter(isPendingNewSessionProjectQueueItem)
+        : [],
+    [projectQueues.items, supportsProjectQueue],
+  );
+  const totalItems = totalSessionItems + pendingNewSessionQueueItems.length;
 
-  // Track which sessions have unsent drafts
-  const drafts = useDrafts();
+  const pageLoading =
+    loading ||
+    (totalSessionItems === 0 &&
+      pendingNewSessionQueueItems.length === 0 &&
+      supportsProjectQueue &&
+      projectQueues.loading);
+  const isEmpty = totalItems === 0 && !pageLoading;
+
+  const drafts = useDraftSessionIds();
 
   // Build project options for FilterDropdown
   const projectOptions: FilterOption<string>[] = projects
@@ -272,13 +505,13 @@ export function InboxContent({
           </button>
         </div>
 
-        {loading && <p className="loading">{t("inboxLoading")}</p>}
+        {pageLoading && <p className="loading">{t("inboxLoading")}</p>}
 
         {error && (
           <p className="error">{t("inboxError", { message: error.message })}</p>
         )}
 
-        {!loading && !error && isEmpty && (
+        {!pageLoading && !error && isEmpty && (
           <div className="inbox-empty">
             <svg
               width="48"
@@ -303,16 +536,21 @@ export function InboxContent({
           </div>
         )}
 
-        {!loading && !error && !isEmpty && (
+        {!pageLoading && !error && !isEmpty && (
           <div className="inbox-tiers">
             {TIER_CONFIGS.map((config) => (
               <InboxSection
                 key={config.key}
                 config={config}
                 items={tierData[config.key] ?? []}
+                projectQueueItems={
+                  config.key === "active" ? pendingNewSessionQueueItems : []
+                }
+                projectNameById={projectNameById}
                 hideProjectName={!!projectId}
                 basePath={basePath}
                 drafts={drafts}
+                projectQueuedSessionIds={projectQueuedSessionIds}
                 publicShareControlsVisible={publicShareControlsVisible}
               />
             ))}

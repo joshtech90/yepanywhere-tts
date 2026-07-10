@@ -28,11 +28,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macos-latest is mid-migration to macOS 26 (runner-images#14167, rolling
+          # out 2026-06-15 → 2026-07-15). Pin the actual runner to macos-26 so releases
+          # are deterministic instead of a coin-flip between the 15 and 26 images.
+          # `platform: macos-latest` stays as the discriminator the `if:` steps key on;
+          # `runner` controls the image. Bump to macos-27 after a test build when announced.
           - platform: macos-latest
+            runner: macos-26
             args: '--target aarch64-apple-darwin'
             rust_target: aarch64-apple-darwin
             target_triple: aarch64-apple-darwin
           - platform: macos-latest
+            runner: macos-26
             args: '--target x86_64-apple-darwin'
             rust_target: x86_64-apple-darwin
             target_triple: x86_64-apple-darwin
@@ -41,7 +48,7 @@ jobs:
             rust_target: ''
             target_triple: ''
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner || matrix.platform }}
 
     env:
       HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
@@ -108,26 +115,36 @@ jobs:
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
       # --- Signing env vars ---
-      # These MUST be set conditionally via GITHUB_ENV, not in the static env block.
-      # Tauri's bundler treats empty-string env vars as "present" and crashes
-      # trying to decode empty keys or import empty certificates.
+      # Inject secrets via this step's `env:` block (GitHub sets the values WITHOUT shell
+      # re-parsing) and write them to $GITHUB_ENV with heredocs. Do NOT inline
+      # ${{ secrets.* }} into `echo "VAR=..."`: a value containing shell metacharacters
+      # (" $ ` \) gets mangled there — an updater password with such a character yields
+      # "incorrect updater private key password: Wrong password for that key" at bundle
+      # time. Writes stay conditional so empty values don't reach the bundler (an empty
+      # APPLE_CERTIFICATE makes Tauri's bundler crash on import).
       - name: Set signing env vars
         shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATER_PW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MAC_CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MAC_CERT_PW: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          ASC_KEY: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
-          if [ "${{ env.HAS_UPDATER_KEY }}" = "true" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          emit() { { printf '%s<<__YEPEOF__\n' "$1"; printf '%s\n' "$2"; printf '__YEPEOF__\n'; } >> "$GITHUB_ENV"; }
+          if [ -n "$UPDATER_KEY" ]; then
+            emit TAURI_SIGNING_PRIVATE_KEY "$UPDATER_KEY"
+            emit TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$UPDATER_PW"
           fi
-          if [ "${{ env.HAS_MACOS_SIGNING }}" = "true" ] && [ "${{ matrix.platform }}" = "macos-latest" ]; then
-            echo "APPLE_CERTIFICATE<<CERT_EOF" >> "$GITHUB_ENV"
-            echo "${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}" >> "$GITHUB_ENV"
-            echo "CERT_EOF" >> "$GITHUB_ENV"
-            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.MACOS_CERTIFICATE_PASSWORD }}" >> "$GITHUB_ENV"
+          if [ -n "$MAC_CERT" ] && [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            emit APPLE_CERTIFICATE "$MAC_CERT"
+            emit APPLE_CERTIFICATE_PASSWORD "$MAC_CERT_PW"
             echo "APPLE_SIGNING_IDENTITY=Developer ID Application: Kyle Graehl (VD7BYQ6ABM)" >> "$GITHUB_ENV"
           fi
-          if [ "${{ env.HAS_MACOS_NOTARIZATION }}" = "true" ] && [ "${{ matrix.platform }}" = "macos-latest" ]; then
-            echo "APPLE_API_KEY=${{ secrets.ASC_API_KEY_ID }}" >> "$GITHUB_ENV"
-            echo "APPLE_API_ISSUER=${{ secrets.ASC_API_ISSUER_ID }}" >> "$GITHUB_ENV"
+          if [ -n "$ASC_KEY" ] && [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            emit APPLE_API_KEY "$ASC_KEY"
+            emit APPLE_API_ISSUER "$ASC_ISSUER"
           fi
 
       # --- Windows signing tool ---
@@ -176,16 +193,26 @@ jobs:
           args: >-
             ${{ matrix.args }}
             ${{ matrix.platform == 'macos-latest' && env.HAS_MACOS_SIGNING != 'true' && '--no-sign' || '' }}
-            ${{ env.HAS_UPDATER_KEY == 'true' && '--config ''{"bundle":{"createUpdaterArtifacts":"v2"}}''' || '' }}
+            ${{ env.HAS_UPDATER_KEY == 'true' && '--config ''{"bundle":{"createUpdaterArtifacts":true}}''' || '' }}
             ${{ matrix.platform == 'windows-latest' && secrets.AZURE_CLIENT_SECRET != '' && '--config ''{"bundle":{"windows":{"signCommand":"trusted-signing-cli -e https://eus.codesigning.azure.net -a kylegraehl -c jstorrent-profile %1"}}}''' || '' }}
 
-      # --- Diagnose flaky DMG bundling ---
-      - name: Check for flaky DMG bundling failure
+      # --- Diagnose macOS build failure ---
+      # Only blame the flaky hdiutil DMG issue when the build actually got past codesign
+      # (a signed .app exists) but produced no .dmg. Otherwise point at the real failure,
+      # so we don't chase a phantom DMG flake (config error, updater key/pubkey, etc.).
+      - name: Diagnose macOS build failure
         if: failure() && matrix.platform == 'macos-latest'
+        shell: bash
         run: |
-          echo ""
-          echo "::error::macOS DMG bundling failed. This is likely the known flaky hdiutil issue on GitHub Actions runners (not a code problem). Re-run this job: gh run rerun ${{ github.run_id }} --failed"
-          echo ""
+          app=$(find packages/desktop/src-tauri/target -type d -path '*/release/bundle/macos/*.app' 2>/dev/null | head -1)
+          dmg=$(find packages/desktop/src-tauri/target -type f -path '*/release/bundle/dmg/*.dmg' 2>/dev/null | head -1)
+          if [ -n "$app" ] && [ -z "$dmg" ]; then
+            echo "::error::macOS .app built and signed but no .dmg produced — likely the flaky hdiutil/bundle_dmg issue on GH runners. Re-run: gh run rerun ${{ github.run_id }} --failed"
+          elif [ -z "$app" ]; then
+            echo "::error::macOS build failed before the app bundle was produced (compile / config / codesign). Read the 'Build Tauri app' step log — this is a real error, NOT a DMG flake."
+          else
+            echo "::error::macOS .app and .dmg both built; failure was a later step (updater signing / latest.json). Read the 'Build Tauri app' step log — NOT a DMG flake."
+          fi
 
       # --- Cleanup ---
       - name: Clean up macOS keychain

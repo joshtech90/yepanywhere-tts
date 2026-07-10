@@ -32,7 +32,7 @@ import { initializeOutputAppearance } from "./hooks/useOutputAppearance";
 import { initializeTabSize } from "./hooks/useTabSize";
 import { initializeTheme } from "./hooks/useTheme";
 import { I18nProvider } from "./i18n";
-import { NavigationLayout } from "./layouts";
+import { NavigationLayout, SessionDomLingerRouteMarker } from "./layouts";
 import { ActivityPage } from "./pages/ActivityPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { DirectLoginPage } from "./pages/DirectLoginPage";
@@ -50,7 +50,9 @@ import { RelayConnectionGate } from "./pages/RelayConnectionGate";
 import { RelayLoginPage } from "./pages/RelayLoginPage";
 import { SessionPage } from "./pages/SessionPage";
 import { SettingsLayout } from "./pages/settings";
+import { WorkstreamsPage } from "./pages/WorkstreamsPage";
 import { useRemoteBasePath } from "./hooks/useRemoteBasePath";
+import { registerServiceWorkerAtStartup } from "./lib/registerServiceWorker";
 import "./styles/index.css";
 
 // Apply saved preferences before React renders to avoid flash
@@ -59,6 +61,9 @@ initializeFontSize();
 initializeOutputAppearance();
 initializeTabSize();
 initializeContentMaxWidth();
+
+// Register SW at startup so PWA install is available without visiting settings
+registerServiceWorkerAtStartup();
 
 // Get base URL for router (Vite sets this based on --base flag)
 // Remove trailing slash for BrowserRouter basename
@@ -79,8 +84,26 @@ const APP_ROUTES = (
     <Route index element={<Navigate to="projects" replace />} />
 
     {/* IMPORTANT: Keep routes in sync with main.tsx — adding a route here? Add it there too! */}
-    <Route element={<NavigationLayout />}>
+    <Route
+      element={
+        <NavigationLayout
+          sessionElement={(route, { parked }) => (
+            <SessionPage
+              key={route.key}
+              projectId={route.projectId}
+              sessionId={route.sessionId}
+              routeLocation={route.location}
+              isDomLingerParked={parked}
+            />
+          )}
+        />
+      }
+    >
       <Route path="projects" element={<ProjectsPage />} />
+      <Route
+        path="projects/:projectId/workstreams"
+        element={<WorkstreamsPage />}
+      />
       <Route path="projects/:projectId" element={<ProjectRedirect />} />
       <Route path="sessions" element={<GlobalSessionsPage />} />
       <Route path="agents" element={<AgentsPage />} />
@@ -91,14 +114,14 @@ const APP_ROUTES = (
       <Route path="settings" element={<SettingsLayout />} />
       <Route path="settings/:category" element={<SettingsLayout />} />
       <Route path="new-session" element={<NewSessionPage />} />
+      <Route path="projects/:projectId/file" element={<FilePage />} />
       <Route
         path="projects/:projectId/sessions/:sessionId"
-        element={<SessionPage />}
+        element={<SessionDomLingerRouteMarker />}
       />
     </Route>
 
     {/* Pages with custom layouts */}
-    <Route path="projects/:projectId/file" element={<FilePage />} />
     <Route path="activity" element={<ActivityPage />} />
 
     {/* Catch-all redirect to projects (must use ../ to escape splat route's relative resolution) */}
@@ -128,22 +151,25 @@ createRoot(rootElement).render(
             element={
               <RemoteApp>
                 <Routes>
-            {/* Login routes — redirect to app if already connected */}
-            <Route element={<UnauthenticatedGate />}>
-              <Route path="/login" element={<HostPickerPage />} />
-              <Route path="/login/direct" element={<DirectLoginPage />} />
-              <Route path="/login/relay" element={<RelayLoginPage />} />
-            </Route>
+                  {/* Login routes — redirect to app if already connected */}
+                  <Route element={<UnauthenticatedGate />}>
+                    <Route path="/login" element={<HostPickerPage />} />
+                    <Route path="/login/direct" element={<DirectLoginPage />} />
+                    <Route path="/login/relay" element={<RelayLoginPage />} />
+                  </Route>
 
-            {/* Direct mode — requires connection, no relay username in URL */}
-            <Route element={<ConnectionGate />}>{APP_ROUTES}</Route>
+                  {/* Direct mode — requires connection, no relay username in URL */}
+                  <Route element={<ConnectionGate />}>{APP_ROUTES}</Route>
 
-            {/* Relay mode — manages relay connection by URL username.
+                  {/* Relay mode — manages relay connection by URL username.
                 React Router ranks static segments above dynamic params,
                 so /projects matches ConnectionGate, not /:relayUsername. */}
-            <Route path="/:relayUsername" element={<RelayConnectionGate />}>
-              {APP_ROUTES}
-            </Route>
+                  <Route
+                    path="/:relayUsername"
+                    element={<RelayConnectionGate />}
+                  >
+                    {APP_ROUTES}
+                  </Route>
                 </Routes>
               </RemoteApp>
             }

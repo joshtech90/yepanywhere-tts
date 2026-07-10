@@ -78,6 +78,7 @@ describe("Global Sessions Routes", () => {
       state: { type: string };
       permissionMode: string;
       modeVersion: number;
+      isRetainingProviderWork?: () => boolean;
     }
   >;
   let unreadMap: Map<string, boolean>;
@@ -144,6 +145,7 @@ describe("Global Sessions Routes", () => {
     // Mock metadata service
     mockMetadataService = {
       getMetadata: vi.fn((sessionId: string) => metadataMap.get(sessionId)),
+      getRecapMessages: vi.fn(() => []),
     } as unknown as SessionMetadataService;
   });
 
@@ -259,6 +261,22 @@ describe("Global Sessions Routes", () => {
       expect(
         archived.sessions.find((session) => session.id === "old"),
       ).toMatchObject({ isArchived: true });
+    });
+
+    it("keeps old sessions visible by default", async () => {
+      const project = createProject("proj1", "project-one", "/sessions/proj1");
+      const recent = createSession("recent", "proj1", hoursAgo(1));
+      const old = createSession("old", "proj1", hoursAgo(24 * 20));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [recent, old]);
+
+      const result = await makeRequest();
+
+      expect(result.sessions.map((session) => session.id)).toEqual([
+        "recent",
+        "old",
+      ]);
     });
 
     it("includes project context on each session", async () => {
@@ -670,7 +688,7 @@ describe("Global Sessions Routes", () => {
         "/codex/sessions",
         project.id,
         codexReader,
-        expect.objectContaining({ activeAfterMs: expect.any(Number) }),
+        undefined,
       );
       expect(codexReader.listSessions).not.toHaveBeenCalled();
       expect(result.sessions.some((s) => s.id === "codex-sess-1")).toBe(true);
@@ -732,7 +750,7 @@ describe("Global Sessions Routes", () => {
         "/gemini/tmp",
         project.id,
         geminiReader,
-        expect.objectContaining({ activeAfterMs: expect.any(Number) }),
+        undefined,
       );
       expect(geminiReader.listSessions).not.toHaveBeenCalled();
       expect(result.sessions.some((s) => s.id === "gemini-sess-1")).toBe(true);
@@ -763,6 +781,46 @@ describe("Global Sessions Routes", () => {
         modeVersion: 1,
       });
       expect(result.sessions[0].activity).toBe("in-turn");
+    });
+
+    it("reports idle process retaining provider background work as in-turn", async () => {
+      const project = createProject("proj1", "project", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(5));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      processMap.set("sess1", {
+        id: "proc-1",
+        getPendingInputRequest: () => null,
+        state: { type: "idle" },
+        permissionMode: "default",
+        modeVersion: 1,
+        isRetainingProviderWork: () => true,
+      });
+
+      const result = await makeRequest();
+
+      expect(result.sessions[0].activity).toBe("in-turn");
+    });
+
+    it("reports idle process without provider retention as inactive", async () => {
+      const project = createProject("proj1", "project", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(5));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      processMap.set("sess1", {
+        id: "proc-1",
+        getPendingInputRequest: () => null,
+        state: { type: "idle" },
+        permissionMode: "default",
+        modeVersion: 1,
+        isRetainingProviderWork: () => false,
+      });
+
+      const result = await makeRequest();
+
+      expect(result.sessions[0].activity).toBeUndefined();
     });
 
     it("enriches with external ownership", async () => {
@@ -808,6 +866,41 @@ describe("Global Sessions Routes", () => {
       const result = await makeRequest();
 
       expect(result.sessions[0].hasUnread).toBe(true);
+    });
+
+    it("computes hasUnread from the pre-recap-overlay updatedAt", async () => {
+      const project = createProject("proj1", "project", "/sessions/proj1");
+      const rawUpdatedAt = minutesAgo(30);
+      const session = createSession("sess1", "proj1", rawUpdatedAt);
+      const recapTimestamp = minutesAgo(5);
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      vi.mocked(mockMetadataService.getRecapMessages).mockReturnValue([
+        {
+          type: "system",
+          subtype: "away_summary",
+          content: "Recap of what happened while away",
+          timestamp: recapTimestamp,
+          uuid: "recap-1",
+          yaRecapSource: "ya-synthetic",
+        },
+      ]);
+      // Session fully seen after the last provider write but before the
+      // recap landed: the recap bumps list freshness, never unread.
+      const lastSeenAt = minutesAgo(20);
+      vi.mocked(mockNotificationService.hasUnread).mockImplementation(
+        (_sessionId: string, updatedAt: string) => updatedAt > lastSeenAt,
+      );
+
+      const result = await makeRequest();
+
+      expect(result.sessions[0].updatedAt).toBe(recapTimestamp);
+      expect(result.sessions[0].hasUnread).toBe(false);
+      expect(mockNotificationService.hasUnread).toHaveBeenCalledWith(
+        "sess1",
+        rawUpdatedAt,
+      );
     });
 
     it("enriches with metadata (customTitle, isArchived, isStarred)", async () => {

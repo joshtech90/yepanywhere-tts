@@ -1,7 +1,8 @@
 /**
- * InboxContext - Single source of truth for inbox data.
+ * InboxContext - Fetch lifecycle and compatibility context for inbox data.
  *
- * Consolidates inbox fetching to avoid multiple hooks making duplicate requests.
+ * Consolidates inbox fetching, reports accepted snapshots into the client
+ * summary store, and exposes store-selected rows to existing consumers.
  * Supports an `enabled` option to pause fetching when inbox UI is not visible.
  */
 
@@ -15,32 +16,46 @@ import {
   useState,
 } from "react";
 import { type InboxItem, type InboxResponse, api } from "../api/client";
-import { useFileActivity } from "../hooks/useFileActivity";
+import {
+  type RetainedClientQueryEvent,
+  useRetainedClientQuery,
+} from "../hooks/useRetainedClientQuery";
 import { authEvents } from "../lib/authEvents";
+import {
+  createClientQueryKey,
+  type ClientQueryRequestContext,
+} from "../lib/clientQueryController";
 import { isRemoteClient } from "../lib/connection";
-import { reportInboxLifecycleSnapshots } from "../lib/sessionLifecycleApiSnapshots";
+import {
+  useInboxResponseSnapshot,
+} from "../lib/clientSummaryStore";
+import { INBOX_TIERS, type InboxTier } from "../lib/inboxTiers";
 import { useOptionalRemoteConnection } from "./RemoteConnectionContext";
+import { useCurrentSourceRuntime } from "./SourceRuntimeContext";
 
 // Re-export types for consumers
 export type { InboxItem, InboxResponse } from "../api/client";
+export { INBOX_TIERS, type InboxTier } from "../lib/inboxTiers";
 
-// Debounce interval for refetch on SSE events (prevents rapid refetches)
-const REFETCH_DEBOUNCE_MS = 500;
-
-/** The five tier keys in priority order */
-export const INBOX_TIERS = [
-  "needsAttention",
-  "active",
-  "recentActivity",
-  "unread8h",
-  "unread24h",
+const INBOX_QUERY_KEY = createClientQueryKey({
+  endpoint: "inbox",
+});
+const INBOX_REVALIDATE_EVENTS = [
+  "refresh",
+  "reconnect",
+  "process-state-changed",
+  "session-status-changed",
+  "session-seen",
+  "session-created",
+  "session-metadata-changed",
+  "session-updated",
+  "project-queue-changed",
 ] as const;
-
-export type InboxTier = (typeof INBOX_TIERS)[number];
+const INBOX_STALE_TIME_MS = 0;
 
 /**
  * Tracks the stable order of session IDs within each tier.
- * Used to prevent reordering during polling while still allowing
+ * Used to prevent reordering during background revalidation while still allowing
  * items to move between tiers.
  */
 type TierOrder = Record<InboxTier, string[]>;
@@ -122,13 +137,29 @@ function createEmptyTierOrder(): TierOrder {
   };
 }
 
-const EMPTY_INBOX: InboxResponse = {
-  needsAttention: [],
-  active: [],
-  recentActivity: [],
-  unread8h: [],
-  unread24h: [],
-};
+function getLocallyPatchableSessionUpdatedIds(
+  inbox: InboxResponse,
+): ReadonlySet<string> {
+  const sessionIds = new Set<string>();
+  for (const tier of ["needsAttention", "active", "recentActivity"] as const) {
+    for (const item of inbox[tier]) {
+      sessionIds.add(item.sessionId);
+    }
+  }
+  return sessionIds;
+}
+
+function getEventSessionId(data: unknown): string | null {
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    !("sessionId" in data) ||
+    typeof data.sessionId !== "string"
+  ) {
+    return null;
+  }
+  return data.sessionId;
+}
 
 interface InboxContextValue {
   /** Sessions requiring immediate user input (tool approval or question) */
@@ -176,135 +207,126 @@ export function InboxProvider({
   initialEnabled = true,
 }: InboxProviderProps) {
   const remoteConnection = useOptionalRemoteConnection();
-  const [inbox, setInbox] = useState<InboxResponse>(EMPTY_INBOX);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const runtime = useCurrentSourceRuntime();
+  const sourceKey = runtime.sourceKey;
+  const sourceSummary = runtime.summary;
+  const sourceKeyRef = useRef(sourceKey);
+  sourceKeyRef.current = sourceKey;
+  const inbox = useInboxResponseSnapshot();
+  const locallyPatchableSessionUpdatedIdsRef = useRef<ReadonlySet<string>>(
+    new Set(),
+  );
+  locallyPatchableSessionUpdatedIdsRef.current =
+    getLocallyPatchableSessionUpdatedIds(inbox);
   const [enabled, setEnabled] = useState(initialEnabled);
   const isRemoteConnectionReady =
     !isRemoteClient() ||
     (remoteConnection !== null && remoteConnection.connection !== null);
+  const queryEnabled =
+    enabled &&
+    window.location.pathname !== "/login" &&
+    !authEvents.loginRequired;
 
   // Track the order of session IDs per tier for stable rendering
   const tierOrderRef = useRef<TierOrder>(createEmptyTierOrder());
   // Track if we've done the initial load (determines whether to use stable ordering)
   const hasInitialLoadRef = useRef(false);
-  // Debounce timer for SSE-triggered refetches
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Track enabled state in ref for callbacks
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
+  const [hasInitialLoad, setHasInitialLoad] = useState(false);
+  // Track accepted responses so an older overlapping request cannot perturb the
+  // stable tier order after a newer request already won.
+  const latestAcceptedRequestStartedAtRef = useRef(0);
+
+  useEffect(() => {
+    void sourceKey;
+    tierOrderRef.current = createEmptyTierOrder();
+    hasInitialLoadRef.current = false;
+    setHasInitialLoad(false);
+    latestAcceptedRequestStartedAtRef.current = 0;
+  }, [sourceKey]);
 
   /**
-   * Fetches inbox data and applies stable ordering.
-   * @param forceFullSort - If true, uses server sort order instead of stable merge
+   * Applies inbox data and preserves stable tier ordering unless a foreground
+   * refresh explicitly asks for server sort order.
    */
-  const fetchInbox = useCallback(
-    async (forceFullSort = false) => {
-      // Skip if disabled, remote auth is still establishing, on login page,
-      // or login is required (prevents transient auth errors and 401s).
-      if (
-        !enabledRef.current ||
-        !isRemoteConnectionReady ||
-        window.location.pathname === "/login" ||
-        authEvents.loginRequired
-      ) {
+  const applyInboxSnapshot = useCallback(
+    (data: InboxResponse, context: ClientQueryRequestContext) => {
+      const requestSourceKey = context.sourceKey;
+      const requestStartedAt = context.requestStartedAt;
+      const forceFullSort =
+        typeof context.meta === "object" &&
+        context.meta !== null &&
+        "forceFullSort" in context.meta &&
+        context.meta.forceFullSort === true;
+
+      if (sourceKeyRef.current !== requestSourceKey) {
+        sourceSummary.reportInboxCollectionSnapshot(data, requestStartedAt);
         return;
       }
 
-      try {
-        const requestStartedAt = Date.now();
-        const data = await api.getInbox();
-        reportInboxLifecycleSnapshots(data, requestStartedAt);
+      const nextInbox =
+        !hasInitialLoadRef.current || forceFullSort
+          ? data
+          : mergeWithStableOrder(data, tierOrderRef.current);
 
-        if (!hasInitialLoadRef.current || forceFullSort) {
-          // Initial load or explicit refresh: use server's sort order
-          setInbox(data);
-          tierOrderRef.current = extractTierOrder(data);
-          hasInitialLoadRef.current = true;
-        } else {
-          // Subsequent fetches: merge with stable ordering
-          const mergedData = mergeWithStableOrder(data, tierOrderRef.current);
-          setInbox(mergedData);
-          // Update tier order to include any new items
-          tierOrderRef.current = extractTierOrder(mergedData);
-        }
-
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        setLoading(false);
+      if (requestStartedAt < latestAcceptedRequestStartedAtRef.current) {
+        return;
       }
+
+      sourceSummary.reportInboxCollectionSnapshot(nextInbox, requestStartedAt);
+      tierOrderRef.current = extractTierOrder(nextInbox);
+      latestAcceptedRequestStartedAtRef.current = requestStartedAt;
+      hasInitialLoadRef.current = true;
+      setHasInitialLoad(true);
     },
-    [isRemoteConnectionReady],
+    [sourceSummary],
   );
+
+  const shouldRevalidateInboxEvent = useCallback(
+    (event: RetainedClientQueryEvent) => {
+      if (event.eventType !== "session-updated") {
+        return true;
+      }
+
+      const sessionId = getEventSessionId(event.data);
+      return (
+        sessionId === null ||
+        !locallyPatchableSessionUpdatedIdsRef.current.has(sessionId)
+      );
+    },
+    [],
+  );
+
+  const {
+    loading,
+    error,
+    refetch: refetchInboxQuery,
+  } = useRetainedClientQuery<InboxResponse>({
+    sourceKey,
+    key: INBOX_QUERY_KEY,
+    enabled: queryEnabled,
+    ready: isRemoteConnectionReady,
+    hasData: hasInitialLoad,
+    staleTimeMs: INBOX_STALE_TIME_MS,
+    revalidateOn: INBOX_REVALIDATE_EVENTS,
+    shouldRevalidateEvent: shouldRevalidateInboxEvent,
+    fetcher: () => api.getInbox(),
+    applySnapshot: applyInboxSnapshot,
+  });
 
   /**
    * Force a full refresh with server-provided sort order.
    */
   const refresh = useCallback(() => {
-    return fetchInbox(true);
-  }, [fetchInbox]);
+    return refetchInboxQuery({ meta: { forceFullSort: true } });
+  }, [refetchInboxQuery]);
 
-  /**
-   * Debounced refetch - prevents rapid refetches from multiple SSE events
-   */
-  const debouncedRefetch = useCallback(() => {
-    // Skip if disabled, remote auth is still establishing, on login page,
-    // or login is required.
-    if (
-      !enabledRef.current ||
-      !isRemoteConnectionReady ||
-      window.location.pathname === "/login" ||
-      authEvents.loginRequired
-    ) {
-      return;
-    }
-
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-    debounceTimerRef.current = setTimeout(() => {
-      fetchInbox();
-    }, REFETCH_DEBOUNCE_MS);
-  }, [fetchInbox, isRemoteConnectionReady]);
-
-  // Subscribe to SSE events for real-time updates
-  // NOTE: We no longer refetch on file-change events. The inbox API primarily categorizes
-  // sessions by processState and pendingInputType, which are now available via SSE events:
-  // - process-state-changed: processState, pendingInputType (for needsAttention/active tiers)
-  // - session-status-changed: when session becomes owned/external/idle
-  // - session-created: new session
-  // - session-seen: hasUnread status changes (less critical for inbox tiers)
-  //
-  // File changes mostly affect hasUnread, which is secondary to inbox tier categorization.
-  useFileActivity({
-    onProcessStateChange: debouncedRefetch,
-    onSessionStatusChange: debouncedRefetch,
-    onSessionSeen: debouncedRefetch,
-    onSessionCreated: debouncedRefetch,
-  });
-
-  // Initial fetch when enabled (and not on login page or requiring login)
-  useEffect(() => {
-    if (
-      enabled &&
-      isRemoteConnectionReady &&
-      window.location.pathname !== "/login" &&
-      !authEvents.loginRequired
-    ) {
-      fetchInbox();
-    }
-  }, [enabled, fetchInbox, isRemoteConnectionReady]);
-
-  // Cleanup debounce timer
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, []);
+  const refetch = useCallback(
+    (forceFullSort = false) =>
+      refetchInboxQuery(
+        forceFullSort ? { meta: { forceFullSort: true } } : undefined,
+      ),
+    [refetchInboxQuery],
+  );
 
   // Computed totals
   const totalNeedsAttention = inbox.needsAttention.length;
@@ -328,7 +350,7 @@ export function InboxProvider({
         loading,
         error,
         refresh,
-        refetch: fetchInbox,
+        refetch,
         totalNeedsAttention,
         totalActive,
         totalItems,

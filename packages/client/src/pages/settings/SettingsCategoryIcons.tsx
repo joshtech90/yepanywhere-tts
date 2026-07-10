@@ -36,8 +36,10 @@ function Icon(props: {
 
 export const settingsCategoryEmojiIcons: Record<string, string> = {
   appearance: "🎨",
+  performance: "⚡",
   toolbar: "🎛️",
   model: "🧠",
+  "cache-miss-billing": "🧾",
   "message-delivery": "📨",
   "agent-context": "📋",
   notifications: "🔔",
@@ -77,6 +79,18 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
     </Icon>
   ),
 
+  performance: (
+    <Icon strokeWidth={2.5}>
+      {/* Gauge / speedometer */}
+      <path d="M4 15a8 8 0 0 1 16 0" />
+      <path d="M6.5 18h11" />
+      <path d="m12 14 4-5" />
+      <path d="M12 14h.01" />
+      <path d="M7.8 10.8 6.4 9.4" />
+      <path d="M16.2 10.8 17.6 9.4" />
+    </Icon>
+  ),
+
   model: (
     <Icon strokeWidth={2.5}>
       {/* Brain / model (exact Lucide "brain" for clear structured folds, not blob). Thicker stroke for visual weight. */}
@@ -98,6 +112,18 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
       <circle cx="7" cy="12" r="0.8" fill="currentColor" />
       <circle cx="12" cy="12" r="0.8" fill="currentColor" />
       <circle cx="17" cy="12" r="0.8" fill="currentColor" />
+    </Icon>
+  ),
+
+  "cache-miss-billing": (
+    <Icon>
+      {/* Receipt with a cache-miss marker. */}
+      <path d="M5 3v18l2-1 2 1 2-1 2 1 2-1 2 1 2-1V3Z" />
+      <path d="M8 7h8" />
+      <path d="M8 11h5" />
+      <path d="m15 11 2 2 2-2" />
+      <path d="m17 13V8" />
+      <path d="M8 16h4" />
     </Icon>
   ),
 

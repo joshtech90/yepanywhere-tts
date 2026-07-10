@@ -27,6 +27,24 @@ export interface ConnectionManagerConfig {
 
 export type ReconnectFn = () => Promise<void>;
 
+export interface ConnectionManagerStartOptions {
+  /**
+   * Optional function to send a keepalive ping with a given ID. When provided,
+   * visibility changes trigger a ping/pong check instead of blindly forcing
+   * reconnect.
+   */
+  sendPing?: SendPingFn;
+  /** Optional label for log messages (e.g., "ws", "relay"). */
+  label?: string;
+  /**
+   * Whether this manager is allowed to execute reconnectFn from background
+   * health signals. SourceTransport facades created before T6/T7 start their
+   * managers in passive mode so they can observe the same socket as the legacy
+   * singleton without becoming a second reconnect driver.
+   */
+  driveReconnect?: boolean;
+}
+
 /**
  * Injectable timer interface for deterministic testing.
  */
@@ -90,8 +108,8 @@ const realVisibility: VisibilityInterface = {
  * Centralized connection state machine that manages reconnection.
  *
  * Replaces the multiple overlapping reconnection systems (stale timers,
- * visibility handlers, backoff logic) scattered across ActivityBus,
- * useSessionStream, useActivityBusConnection, etc.
+ * visibility handlers, backoff logic) scattered across ActivityBus and
+ * legacy connection consumers.
  *
  * States:
  * - connected: socket is up, events flowing
@@ -107,6 +125,7 @@ export class ConnectionManager {
   private _reconnectFn: ReconnectFn | null = null;
   private _sendPing: SendPingFn | null = null;
   private _label: string | null = null;
+  private _driveReconnect = true;
   private _started = false;
 
   // Stale detection
@@ -186,11 +205,12 @@ export class ConnectionManager {
    */
   start(
     reconnectFn: ReconnectFn,
-    options?: { sendPing?: SendPingFn; label?: string },
+    options?: ConnectionManagerStartOptions,
   ): void {
     this._reconnectFn = reconnectFn;
     this._sendPing = options?.sendPing ?? null;
     this._label = options?.label ?? null;
+    this._driveReconnect = options?.driveReconnect ?? true;
     if (this._started) return;
     this._started = true;
     this._setState("connected");
@@ -206,6 +226,7 @@ export class ConnectionManager {
     this._reconnectFn = null;
     this._sendPing = null;
     this._label = null;
+    this._driveReconnect = true;
     this._stopStaleCheck();
     this._stopVisibilityListener();
     this._cancelBackoff();
@@ -262,6 +283,7 @@ export class ConnectionManager {
    * Called by consumers when their subscription's onOpen fires.
    */
   markConnected(): void {
+    if (!this._started) return;
     this._reconnectAttempts = 0;
     this._reconnectPromise = null;
     this._cancelBackoff();
@@ -318,7 +340,9 @@ export class ConnectionManager {
    */
   forceReconnect(reason?: string): void {
     if (this._shouldSuppressHealthReconnect(reason)) {
-      this._log(`suppressing health reconnect during critical operation: ${reason}`);
+      this._log(
+        `suppressing health reconnect during critical operation: ${reason}`,
+      );
       return;
     }
     this._log(`force reconnect${reason ? `: ${reason}` : ""}`);
@@ -386,6 +410,11 @@ export class ConnectionManager {
 
   private _scheduleReconnect(): void {
     if (!this._started || !this._reconnectFn) return;
+
+    if (!this._driveReconnect) {
+      this._log("passive manager observing reconnect state");
+      return;
+    }
 
     if (this._reconnectAttempts >= this.config.maxAttempts) {
       this._setState("disconnected");
@@ -492,6 +521,7 @@ export class ConnectionManager {
       (visible) => {
         if (!visible) {
           this._hiddenSince = this.timers.now();
+          this._log(`visibility hidden (${this._formatReconnectContext()})`);
         } else {
           this._handleBecameVisible();
         }
@@ -507,10 +537,20 @@ export class ConnectionManager {
   }
 
   private _handleBecameVisible(): void {
-    if (this._state !== "connected") return;
-
     const hiddenDuration =
       this._hiddenSince !== null ? this.timers.now() - this._hiddenSince : null;
+    const visiblePrefix = `visibility visible${
+      hiddenDuration != null ? ` after ${hiddenDuration}ms hidden` : ""
+    }`;
+
+    if (this._state !== "connected") {
+      const context = this._formatReconnectContext();
+      this._log(
+        `${visiblePrefix}, keeping existing reconnect cycle (${context})`,
+      );
+      return;
+    }
+
     this._hiddenSince = null;
 
     // Notify consumers immediately so they can refresh data in parallel
@@ -519,11 +559,16 @@ export class ConnectionManager {
 
     if (!this._sendPing) {
       // No ping function provided — skip connectivity check
+      const context = this._formatReconnectContext();
+      this._log(`${visiblePrefix}, no ping function (${context})`);
       return;
     }
 
     if (this._criticalOperationDepth > 0) {
-      this._log("visible, skipping ping during critical operation");
+      const context = this._formatReconnectContext();
+      this._log(
+        `${visiblePrefix}, skipping ping during critical operation (${context})`,
+      );
       return;
     }
 
@@ -533,9 +578,7 @@ export class ConnectionManager {
     const pingId = String(++this._pingCounter);
     this._pendingPingId = pingId;
 
-    this._log(
-      `visible${hiddenDuration != null ? ` after ${hiddenDuration}ms hidden` : ""}, pinging`,
-    );
+    this._log(`${visiblePrefix}, pinging (${this._formatReconnectContext()})`);
 
     try {
       this._sendPing(pingId);
@@ -571,10 +614,24 @@ export class ConnectionManager {
         reason === "pong-timeout")
     );
   }
-}
 
-/**
- * Singleton ConnectionManager for the app.
- * Both ActivityBus and useSessionStream feed events into this instance.
- */
-export const connectionManager = new ConnectionManager();
+  private _formatReconnectContext(): string {
+    const parts = [`state=${this._state}`];
+    if (this._reconnectAttempts > 0) {
+      parts.push(`attempts=${this._reconnectAttempts}`);
+    }
+    if (this._backoffTimerId !== null) {
+      parts.push("backoff=pending");
+    }
+    if (this._reconnectPromise) {
+      parts.push("reconnect=in-flight");
+    }
+    if (this._pendingPingId) {
+      parts.push(`pendingPing=${this._pendingPingId}`);
+    }
+    if (this._criticalOperationDepth > 0) {
+      parts.push(`criticalDepth=${this._criticalOperationDepth}`);
+    }
+    return parts.join(", ");
+  }
+}

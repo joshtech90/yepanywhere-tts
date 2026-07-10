@@ -10,14 +10,23 @@ import {
 } from "../components/FilterDropdown";
 import { PageHeader } from "../components/PageHeader";
 import { SessionListItem } from "../components/SessionListItem";
-import { useDrafts } from "../hooks/useDrafts";
-import { useGlobalSessions } from "../hooks/useGlobalSessions";
+import { useGlobalSessionsFeed } from "../hooks/useGlobalSessionsFeed";
+import { useProjectQueues } from "../hooks/useProjectQueues";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { setNewSessionPrefill } from "../lib/newSessionPrefill";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+import { sessionCollectionRecordsToGlobalSessionItems } from "../lib/sessionCollectionRecords";
+import {
+  useClientSummarySourceKey,
+  useDraftSessionIds,
+  useProjectQueuedSessionIds,
+  useSessionCollectionQueryRecords,
+} from "../lib/clientSummaryStore";
 import { getSessionDisplayTitle } from "../utils";
 
 // Long-press threshold for entering selection mode on mobile
@@ -25,6 +34,9 @@ const LONG_PRESS_MS = 500;
 
 const STATUS_FILTER_VALUES = ["unread", "starred", "archived"] as const;
 type StatusFilter = (typeof STATUS_FILTER_VALUES)[number];
+
+const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
+const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
 
 // Age filter options (days)
 type AgeFilter = "3" | "7" | "14" | "30";
@@ -117,8 +129,11 @@ export function GlobalSessionsPage() {
     useNavigationLayout();
   const basePath = useRemoteBasePath();
   const navigate = useNavigate();
+  const clientSummarySourceKey = useClientSummarySourceKey();
   const [searchParams, setSearchParams] = useSearchParams();
   const { settings: serverSettings } = useServerSettings();
+  const { version } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(version);
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -224,13 +239,18 @@ export function GlobalSessionsPage() {
   // Include archived sessions when archived filter is selected
   const includeArchived = statusFilters.includes("archived");
 
-  const { sessions, stats, projects, loading, error, hasMore, loadMore } =
-    useGlobalSessions({
-      projectId: projectFilter,
-      searchQuery,
-      includeArchived,
-      includeStats: !projectFilter,
-    });
+  const feed = useGlobalSessionsFeed({
+    projectId: projectFilter,
+    searchQuery,
+    includeArchived,
+    includeStats: !projectFilter,
+  });
+  const sessionRecords = useSessionCollectionQueryRecords(feed.query);
+  const sessions = useMemo(
+    () => sessionCollectionRecordsToGlobalSessionItems(sessionRecords),
+    [sessionRecords],
+  );
+  const { stats, projects, loading, error, hasMore, loadMore } = feed;
 
   // Filter sessions based on status and provider filters (client-side)
   const filteredSessions = useMemo(() => {
@@ -287,8 +307,30 @@ export function GlobalSessionsPage() {
     });
   }, [sessions, statusFilters, providerFilters, executorFilters, ageFilter]);
 
-  // Track which sessions have unsent drafts
-  const drafts = useDrafts();
+  const drafts = useDraftSessionIds();
+  const filteredProjectIds = useMemo(
+    () => [
+      ...new Set(
+        filteredSessions.map((session) => session.projectId).filter(Boolean),
+      ),
+    ],
+    [filteredSessions],
+  );
+  // Keep the queue feed mounted for the visible result projects. Badge
+  // rendering reads from the shared store selector below.
+  useProjectQueues(
+    supportsProjectQueue
+      ? filteredProjectIds
+      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+  );
+  const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
+    supportsProjectQueue
+      ? filteredProjectIds
+      : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+  );
+  const projectQueuedSessionIds = supportsProjectQueue
+    ? rawProjectQueuedSessionIds
+    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
 
   // Build status filter options with global counts from server
   // When filtering by project, we don't have global stats, so omit counts
@@ -641,29 +683,6 @@ export function GlobalSessionsPage() {
     }
   }, [selectedIds, isBulkActionPending, handleClearSelection]);
 
-  // "Archive all" for filtered results (no manual selection needed)
-  const handleArchiveAllFiltered = useCallback(async () => {
-    if (isBulkActionPending) return;
-    const archivable = filteredSessions.filter((s) => !s.isArchived);
-    if (archivable.length === 0) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        archivable.map((s) =>
-          api.updateSessionMetadata(s.id, { archived: true }),
-        ),
-      );
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [filteredSessions, isBulkActionPending]);
-
-  // Count of archivable sessions in filtered results
-  const archivableFilteredCount = useMemo(
-    () => filteredSessions.filter((s) => !s.isArchived).length,
-    [filteredSessions],
-  );
-
   // Compute which bulk actions are applicable based on selection
   const bulkActionState = useMemo(() => {
     const selectedSessions = sessions.filter((s) => selectedIds.has(s.id));
@@ -722,12 +741,18 @@ export function GlobalSessionsPage() {
   const handleStartProjectSession = useCallback(() => {
     if (!projectFilter) return;
     if (projectScopedSearchText) {
-      setNewSessionPrefill(projectScopedSearchText);
+      setNewSessionPrefill(clientSummarySourceKey, projectScopedSearchText);
     }
     navigate(
       `${basePath}/new-session?projectId=${encodeURIComponent(projectFilter)}`,
     );
-  }, [basePath, navigate, projectFilter, projectScopedSearchText]);
+  }, [
+    basePath,
+    clientSummarySourceKey,
+    navigate,
+    projectFilter,
+    projectScopedSearchText,
+  ]);
 
   // Clear all filters
   const clearFilters = () => {
@@ -982,6 +1007,7 @@ export function GlobalSessionsPage() {
                         session.fullTitle ?? getSessionDisplayTitle(session)
                       }
                       initialPrompt={session.initialPrompt}
+                      hasCustomTitle={!!session.customTitle}
                       lastAgentText={session.lastAgentText}
                       updatedAt={session.updatedAt}
                       createdAt={session.createdAt}
@@ -1020,6 +1046,7 @@ export function GlobalSessionsPage() {
                       // userTurnCount / systemTurnCount will be populated when
                       // the index summaries cache them (see SessionIndexService)
                       hasDraft={drafts.has(session.id)}
+                      hasProjectQueue={projectQueuedSessionIds.has(session.id)}
                       publicShareControlsVisible={publicShareControlsVisible}
                     />
                   </div>
@@ -1058,6 +1085,7 @@ export function GlobalSessionsPage() {
                               getSessionDisplayTitle(session)
                             }
                             initialPrompt={session.initialPrompt}
+                            hasCustomTitle={!!session.customTitle}
                             lastAgentText={session.lastAgentText}
                             updatedAt={session.updatedAt}
                             createdAt={session.createdAt}
@@ -1096,6 +1124,9 @@ export function GlobalSessionsPage() {
                             basePath={basePath}
                             messageCount={session.messageCount}
                             hasDraft={drafts.has(session.id)}
+                            hasProjectQueue={projectQueuedSessionIds.has(
+                              session.id,
+                            )}
                           />
                         </div>
                       ))}
@@ -1138,10 +1169,8 @@ export function GlobalSessionsPage() {
             canUnstar={bulkActionState.canUnstar}
             canMarkRead={bulkActionState.canMarkRead}
             canMarkUnread={bulkActionState.canMarkUnread}
-            onArchiveAllFiltered={
-              hasFilters ? handleArchiveAllFiltered : undefined
-            }
-            archivableFilteredCount={archivableFilteredCount}
+            onSelectAllFiltered={hasFilters ? handleSelectAll : undefined}
+            filteredCount={filteredSessions.length}
           />
         </div>
       </main>

@@ -16,6 +16,20 @@ export interface GetSessionOptions {
   includeOrphans?: boolean;
 }
 
+export type SessionSummaryReadMode = "full" | "head";
+
+/**
+ * Options for reading summary metadata.
+ */
+export interface GetSessionSummaryOptions {
+  /**
+   * `head` permits a provider to stop after stable head metadata. It preserves
+   * the SessionSummary wire shape but may omit tail-derived optional fields
+   * such as contextUsage and may use a minimal compatible messageCount.
+   */
+  readMode?: SessionSummaryReadMode;
+}
+
 // Return type that includes both the computed summary and the raw provider data
 export interface LoadedSession {
   summary: SessionSummary;
@@ -29,6 +43,11 @@ export interface LoadedSession {
  * For example, ClaudeSessionReader has getAgentSession() for subagent support.
  */
 export interface ISessionReader {
+  /**
+   * Release any reader-owned resources such as parser child processes.
+   */
+  close?(): void | Promise<void>;
+
   /**
    * List all sessions in this reader's session directory.
    */
@@ -48,6 +67,7 @@ export interface ISessionReader {
   getSessionSummary(
     sessionId: string,
     projectId: UrlProjectId,
+    options?: GetSessionSummaryOptions,
   ): Promise<SessionSummary | null>;
 
   /**
@@ -111,11 +131,18 @@ export interface ISessionReader {
    *
    * When not implemented, the index service falls back to JSONL
    * filename-based enumeration.
+   *
+   * `sharedFilePath: true` marks an entry whose filePath is a container
+   * shared by many sessions (e.g. a provider database). Its stat mtime/size
+   * say nothing about this session, so the index must validate it through
+   * getSessionSummaryIfChanged instead of comparing file stats.
    */
   listSessionFiles?(
     sessionDir: string,
     options?: { activeAfterMs?: number },
-  ): Promise<{ sessionId: string; filePath: string }[]>;
+  ): Promise<
+    { sessionId: string; filePath: string; sharedFilePath?: boolean }[]
+  >;
 
   /**
    * Return a stable cache/index scope key for this reader.

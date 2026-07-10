@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 
 import {
+  GIT_STATUS_ENHANCED_CAPABILITY,
+  PROJECT_QUEUE_CAPABILITY,
+  type ProjectQueueItemSummary,
+  type ProjectQueueProjectStatus,
+} from "@yep-anywhere/shared";
+import {
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_KEYS } from "../../lib/storageKeys";
 import { Sidebar } from "../Sidebar";
@@ -15,12 +21,17 @@ import { Sidebar } from "../Sidebar";
 const {
   globalSessionsState,
   mockGlobalLoadMore,
+  mockPromoteNow,
   mockRemoteConnectionState,
   mockStarredLoadMore,
   mockToggleExpanded,
   mockWindowOpen,
   newSessionDraftState,
+  projectQueueSidebarCountState,
+  projectQueuesState,
+  projectsState,
   starredSessionsState,
+  versionState,
 } = vi.hoisted(() => ({
   globalSessionsState: {
     sessions: [] as Array<Record<string, unknown>>,
@@ -35,6 +46,7 @@ const {
     loadMore: vi.fn(),
   },
   mockGlobalLoadMore: vi.fn(),
+  mockPromoteNow: vi.fn(),
   mockRemoteConnectionState: {
     value: null as null | { disconnect: ReturnType<typeof vi.fn> },
   },
@@ -44,27 +56,120 @@ const {
   newSessionDraftState: {
     hasDraft: false,
   },
+  projectQueueSidebarCountState: {
+    count: 0,
+  },
+  projectQueuesState: {
+    queuesByProject: {} as Record<string, ProjectQueueItemSummary[]>,
+  },
+  projectsState: {
+    projects: [] as Array<Record<string, unknown>>,
+  },
+  versionState: {
+    capabilities: [] as string[],
+  },
 }));
 
 vi.mock("../../contexts/RemoteConnectionContext", () => ({
   useOptionalRemoteConnection: () => mockRemoteConnectionState.value,
 }));
 
-vi.mock("../../contexts/InboxContext", () => ({
-  useInboxContext: () => ({
-    totalNeedsAttention: 0,
-  }),
-}));
-
 vi.mock("../../hooks/useDrafts", () => ({
-  useDrafts: () => new Set<string>(),
   useNewSessionDraft: () => newSessionDraftState.hasDraft,
 }));
 
-vi.mock("../../hooks/useGlobalSessions", () => ({
-  useGlobalSessions: (options?: { starred?: boolean }) =>
-    options?.starred ? starredSessionsState : globalSessionsState,
+vi.mock("../../hooks/useProjectQueues", () => ({
+  useProjectQueues: () => ({
+    queuesByProject: projectQueuesState.queuesByProject,
+    items: Object.values(projectQueuesState.queuesByProject).flat(),
+    projectStatusesByProject: {},
+    recoveredSessionQueues: [],
+    loading: false,
+    error: null,
+    mutatingItemId: null,
+    mutatingDispatchState: false,
+    mutatingPromoteItemId: null,
+    dispatchState: { status: "running" },
+    refetch: vi.fn(),
+    pauseDispatch: vi.fn(),
+    resumeDispatch: vi.fn(),
+    promoteNow: mockPromoteNow,
+    updateItem: vi.fn(),
+    deleteItem: vi.fn(),
+    retryItem: vi.fn(),
+    moveItemToTop: vi.fn(),
+  }),
 }));
+
+vi.mock("../../hooks/useProjects", () => ({
+  useProjects: () => ({
+    projects: projectsState.projects,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("../../hooks/useSidebarSessionFeeds", () => ({
+  SIDEBAR_SESSION_FEED_LIMIT: 50,
+  useSidebarSessionFeeds: () => ({
+    globalQuery: { scope: "global-sessions" },
+    starredQuery: { scope: "global-sessions", starred: true },
+    loading: globalSessionsState.loading || starredSessionsState.loading,
+    hasMoreGlobalSessions: globalSessionsState.hasMore,
+    loadMoreGlobalSessions: globalSessionsState.loadMore,
+    hasMoreStarredSessions: starredSessionsState.hasMore,
+    loadMoreStarredSessions: starredSessionsState.loadMore,
+  }),
+}));
+
+vi.mock("../../lib/clientSummaryStore", () => {
+  return {
+    useDraftSessionIds: () => new Set<string>(),
+    useInboxCounts: () => ({
+      needsAttention: 0,
+      active: 0,
+      total: 0,
+    }),
+    useSessionCollectionQueryRecords: (query: { starred?: boolean }) =>
+      query.starred
+        ? starredSessionsState.sessions
+        : globalSessionsState.sessions,
+    useStarredSessionRecords: () => {
+      const sessionsById = new Map<string, Record<string, unknown>>();
+      for (const session of [
+        ...globalSessionsState.sessions,
+        ...starredSessionsState.sessions,
+      ]) {
+        if (
+          typeof session.id === "string" &&
+          session.isStarred === true &&
+          session.isArchived !== true
+        ) {
+          sessionsById.set(session.id, session);
+        }
+      }
+      return Array.from(sessionsById.values());
+    },
+    useKnownProjectQueueItems: () =>
+      Object.values(projectQueuesState.queuesByProject).flat(),
+    useProjectQueuedSessionIds: () => {
+      const sessionIds = new Set<string>();
+      for (const items of Object.values(projectQueuesState.queuesByProject)) {
+        for (const item of items) {
+          if (
+            item.target.type === "existing-session" &&
+            item.target.sessionId
+          ) {
+            sessionIds.add(item.target.sessionId);
+          }
+        }
+      }
+      return sessionIds;
+    },
+    useProjectQueueSidebarCount: () => projectQueueSidebarCountState.count,
+  };
+});
 
 vi.mock("../../hooks/useRemoteBasePath", () => ({
   useRemoteBasePath: () => "/remote/test",
@@ -87,32 +192,46 @@ vi.mock("../../hooks/useServerSettings", () => ({
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
-      capabilities: [],
+      capabilities: versionState.capabilities,
     },
   }),
 }));
 
 vi.mock("../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string) =>
-      (
-        {
-          actionExpandSidebar: "Expand sidebar",
-          actionCloseSidebar: "Close sidebar",
-          sidebarNewSession: "New Session",
-          sidebarInbox: "Inbox",
-          sidebarAllSessions: "All Sessions",
-          sidebarProjects: "Projects",
-          sidebarSettings: "Settings",
-          sidebarSwitchHost: "Switch Host",
-          sidebarSectionStarred: "Starred",
-          sidebarSectionLast24Hours: "Last 24 Hours",
-          sidebarSectionOlder: "Older",
-          sidebarSectionExpand: "Expand",
-          sidebarSectionCollapse: "Collapse",
-          sidebarEmpty: "No sessions yet",
-        } as Record<string, string>
-      )[key] ?? key,
+    t: (key: string, vars?: Record<string, string | number>) => {
+      const messages = {
+        actionExpandSidebar: "Expand sidebar",
+        actionCloseSidebar: "Close sidebar",
+        sidebarNewSession: "New Session",
+        sidebarInbox: "Inbox",
+        sidebarAllSessions: "All Sessions",
+        sidebarProjects: "Projects",
+        sidebarSourceControl: "Source Control",
+        projectCardQueueCount: "Project Queue items: {count}",
+        sidebarSectionPendingSessions: "Pending Sessions",
+        sidebarSettings: "Settings",
+        sidebarSwitchHost: "Switch Host",
+        sidebarSectionStarred: "Starred",
+        sidebarSectionLast24Hours: "Last 24 Hours",
+        sidebarSectionOlder: "Older",
+        sidebarSectionExpand: "Expand",
+        sidebarSectionCollapse: "Collapse",
+        sidebarEmpty: "No sessions yet",
+        sidebarHiddenDuplicateSessions: "{count} hidden (duplicate titles)",
+        projectQueueStatusQueued: "Queued",
+        projectQueueStatusFailed: "Failed",
+        projectQueueTargetNewSession: "New session",
+        projectQueueUnknownProject: "Unknown project",
+      } as Record<string, string>;
+      let text = messages[key] ?? key;
+      if (vars) {
+        for (const [name, value] of Object.entries(vars)) {
+          text = text.replaceAll(`{${name}}`, String(value));
+        }
+      }
+      return text;
+    },
   }),
 }));
 
@@ -124,10 +243,22 @@ vi.mock("../SessionListItem", () => ({
   SessionListItem: ({
     sessionId,
     title,
+    activity,
+    hasProjectQueue,
   }: {
     sessionId: string;
     title: string;
-  }) => <li data-testid={`session-${sessionId}`}>{title}</li>,
+    activity?: string;
+    hasProjectQueue?: boolean;
+  }) => (
+    <li data-testid={`session-${sessionId}`} data-activity={activity ?? ""}>
+      {title}
+      {activity === "in-turn" ? (
+        <span data-testid={`thinking-${sessionId}`}>Thinking</span>
+      ) : null}
+      {hasProjectQueue ? <span>Q</span> : null}
+    </li>
+  ),
 }));
 
 function makeSession(
@@ -149,6 +280,49 @@ function makeSession(
     isStarred: false,
     ...overrides,
   };
+}
+
+function makeProjectQueueItem(
+  id: string,
+  overrides: Partial<ProjectQueueItemSummary> = {},
+): ProjectQueueItemSummary {
+  return {
+    id,
+    projectId: "project-1" as ProjectQueueItemSummary["projectId"],
+    target: { type: "new-session", title: `Pending ${id}` },
+    messagePreview: `Pending ${id}`,
+    message: { text: `Pending ${id}` },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: "queued",
+    attachmentCount: 0,
+    ...overrides,
+  };
+}
+
+function makeProjectStatus(
+  state: ProjectQueueProjectStatus["state"],
+): ProjectQueueProjectStatus {
+  return {
+    projectId: "project-1" as ProjectQueueProjectStatus["projectId"],
+    state,
+    idle: state !== "blocked",
+    blockers: state === "blocked" ? ["session-1:in-turn"] : [],
+    dispatchPaused: state === "paused",
+    inFlight: state === "dispatching",
+    quietWindowMs: 30_000,
+    itemCount: 1,
+  };
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return (
+    <div data-testid="location">
+      {location.pathname}
+      {location.search}
+    </div>
+  );
 }
 
 /** Render order (top → bottom) of the rendered rows in the Last 24 Hours list. */
@@ -174,6 +348,7 @@ describe("Sidebar collapsed toggle", () => {
     });
     mockToggleExpanded.mockReset();
     mockWindowOpen.mockReset();
+    mockPromoteNow.mockReset();
     mockRemoteConnectionState.value = null;
     mockGlobalLoadMore.mockReset();
     mockStarredLoadMore.mockReset();
@@ -186,6 +361,10 @@ describe("Sidebar collapsed toggle", () => {
     starredSessionsState.hasMore = false;
     starredSessionsState.loadMore = mockStarredLoadMore;
     newSessionDraftState.hasDraft = false;
+    projectQueuesState.queuesByProject = {};
+    projectQueueSidebarCountState.count = 0;
+    projectsState.projects = [];
+    versionState.capabilities = [];
     vi.stubGlobal("open", mockWindowOpen);
   });
 
@@ -279,6 +458,300 @@ describe("Sidebar collapsed toggle", () => {
     expect(screen.queryByText("Show more")).toBeNull();
   });
 
+  it("marks sidebar rows that have Project Queue items", () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    globalSessionsState.sessions = [
+      makeSession("queued-session", new Date().toISOString()),
+      makeSession("plain-session", new Date(Date.now() - 60_000).toISOString()),
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-session", {
+          target: {
+            type: "existing-session",
+            sessionId: "queued-session",
+          },
+        }),
+      ],
+    };
+
+    renderSidebar();
+
+    expect(screen.getByTestId("session-queued-session").textContent).toContain(
+      "Q",
+    );
+    expect(
+      screen.getByTestId("session-plain-session").textContent,
+    ).not.toContain("Q");
+  });
+
+  it("hides the sidebar thinking dot for queue-only active rows", () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    globalSessionsState.sessions = [
+      makeSession("queued-session", new Date().toISOString(), {
+        activity: "in-turn",
+        activityInferredFromInboxTier: true,
+      }),
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-session", {
+          target: {
+            type: "existing-session",
+            sessionId: "queued-session",
+          },
+        }),
+      ],
+    };
+
+    renderSidebar();
+
+    expect(screen.getByTestId("session-queued-session").textContent).toContain(
+      "Q",
+    );
+    expect(screen.queryByTestId("thinking-queued-session")).toBeNull();
+    expect(screen.getByTestId("session-queued-session").dataset.activity).toBe(
+      "",
+    );
+  });
+
+  it("hides stale queue-inferred thinking after the queue clears", () => {
+    globalSessionsState.sessions = [
+      makeSession("queued-session", new Date().toISOString(), {
+        activity: "in-turn",
+        activityInferredFromInboxTier: true,
+      }),
+    ];
+
+    renderSidebar();
+
+    expect(screen.queryByTestId("thinking-queued-session")).toBeNull();
+    expect(screen.getByTestId("session-queued-session").dataset.activity).toBe(
+      "",
+    );
+  });
+
+  it("keeps the sidebar thinking dot for real in-turn queued rows", () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    globalSessionsState.sessions = [
+      makeSession("active-queued-session", new Date().toISOString(), {
+        activity: "in-turn",
+      }),
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-session", {
+          target: {
+            type: "existing-session",
+            sessionId: "active-queued-session",
+          },
+        }),
+      ],
+    };
+
+    renderSidebar();
+
+    expect(screen.getByTestId("thinking-active-queued-session")).toBeDefined();
+    expect(
+      screen.getByTestId("session-active-queued-session").dataset.activity,
+    ).toBe("in-turn");
+  });
+
+  it("shows the Project Queue count on the Projects nav item", () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    projectQueueSidebarCountState.count = 3;
+
+    renderSidebar();
+
+    const projectsLink = screen.getByRole("link", { name: /Projects/i });
+    expect(projectsLink.textContent).toContain("3");
+    const badge = projectsLink.querySelector(".sidebar-nav-badge");
+    expect(badge?.classList.contains("sidebar-nav-badge--projectQueue")).toBe(
+      true,
+    );
+  });
+
+  it("links Source Control to the project selected in the sessions filter", () => {
+    versionState.capabilities = [GIT_STATUS_ENHANCED_CAPABILITY];
+    projectsState.projects = [
+      { id: "project-1", name: "Alpha" },
+      { id: "project-2", name: "Beta" },
+    ];
+
+    render(
+      <MemoryRouter
+        initialEntries={["/sessions?project=project-2&source=projects"]}
+      >
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Source Control" }).getAttribute("href"),
+    ).toBe("/remote/test/git-status?projectId=project-2");
+  });
+
+  it("links Source Control to the current session project", () => {
+    versionState.capabilities = [GIT_STATUS_ENHANCED_CAPABILITY];
+    projectsState.projects = [
+      { id: "project-1", name: "Alpha" },
+      { id: "project-2", name: "Beta" },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={["/projects/project-1/sessions/session-1"]}>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Source Control" }).getAttribute("href"),
+    ).toBe("/remote/test/git-status?projectId=project-1");
+  });
+
+  it("keeps Source Control active when its link includes project context", () => {
+    versionState.capabilities = [GIT_STATUS_ENHANCED_CAPABILITY];
+    projectsState.projects = [{ id: "project-1", name: "Alpha" }];
+
+    render(
+      <MemoryRouter initialEntries={["/git-status?projectId=project-1"]}>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen
+        .getByRole("link", { name: "Source Control" })
+        .classList.contains("active"),
+    ).toBe(true);
+  });
+
+  it("links pending new-session Project Queue items to the Projects page", () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    projectsState.projects = [
+      {
+        id: "project-1",
+        name: "Alpha",
+        projectQueueCount: 1,
+      },
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-new-session", {
+          target: { type: "new-session", title: "Queued launch" },
+          messagePreview: "Queued launch",
+        }),
+      ],
+    };
+
+    renderSidebar();
+
+    expect(screen.getByText("Pending Sessions")).toBeDefined();
+    const link = screen.getByRole("link", { name: /Queued launch/i });
+    expect(link.getAttribute("href")).toBe(
+      "/remote/test/projects?queueItem=queue-new-session",
+    );
+  });
+
+  it("starts queued new-session sidebar rows before navigating", async () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    projectsState.projects = [
+      {
+        id: "project-1",
+        name: "Alpha",
+        projectQueueCount: 1,
+      },
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-new-session", {
+          target: { type: "new-session", title: "Queued launch" },
+          messagePreview: "Queued launch",
+        }),
+      ],
+    };
+    mockPromoteNow.mockResolvedValue({
+      promoted: true,
+      itemId: "queue-new-session",
+      sessionId: "session-created",
+      reason: "promoted",
+      status: makeProjectStatus("empty"),
+    });
+    const onNavigate = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={onNavigate}
+          isDesktop={true}
+          isCollapsed={true}
+          onToggleExpanded={mockToggleExpanded}
+        />
+        <Routes>
+          <Route path="*" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: /Queued launch/i }));
+
+    await waitFor(() =>
+      expect(mockPromoteNow).toHaveBeenCalledWith(
+        "project-1",
+        "queue-new-session",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/remote/test/projects/project-1/sessions/session-created",
+      ),
+    );
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides pending Project Queue rows without the server capability", () => {
+    projectsState.projects = [
+      {
+        id: "project-1",
+        name: "Alpha",
+        projectQueueCount: 1,
+      },
+    ];
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-new-session", {
+          target: { type: "new-session", title: "Queued launch" },
+          messagePreview: "Queued launch",
+        }),
+      ],
+    };
+
+    renderSidebar();
+
+    expect(screen.queryByText("Pending Sessions")).toBe(null);
+    expect(screen.queryByRole("link", { name: /Queued launch/i })).toBe(null);
+  });
+
   it("keeps the highest-message duplicate session visible", () => {
     const sharedTitle = "Repeated session";
     const now = Date.now();
@@ -309,6 +782,197 @@ describe("Sidebar collapsed toggle", () => {
 
     expect(screen.getByTestId("session-substantive")).toBeDefined();
     expect(screen.queryByTestId("session-thin")).toBeNull();
+  });
+
+  it("keeps the current same-title fork visible even with fewer messages", () => {
+    const sharedTitle = "Bug hunt";
+    const now = Date.now();
+    globalSessionsState.sessions = [
+      makeSession("parent", new Date(now - 60_000).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 198,
+      }),
+      makeSession("current-fork", new Date(now).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 81,
+        parentSessionId: "parent",
+      }),
+    ];
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          currentSessionId="current-fork"
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("session-current-fork")).toBeDefined();
+    expect(screen.getByTestId("session-parent")).toBeDefined();
+    expect(screen.queryByText(/hidden \(duplicate titles\)/)).toBeNull();
+  });
+
+  it("keeps self-owned idle same-title sessions visible", () => {
+    const sharedTitle = "Retitle work";
+    const now = Date.now();
+    globalSessionsState.sessions = [
+      makeSession("owned", new Date(now).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 1,
+        ownership: { owner: "self", processId: "process-owned" },
+      }),
+      makeSession("larger", new Date(now - 60_000).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 20,
+      }),
+    ];
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("session-owned")).toBeDefined();
+    expect(screen.getByTestId("session-larger")).toBeDefined();
+    expect(screen.queryByText(/hidden \(duplicate titles\)/)).toBeNull();
+  });
+
+  it("does not let a same-title helper child hide its source", () => {
+    const sharedTitle = "Summarize this session";
+    const now = Date.now();
+    globalSessionsState.sessions = [
+      makeSession("source", new Date(now - 60_000).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 4,
+      }),
+      makeSession("helper", new Date(now).toISOString(), {
+        title: sharedTitle,
+        fullTitle: sharedTitle,
+        messageCount: 12,
+        parentSessionId: "source",
+      }),
+    ];
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("session-source")).toBeDefined();
+    expect(screen.getByTestId("session-helper")).toBeDefined();
+    expect(screen.queryByText(/hidden \(duplicate titles\)/)).toBeNull();
+  });
+
+  it("does not group rows that only share compact truncated titles", () => {
+    const compactTitle = "Shared compact title";
+    const now = Date.now();
+    globalSessionsState.sessions = [
+      makeSession("first", new Date(now).toISOString(), {
+        title: compactTitle,
+        fullTitle: `${compactTitle} with first distinct full prompt`,
+        messageCount: 1,
+      }),
+      makeSession("second", new Date(now - 60_000).toISOString(), {
+        title: compactTitle,
+        fullTitle: `${compactTitle} with second distinct full prompt`,
+        messageCount: 20,
+      }),
+    ];
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("session-first")).toBeDefined();
+    expect(screen.getByTestId("session-second")).toBeDefined();
+    expect(screen.queryByText(/hidden \(duplicate titles\)/)).toBeNull();
+  });
+
+  it("shows recent and older duplicates when duplicate hiding is disabled", () => {
+    window.localStorage.setItem(UI_KEYS.sidebarDuplicateHidingEnabled, "false");
+    const sharedRecentTitle = "Repeated recent session";
+    const sharedOlderTitle = "Repeated older session";
+    const now = Date.now();
+    globalSessionsState.sessions = [
+      makeSession("recent-thin", new Date(now).toISOString(), {
+        title: sharedRecentTitle,
+        fullTitle: sharedRecentTitle,
+        messageCount: 1,
+      }),
+      makeSession("recent-substantive", new Date(now - 60_000).toISOString(), {
+        title: sharedRecentTitle,
+        fullTitle: sharedRecentTitle,
+        messageCount: 12,
+      }),
+      makeSession(
+        "older-thin",
+        new Date(now - 48 * 60 * 60 * 1000).toISOString(),
+        {
+          title: sharedOlderTitle,
+          fullTitle: sharedOlderTitle,
+          messageCount: 1,
+        },
+      ),
+      makeSession(
+        "older-substantive",
+        new Date(now - 49 * 60 * 60 * 1000).toISOString(),
+        {
+          title: sharedOlderTitle,
+          fullTitle: sharedOlderTitle,
+          messageCount: 12,
+        },
+      ),
+    ];
+
+    render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("session-recent-thin")).toBeDefined();
+    expect(screen.getByTestId("session-recent-substantive")).toBeDefined();
+    expect(screen.getByTestId("session-older-thin")).toBeDefined();
+    expect(screen.getByTestId("session-older-substantive")).toBeDefined();
+    expect(screen.queryByText(/hidden \(duplicate titles\)/)).toBeNull();
   });
 
   it("shows a draft badge on the new session action", () => {
@@ -360,7 +1024,7 @@ describe("Sidebar collapsed toggle", () => {
 
   it("collapses and expands the starred bucket", () => {
     starredSessionsState.sessions = [
-      makeSession("starred", new Date().toISOString()),
+      makeSession("starred", new Date().toISOString(), { isStarred: true }),
     ];
 
     render(
@@ -395,7 +1059,7 @@ describe("Sidebar collapsed toggle", () => {
   it("initializes sidebar section collapse state from localStorage", () => {
     const now = Date.now();
     starredSessionsState.sessions = [
-      makeSession("starred", new Date(now).toISOString()),
+      makeSession("starred", new Date(now).toISOString(), { isStarred: true }),
     ];
     globalSessionsState.sessions = [
       makeSession("recent", new Date(now).toISOString()),
@@ -453,9 +1117,10 @@ describe("Sidebar collapsed toggle", () => {
     });
   });
 
-  // Active sessions (activity = in-turn / waiting-input) are pinned above idle
-  // rows in a stable order, and never run through the recency sort or the
-  // duplicate-title grouping. See topics/sidebar-session-ordering.md.
+  // Active sessions (activity = in-turn / waiting-input) and sessions targeted
+  // by Project Queue are pinned above idle rows in a stable order, and never run
+  // through the recency sort or the duplicate-title grouping.
+  // See topics/sidebar-session-ordering.md.
   describe("active session ordering", () => {
     const now = Date.now();
     const ago = (ms: number) => new Date(now - ms).toISOString();
@@ -517,7 +1182,36 @@ describe("Sidebar collapsed toggle", () => {
       expect(last24HourIds(container)).toEqual(["waiting", "idle-new"]);
     });
 
-    it("never hides active sessions that share a duplicate title", () => {
+    it("pins queued target sessions above newer idle rows without thinking", () => {
+      versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+      globalSessionsState.sessions = [
+        makeSession("idle-new", ago(10_000)),
+        makeSession("queued-old", ago(5 * 60_000)),
+      ];
+      projectQueuesState.queuesByProject = {
+        "project-1": [
+          makeProjectQueueItem("queue-session", {
+            target: {
+              type: "existing-session",
+              sessionId: "queued-old",
+            },
+          }),
+        ],
+      };
+
+      const { container } = renderExpanded();
+
+      expect(last24HourIds(container)).toEqual(["queued-old", "idle-new"]);
+      expect(screen.getByTestId("session-queued-old").textContent).toContain(
+        "Q",
+      );
+      expect(screen.queryByTestId("thinking-queued-old")).toBeNull();
+      expect(screen.getByTestId("session-queued-old").dataset.activity).toBe(
+        "",
+      );
+    });
+
+    it("collapses active duplicates to one representative, rest hidden", () => {
       const shared = "Repeated session";
       globalSessionsState.sessions = [
         makeSession("active-thin", ago(60_000), {
@@ -536,9 +1230,13 @@ describe("Sidebar collapsed toggle", () => {
 
       renderExpanded();
 
-      // Both remain visible — the dedup expander must not swallow live work.
-      expect(screen.getByTestId("session-active-thin")).toBeDefined();
+      // Rotated session ids for one conversation flood the pinned list, so
+      // active duplicates collapse to the best-ranked representative; the rest
+      // stay reachable under the hidden-duplicates expander rather than being
+      // dropped.
       expect(screen.getByTestId("session-active-fat")).toBeDefined();
+      expect(screen.queryByTestId("session-active-thin")).toBeNull();
+      expect(screen.getByText(/hidden \(duplicate titles\)/)).toBeDefined();
     });
 
     it("renders the section for an active-only recent list", () => {
@@ -556,7 +1254,7 @@ describe("Sidebar collapsed toggle", () => {
       expect(screen.queryByText("sidebarNoSessions")).toBeNull();
     });
 
-    it("dedups idle duplicates while leaving active duplicates intact", () => {
+    it("collapses both active and idle duplicate groups", () => {
       const activeTitle = "Active dup";
       const idleTitle = "Idle dup";
       globalSessionsState.sessions = [
@@ -586,14 +1284,14 @@ describe("Sidebar collapsed toggle", () => {
 
       const { container } = renderExpanded();
 
-      // Both active duplicates stay; only the lower-message idle duplicate is
-      // hidden. Active rows render above the surviving idle row.
-      expect(screen.getByTestId("session-active-dup-1")).toBeDefined();
+      // The higher-message row survives in each group; the lower-message active
+      // and idle duplicates fold into the shared hidden-duplicates expander. The
+      // surviving active row still pins above the surviving idle row.
       expect(screen.getByTestId("session-active-dup-2")).toBeDefined();
+      expect(screen.queryByTestId("session-active-dup-1")).toBeNull();
       expect(screen.getByTestId("session-idle-dup-keep")).toBeDefined();
       expect(screen.queryByTestId("session-idle-dup-hide")).toBeNull();
       expect(last24HourIds(container)).toEqual([
-        "active-dup-1",
         "active-dup-2",
         "idle-dup-keep",
       ]);

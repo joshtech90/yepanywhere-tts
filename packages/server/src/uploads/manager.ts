@@ -24,6 +24,7 @@ export interface UploadState {
   imageWidth?: number;
   imageHeight?: number;
   writeStream: WriteStream | null;
+  writeError: Error | null;
   status: "pending" | "streaming" | "complete" | "error" | "cancelled";
 }
 
@@ -54,6 +55,8 @@ export function sanitizeFilename(original: string): {
   // Remove null bytes and other dangerous characters
   let sanitized = baseFilename
     .replace(/\0/g, "")
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "") // strip zero-width/invisible chars
+    .replace(/[^\S ]/g, " ") // normalize exotic whitespace (NBSP, U+202F narrow no-break space that macOS screenshots use before AM/PM, tabs, etc.) to a regular space
     .replace(/[<>:"/\\|?*]/g, "_") // Windows-invalid chars (includes path separators)
     .replace(/\.\./g, "_") // path traversal
     .trim();
@@ -180,6 +183,10 @@ function normalizeImageDimensions(input?: {
   return { width, height };
 }
 
+function toWriteError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Manages file upload operations with streaming to disk.
  */
@@ -239,6 +246,7 @@ export class UploadManager {
           }
         : {}),
       writeStream: null,
+      writeError: null,
       status: "pending",
     };
 
@@ -258,7 +266,7 @@ export class UploadManager {
     }
 
     if (state.status === "cancelled" || state.status === "error") {
-      throw new Error(`Upload is ${state.status}`);
+      throw state.writeError ?? new Error(`Upload is ${state.status}`);
     }
 
     // Check if this chunk would exceed the size limit
@@ -276,18 +284,40 @@ export class UploadManager {
       state.status = "streaming";
 
       // Handle stream errors
-      state.writeStream.on("error", () => {
+      state.writeStream.on("error", (error) => {
+        state.writeError = toWriteError(error);
         state.status = "error";
       });
     }
 
     // Write chunk and track bytes
     return new Promise((resolve, reject) => {
-      const canContinue = state.writeStream?.write(chunk, (err) => {
+      const writeStream = state.writeStream;
+      if (!writeStream) {
+        reject(new Error("Upload stream is not available"));
+        return;
+      }
+      let settled = false;
+      const rejectOnce = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        writeStream.off("error", rejectOnce);
+        state.writeError = toWriteError(error);
+        state.status = "error";
+        reject(state.writeError);
+      };
+      writeStream.once("error", rejectOnce);
+      const canContinue = writeStream.write(chunk, (err) => {
         if (err) {
-          state.status = "error";
-          reject(err);
+          rejectOnce(err);
         } else {
+          if (state.writeError) {
+            rejectOnce(state.writeError);
+            return;
+          }
+          if (settled) return;
+          settled = true;
+          writeStream.off("error", rejectOnce);
           state.bytesReceived += chunk.length;
           resolve(state.bytesReceived);
         }
@@ -295,7 +325,7 @@ export class UploadManager {
 
       // Handle backpressure - wait for drain if buffer is full
       if (!canContinue) {
-        state.writeStream?.once("drain", () => {
+        writeStream.once("drain", () => {
           // Already resolved in callback above
         });
       }
@@ -313,15 +343,47 @@ export class UploadManager {
     }
 
     if (state.status !== "streaming" && state.status !== "pending") {
-      throw new Error(`Cannot complete upload in status: ${state.status}`);
+      throw (
+        state.writeError ??
+        new Error(`Cannot complete upload in status: ${state.status}`)
+      );
     }
 
     // Close the write stream
     if (state.writeStream) {
       await new Promise<void>((resolve, reject) => {
-        state.writeStream?.end((err: Error | null | undefined) => {
-          if (err) reject(err);
-          else resolve();
+        const writeStream = state.writeStream;
+        if (!writeStream) {
+          resolve();
+          return;
+        }
+        if (state.writeError) {
+          reject(state.writeError);
+          return;
+        }
+        let settled = false;
+        const rejectOnce = (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          writeStream.off("error", rejectOnce);
+          state.writeError = toWriteError(error);
+          state.status = "error";
+          reject(state.writeError);
+        };
+        writeStream.once("error", rejectOnce);
+        writeStream.end((err: Error | null | undefined) => {
+          if (err) {
+            rejectOnce(err);
+            return;
+          }
+          if (state.writeError) {
+            rejectOnce(state.writeError);
+            return;
+          }
+          if (settled) return;
+          settled = true;
+          writeStream.off("error", rejectOnce);
+          resolve();
         });
       });
     }

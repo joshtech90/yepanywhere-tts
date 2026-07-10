@@ -60,6 +60,7 @@
 import { open } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { stripBom } from "../utils/jsonl.js";
 
@@ -150,6 +151,24 @@ export function canonicalizeProjectPath(path: string): string {
   });
 }
 
+function isWindowsDriveProjectPath(path: string): boolean {
+  return /^[a-zA-Z]:\//.test(path);
+}
+
+/**
+ * Return the internal identity key used for project membership comparisons.
+ *
+ * Windows drive paths are case-insensitive in the common Win32 path model, so
+ * path spellings that differ only by casing should not create separate YA
+ * projects. POSIX/WSL-style paths remain case-sensitive.
+ */
+export function getProjectIdentityKey(path: string): string {
+  const normalized = canonicalizeProjectPath(path);
+  return isWindowsDriveProjectPath(normalized)
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
 /**
  * Normalize a project path for cross-machine deduplication.
  *
@@ -164,15 +183,18 @@ export function canonicalizeProjectPath(path: string): string {
  */
 export function normalizeProjectPathForDedup(path: string): string {
   const normalized = canonicalizeProjectPath(path);
+  const caseInsensitive = isWindowsDriveProjectPath(normalized);
   // Unix: /Users/kgraehl/dotfiles or /home/kgraehl/dotfiles
   const unixMatch = normalized.match(/^\/(?:Users|home)\/(.+)$/);
   if (unixMatch?.[1]) return unixMatch[1];
   // Windows: C:/Users/kgraehl/dotfiles (after backslash normalization)
-  const winMatch = normalized.match(/^[a-zA-Z]:\/(?:Users|home)\/(.+)$/);
-  if (winMatch?.[1]) return winMatch[1];
+  const winMatch = normalized.match(/^[a-zA-Z]:\/(?:Users|home)\/(.+)$/i);
+  if (winMatch?.[1]) {
+    return caseInsensitive ? winMatch[1].toLowerCase() : winMatch[1];
+  }
   const rootMatch = normalized.match(/^\/root\/(.+)$/);
   if (rootMatch?.[1]) return `root/${rootMatch[1]}`;
-  return normalized;
+  return caseInsensitive ? normalized.toLowerCase() : normalized;
 }
 
 /**
@@ -208,11 +230,33 @@ export function getSessionIdFromPath(filePath: string): string | null {
   return match?.[1] ?? null;
 }
 
+const CWD_SCAN_CHUNK_BYTES = 8192;
+const CWD_SCAN_MAX_BYTES = 256 * 1024;
+
+function extractCwdFromJsonLine(line: string): string | null {
+  const trimmed = stripBom(line).trim();
+  if (!trimmed) return null;
+
+  try {
+    const data = JSON.parse(trimmed) as { cwd?: unknown };
+    if (typeof data.cwd === "string") {
+      return data.cwd;
+    }
+  } catch {
+    // Skip invalid or partial JSONL lines.
+  }
+
+  return null;
+}
+
 /**
  * Read the working directory (cwd) from a session file.
  * This is the most reliable way to get the actual project path.
  *
- * The cwd is stored in the first few lines of the JSONL file by the Claude SDK.
+ * The cwd is stored near the start of Claude JSONL files, but YA queue
+ * bookkeeping can prepend long prompt lines before the first cwd-bearing entry.
+ * Scan complete JSONL records up to a bounded prefix rather than assuming a
+ * single fixed-size read reaches the field.
  *
  * @param sessionFilePath - Absolute path to the session .jsonl file
  * @returns The cwd field value, or null if not found
@@ -222,27 +266,36 @@ export async function readCwdFromSessionFile(
 ): Promise<string | null> {
   let fd: Awaited<ReturnType<typeof open>> | null = null;
   try {
-    // Read only the first 8KB — cwd is always near the start of the file.
-    // Avoids reading multi-MB session files entirely.
     fd = await open(sessionFilePath, "r");
-    const buf = Buffer.alloc(8192);
-    const { bytesRead } = await fd.read(buf, 0, 8192, 0);
-    if (bytesRead === 0) return null;
+    const decoder = new StringDecoder("utf8");
+    let bytesScanned = 0;
+    let pending = "";
 
-    const content = stripBom(buf.toString("utf-8", 0, bytesRead));
-    const lines = content.split("\n").slice(0, 20);
+    while (bytesScanned < CWD_SCAN_MAX_BYTES) {
+      const bytesToRead = Math.min(
+        CWD_SCAN_CHUNK_BYTES,
+        CWD_SCAN_MAX_BYTES - bytesScanned,
+      );
+      const buf = Buffer.alloc(bytesToRead);
+      const { bytesRead } = await fd.read(buf, 0, bytesToRead, bytesScanned);
+      if (bytesRead === 0) {
+        break;
+      }
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const data = JSON.parse(line);
-        if (data.cwd && typeof data.cwd === "string") {
-          return data.cwd;
-        }
-      } catch {
-        // Skip invalid JSON lines
+      bytesScanned += bytesRead;
+      pending += decoder.write(buf.subarray(0, bytesRead));
+
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const cwd = extractCwdFromJsonLine(line);
+        if (cwd) return cwd;
       }
     }
+
+    pending += decoder.end();
+    const cwd = extractCwdFromJsonLine(pending);
+    if (cwd) return cwd;
 
     return null;
   } catch {

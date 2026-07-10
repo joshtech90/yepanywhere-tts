@@ -1,8 +1,9 @@
 import type {
   MarkdownAugment,
+  ProjectQueueItemStatus,
+  SessionQueuedMessageSummary,
   TranscriptDisplayObject,
   UploadedFile,
-  UserMessageMetadata,
 } from "@yep-anywhere/shared";
 import {
   memo,
@@ -14,235 +15,79 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  createCommentAnchor,
-  type CommentAnchor,
-  draftContainsAnchorQuote,
-} from "../lib/commentAnchors";
+import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
 import { getShowThinkingSetting } from "../hooks/useModelSettings";
-import { useAlwaysShowQuoteCircles } from "../hooks/useAlwaysShowQuoteCircles";
+import { useMessageListIsearch } from "../hooks/useMessageListIsearch";
+import { useMessageListSelectionQuote } from "../hooks/useMessageListSelectionQuote";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useI18n } from "../i18n";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import {
-  copyMarkdownSelectionToClipboard,
-  extractMarkdownSnippetsFromSelection,
-} from "../lib/markdownSelectionCopy";
-import {
   formatCompactRelativeAge,
   getLatestMessageTimestampMs,
-  isStaleTimestamp,
   MESSAGE_STALE_THRESHOLD_MS,
-  parseTimestampMs,
 } from "../lib/messageAge";
-import { parseUserPrompt } from "../lib/parseUserPrompt";
+import type { ActiveToolApproval } from "../lib/preprocessMessages";
+import type { SessionIsearchScope } from "../lib/sessionIsearchGuide";
 import {
-  type ActiveToolApproval,
-  preprocessMessages,
-} from "../lib/preprocessMessages";
+  decideSessionScrollRestore,
+  DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
+  type SessionScrollBehaviorMode,
+} from "../lib/sessionScrollBehavior";
+import type { SessionRouteScrollSnapshot } from "../lib/sessionRouteSnapshots";
 import {
-  dispatchSessionIsearchGuideState,
-  type SessionIsearchScope,
-} from "../lib/sessionIsearchGuide";
-import { stabilizeRenderItems } from "../lib/stableRenderItems";
-import { insertTranscriptDisplayObjects } from "../lib/transcriptDisplayObjects";
+  findFallbackRenderAnchorRow,
+  findRenderRow,
+  getFirstVisibleRenderAnchor,
+  restoreScrollToAnchorRow,
+} from "../lib/scrollAnchors";
+import {
+  buildComposerTailDisplayRows,
+  buildSessionDetailRenderItems,
+  buildTimelineEntryDisplayRows,
+  buildVisibleTimelineEntries,
+  countThinkingItems,
+  getDisplayRenderItems,
+  getLastTimestampedRenderItem,
+  getLatestVisibleTimestampMs,
+  getLatestThinkingItemId,
+  getNextProgressiveEntryCount,
+  getProgressiveTimelineVisibility,
+  getTailEntryCountForRenderItemTarget,
+  getThinkingItemIds,
+  getThinkingTextLengths,
+  groupEndsVisibleTurn,
+  groupRenderItemsIntoTurns,
+  hasVisibleThinkingTextDelta,
+  reconcileAutoExpandedThinkingItemIds,
+  selectLatestCorrectablePrompt,
+  type ComposerTailLanePosition,
+  type RenderTurnGroup,
+} from "../lib/sessionDetail/renderSelectors";
 import { UI_KEYS } from "../lib/storageKeys";
-import type { ContentBlock, Message } from "../types";
+import type { Message } from "../types";
 import type { RenderItem } from "../types/renderItems";
 import { AttachmentChip } from "./AttachmentChip";
 import {
   BtwAsideTranscript,
   type BtwAsideTranscriptTurn,
 } from "./BtwAsidePane";
-import {
-  type AssistantRenderSegment,
-  buildAssistantRenderSegments,
-  ExploredToolGroup,
-  getExploredEntrySearchPreview,
-  getExploredEntrySearchText,
-} from "./blocks/ExploredToolGroup";
+import { ExploredToolGroup } from "./blocks/ExploredToolGroup";
 import { MessageAge } from "./MessageAge";
 import { ProcessingIndicator } from "./ProcessingIndicator";
 import { RenderItemComponent } from "./RenderItemComponent";
 import {
-  type UserTurnNavAnchor,
   UserTurnNavigator,
   type UserTurnNavMotionCue,
-  type UserTurnNavSearchState,
 } from "./UserTurnNavigator";
 import { CopyTextButton } from "./ui/CopyTextButton";
+import { LinkifiedText } from "./ui/LinkifiedText";
 
 const EMPTY_TRANSCRIPT_DISPLAY_OBJECTS: readonly TranscriptDisplayObject[] = [];
-
-/**
- * Groups consecutive assistant items (text, thinking, tool_call) into turns.
- * User prompts break the grouping and are returned as separate groups.
- */
-function groupItemsIntoTurns(items: RenderItem[]): Array<{
-  isUserPrompt: boolean;
-  isStandalone?: boolean;
-  items: RenderItem[];
-}> {
-  const groups: Array<{
-    isUserPrompt: boolean;
-    isStandalone?: boolean;
-    items: RenderItem[];
-  }> = [];
-  let currentAssistantGroup: RenderItem[] = [];
-
-  for (const item of items) {
-    if (item.type === "transcript_display_object") {
-      if (currentAssistantGroup.length > 0) {
-        groups.push({ isUserPrompt: false, items: currentAssistantGroup });
-        currentAssistantGroup = [];
-      }
-      groups.push({
-        isUserPrompt: false,
-        isStandalone: true,
-        items: [item],
-      });
-    } else if (item.type === "user_prompt" || item.type === "session_setup") {
-      // Flush any pending assistant items
-      if (currentAssistantGroup.length > 0) {
-        groups.push({ isUserPrompt: false, items: currentAssistantGroup });
-        currentAssistantGroup = [];
-      }
-      // User prompt is its own group
-      groups.push({ isUserPrompt: true, items: [item] });
-    } else {
-      // Accumulate assistant items
-      currentAssistantGroup.push(item);
-    }
-  }
-
-  // Flush remaining assistant items
-  if (currentAssistantGroup.length > 0) {
-    groups.push({ isUserPrompt: false, items: currentAssistantGroup });
-  }
-
-  return groups;
-}
-
-function getEarliestMessageTimestampMs(
-  messages: readonly Message[],
-): number | null {
-  let earliest: number | null = null;
-  for (const message of messages) {
-    const timestampMs = parseTimestampMs(message.timestamp);
-    if (timestampMs === null) {
-      continue;
-    }
-    earliest =
-      earliest === null ? timestampMs : Math.min(earliest, timestampMs);
-  }
-  return earliest;
-}
-
-function getLatestItemsTimestampMs(
-  items: readonly RenderItem[],
-): number | null {
-  let latest: number | null = null;
-  for (const item of items) {
-    const timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
-    if (timestampMs === null) {
-      continue;
-    }
-    latest = latest === null ? timestampMs : Math.max(latest, timestampMs);
-  }
-  return latest;
-}
-
-function getThinkingDurationMs(
-  item: RenderItem,
-  items: readonly RenderItem[],
-  index: number,
-  nowMs: number,
-): number | undefined {
-  if (item.type !== "thinking") {
-    return undefined;
-  }
-
-  const startMs =
-    getEarliestMessageTimestampMs(item.sourceMessages) ??
-    getLatestMessageTimestampMs(item.sourceMessages);
-  if (startMs === null) {
-    return undefined;
-  }
-
-  let endMs: number | null = item.status === "streaming" ? nowMs : null;
-  for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
-    const nextItem = items[nextIndex];
-    if (!nextItem) {
-      continue;
-    }
-    const nextTimestampMs =
-      getEarliestMessageTimestampMs(nextItem.sourceMessages) ??
-      getLatestMessageTimestampMs(nextItem.sourceMessages);
-    if (nextTimestampMs !== null && nextTimestampMs >= startMs) {
-      endMs = nextTimestampMs;
-      break;
-    }
-  }
-
-  if (endMs === null) {
-    const latestOwnMs = getLatestMessageTimestampMs(item.sourceMessages);
-    endMs = latestOwnMs !== null && latestOwnMs > startMs ? latestOwnMs : null;
-  }
-
-  if (endMs === null) {
-    return undefined;
-  }
-
-  const durationMs = endMs - startMs;
-  return durationMs >= 100 && durationMs < 24 * 60 * 60 * 1000
-    ? durationMs
-    : undefined;
-}
-
-const SESSION_SETUP_PREFIXES = [
-  "# AGENTS.md instructions",
-  "<environment_context>",
-];
-
-function getPromptTextForCorrection(content: string | ContentBlock[]): string {
-  const rawText =
-    typeof content === "string"
-      ? content
-      : content
-          .filter(
-            (block): block is ContentBlock & { type: "text"; text: string } =>
-              block.type === "text" && typeof block.text === "string",
-          )
-          .map((block) => block.text)
-          .join("\n");
-  return parseUserPrompt(rawText).text.trim();
-}
-
-function getUserTurnPreview(content: string | ContentBlock[]): string {
-  const text = getPromptTextForCorrection(content).replace(/\s+/g, " ").trim();
-  return getSearchPreviewFallback(text);
-}
-
-function getSearchPreviewFallback(text: string): string {
-  const compactText = text.replace(/\s+/g, " ").trim();
-  if (compactText.length <= 180) {
-    return compactText;
-  }
-  return `${compactText.slice(0, 177).trimEnd()}...`;
-}
-
-function normalizeSearchText(text: string, caseSensitive = false): string {
-  const compactText = text.replace(/\s+/g, " ").trim();
-  return caseSensitive ? compactText : compactText.toLowerCase();
-}
-
-function getSearchableUserTurnPreview(item: RenderItem): string | null {
-  if (item.type !== "user_prompt" || item.isSubagent) {
-    return null;
-  }
-  const preview = getUserTurnPreview(item.content);
-  return preview && !isSessionSetupText(preview) ? preview : null;
-}
+const PROGRESSIVE_INITIAL_RENDER_ITEM_TARGET = 120;
+const PROGRESSIVE_RENDER_ITEM_BATCH_TARGET = 90;
+const PROGRESSIVE_RENDER_BATCH_DELAY_MS = 32;
+const PROGRESSIVE_RENDER_REVEAL_DELAY_MS = 180;
 
 function isCtrlKeyShortcut(
   event: KeyboardEvent,
@@ -280,31 +125,56 @@ function getSessionIsearchShortcutScope(
   return null;
 }
 
-function findRenderRow(
-  messageList: HTMLDivElement | null,
-  id: string,
-): HTMLElement | null {
-  if (!messageList) return null;
-  for (const row of messageList.querySelectorAll<HTMLElement>(
-    "[data-render-id]",
-  )) {
-    if (row.dataset.renderId === id) {
-      return row;
-    }
-  }
-  return null;
-}
-
-interface VisibleRenderAnchor {
-  id: string;
-  topOffset: number;
-}
-
-function getFirstVisibleRenderAnchor(
+function getVisibleTurnEndTimestampMs(
   messageList: HTMLDivElement,
   scrollContainer: HTMLElement,
-): VisibleRenderAnchor | null {
+  groups: readonly RenderTurnGroup[],
+): number | null {
   const containerRect = scrollContainer.getBoundingClientRect();
+  let timestampMs: number | null = null;
+
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
+    if (!group || !groupEndsVisibleTurn(group, groups[index + 1])) {
+      continue;
+    }
+    const item = getLastTimestampedRenderItem(group.items);
+    if (!item) {
+      continue;
+    }
+    const row = findRenderRow(messageList, item.id);
+    if (!row) {
+      continue;
+    }
+    const rowRect = row.getBoundingClientRect();
+    if (
+      rowRect.bottom >= containerRect.top &&
+      rowRect.bottom <= containerRect.bottom
+    ) {
+      timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
+    }
+  }
+
+  return timestampMs;
+}
+
+function getMiddleVisibleTimestampMs(
+  messageList: HTMLDivElement,
+  scrollContainer: HTMLElement,
+  items: readonly RenderItem[],
+): number | null {
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const middleY = containerRect.top + containerRect.height / 2;
+  const timestampsById = new Map<string, number>();
+
+  for (const item of items) {
+    const timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
+    if (timestampMs !== null) {
+      timestampsById.set(item.id, timestampMs);
+    }
+  }
+
+  let best: { distance: number; timestampMs: number } | null = null;
   for (const row of messageList.querySelectorAll<HTMLElement>(
     "[data-render-id]",
   )) {
@@ -312,327 +182,45 @@ function getFirstVisibleRenderAnchor(
     if (!id) {
       continue;
     }
+    const timestampMs = timestampsById.get(id);
+    if (timestampMs === undefined) {
+      continue;
+    }
     const rowRect = row.getBoundingClientRect();
-    if (
-      rowRect.bottom > containerRect.top &&
-      rowRect.top < containerRect.bottom
-    ) {
-      return {
-        id,
-        topOffset: rowRect.top - containerRect.top,
-      };
+    const visible =
+      rowRect.bottom >= containerRect.top &&
+      rowRect.top <= containerRect.bottom;
+    if (!visible) {
+      continue;
     }
-  }
-  return null;
-}
-
-function buildSearchPreview(
-  text: string,
-  query: string,
-  caseSensitive = false,
-): string {
-  const compactText = text.replace(/\s+/g, " ").trim();
-  const normalizedText = normalizeSearchText(compactText, caseSensitive);
-  const normalizedQuery = normalizeSearchText(query, caseSensitive);
-  const fallback =
-    compactText.length > 420
-      ? `${compactText.slice(0, 417).trimEnd()}...`
-      : compactText;
-  if (!normalizedQuery) {
-    return fallback;
-  }
-
-  const matchIndexes: number[] = [];
-  let searchFrom = 0;
-  while (matchIndexes.length < 3) {
-    const index = normalizedText.indexOf(normalizedQuery, searchFrom);
-    if (index === -1) break;
-    matchIndexes.push(index);
-    searchFrom = index + normalizedQuery.length;
-  }
-  if (matchIndexes.length === 0) {
-    return fallback;
-  }
-
-  return matchIndexes
-    .map((index) => {
-      const start = Math.max(0, index - 96);
-      const end = Math.min(
-        compactText.length,
-        index + normalizedQuery.length + 180,
-      );
-      const prefix = start > 0 ? "..." : "";
-      const suffix = end < compactText.length ? "..." : "";
-      return `${prefix}${compactText.slice(start, end).trim()}${suffix}`;
-    })
-    .join(" ... ");
-}
-
-function stringifySearchValue(value: unknown): string {
-  const seen = new WeakSet<object>();
-
-  const stringify = (nestedValue: unknown): string => {
-    if (nestedValue === null || nestedValue === undefined) {
-      return "";
-    }
-    if (typeof nestedValue === "string") {
-      return nestedValue;
-    }
-    if (
-      typeof nestedValue === "number" ||
-      typeof nestedValue === "boolean" ||
-      typeof nestedValue === "bigint"
-    ) {
-      return String(nestedValue);
-    }
-    if (typeof nestedValue !== "object") {
-      return String(nestedValue);
-    }
-    if (seen.has(nestedValue)) {
-      return "[Circular]";
-    }
-    seen.add(nestedValue);
-    if (Array.isArray(nestedValue)) {
-      return nestedValue.map(stringify).filter(Boolean).join("\n");
-    }
-    return Object.entries(nestedValue as Record<string, unknown>)
-      .map(([key, entryValue]) => {
-        const text = stringify(entryValue);
-        return text ? `${key}: ${text}` : key;
-      })
-      .filter(Boolean)
-      .join("\n");
-  };
-
-  return stringify(value);
-}
-
-function getContentBlocksText(content: string | ContentBlock[]): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  return content
-    .map((block) => {
-      if (block.type === "text" && typeof block.text === "string") {
-        return block.text;
-      }
-      if (block.type === "thinking" && typeof block.thinking === "string") {
-        return block.thinking;
-      }
-      if (block.type === "tool_use") {
-        return [block.name, block.id, stringifySearchValue(block.input)].join(
-          "\n",
-        );
-      }
-      if (block.type === "tool_result") {
-        return [
-          block.tool_use_id,
-          typeof block.content === "string"
-            ? block.content
-            : stringifySearchValue(block.content),
-        ].join("\n");
-      }
-      return stringifySearchValue(block);
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function joinSearchParts(parts: Array<string | null | undefined>): string {
-  return parts
-    .map((part) => part?.trim() ?? "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function getToolSearchText(item: RenderItem): string {
-  if (item.type !== "tool_call") {
-    return "";
-  }
-  return joinSearchParts([
-    item.toolName,
-    item.id,
-    item.status,
-    stringifySearchValue(item.toolInput),
-    item.toolResult?.isError ? "error" : null,
-    item.toolResult?.content,
-    stringifySearchValue(item.toolResult?.structured),
-  ]);
-}
-
-function getToolSearchPreview(item: RenderItem): string {
-  if (item.type !== "tool_call") {
-    return "";
-  }
-  const input = stringifySearchValue(item.toolInput).replace(/\s+/g, " ");
-  const detail = input ? `: ${getSearchPreviewFallback(input)}` : "";
-  return `${item.toolName}${detail}`;
-}
-
-function getFullSessionSearchAnchorForItem(
-  item: RenderItem,
-): UserTurnNavAnchor | null {
-  switch (item.type) {
-    case "user_prompt": {
-      const text = getPromptTextForCorrection(item.content);
-      const preview = getSearchPreviewFallback(text);
-      return preview ? { id: item.id, preview, searchText: text } : null;
-    }
-    case "session_setup": {
-      const text = joinSearchParts([
-        item.title,
-        ...item.prompts.map(getContentBlocksText),
-      ]);
-      return text
-        ? {
-            id: item.id,
-            preview: item.title || getSearchPreviewFallback(text),
-            searchText: text,
-          }
-        : null;
-    }
-    case "transcript_display_object": {
-      const searchText = joinSearchParts([
-        item.object.title,
-        item.object.status,
-        item.object.error,
-      ]);
-      return searchText
-        ? {
-            id: item.id,
-            preview:
-              item.object.title ??
-              getSearchPreviewFallback(item.object.error ?? item.object.status),
-            searchText,
-          }
-        : null;
-    }
-    case "text":
-      return item.text
-        ? {
-            id: item.id,
-            preview: getSearchPreviewFallback(item.text),
-            searchText: item.text,
-          }
-        : null;
-    case "thinking":
-      return item.thinking
-        ? {
-            id: item.id,
-            preview: `Thinking: ${getSearchPreviewFallback(item.thinking)}`,
-            searchText: joinSearchParts(["Thinking", item.thinking]),
-          }
-        : null;
-    case "system":
-      return item.content
-        ? {
-            id: item.id,
-            preview: getSearchPreviewFallback(item.content),
-            searchText: item.content,
-          }
-        : null;
-    case "task_notification": {
-      const searchText = item.summary ?? item.raw;
-      return searchText
-        ? {
-            id: item.id,
-            preview: getSearchPreviewFallback(searchText),
-            searchText,
-          }
-        : null;
-    }
-    case "tool_call": {
-      const searchText = getToolSearchText(item);
-      return searchText
-        ? {
-            id: item.id,
-            preview: getToolSearchPreview(item),
-            searchText,
-          }
-        : null;
-    }
-  }
-}
-
-function getFullSessionSearchAnchorsForSegment(
-  segment: AssistantRenderSegment,
-): UserTurnNavAnchor[] {
-  if (segment.kind === "item") {
-    const anchor = getFullSessionSearchAnchorForItem(segment.item);
-    return anchor ? [anchor] : [];
-  }
-
-  const anchors: UserTurnNavAnchor[] = [
-    {
-      id: segment.id,
-      preview: `Explored: ${segment.items.length} ${
-        segment.items.length === 1 ? "item" : "items"
-      }`,
-      searchText: joinSearchParts([
-        "Explored",
-        `${segment.items.length} items`,
-      ]),
-    },
-  ];
-
-  for (const item of segment.items) {
-    const anchor = getFullSessionSearchAnchorForItem(item);
-    if (anchor) {
-      const exploredPreview = getExploredEntrySearchPreview(item);
-      const exploredSearchText = getExploredEntrySearchText(item);
-      anchors.push({
-        ...anchor,
-        id: `${segment.id}:${item.id}`,
-        preview: `Explored / ${exploredPreview || anchor.preview}`,
-        searchText: joinSearchParts([exploredSearchText, anchor.searchText]),
-        targetId: segment.id,
-      });
+    const distance =
+      rowRect.top <= middleY && rowRect.bottom >= middleY
+        ? 0
+        : Math.min(
+            Math.abs(rowRect.top - middleY),
+            Math.abs(rowRect.bottom - middleY),
+          );
+    if (!best || distance <= best.distance) {
+      best = { distance, timestampMs };
     }
   }
 
-  return anchors;
+  return best?.timestampMs ?? null;
 }
 
-function getSearchScopeLabel(scope: SessionIsearchScope): string {
-  if (scope === "full") {
-    return "Full session";
-  }
-  return scope === "all" ? "All turns" : "User turns";
-}
-
-function getSearchScopeAriaLabel(scope: SessionIsearchScope): string {
-  if (scope === "full") {
-    return "Reverse search full session";
-  }
-  return scope === "all"
-    ? "Reverse search all turns"
-    : "Reverse search user turns";
-}
-
-function getSearchScopeKeys(scope: SessionIsearchScope): string {
-  if (scope === "full") {
-    return "Ctrl+Alt+S";
-  }
-  return scope === "all" ? "Ctrl+S" : "Ctrl+R/Ctrl+Alt+R";
-}
-
-function isSessionSetupText(text: string): boolean {
-  const trimmed = text.trimStart();
-  return SESSION_SETUP_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
-
-interface UserTurnSearchSession {
-  active: boolean;
-  scope: SessionIsearchScope;
-  query: string;
-  caseSensitive: boolean;
-  selectedId: string | null;
-  originalScrollTop: number | null;
+function getTranscriptPositionTimestampMs(
+  messageList: HTMLDivElement,
+  scrollContainer: HTMLElement,
+  groups: readonly RenderTurnGroup[],
+  items: readonly RenderItem[],
+): number | null {
+  return (
+    getVisibleTurnEndTimestampMs(messageList, scrollContainer, groups) ??
+    getMiddleVisibleTimestampMs(messageList, scrollContainer, items)
+  );
 }
 
 const NAV_MOTION_CUE_CLEAR_MS = 760;
-const SEARCH_ARROW_REPEAT_DELAY_MS = 150;
-const SEARCH_ARROW_REPEAT_INTERVAL_MS = 42;
 const MIN_BOTTOM_FOLLOW_THRESHOLD_PX = 120;
 const MAX_BOTTOM_FOLLOW_THRESHOLD_PX = 520;
 const BOTTOM_FOLLOW_VIEWPORT_FRACTION = 0.45;
@@ -666,6 +254,10 @@ function isNearScrollBottom(container: HTMLElement): boolean {
 // Tolerance for "the last line is in view" — sub-pixel / zoom / high-DPI
 // rounding only, not a behavioural band.
 const FOLLOW_BOTTOM_TOLERANCE_PX = 4;
+// Scroll snapshots are warm-restore hints, not live state: capture involves a
+// full anchor walk (rect reads), so per-tick publishes coalesce to a trailing
+// capture; leave/settle paths still publish immediately.
+const SCROLL_SNAPSHOT_PUBLISH_DEBOUNCE_MS = 200;
 
 // "At bottom" for follow purposes = the last rendered line is in view (its
 // bottom edge at or above the viewport bottom), not that scrollTop reached the
@@ -765,14 +357,8 @@ function saveSessionThinkingLatestOnly(latestOnly: boolean) {
   }
 }
 
-function countThinkingItems(items: readonly RenderItem[]) {
-  let count = 0;
-  for (const item of items) {
-    if (item.type === "thinking") {
-      count += 1;
-    }
-  }
-  return count;
+function providerExpandsHistoricalThinking(provider: string | undefined) {
+  return provider === "pi";
 }
 
 function formatSize(bytes: number): string {
@@ -794,22 +380,18 @@ interface PendingMessage {
 }
 
 /** Deferred message queued server-side */
-interface DeferredMessage {
-  tempId?: string;
+type DeferredMessage = SessionQueuedMessageSummary;
+
+interface InlineProjectQueueMessage {
+  id: string;
   content: string;
   timestamp: string;
-  metadata?: UserMessageMetadata;
+  status: ProjectQueueItemStatus;
+  projectPosition: number;
   attachmentCount?: number;
   attachments?: UploadedFile[];
-}
-
-interface ComposerTailLanePosition {
-  regularIndex?: number;
-  patientIndex?: number;
-}
-
-function isPatientDeferredMessage(message: DeferredMessage): boolean {
-  return message.metadata?.deliveryIntent === "patient";
+  lastError?: string;
+  isMutating?: boolean;
 }
 
 function formatQueuedAge(timestampMs: number, nowMs: number): string {
@@ -847,63 +429,6 @@ function getDeferredMessageStatus({
     : `Queued regular (#${regularIndex + 1})`;
 }
 
-type ComposerTailItem =
-  | {
-      kind: "pending";
-      key: string;
-      message: PendingMessage;
-      sourceIndex: number;
-    }
-  | {
-      kind: "deferred";
-      key: string;
-      message: DeferredMessage;
-      deferredIndex: number;
-      sourceIndex: number;
-    };
-
-function compareComposerTailItems(
-  left: ComposerTailItem,
-  right: ComposerTailItem,
-): number {
-  // Two lanes, each kept in its own order: optimistic pending sends (in flight)
-  // render before server-queued deferred messages, and deferred messages
-  // preserve the server's authoritative queue order rather than being re-sorted.
-  if (left.kind !== right.kind) {
-    return left.kind === "pending" ? -1 : 1;
-  }
-
-  if (left.kind === "deferred" && right.kind === "deferred") {
-    return left.deferredIndex - right.deferredIndex;
-  }
-
-  const leftOrder =
-    left.kind === "pending" ? left.message.clientOrder : undefined;
-  const rightOrder =
-    right.kind === "pending" ? right.message.clientOrder : undefined;
-  if (
-    typeof leftOrder === "number" &&
-    Number.isFinite(leftOrder) &&
-    typeof rightOrder === "number" &&
-    Number.isFinite(rightOrder) &&
-    leftOrder !== rightOrder
-  ) {
-    return leftOrder - rightOrder;
-  }
-
-  const leftTimestamp = parseTimestampMs(left.message.timestamp);
-  const rightTimestamp = parseTimestampMs(right.message.timestamp);
-  if (
-    leftTimestamp !== null &&
-    rightTimestamp !== null &&
-    leftTimestamp !== rightTimestamp
-  ) {
-    return leftTimestamp - rightTimestamp;
-  }
-
-  return left.sourceIndex - right.sourceIndex;
-}
-
 interface BtwAsideTimelineItem {
   id: string;
   request: string;
@@ -935,6 +460,8 @@ interface Props {
   pendingMessages?: PendingMessage[];
   /** Deferred messages queued server-side (shown as "Queued") */
   deferredMessages?: DeferredMessage[];
+  /** Project Queue items targeting this session (shown below local queue). */
+  projectQueueMessages?: InlineProjectQueueMessage[];
   /** YA-owned /btw cards that have entered the scrollback timeline. */
   btwAsides?: BtwAsideTimelineItem[];
   /** Focus this /btw aside for follow-up turns. */
@@ -952,10 +479,23 @@ interface Props {
   /** Read current composer draft for quote tint reconciliation. */
   getComposerDraft?: () => string;
   composerDraft?: string;
+  composerDraftChange?: DraftTextChangeMetadata;
   /** Clear all comment anchors after the quoted turn is sent. */
   quoteClearSignal?: number;
   /** Callback to cancel a deferred message */
   onCancelDeferred?: (tempId: string) => void;
+  /** Callback to cancel an optimistic steering send before the provider acts. */
+  onCancelUnconfirmedUserMessage?: (tempId: string) => void;
+  /** Steer a patient queued message, and earlier patient entries, into the session now */
+  onSteerDeferred?: (tempId: string) => void;
+  /** Callback to resume a restart-paused recovered queue entry */
+  onResumeRecoveredDeferred?: (queueId: string) => void;
+  /** Steer a restart-paused recovered entry, and earlier patient entries, into the session now */
+  onSteerRecoveredDeferred?: (queueId: string) => void;
+  /** Callback to delete a restart-paused recovered queue entry */
+  onDeleteRecoveredDeferred?: (queueId: string) => void;
+  /** Callback to cancel a Project Queue item */
+  onCancelProjectQueueMessage?: (itemId: string) => void;
   /** Callback to correct the latest actually-sent user message */
   onCorrectLatestUserMessage?: (messageId: string, content: string) => void;
   /** Callback to aggressively reload the client transcript from a user turn */
@@ -978,6 +518,19 @@ interface Props {
   onLoadOlderMessages?: () => void;
   /** Whether the client transcript is intentionally loaded from a recent tail */
   clientTailActive?: boolean;
+  /** Render the recent transcript tail first, then hydrate older rows in batches. */
+  progressiveRenderEnabled?: boolean;
+  /** Show detailed progressive render text and progress bar while hydrating. */
+  progressiveRenderStatusVisible?: boolean;
+  /** Stable identity for one progressive initial-render cycle. */
+  progressiveRenderKey?: string;
+  initialScrollSnapshot?: SessionRouteScrollSnapshot | null;
+  onScrollSnapshotChange?: (snapshot: SessionRouteScrollSnapshot) => void;
+  scrollBehaviorMode?: SessionScrollBehaviorMode;
+  /** Allow CSS to skip rendering transcript rows outside the viewport. */
+  offscreenTranscriptRenderingEnabled?: boolean;
+  inert?: boolean;
+  onTranscriptPositionTimestampChange?: (timestampMs: number | null) => void;
   getForkSummaryTargetHref?: (targetSessionId: string) => string;
   onCancelForkSummary?: (objectId: string) => void;
   onToggleForkSummaryAutoOpen?: (objectId: string, value: boolean) => void;
@@ -999,6 +552,24 @@ function XIcon({ size = 14 }: { size?: number }) {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function PlayIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m8 5 11 7-11 7V5Z" />
     </svg>
   );
 }
@@ -1117,6 +688,7 @@ export const MessageList = memo(function MessageList({
   scrollTrigger = 0,
   pendingMessages = [],
   deferredMessages = [],
+  projectQueueMessages = [],
   btwAsides = [],
   onFocusBtwAside,
   onDoneBtwAside,
@@ -1126,8 +698,15 @@ export const MessageList = memo(function MessageList({
   onQuoteSelection,
   getComposerDraft,
   composerDraft = "",
+  composerDraftChange,
   quoteClearSignal = 0,
   onCancelDeferred,
+  onCancelUnconfirmedUserMessage,
+  onSteerDeferred,
+  onResumeRecoveredDeferred,
+  onSteerRecoveredDeferred,
+  onDeleteRecoveredDeferred,
+  onCancelProjectQueueMessage,
   onCorrectLatestUserMessage,
   onTrimBeforeUserMessage,
   onForkBeforeUserMessage,
@@ -1139,6 +718,15 @@ export const MessageList = memo(function MessageList({
   loadingOlder = false,
   onLoadOlderMessages,
   clientTailActive = false,
+  progressiveRenderEnabled = false,
+  progressiveRenderStatusVisible = true,
+  progressiveRenderKey,
+  initialScrollSnapshot = null,
+  onScrollSnapshotChange,
+  scrollBehaviorMode = DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
+  offscreenTranscriptRenderingEnabled = false,
+  inert = false,
+  onTranscriptPositionTimestampChange,
   getForkSummaryTargetHref,
   onCancelForkSummary,
   onToggleForkSummaryAutoOpen,
@@ -1146,6 +734,7 @@ export const MessageList = memo(function MessageList({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
+  const previousInertRef = useRef(inert);
   const isInitialLoadRef = useRef(true);
   const isProgrammaticScrollRef = useRef(false);
   const lastHeightRef = useRef(0);
@@ -1157,29 +746,22 @@ export const MessageList = memo(function MessageList({
   const programmaticScrollReleaseRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const progressiveActiveRenderKeyRef = useRef<string | null>(null);
+  const progressiveCompletedRenderKeyRef = useRef<string | null>(null);
   const previousRenderItemsRef = useRef<RenderItem[]>([]);
   const previousThinkingTextLengthsRef = useRef<Map<string, number> | null>(
     null,
   );
   const observedThinkingItemIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const autoExpandedHistoricalThinkingProviderRef = useRef<string | null>(null);
   const thinkingDeltaFollowAllowedRef = useRef(false);
   const navMotionCueTokenRef = useRef(0);
   const navMotionCueClearTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const searchRestoreFocusRef = useRef<HTMLElement | null>(null);
-  const searchOriginalScrollTopRef = useRef<number | null>(null);
-  const selectedSearchTargetIdRef = useRef<string | null>(null);
-  const searchArrowRepeatTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const searchArrowRepeatIntervalRef = useRef<ReturnType<
-    typeof setInterval
-  > | null>(null);
-  const searchArrowRepeatDirectionRef = useRef<"previous" | "next" | null>(
-    null,
-  );
+  const previousProgressiveRevealActiveRef = useRef(false);
+  const scrollSnapshotWritesSuppressedRef = useRef(false);
+  const previousScrollSnapshotWritesSuppressedRef = useRef(false);
   const [thinkingItemsVisible, setThinkingItemsVisible] = useState(() => {
     // "Show thinking" preference seeds the render gate's default; "default"
     // falls back to the live eye-toggle value. The eye icon still overrides
@@ -1200,111 +782,16 @@ export const MessageList = memo(function MessageList({
   const [navMotionCue, setNavMotionCue] = useState<UserTurnNavMotionCue | null>(
     null,
   );
+  const [hoveredMarkerTimestampMs, setHoveredMarkerTimestampMs] = useState<
+    number | null
+  >(null);
+  const [scrollPositionTimestampMs, setScrollPositionTimestampMs] = useState<
+    number | null
+  >(null);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
-  const [userTurnSearch, setUserTurnSearch] = useState<UserTurnSearchSession>({
-    active: false,
-    scope: "user",
-    query: "",
-    caseSensitive: false,
-    selectedId: null,
-    originalScrollTop: null,
-  });
-  const [commentAnchors, setCommentAnchors] = useState<
-    readonly CommentAnchor[]
-  >([]);
-  const [floatingQuoteButton, setFloatingQuoteButton] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
-  const { alwaysShowQuoteCircles } = useAlwaysShowQuoteCircles();
+  const [newOutputBelowVisible, setNewOutputBelowVisible] = useState(false);
   const { t } = useI18n();
   const nowMs = useRelativeNow();
-
-  const applyQuoteAnchors = useCallback(
-    (anchors: readonly CommentAnchor[], typedPrefix = "") => {
-      if (!onQuoteSelection || anchors.length === 0) {
-        return false;
-      }
-      const quotedText = anchors
-        .map((anchor) => anchor.quotedText)
-        .join("\n\n");
-      const nextDraft = onQuoteSelection(
-        typedPrefix ? `${quotedText}\n${typedPrefix}` : `${quotedText}\n`,
-      );
-      if (nextDraft === null) {
-        return false;
-      }
-      setCommentAnchors((previous) => [...previous, ...anchors]);
-      containerRef.current?.ownerDocument.getSelection()?.removeAllRanges();
-      setFloatingQuoteButton(null);
-      return true;
-    },
-    [onQuoteSelection],
-  );
-
-  const applyQuoteFromSelection = useCallback(
-    (typedPrefix = "") => {
-      const root = containerRef.current;
-      if (!root) {
-        return false;
-      }
-      const anchors =
-        extractMarkdownSnippetsFromSelection(root).map(createCommentAnchor);
-      return applyQuoteAnchors(anchors, typedPrefix);
-    },
-    [applyQuoteAnchors],
-  );
-
-  const handleQuoteTextBlock = useCallback(
-    (anchor: CommentAnchor) => {
-      applyQuoteAnchors([anchor]);
-    },
-    [applyQuoteAnchors],
-  );
-
-  useEffect(() => {
-    if (commentAnchors.length === 0) {
-      return;
-    }
-    const draft = getComposerDraft?.() ?? composerDraft;
-    setCommentAnchors((previous) => {
-      const next = previous.filter((anchor) =>
-        draftContainsAnchorQuote(draft, anchor),
-      );
-      return next.length === previous.length ? previous : next;
-    });
-  }, [commentAnchors.length, composerDraft, getComposerDraft]);
-
-  useEffect(() => {
-    if (quoteClearSignal > 0) {
-      setCommentAnchors([]);
-    }
-  }, [quoteClearSignal]);
-
-  useEffect(() => {
-    if (
-      typeof CSS === "undefined" ||
-      !("highlights" in CSS) ||
-      typeof Highlight === "undefined"
-    ) {
-      return;
-    }
-
-    if (commentAnchors.length === 0) {
-      CSS.highlights.delete("comment-tint");
-      return;
-    }
-
-    const highlight = new Highlight(
-      ...commentAnchors
-        .filter((anchor) => anchor.sourceElement.isConnected)
-        .map((anchor) => anchor.range),
-    );
-    CSS.highlights.set("comment-tint", highlight);
-    return () => {
-      CSS.highlights.delete("comment-tint");
-    };
-  }, [commentAnchors]);
 
   // Scroll to bottom, marking it as programmatic so scroll handler ignores it
   const scrollToBottom = useCallback(
@@ -1322,6 +809,8 @@ export const MessageList = memo(function MessageList({
       }
       lastHeightRef.current = container.scrollHeight;
       setIsScrolledToBottom(true);
+      setScrollPositionTimestampMs(null);
+      setNewOutputBelowVisible(false);
 
       // Clear programmatic flag after scroll events have fired
       const releaseProgrammaticScroll = () => {
@@ -1442,23 +931,19 @@ export const MessageList = memo(function MessageList({
       markdownAugments: Object.keys(markdownAugments ?? {}).length,
       hasActiveToolApproval: !!activeToolApproval,
     });
-    const nextRenderItems = insertTranscriptDisplayObjects(
-      preprocessMessages(messages, {
-        markdown: markdownAugments,
-        activeToolApproval,
-      }),
+    const nextRenderItems = buildSessionDetailRenderItems({
+      messages,
+      markdownAugments,
+      activeToolApproval,
       transcriptDisplayObjects,
-    );
-    const stabilized = stabilizeRenderItems(
-      previousRenderItemsRef.current,
-      nextRenderItems,
-    );
+      previousRenderItems: previousRenderItemsRef.current,
+    });
     markReloadPerfPhase("message_list_preprocess_end", {
       messages: messages.length,
-      renderItems: stabilized.length,
+      renderItems: nextRenderItems.length,
       durationMs: highResolutionNowMs() - startedAt,
     });
-    return stabilized;
+    return nextRenderItems;
   }, [
     messages,
     markdownAugments,
@@ -1480,13 +965,10 @@ export const MessageList = memo(function MessageList({
   // Most-recent thinking item; only meaningful in latest-only mode, where its
   // auto-openness is recomputed each render rather than stored, so the prior
   // block collapses with no mutation as soon as a newer one arrives.
-  const lastThinkingItemId = useMemo(() => {
-    for (let i = renderItems.length - 1; i >= 0; i -= 1) {
-      const item = renderItems[i];
-      if (item?.type === "thinking") return item.id;
-    }
-    return null;
-  }, [renderItems]);
+  const lastThinkingItemId = useMemo(
+    () => getLatestThinkingItemId(renderItems),
+    [renderItems],
+  );
   // Single source of truth for "is this thinking block expanded": an explicit
   // user toggle (tri-state: open / collapsed / absent) always wins; otherwise
   // the active auto policy decides. A manual expand is a permanent pin — the
@@ -1508,34 +990,18 @@ export const MessageList = memo(function MessageList({
     ],
   );
   const displayRenderItems = useMemo(
-    () =>
-      thinkingItemsVisible
-        ? renderItems
-        : renderItems.filter((item) => item.type !== "thinking"),
+    () => getDisplayRenderItems(renderItems, { thinkingItemsVisible }),
     [renderItems, thinkingItemsVisible],
   );
   useLayoutEffect(() => {
     const previousThinkingTextLengths = previousThinkingTextLengthsRef.current;
-    const nextThinkingTextLengths = new Map<string, number>();
-    let visibleThinkingDelta = false;
-
-    for (const item of renderItems) {
-      if (item.type !== "thinking") {
-        continue;
-      }
-      const nextLength = item.thinking.length;
-      nextThinkingTextLengths.set(item.id, nextLength);
-
-      if (previousThinkingTextLengths === null || !thinkingItemsVisible) {
-        continue;
-      }
-
-      const isExpanded = resolveThinkingItemExpanded(item.id);
-      const previousLength = previousThinkingTextLengths.get(item.id) ?? 0;
-      if (isExpanded && nextLength > previousLength) {
-        visibleThinkingDelta = true;
-      }
-    }
+    const nextThinkingTextLengths = getThinkingTextLengths(renderItems);
+    const visibleThinkingDelta = hasVisibleThinkingTextDelta({
+      isThinkingItemExpanded: resolveThinkingItemExpanded,
+      nextTextLengths: nextThinkingTextLengths,
+      previousTextLengths: previousThinkingTextLengths,
+      thinkingItemsVisible,
+    });
 
     previousThinkingTextLengthsRef.current = nextThinkingTextLengths;
 
@@ -1550,40 +1016,28 @@ export const MessageList = memo(function MessageList({
   ]);
   useLayoutEffect(() => {
     const previouslyObservedThinkingIds = observedThinkingItemIdsRef.current;
-    const existingThinkingIds = new Set<string>();
-    for (const item of renderItems) {
-      if (item.type === "thinking") {
-        existingThinkingIds.add(item.id);
-      }
-    }
+    const existingThinkingIds = getThinkingItemIds(renderItems);
     observedThinkingItemIdsRef.current = existingThinkingIds;
+    const seedHistoricalThinking =
+      existingThinkingIds.size > 0 &&
+      providerExpandsHistoricalThinking(provider) &&
+      autoExpandedHistoricalThinkingProviderRef.current !== provider;
+    if (seedHistoricalThinking) {
+      autoExpandedHistoricalThinkingProviderRef.current = provider ?? null;
+    }
 
     setAutoExpandedThinkingItemIds((previous) => {
-      const next = new Set<string>();
-      let changed = false;
-      for (const itemId of previous) {
-        if (existingThinkingIds.has(itemId)) {
-          next.add(itemId);
-        } else {
-          changed = true;
-        }
-      }
-
-      if (previouslyObservedThinkingIds !== null) {
-        for (const itemId of existingThinkingIds) {
-          if (!previouslyObservedThinkingIds.has(itemId) && !next.has(itemId)) {
-            next.add(itemId);
-            changed = true;
-          }
-        }
-      }
-
-      return changed ? next : previous;
+      return reconcileAutoExpandedThinkingItemIds({
+        currentThinkingIds: existingThinkingIds,
+        previouslyObservedThinkingIds,
+        previousExpandedIds: previous,
+        seedHistoricalThinking,
+      });
     });
-  }, [renderItems]);
+  }, [provider, renderItems]);
   const turnGroups = useMemo(() => {
     const startedAt = highResolutionNowMs();
-    const grouped = groupItemsIntoTurns(displayRenderItems);
+    const grouped = groupRenderItemsIntoTurns(displayRenderItems);
     markReloadPerfPhase("message_list_group_end", {
       renderItems: displayRenderItems.length,
       turnGroups: grouped.length,
@@ -1598,498 +1052,381 @@ export const MessageList = memo(function MessageList({
       turnGroups: turnGroups.length,
     });
   }, [messages.length, displayRenderItems.length, turnGroups.length]);
-  const hasUserSearchableTurn = useMemo(
-    () => displayRenderItems.some((item) => getSearchableUserTurnPreview(item)),
-    [displayRenderItems],
-  );
-  const getUserTurnNavAnchors = useCallback((): UserTurnNavAnchor[] => {
-    const anchors: UserTurnNavAnchor[] = [];
-    for (const item of displayRenderItems) {
-      const preview = getSearchableUserTurnPreview(item);
-      if (!preview) {
-        continue;
+  const {
+    active: searchActive,
+    scope: searchScope,
+    visibleTurnGroups,
+    getNavigatorAnchors,
+    searchState: userTurnNavSearchState,
+    searchPanel,
+    closeSearch,
+    getSelectedSearchTargetId,
+    handleSearchArrowKey,
+    moveSearchSelection,
+    openSearch,
+    selectSearchMatch,
+    stopSearchArrowRepeat,
+  } = useMessageListIsearch({
+    containerRef,
+    displayRenderItems,
+    inert,
+    turnGroups,
+  });
+  const updateScrollPositionTimestamp = useCallback(
+    (options: { atBottom?: boolean } = {}) => {
+      const content = containerRef.current;
+      const container = content?.parentElement;
+      if (!content || !container || options.atBottom) {
+        setScrollPositionTimestampMs(null);
+        return;
       }
-      anchors.push({ id: item.id, preview });
-    }
-    return anchors;
-  }, [displayRenderItems]);
-  const searchReady =
-    userTurnSearch.active &&
-    normalizeSearchText(userTurnSearch.query).length >= 2;
-  const includeUserTurnSearchAnchors =
-    searchReady && userTurnSearch.scope === "user";
-  const userTurnSearchAnchors = useMemo<UserTurnNavAnchor[]>(() => {
-    if (!includeUserTurnSearchAnchors) {
-      return [];
-    }
-    const anchors: UserTurnNavAnchor[] = [];
-    for (const item of displayRenderItems) {
-      if (item.type !== "user_prompt" || item.isSubagent) {
-        continue;
-      }
-      const text = getPromptTextForCorrection(item.content);
-      const preview = getSearchPreviewFallback(text);
-      if (preview && !isSessionSetupText(preview)) {
-        anchors.push({ id: item.id, preview, searchText: text });
-      }
-    }
-    return anchors;
-  }, [includeUserTurnSearchAnchors, displayRenderItems]);
-  const includeAllTurnSearchAnchors =
-    searchReady && userTurnSearch.scope === "all";
-  const sessionTurnNavAnchors = useMemo<UserTurnNavAnchor[]>(() => {
-    if (!includeAllTurnSearchAnchors) {
-      return [];
-    }
-    const anchors: UserTurnNavAnchor[] = [];
-    for (const item of displayRenderItems) {
-      if (item.type === "user_prompt") {
-        const text = getPromptTextForCorrection(item.content);
-        const preview = getSearchPreviewFallback(text);
-        if (preview && !isSessionSetupText(preview)) {
-          anchors.push({ id: item.id, preview, searchText: text });
-        }
-        continue;
-      }
-      if (item.type === "text") {
-        const preview = getSearchPreviewFallback(item.text);
-        if (preview) {
-          anchors.push({ id: item.id, preview, searchText: item.text });
-        }
-        continue;
-      }
-      if (item.type === "system") {
-        const preview = getSearchPreviewFallback(item.content);
-        if (preview) {
-          anchors.push({ id: item.id, preview, searchText: item.content });
-        }
-      }
-    }
-    return anchors;
-  }, [includeAllTurnSearchAnchors, displayRenderItems]);
-  const includeFullSessionSearchAnchors =
-    searchReady && userTurnSearch.scope === "full";
-  const fullSessionSearchAnchors = useMemo<UserTurnNavAnchor[]>(() => {
-    if (!includeFullSessionSearchAnchors) {
-      return [];
-    }
-    const anchors: UserTurnNavAnchor[] = [];
-    for (const group of turnGroups) {
-      if (group.isUserPrompt) {
-        const item = group.items[0];
-        const anchor = item ? getFullSessionSearchAnchorForItem(item) : null;
-        if (anchor) {
-          anchors.push(anchor);
-        }
-        continue;
-      }
-
-      for (const segment of buildAssistantRenderSegments(group.items)) {
-        anchors.push(...getFullSessionSearchAnchorsForSegment(segment));
-      }
-    }
-    return anchors;
-  }, [includeFullSessionSearchAnchors, turnGroups]);
-  const activeSearchAnchors =
-    userTurnSearch.scope === "full"
-      ? fullSessionSearchAnchors
-      : userTurnSearch.scope === "all"
-        ? sessionTurnNavAnchors
-        : userTurnSearchAnchors;
-  const userTurnSearchMatches = useMemo(() => {
-    if (!searchReady) {
-      return [];
-    }
-    const query = normalizeSearchText(
-      userTurnSearch.query,
-      userTurnSearch.caseSensitive,
-    );
-    return activeSearchAnchors.filter((anchor) =>
-      normalizeSearchText(
-        anchor.searchText ?? anchor.preview,
-        userTurnSearch.caseSensitive,
-      ).includes(query),
-    );
-  }, [
-    activeSearchAnchors,
-    searchReady,
-    userTurnSearch.caseSensitive,
-    userTurnSearch.query,
-  ]);
-  const userTurnSearchMatchIds = useMemo(
-    () => new Set(userTurnSearchMatches.map((anchor) => anchor.id)),
-    [userTurnSearchMatches],
-  );
-  const userTurnSearchMatchTargetIds = useMemo(
-    () =>
-      new Set(
-        userTurnSearchMatches.map((anchor) => anchor.targetId ?? anchor.id),
-      ),
-    [userTurnSearchMatches],
-  );
-  const userTurnSearchPreviewsById = useMemo(() => {
-    const previewsById = new Map<string, string>();
-    if (!searchReady) {
-      return previewsById;
-    }
-    for (const anchor of userTurnSearchMatches) {
-      previewsById.set(
-        anchor.id,
-        buildSearchPreview(
-          anchor.searchText ?? anchor.preview,
-          userTurnSearch.query,
-          userTurnSearch.caseSensitive,
+      setScrollPositionTimestampMs(
+        getTranscriptPositionTimestampMs(
+          content,
+          container,
+          turnGroups,
+          displayRenderItems,
         ),
       );
-    }
-    return previewsById;
-  }, [
-    searchReady,
-    userTurnSearch.caseSensitive,
-    userTurnSearch.query,
-    userTurnSearchMatches,
-  ]);
-  const getNavigatorAnchors = useCallback(
-    () =>
-      searchReady
-        ? userTurnSearchMatches
-        : userTurnSearch.active
-          ? []
-          : getUserTurnNavAnchors(),
-    [
-      getUserTurnNavAnchors,
-      searchReady,
-      userTurnSearch.active,
-      userTurnSearchMatches,
-    ],
-  );
-  const selectedSearchAnchor =
-    userTurnSearch.selectedId && searchReady
-      ? (activeSearchAnchors.find(
-          (anchor) => anchor.id === userTurnSearch.selectedId,
-        ) ?? null)
-      : null;
-  const selectedSearchTargetId =
-    selectedSearchAnchor?.targetId ?? selectedSearchAnchor?.id ?? null;
-  selectedSearchTargetIdRef.current = selectedSearchTargetId;
-  const userTurnSearchPreview =
-    selectedSearchAnchor && searchReady
-      ? (userTurnSearchPreviewsById.get(selectedSearchAnchor.id) ?? null)
-      : null;
-  const userTurnNavSearchState = useMemo<UserTurnNavSearchState | null>(
-    () =>
-      searchReady
-        ? {
-            activeId: selectedSearchAnchor?.id ?? null,
-            caseSensitive: userTurnSearch.caseSensitive,
-            matchIds: userTurnSearchMatchIds,
-            preview: userTurnSearchPreview,
-            previewsById: userTurnSearchPreviewsById,
-            query: userTurnSearch.query,
-          }
-        : null,
-    [
-      searchReady,
-      selectedSearchAnchor?.id,
-      userTurnSearch.caseSensitive,
-      userTurnSearch.query,
-      userTurnSearchPreviewsById,
-      userTurnSearchMatchIds,
-      userTurnSearchPreview,
-    ],
+    },
+    [displayRenderItems, turnGroups],
   );
 
-  useEffect(() => {
-    dispatchSessionIsearchGuideState({
-      active: userTurnSearch.active,
-      scope: userTurnSearch.scope,
-    });
-  }, [userTurnSearch.active, userTurnSearch.scope]);
+  // Latest render data for scroll-time reads: the capture callback stays
+  // identity-stable so the scroll listener does not re-attach on every
+  // transcript change.
+  const displayRenderItemsRef = useRef(displayRenderItems);
+  displayRenderItemsRef.current = displayRenderItems;
+  const updateScrollPositionTimestampRef = useRef(
+    updateScrollPositionTimestamp,
+  );
+  updateScrollPositionTimestampRef.current = updateScrollPositionTimestamp;
 
-  useEffect(
-    () => () => {
-      dispatchSessionIsearchGuideState({ active: false, scope: "user" });
+  const captureScrollSnapshot = useCallback(
+    (container: HTMLElement, content: HTMLDivElement) => {
+      const atBottom = isAtScrollBottom(container, content);
+      const anchor =
+        getFirstVisibleRenderAnchor(
+          content,
+          container,
+          displayRenderItemsRef.current,
+        ) ?? undefined;
+      return {
+        atBottom,
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+        ...(anchor ? { anchor } : {}),
+        updatedAtMs: Date.now(),
+      };
     },
     [],
   );
-  useEffect(() => {
-    const handleCopy = (event: ClipboardEvent) => {
-      const root = containerRef.current;
-      if (!root) {
-        return;
-      }
-
-      copyMarkdownSelectionToClipboard(event, root);
-    };
-
-    document.addEventListener("copy", handleCopy);
-    return () => document.removeEventListener("copy", handleCopy);
-  }, []);
 
   useEffect(() => {
-    if (!onQuoteSelection) {
-      setFloatingQuoteButton(null);
-      return;
-    }
-
-    const updateFloatingQuoteButton = () => {
-      const root = containerRef.current;
-      const selection = root?.ownerDocument.getSelection();
-      if (
-        !root ||
-        !selection ||
-        selection.isCollapsed ||
-        selection.rangeCount === 0 ||
-        extractMarkdownSnippetsFromSelection(root).length === 0
-      ) {
-        setFloatingQuoteButton(null);
-        return;
-      }
-
-      const range = selection.getRangeAt(selection.rangeCount - 1);
-      const rect = range.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) {
-        setFloatingQuoteButton(null);
-        return;
-      }
-      const rootRect = root.getBoundingClientRect();
-      setFloatingQuoteButton({
-        top: rect.top - rootRect.top - 34,
-        left: Math.max(
-          0,
-          Math.min(rect.right - rootRect.left + 8, root.clientWidth - 36),
-        ),
-      });
-    };
-
-    document.addEventListener("selectionchange", updateFloatingQuoteButton);
-    window.addEventListener("resize", updateFloatingQuoteButton);
-    window.addEventListener("scroll", updateFloatingQuoteButton, true);
-    return () => {
-      document.removeEventListener(
-        "selectionchange",
-        updateFloatingQuoteButton,
-      );
-      window.removeEventListener("resize", updateFloatingQuoteButton);
-      window.removeEventListener("scroll", updateFloatingQuoteButton, true);
-    };
-  }, [onQuoteSelection]);
+    updateScrollPositionTimestamp({ atBottom: isScrolledToBottom });
+  }, [isScrolledToBottom, updateScrollPositionTimestamp]);
 
   useEffect(() => {
-    if (!onQuoteSelection) {
-      return;
-    }
-    const handleSelectionTyping = (event: KeyboardEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.isComposing ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        event.key.length !== 1 ||
-        isInteractiveScrollTarget(event.target)
-      ) {
-        return;
-      }
-      if (!applyQuoteFromSelection(event.key)) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-    };
+    const contextualTimestampMs =
+      hoveredMarkerTimestampMs ??
+      (isScrolledToBottom ? null : scrollPositionTimestampMs);
+    onTranscriptPositionTimestampChange?.(contextualTimestampMs);
+  }, [
+    hoveredMarkerTimestampMs,
+    isScrolledToBottom,
+    onTranscriptPositionTimestampChange,
+    scrollPositionTimestampMs,
+  ]);
 
-    window.addEventListener("keydown", handleSelectionTyping, true);
-    return () =>
-      window.removeEventListener("keydown", handleSelectionTyping, true);
-  }, [applyQuoteFromSelection, onQuoteSelection]);
-  const latestVisibleTimestampMs = useMemo(() => {
-    let latest: number | null = null;
-    const includeTimestamp = (timestampMs: number | null) => {
-      if (timestampMs === null) return;
-      latest = latest === null ? timestampMs : Math.max(latest, timestampMs);
-    };
-
-    for (const item of displayRenderItems) {
-      includeTimestamp(getLatestMessageTimestampMs(item.sourceMessages));
-    }
-    for (const pending of pendingMessages) {
-      includeTimestamp(parseTimestampMs(pending.timestamp));
-    }
-    for (const deferred of deferredMessages) {
-      includeTimestamp(parseTimestampMs(deferred.timestamp));
-    }
-    for (const aside of btwAsides) {
-      includeTimestamp(parseTimestampMs(aside.historyAt ?? aside.updatedAt));
-    }
-
-    return latest;
-  }, [displayRenderItems, pendingMessages, deferredMessages, btwAsides]);
-  const composerTailItems = useMemo(() => {
-    let sourceIndex = 0;
-    const items: ComposerTailItem[] = [];
-
-    for (const pending of pendingMessages) {
-      items.push({
-        kind: "pending",
-        key: pending.tempId,
-        message: pending,
-        sourceIndex: sourceIndex++,
-      });
-    }
-    deferredMessages.forEach((deferred, deferredIndex) => {
-      items.push({
-        kind: "deferred",
-        key: deferred.tempId ?? `deferred-${deferredIndex}`,
-        message: deferred,
-        deferredIndex,
-        sourceIndex: sourceIndex++,
-      });
-    });
-
-    return items.sort(compareComposerTailItems);
-  }, [pendingMessages, deferredMessages]);
-  const composerTailLanePositions = useMemo(() => {
-    const positions = new Map<string, ComposerTailLanePosition>();
-    let regularIndex = 0;
-    let patientIndex = 0;
-
-    for (const item of composerTailItems) {
-      if (item.kind !== "deferred") {
-        continue;
-      }
-      if (isPatientDeferredMessage(item.message)) {
-        positions.set(item.key, { patientIndex });
-        patientIndex += 1;
-      } else {
-        positions.set(item.key, { regularIndex });
-        regularIndex += 1;
-      }
-    }
-
-    return positions;
-  }, [composerTailItems]);
+  useEffect(
+    () => () => {
+      onTranscriptPositionTimestampChange?.(null);
+    },
+    [onTranscriptPositionTimestampChange],
+  );
+  const {
+    alwaysShowQuoteCircles,
+    paragraphQuoteCirclesEnabled,
+    handleQuoteTextBlock,
+    mobileSelectionQuoteButton,
+    floatingSelectionQuoteButton,
+  } = useMessageListSelectionQuote({
+    containerRef,
+    inert,
+    onQuoteSelection,
+    getComposerDraft,
+    composerDraft,
+    composerDraftChange,
+    quoteClearSignal,
+    followButtonVisible: !isScrolledToBottom,
+    isInteractiveTarget: isInteractiveScrollTarget,
+  });
+  const latestVisibleTimestampMs = useMemo(
+    () =>
+      getLatestVisibleTimestampMs({
+        asides: btwAsides,
+        deferredMessages,
+        displayRenderItems,
+        pendingMessages,
+        projectQueueMessages,
+      }),
+    [
+      displayRenderItems,
+      pendingMessages,
+      deferredMessages,
+      projectQueueMessages,
+      btwAsides,
+    ],
+  );
+  const composerTailRows = useMemo(
+    () =>
+      buildComposerTailDisplayRows({
+        deferredMessages,
+        latestVisibleTimestampMs,
+        nowMs,
+        pendingMessages,
+        projectQueueMessages,
+        staleThresholdMs: MESSAGE_STALE_THRESHOLD_MS,
+      }),
+    [
+      pendingMessages,
+      deferredMessages,
+      projectQueueMessages,
+      latestVisibleTimestampMs,
+      nowMs,
+    ],
+  );
   const latestCorrectablePrompt = useMemo(() => {
     if (!onCorrectLatestUserMessage) return null;
-
-    for (let index = renderItems.length - 1; index >= 0; index -= 1) {
-      const item = renderItems[index];
-      if (item?.type !== "user_prompt" || item.isSubagent) {
-        continue;
-      }
-      const content = getPromptTextForCorrection(item.content);
-      if (!content || isSessionSetupText(content)) {
-        continue;
-      }
-      return { id: item.id, content };
-    }
-    return null;
+    return selectLatestCorrectablePrompt(renderItems);
   }, [renderItems, onCorrectLatestUserMessage]);
-  const visibleTurnGroups = useMemo(() => {
-    if (!searchReady || userTurnSearchMatchIds.size === 0) {
-      return turnGroups;
-    }
-
-    let currentUserTurnId: string | null = null;
-    const visibleGroups: typeof turnGroups = [];
-    for (const group of turnGroups) {
-      const firstItem = group.items[0];
-      if (group.isUserPrompt && firstItem?.type === "user_prompt") {
-        currentUserTurnId = firstItem.id;
-      }
-      const isFullSessionVisible =
-        userTurnSearch.scope === "full" &&
-        (group.items.some((item) =>
-          userTurnSearchMatchTargetIds.has(item.id),
-        ) ||
-          buildAssistantRenderSegments(group.items).some((segment) =>
-            segment.kind === "explored"
-              ? userTurnSearchMatchTargetIds.has(segment.id) ||
-                segment.items.some((item) =>
-                  userTurnSearchMatchTargetIds.has(item.id),
-                )
-              : userTurnSearchMatchTargetIds.has(segment.item.id),
-          ));
-      const isVisible =
-        userTurnSearch.scope === "full"
-          ? isFullSessionVisible
-          : userTurnSearch.scope === "all"
-            ? group.items.some((item) => userTurnSearchMatchIds.has(item.id)) ||
-              (!!currentUserTurnId &&
-                userTurnSearchMatchIds.has(currentUserTurnId))
-            : !!currentUserTurnId &&
-              userTurnSearchMatchIds.has(currentUserTurnId);
-      if (isVisible) {
-        visibleGroups.push(group);
-      }
-    }
-    return visibleGroups;
-  }, [
-    searchReady,
-    turnGroups,
-    userTurnSearch.scope,
-    userTurnSearchMatchIds,
-    userTurnSearchMatchTargetIds,
-  ]);
   const visibleTimelineEntries = useMemo(() => {
-    const entries: Array<
-      | {
-          kind: "turn";
-          key: string;
-          timestampMs: number | null;
-          ordinal: number;
-          group: (typeof visibleTurnGroups)[number];
-        }
-      | {
-          kind: "btw";
-          key: string;
-          timestampMs: number | null;
-          ordinal: number;
-          aside: BtwAsideTimelineItem;
-        }
-    > = [];
-
-    visibleTurnGroups.forEach((group, index) => {
-      let timestampMs: number | null = null;
-      for (const item of group.items) {
-        const itemTimestamp = getLatestMessageTimestampMs(item.sourceMessages);
-        if (itemTimestamp !== null) {
-          timestampMs =
-            timestampMs === null
-              ? itemTimestamp
-              : Math.max(timestampMs, itemTimestamp);
-        }
-      }
-      const firstItem = group.items[0];
-      entries.push({
-        kind: "turn",
-        key: firstItem ? `turn-${firstItem.id}` : `turn-${index}`,
-        timestampMs,
-        ordinal: index,
-        group,
-      });
-    });
-
-    btwAsides.forEach((aside, index) => {
-      entries.push({
-        kind: "btw",
-        key: `btw-${aside.id}`,
-        timestampMs: parseTimestampMs(aside.historyAt ?? aside.updatedAt),
-        ordinal: visibleTurnGroups.length + index,
-        aside,
-      });
-    });
-
-    return entries.sort((left, right) => {
-      if (left.timestampMs !== null && right.timestampMs !== null) {
-        return (
-          left.timestampMs - right.timestampMs || left.ordinal - right.ordinal
-        );
-      }
-      if (left.timestampMs !== null) return -1;
-      if (right.timestampMs !== null) return 1;
-      return left.ordinal - right.ordinal;
+    return buildVisibleTimelineEntries({
+      asides: btwAsides,
+      turnGroups: visibleTurnGroups,
     });
   }, [btwAsides, visibleTurnGroups]);
+  const progressiveRenderAllowed =
+    progressiveRenderEnabled &&
+    !searchActive &&
+    visibleTimelineEntries.length > 0;
+  const progressiveRenderCycleKey = progressiveRenderKey ?? "default";
+  const progressiveInitialEntryCount = useMemo(
+    () =>
+      progressiveRenderAllowed
+        ? getTailEntryCountForRenderItemTarget(
+            visibleTimelineEntries,
+            PROGRESSIVE_INITIAL_RENDER_ITEM_TARGET,
+          )
+        : visibleTimelineEntries.length,
+    [progressiveRenderAllowed, visibleTimelineEntries],
+  );
+  const [progressiveEntryCount, setProgressiveEntryCount] = useState<
+    number | null
+  >(null);
+  const [progressiveRenderStateKey, setProgressiveRenderStateKey] = useState<
+    string | null
+  >(null);
+  const [progressiveRenderRevealed, setProgressiveRenderRevealed] =
+    useState(false);
+  const progressiveEntryCountForCycle =
+    progressiveRenderStateKey === progressiveRenderCycleKey
+      ? progressiveEntryCount
+      : null;
+  const progressiveRenderRevealedForCycle =
+    progressiveRenderStateKey === progressiveRenderCycleKey
+      ? progressiveRenderRevealed
+      : false;
+  const progressiveRenderAlreadyCompleted =
+    progressiveRenderAllowed &&
+    progressiveCompletedRenderKeyRef.current === progressiveRenderCycleKey;
+  const progressiveRevealActive =
+    progressiveRenderAllowed &&
+    !progressiveRenderAlreadyCompleted &&
+    !progressiveRenderRevealedForCycle;
+  const {
+    effectiveEntryCount: effectiveProgressiveEntryCount,
+    entries: progressiveTimelineEntries,
+    percent: progressiveRenderPercent,
+  } = useMemo(() => {
+    return getProgressiveTimelineVisibility({
+      entries: visibleTimelineEntries,
+      entryCount: progressiveEntryCountForCycle,
+      initialEntryCount: progressiveInitialEntryCount,
+      revealActive: progressiveRevealActive,
+    });
+  }, [
+    progressiveEntryCountForCycle,
+    progressiveInitialEntryCount,
+    progressiveRevealActive,
+    visibleTimelineEntries,
+  ]);
+  const timelineEntryRows = useMemo(
+    () =>
+      buildTimelineEntryDisplayRows({
+        entries: progressiveTimelineEntries,
+        latestCorrectablePromptId: latestCorrectablePrompt?.id ?? null,
+        latestVisibleTimestampMs,
+        nowMs,
+      }),
+    [
+      progressiveTimelineEntries,
+      latestCorrectablePrompt?.id,
+      latestVisibleTimestampMs,
+      nowMs,
+    ],
+  );
+  useEffect(() => {
+    if (!progressiveRenderAllowed) {
+      progressiveActiveRenderKeyRef.current = null;
+      setProgressiveRenderStateKey(null);
+      setProgressiveEntryCount(null);
+      setProgressiveRenderRevealed(true);
+      return;
+    }
+
+    if (
+      progressiveCompletedRenderKeyRef.current === progressiveRenderCycleKey
+    ) {
+      progressiveActiveRenderKeyRef.current = null;
+      setProgressiveRenderStateKey(progressiveRenderCycleKey);
+      setProgressiveEntryCount(visibleTimelineEntries.length);
+      setProgressiveRenderRevealed(true);
+      return;
+    }
+
+    if (progressiveActiveRenderKeyRef.current === progressiveRenderCycleKey) {
+      return;
+    }
+
+    progressiveActiveRenderKeyRef.current = progressiveRenderCycleKey;
+    setProgressiveRenderStateKey(progressiveRenderCycleKey);
+    setProgressiveEntryCount(progressiveInitialEntryCount);
+    setProgressiveRenderRevealed(false);
+  }, [
+    progressiveInitialEntryCount,
+    progressiveRenderAllowed,
+    progressiveRenderCycleKey,
+    visibleTimelineEntries.length,
+  ]);
+  useEffect(() => {
+    if (
+      !progressiveRevealActive ||
+      effectiveProgressiveEntryCount >= visibleTimelineEntries.length
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setProgressiveEntryCount((current) =>
+        getNextProgressiveEntryCount(
+          visibleTimelineEntries,
+          current ?? progressiveInitialEntryCount,
+          PROGRESSIVE_RENDER_ITEM_BATCH_TARGET,
+        ),
+      );
+    }, PROGRESSIVE_RENDER_BATCH_DELAY_MS);
+
+    return () => clearTimeout(timer);
+  }, [
+    effectiveProgressiveEntryCount,
+    progressiveInitialEntryCount,
+    progressiveRevealActive,
+    visibleTimelineEntries,
+  ]);
+  useEffect(() => {
+    if (
+      !progressiveRevealActive ||
+      effectiveProgressiveEntryCount < visibleTimelineEntries.length
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      progressiveCompletedRenderKeyRef.current = progressiveRenderCycleKey;
+      progressiveActiveRenderKeyRef.current = null;
+      setProgressiveRenderStateKey(progressiveRenderCycleKey);
+      setProgressiveEntryCount(visibleTimelineEntries.length);
+      setProgressiveRenderRevealed(true);
+    }, PROGRESSIVE_RENDER_REVEAL_DELAY_MS);
+
+    return () => clearTimeout(timer);
+  }, [
+    effectiveProgressiveEntryCount,
+    progressiveRevealActive,
+    progressiveRenderCycleKey,
+    visibleTimelineEntries.length,
+  ]);
+  useLayoutEffect(() => {
+    const wasProgressiveRevealActive =
+      previousProgressiveRevealActiveRef.current;
+    previousProgressiveRevealActiveRef.current = progressiveRevealActive;
+
+    if (
+      !wasProgressiveRevealActive ||
+      progressiveRevealActive ||
+      !shouldAutoScrollRef.current
+    ) {
+      return;
+    }
+
+    const container = containerRef.current?.parentElement;
+    if (container) {
+      scrollToBottom(container);
+    }
+  }, [progressiveRevealActive, scrollToBottom]);
+
+  const scrollSnapshotWritesSuppressed = progressiveRevealActive;
+  scrollSnapshotWritesSuppressedRef.current = scrollSnapshotWritesSuppressed;
+  const publishScrollSnapshot = useCallback(() => {
+    if (scrollSnapshotWritesSuppressedRef.current || !onScrollSnapshotChange) {
+      return;
+    }
+    const content = containerRef.current;
+    const container = content?.parentElement;
+    if (!content || !container) return;
+    onScrollSnapshotChange(captureScrollSnapshot(container, content));
+  }, [captureScrollSnapshot, onScrollSnapshotChange]);
+
+  const scrollSnapshotPublishTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const clearScrollSnapshotPublishTimer = useCallback(() => {
+    if (scrollSnapshotPublishTimerRef.current !== null) {
+      clearTimeout(scrollSnapshotPublishTimerRef.current);
+      scrollSnapshotPublishTimerRef.current = null;
+    }
+  }, []);
+  const schedulePublishScrollSnapshot = useCallback(() => {
+    clearScrollSnapshotPublishTimer();
+    scrollSnapshotPublishTimerRef.current = setTimeout(() => {
+      scrollSnapshotPublishTimerRef.current = null;
+      publishScrollSnapshot();
+    }, SCROLL_SNAPSHOT_PUBLISH_DEBOUNCE_MS);
+  }, [clearScrollSnapshotPublishTimer, publishScrollSnapshot]);
+
+  // Leave-time capture: flush the pending trailing capture and publish once
+  // on unmount or on becoming inert — not on listener re-attachment.
+  useEffect(() => {
+    if (inert) {
+      return;
+    }
+    return () => {
+      clearScrollSnapshotPublishTimer();
+      publishScrollSnapshot();
+    };
+  }, [inert, clearScrollSnapshotPublishTimer, publishScrollSnapshot]);
+
+  useEffect(() => {
+    const wasSuppressed = previousScrollSnapshotWritesSuppressedRef.current;
+    previousScrollSnapshotWritesSuppressedRef.current =
+      scrollSnapshotWritesSuppressed;
+    if (inert || scrollSnapshotWritesSuppressed || !wasSuppressed) {
+      return;
+    }
+    publishScrollSnapshot();
+  }, [inert, publishScrollSnapshot, scrollSnapshotWritesSuppressed]);
 
   const getThinkingItemExpanded = useCallback(
     (item: RenderItem) =>
@@ -2190,15 +1527,47 @@ export const MessageList = memo(function MessageList({
     });
   }, [preserveScrollAfterTranscriptHeightChange]);
 
+  // The explicit "show me everything" gesture: auto-expand every thinking
+  // block currently in the transcript (historical blocks included, unlike the
+  // all-new policy's since-mount seeding). Earlier manual collapses yield to
+  // it; manual-open pins are unaffected. See
+  // topics/thinking-expand-latest-only.md.
+  const expandAllThinkingItems = useCallback(() => {
+    setAutoExpandedThinkingItemIds(getThinkingItemIds(renderItems));
+    setThinkingExpansionOverrides((previous) => {
+      if (!Object.values(previous).includes(false)) return previous;
+      return Object.fromEntries(
+        Object.entries(previous).filter(([, open]) => open),
+      );
+    });
+  }, [renderItems]);
+
+  // Right-click / long-press on the thought-transcript toggle. From hidden or
+  // latest-only it reveals thinking and expands the full history; from the
+  // everything-expanded state it drops back to latest-only.
   const toggleThinkingLatestOnly = useCallback(() => {
     preserveScrollAfterTranscriptHeightChange(() => {
-      setThinkingLatestOnly((previous) => {
-        const next = !previous;
-        saveSessionThinkingLatestOnly(next);
-        return next;
-      });
+      if (!thinkingItemsVisible || thinkingLatestOnly) {
+        if (!thinkingItemsVisible) {
+          setThinkingItemsVisible(true);
+          saveSessionThinkingVisible(true);
+        }
+        if (thinkingLatestOnly) {
+          setThinkingLatestOnly(false);
+          saveSessionThinkingLatestOnly(false);
+        }
+        expandAllThinkingItems();
+        return;
+      }
+      setThinkingLatestOnly(true);
+      saveSessionThinkingLatestOnly(true);
     });
-  }, [preserveScrollAfterTranscriptHeightChange]);
+  }, [
+    expandAllThinkingItems,
+    preserveScrollAfterTranscriptHeightChange,
+    thinkingItemsVisible,
+    thinkingLatestOnly,
+  ]);
 
   const showNavMotionCue = useCallback((direction: "up" | "down") => {
     if (navMotionCueClearTimerRef.current !== null) {
@@ -2215,71 +1584,6 @@ export const MessageList = memo(function MessageList({
     }, NAV_MOTION_CUE_CLEAR_MS);
   }, []);
 
-  const moveUserTurnSearchSelection = useCallback(
-    (direction: "previous" | "next") => {
-      setUserTurnSearch((previous) => {
-        if (!previous.active || userTurnSearchMatches.length === 0) {
-          return previous;
-        }
-        const currentIndex = previous.selectedId
-          ? userTurnSearchMatches.findIndex(
-              (anchor) => anchor.id === previous.selectedId,
-            )
-          : -1;
-        const step = direction === "previous" ? -1 : 1;
-        const fallbackIndex =
-          direction === "previous" ? userTurnSearchMatches.length - 1 : 0;
-        const nextIndex =
-          currentIndex >= 0
-            ? (currentIndex + step + userTurnSearchMatches.length) %
-              userTurnSearchMatches.length
-            : fallbackIndex;
-        const nextSelectedId = userTurnSearchMatches[nextIndex]?.id ?? null;
-        return { ...previous, selectedId: nextSelectedId };
-      });
-    },
-    [userTurnSearchMatches],
-  );
-  const stopUserTurnSearchArrowRepeat = useCallback(() => {
-    if (searchArrowRepeatTimeoutRef.current !== null) {
-      clearTimeout(searchArrowRepeatTimeoutRef.current);
-      searchArrowRepeatTimeoutRef.current = null;
-    }
-    if (searchArrowRepeatIntervalRef.current !== null) {
-      clearInterval(searchArrowRepeatIntervalRef.current);
-      searchArrowRepeatIntervalRef.current = null;
-    }
-    searchArrowRepeatDirectionRef.current = null;
-  }, []);
-  const startUserTurnSearchArrowRepeat = useCallback(
-    (direction: "previous" | "next") => {
-      if (
-        searchArrowRepeatDirectionRef.current === direction &&
-        (searchArrowRepeatTimeoutRef.current !== null ||
-          searchArrowRepeatIntervalRef.current !== null)
-      ) {
-        return;
-      }
-      stopUserTurnSearchArrowRepeat();
-      searchArrowRepeatDirectionRef.current = direction;
-      searchArrowRepeatTimeoutRef.current = setTimeout(() => {
-        searchArrowRepeatTimeoutRef.current = null;
-        moveUserTurnSearchSelection(direction);
-        searchArrowRepeatIntervalRef.current = setInterval(() => {
-          moveUserTurnSearchSelection(direction);
-        }, SEARCH_ARROW_REPEAT_INTERVAL_MS);
-      }, SEARCH_ARROW_REPEAT_DELAY_MS);
-    },
-    [moveUserTurnSearchSelection, stopUserTurnSearchArrowRepeat],
-  );
-  const selectUserTurnSearchMatch = useCallback((id: string) => {
-    setUserTurnSearch((previous) =>
-      previous.active ? { ...previous, selectedId: id } : previous,
-    );
-    requestAnimationFrame(() => {
-      searchInputRef.current?.focus({ preventScroll: true });
-    });
-  }, []);
   const scrollToRenderId = useCallback(
     (
       id: string,
@@ -2315,126 +1619,17 @@ export const MessageList = memo(function MessageList({
   );
 
   const scrollToCurrent = useCallback(() => {
+    setNewOutputBelowVisible(false);
     forceScrollToCurrent(FOLLOW_CATCH_UP_DELAYS_MS, {
       allowThinkingDeltas: true,
     });
   }, [forceScrollToCurrent]);
 
-  const closeUserTurnSearch = useCallback((restoreScroll: boolean) => {
-    const scrollTopToRestore = restoreScroll
-      ? searchOriginalScrollTopRef.current
-      : null;
-    const focusTarget = restoreScroll ? searchRestoreFocusRef.current : null;
-    searchOriginalScrollTopRef.current = null;
-    searchRestoreFocusRef.current = null;
-
-    if (restoreScroll || focusTarget) {
-      requestAnimationFrame(() => {
-        const scrollContainer = containerRef.current?.parentElement;
-        if (scrollContainer && scrollTopToRestore !== null) {
-          scrollContainer.scrollTop = scrollTopToRestore;
-        }
-        if (focusTarget?.isConnected) {
-          focusTarget.focus({ preventScroll: true });
-        }
-      });
-    }
-
-    setUserTurnSearch((previous) => {
-      return {
-        active: false,
-        scope: previous.scope,
-        query: "",
-        caseSensitive: false,
-        selectedId: null,
-        originalScrollTop: null,
-      };
-    });
-  }, []);
-
-  const openUserTurnSearch = useCallback(
-    (scope: SessionIsearchScope) => {
-      const canSearch =
-        scope === "user"
-          ? hasUserSearchableTurn
-          : displayRenderItems.length > 0;
-      if (!canSearch) {
-        return;
-      }
-      const activeElement = document.activeElement;
-      searchRestoreFocusRef.current =
-        activeElement instanceof HTMLElement && activeElement !== document.body
-          ? activeElement
-          : null;
-      const scrollContainer = containerRef.current?.parentElement;
-      searchOriginalScrollTopRef.current = scrollContainer?.scrollTop ?? null;
-      setUserTurnSearch({
-        active: true,
-        scope,
-        query: "",
-        caseSensitive: false,
-        selectedId: null,
-        originalScrollTop: searchOriginalScrollTopRef.current,
-      });
-      requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-    },
-    [hasUserSearchableTurn, displayRenderItems.length],
-  );
-
-  const handleUserTurnSearchQueryChange = useCallback((query: string) => {
-    setUserTurnSearch((previous) => ({
-      ...previous,
-      query,
-      selectedId: null,
-    }));
-  }, []);
-
-  const toggleUserTurnSearchCaseSensitive = useCallback(() => {
-    setUserTurnSearch((previous) =>
-      previous.active
-        ? {
-            ...previous,
-            caseSensitive: !previous.caseSensitive,
-            selectedId: null,
-          }
-        : previous,
-    );
-  }, []);
-
   useEffect(() => {
-    if (!userTurnSearch.active) {
-      stopUserTurnSearchArrowRepeat();
+    if (inert) {
+      stopSearchArrowRepeat();
       return;
     }
-    setUserTurnSearch((previous) => {
-      if (!previous.active) {
-        return previous;
-      }
-      let nextSelectedId: string | null = null;
-      if (searchReady && userTurnSearchMatches.length > 0) {
-        nextSelectedId =
-          previous.selectedId && userTurnSearchMatchIds.has(previous.selectedId)
-            ? previous.selectedId
-            : (userTurnSearchMatches[userTurnSearchMatches.length - 1]?.id ??
-              null);
-      }
-      if (previous.selectedId === nextSelectedId) {
-        return previous;
-      }
-      return { ...previous, selectedId: nextSelectedId };
-    });
-  }, [
-    searchReady,
-    stopUserTurnSearchArrowRepeat,
-    userTurnSearch.active,
-    userTurnSearchMatches,
-    userTurnSearchMatchIds,
-  ]);
-
-  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) {
         return;
@@ -2464,42 +1659,36 @@ export const MessageList = memo(function MessageList({
       if (requestedScope) {
         event.preventDefault();
         event.stopPropagation();
-        if (userTurnSearch.active && userTurnSearch.scope === requestedScope) {
-          moveUserTurnSearchSelection("previous");
+        if (searchActive && searchScope === requestedScope) {
+          moveSearchSelection("previous");
         } else {
-          openUserTurnSearch(requestedScope);
+          openSearch(requestedScope);
         }
         return;
       }
-      if (!userTurnSearch.active) {
+      if (!searchActive) {
         return;
       }
       if (event.key === "ArrowUp" || event.key === "ArrowDown") {
         event.preventDefault();
         event.stopPropagation();
         const direction = event.key === "ArrowUp" ? "previous" : "next";
-        if (
-          !event.repeat ||
-          searchArrowRepeatDirectionRef.current !== direction
-        ) {
-          moveUserTurnSearchSelection(direction);
-          startUserTurnSearchArrowRepeat(direction);
-        }
+        handleSearchArrowKey(direction, event.repeat);
         return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        stopUserTurnSearchArrowRepeat();
-        closeUserTurnSearch(true);
+        stopSearchArrowRepeat();
+        closeSearch(true);
         return;
       }
       if (event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
-        const selectedId = selectedSearchTargetIdRef.current;
-        stopUserTurnSearchArrowRepeat();
-        closeUserTurnSearch(false);
+        const selectedId = getSelectedSearchTargetId();
+        stopSearchArrowRepeat();
+        closeSearch(false);
         if (selectedId) {
           requestAnimationFrame(() =>
             scrollToRenderId(selectedId, "auto", "center", true),
@@ -2509,7 +1698,7 @@ export const MessageList = memo(function MessageList({
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        stopUserTurnSearchArrowRepeat();
+        stopSearchArrowRepeat();
       }
     };
 
@@ -2518,19 +1707,21 @@ export const MessageList = memo(function MessageList({
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("keyup", handleKeyUp, true);
-      stopUserTurnSearchArrowRepeat();
+      stopSearchArrowRepeat();
     };
   }, [
-    closeUserTurnSearch,
-    moveUserTurnSearchSelection,
-    openUserTurnSearch,
+    closeSearch,
+    getSelectedSearchTargetId,
+    handleSearchArrowKey,
+    moveSearchSelection,
+    openSearch,
     scrollToCurrent,
     scrollToRenderId,
-    startUserTurnSearchArrowRepeat,
-    stopUserTurnSearchArrowRepeat,
+    searchActive,
+    searchScope,
+    stopSearchArrowRepeat,
     toggleThinkingItemsVisible,
-    userTurnSearch.active,
-    userTurnSearch.scope,
+    inert,
   ]);
 
   // Load older messages with scroll position preservation
@@ -2572,14 +1763,22 @@ export const MessageList = memo(function MessageList({
     const atBottom = isAtScrollBottom(container, content);
     shouldAutoScrollRef.current = atBottom;
     thinkingDeltaFollowAllowedRef.current = atBottom;
+    if (atBottom) {
+      setNewOutputBelowVisible(false);
+    }
     if (!atBottom) {
       clearForcedCurrentScrollTimers();
     }
     setIsScrolledToBottom(atBottom);
-  }, [clearForcedCurrentScrollTimers]);
+    updateScrollPositionTimestampRef.current({ atBottom });
+    schedulePublishScrollSnapshot();
+  }, [clearForcedCurrentScrollTimers, schedulePublishScrollSnapshot]);
 
   // Attach scroll listener to parent container
   useEffect(() => {
+    if (inert) {
+      return;
+    }
     const container = containerRef.current?.parentElement;
     if (!container) return;
 
@@ -2588,12 +1787,15 @@ export const MessageList = memo(function MessageList({
     return () => {
       container.removeEventListener("scroll", handleScroll);
     };
-  }, [handleScroll]);
+  }, [handleScroll, inert]);
 
   // Cancel follow before browser scroll events when the user clearly tries to
   // move away from the live tail. Programmatic scroll bursts can otherwise keep
   // the scroll handler muted long enough to rubber-band the viewport back down.
   useEffect(() => {
+    if (inert) {
+      return;
+    }
     const container = containerRef.current?.parentElement;
     if (!container) return;
 
@@ -2689,7 +1891,7 @@ export const MessageList = memo(function MessageList({
       container.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [stopFollowingForUserScroll]);
+  }, [inert, stopFollowingForUserScroll]);
 
   // Use ResizeObserver to detect content height changes (handles async markdown rendering)
   useEffect(() => {
@@ -2780,9 +1982,8 @@ export const MessageList = memo(function MessageList({
         isProgrammaticScrollRef.current = true;
         resizeContainer.scrollTop = targetScrollTop;
         lastHeightRef.current = resizeContainer.scrollHeight;
-        const nearBottom = isNearScrollBottom(resizeContainer);
-        shouldAutoScrollRef.current = nearBottom;
-        setIsScrolledToBottom(nearBottom);
+        shouldAutoScrollRef.current = false;
+        setIsScrolledToBottom(false);
 
         requestAnimationFrame(() => {
           isProgrammaticScrollRef.current = false;
@@ -2806,106 +2007,144 @@ export const MessageList = memo(function MessageList({
     }
   }, [forceScrollToCurrent, scrollTrigger]);
 
+  useLayoutEffect(() => {
+    const wasInert = previousInertRef.current;
+    previousInertRef.current = inert;
+    if (wasInert && !inert && shouldAutoScrollRef.current) {
+      forceScrollToCurrent(SEND_CATCH_UP_DELAYS_MS);
+    }
+  }, [forceScrollToCurrent, inert]);
+
+  // Restore same-tab route scroll before the default first-load follow behavior
+  // moves the viewport to the tail.
+  const initialScrollRestoreDecision = decideSessionScrollRestore({
+    mode: scrollBehaviorMode,
+    snapshot: initialScrollSnapshot,
+    topTolerancePx: FOLLOW_BOTTOM_TOLERANCE_PX,
+  });
+  const mountedTimelineRowCount = timelineEntryRows.length;
+  const shouldWaitForInitialAnchorRestore =
+    initialScrollRestoreDecision === "restore-position" &&
+    initialScrollSnapshot?.anchor !== undefined &&
+    progressiveRevealActive;
+  useEffect(() => {
+    if (
+      !isInitialLoadRef.current ||
+      !initialScrollSnapshot ||
+      mountedTimelineRowCount === 0
+    ) {
+      return;
+    }
+    if (initialScrollRestoreDecision === "skip") {
+      return;
+    }
+    const content = containerRef.current;
+    const container = content?.parentElement;
+    if (!content || !container) return;
+
+    isProgrammaticScrollRef.current = true;
+    if (initialScrollRestoreDecision === "follow-bottom") {
+      scrollToBottom(container);
+      shouldAutoScrollRef.current = true;
+      setIsScrolledToBottom(true);
+      setNewOutputBelowVisible(false);
+    } else {
+      let restored = false;
+      const anchor = initialScrollSnapshot.anchor;
+      if (anchor) {
+        const row = findRenderRow(content, anchor.id);
+        if (row) {
+          restoreScrollToAnchorRow(container, row, anchor.topOffset);
+          restored = true;
+        } else if (progressiveRevealActive) {
+          isProgrammaticScrollRef.current = false;
+          return;
+        } else {
+          const fallbackRow = findFallbackRenderAnchorRow(
+            content,
+            anchor,
+            displayRenderItems,
+          );
+          if (fallbackRow) {
+            restoreScrollToAnchorRow(container, fallbackRow, anchor.topOffset);
+            restored = true;
+          }
+        }
+      }
+      if (!restored) {
+        const maxScrollTop = Math.max(
+          0,
+          container.scrollHeight - container.clientHeight,
+        );
+        container.scrollTop = Math.min(
+          initialScrollSnapshot.scrollTop,
+          maxScrollTop,
+        );
+      }
+      shouldAutoScrollRef.current = false;
+      setIsScrolledToBottom(false);
+      updateScrollPositionTimestamp({ atBottom: false });
+      setNewOutputBelowVisible(
+        initialScrollSnapshot.atBottom &&
+          container.scrollHeight >
+            initialScrollSnapshot.scrollHeight + FOLLOW_BOTTOM_TOLERANCE_PX &&
+          !isAtScrollBottom(container, content),
+      );
+    }
+    lastHeightRef.current = container.scrollHeight;
+    isInitialLoadRef.current = false;
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+      publishScrollSnapshot();
+    });
+  }, [
+    initialScrollSnapshot,
+    initialScrollRestoreDecision,
+    displayRenderItems,
+    mountedTimelineRowCount,
+    publishScrollSnapshot,
+    progressiveRevealActive,
+    scrollToBottom,
+    updateScrollPositionTimestamp,
+  ]);
+
   // Initial scroll to bottom on first render
   useEffect(() => {
     if (isInitialLoadRef.current && displayRenderItems.length > 0) {
+      if (shouldWaitForInitialAnchorRestore) {
+        return;
+      }
       const container = containerRef.current?.parentElement;
       if (container) {
         scrollToBottom(container);
       }
       isInitialLoadRef.current = false;
     }
-  }, [displayRenderItems.length, scrollToBottom]);
+  }, [
+    displayRenderItems.length,
+    scrollToBottom,
+    shouldWaitForInitialAnchorRestore,
+  ]);
 
-  const searchPanelTarget =
-    userTurnSearch.active && typeof document !== "undefined"
-      ? document.querySelector<HTMLElement>(".session-input-inner")
-      : null;
   const followButtonTarget =
     !isScrolledToBottom && typeof document !== "undefined"
       ? document.querySelector<HTMLElement>(".session-input-inner")
       : null;
-  const getItemStaleNowMs = useCallback(
-    (item: RenderItem) =>
-      getLatestMessageTimestampMs(item.sourceMessages) ===
-      latestVisibleTimestampMs
-        ? nowMs
-        : undefined,
-    [latestVisibleTimestampMs, nowMs],
-  );
-  const searchPanel = userTurnSearch.active ? (
-    <div
-      className="user-turn-search-panel"
-      role="search"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          closeUserTurnSearch(false);
-        }
-      }}
-    >
-      <div className="user-turn-search-main">
-        <span className="user-turn-search-label">
-          {getSearchScopeLabel(userTurnSearch.scope)}
-        </span>
-        <input
-          ref={searchInputRef}
-          className="user-turn-search-input"
-          value={userTurnSearch.query}
-          onChange={(event) =>
-            handleUserTurnSearchQueryChange(event.target.value)
-          }
-          placeholder="reverse search"
-          aria-label={getSearchScopeAriaLabel(userTurnSearch.scope)}
-        />
-        <button
-          type="button"
-          className={[
-            "user-turn-search-case-toggle",
-            userTurnSearch.caseSensitive ? "is-active" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          aria-label="Case-sensitive search"
-          aria-pressed={userTurnSearch.caseSensitive}
-          title={
-            userTurnSearch.caseSensitive
-              ? "Case-sensitive search on"
-              : "Case-sensitive search off"
-          }
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={toggleUserTurnSearchCaseSensitive}
-        >
-          Aa
-        </button>
-        <span className="user-turn-search-count">
-          {!searchReady
-            ? "2+ chars"
-            : userTurnSearchMatches.length > 0
-              ? `${Math.max(
-                  1,
-                  userTurnSearchMatches.findIndex(
-                    (anchor) => anchor.id === userTurnSearch.selectedId,
-                  ) + 1,
-                )}/${userTurnSearchMatches.length}`
-              : "0/0"}
-        </span>
-      </div>
-      <div className="user-turn-search-help">
-        <span>
-          {getSearchScopeKeys(userTurnSearch.scope)} prev · ↑↓ matches · click
-          selects
-        </span>
-        <span>Enter jump+close · Esc cancel · Aa case</span>
-      </div>
-    </div>
-  ) : null;
+  const followButtonLabel = newOutputBelowVisible
+    ? t("sessionNewOutputBelow")
+    : t("sessionFollow");
+  const followButtonTitle = newOutputBelowVisible
+    ? t("sessionNewOutputBelowTitle")
+    : t("sessionFollowLatestOutput");
   const followButton = !isScrolledToBottom ? (
     <button
       type="button"
-      className="message-follow-toggle"
+      className={`message-follow-toggle${
+        newOutputBelowVisible ? " is-new-output" : ""
+      }`}
       onClick={scrollToCurrent}
-      aria-label="Follow latest session output"
-      title="Follow latest session output"
+      aria-label={followButtonTitle}
+      title={followButtonTitle}
     >
       <svg
         width="14"
@@ -2921,7 +2160,7 @@ export const MessageList = memo(function MessageList({
         <path d="M12 5v14" />
         <path d="m19 12-7 7-7-7" />
       </svg>
-      <span>Follow</span>
+      <span>{followButtonLabel}</span>
     </button>
   ) : null;
   return (
@@ -2933,36 +2172,61 @@ export const MessageList = memo(function MessageList({
         onNavigateStart={() => {
           shouldAutoScrollRef.current = false;
           setIsScrolledToBottom(false);
+          updateScrollPositionTimestamp({ atBottom: false });
         }}
-        onSearchMatchSelect={selectUserTurnSearchMatch}
+        onSearchMatchSelect={selectSearchMatch}
         onTrimAnchor={onTrimBeforeUserMessage}
         onForkBeforeAnchor={onForkBeforeUserMessage}
         onForkAfterAnchor={onForkAfterUserMessage}
         onCopyAnchor={onCopyUserMessage}
+        onPreviewTimestampChange={setHoveredMarkerTimestampMs}
         searchState={userTurnNavSearchState}
       />
-      {searchPanelTarget && searchPanel
-        ? createPortal(searchPanel, searchPanelTarget)
-        : searchPanel}
+      {searchPanel}
       {followButtonTarget && followButton
         ? createPortal(followButton, followButtonTarget)
         : followButton}
-      <div className="message-list" ref={containerRef}>
-        {floatingQuoteButton && (
-          <button
-            type="button"
-            className="selection-quote-button"
-            style={{
-              top: `${floatingQuoteButton.top}px`,
-              left: `${floatingQuoteButton.left}px`,
-            }}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => applyQuoteFromSelection()}
-            aria-label={t("sessionQuoteSelection")}
-            title={t("sessionQuoteSelection")}
-          >
-            &gt;
-          </button>
+      {mobileSelectionQuoteButton}
+      <div
+        className={[
+          "message-list",
+          progressiveRevealActive ? "message-list-progressive-hydrating" : "",
+          offscreenTranscriptRenderingEnabled
+            ? "message-list-offscreen-rendering"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        ref={containerRef}
+        aria-busy={progressiveRevealActive ? true : undefined}
+      >
+        {floatingSelectionQuoteButton}
+        {progressiveRevealActive && (
+          <div className="session-render-progress loading" role="status">
+            <div>{t("sessionLoading")}</div>
+            {progressiveRenderStatusVisible && (
+              <>
+                <div className="loading-detail session-render-progress-label">
+                  {t("sessionProgressiveRenderingStatus", {
+                    percent: progressiveRenderPercent,
+                  })}
+                </div>
+                <div
+                  className="session-render-progress-bar"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={progressiveRenderPercent}
+                  aria-label={t("sessionProgressiveRenderingAriaLabel")}
+                >
+                  <div
+                    className="session-render-progress-fill"
+                    style={{ width: `${progressiveRenderPercent}%` }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
         )}
         {(hasOlderMessages || clientTailActive) && (
           <div className="load-older-messages">
@@ -2989,12 +2253,12 @@ export const MessageList = memo(function MessageList({
             )}
           </div>
         )}
-        {visibleTimelineEntries.map((entry) => {
-          if (entry.kind === "btw") {
+        {timelineEntryRows.map((timelineRow) => {
+          if (timelineRow.kind === "btw") {
             return (
               <BtwAsideTimelineCard
-                key={entry.key}
-                aside={entry.aside}
+                key={timelineRow.key}
+                aside={timelineRow.aside}
                 onFocus={onFocusBtwAside}
                 onDone={onDoneBtwAside}
                 onStop={onStopBtwAside}
@@ -3004,13 +2268,15 @@ export const MessageList = memo(function MessageList({
             );
           }
 
-          const { group } = entry;
-          if (group.isStandalone) {
-            const item = group.items[0];
-            if (!item) return null;
+          if (timelineRow.kind === "empty") {
+            return null;
+          }
+
+          if (timelineRow.kind === "standalone") {
+            const { item } = timelineRow;
             return (
               <RenderItemComponent
-                key={item.id}
+                key={timelineRow.key}
                 item={item}
                 isStreaming={isStreaming}
                 thinkingExpanded={false}
@@ -3023,20 +2289,19 @@ export const MessageList = memo(function MessageList({
               />
             );
           }
-          if (group.isUserPrompt) {
-            // User prompts render directly without timeline wrapper
-            const item = group.items[0];
-            if (!item) return null;
+
+          if (timelineRow.kind === "user") {
+            const { item } = timelineRow;
             return (
               <RenderItemComponent
-                key={item.id}
+                key={timelineRow.key}
                 item={item}
                 isStreaming={isStreaming}
                 thinkingExpanded={getThinkingItemExpanded(item)}
                 toggleThinkingExpanded={noopToggleThinkingExpanded}
                 sessionProvider={provider}
                 onCorrectUserPrompt={
-                  latestCorrectablePrompt?.id === item.id
+                  timelineRow.isLatestCorrectable && latestCorrectablePrompt
                     ? () =>
                         onCorrectLatestUserMessage?.(
                           latestCorrectablePrompt.id,
@@ -3044,49 +2309,40 @@ export const MessageList = memo(function MessageList({
                         )
                     : undefined
                 }
+                onCancelUnconfirmedUserPrompt={onCancelUnconfirmedUserMessage}
                 onTrimBeforeUserPrompt={
-                  onTrimBeforeUserMessage && !item.isSubagent
+                  onTrimBeforeUserMessage && timelineRow.allowsPromptActions
                     ? () => onTrimBeforeUserMessage(item.id)
                     : undefined
                 }
                 onForkBeforeUserPrompt={
-                  onForkBeforeUserMessage && !item.isSubagent
+                  onForkBeforeUserMessage && timelineRow.allowsPromptActions
                     ? () => onForkBeforeUserMessage(item.id)
                     : undefined
                 }
-                staleNowMs={getItemStaleNowMs(item)}
+                staleNowMs={timelineRow.staleNowMs}
                 latestVisibleTimestampMs={latestVisibleTimestampMs}
               />
             );
           }
-          // Assistant items wrapped in timeline container - key based on first item
-          const firstItem = group.items[0];
-          if (!firstItem) return null;
+
           return (
-            <div key={entry.key} className="assistant-turn">
-              {buildAssistantRenderSegments(group.items).map((segment) => {
-                if (segment.kind === "explored") {
-                  const segmentTimestampMs = getLatestItemsTimestampMs(
-                    segment.items,
-                  );
+            <div key={timelineRow.key} className="assistant-turn">
+              {timelineRow.rows.map((assistantRow) => {
+                if (assistantRow.kind === "explored") {
                   return (
                     <ExploredToolGroup
-                      key={segment.id}
-                      id={segment.id}
-                      items={segment.items}
+                      key={assistantRow.id}
+                      id={assistantRow.id}
+                      projection={assistantRow.projection}
                       sessionProvider={provider}
-                      staleNowMs={
-                        segmentTimestampMs === latestVisibleTimestampMs
-                          ? nowMs
-                          : undefined
-                      }
+                      staleNowMs={assistantRow.staleNowMs}
                       latestVisibleTimestampMs={latestVisibleTimestampMs}
                     />
                   );
                 }
 
-                const { item } = segment;
-                const itemIndex = group.items.indexOf(item);
+                const { item } = assistantRow;
                 return (
                   <RenderItemComponent
                     key={item.id}
@@ -3094,61 +2350,56 @@ export const MessageList = memo(function MessageList({
                     isStreaming={isStreaming}
                     thinkingExpanded={getThinkingItemExpanded(item)}
                     toggleThinkingExpanded={
-                      item.type === "thinking"
+                      assistantRow.allowsThinkingToggle
                         ? () => toggleThinkingItemExpanded(item)
                         : noopToggleThinkingExpanded
                     }
                     sessionProvider={provider}
                     onTrimBeforeUserPrompt={
-                      item.type === "user_prompt" &&
                       onTrimBeforeUserMessage &&
-                      !item.isSubagent
+                      assistantRow.allowsPromptActions
                         ? () => onTrimBeforeUserMessage(item.id)
                         : undefined
                     }
                     onForkBeforeUserPrompt={
-                      item.type === "user_prompt" &&
                       onForkBeforeUserMessage &&
-                      !item.isSubagent
+                      assistantRow.allowsPromptActions
                         ? () => onForkBeforeUserMessage(item.id)
                         : undefined
                     }
                     onQuoteTextBlock={
-                      item.type === "text" ? handleQuoteTextBlock : undefined
+                      assistantRow.allowsTextQuote
+                        ? handleQuoteTextBlock
+                        : undefined
                     }
                     alwaysShowQuoteCircle={alwaysShowQuoteCircles}
-                    staleNowMs={getItemStaleNowMs(item)}
+                    paragraphQuoteCirclesEnabled={
+                      paragraphQuoteCirclesEnabled
+                    }
+                    staleNowMs={assistantRow.staleNowMs}
                     latestVisibleTimestampMs={latestVisibleTimestampMs}
-                    thinkingDurationMs={getThinkingDurationMs(
-                      item,
-                      group.items,
-                      itemIndex,
-                      nowMs,
-                    )}
+                    thinkingDurationMs={assistantRow.thinkingDurationMs}
                   />
                 );
               })}
             </div>
           );
         })}
-        {composerTailItems.map((tailItem) => {
-          const timestampMs = parseTimestampMs(tailItem.message.timestamp);
-          const showAgeByDefault =
-            latestVisibleTimestampMs === timestampMs &&
-            isStaleTimestamp(timestampMs, nowMs, MESSAGE_STALE_THRESHOLD_MS);
+        {composerTailRows.map((tailRow) => {
+          const { hasMessageAge, showAgeByDefault, timestampMs } = tailRow;
 
-          if (tailItem.kind === "pending") {
-            const pending = tailItem.message;
+          if (tailRow.kind === "pending") {
+            const pending = tailRow.message;
             return (
               <div
-                key={tailItem.key}
+                key={tailRow.key}
                 className={`pending-message message-render-row ${
-                  timestampMs !== null ? "has-message-age" : ""
+                  hasMessageAge ? "has-message-age" : ""
                 } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
               >
                 <div className="message-render-content">
                   <div className="message-user-prompt pending-message-bubble">
-                    {pending.content}
+                    <LinkifiedText text={pending.content} />
                   </div>
                   {pending.attachments?.length ? (
                     <div className="attachment-list pending-message-attachments">
@@ -3186,25 +2437,142 @@ export const MessageList = memo(function MessageList({
             );
           }
 
-          const deferred = tailItem.message;
-          const isPatientDeferred = isPatientDeferredMessage(deferred);
-          const lanePosition = composerTailLanePositions.get(tailItem.key);
-          const deferredStatus = getDeferredMessageStatus({
-            isPatient: isPatientDeferred,
-            lanePosition,
-            timestampMs,
-            nowMs,
-          });
+          if (tailRow.kind === "project-queue") {
+            const projectQueue = tailRow.message;
+            const projectQueueStatus =
+              tailRow.projectQueueStatusKind === "dispatching"
+                ? t("projectQueueInlineStatusDispatching", {
+                    position: projectQueue.projectPosition,
+                  })
+                : tailRow.projectQueueStatusKind === "failed"
+                  ? t("projectQueueInlineStatusFailed", {
+                      position: projectQueue.projectPosition,
+                    })
+                  : t("projectQueueInlineStatusQueued", {
+                      position: projectQueue.projectPosition,
+                    });
+            return (
+              <div
+                key={tailRow.key}
+                className={`deferred-message project-queue-inline-message message-render-row ${
+                  hasMessageAge ? "has-message-age" : ""
+                } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
+              >
+                <div className="message-render-content">
+                  <div className="message-user-prompt deferred-message-bubble project-queue-inline-message-bubble">
+                    <LinkifiedText text={projectQueue.content} />
+                  </div>
+                  {projectQueue.attachments?.length ? (
+                    <div className="attachment-list deferred-message-attachments-list">
+                      {projectQueue.attachments.map((file) => (
+                        <AttachmentChip
+                          key={file.id}
+                          attachmentId={file.id}
+                          originalName={file.originalName}
+                          path={file.path}
+                          mimeType={file.mimeType}
+                          sizeLabel={formatSize(file.size)}
+                          imageWidth={file.width}
+                          imageHeight={file.height}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="deferred-message-footer">
+                    <span className="deferred-message-status project-queue-inline-message-status">
+                      {projectQueueStatus}
+                    </span>
+                    {tailRow.showAttachmentCountBadge ? (
+                      <span
+                        className="deferred-message-attachments"
+                        title={`${projectQueue.attachmentCount} attachment${
+                          projectQueue.attachmentCount === 1 ? "" : "s"
+                        } queued`}
+                        role="img"
+                        aria-label={`${projectQueue.attachmentCount} attachment${
+                          projectQueue.attachmentCount === 1 ? "" : "s"
+                        } queued`}
+                      >
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                        </svg>
+                        <span>{projectQueue.attachmentCount}</span>
+                      </span>
+                    ) : null}
+                    {projectQueue.lastError && (
+                      <span className="project-queue-inline-message-error">
+                        {projectQueue.lastError}
+                      </span>
+                    )}
+                    <div className="deferred-message-actions">
+                      <CopyTextButton
+                        text={projectQueue.content}
+                        label={t("projectQueueInlineCopy")}
+                        className="deferred-message-action deferred-message-action-copy"
+                        showTextLabel
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                      {tailRow.allowsCancel && onCancelProjectQueueMessage && (
+                        <button
+                          type="button"
+                          className="deferred-message-action deferred-message-action-cancel project-queue-inline-message-cancel"
+                          disabled={projectQueue.isMutating}
+                          onClick={() =>
+                            onCancelProjectQueueMessage(projectQueue.id)
+                          }
+                          aria-label={t("projectQueueInlineCancel")}
+                          title={t("projectQueueInlineCancel")}
+                        >
+                          <XIcon />
+                          <span>{t("projectQueueDelete")}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
+              </div>
+            );
+          }
+
+          const deferred = tailRow.message;
+          const recoveredQueueId = tailRow.recoveredQueueId;
+          const deferredStatus = tailRow.isRecovered
+            ? t("sessionRecoveredQueuedPaused")
+            : getDeferredMessageStatus({
+                isPatient: tailRow.isPatient,
+                lanePosition: tailRow.lanePosition,
+                timestampMs,
+                nowMs,
+              });
+          const earlierPatientCount = tailRow.lanePosition?.patientIndex ?? 0;
+          const steerQueuedLabel =
+            earlierPatientCount > 0
+              ? t("sessionSteerQueuedMessageThrough", {
+                  count: String(earlierPatientCount),
+                  suffix: earlierPatientCount === 1 ? "" : "s",
+                })
+              : t("sessionSteerQueuedMessageNow");
           return (
             <div
-              key={tailItem.key}
+              key={tailRow.key}
               className={`deferred-message message-render-row ${
-                timestampMs !== null ? "has-message-age" : ""
+                hasMessageAge ? "has-message-age" : ""
               } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
             >
               <div className="message-render-content">
                 <div className="message-user-prompt deferred-message-bubble">
-                  {deferred.content}
+                  <LinkifiedText text={deferred.content} />
                 </div>
                 {deferred.attachments?.length ? (
                   <div className="attachment-list deferred-message-attachments-list">
@@ -3226,14 +2594,16 @@ export const MessageList = memo(function MessageList({
                   <span
                     className="deferred-message-status"
                     title={
-                      isPatientDeferred
-                        ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
-                        : undefined
+                      tailRow.isRecovered
+                        ? t("sessionRecoveredQueuedPausedTitle")
+                        : tailRow.isPatient
+                          ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
+                          : undefined
                     }
                   >
                     {deferredStatus}
                   </span>
-                  {deferred.attachmentCount ? (
+                  {tailRow.showAttachmentCountBadge ? (
                     <span
                       className="deferred-message-attachments"
                       title={`${deferred.attachmentCount} attachment${
@@ -3268,7 +2638,71 @@ export const MessageList = memo(function MessageList({
                       showTextLabel
                       onClick={(event) => event.stopPropagation()}
                     />
-                    {deferred.tempId && onCancelDeferred && (
+                    {tailRow.isPatient &&
+                    !tailRow.isRecovered &&
+                    deferred.tempId &&
+                    onSteerDeferred ? (
+                      <button
+                        type="button"
+                        className="deferred-message-action deferred-message-action-steer"
+                        onClick={() =>
+                          onSteerDeferred(deferred.tempId as string)
+                        }
+                        aria-label={steerQueuedLabel}
+                        title={steerQueuedLabel}
+                      >
+                        <PlayIcon />
+                        <span>{t("sessionSteerNow")}</span>
+                      </button>
+                    ) : null}
+                    {tailRow.isRecovered &&
+                    recoveredQueueId &&
+                    onSteerRecoveredDeferred ? (
+                      <button
+                        type="button"
+                        className="deferred-message-action deferred-message-action-steer"
+                        onClick={() =>
+                          onSteerRecoveredDeferred(recoveredQueueId)
+                        }
+                        aria-label={steerQueuedLabel}
+                        title={steerQueuedLabel}
+                      >
+                        <PlayIcon />
+                        <span>{t("sessionSteerNow")}</span>
+                      </button>
+                    ) : null}
+                    {tailRow.allowsRecoveredResume &&
+                    recoveredQueueId &&
+                    onResumeRecoveredDeferred ? (
+                      <button
+                        type="button"
+                        className="deferred-message-action deferred-message-action-resume"
+                        onClick={() =>
+                          onResumeRecoveredDeferred(recoveredQueueId)
+                        }
+                        aria-label={t("sessionRecoveredQueuedResume")}
+                        title={t("sessionRecoveredQueuedResume")}
+                      >
+                        <PlayIcon />
+                        <span>{t("sessionRecoveredQueuedResumeShort")}</span>
+                      </button>
+                    ) : null}
+                    {tailRow.allowsRecoveredDelete &&
+                    recoveredQueueId &&
+                    onDeleteRecoveredDeferred ? (
+                      <button
+                        type="button"
+                        className="deferred-message-action deferred-message-action-cancel"
+                        onClick={() =>
+                          onDeleteRecoveredDeferred(recoveredQueueId)
+                        }
+                        aria-label={t("sessionRecoveredQueuedDelete")}
+                        title={t("sessionRecoveredQueuedDelete")}
+                      >
+                        <XIcon />
+                        <span>{t("sessionRecoveredQueuedDeleteShort")}</span>
+                      </button>
+                    ) : tailRow.allowsDeferredCancel && onCancelDeferred ? (
                       <button
                         type="button"
                         className="deferred-message-action deferred-message-action-cancel"
@@ -3281,7 +2715,7 @@ export const MessageList = memo(function MessageList({
                         <XIcon />
                         <span>Cancel</span>
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>

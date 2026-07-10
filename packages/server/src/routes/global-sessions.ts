@@ -5,7 +5,7 @@
  * this returns a flat list suitable for navigation/sidebar use.
  */
 
-import type { ProviderName } from "@yep-anywhere/shared";
+import type { ProviderName, WorkstreamId } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionIndexListOptions } from "../indexes/types.js";
@@ -21,6 +21,10 @@ import { listSessionsAcrossProviders } from "../sessions/provider-resolution.js"
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader } from "../sessions/types.js";
+import {
+  applyRecapOverlayToSummary,
+  hasUnreadProviderContent,
+} from "../sessions/recap-overlays.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type {
@@ -93,11 +97,13 @@ export interface GlobalSessionItem {
   isStarred?: boolean;
   /** Parent session when this item is a YA-owned /btw aside. */
   parentSessionId?: string;
+  /** YA workstream lane for this session. Missing means the implicit main lane. */
+  workstreamId?: WorkstreamId;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
-  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
 }
 
@@ -227,25 +233,34 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       );
       for (const session of sessions) {
         const metadata = deps.sessionMetadataService?.getMetadata(session.id);
+        const overlaidSession = deps.sessionMetadataService
+          ? applyRecapOverlayToSummary(
+              session,
+              deps.sessionMetadataService.getRecapMessages(session.id),
+            )
+          : session;
         const isArchived =
           metadata?.isArchived ??
-          session.isArchived ??
-          isSessionAutoArchived(session, statsAutoArchiveAfterMs);
+          overlaidSession.isArchived ??
+          isSessionAutoArchived(overlaidSession, statsAutoArchiveAfterMs);
         const isStarred = metadata?.isStarred ?? session.isStarred ?? false;
         const executor = metadata?.executor;
 
-        const hasUnread = deps.notificationService
-          ? deps.notificationService.hasUnread(session.id, session.updatedAt)
-          : false;
+        const hasUnread =
+          hasUnreadProviderContent(
+            deps.notificationService,
+            session.id,
+            session.updatedAt,
+          ) ?? false;
 
         if (isArchived) {
           stats.archivedCount++;
         } else {
           stats.totalCount++;
           if (hasUnread) stats.unreadCount++;
-          if (session.provider) {
-            stats.providerCounts[session.provider] =
-              (stats.providerCounts[session.provider] ?? 0) + 1;
+          if (overlaidSession.provider) {
+            stats.providerCounts[overlaidSession.provider] =
+              (stats.providerCounts[overlaidSession.provider] ?? 0) + 1;
           }
           const executorKey = executor ?? "local";
           stats.executorCounts[executorKey] =
@@ -317,10 +332,10 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     // Get all projects
     const allProjects = await deps.scanner.listProjects();
 
-    // Filter to single project if projectId query param provided
-    const projects = filterProjectId
-      ? allProjects.filter((p) => p.id === filterProjectId)
-      : allProjects;
+    const projectsById = new Map(allProjects.map((p) => [p.id, p]));
+    // Project filtering applies to the effective YA project after session
+    // metadata is read, so scan every transcript project and filter below.
+    const projects = allProjects;
 
     // Build project options for filter dropdown (from all projects, sorted by name)
     const projectOptions: ProjectOption[] = allProjects
@@ -351,21 +366,37 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       for (const session of sessions) {
         // Get session metadata
         const metadata = deps.sessionMetadataService?.getMetadata(session.id);
+        const overlaidSession = deps.sessionMetadataService
+          ? applyRecapOverlayToSummary(
+              session,
+              deps.sessionMetadataService.getRecapMessages(session.id),
+            )
+          : session;
+        const effectiveProjectId = metadata?.workingProjectId ?? session.projectId;
+        if (filterProjectId && effectiveProjectId !== filterProjectId) {
+          continue;
+        }
+        const effectiveProject = projectsById.get(effectiveProjectId) ?? project;
+
         const isArchived =
           metadata?.isArchived ??
-          session.isArchived ??
-          isSessionAutoArchived(session, autoArchiveAfterMs);
-        const isStarred = metadata?.isStarred ?? session.isStarred ?? false;
-        const customTitle = metadata?.customTitle ?? session.customTitle;
+          overlaidSession.isArchived ??
+          isSessionAutoArchived(overlaidSession, autoArchiveAfterMs);
+        const isStarred =
+          metadata?.isStarred ?? overlaidSession.isStarred ?? false;
+        const customTitle =
+          metadata?.customTitle ?? overlaidSession.customTitle;
         const parentSessionId =
-          metadata?.parentSessionId ?? session.parentSessionId;
-        const initialPrompt = metadata?.initialPrompt ?? session.fullTitle;
+          metadata?.parentSessionId ?? overlaidSession.parentSessionId;
+        const initialPrompt =
+          metadata?.initialPrompt ?? overlaidSession.fullTitle;
         const executor = metadata?.executor;
 
-        // Get unread status
-        const hasUnread = deps.notificationService
-          ? deps.notificationService.hasUnread(session.id, session.updatedAt)
-          : undefined;
+        const hasUnread = hasUnreadProviderContent(
+          deps.notificationService,
+          session.id,
+          session.updatedAt,
+        );
 
         // Skip archived sessions unless explicitly requested
         if (isArchived && !includeArchived) continue;
@@ -384,6 +415,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
               processId: process.id,
               permissionMode: process.permissionMode,
               modeVersion: process.modeVersion,
+              recapAfterSeconds: process.recapAfterSeconds,
             }
           : isExternal
             ? { owner: "external" }
@@ -403,16 +435,22 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           const state = process.state.type;
           if (state === "in-turn" || state === "waiting-input") {
             activity = state;
+          } else if (state === "idle" && process.isRetainingProviderWork()) {
+            // Idle but the provider still has background tasks/crons running —
+            // surface as active so the sidebar shows the activity indicator.
+            activity = "in-turn";
           }
         }
 
         // Apply search filter
         if (searchQuery) {
-          const titleMatch = session.title?.toLowerCase().includes(searchQuery);
+          const titleMatch = overlaidSession.title
+            ?.toLowerCase()
+            .includes(searchQuery);
           const customTitleMatch = customTitle
             ?.toLowerCase()
             .includes(searchQuery);
-          const projectNameMatch = project.name
+          const projectNameMatch = effectiveProject.name
             .toLowerCase()
             .includes(searchQuery);
           const initialPromptMatch = initialPrompt
@@ -430,16 +468,16 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         }
 
         allSessions.push({
-          id: session.id,
-          title: session.title,
-          fullTitle: session.fullTitle,
-          createdAt: session.createdAt,
-          updatedAt: session.updatedAt,
-          messageCount: session.messageCount,
-          provider: session.provider,
-          model: session.model,
-          projectId: session.projectId,
-          projectName: project.name,
+          id: overlaidSession.id,
+          title: overlaidSession.title,
+          fullTitle: overlaidSession.fullTitle,
+          createdAt: overlaidSession.createdAt,
+          updatedAt: overlaidSession.updatedAt,
+          messageCount: overlaidSession.messageCount,
+          provider: overlaidSession.provider,
+          model: overlaidSession.model,
+          projectId: effectiveProjectId,
+          projectName: effectiveProject.name,
           ownership,
           pendingInputType,
           activity,
@@ -448,9 +486,10 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           isArchived,
           isStarred,
           parentSessionId,
+          workstreamId: metadata?.workstreamId,
           initialPrompt: initialPrompt ?? undefined,
           executor,
-          lastAgentText: session.lastAgentText,
+          lastAgentText: overlaidSession.lastAgentText,
         });
       }
     }

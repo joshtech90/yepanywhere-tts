@@ -1,14 +1,17 @@
 import {
+  DEFAULT_RECAP_AFTER_SECONDS,
+  DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
-  PROMPT_SUGGESTION_MODES,
   type EffortLevel,
   type ModelInfo,
   type PromptSuggestionMode,
   type ProviderName,
   type RecapMode,
   type ThinkingMode,
-  type ThinkingOption,
+  type Workstream,
+  type WorkstreamId,
+  normalizeRecapAfterSeconds,
   resolveModel,
 } from "@yep-anywhere/shared";
 import {
@@ -27,15 +30,17 @@ import {
 import { useNavigate } from "react-router-dom";
 import { type UploadedFile, api } from "../api/client";
 import { ENTER_SENDS_MESSAGE } from "../constants";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useToastContext } from "../contexts/ToastContext";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
-import { useConnection } from "../hooks/useConnection";
 import { useDraftPersistence } from "../hooks/useDraftPersistence";
+import { createNewSessionDraftKey } from "../hooks/useDrafts";
 import {
   getModelSetting,
   getShowThinkingSetting,
   useModelSettings,
 } from "../hooks/useModelSettings";
+import { useProjectQueues } from "../hooks/useProjectQueues";
 import {
   getAvailableProviders,
   getDefaultProvider,
@@ -48,6 +53,7 @@ import {
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useRemoteExecutors } from "../hooks/useRemoteExecutors";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useI18n } from "../i18n";
 import {
   getEffortLevelOptions,
@@ -55,14 +61,67 @@ import {
   resolveSupportedEffortLevel,
   resolveSupportedThinkingMode,
 } from "../lib/effortLevels";
+import {
+  getPreferredModelId,
+  getProviderSessionDefaults,
+  withProviderSessionDefaults,
+} from "../lib/newSessionDefaults";
+import {
+  type PendingFile,
+  type PendingLocalFile,
+  type PendingStagedFile,
+  type PendingUploadingFile,
+  getPendingFileName,
+  getPendingFileSize,
+  isPendingLocalFile,
+  isPendingStagedFile,
+  revokePendingFilePreviewUrls,
+  toPersistedStagedAttachmentRef,
+} from "../lib/newSessionAttachments";
+import {
+  PROMPT_SUGGESTION_MODE_ORDER,
+  RECAP_MODE_ORDER,
+  getDefaultHelperSideModel,
+  getPreferredPromptSuggestionMode,
+  getPreferredRecapMode,
+  resolvePromptSuggestionMode,
+  resolveRecapMode,
+  toThinkingOption,
+} from "../lib/newSessionOptions";
+import {
+  PROJECT_SUGGESTION_COUNT,
+  QUICK_PROJECT_COUNT,
+  findProjectByInput,
+  normalizeProjectInput,
+  sortProjectsForChooser,
+} from "../lib/newSessionProjects";
+import { getRecapModeDescription } from "../lib/recapModes";
 import { prepareImageUpload } from "../lib/imageAttachmentResize";
+import type { DraftAttachmentState } from "../lib/draftEnvelope";
+import {
+  deleteDraftAttachmentRef,
+  materializeDraftAttachmentsForSession,
+  validateDraftAttachmentRefs,
+} from "../lib/draftAttachmentStaging";
+import {
+  hasAttachmentNavigationRisk,
+  useAttachmentNavigationGuard,
+} from "../lib/attachmentNavigationGuard";
+import {
+  serverSupportsProjectQueue,
+  shouldShowProjectQueueAffordance,
+} from "../lib/projectQueueVisibility";
+import {
+  useActiveProjectSessionIds,
+  useClientSummarySourceKey,
+} from "../lib/clientSummaryStore";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
-import { helperTargetsToModelOptions } from "../lib/helperTargets";
 import {
   clearNewSessionPrefill,
   getNewSessionPrefill,
 } from "../lib/newSessionPrefill";
+import { makeAttachmentFileNamesUnique } from "../lib/attachmentFileNames";
 import {
   getEstimatedServerOffsetMs,
   getServerClockTimestamp,
@@ -107,18 +166,22 @@ import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import { ProviderBadge } from "./ProviderBadge";
+import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import { SpeechControlMenu } from "./SpeechControlMenu";
-import { ThinkingControlsPanel } from "./ThinkingControls";
+import {
+  ShowThinkingControls,
+  ThinkingControlsPanel,
+} from "./ThinkingControls";
 import {
   VoiceInputButton,
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
 
-interface PendingFile {
-  id: string;
-  file: File;
-  previewUrl?: string;
+interface WorkstreamsLoadState {
+  status: "idle" | "loading" | "ready" | "error";
+  projectId: string | null;
+  workstreams: Workstream[];
 }
 
 interface PendingSpeechFinal {
@@ -126,14 +189,6 @@ interface PendingSpeechFinal {
   transcript: string;
   metadata?: SpeechTranscriptionResultMetadata;
 }
-
-const RECAP_MODE_ORDER: RecapMode[] = ["off", "native", "side-session"];
-const PROMPT_SUGGESTION_MODE_ORDER: PromptSuggestionMode[] = [
-  ...PROMPT_SUGGESTION_MODES,
-];
-const NEW_SESSION_DRAFT_KEY = "draft-new-session";
-const QUICK_PROJECT_COUNT = 10;
-const PROJECT_SUGGESTION_COUNT = 10;
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}\u202fb`;
@@ -149,181 +204,6 @@ function createClientSpeechTurnId(): string {
 
 function createSpeechTargetId(): string {
   return `speech-target-${generateUUID()}`;
-}
-
-function toThinkingOption(
-  mode: ThinkingMode,
-  effort: EffortLevel,
-): ThinkingOption {
-  if (mode === "off") return "off";
-  if (mode === "auto") return "auto";
-  return `on:${effort}`;
-}
-
-function getPreferredModelId(
-  models: ModelInfo[],
-  preferredModelId?: string | null,
-) {
-  if (preferredModelId) {
-    const matchingPreferredModel = models.find(
-      (m) => m.id === preferredModelId,
-    );
-    if (matchingPreferredModel) return matchingPreferredModel.id;
-  }
-
-  return models[0]?.id ?? null;
-}
-
-function getPreferredProviderModelId(
-  providerName: ProviderName,
-  models: ModelInfo[],
-  defaults?: {
-    provider?: ProviderName;
-    model?: string;
-  } | null,
-) {
-  const sessionDefaultModel =
-    defaults?.provider === providerName ? defaults.model : undefined;
-  const legacyClaudeFallbackModel =
-    providerName === "claude" ? resolveModel(getModelSetting()) : undefined;
-
-  return getPreferredModelId(
-    models,
-    sessionDefaultModel ?? legacyClaudeFallbackModel,
-  );
-}
-
-function providerSupportsRecapMode(
-  provider:
-    | {
-        supportsRecaps?: boolean;
-        supportsNativeRecaps?: boolean;
-      }
-    | null
-    | undefined,
-  mode: RecapMode,
-): boolean {
-  if (mode === "off") return true;
-  if (mode === "native") return provider?.supportsNativeRecaps === true;
-  return provider?.supportsRecaps === true;
-}
-
-function getDefaultRecapMode(
-  provider:
-    | {
-        supportsRecaps?: boolean;
-        supportsNativeRecaps?: boolean;
-      }
-    | null
-    | undefined,
-  defaults?: { recapMode?: RecapMode } | null,
-): RecapMode {
-  if (
-    defaults?.recapMode &&
-    providerSupportsRecapMode(provider, defaults.recapMode)
-  ) {
-    return defaults.recapMode;
-  }
-  return provider?.supportsNativeRecaps ? "native" : "off";
-}
-
-function providerSupportsPromptSuggestionMode(
-  provider: { supportsNativePromptSuggestions?: boolean } | null | undefined,
-  mode: PromptSuggestionMode,
-): boolean {
-  if (mode === "off") return true;
-  return provider?.supportsNativePromptSuggestions === true;
-}
-
-function getPreferredPromptSuggestionMode(
-  defaults?: { promptSuggestionMode?: PromptSuggestionMode } | null,
-): PromptSuggestionMode {
-  return defaults?.promptSuggestionMode &&
-    PROMPT_SUGGESTION_MODE_ORDER.includes(defaults.promptSuggestionMode)
-    ? defaults.promptSuggestionMode
-    : "off";
-}
-
-function resolvePromptSuggestionMode(
-  provider: { supportsNativePromptSuggestions?: boolean } | null | undefined,
-  preferredMode: PromptSuggestionMode,
-): PromptSuggestionMode {
-  return providerSupportsPromptSuggestionMode(provider, preferredMode)
-    ? preferredMode
-    : "off";
-}
-
-function getDefaultHelperSideModel(
-  models: ModelInfo[],
-  defaults?: { helperSideModel?: string } | null,
-): string {
-  const defaultModel = defaults?.helperSideModel;
-  if (
-    defaultModel &&
-    (defaultModel === HELPER_SIDE_MODEL_CHEAPEST ||
-      defaultModel === HELPER_SIDE_MODEL_SAME_AS_MAIN ||
-      models.some((model) => model.id === defaultModel))
-  ) {
-    return defaultModel;
-  }
-  return HELPER_SIDE_MODEL_CHEAPEST;
-}
-
-function getProjectSortValue(project: Project): number {
-  return project.lastActivity ? new Date(project.lastActivity).getTime() : 0;
-}
-
-function sortProjectsForChooser(
-  projects: readonly Project[],
-  recentProjectIds: readonly string[] = [],
-): Project[] {
-  const recentRanks = new Map(
-    recentProjectIds.map((projectId, index) => [projectId, index]),
-  );
-
-  return [...projects].sort((a, b) => {
-    const recentRankA = recentRanks.get(a.id) ?? Number.POSITIVE_INFINITY;
-    const recentRankB = recentRanks.get(b.id) ?? Number.POSITIVE_INFINITY;
-    if (recentRankA !== recentRankB) return recentRankA - recentRankB;
-
-    const activityDiff = getProjectSortValue(b) - getProjectSortValue(a);
-    if (activityDiff !== 0) return activityDiff;
-    const nameDiff = a.name.localeCompare(b.name);
-    if (nameDiff !== 0) return nameDiff;
-    return a.path.localeCompare(b.path);
-  });
-}
-
-function normalizeProjectInput(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (trimmed.length > 1 && /[/\\]$/.test(trimmed)) {
-    return trimmed.slice(0, -1);
-  }
-  return trimmed;
-}
-
-function findProjectByInput(
-  projects: readonly Project[],
-  candidate: string,
-): Project | null {
-  const normalizedCandidate = normalizeProjectInput(candidate);
-  if (!normalizedCandidate) return null;
-
-  const exactPathMatch = projects.find(
-    (project) => project.path === normalizedCandidate,
-  );
-  if (exactPathMatch) return exactPathMatch;
-
-  const exactNameMatches = projects.filter(
-    (project) =>
-      project.name.toLowerCase() === normalizedCandidate.toLowerCase(),
-  );
-  if (exactNameMatches.length === 1) {
-    return exactNameMatches[0] ?? null;
-  }
-
-  return null;
 }
 
 export interface NewSessionFormProps {
@@ -364,15 +244,29 @@ export function NewSessionForm({
   const { t } = useI18n();
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
-  const [message, setMessage, draftControls] = useDraftPersistence(
-    NEW_SESSION_DRAFT_KEY,
+  const clientSummarySourceKey = useClientSummarySourceKey();
+  const sourceRuntime = useCurrentSourceRuntime();
+  const sourceSummary = sourceRuntime.summary;
+  const sourceTransport = sourceRuntime.transport;
+  const newSessionDraftKey = useMemo(
+    () => createNewSessionDraftKey(clientSummarySourceKey),
+    [clientSummarySourceKey],
   );
+  const [message, setMessage, draftControls] =
+    useDraftPersistence(newSessionDraftKey);
   const [mode, setMode] = useState<PermissionMode>("default");
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(
     null,
   );
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedThinkingMode, setSelectedThinkingMode] =
+    useState<ThinkingMode>("off");
+  const [selectedEffortLevel, setSelectedEffortLevel] =
+    useState<EffortLevel>("high");
   const [selectedRecapMode, setSelectedRecapMode] = useState<RecapMode>("off");
+  const [recapAfterSeconds, setRecapAfterSeconds] = useState(
+    DEFAULT_RECAP_AFTER_SECONDS,
+  );
   const [selectedPromptSuggestionMode, setSelectedPromptSuggestionMode] =
     useState<PromptSuggestionMode>("off");
   const [helperSideModel, setHelperSideModel] = useState<string>(
@@ -380,12 +274,20 @@ export function NewSessionForm({
   );
   // null = local, string = remote host
   const [selectedExecutor, setSelectedExecutor] = useState<string | null>(null);
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [pendingFiles, setPendingFilesState] = useState<PendingFile[]>([]);
+  const pendingFilesRef = useRef<PendingFile[]>([]);
+  const draftAttachmentBatchIdRef = useRef<string | null>(null);
+  const draftAttachmentHydrationRef = useRef(0);
+  const pendingStagedUploadsRef = useRef<
+    Map<string, Promise<PendingStagedFile | null>>
+  >(new Map());
+  const removedPendingUploadIdsRef = useRef<Set<string>>(new Set());
   const [isStarting, setIsStarting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<
     Record<string, { uploaded: number; total: number }>
   >({});
   const [attachmentQuality] = useAttachmentUploadQuality();
+  const { visibility: toolbarVisibility } = useSessionToolbarPresence();
   const [interimTranscript, setInterimTranscript] = useState("");
   const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
     null,
@@ -393,10 +295,19 @@ export function NewSessionForm({
   const [, setSpeechPreviewRevision] = useState(0);
   const [isProjectChooserExpanded, setIsProjectChooserExpanded] =
     useState(false);
+  const [selectedWorkstreamId, setSelectedWorkstreamId] =
+    useState<WorkstreamId | null>(null);
+  const [workstreamsState, setWorkstreamsState] =
+    useState<WorkstreamsLoadState>({
+      status: "idle",
+      projectId: null,
+      workstreams: [],
+    });
   const [projectInput, setProjectInput] = useState(
     () => selectedProject?.path ?? "",
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectChooserRef = useRef<HTMLDivElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
@@ -415,15 +326,12 @@ export function NewSessionForm({
     useRef<PendingTextareaSelectionRestore | null>(null);
   const hasInitializedDefaultsRef = useRef(false);
   const hasUserCustomizedDefaultsRef = useRef(false);
-  const preferredPromptSuggestionModeRef = useRef<PromptSuggestionMode>("off");
   const lastSyncedProjectIdRef = useRef<string | null>(null);
 
   // Thinking toggle state
   const {
-    effortLevel,
-    setEffortLevel,
-    thinkingMode,
-    setThinkingMode,
+    effortLevel: legacyEffortLevel,
+    thinkingMode: legacyThinkingMode,
     showThinking,
     setShowThinking,
     voiceInputEnabled,
@@ -434,15 +342,345 @@ export function NewSessionForm({
     setSpeechSmartTurnSettings,
   } = useModelSettings();
 
-  // Connection for uploads (uses WebSocket when enabled)
-  const connection = useConnection();
-
   // Server version for voiceBackends advertisement
   const { version: versionInfo } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const projectQueueCtrlEnterEnabled =
+    versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
+    DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
   const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
 
   // Toast for error messages
   const { showToast } = useToastContext();
+
+  const writeDraftAttachmentState = useCallback(
+    (nextFiles: readonly PendingFile[]) => {
+      const stagedRefs = nextFiles
+        .filter(isPendingStagedFile)
+        .map(toPersistedStagedAttachmentRef);
+      if (stagedRefs.length === 0) {
+        if (!nextFiles.some((file) => file.kind === "uploading")) {
+          draftAttachmentBatchIdRef.current = null;
+        }
+        draftControls.setAttachmentState(null);
+        return;
+      }
+
+      const batchId = stagedRefs[0]?.batchId;
+      if (!batchId) {
+        draftControls.setAttachmentState(null);
+        return;
+      }
+
+      draftAttachmentBatchIdRef.current = batchId;
+      draftControls.setAttachmentState({
+        batchId,
+        refs: stagedRefs,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [draftControls],
+  );
+
+  const setPendingFiles = useCallback(
+    (
+      updater:
+        | PendingFile[]
+        | ((previous: readonly PendingFile[]) => readonly PendingFile[]),
+      options?: {
+        persistDraft?: boolean;
+        revokeRemovedPreviewUrls?: boolean;
+      },
+    ) => {
+      const previous = pendingFilesRef.current;
+      const nextValue =
+        typeof updater === "function" ? updater(previous) : updater;
+      if (nextValue === previous) {
+        return;
+      }
+      const next = [...nextValue];
+
+      if (options?.revokeRemovedPreviewUrls) {
+        const nextIds = new Set(next.map((file) => file.id));
+        revokePendingFilePreviewUrls(
+          previous.filter((file) => !nextIds.has(file.id)),
+        );
+      }
+
+      pendingFilesRef.current = next;
+      setPendingFilesState(next);
+      if (options?.persistDraft !== false) {
+        writeDraftAttachmentState(next);
+      }
+    },
+    [writeDraftAttachmentState],
+  );
+
+  useEffect(() => {
+    return () => {
+      revokePendingFilePreviewUrls(pendingFilesRef.current);
+    };
+  }, []);
+
+  const ensureDraftAttachmentBatchId = useCallback(() => {
+    const existing =
+      draftControls.getAttachmentState()?.batchId ??
+      draftAttachmentBatchIdRef.current;
+    if (existing) {
+      draftAttachmentBatchIdRef.current = existing;
+      return existing;
+    }
+    const batchId = generateUUID();
+    draftAttachmentBatchIdRef.current = batchId;
+    return batchId;
+  }, [draftControls]);
+
+  const hydrateDraftAttachments = useCallback(async () => {
+    if (!supportsProjectQueue) {
+      return;
+    }
+
+    const state = draftControls.getAttachmentState();
+    if (!state) {
+      setPendingFiles(
+        (prev) =>
+          prev.some(isPendingStagedFile)
+            ? prev.filter((file) => !isPendingStagedFile(file))
+            : prev,
+        {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        },
+      );
+      return;
+    }
+
+    if (
+      pendingFilesRef.current.some(
+        (file) => file.kind === "uploading" || isPendingStagedFile(file),
+      )
+    ) {
+      return;
+    }
+
+    const hydrationId = draftAttachmentHydrationRef.current + 1;
+    draftAttachmentHydrationRef.current = hydrationId;
+
+    try {
+      const refs = await validateDraftAttachmentRefs(sourceTransport, state);
+      if (draftAttachmentHydrationRef.current !== hydrationId) {
+        return;
+      }
+
+      const nextState: DraftAttachmentState | null =
+        refs.length > 0
+          ? {
+              batchId: refs[0]?.batchId ?? state.batchId,
+              refs,
+              updatedAt: new Date().toISOString(),
+            }
+          : null;
+      draftAttachmentBatchIdRef.current = nextState?.batchId ?? null;
+      draftControls.setAttachmentState(nextState);
+      setPendingFiles(
+        (prev) => [
+          ...prev.filter((file) => !isPendingStagedFile(file)),
+          ...refs.map(
+            (ref): PendingStagedFile => ({
+              ...ref,
+              kind: "staged",
+            }),
+          ),
+        ],
+        {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        },
+      );
+    } catch (err) {
+      if (draftAttachmentHydrationRef.current !== hydrationId) {
+        return;
+      }
+      console.warn(
+        "[NewSessionForm] Failed to validate draft attachments:",
+        err,
+      );
+      draftControls.setAttachmentState(null);
+      setPendingFiles(
+        (prev) =>
+          prev.some(isPendingStagedFile)
+            ? prev.filter((file) => !isPendingStagedFile(file))
+            : prev,
+        {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        },
+      );
+      showToast(t("sessionDraftAttachmentsUnavailable"), "info");
+    }
+  }, [
+    sourceTransport,
+    draftControls,
+    setPendingFiles,
+    showToast,
+    supportsProjectQueue,
+    t,
+  ]);
+
+  useEffect(() => {
+    void newSessionDraftKey;
+    void hydrateDraftAttachments();
+  }, [hydrateDraftAttachments, newSessionDraftKey]);
+
+  const addPendingFiles = useCallback(
+    (files: readonly File[]) => {
+      if (files.length === 0) {
+        return;
+      }
+      const pendingNames = pendingFilesRef.current.map(getPendingFileName);
+      const uniqueFiles = makeAttachmentFileNamesUnique(files, pendingNames);
+
+      const batchId = supportsProjectQueue
+        ? ensureDraftAttachmentBatchId()
+        : null;
+
+      if (!batchId) {
+        const localFiles = uniqueFiles.map(
+          (file): PendingLocalFile => ({
+            kind: "local",
+            id: `pending-${generateUUID()}`,
+            file,
+            previewUrl: file.type.startsWith("image/")
+              ? URL.createObjectURL(file)
+              : undefined,
+          }),
+        );
+        setPendingFiles((prev) => [...prev, ...localFiles]);
+        return;
+      }
+
+      for (const file of uniqueFiles) {
+        const tempId = `pending-${generateUUID()}`;
+        const previewUrl = file.type.startsWith("image/")
+          ? URL.createObjectURL(file)
+          : undefined;
+        const uploadingFile: PendingUploadingFile = {
+          kind: "uploading",
+          id: tempId,
+          originalName: file.name,
+          size: file.size,
+          mimeType: file.type || "application/octet-stream",
+          ...(previewUrl ? { previewUrl } : {}),
+        };
+        setPendingFiles((prev) => [...prev, uploadingFile]);
+
+        const uploadPromise = (async () => {
+          const preparedImage = file.type.startsWith("image/")
+            ? await prepareImageUpload(
+                file,
+                getAttachmentUploadLongEdgePx(attachmentQuality),
+              )
+            : { file };
+          const uploadFile = preparedImage.file;
+          const stagedRef = await sourceTransport.uploadStagedAttachment(
+            uploadFile,
+            {
+              batchId,
+              onProgress: (bytesUploaded) => {
+                setUploadProgress((prev) => ({
+                  ...prev,
+                  [tempId]: {
+                    uploaded: bytesUploaded,
+                    total: uploadFile.size,
+                  },
+                }));
+              },
+              ...(preparedImage.width !== undefined &&
+              preparedImage.height !== undefined
+                ? {
+                    imageDimensions: {
+                      width: preparedImage.width,
+                      height: preparedImage.height,
+                    },
+                  }
+                : {}),
+            },
+          );
+          return {
+            ...stagedRef,
+            originalName: file.name,
+            kind: "staged",
+            ...(previewUrl ? { previewUrl } : {}),
+          } satisfies PendingStagedFile;
+        })()
+          .then(
+            (stagedFile) => {
+              const wasRemoved =
+                removedPendingUploadIdsRef.current.delete(tempId) ||
+                !pendingFilesRef.current.some((item) => item.id === tempId);
+              if (wasRemoved) {
+                if (previewUrl) {
+                  URL.revokeObjectURL(previewUrl);
+                }
+                void deleteDraftAttachmentRef(
+                  sourceTransport,
+                  stagedFile.batchId,
+                  stagedFile.id,
+                ).catch((err) => {
+                  console.warn(
+                    "[NewSessionForm] Failed to delete staged attachment:",
+                    err,
+                  );
+                });
+                return null;
+              }
+
+              setPendingFiles((prev) =>
+                prev.map((item) => (item.id === tempId ? stagedFile : item)),
+              );
+              return stagedFile;
+            },
+            (err) => {
+              const wasRemoved =
+                removedPendingUploadIdsRef.current.delete(tempId) ||
+                !pendingFilesRef.current.some((item) => item.id === tempId);
+              if (!wasRemoved) {
+                console.error("Failed to upload staged file:", err);
+                const uploadMessage =
+                  err instanceof Error ? err.message : String(err);
+                showToast(
+                  t("newSessionUploadError", { message: uploadMessage }),
+                  "error",
+                );
+                setPendingFiles(
+                  (prev) => prev.filter((item) => item.id !== tempId),
+                  { revokeRemovedPreviewUrls: true },
+                );
+              }
+              return null;
+            },
+          )
+          .finally(() => {
+            setUploadProgress((prev) => {
+              const { [tempId]: _removed, ...rest } = prev;
+              return rest;
+            });
+            pendingStagedUploadsRef.current.delete(tempId);
+          });
+
+        pendingStagedUploadsRef.current.set(tempId, uploadPromise);
+      }
+    },
+    [
+      attachmentQuality,
+      sourceTransport,
+      ensureDraftAttachmentBatchId,
+      setPendingFiles,
+      showToast,
+      supportsProjectQueue,
+      t,
+    ],
+  );
 
   // Fetch available providers
   const { providers, loading: providersLoading } = useProviders();
@@ -451,6 +689,10 @@ export function NewSessionForm({
     isLoading: settingsLoading,
     updateSetting: updateServerSetting,
   } = useServerSettings();
+  const newSessionDefaultsRef = useRef(settings?.newSessionDefaults);
+  useEffect(() => {
+    newSessionDefaultsRef.current = settings?.newSessionDefaults;
+  }, [settings?.newSessionDefaults]);
 
   // Fetch remote executors
   const { executors: remoteExecutors, loading: executorsLoading } =
@@ -475,11 +717,7 @@ export function NewSessionForm({
     off: t("recapModeOff"),
     native: t("recapModeNative"),
     "side-session": t("recapModeSideSession"),
-  };
-  const recapModeDescriptions: Record<RecapMode, string> = {
-    off: t("recapModeOffDescription"),
-    native: t("recapModeNativeDescription"),
-    "side-session": t("recapModeSideSessionDescription"),
+    fork: t("recapModeFork"),
   };
   const promptSuggestionModeLabels: Record<PromptSuggestionMode, string> = {
     off: t("promptSuggestionModeOff"),
@@ -496,13 +734,9 @@ export function NewSessionForm({
     (p) => p.name === selectedProvider,
   );
   const availableModels: ModelInfo[] = selectedProviderInfo?.models ?? [];
-  const helperTargetModelOptions = useMemo(
-    () => helperTargetsToModelOptions(settings?.helperTargets),
-    [settings?.helperTargets],
-  );
   const helperSelectableModels = useMemo(
-    () => [...helperTargetModelOptions, ...availableModels],
-    [availableModels, helperTargetModelOptions],
+    () => [...availableModels],
+    [availableModels],
   );
   const helperSideModelOptions: FilterOption<string>[] = useMemo(
     () => [
@@ -541,7 +775,7 @@ export function NewSessionForm({
     [selectedModelInfo, selectedProviderInfo, t],
   );
   const effectiveEffortLevel = resolveSupportedEffortLevel(
-    effortLevel,
+    selectedEffortLevel,
     effortOptions,
   );
   const thinkingModeOptions = useMemo(
@@ -554,7 +788,7 @@ export function NewSessionForm({
     [effortOptions, selectedModelInfo, selectedProviderInfo],
   );
   const effectiveThinkingMode = resolveSupportedThinkingMode(
-    thinkingMode,
+    selectedThinkingMode,
     thinkingModeOptions,
   );
   const showThinkingControls =
@@ -567,15 +801,18 @@ export function NewSessionForm({
   const effectivePermissionMode = permissionModeOptions.includes(mode)
     ? mode
     : "default";
-  const selectedProviderDisplayName =
-    selectedProviderInfo?.displayName ?? selectedProvider ?? "";
-  const availableRecapModes = RECAP_MODE_ORDER.filter((modeValue) =>
-    providerSupportsRecapMode(selectedProviderInfo, modeValue),
+  const getLegacyProviderDefaultSeed = useCallback(
+    (providerName: ProviderName) => ({
+      model:
+        providerName === "claude" ? resolveModel(getModelSetting()) : undefined,
+      thinkingMode: legacyThinkingMode,
+      effortLevel: legacyEffortLevel,
+    }),
+    [legacyEffortLevel, legacyThinkingMode],
   );
-  const availablePromptSuggestionModes = PROMPT_SUGGESTION_MODE_ORDER.filter(
-    (modeValue) =>
-      providerSupportsPromptSuggestionMode(selectedProviderInfo, modeValue),
-  );
+  const availableRecapModes = RECAP_MODE_ORDER;
+  const availablePromptSuggestionModes = PROMPT_SUGGESTION_MODE_ORDER;
+  const showHelperSideModel = selectedRecapMode === "side-session";
   const sortedProjects = useMemo(
     () => sortProjectsForChooser(projects, recentProjectIds),
     [projects, recentProjectIds],
@@ -628,6 +865,31 @@ export function NewSessionForm({
   const hasCustomProjectPath =
     Boolean(activeProjectSearchQuery) && exactProjectMatch === null;
   const currentProjectSelection = exactProjectMatch ?? selectedProject ?? null;
+  const projectQueueTargetProjectId =
+    !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
+      ? currentProjectSelection.id
+      : null;
+  const projectQueueProjectIds = useMemo(
+    () => (projectQueueTargetProjectId ? [projectQueueTargetProjectId] : []),
+    [projectQueueTargetProjectId],
+  );
+  const projectQueues = useProjectQueues(projectQueueProjectIds);
+  const activeProjectSessionIds = useActiveProjectSessionIds(
+    projectQueueTargetProjectId,
+  );
+  const projectQueueItemCount = projectQueueTargetProjectId
+    ? (projectQueues.queuesByProject[projectQueueTargetProjectId]?.length ?? 0)
+    : 0;
+  const projectQueueBlockingCount =
+    currentProjectSelection?.projectQueueBlockingCount ?? null;
+  const showProjectQueueAction =
+    supportsProjectQueue &&
+    shouldShowProjectQueueAffordance({
+      projectId: projectQueueTargetProjectId,
+      activeProjectSessionIds,
+      projectQueueBlockingCount,
+      projectQueueItemCount,
+    });
   const isDetachedProject =
     !hasCustomProjectPath && currentProjectSelection === null;
   const projectSummaryTitle =
@@ -639,6 +901,82 @@ export function NewSessionForm({
     hasCustomProjectPath || currentProjectSelection
       ? shortenPath(projectSummaryMeta)
       : projectSummaryMeta;
+  const workstreamSelectionProjectId =
+    !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
+      ? currentProjectSelection.id
+      : null;
+  const workstreamSelectionEnabled = settings?.workstreamsEnabled === true;
+
+  useEffect(() => {
+    setSelectedWorkstreamId(null);
+    if (!workstreamSelectionEnabled || !workstreamSelectionProjectId) {
+      setWorkstreamsState({
+        status: "idle",
+        projectId: null,
+        workstreams: [],
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setWorkstreamsState({
+      status: "loading",
+      projectId: workstreamSelectionProjectId,
+      workstreams: [],
+    });
+
+    api
+      .getProjectWorkstreams(workstreamSelectionProjectId)
+      .then((response) => {
+        if (cancelled) return;
+        setWorkstreamsState({
+          status: "ready",
+          projectId: workstreamSelectionProjectId,
+          workstreams: response.workstreams,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWorkstreamsState({
+          status: "error",
+          projectId: workstreamSelectionProjectId,
+          workstreams: [],
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workstreamSelectionEnabled, workstreamSelectionProjectId]);
+
+  const workstreamOptions =
+    workstreamsState.status === "ready" &&
+    workstreamsState.projectId === workstreamSelectionProjectId
+      ? workstreamsState.workstreams.filter(
+          (workstream) =>
+            workstream.kind === "main" || workstream.status === "active",
+        )
+      : [];
+  const showWorkstreamChooser =
+    workstreamSelectionEnabled &&
+    workstreamSelectionProjectId !== null &&
+    workstreamOptions.length > 1;
+  const selectedWorkstream =
+    workstreamOptions.find(
+      (workstream) => workstream.id === selectedWorkstreamId,
+    ) ??
+    workstreamOptions.find((workstream) => workstream.kind === "main") ??
+    null;
+  const selectedCheckoutWorkstreamId =
+    selectedWorkstream?.kind === "checkout" ? selectedWorkstream.id : undefined;
+
+  const handleWorkstreamSelect = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const nextValue = event.currentTarget.value;
+      setSelectedWorkstreamId(nextValue ? (nextValue as WorkstreamId) : null);
+    },
+    [],
+  );
 
   const handleProjectOptionSelect = useCallback(
     (project: Project) => {
@@ -742,7 +1080,6 @@ export function NewSessionForm({
     activeProjectSearchQuery,
     projectSuggestions,
     projectsLoading,
-    setIsProjectChooserExpanded,
     t,
   ]);
 
@@ -796,28 +1133,25 @@ export function NewSessionForm({
         : null;
     const preferredPromptSuggestionMode =
       getPreferredPromptSuggestionMode(savedDefaults);
-    preferredPromptSuggestionModeRef.current = preferredPromptSuggestionMode;
+    const initialProviderDefaults = getProviderSessionDefaults(
+      savedDefaults,
+      initialProvider.name,
+      getLegacyProviderDefaultSeed(initialProvider.name),
+    );
     setSelectedProvider(initialProvider.name);
     setSelectedModel(
       requestedModelId ??
-        getPreferredProviderModelId(
-          initialProvider.name,
-          initialModels,
-          savedDefaults,
-        ),
+        getPreferredModelId(initialModels, initialProviderDefaults.model),
     );
-    setSelectedRecapMode(getDefaultRecapMode(initialProvider, savedDefaults));
-    setSelectedPromptSuggestionMode(
-      resolvePromptSuggestionMode(
-        initialProvider,
-        preferredPromptSuggestionMode,
-      ),
+    setSelectedThinkingMode(initialProviderDefaults.thinkingMode ?? "off");
+    setSelectedEffortLevel(initialProviderDefaults.effortLevel ?? "high");
+    setSelectedRecapMode(getPreferredRecapMode(initialProvider, savedDefaults));
+    setRecapAfterSeconds(
+      normalizeRecapAfterSeconds(savedDefaults?.recapAfterSeconds),
     );
+    setSelectedPromptSuggestionMode(preferredPromptSuggestionMode);
     setHelperSideModel(
-      getDefaultHelperSideModel(
-        [...helperTargetModelOptions, ...initialModels],
-        savedDefaults,
-      ),
+      getDefaultHelperSideModel(initialModels, initialProviderDefaults),
     );
     setMode(savedDefaults?.permissionMode ?? "default");
   }, [
@@ -826,7 +1160,7 @@ export function NewSessionForm({
     providersLoading,
     settings,
     settingsLoading,
-    helperTargetModelOptions,
+    getLegacyProviderDefaultSeed,
     preferredProvider,
     preferredModel,
   ]);
@@ -841,37 +1175,55 @@ export function NewSessionForm({
     setProjectInput((prev) => prev || (selectedProject?.path ?? ""));
   }, [projectId, selectedProject]);
 
+  useEffect(() => {
+    if (!isProjectChooserExpanded) return;
+
+    const closeIfOutsideProjectChooser = (target: EventTarget | null) => {
+      if (!(target instanceof Node)) return;
+      const projectChooser = projectChooserRef.current;
+      if (projectChooser && !projectChooser.contains(target)) {
+        setIsProjectChooserExpanded(false);
+      }
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      closeIfOutsideProjectChooser(event.target);
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      closeIfOutsideProjectChooser(event.target);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("focusin", handleFocusIn, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+    };
+  }, [isProjectChooserExpanded]);
+
   // When provider changes, reset model based on user settings
   const handleProviderSelect = (providerName: ProviderName) => {
     hasUserCustomizedDefaultsRef.current = true;
     setSelectedProvider(providerName);
     const provider = providers.find((p) => p.name === providerName);
     const providerModels = provider?.models ?? [];
+    const providerDefaults = getProviderSessionDefaults(
+      settings?.newSessionDefaults,
+      providerName,
+      getLegacyProviderDefaultSeed(providerName),
+    );
     if (provider?.models && provider.models.length > 0) {
       setSelectedModel(
-        getPreferredProviderModelId(
-          providerName,
-          providerModels,
-          settings?.newSessionDefaults,
-        ),
+        getPreferredModelId(providerModels, providerDefaults.model),
       );
     } else {
       setSelectedModel(null);
     }
-    setSelectedRecapMode(
-      getDefaultRecapMode(provider, settings?.newSessionDefaults),
-    );
-    setSelectedPromptSuggestionMode(
-      resolvePromptSuggestionMode(
-        provider,
-        preferredPromptSuggestionModeRef.current,
-      ),
-    );
+    setSelectedThinkingMode(providerDefaults.thinkingMode ?? "off");
+    setSelectedEffortLevel(providerDefaults.effortLevel ?? "high");
     setHelperSideModel(
-      getDefaultHelperSideModel(
-        [...helperTargetModelOptions, ...providerModels],
-        settings?.newSessionDefaults,
-      ),
+      getDefaultHelperSideModel(providerModels, providerDefaults),
     );
   };
 
@@ -976,24 +1328,31 @@ export function NewSessionForm({
   useLayoutEffect(() => {
     const pending = pendingTextareaSelectionRef.current;
     const textarea = textareaRef.current;
-    if (!pending || !textarea || textarea.value !== pending.value) return;
+    if (
+      !pending ||
+      !textarea ||
+      message !== pending.value ||
+      textarea.value !== pending.value
+    ) {
+      return;
+    }
     pendingTextareaSelectionRef.current = null;
     pending.restore(textarea);
   }, [message]);
 
   // Check for opt-in new-session prefill on mount.
   useEffect(() => {
-    const prefill = getNewSessionPrefill();
+    const prefill = getNewSessionPrefill(clientSummarySourceKey);
     if (prefill) {
       setMessage(prefill);
-      clearNewSessionPrefill();
+      clearNewSessionPrefill(clientSummarySourceKey);
       // Focus and move cursor to end
       if (textareaRef.current) {
         textareaRef.current.focus();
         textareaRef.current.setSelectionRange(prefill.length, prefill.length);
       }
     }
-  }, [setMessage]);
+  }, [clientSummarySourceKey, setMessage]);
 
   const handleProjectInputKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -1009,38 +1368,38 @@ export function NewSessionForm({
         setIsProjectChooserExpanded(false);
       }
     },
-    [
-      exactProjectMatch,
-      handleProjectOptionSelect,
-      normalizedProjectInput,
-      setIsProjectChooserExpanded,
-    ],
+    [exactProjectMatch, handleProjectOptionSelect, normalizedProjectInput],
   );
 
   const handleFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files?.length) return;
 
-    const newPendingFiles: PendingFile[] = Array.from(files).map((file) => ({
-      id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
-      previewUrl: file.type.startsWith("image/")
-        ? URL.createObjectURL(file)
-        : undefined,
-    }));
-
-    setPendingFiles((prev) => [...prev, ...newPendingFiles]);
+    addPendingFiles(Array.from(files));
     e.target.value = ""; // Reset for re-selection
   };
 
   const handleRemoveFile = (id: string) => {
-    setPendingFiles((prev) => {
-      const file = prev.find((f) => f.id === id);
-      if (file?.previewUrl) {
-        URL.revokeObjectURL(file.previewUrl);
-      }
-      return prev.filter((f) => f.id !== id);
+    const removed = pendingFilesRef.current.find((file) => file.id === id);
+    if (removed?.kind === "uploading") {
+      removedPendingUploadIdsRef.current.add(id);
+    }
+    setPendingFiles((prev) => prev.filter((file) => file.id !== id), {
+      revokeRemovedPreviewUrls: true,
     });
+
+    if (removed && isPendingStagedFile(removed)) {
+      deleteDraftAttachmentRef(
+        sourceTransport,
+        removed.batchId,
+        removed.id,
+      ).catch((err) => {
+        console.warn(
+          "[NewSessionForm] Failed to delete staged attachment:",
+          err,
+        );
+      });
+    }
   };
 
   const handleModeSelect = (selectedMode: PermissionMode) => {
@@ -1055,39 +1414,477 @@ export function NewSessionForm({
   // avoid a toast on every click.
   useEffect(() => {
     if (!hasUserCustomizedDefaultsRef.current || !selectedProvider) return;
+    const { helperSideModel: _legacyHelperSideModel, ...baseDefaults } =
+      (newSessionDefaultsRef.current ?? {}) as NonNullable<
+        typeof newSessionDefaultsRef.current
+      > & { helperSideModel?: string };
     void Promise.resolve(
       updateServerSetting("newSessionDefaults", {
-        provider: selectedProvider ?? undefined,
-        model: selectedModel ?? undefined,
-        permissionMode: effectivePermissionMode,
-        recapMode: selectedRecapMode,
-        promptSuggestionMode: preferredPromptSuggestionModeRef.current,
-        helperSideModel,
+        ...withProviderSessionDefaults(
+          {
+            ...baseDefaults,
+            provider: selectedProvider ?? undefined,
+            // Permission mode is an all-provider preference. Keep an
+            // unsupported saved value such as Auto intact while the visible /
+            // launch-time mode falls back to Ask for the selected model.
+            permissionMode: mode,
+            recapMode: selectedRecapMode,
+            recapAfterSeconds,
+            promptSuggestionMode: selectedPromptSuggestionMode,
+          },
+          selectedProvider,
+          {
+            model: selectedModel ?? undefined,
+            thinkingMode: selectedThinkingMode,
+            effortLevel: selectedEffortLevel,
+            helperSideModel,
+          },
+          getLegacyProviderDefaultSeed(selectedProvider),
+        ),
       }),
     ).catch((err) => {
       console.error("Failed to save new session defaults:", err);
     });
   }, [
-    effectivePermissionMode,
+    getLegacyProviderDefaultSeed,
     helperSideModel,
+    mode,
+    recapAfterSeconds,
     selectedModel,
+    selectedEffortLevel,
     selectedProvider,
     selectedPromptSuggestionMode,
     selectedRecapMode,
+    selectedThinkingMode,
     updateServerSetting,
   ]);
 
-  const handleStartSession = async (messageOverride?: unknown) => {
+  const resolveProjectIdForSubmission = useCallback(
+    async (trimmedProjectInput: string): Promise<string | null> => {
+      let resolvedProjectId =
+        trimmedProjectInput &&
+        currentProjectSelection?.path === trimmedProjectInput
+          ? currentProjectSelection.id
+          : (findProjectByInput(projects, trimmedProjectInput)?.id ?? null);
+
+      if (trimmedProjectInput && !resolvedProjectId) {
+        const addProjectResult = await api.addProject(trimmedProjectInput);
+        resolvedProjectId = addProjectResult.project.id ?? null;
+        if (!resolvedProjectId) return null;
+        lastSyncedProjectIdRef.current = resolvedProjectId;
+        onProjectChange?.(resolvedProjectId);
+      }
+
+      return resolvedProjectId;
+    },
+    [currentProjectSelection, onProjectChange, projects],
+  );
+
+  const resolvePendingAttachmentsForSession = useCallback(
+    async (activeProjectId: string, sessionId: string) => {
+      const pendingUploads = [...pendingStagedUploadsRef.current.values()];
+      if (pendingUploads.length > 0) {
+        await Promise.all(pendingUploads);
+      }
+
+      const currentFiles = pendingFilesRef.current;
+      const uploadedFiles: UploadedFile[] = [];
+      const localFiles = currentFiles.filter(isPendingLocalFile);
+      for (const pendingFile of localFiles) {
+        try {
+          const preparedImage = pendingFile.file.type.startsWith("image/")
+            ? await prepareImageUpload(
+                pendingFile.file,
+                getAttachmentUploadLongEdgePx(attachmentQuality),
+              )
+            : { file: pendingFile.file };
+          const uploadFile = preparedImage.file;
+          const uploadedFile = await sourceTransport.upload(
+            activeProjectId,
+            sessionId,
+            uploadFile,
+            {
+              onProgress: (bytesUploaded) => {
+                setUploadProgress((prev) => ({
+                  ...prev,
+                  [pendingFile.id]: {
+                    uploaded: bytesUploaded,
+                    total: uploadFile.size,
+                  },
+                }));
+              },
+              ...(preparedImage.width !== undefined &&
+              preparedImage.height !== undefined
+                ? {
+                    imageDimensions: {
+                      width: preparedImage.width,
+                      height: preparedImage.height,
+                    },
+                  }
+                : {}),
+            },
+          );
+          uploadedFiles.push(uploadedFile);
+        } catch (uploadErr) {
+          console.error("Failed to upload file:", uploadErr);
+          const uploadMessage =
+            uploadErr instanceof Error ? uploadErr.message : "";
+          showToast(
+            t("newSessionUploadError", { message: uploadMessage }),
+            "error",
+          );
+        }
+      }
+
+      const stagedRefs = currentFiles
+        .filter(isPendingStagedFile)
+        .map(toPersistedStagedAttachmentRef);
+      if (stagedRefs.length === 0) {
+        return uploadedFiles;
+      }
+
+      const batchId = stagedRefs[0]?.batchId;
+      if (!batchId || stagedRefs.some((ref) => ref.batchId !== batchId)) {
+        throw new Error("Draft attachments are split across staging batches");
+      }
+
+      const materializedFiles = await materializeDraftAttachmentsForSession(
+        sourceTransport,
+        activeProjectId,
+        sessionId,
+        {
+          batchId,
+          refs: stagedRefs,
+          updatedAt: new Date().toISOString(),
+        },
+      );
+      return [...uploadedFiles, ...materializedFiles];
+    },
+    [attachmentQuality, sourceTransport, showToast, t],
+  );
+
+  const handleStartSession = useCallback(
+    async (messageOverride?: unknown) => {
+      const override =
+        typeof messageOverride === "string" ? messageOverride : undefined;
+      // Stop voice recording and get any pending interim text unless the caller
+      // already supplied the finalized text from the STT backend.
+      const pendingVoice =
+        override === undefined
+          ? (voiceButtonRef.current?.stopAndFinalize() ?? "")
+          : "";
+
+      // Combine committed text with any pending voice text
+      let finalMessage = (override ?? message).trimEnd();
+      if (pendingVoice) {
+        finalMessage = finalMessage
+          ? `${finalMessage} ${pendingVoice}`
+          : pendingVoice;
+      }
+
+      const hasContent = finalMessage.trim() || pendingFiles.length > 0;
+      if (!hasContent || isStarting) return;
+
+      const trimmedMessage = finalMessage.trim();
+      const trimmedProjectInput = normalizeProjectInput(projectInput);
+      const actionAtMs = Date.now();
+      const clientTimestamp = getServerClockTimestamp(actionAtMs);
+
+      setInterimTranscript("");
+      setIsStarting(true);
+
+      try {
+        let resolvedProjectId =
+          await resolveProjectIdForSubmission(trimmedProjectInput);
+
+        let sessionId: string;
+        let processId: string;
+        const sessionMode = effectivePermissionMode;
+        let initialPermissionMode: PermissionMode = sessionMode;
+        let initialModeVersion = 0;
+        const uploadedFiles: UploadedFile[] = [];
+
+        // Get model and thinking settings
+        const thinking = toThinkingOption(
+          effectiveThinkingMode,
+          effectiveEffortLevel,
+        );
+        const effectiveRecapMode = resolveRecapMode(
+          selectedProviderInfo,
+          selectedRecapMode,
+        );
+        const effectivePromptSuggestionMode = resolvePromptSuggestionMode(
+          selectedProviderInfo,
+          selectedPromptSuggestionMode,
+        );
+        // Display preference for thinking rows; sent for compatibility while the
+        // server requests provider summaries independently.
+        const showThinking = getShowThinkingSetting();
+        const sessionOptions = {
+          mode: sessionMode,
+          model: selectedModel ?? undefined,
+          thinking,
+          showThinking,
+          provider: selectedProvider ?? undefined,
+          executor: selectedExecutor ?? undefined,
+          recapMode: effectiveRecapMode,
+          recapAfterSeconds,
+          promptSuggestionMode: effectivePromptSuggestionMode,
+          helperSideModel,
+          workstreamId: selectedCheckoutWorkstreamId,
+        };
+        logSessionUiTrace("new-session-submit", {
+          projectId: resolvedProjectId ?? null,
+          detached: !resolvedProjectId,
+          mode: sessionMode,
+          model: selectedModel ?? null,
+          thinking,
+          provider: selectedProvider ?? null,
+          executor: selectedExecutor ?? null,
+          recapMode: effectiveRecapMode,
+          recapAfterSeconds,
+          promptSuggestionMode: effectivePromptSuggestionMode,
+          helperSideModel,
+          textLength: trimmedMessage.length,
+          pendingFileCount: pendingFiles.length,
+          clientTimestamp,
+          serverOffsetMs: getEstimatedServerOffsetMs(),
+        });
+
+        if (pendingFiles.length > 0) {
+          // Two-phase flow: create session first, then upload to real session folder
+          // Step 1: Create the session without sending a message
+          const createRequestSentAtMs = Date.now();
+          const createResult = resolvedProjectId
+            ? await api.createSession(resolvedProjectId, sessionOptions)
+            : await api.createDetachedSession(sessionOptions);
+          const createResponseReceivedAtMs = Date.now();
+          const createTiming = recordServerClockSample({
+            clientRequestStartMs: createRequestSentAtMs,
+            clientResponseEndMs: createResponseReceivedAtMs,
+            serverTimestamp: createResult.serverTimestamp,
+          });
+          const activeProjectId = createResult.projectId;
+          sessionId = createResult.sessionId;
+          processId = createResult.processId;
+          initialPermissionMode = createResult.permissionMode;
+          initialModeVersion = createResult.modeVersion;
+          resolvedProjectId = activeProjectId;
+          logSessionUiTrace("new-session-created", {
+            sessionId,
+            processId,
+            projectId: resolvedProjectId,
+            thinking,
+            mode: sessionMode,
+            serverTimestamp: createResult.serverTimestamp,
+            requestRttMs: createTiming?.roundTripMs ?? null,
+            estimatedServerOffsetMs: createTiming?.serverOffsetMs ?? null,
+          });
+
+          // Step 2: Materialize staged draft refs, or use the legacy final
+          // session upload fallback for files selected before capability support
+          // was known.
+          uploadedFiles.push(
+            ...(await resolvePendingAttachmentsForSession(
+              activeProjectId,
+              sessionId,
+            )),
+          );
+
+          // Step 3: Send the first message with attachments
+          const queueRequestSentAtMs = Date.now();
+          const queueResult = await api.queueMessage(
+            sessionId,
+            trimmedMessage,
+            sessionMode,
+            uploadedFiles.length > 0 ? uploadedFiles : undefined,
+            undefined, // tempId
+            thinking, // Pass the captured thinking setting to avoid process restart
+            undefined, // deferred
+            clientTimestamp,
+            undefined, // messageMetadata
+            undefined, // serviceTier
+            showThinking,
+          );
+          const queueResponseReceivedAtMs = Date.now();
+          const queueTiming = recordServerClockSample({
+            clientRequestStartMs: queueRequestSentAtMs,
+            clientResponseEndMs: queueResponseReceivedAtMs,
+            serverTimestamp: queueResult.serverTimestamp,
+          });
+          logSessionUiTrace("new-session-queued", {
+            sessionId,
+            processId,
+            projectId: resolvedProjectId,
+            clientTimestamp,
+            serverTimestamp: queueResult.serverTimestamp,
+            uploadWaitMs: queueRequestSentAtMs - actionAtMs,
+            requestRttMs: queueTiming?.roundTripMs ?? null,
+            estimatedServerOffsetMs: queueTiming?.serverOffsetMs ?? null,
+            clientToServerLatencyMs: measureServerLatencyMs(
+              clientTimestamp,
+              queueResult.serverTimestamp,
+            ),
+          });
+        } else {
+          // No files - use single-step flow for efficiency
+          const startRequestSentAtMs = Date.now();
+          const result = resolvedProjectId
+            ? await api.startSession(
+                resolvedProjectId,
+                trimmedMessage,
+                sessionOptions,
+                undefined,
+                clientTimestamp,
+              )
+            : await api.startDetachedSession(
+                trimmedMessage,
+                sessionOptions,
+                undefined,
+                clientTimestamp,
+              );
+          const startResponseReceivedAtMs = Date.now();
+          const startTiming = recordServerClockSample({
+            clientRequestStartMs: startRequestSentAtMs,
+            clientResponseEndMs: startResponseReceivedAtMs,
+            serverTimestamp: result.serverTimestamp,
+          });
+          sessionId = result.sessionId;
+          processId = result.processId;
+          initialPermissionMode = result.permissionMode;
+          initialModeVersion = result.modeVersion;
+          resolvedProjectId = result.projectId;
+          logSessionUiTrace("new-session-started", {
+            sessionId,
+            processId,
+            projectId: resolvedProjectId,
+            thinking,
+            mode: sessionMode,
+            provider: selectedProvider ?? null,
+            model: selectedModel ?? null,
+            clientTimestamp,
+            serverTimestamp: result.serverTimestamp,
+            requestRttMs: startTiming?.roundTripMs ?? null,
+            estimatedServerOffsetMs: startTiming?.serverOffsetMs ?? null,
+            clientToServerLatencyMs: measureServerLatencyMs(
+              clientTimestamp,
+              result.serverTimestamp,
+            ),
+          });
+        }
+
+        if (!resolvedProjectId) {
+          throw new Error("Missing project ID for new session");
+        }
+
+        // Clean up preview URLs
+        setPendingFiles([], {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        });
+
+        draftControls.clearDraft();
+        // Pass initial status so SessionPage can connect SSE immediately
+        // without waiting for getSession to complete
+        // Also pass initial message as optimistic title (session name = first message)
+        // Pass model/provider so ProviderBadge can render immediately
+        navigate(
+          `${basePath}/projects/${resolvedProjectId}/sessions/${sessionId}`,
+          {
+            state: createSessionNavigationState({
+              initialStatus: {
+                owner: "self",
+                processId,
+                permissionMode: initialPermissionMode,
+                modeVersion: initialModeVersion,
+                recapAfterSeconds,
+              },
+              initialTitle: trimmedMessage,
+              initialModel: selectedModel ?? undefined,
+              initialProvider: selectedProvider ?? undefined,
+            }),
+          },
+        );
+      } catch (err) {
+        console.error("Failed to start session:", err);
+        draftControls.restoreFromStorage();
+        setIsStarting(false);
+
+        // Show user-visible error message
+        let errorMessage = t("newSessionStartError");
+        if (err instanceof Error) {
+          const providerDisplayName =
+            selectedProviderInfo?.displayName ?? selectedProvider ?? "Provider";
+          const lowerMessage = err.message.toLowerCase();
+          const status = (err as Error & { status?: number }).status;
+
+          // Check for specific error types
+          if (err.message.includes("Queue is full")) {
+            errorMessage = t("newSessionServerBusy");
+          } else if (
+            lowerMessage.includes("invalid authentication credentials") ||
+            lowerMessage.includes("authentication_error") ||
+            lowerMessage.includes("please run /login") ||
+            (status === 401 &&
+              (selectedProvider === "claude" ||
+                selectedProvider === "gemini" ||
+                selectedProvider === "codex"))
+          ) {
+            errorMessage = t("newSessionProviderAuthError", {
+              provider: providerDisplayName,
+            });
+          } else if (err.message.includes("503")) {
+            errorMessage = t("newSessionServerCapacity");
+          } else if (err.message.includes("404")) {
+            errorMessage = t("newSessionProjectNotFound");
+          } else if (
+            err.message.includes("fetch") ||
+            err.message.includes("network")
+          ) {
+            errorMessage = t("newSessionNetworkError");
+          } else {
+            errorMessage = err.message;
+          }
+        }
+        showToast(errorMessage, "error");
+      }
+    },
+    [
+      basePath,
+      draftControls,
+      effectiveEffortLevel,
+      effectivePermissionMode,
+      effectiveThinkingMode,
+      helperSideModel,
+      isStarting,
+      message,
+      navigate,
+      pendingFiles,
+      projectInput,
+      recapAfterSeconds,
+      resolvePendingAttachmentsForSession,
+      resolveProjectIdForSubmission,
+      selectedExecutor,
+      selectedCheckoutWorkstreamId,
+      selectedModel,
+      selectedPromptSuggestionMode,
+      selectedProvider,
+      selectedProviderInfo,
+      selectedRecapMode,
+      setPendingFiles,
+      showToast,
+      t,
+    ],
+  );
+
+  const handleQueueProjectSession = async (messageOverride?: unknown) => {
     const override =
       typeof messageOverride === "string" ? messageOverride : undefined;
-    // Stop voice recording and get any pending interim text unless the caller
-    // already supplied the finalized text from the STT backend.
     const pendingVoice =
       override === undefined
         ? (voiceButtonRef.current?.stopAndFinalize() ?? "")
         : "";
 
-    // Combine committed text with any pending voice text
     let finalMessage = (override ?? message).trimEnd();
     if (pendingVoice) {
       finalMessage = finalMessage
@@ -1095,308 +1892,97 @@ export function NewSessionForm({
         : pendingVoice;
     }
 
-    const hasContent = finalMessage.trim() || pendingFiles.length > 0;
-    if (!hasContent || isStarting) return;
-
     const trimmedMessage = finalMessage.trim();
     const trimmedProjectInput = normalizeProjectInput(projectInput);
+    const stagedRefs = pendingFiles
+      .filter(isPendingStagedFile)
+      .map(toPersistedStagedAttachmentRef);
+    const canQueueAttachments = stagedRefs.length === pendingFiles.length;
+    if (!trimmedMessage || !canQueueAttachments || isStarting) return;
+
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
+    const submittedAt = new Date(clientTimestamp).toISOString();
+    const firstStagedRef = stagedRefs[0];
+    const stagedAttachments = firstStagedRef
+      ? {
+          batchId: firstStagedRef.batchId,
+          refs: stagedRefs,
+          updatedAt: new Date().toISOString(),
+        }
+      : undefined;
 
     setInterimTranscript("");
     setIsStarting(true);
 
     try {
-      let resolvedProjectId = trimmedProjectInput
-        ? currentProjectSelection?.path === trimmedProjectInput
-          ? currentProjectSelection.id
-          : findProjectByInput(projects, trimmedProjectInput)?.id
-        : null;
-
-      if (trimmedProjectInput && !resolvedProjectId) {
-        const addProjectResult = await api.addProject(trimmedProjectInput);
-        resolvedProjectId = addProjectResult.project.id;
-        lastSyncedProjectIdRef.current = resolvedProjectId;
-        onProjectChange?.(resolvedProjectId);
+      const resolvedProjectId =
+        await resolveProjectIdForSubmission(trimmedProjectInput);
+      if (!resolvedProjectId) {
+        throw new Error(t("projectQueueNewSessionNeedsProject"));
       }
 
-      let sessionId: string;
-      let processId: string;
       const sessionMode = effectivePermissionMode;
-      let initialPermissionMode: PermissionMode = sessionMode;
-      let initialModeVersion = 0;
-      const uploadedFiles: UploadedFile[] = [];
-
-      // Get model and thinking settings
       const thinking = toThinkingOption(
         effectiveThinkingMode,
         effectiveEffortLevel,
       );
-      // Display preference for thinking rows; sent for compatibility while the
-      // server requests provider summaries independently.
       const showThinking = getShowThinkingSetting();
-      const sessionOptions = {
-        mode: sessionMode,
-        model: selectedModel ?? undefined,
-        thinking,
-        showThinking,
-        provider: selectedProvider ?? undefined,
-        executor: selectedExecutor ?? undefined,
-        recapMode: selectedRecapMode,
-        promptSuggestionMode: selectedPromptSuggestionMode,
-        helperSideModel,
-      };
-      logSessionUiTrace("new-session-submit", {
-        projectId: resolvedProjectId ?? null,
-        detached: !resolvedProjectId,
+
+      const response = await api.createProjectQueueItem(resolvedProjectId, {
+        target: {
+          type: "new-session",
+          mode: sessionMode,
+          model: selectedModel ?? undefined,
+          thinking,
+          showThinking,
+          provider: selectedProvider ?? undefined,
+          executor: selectedExecutor ?? undefined,
+          title: trimmedMessage,
+        },
+        message: {
+          text: trimmedMessage,
+          mode: sessionMode,
+          ...(stagedAttachments ? { stagedAttachments } : {}),
+          metadata: {
+            deliveryIntent: "deferred",
+            clientTimestamp,
+            composition: {
+              submittedAt,
+              typingEndedAt: submittedAt,
+            },
+          },
+        },
+        createdFrom: {
+          client: "new-session",
+        },
+      });
+      sourceSummary.reportProjectQueueCollectionSnapshot(response.queue);
+
+      logSessionUiTrace("new-session-project-queued", {
+        projectId: resolvedProjectId,
         mode: sessionMode,
         model: selectedModel ?? null,
         thinking,
         provider: selectedProvider ?? null,
         executor: selectedExecutor ?? null,
-        recapMode: selectedRecapMode,
-        promptSuggestionMode: selectedPromptSuggestionMode,
-        helperSideModel,
         textLength: trimmedMessage.length,
-        pendingFileCount: pendingFiles.length,
-        clientTimestamp,
-        serverOffsetMs: getEstimatedServerOffsetMs(),
+        attachmentCount: stagedRefs.length,
+        uploadWaitMs: Date.now() - actionAtMs,
       });
-
-      if (pendingFiles.length > 0) {
-        // Two-phase flow: create session first, then upload to real session folder
-        // Step 1: Create the session without sending a message
-        const createRequestSentAtMs = Date.now();
-        const createResult = resolvedProjectId
-          ? await api.createSession(resolvedProjectId, sessionOptions)
-          : await api.createDetachedSession(sessionOptions);
-        const createResponseReceivedAtMs = Date.now();
-        const createTiming = recordServerClockSample({
-          clientRequestStartMs: createRequestSentAtMs,
-          clientResponseEndMs: createResponseReceivedAtMs,
-          serverTimestamp: createResult.serverTimestamp,
-        });
-        const activeProjectId = createResult.projectId;
-        sessionId = createResult.sessionId;
-        processId = createResult.processId;
-        initialPermissionMode = createResult.permissionMode;
-        initialModeVersion = createResult.modeVersion;
-        resolvedProjectId = activeProjectId;
-        logSessionUiTrace("new-session-created", {
-          sessionId,
-          processId,
-          projectId: resolvedProjectId,
-          thinking,
-          mode: sessionMode,
-          serverTimestamp: createResult.serverTimestamp,
-          requestRttMs: createTiming?.roundTripMs ?? null,
-          estimatedServerOffsetMs: createTiming?.serverOffsetMs ?? null,
-        });
-
-        // Step 2: Upload files to the real session folder
-        for (const pendingFile of pendingFiles) {
-          try {
-            const preparedImage = pendingFile.file.type.startsWith("image/")
-              ? await prepareImageUpload(
-                  pendingFile.file,
-                  getAttachmentUploadLongEdgePx(attachmentQuality),
-                )
-              : { file: pendingFile.file };
-            const uploadFile = preparedImage.file;
-            const uploadedFile = await connection.upload(
-              activeProjectId,
-              sessionId,
-              uploadFile,
-              {
-                onProgress: (bytesUploaded) => {
-                  setUploadProgress((prev) => ({
-                    ...prev,
-                    [pendingFile.id]: {
-                      uploaded: bytesUploaded,
-                      total: uploadFile.size,
-                    },
-                  }));
-                },
-                ...(preparedImage.width !== undefined &&
-                preparedImage.height !== undefined
-                  ? {
-                      imageDimensions: {
-                        width: preparedImage.width,
-                        height: preparedImage.height,
-                      },
-                    }
-                  : {}),
-              },
-            );
-            uploadedFiles.push(uploadedFile);
-          } catch (uploadErr) {
-            console.error("Failed to upload file:", uploadErr);
-            const uploadMessage =
-              uploadErr instanceof Error ? uploadErr.message : "";
-            showToast(
-              t("newSessionUploadError", { message: uploadMessage }),
-              "error",
-            );
-            // Continue with other files
-          }
-        }
-
-        // Step 3: Send the first message with attachments
-        const queueRequestSentAtMs = Date.now();
-        const queueResult = await api.queueMessage(
-          sessionId,
-          trimmedMessage,
-          sessionMode,
-          uploadedFiles.length > 0 ? uploadedFiles : undefined,
-          undefined, // tempId
-          thinking, // Pass the captured thinking setting to avoid process restart
-          undefined, // deferred
-          clientTimestamp,
-          undefined, // messageMetadata
-          undefined, // serviceTier
-          showThinking,
-        );
-        const queueResponseReceivedAtMs = Date.now();
-        const queueTiming = recordServerClockSample({
-          clientRequestStartMs: queueRequestSentAtMs,
-          clientResponseEndMs: queueResponseReceivedAtMs,
-          serverTimestamp: queueResult.serverTimestamp,
-        });
-        logSessionUiTrace("new-session-queued", {
-          sessionId,
-          processId,
-          projectId: resolvedProjectId,
-          clientTimestamp,
-          serverTimestamp: queueResult.serverTimestamp,
-          uploadWaitMs: queueRequestSentAtMs - actionAtMs,
-          requestRttMs: queueTiming?.roundTripMs ?? null,
-          estimatedServerOffsetMs: queueTiming?.serverOffsetMs ?? null,
-          clientToServerLatencyMs: measureServerLatencyMs(
-            clientTimestamp,
-            queueResult.serverTimestamp,
-          ),
-        });
-      } else {
-        // No files - use single-step flow for efficiency
-        const startRequestSentAtMs = Date.now();
-        const result = resolvedProjectId
-          ? await api.startSession(
-              resolvedProjectId,
-              trimmedMessage,
-              sessionOptions,
-              undefined,
-              clientTimestamp,
-            )
-          : await api.startDetachedSession(
-              trimmedMessage,
-              sessionOptions,
-              undefined,
-              clientTimestamp,
-            );
-        const startResponseReceivedAtMs = Date.now();
-        const startTiming = recordServerClockSample({
-          clientRequestStartMs: startRequestSentAtMs,
-          clientResponseEndMs: startResponseReceivedAtMs,
-          serverTimestamp: result.serverTimestamp,
-        });
-        sessionId = result.sessionId;
-        processId = result.processId;
-        initialPermissionMode = result.permissionMode;
-        initialModeVersion = result.modeVersion;
-        resolvedProjectId = result.projectId;
-        logSessionUiTrace("new-session-started", {
-          sessionId,
-          processId,
-          projectId: resolvedProjectId,
-          thinking,
-          mode: sessionMode,
-          provider: selectedProvider ?? null,
-          model: selectedModel ?? null,
-          clientTimestamp,
-          serverTimestamp: result.serverTimestamp,
-          requestRttMs: startTiming?.roundTripMs ?? null,
-          estimatedServerOffsetMs: startTiming?.serverOffsetMs ?? null,
-          clientToServerLatencyMs: measureServerLatencyMs(
-            clientTimestamp,
-            result.serverTimestamp,
-          ),
-        });
-      }
-
-      if (!resolvedProjectId) {
-        throw new Error("Missing project ID for new session");
-      }
-
-      // Clean up preview URLs
-      for (const pf of pendingFiles) {
-        if (pf.previewUrl) {
-          URL.revokeObjectURL(pf.previewUrl);
-        }
-      }
-
+      setPendingFiles([], {
+        persistDraft: false,
+        revokeRemovedPreviewUrls: true,
+      });
       draftControls.clearDraft();
-      // Pass initial status so SessionPage can connect SSE immediately
-      // without waiting for getSession to complete
-      // Also pass initial message as optimistic title (session name = first message)
-      // Pass model/provider so ProviderBadge can render immediately
-      navigate(
-        `${basePath}/projects/${resolvedProjectId}/sessions/${sessionId}`,
-        {
-          state: createSessionNavigationState({
-            initialStatus: {
-              owner: "self",
-              processId,
-              permissionMode: initialPermissionMode,
-              modeVersion: initialModeVersion,
-            },
-            initialTitle: trimmedMessage,
-            initialModel: selectedModel ?? undefined,
-            initialProvider: selectedProvider ?? undefined,
-          }),
-        },
-      );
+      setIsStarting(false);
+      showToast(t("projectQueueNewSessionQueuedToast"), "success");
     } catch (err) {
-      console.error("Failed to start session:", err);
+      console.error("Failed to queue project session:", err);
       draftControls.restoreFromStorage();
       setIsStarting(false);
-
-      // Show user-visible error message
-      let errorMessage = t("newSessionStartError");
-      if (err instanceof Error) {
-        const providerDisplayName =
-          selectedProviderInfo?.displayName ?? selectedProvider ?? "Provider";
-        const lowerMessage = err.message.toLowerCase();
-        const status = (err as Error & { status?: number }).status;
-
-        // Check for specific error types
-        if (err.message.includes("Queue is full")) {
-          errorMessage = t("newSessionServerBusy");
-        } else if (
-          lowerMessage.includes("invalid authentication credentials") ||
-          lowerMessage.includes("authentication_error") ||
-          lowerMessage.includes("please run /login") ||
-          (status === 401 &&
-            (selectedProvider === "claude" ||
-              selectedProvider === "gemini" ||
-              selectedProvider === "codex"))
-        ) {
-          errorMessage = t("newSessionProviderAuthError", {
-            provider: providerDisplayName,
-          });
-        } else if (err.message.includes("503")) {
-          errorMessage = t("newSessionServerCapacity");
-        } else if (err.message.includes("404")) {
-          errorMessage = t("newSessionProjectNotFound");
-        } else if (
-          err.message.includes("fetch") ||
-          err.message.includes("network")
-        ) {
-          errorMessage = t("newSessionNetworkError");
-        } else {
-          errorMessage = err.message;
-        }
-      }
-      showToast(errorMessage, "error");
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      showToast(t("projectQueueSubmitFailed", { message: errorMsg }), "error");
     }
   };
 
@@ -1436,16 +2022,31 @@ export function NewSessionForm({
       // Skip Enter during IME composition (e.g. Chinese/Japanese/Korean input)
       if (e.nativeEvent.isComposing) return;
 
-      // On mobile (touch devices), Enter adds newline - must use send button
-      // On desktop, Enter sends message, Shift/Ctrl+Enter adds newline
-      const isMobile = hasCoarsePointer();
-
       // If voice recording is active, Enter submits (on any device)
       if (voiceButtonRef.current?.isListening) {
         e.preventDefault();
         handleStartSession();
         return;
       }
+
+      if (
+        projectQueueCtrlEnterEnabled &&
+        toolbarVisibility.projectQueue &&
+        showProjectQueueAction &&
+        canQueueProjectSession &&
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        void handleQueueProjectSession();
+        return;
+      }
+
+      // On mobile (touch devices), Enter adds newline - must use send button.
+      // On desktop, Enter sends message, Shift/Ctrl+Enter adds newline.
+      const isMobile = hasCoarsePointer();
 
       if (isMobile) {
         // Mobile: Enter always adds newline, send button required
@@ -1481,14 +2082,7 @@ export function NewSessionForm({
 
     if (files.length > 0) {
       e.preventDefault();
-      const newPendingFiles: PendingFile[] = files.map((file) => ({
-        id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        file,
-        previewUrl: file.type.startsWith("image/")
-          ? URL.createObjectURL(file)
-          : undefined,
-      }));
-      setPendingFiles((prev) => [...prev, ...newPendingFiles]);
+      addPendingFiles(files);
     }
   };
 
@@ -1718,6 +2312,33 @@ export function NewSessionForm({
 
   const hasContent = message.trim() || pendingFiles.length > 0;
   const canStart = Boolean(hasContent);
+  const hasProjectQueueTargetProject = Boolean(projectQueueTargetProjectId);
+  const pendingFilesReadyForProjectQueue =
+    pendingFiles.every(isPendingStagedFile);
+  const stagedPendingFileRefs = pendingFiles
+    .filter(isPendingStagedFile)
+    .map(toPersistedStagedAttachmentRef);
+  const attachmentNavigationGuardActive = hasAttachmentNavigationRisk({
+    pendingUploadCount: pendingFiles.filter((file) => file.kind === "uploading")
+      .length,
+    transientAttachmentCount: pendingFiles.filter(isPendingLocalFile).length,
+    stagedRefs: stagedPendingFileRefs,
+    draftState: draftControls.getAttachmentState(),
+  });
+  useAttachmentNavigationGuard(attachmentNavigationGuardActive);
+  const canQueueProjectSession = Boolean(
+    showProjectQueueAction &&
+      message.trim() &&
+      pendingFilesReadyForProjectQueue &&
+      hasProjectQueueTargetProject,
+  );
+  const projectQueueNewSessionTitle = !pendingFilesReadyForProjectQueue
+    ? t("projectQueueNewSessionAttachmentsPreparing")
+    : hasProjectQueueTargetProject
+      ? projectQueueCtrlEnterEnabled
+        ? t("toolbarProjectQueueTooltipWithShortcut")
+        : t("toolbarProjectQueueTooltip")
+      : t("projectQueueNewSessionNeedsProject");
   const interimDisplayTranscript = interimTranscript.trim();
   // The inline mirror previews speech in place at the insertion point: streaming
   // interim text, otherwise the pending-state label (Listening…/Transcribing…/
@@ -1793,11 +2414,11 @@ export function NewSessionForm({
       }
       return {
         projectId,
-        draftKey: NEW_SESSION_DRAFT_KEY,
+        draftKey: newSessionDraftKey,
         clientTurnId: speechTurnIdRef.current,
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
       };
-    }, [projectId]);
+    }, [projectId, newSessionDraftKey]);
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
   const inputArea = (
     <>
@@ -1984,39 +2605,72 @@ export function NewSessionForm({
               />
             }
           />
-        </div>
-        <button
-          type="button"
-          onClick={handleStartSession}
-          disabled={isStarting || !canStart}
-          className="send-button new-session-submit-button"
-          aria-label={t("newSessionStartAction")}
-        >
-          {isStarting ? (
-            <span className="send-spinner" />
-          ) : (
-            <svg
-              className="send-icon new-session-submit-icon"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.25"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 19V5" />
-              <path d="m5 12 7-7 7 7" />
-            </svg>
+          {selectedProvider && modelOptions.length > 0 && (
+            <FilterDropdown
+              className="composer-model-chip"
+              label={t("newSessionModelTitle")}
+              options={modelOptions}
+              selected={selectedModel ? [selectedModel] : []}
+              onChange={handleModelSelect}
+              multiSelect={false}
+              triggerContent={
+                <ProviderBadge
+                  provider={selectedProvider}
+                  model={selectedModel ?? undefined}
+                />
+              }
+              triggerTitle={t("composerModelChipTitle")}
+            />
           )}
-        </button>
+        </div>
+        <div className="new-session-form-toolbar-actions">
+          {toolbarVisibility.projectQueue && showProjectQueueAction && (
+            <button
+              type="button"
+              onClick={handleQueueProjectSession}
+              disabled={isStarting || !canQueueProjectSession}
+              className="send-button project-queue-button new-session-project-queue-button"
+              aria-label={t("toolbarProjectQueueLabel")}
+              title={projectQueueNewSessionTitle}
+            >
+              <span className="send-icon">⇥</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleStartSession}
+            disabled={isStarting || !canStart}
+            className="send-button new-session-submit-button"
+            aria-label={t("newSessionStartAction")}
+          >
+            {isStarting ? (
+              <span className="send-spinner" />
+            ) : (
+              <svg
+                className="send-icon new-session-submit-icon"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 19V5" />
+                <path d="m5 12 7-7 7 7" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
       {pendingFiles.length > 0 && (
         <div className="pending-files-list">
           {pendingFiles.map((pf) => {
             const progress = uploadProgress[pf.id];
+            const fileName = getPendingFileName(pf);
+            const fileSize = getPendingFileSize(pf);
             return (
               <div key={pf.id} className="pending-file-chip">
                 {pf.previewUrl && (
@@ -2027,11 +2681,11 @@ export function NewSessionForm({
                   />
                 )}
                 <div className="pending-file-info">
-                  <span className="pending-file-name">{pf.file.name}</span>
+                  <span className="pending-file-name">{fileName}</span>
                   <span className="pending-file-size">
                     {progress
                       ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
-                      : formatSize(pf.file.size)}
+                      : formatSize(fileSize)}
                   </span>
                 </div>
                 {!isStarting && (
@@ -2040,7 +2694,7 @@ export function NewSessionForm({
                     className="pending-file-remove"
                     onClick={() => handleRemoveFile(pf.id)}
                     aria-label={t("newSessionRemoveFile", {
-                      name: pf.file.name,
+                      name: fileName,
                     })}
                   >
                     <svg
@@ -2062,26 +2716,12 @@ export function NewSessionForm({
           })}
         </div>
       )}
-      {showThinkingControls && (
-        <ThinkingControlsPanel
-          mode={effectiveThinkingMode}
-          modeOptions={thinkingModeOptions}
-          onSetMode={setThinkingMode}
-          level={effectiveEffortLevel}
-          effortOptions={effortOptions}
-          onSetEffort={setEffortLevel}
-          showThinking={showThinking}
-          onSetShowThinking={setShowThinking}
-          provider={selectedProvider ?? undefined}
-          t={t}
-          className="thinking-controls-panel--inline new-session-thinking-controls"
-        />
-      )}
     </>
   );
 
   const projectChooser = (
     <div
+      ref={projectChooserRef}
       className={`new-session-project-chooser ${isProjectChooserExpanded ? "expanded" : ""}`}
     >
       <div className="new-session-project-controls">
@@ -2174,6 +2814,38 @@ export function NewSessionForm({
       )}
     </div>
   );
+  const workstreamChooser =
+    showWorkstreamChooser && selectedWorkstream ? (
+      <label className="new-session-workstream-field">
+        <span className="new-session-workstream-label">
+          {t("newSessionWorkstreamLabel")}
+        </span>
+        <select
+          className="new-session-workstream-select"
+          value={selectedCheckoutWorkstreamId ?? ""}
+          onChange={handleWorkstreamSelect}
+          disabled={isStarting}
+          aria-label={t("newSessionWorkstreamLabel")}
+        >
+          {workstreamOptions.map((workstream) => (
+            <option
+              key={workstream.id}
+              value={workstream.kind === "main" ? "" : workstream.id}
+            >
+              {workstream.kind === "main"
+                ? t("newSessionWorkstreamMain")
+                : workstream.label}
+            </option>
+          ))}
+        </select>
+        <span
+          className="new-session-workstream-path"
+          title={selectedWorkstream.path}
+        >
+          {shortenPath(selectedWorkstream.path)}
+        </span>
+      </label>
+    ) : null;
 
   const providerSection =
     !providersLoading && availableProviders.length > 1 ? (
@@ -2236,6 +2908,45 @@ export function NewSessionForm({
   const modelSection = modelField ? (
     <div className="new-session-model-section">{modelField}</div>
   ) : null;
+  const showThinkingSection = (
+    <div className="new-session-helper-section new-session-show-thinking-section">
+      <h3>{t("showThinkingTitle")}</h3>
+      <ShowThinkingControls
+        value={showThinking}
+        onChange={(value) => setShowThinking(value)}
+        t={t}
+        showLabel={false}
+      />
+    </div>
+  );
+  const thinkingSection = showThinkingControls ? (
+    <div className="new-session-helper-section new-session-thinking-section">
+      <h3>{t("modelSettingsThinkingTitle")}</h3>
+      <ThinkingControlsPanel
+        mode={effectiveThinkingMode}
+        modeOptions={thinkingModeOptions}
+        onSetMode={(nextMode) => {
+          hasUserCustomizedDefaultsRef.current = true;
+          setSelectedThinkingMode(nextMode);
+        }}
+        level={effectiveEffortLevel}
+        effortOptions={effortOptions}
+        onSetEffort={(nextEffort) => {
+          hasUserCustomizedDefaultsRef.current = true;
+          setSelectedEffortLevel(nextEffort);
+        }}
+        onSetEffortMode={(nextEffort) => {
+          hasUserCustomizedDefaultsRef.current = true;
+          setSelectedEffortLevel(nextEffort);
+          setSelectedThinkingMode("on");
+        }}
+        showThinkingControl={false}
+        provider={selectedProvider ?? undefined}
+        t={t}
+        className="thinking-controls-panel--inline new-session-thinking-controls"
+      />
+    </div>
+  ) : null;
   const recapSection = selectedProvider ? (
     <div className="new-session-helper-section">
       <h3>{t("newSessionRecapTitle")}</h3>
@@ -2252,29 +2963,43 @@ export function NewSessionForm({
               setSelectedRecapMode(modeValue);
             }}
             disabled={isStarting}
-            title={recapModeDescriptions[modeValue]}
+            title={getRecapModeDescription(modeValue, t, recapAfterSeconds)}
           >
             <span className={`mode-option-dot recap-${modeValue}`} />
             <span>{recapModeLabels[modeValue]}</span>
           </button>
         ))}
       </div>
-      {selectedRecapMode === "side-session" && (
-        <div className="new-session-helper-model">
-          <h3>{t("helperSideModelTitle")}</h3>
-          <FilterDropdown
-            label={t("helperSideModelTitle")}
-            options={helperSideModelOptions}
-            selected={[helperSideModel]}
-            onChange={(selected) => {
-              hasUserCustomizedDefaultsRef.current = true;
-              setHelperSideModel(selected[0] ?? HELPER_SIDE_MODEL_CHEAPEST);
-            }}
-            multiSelect={false}
-            placeholder={t("helperSideModelCheapest")}
-          />
-        </div>
+      {selectedRecapMode !== "off" && (
+        <RecapAfterSecondsControl
+          value={recapAfterSeconds}
+          disabled={isStarting}
+          mode={selectedRecapMode}
+          onCommit={(seconds) => {
+            hasUserCustomizedDefaultsRef.current = true;
+            setRecapAfterSeconds(seconds);
+          }}
+        />
       )}
+      <p className="recap-mode-caption">
+        {getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
+      </p>
+    </div>
+  ) : null;
+  const helperSideModelSection = showHelperSideModel ? (
+    <div className="new-session-helper-section new-session-helper-model-section">
+      <h3>{t("helperSideModelTitle")}</h3>
+      <FilterDropdown
+        label={t("helperSideModelTitle")}
+        options={helperSideModelOptions}
+        selected={[helperSideModel]}
+        onChange={(selected) => {
+          hasUserCustomizedDefaultsRef.current = true;
+          setHelperSideModel(selected[0] ?? HELPER_SIDE_MODEL_CHEAPEST);
+        }}
+        multiSelect={false}
+        placeholder={t("helperSideModelCheapest")}
+      />
     </div>
   ) : null;
   const promptSuggestionSection = selectedProvider ? (
@@ -2290,7 +3015,6 @@ export function NewSessionForm({
             }`}
             onClick={() => {
               hasUserCustomizedDefaultsRef.current = true;
-              preferredPromptSuggestionModeRef.current = modeValue;
               setSelectedPromptSuggestionMode(modeValue);
             }}
             disabled={isStarting}
@@ -2301,15 +3025,6 @@ export function NewSessionForm({
           </button>
         ))}
       </div>
-      {availablePromptSuggestionModes.length === 1 &&
-        availablePromptSuggestionModes[0] === "off" &&
-        selectedProviderDisplayName && (
-          <p className="new-session-helper-note">
-            {t("promptSuggestionNativeUnsupported", {
-              provider: selectedProviderDisplayName,
-            })}
-          </p>
-        )}
     </div>
   ) : null;
   const permissionSection = supportsPermissionMode ? (
@@ -2361,18 +3076,26 @@ export function NewSessionForm({
         <div className="new-session-main-stack">
           <div className="new-session-input-area">{inputArea}</div>
         </div>
-        <aside className="new-session-project-slot">{projectChooser}</aside>
+        <aside className="new-session-project-slot">
+          {projectChooser}
+          {workstreamChooser}
+        </aside>
         {(providerSection ||
           modelSection ||
+          thinkingSection ||
+          helperSideModelSection ||
           recapSection ||
           promptSuggestionSection ||
           permissionSection) && (
           <div className="new-session-provider-slot">
-            {providerSection}
-            {modelSection}
             {recapSection}
             {promptSuggestionSection}
             {permissionSection}
+            {showThinkingSection}
+            {providerSection}
+            {modelSection}
+            {thinkingSection}
+            {helperSideModelSection}
           </div>
         )}
       </div>

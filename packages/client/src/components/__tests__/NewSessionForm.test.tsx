@@ -8,6 +8,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
 import {
   forwardRef,
   useCallback,
@@ -27,9 +28,19 @@ const {
   mockUpdateSetting,
   mockStartSession,
   mockStartDetachedSession,
+  mockCreateSession,
+  mockCreateDetachedSession,
+  mockQueueMessage,
+  mockCreateProjectQueueItem,
+  mockGetProjectWorkstreams,
+  mockReportProjectQueueCollectionSnapshot,
   mockAddProject,
+  mockUpload,
+  mockUploadStagedAttachment,
+  mockConnectionFetch,
   mockCycleThinkingMode,
   mockSetEffortLevel,
+  mockSetShowThinking,
   mockSetSpeechMethod,
   mockSetSpeechSmartTurnSettings,
   mockSetGrokSpeechAudioSettings,
@@ -43,14 +54,28 @@ const {
   versionState,
   remoteBasePathState,
   filterDropdownState,
+  toolbarVisibilityState,
+  inboxState,
+  projectQueueState,
+  draftAttachmentState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockUpdateSetting: vi.fn(),
   mockStartSession: vi.fn(),
   mockStartDetachedSession: vi.fn(),
+  mockCreateSession: vi.fn(),
+  mockCreateDetachedSession: vi.fn(),
+  mockQueueMessage: vi.fn(),
+  mockCreateProjectQueueItem: vi.fn(),
+  mockGetProjectWorkstreams: vi.fn(),
+  mockReportProjectQueueCollectionSnapshot: vi.fn(),
   mockAddProject: vi.fn(),
+  mockUpload: vi.fn(),
+  mockUploadStagedAttachment: vi.fn(),
+  mockConnectionFetch: vi.fn(),
   mockCycleThinkingMode: vi.fn(),
   mockSetEffortLevel: vi.fn(),
+  mockSetShowThinking: vi.fn(),
   mockSetSpeechMethod: vi.fn(),
   mockSetSpeechSmartTurnSettings: vi.fn(),
   mockSetGrokSpeechAudioSettings: vi.fn(),
@@ -92,7 +117,12 @@ const {
       supportsRecaps?: boolean;
       supportsNativeRecaps?: boolean;
       supportsNativePromptSuggestions?: boolean;
-      models?: Array<{ id: string; name: string; description?: string }>;
+      models?: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        supportsAutoMode?: boolean;
+      }>;
     }>,
     loading: false,
   },
@@ -101,10 +131,22 @@ const {
       newSessionDefaults?: {
         provider?: "claude" | "codex";
         model?: string;
-        permissionMode?: "default";
-        recapMode?: "off" | "native" | "side-session";
+        permissionMode?: "default" | "auto";
+        recapMode?: "off" | "native" | "side-session" | "fork";
+        recapAfterSeconds?: number;
         promptSuggestionMode?: "off" | "native";
         helperSideModel?: string;
+        providers?: Partial<
+          Record<
+            "claude" | "codex",
+            {
+              model?: string;
+              thinkingMode?: "off" | "auto" | "on";
+              effortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
+              helperSideModel?: string;
+            }
+          >
+        >;
       };
       helperTargets?: Array<{
         id: string;
@@ -113,16 +155,21 @@ const {
         baseUrl: string;
         model?: string;
       }>;
+      workstreamsEnabled?: boolean;
     } | null,
     isLoading: true,
   },
   versionState: {
     version: null as {
+      capabilities?: string[];
       voiceBackends?: string[];
       voiceBackendCapabilities?: Record<
         string,
         { streaming?: boolean; smartTurn?: boolean }
       >;
+      clientDefaults?: {
+        projectQueueCtrlEnterEnabled?: boolean;
+      };
     } | null,
   },
   remoteBasePathState: {
@@ -130,6 +177,34 @@ const {
   },
   filterDropdownState: {
     selected: [] as string[],
+  },
+  toolbarVisibilityState: {
+    projectQueue: false,
+  },
+  inboxState: {
+    needsAttention: [] as Array<{ sessionId: string; projectId: string }>,
+    active: [] as Array<{ sessionId: string; projectId: string }>,
+  },
+  projectQueueState: {
+    byProject: {} as Record<string, unknown[]>,
+  },
+  draftAttachmentState: {
+    value: null as null | {
+      batchId: string;
+      refs: Array<{
+        id: string;
+        batchId: string;
+        originalName: string;
+        name: string;
+        size: number;
+        mimeType: string;
+        width?: number;
+        height?: number;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+      updatedAt: string;
+    },
   },
 }));
 
@@ -150,16 +225,12 @@ vi.mock("../../api/client", () => ({
     addProject: mockAddProject,
     startSession: mockStartSession,
     startDetachedSession: mockStartDetachedSession,
-    createDetachedSession: vi.fn(),
-    createSession: vi.fn(),
-    queueMessage: vi.fn(),
+    createDetachedSession: mockCreateDetachedSession,
+    createSession: mockCreateSession,
+    queueMessage: mockQueueMessage,
+    createProjectQueueItem: mockCreateProjectQueueItem,
+    getProjectWorkstreams: mockGetProjectWorkstreams,
   },
-}));
-
-vi.mock("../../hooks/useConnection", () => ({
-  useConnection: () => ({
-    upload: vi.fn(),
-  }),
 }));
 
 vi.mock("../../hooks/useDraftPersistence", () => ({
@@ -171,15 +242,30 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
       (nextValue: string) => setValue(nextValue),
       [],
     );
+    const getAttachmentState = useCallback(
+      () => draftAttachmentState.value,
+      [],
+    );
+    const setAttachmentState = useCallback(
+      (nextValue: typeof draftAttachmentState.value) => {
+        draftAttachmentState.value = nextValue;
+      },
+      [],
+    );
     const flushDraft = useCallback(() => {}, []);
     const clearInput = useCallback(() => setValue(""), []);
-    const clearDraft = useCallback(() => setValue(""), []);
+    const clearDraft = useCallback(() => {
+      setValue("");
+      draftAttachmentState.value = null;
+    }, []);
     const restoreFromStorage = useCallback(() => {}, []);
 
     const controls = useMemo(
       () => ({
         getDraft,
+        getAttachmentState,
         setDraft,
+        setAttachmentState,
         flushDraft,
         clearInput,
         clearDraft,
@@ -189,8 +275,10 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
         clearDraft,
         clearInput,
         flushDraft,
+        getAttachmentState,
         getDraft,
         restoreFromStorage,
+        setAttachmentState,
         setDraft,
       ],
     );
@@ -208,7 +296,7 @@ vi.mock("../../hooks/useModelSettings", () => ({
     setThinkingMode: vi.fn(),
     thinkingLevel: modelSettingsState.effortLevel,
     showThinking: "default",
-    setShowThinking: vi.fn(),
+    setShowThinking: mockSetShowThinking,
     voiceInputEnabled: modelSettingsState.voiceInputEnabled,
     speechMethod: modelSettingsState.speechMethod,
     hasStoredSpeechMethod: modelSettingsState.hasStoredSpeechMethod,
@@ -268,6 +356,78 @@ vi.mock("../../hooks/useServerSettings", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useSessionToolbarPresence", () => ({
+  useSessionToolbarPresence: () => ({
+    visibility: {
+      projectQueue: toolbarVisibilityState.projectQueue,
+    },
+  }),
+}));
+
+vi.mock("../../lib/clientSummaryStore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../lib/clientSummaryStore")>();
+  return {
+    ...actual,
+    reportProjectQueueCollectionSnapshot:
+      mockReportProjectQueueCollectionSnapshot,
+    useClientSummarySourceKey: () => "host:test",
+    useActiveProjectSessionIds: (projectId: string | null | undefined) => {
+      if (!projectId) return [];
+      return [...inboxState.needsAttention, ...inboxState.active]
+        .filter((item) => item.projectId === projectId)
+        .map((item) => item.sessionId);
+    },
+  };
+});
+
+vi.mock("../../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => ({
+    sourceKey: "host:test",
+    transport: {
+      capabilities: { sameOriginUrls: true },
+      fetch: mockConnectionFetch,
+      upload: mockUpload,
+      uploadStagedAttachment: mockUploadStagedAttachment,
+    },
+    summary: {
+      reportProjectQueueCollectionSnapshot:
+        mockReportProjectQueueCollectionSnapshot,
+    },
+  }),
+}));
+
+vi.mock("../../hooks/useProjectQueues", () => ({
+  useProjectQueues: (projectIds: string[]) => {
+    const queuesByProject = Object.fromEntries(
+      projectIds.map((projectId) => [
+        projectId,
+        projectQueueState.byProject[projectId] ?? [],
+      ]),
+    );
+    return {
+      queuesByProject,
+      items: Object.values(queuesByProject).flat(),
+      projectStatusesByProject: {},
+      recoveredSessionQueues: [],
+      loading: false,
+      error: null,
+      mutatingItemId: null,
+      mutatingDispatchState: false,
+      mutatingPromoteItemId: null,
+      dispatchState: { status: "running" },
+      refetch: vi.fn(),
+      pauseDispatch: vi.fn(),
+      resumeDispatch: vi.fn(),
+      promoteNow: vi.fn(),
+      updateItem: vi.fn(),
+      deleteItem: vi.fn(),
+      retryItem: vi.fn(),
+      moveItemToTop: vi.fn(),
+    };
+  },
+}));
+
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: versionState.version,
@@ -286,23 +446,34 @@ vi.mock("../../contexts/ToastContext", () => ({
 
 vi.mock("../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string) =>
-      (
-        ({
-          effortLevelLowLabel: "Low",
-          effortLevelMediumLabel: "Medium",
-          effortLevelHighLabel: "High",
-          effortLevelExtraLabel: "Extra",
-          effortLevelExtraHighLabel: "Extra High",
-          effortLevelMaxLabel: "Max",
-          effortLevelLowDescription: "Fastest responses",
-          effortLevelMediumDescription: "Moderate reasoning",
-          effortLevelHighDescription: "Deep reasoning",
-          effortLevelExtraDescription: "For your hardest tasks",
-          effortLevelExtraHighDescription: "Extra-high reasoning",
-          effortLevelMaxDescription: "Maximum effort",
-        }) satisfies Record<string, string>
-      )[key] ?? key,
+    t: (key: string, vars?: Record<string, string | number>) => {
+      const text: Record<string, string> = {
+        effortLevelLowLabel: "Low",
+        effortLevelMediumLabel: "Medium",
+        effortLevelHighLabel: "High",
+        effortLevelExtraLabel: "Extra",
+        effortLevelExtraHighLabel: "Extra High",
+        effortLevelMaxLabel: "Max",
+        effortLevelLowDescription: "Fastest responses",
+        effortLevelMediumDescription: "Moderate reasoning",
+        effortLevelHighDescription: "Deep reasoning",
+        effortLevelExtraDescription: "For your hardest tasks",
+        effortLevelExtraHighDescription: "Extra-high reasoning",
+        effortLevelMaxDescription: "Maximum effort",
+        recapModeSideSessionTimedDescription:
+          "Summarize tailed assistant output after backgrounding (not closing) for {seconds} s.",
+        recapModeForkTimedDescription:
+          "Summarize from a temporary fork after backgrounding (not closing) for {seconds} s.",
+        toolbarProjectQueueTooltipWithShortcut:
+          "Send after all sessions in this project are idle\nCtrl+Enter",
+      };
+      let translated = text[key] ?? key;
+      if (!vars) return translated;
+      for (const [name, value] of Object.entries(vars)) {
+        translated = translated.replaceAll(`{${name}}`, String(value));
+      }
+      return translated;
+    },
   }),
 }));
 
@@ -340,23 +511,21 @@ vi.mock("../../lib/newSessionPrefill", () => ({
 }));
 
 vi.mock("../VoiceInputButton", () => ({
-  VoiceInputButton: forwardRef(
-    (props: Record<string, unknown>, ref) => {
-      voicePropsState.current = props as typeof voicePropsState.current;
-      useImperativeHandle(
-        ref,
-        () => ({
-          stopAndFinalize: () => "",
-          toggle: mockVoiceToggle,
-          cancelProcessing: mockVoiceCancelProcessing,
-          isListening: false,
-          isAvailable: true,
-        }),
-        [],
-      );
-      return <button type="button">voice</button>;
-    },
-  ),
+  VoiceInputButton: forwardRef((props: Record<string, unknown>, ref) => {
+    voicePropsState.current = props as typeof voicePropsState.current;
+    useImperativeHandle(
+      ref,
+      () => ({
+        stopAndFinalize: () => "",
+        toggle: mockVoiceToggle,
+        cancelProcessing: mockVoiceCancelProcessing,
+        isListening: false,
+        isAvailable: true,
+      }),
+      [],
+    );
+    return <button type="button">voice</button>;
+  }),
 }));
 
 const chooserProjects = [
@@ -380,8 +549,43 @@ const chooserProjects = [
   },
 ] as const;
 
+const stagedRef = {
+  id: "staged-file-1",
+  batchId: "batch-new-session",
+  originalName: "notes.txt",
+  name: "staged-file-1_notes.txt",
+  size: 5,
+  mimeType: "text/plain",
+  createdAt: "2026-06-28T00:00:00.000Z",
+  updatedAt: "2026-06-28T00:00:00.000Z",
+};
+
+const materializedFile = {
+  id: "staged-file-1",
+  originalName: "notes.txt",
+  name: "staged-file-1_notes.txt",
+  path: "/tmp/alpha/.attachments/session-created/staged-file-1_notes.txt",
+  size: 5,
+  mimeType: "text/plain",
+};
+
+function installObjectUrlMock() {
+  const URLCtor = URL;
+  class MockURL extends URLCtor {}
+  Object.defineProperty(MockURL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:new-session-attachment"),
+  });
+  Object.defineProperty(MockURL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  vi.stubGlobal("URL", MockURL);
+}
+
 describe("NewSessionForm", () => {
   beforeEach(() => {
+    installObjectUrlMock();
     providersState.providers = [
       {
         name: "claude",
@@ -416,15 +620,28 @@ describe("NewSessionForm", () => {
     serverSettingsState.settings = null;
     serverSettingsState.isLoading = true;
     filterDropdownState.selected = [];
+    toolbarVisibilityState.projectQueue = false;
+    inboxState.needsAttention = [];
+    inboxState.active = [];
+    projectQueueState.byProject = {};
     modelSettingsState.thinkingMode = "off";
     modelSettingsState.effortLevel = "high";
     mockNavigate.mockReset();
     mockUpdateSetting.mockReset();
     mockStartSession.mockReset();
     mockStartDetachedSession.mockReset();
+    mockCreateSession.mockReset();
+    mockCreateDetachedSession.mockReset();
+    mockQueueMessage.mockReset();
+    mockCreateProjectQueueItem.mockReset();
+    mockGetProjectWorkstreams.mockReset();
     mockAddProject.mockReset();
+    mockUpload.mockReset();
+    mockUploadStagedAttachment.mockReset();
+    mockConnectionFetch.mockReset();
     mockCycleThinkingMode.mockReset();
     mockSetEffortLevel.mockReset();
+    mockSetShowThinking.mockReset();
     mockSetSpeechMethod.mockReset();
     mockSetSpeechSmartTurnSettings.mockReset();
     mockSetGrokSpeechAudioSettings.mockReset();
@@ -432,8 +649,9 @@ describe("NewSessionForm", () => {
     mockVoiceCancelProcessing.mockReset();
     voicePropsState.current = null;
     draftKeys.length = 0;
+    draftAttachmentState.value = null;
     remoteBasePathState.basePath = "";
-    versionState.version = null;
+    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
     modelSettingsState.voiceInputEnabled = true;
     modelSettingsState.speechMethod = "browser-native";
     modelSettingsState.hasStoredSpeechMethod = false;
@@ -459,6 +677,43 @@ describe("NewSessionForm", () => {
       permissionMode: "default",
       modeVersion: 0,
     });
+    mockCreateSession.mockResolvedValue({
+      sessionId: "session-created",
+      processId: "process-created",
+      projectId: "project-1",
+      permissionMode: "default",
+      modeVersion: 0,
+      serverTimestamp: 1000,
+    });
+    mockCreateDetachedSession.mockResolvedValue({
+      sessionId: "session-detached-created",
+      processId: "process-detached-created",
+      projectId: "detached-project",
+      permissionMode: "default",
+      modeVersion: 0,
+      serverTimestamp: 1000,
+    });
+    mockQueueMessage.mockResolvedValue({
+      serverTimestamp: 1001,
+    });
+    mockCreateProjectQueueItem.mockResolvedValue({
+      item: {
+        id: "queue-1",
+        projectId: "project-1",
+        target: { type: "new-session" },
+        messagePreview: "Queued work",
+        message: { text: "Queued work" },
+        createdAt: "2026-06-27T00:00:00.000Z",
+        updatedAt: "2026-06-27T00:00:00.000Z",
+        status: "queued",
+        attachmentCount: 0,
+      },
+      queue: { projectId: "project-1", items: [] },
+    });
+    mockGetProjectWorkstreams.mockResolvedValue({
+      projectId: "project-1",
+      workstreams: [],
+    });
     mockAddProject.mockResolvedValue({
       project: {
         id: "project-added",
@@ -475,6 +730,7 @@ describe("NewSessionForm", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("keeps an explicit Claude selection when saved Codex defaults load later", async () => {
@@ -485,7 +741,7 @@ describe("NewSessionForm", () => {
     expect(screen.getByRole("button", { name: "Claude" }).className).toContain(
       "selected",
     );
-    expect(screen.getByTestId("filter-selected").textContent).toBe("opus");
+    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
 
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -505,7 +761,7 @@ describe("NewSessionForm", () => {
       expect(
         screen.getByRole("button", { name: "Codex" }).className,
       ).not.toContain("selected");
-      expect(screen.getByTestId("filter-selected").textContent).toBe("opus");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
     });
   });
 
@@ -526,7 +782,137 @@ describe("NewSessionForm", () => {
       expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
         "selected",
       );
-      expect(screen.getByTestId("filter-selected").textContent).toBe("gpt-5.4");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("gpt-5.4");
+    });
+  });
+
+  it("restores provider-scoped model and thinking defaults on provider switch", async () => {
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "default",
+        providers: {
+          claude: {
+            model: "opus",
+            thinkingMode: "on",
+            effortLevel: "medium",
+          },
+          codex: {
+            model: "gpt-5.3-codex",
+            thinkingMode: "auto",
+            effortLevel: "xhigh",
+          },
+        },
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+      expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
+        "active",
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "gpt-5.3-codex",
+      );
+      expect(
+        screen.getByRole("radio", { name: "modelSettingsThinkingAutoLabel" })
+          .className,
+      ).toContain("active");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+      expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
+        "active",
+      );
+    });
+  });
+
+  it("preserves Auto as the all-provider permission default across unsupported providers", async () => {
+    const claudeProvider = providersState.providers[0];
+    if (!claudeProvider) throw new Error("expected Claude provider fixture");
+    providersState.providers[0] = {
+      ...claudeProvider,
+      models: [
+        { id: "fable", name: "Fable", supportsAutoMode: true },
+        { id: "opus", name: "Opus 4.8" },
+      ],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "auto",
+        providers: {
+          claude: { model: "fable" },
+          codex: { model: "gpt-5.3-codex" },
+        },
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /modeAutoLabel/ }).className,
+      ).toContain("selected");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /modeDefaultLabel/ }).className,
+      ).toContain("selected");
+      expect(mockUpdateSetting).toHaveBeenCalledWith(
+        "newSessionDefaults",
+        expect.objectContaining({
+          provider: "codex",
+          permissionMode: "auto",
+        }),
+      );
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "hello",
+        expect.objectContaining({
+          provider: "codex",
+          mode: "default",
+        }),
+        undefined,
+        expect.any(Number),
+      );
     });
   });
 
@@ -549,7 +935,7 @@ describe("NewSessionForm", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
-    fireEvent.click(screen.getByRole("button", { name: "Opus 4.8" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
     });
@@ -567,6 +953,7 @@ describe("NewSessionForm", () => {
       expect.objectContaining({
         provider: "claude",
         model: "opus",
+        recapAfterSeconds: 300,
         promptSuggestionMode: "off",
       }),
       undefined,
@@ -576,21 +963,456 @@ describe("NewSessionForm", () => {
       "/projects/project-1/sessions/session-1",
       expect.objectContaining({
         state: expect.objectContaining({
-          initialStatus: {
+          initialStatus: expect.objectContaining({
             owner: "self",
             processId: "process-1",
             permissionMode: "default",
             modeVersion: 0,
-          },
+            recapAfterSeconds: 300,
+          }),
           initialProvider: "claude",
         }),
       }),
     );
   });
 
-  it("shows and updates the initial effort selector when thinking is on", () => {
+  it("submits the selected workstream when starting a project session", async () => {
+    serverSettingsState.settings = {
+      workstreamsEnabled: true,
+    };
+    serverSettingsState.isLoading = false;
+    mockGetProjectWorkstreams.mockResolvedValue({
+      projectId: "project-1",
+      workstreams: [
+        {
+          id: "main:project-1",
+          projectId: "project-1",
+          label: "Main",
+          kind: "main",
+          path: "/tmp/alpha",
+          branch: "main",
+          baseBranch: "main",
+          baseCommit: null,
+          managedByYa: false,
+          queuePaused: false,
+          status: "active",
+          createdAt: "1970-01-01T00:00:00.000Z",
+          updatedAt: "1970-01-01T00:00:00.000Z",
+        },
+        {
+          id: "ws-lane",
+          projectId: "project-1",
+          label: "tools cleanup",
+          kind: "checkout",
+          path: "/tmp/checkouts/alpha/tools-cleanup",
+          branch: "main",
+          baseBranch: "main",
+          baseCommit: null,
+          managedByYa: true,
+          queuePaused: false,
+          status: "active",
+          createdAt: "2026-07-05T10:00:00.000Z",
+          updatedAt: "2026-07-05T10:00:00.000Z",
+        },
+      ],
+    });
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const workstreamSelect = (await screen.findByLabelText(
+      "newSessionWorkstreamLabel",
+    )) as HTMLSelectElement;
+    fireEvent.change(workstreamSelect, { target: { value: "ws-lane" } });
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "hello",
+        expect.objectContaining({
+          workstreamId: "ws-lane",
+        }),
+        undefined,
+        expect.any(Number),
+      );
+    });
+  });
+
+  it("stages selected new-session files into the draft envelope", async () => {
+    serverSettingsState.isLoading = false;
+    mockUploadStagedAttachment.mockResolvedValue(stagedRef);
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("missing file input");
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(mockUploadStagedAttachment).toHaveBeenCalledTimes(1);
+      expect(draftAttachmentState.value?.refs).toEqual([stagedRef]);
+    });
+    expect(screen.getByText("notes.txt")).toBeTruthy();
+  });
+
+  it("shows duplicate new-session attachment names with numeric suffixes", async () => {
+    serverSettingsState.isLoading = false;
+    mockUploadStagedAttachment.mockImplementation(async (file: File) => ({
+      ...stagedRef,
+      id: `staged-${file.name}`,
+      originalName: `server-${file.name}`,
+      name: `staged-${file.name}`,
+    }));
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("missing file input");
+
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["a"], "image.png", { type: "image/png" }),
+          new File(["b"], "image.png", { type: "image/png" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockUploadStagedAttachment).toHaveBeenCalledTimes(2);
+    });
+
+    expect(
+      mockUploadStagedAttachment.mock.calls.map(([file]) => file.name),
+    ).toEqual(["image.png", "image-1.png"]);
+    expect(screen.getByText("image.png")).toBeTruthy();
+    expect(screen.getByText("image-1.png")).toBeTruthy();
+    expect(
+      draftAttachmentState.value?.refs.map((ref) => ref.originalName),
+    ).toEqual(["image.png", "image-1.png"]);
+  });
+
+  it("materializes staged new-session files after creating the session", async () => {
+    serverSettingsState.isLoading = false;
+    mockUploadStagedAttachment.mockResolvedValue(stagedRef);
+    mockConnectionFetch.mockResolvedValue({ files: [materializedFile] });
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("missing file input");
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => {
+      expect(draftAttachmentState.value?.refs).toEqual([stagedRef]);
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "start with file" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockCreateSession).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        provider: "claude",
+        model: "opus",
+      }),
+    );
+    expect(mockConnectionFetch).toHaveBeenCalledWith(
+      "/projects/project-1/sessions/session-created/attachments/staging/materialize",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          batchId: "batch-new-session",
+          refs: [stagedRef],
+        }),
+      },
+    );
+    expect(mockQueueMessage).toHaveBeenCalledWith(
+      "session-created",
+      "start with file",
+      "default",
+      [materializedFile],
+      undefined,
+      "off",
+      undefined,
+      expect.any(Number),
+      undefined,
+      undefined,
+      "default",
+    );
+    expect(draftAttachmentState.value).toBe(null);
+  });
+
+  it("queues a new session through Project Queue when the toolbar action is visible", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "queued project work" },
+    });
+    const projectQueueButton = screen.getByRole("button", {
+      name: "toolbarProjectQueueLabel",
+    });
+    expect(projectQueueButton.getAttribute("title")).toBe(
+      "Send after all sessions in this project are idle\nCtrl+Enter",
+    );
+    fireEvent.click(projectQueueButton);
+
+    await waitFor(() => {
+      expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockCreateProjectQueueItem).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        target: expect.objectContaining({
+          type: "new-session",
+          mode: "default",
+          model: "opus",
+          provider: "claude",
+        }),
+        message: expect.objectContaining({
+          text: "queued project work",
+          mode: "default",
+          metadata: expect.objectContaining({
+            deliveryIntent: "deferred",
+            clientTimestamp: expect.any(Number),
+          }),
+        }),
+        createdFrom: { client: "new-session" },
+      }),
+    );
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockReportProjectQueueCollectionSnapshot).toHaveBeenCalledWith(
+      { projectId: "project-1", items: [] },
+    );
+  });
+
+  it("uses Ctrl+Enter to queue a new session through Project Queue", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(composer, {
+      target: { value: "queued project shortcut" },
+    });
+    fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockCreateProjectQueueItem).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        message: expect.objectContaining({
+          text: "queued project shortcut",
+          metadata: expect.objectContaining({
+            deliveryIntent: "deferred",
+          }),
+        }),
+        createdFrom: { client: "new-session" },
+      }),
+    );
+    expect(mockStartSession).not.toHaveBeenCalled();
+  });
+
+  it("queues staged new-session files through Project Queue", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+    mockUploadStagedAttachment.mockResolvedValue(stagedRef);
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("missing file input");
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["hello"], "notes.txt", { type: "text/plain" })],
+      },
+    });
+    await waitFor(() => {
+      expect(draftAttachmentState.value?.refs).toEqual([stagedRef]);
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "queued project work with file" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolbarProjectQueueLabel" }),
+    );
+
+    await waitFor(() => {
+      expect(mockCreateProjectQueueItem).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockCreateProjectQueueItem).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        message: expect.objectContaining({
+          text: "queued project work with file",
+          stagedAttachments: {
+            batchId: stagedRef.batchId,
+            refs: [stagedRef],
+            updatedAt: expect.any(String),
+          },
+        }),
+      }),
+    );
+    expect(mockCreateSession).not.toHaveBeenCalled();
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(draftAttachmentState.value).toBe(null);
+  });
+
+  it("shows the new-session Project Queue action from project blocking counts", () => {
+    toolbarVisibilityState.projectQueue = true;
+    serverSettingsState.isLoading = false;
+    const activeProject = {
+      ...chooserProjects[0],
+      projectQueueBlockingCount: 1,
+    };
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={activeProject}
+        projects={[activeProject, chooserProjects[1]]}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "toolbarProjectQueueLabel" }),
+    ).toBeTruthy();
+  });
+
+  it("hides the new-session Project Queue action when the project is inactive", () => {
+    toolbarVisibilityState.projectQueue = true;
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
+    ).toBe(null);
+  });
+
+  it("hides the new-session Project Queue action without server capability", () => {
+    toolbarVisibilityState.projectQueue = true;
+    versionState.version = { capabilities: [] };
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
+    ).toBe(null);
+  });
+
+  it("hides the new-session Project Queue action by default", () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
+    ).toBe(null);
+  });
+
+  it("shows and updates the initial provider effort selector", async () => {
     modelSettingsState.thinkingMode = "on";
     modelSettingsState.effortLevel = "medium";
+    serverSettingsState.isLoading = false;
 
     render(
       <NewSessionForm
@@ -605,7 +1427,21 @@ describe("NewSessionForm", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Low" }));
 
-    expect(mockSetEffortLevel).toHaveBeenCalledWith("low");
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith(
+        "newSessionDefaults",
+        expect.objectContaining({
+          provider: "claude",
+          providers: expect.objectContaining({
+            claude: expect.objectContaining({
+              model: "opus",
+              thinkingMode: "on",
+              effortLevel: "low",
+            }),
+          }),
+        }),
+      );
+    });
   });
 
   it("shows the Show-thinking control in session setup", () => {
@@ -619,11 +1455,11 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    // The new-session form edits the same persisted thinking setting as the
-    // New Session Defaults page, so the Show-thinking toggle belongs here
-    // alongside the mode control (restored in "new session: restore
-    // Show-thinking control").
-    expect(screen.getByText("modelSettingsThinkingTitle")).toBeDefined();
+    // Provider thinking and Show-thinking are separate sections, but both are
+    // still available during session setup.
+    expect(
+      screen.getAllByText("modelSettingsThinkingTitle").length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("showThinkingTitle")).toBeDefined();
   });
 
@@ -684,6 +1520,57 @@ describe("NewSessionForm", () => {
     fireEvent.change(projectInput, { target: { value: "Beta" } });
 
     expect(shortcutNames()).toEqual(["newSessionProjectDetached", "Beta"]);
+  });
+
+  it("closes the project chooser when interacting outside it", () => {
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    fireEvent.click(
+      container.querySelector(".new-session-project-summary") as HTMLElement,
+    );
+
+    expect(
+      container.querySelector("#new-session-project-panel"),
+    ).not.toBeNull();
+
+    fireEvent.pointerDown(screen.getByPlaceholderText("newSessionPlaceholder"));
+
+    expect(container.querySelector("#new-session-project-panel")).toBeNull();
+  });
+
+  it("keeps the project chooser open while typing a custom path", () => {
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const projectInput = screen.getByPlaceholderText(
+      "newSessionProjectPathPlaceholder",
+    ) as HTMLInputElement;
+
+    fireEvent.click(
+      container.querySelector(".new-session-project-summary") as HTMLElement,
+    );
+    fireEvent.pointerDown(projectInput);
+    fireEvent.focus(projectInput);
+    fireEvent.change(projectInput, {
+      target: { value: "/Users/kgraehl/code/yepanywhere" },
+    });
+
+    expect(
+      container.querySelector("#new-session-project-panel"),
+    ).not.toBeNull();
+    expect(screen.getByText("newSessionProjectUseTypedPath")).toBeDefined();
+    expect(screen.getByText("/Users/kgraehl/code/yepanywhere")).toBeDefined();
   });
 
   it("uses visit recency and shows more than four project shortcuts", () => {
@@ -763,7 +1650,7 @@ describe("NewSessionForm", () => {
     expect(screen.queryByRole("button", { name: "HD" })).toBeNull();
   });
 
-  it("orders permission mode last among the config controls", async () => {
+  it("places all-provider controls before provider-specific controls", async () => {
     serverSettingsState.isLoading = false;
 
     const { container } = render(
@@ -781,18 +1668,61 @@ describe("NewSessionForm", () => {
       ).toBeDefined();
     });
 
-    // Permission mode is the tallest control, so it anchors the bottom as the
-    // full-width last item rather than sitting above the helper controls.
     const headings = Array.from(
       container.querySelectorAll(".new-session-provider-slot h3"),
       (element) => element.textContent,
     );
     expect(headings.indexOf("newSessionModeTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionRecapTitle"),
-    );
-    expect(headings.indexOf("newSessionModeTitle")).toBeGreaterThan(
       headings.indexOf("newSessionPromptSuggestionsTitle"),
     );
+    expect(headings.indexOf("showThinkingTitle")).toBeGreaterThan(
+      headings.indexOf("newSessionModeTitle"),
+    );
+    expect(headings.indexOf("newSessionProviderTitle")).toBeGreaterThan(
+      headings.indexOf("showThinkingTitle"),
+    );
+    expect(headings.indexOf("modelSettingsThinkingTitle")).toBeGreaterThan(
+      headings.indexOf("newSessionModelTitle"),
+    );
+  });
+
+  it("shows the selected recap timing description as a caption and tooltip", async () => {
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "default",
+        recapMode: "side-session",
+        recapAfterSeconds: 124,
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const tailedDescription =
+      "Summarize tailed assistant output after backgrounding (not closing) for 124 s.";
+    const forkedDescription =
+      "Summarize from a temporary fork after backgrounding (not closing) for 124 s.";
+
+    await waitFor(() => {
+      expect(screen.getByText(tailedDescription)).toBeDefined();
+    });
+    expect(
+      screen
+        .getByRole("button", { name: "recapModeSideSession" })
+        .getAttribute("title"),
+    ).toBe(tailedDescription);
+    expect(
+      screen
+        .getByRole("button", { name: "recapModeFork" })
+        .getAttribute("title"),
+    ).toBe(forkedDescription);
   });
 
   it("keeps the drafted prompt when switching from detached to a project", async () => {
@@ -836,7 +1766,9 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    expect(new Set(draftKeys)).toEqual(new Set(["draft-new-session"]));
+    expect(new Set(draftKeys)).toEqual(
+      new Set(["draft-new-session:host%3Atest"]),
+    );
   });
 
   it("resolves a typed project path before starting the session", async () => {
@@ -936,7 +1868,9 @@ describe("NewSessionForm", () => {
     expect(badge.textContent).toContain("Transcribing");
 
     expect(textarea.disabled).toBe(false);
-    fireEvent.change(textarea, { target: { value: "typed while transcribing" } });
+    fireEvent.change(textarea, {
+      target: { value: "typed while transcribing" },
+    });
     expect(textarea.value).toBe("typed while transcribing");
 
     fireEvent.keyDown(textarea, { key: "Escape" });
@@ -975,19 +1909,21 @@ describe("NewSessionForm", () => {
     fireEvent.contextMenu(screen.getByText("voice"));
     expect(
       screen.queryByRole("radio", {
-        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+        name: "Grok STT through YA batch",
       }),
     ).toBeNull();
     expect(
-      screen.getByRole("radio", {
-        name: /^Grok STT direct Browser streams PCM audio directly to xAI\.$/,
-      }).getAttribute("aria-checked"),
+      screen
+        .getByRole("radio", {
+          name: "Grok STT direct",
+        })
+        .getAttribute("aria-checked"),
     ).toBe("true");
     expect(screen.getByText("Smart Turn")).toBeDefined();
 
     fireEvent.click(
       screen.getByRole("radio", {
-        name: /^Grok STT through YA Browser streams PCM audio through YA to xAI\.$/,
+        name: "Grok STT through YA",
       }),
     );
     expect(mockSetSpeechMethod).toHaveBeenCalledWith("ya-grok");
@@ -1044,7 +1980,7 @@ describe("NewSessionForm", () => {
 
     expect(
       screen.queryByRole("radio", {
-        name: /^Grok STT through YA batch Browser sends a complete compressed recording through YA to xAI\.$/,
+        name: "Grok STT through YA batch",
       }),
     ).toBeNull();
   });
@@ -1062,11 +1998,11 @@ describe("NewSessionForm", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
     expect(
-      screen.queryByRole("button", {
+      screen.getByRole("button", {
         name: /promptSuggestionModeNative/,
       }),
-    ).toBeNull();
-    expect(screen.getByText("promptSuggestionNativeUnsupported")).toBeDefined();
+    ).toBeDefined();
+    expect(screen.queryByText("promptSuggestionNativeUnsupported")).toBeNull();
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
     });
@@ -1118,13 +2054,10 @@ describe("NewSessionForm", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /promptSuggestionModeOff/ })
+        screen.getByRole("button", { name: /promptSuggestionModeNative/ })
           .className,
       ).toContain("selected");
     });
-    expect(
-      screen.queryByRole("button", { name: /promptSuggestionModeNative/ }),
-    ).toBeNull();
     expect(mockUpdateSetting).toHaveBeenCalledWith(
       "newSessionDefaults",
       expect.objectContaining({
@@ -1132,6 +2065,24 @@ describe("NewSessionForm", () => {
         promptSuggestionMode: "native",
       }),
     );
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "hello",
+        expect.objectContaining({
+          provider: "codex",
+          promptSuggestionMode: "off",
+        }),
+        undefined,
+        expect.any(Number),
+      );
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
 
@@ -1159,10 +2110,13 @@ describe("NewSessionForm", () => {
       screen.getByRole("button", { name: /recapModeSideSession/ }),
     ).toBeDefined();
     expect(
-      screen.queryByRole("button", {
+      screen.queryByRole("button", { name: /recapModeNative/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", {
         name: /promptSuggestionModeNative/,
       }),
-    ).toBeNull();
+    ).toBeDefined();
 
     fireEvent.click(
       screen.getByRole("button", { name: /recapModeSideSession/ }),
@@ -1189,7 +2143,7 @@ describe("NewSessionForm", () => {
     });
   });
 
-  it("offers configured helper targets for side-session recaps", async () => {
+  it("hides configured helper targets until runtime support exists", async () => {
     serverSettingsState.settings = {
       helperTargets: [
         {
@@ -1214,7 +2168,7 @@ describe("NewSessionForm", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /recapModeSideSession/ }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Local vLLM" }));
+    expect(screen.queryByRole("button", { name: "Local vLLM" })).toBeNull();
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
     });
@@ -1228,7 +2182,7 @@ describe("NewSessionForm", () => {
         "hello",
         expect.objectContaining({
           recapMode: "side-session",
-          helperSideModel: "helper-target:local-vllm",
+          helperSideModel: "cheapest",
         }),
         undefined,
         expect.any(Number),

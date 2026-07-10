@@ -1,19 +1,28 @@
+import type { ProjectQueueMessage } from "@yep-anywhere/shared";
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { ProjectCard } from "../components/ProjectCard";
-import { useInboxContext } from "../contexts/InboxContext";
+import { ProjectQueueSection } from "../components/ProjectQueueSection";
+import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProjects } from "../hooks/useProjects";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
+import { useInboxCountsByProject } from "../lib/clientSummaryStore";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import type { Project } from "../types";
+
+const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 
 export function ProjectsPage() {
   const { t } = useI18n();
   const { projects, loading, error, refetch } = useProjects();
-  const { needsAttention, active } = useInboxContext();
+  const { version } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(version);
+  const inboxCountsByProject = useInboxCountsByProject();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProjectPath, setNewProjectPath] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
@@ -23,36 +32,42 @@ export function ProjectsPage() {
     null,
   );
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const basePath = useRemoteBasePath();
+  const highlightedQueueItemId = searchParams.get("queueItem");
 
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
 
-  // Count needs-attention items per project (client-side filter - free)
-  const attentionByProject = useMemo(() => {
+  const projectIds = useMemo(
+    () => projects.map((project) => project.id),
+    [projects],
+  );
+  const projectQueueProjectIds = supportsProjectQueue
+    ? projectIds
+    : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
+  const projectQueues = useProjectQueues(projectQueueProjectIds);
+  const queueCountByProject = useMemo(() => {
+    if (!supportsProjectQueue) return new Map<string, number>();
     const counts = new Map<string, number>();
-    for (const item of needsAttention) {
-      const current = counts.get(item.projectId) ?? 0;
-      counts.set(item.projectId, current + 1);
+    for (const [projectId, items] of Object.entries(
+      projectQueues.queuesByProject,
+    )) {
+      const visibleCount = items.filter(
+        (item) => item.status === "queued" || item.status === "failed",
+      ).length;
+      if (visibleCount > 0) {
+        counts.set(projectId, visibleCount);
+      }
     }
     return counts;
-  }, [needsAttention]);
-
-  // Count actively-thinking sessions per project (from inbox "active" tier)
-  const thinkingByProject = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of active) {
-      const current = counts.get(item.projectId) ?? 0;
-      counts.set(item.projectId, current + 1);
-    }
-    return counts;
-  }, [active]);
+  }, [projectQueues.queuesByProject, supportsProjectQueue]);
 
   // Sort projects: those needing attention first, then by recency
   const sortedProjects = useMemo(() => {
     return [...projects].sort((a, b) => {
-      const aNeeds = attentionByProject.get(a.id) ?? 0;
-      const bNeeds = attentionByProject.get(b.id) ?? 0;
+      const aNeeds = inboxCountsByProject.get(a.id)?.needsAttention ?? 0;
+      const bNeeds = inboxCountsByProject.get(b.id)?.needsAttention ?? 0;
 
       // Projects needing attention come first
       if (aNeeds > 0 && bNeeds === 0) return -1;
@@ -63,7 +78,7 @@ export function ProjectsPage() {
       const bTime = b.lastActivity ? new Date(b.lastActivity).getTime() : 0;
       return bTime - aTime;
     });
-  }, [projects, attentionByProject]);
+  }, [projects, inboxCountsByProject]);
 
   const handleAddProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,6 +118,73 @@ export function ProjectsPage() {
       );
     } finally {
       setDeletingProjectId(null);
+    }
+  };
+
+  const handleDeleteQueueItem = async (projectId: string, itemId: string) => {
+    try {
+      await projectQueues.deleteItem(projectId, itemId);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handlePauseProjectQueue = async () => {
+    try {
+      await projectQueues.pauseDispatch();
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleResumeProjectQueue = async () => {
+    try {
+      await projectQueues.resumeDispatch();
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handlePromoteProjectQueueItem = async (
+    projectId: string,
+    itemId: string,
+    options?: { force?: boolean },
+  ) => {
+    try {
+      await projectQueues.promoteNow(projectId, itemId, options);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleRetryQueueItem = async (projectId: string, itemId: string) => {
+    try {
+      await projectQueues.retryItem(projectId, itemId);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleMoveQueueItemToTop = async (
+    projectId: string,
+    itemId: string,
+  ) => {
+    try {
+      await projectQueues.moveItemToTop(projectId, itemId);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleUpdateQueueItem = async (
+    projectId: string,
+    itemId: string,
+    message: ProjectQueueMessage,
+  ) => {
+    try {
+      await projectQueues.updateItem(projectId, itemId, { message });
+    } catch {
+      // The hook exposes the error in the queue section.
     }
   };
 
@@ -191,6 +273,30 @@ export function ProjectsPage() {
             <div className="add-project-error">{deleteError}</div>
           )}
 
+          {supportsProjectQueue && (
+            <ProjectQueueSection
+              projects={projects}
+              items={projectQueues.items}
+              recoveredSessionQueues={projectQueues.recoveredSessionQueues}
+              loading={projectQueues.loading}
+              error={projectQueues.error}
+              mutatingItemId={projectQueues.mutatingItemId}
+              mutatingDispatchState={projectQueues.mutatingDispatchState}
+              mutatingPromoteItemId={projectQueues.mutatingPromoteItemId}
+              dispatchState={projectQueues.dispatchState}
+              projectStatusesByProject={projectQueues.projectStatusesByProject}
+              highlightedItemId={highlightedQueueItemId}
+              basePath={basePath}
+              onPauseDispatch={handlePauseProjectQueue}
+              onResumeDispatch={handleResumeProjectQueue}
+              onPromoteNow={handlePromoteProjectQueueItem}
+              onDeleteItem={handleDeleteQueueItem}
+              onRetryItem={handleRetryQueueItem}
+              onMoveItemToTop={handleMoveQueueItemToTop}
+              onUpdateItem={handleUpdateQueueItem}
+            />
+          )}
+
           {isEmpty ? (
             <div className="inbox-empty">
               <svg
@@ -215,8 +321,13 @@ export function ProjectsPage() {
                 <ProjectCard
                   key={project.id}
                   project={project}
-                  needsAttentionCount={attentionByProject.get(project.id) ?? 0}
-                  thinkingCount={thinkingByProject.get(project.id) ?? 0}
+                  needsAttentionCount={
+                    inboxCountsByProject.get(project.id)?.needsAttention ?? 0
+                  }
+                  thinkingCount={
+                    inboxCountsByProject.get(project.id)?.active ?? 0
+                  }
+                  queueCount={queueCountByProject.get(project.id) ?? 0}
                   basePath={basePath}
                   onDeleteProject={handleDeleteProject}
                   isDeleting={deletingProjectId === project.id}

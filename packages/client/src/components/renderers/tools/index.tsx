@@ -3,6 +3,10 @@ import type { ToolCallItem } from "../../../types/renderItems";
 import type { RenderContext } from "../types";
 import type { ToolRenderer } from "./types";
 
+// An alias here asserts the provider tool's input schema is compatible with
+// the canonical renderer it routes to. Spec:
+// topics/provider-read-edit-disciplines.md § How YA maps named blocks to one
+// presentation.
 const TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "Bash",
   exec_command: "Bash",
@@ -21,6 +25,33 @@ function canonicalizeToolName(toolName: string): string {
     TOOL_NAME_ALIASES[toolName] ??
     TOOL_NAME_ALIASES[toolName.toLowerCase()] ??
     toolName
+  );
+}
+
+export type ExplorationKind = "read" | "search" | "list";
+
+// Classifies read/search/list-shaped actions for explored-run grouping.
+// Unlike TOOL_NAME_ALIASES, membership asserts nothing about input schema, so
+// provider tool names can be classified without routing them to a canonical
+// renderer. Spec: topics/provider-read-edit-disciplines.md § Exploration-kind
+// classification.
+const EXPLORATION_TOOL_KINDS: Record<string, ExplorationKind> = {
+  read: "read",
+  grep: "search",
+  search: "search",
+  grepsearch: "search",
+  grep_search: "search",
+  glob: "list",
+  ls: "list",
+  list: "list",
+  listdir: "list",
+  list_dir: "list",
+  "list-dir": "list",
+};
+
+export function getExplorationKind(toolName: string): ExplorationKind | null {
+  return (
+    EXPLORATION_TOOL_KINDS[canonicalizeToolName(toolName).toLowerCase()] ?? null
   );
 }
 
@@ -157,13 +188,16 @@ export const toolRegistry = new ToolRendererRegistry(fallbackToolRenderer);
 import { askUserQuestionRenderer } from "./AskUserQuestionRenderer";
 import { bashOutputRenderer } from "./BashOutputRenderer";
 import { bashRenderer } from "./BashRenderer";
+import { codeModeExecRenderer } from "./CodeModeExecRenderer";
 import { editRenderer } from "./EditRenderer";
 import { exitPlanModeRenderer } from "./ExitPlanModeRenderer";
 import { globRenderer } from "./GlobRenderer";
 import { grepRenderer } from "./GrepRenderer";
 import { killShellRenderer } from "./KillShellRenderer";
 import { readRenderer } from "./ReadRenderer";
+import { spawnAgentRenderer } from "./SpawnAgentRenderer";
 import { taskOutputRenderer } from "./TaskOutputRenderer";
+import { taskCreateRenderer, taskUpdateRenderer } from "./TaskListRenderer";
 import { taskRenderer } from "./TaskRenderer";
 import { todoWriteRenderer } from "./TodoWriteRenderer";
 import { updatePlanRenderer } from "./UpdatePlanRenderer";
@@ -181,6 +215,8 @@ toolRegistry.register(writeRenderer);
 toolRegistry.register(globRenderer);
 toolRegistry.register(grepRenderer);
 toolRegistry.register(todoWriteRenderer);
+toolRegistry.register(taskCreateRenderer);
+toolRegistry.register(taskUpdateRenderer);
 
 // Tier 3: Less common tools
 toolRegistry.register(taskRenderer);
@@ -193,6 +229,8 @@ toolRegistry.register(writeStdinRenderer);
 
 // Codex-specific tools
 toolRegistry.register(viewImageRenderer);
+toolRegistry.register(spawnAgentRenderer);
+toolRegistry.register(codeModeExecRenderer);
 
 // Tier 4: Background/async tools
 toolRegistry.register(bashOutputRenderer);

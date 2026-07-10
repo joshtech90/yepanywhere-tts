@@ -3,12 +3,10 @@ import { toUrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { I18nProvider } from "../../../i18n";
+import { buildAssistantRenderSegments } from "../../../lib/sessionDetail/renderSelectors";
 import type { Message } from "../../../types";
 import type { RenderItem, ToolCallItem } from "../../../types/renderItems";
-import {
-  buildAssistantRenderSegments,
-  ExploredToolGroup,
-} from "../ExploredToolGroup";
+import { ExploredToolGroup } from "../ExploredToolGroup";
 
 vi.mock("../../../contexts/SchemaValidationContext", () => ({
   useSchemaValidationContext: () => ({
@@ -47,6 +45,43 @@ function toolCall(
     sourceMessages: [sourceMessage(`msg-${id}`, timestamp)],
   };
 }
+
+function projectionFor(items: ToolCallItem[]) {
+  const segment = buildAssistantRenderSegments(items).find(
+    (candidate) => candidate.kind === "explored",
+  );
+  if (segment?.kind !== "explored") {
+    throw new Error("Expected explored projection");
+  }
+  return segment.projection;
+}
+
+const threeReadActions: NonNullable<ToolCallItem["displayActions"]> = [
+  {
+    kind: "read",
+    path: "src/session.ts",
+    absolutePath: `${projectRoot}/src/session.ts`,
+    name: "session.ts",
+    startLine: 1,
+    endLine: 100,
+  },
+  {
+    kind: "read",
+    path: "src/session.ts",
+    absolutePath: `${projectRoot}/src/session.ts`,
+    name: "session.ts",
+    startLine: 101,
+    endLine: 200,
+  },
+  {
+    kind: "read",
+    path: "src/driver.ts",
+    absolutePath: `${projectRoot}/src/driver.ts`,
+    name: "driver.ts",
+    startLine: 1,
+    endLine: 80,
+  },
+];
 
 describe("ExploredToolGroup", () => {
   afterEach(() => {
@@ -139,16 +174,21 @@ describe("ExploredToolGroup", () => {
     });
 
     const { container } = render(
-      <SessionMetadataProvider
-        projectId={projectId}
-        projectPath={projectRoot}
-        sessionId="session-1"
-      >
-        <ExploredToolGroup id="explored-test" items={[read, search, list]} />
-      </SessionMetadataProvider>,
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath={projectRoot}
+          sessionId="session-1"
+        >
+          <ExploredToolGroup
+            id="explored-test"
+            projection={projectionFor([read, search, list])}
+          />
+        </SessionMetadataProvider>
+      </I18nProvider>,
     );
 
-    expect(screen.getByText("Explored")).toBeDefined();
+    expect(screen.getByText("Exploring")).toBeDefined();
     expect(screen.getByText("Read")).toBeDefined();
     expect(screen.getByText("Grep")).toBeDefined();
     expect(screen.getByText("List")).toBeDefined();
@@ -202,13 +242,18 @@ describe("ExploredToolGroup", () => {
     });
 
     render(
-      <SessionMetadataProvider
-        projectId={windowsProjectId}
-        projectPath={windowsProjectRoot}
-        sessionId="session-1"
-      >
-        <ExploredToolGroup id="explored-test" items={[read, search, list]} />
-      </SessionMetadataProvider>,
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={windowsProjectId}
+          projectPath={windowsProjectRoot}
+          sessionId="session-1"
+        >
+          <ExploredToolGroup
+            id="explored-test"
+            projection={projectionFor([read, search, list])}
+          />
+        </SessionMetadataProvider>
+      </I18nProvider>,
     );
 
     expect(screen.getByText("note.md")).toBeDefined();
@@ -276,7 +321,10 @@ describe("ExploredToolGroup", () => {
           projectPath={projectRoot}
           sessionId="session-1"
         >
-          <ExploredToolGroup id="explored-test" items={[read, search]} />
+          <ExploredToolGroup
+            id="explored-test"
+            projection={projectionFor([read, search])}
+          />
         </SessionMetadataProvider>
       </I18nProvider>,
     );
@@ -301,5 +349,246 @@ describe("ExploredToolGroup", () => {
     expect(screen.getByText("src/a.ts")).toBeDefined();
     expect(screen.getByText("12")).toBeDefined();
     expect(document.querySelectorAll(".grep-match-highlight")).toHaveLength(2);
+  });
+
+  it("renders one multi-action parent compactly and reveals one raw result owner", () => {
+    const command = [
+      "sed -n '1,100p' src/session.ts",
+      "sed -n '101,200p' src/session.ts",
+      "sed -n '1,80p' src/driver.ts",
+    ].join(" && ");
+    const compound = {
+      ...toolCall(
+        "call-three-reads",
+        "Bash",
+        { command, cwd: projectRoot },
+        "2026-05-28T00:00:00.000Z",
+        {
+          content: "combined output once",
+          isError: false,
+          structured: {
+            stdout: "combined output once",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          },
+        },
+      ),
+      displayActions: threeReadActions,
+    } satisfies ToolCallItem;
+    const projection = projectionFor([compound]);
+
+    const { container } = render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath={projectRoot}
+          sessionId="session-1"
+        >
+          <ExploredToolGroup
+            id={projection.id}
+            projection={projection}
+            sessionProvider="codex"
+          />
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("Explored")).toBeDefined();
+    expect(screen.getByText("3 items")).toBeDefined();
+    expect(screen.getAllByText("Read")).toHaveLength(3);
+    expect(screen.getByText("lines 1-100")).toBeDefined();
+    expect(screen.getByText("lines 101-200")).toBeDefined();
+    expect(screen.getByText("lines 1-80")).toBeDefined();
+    expect(screen.queryByText(command)).toBeNull();
+    expect(screen.queryByText("combined output once")).toBeNull();
+    const semanticEntries = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-exploration-entry-id]"),
+    );
+    expect(semanticEntries).toHaveLength(3);
+    expect(semanticEntries.every((entry) => !entry.dataset.renderId)).toBe(
+      true,
+    );
+    expect(screen.getAllByRole("button", { name: "Copy path" })).toHaveLength(
+      3,
+    );
+    expect(
+      screen.getByRole("link", { name: "lines 1-100" }).getAttribute("href"),
+    ).toContain("line=1&lineEnd=100&view=range");
+
+    const groupHeader = container.querySelector<HTMLButtonElement>(
+      ".explored-group-header",
+    );
+    const groupBody = container.querySelector<HTMLElement>(
+      ".explored-group-body",
+    );
+    expect(groupHeader?.getAttribute("aria-controls")).toBe(groupBody?.id);
+    expect(groupHeader?.getAttribute("aria-expanded")).toBe("true");
+
+    const detailsButton = screen.getByRole("button", {
+      name: "Show command details",
+    });
+    fireEvent.click(detailsButton);
+
+    expect(screen.getByText("Ran")).toBeDefined();
+    expect(screen.getAllByText(command)).toHaveLength(1);
+    expect(screen.getAllByText("combined output once")).toHaveLength(1);
+    expect(container.querySelectorAll(".explored-parent-raw")).toHaveLength(1);
+    expect(detailsButton.getAttribute("aria-controls")).toBe(
+      container.querySelector<HTMLElement>(".explored-parent-raw")?.id,
+    );
+  });
+
+  it("keeps duplicate filenames and long search scopes distinguishable", () => {
+    const longQuery =
+      "a deliberately long search query that must stay available when clipped";
+    const actions: NonNullable<ToolCallItem["displayActions"]> = [
+      {
+        kind: "read",
+        path: "packages/client/src/features/deeply/nested/index.ts",
+        name: "index.ts",
+        startLine: 1,
+        endLine: 40,
+      },
+      {
+        kind: "read",
+        path: "packages/server/src/features/deeply/nested/index.ts",
+        name: "index.ts",
+        startLine: 41,
+        endLine: 80,
+      },
+      {
+        kind: "search",
+        query: longQuery,
+        path: "packages/client/src/features/deeply/nested",
+      },
+    ];
+    const compound = {
+      ...toolCall("call-long-paths", "Bash", { command: "safe reads" }),
+      displayActions: actions,
+    } satisfies ToolCallItem;
+
+    const { container } = render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath={projectRoot}
+          sessionId="session-1"
+        >
+          <ExploredToolGroup
+            id="explored-long-paths"
+            projection={projectionFor([compound])}
+          />
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getByText("packages/client/src/features/deeply/nested/index.ts"),
+    ).toBeDefined();
+    expect(
+      screen.getByText("packages/server/src/features/deeply/nested/index.ts"),
+    ).toBeDefined();
+    expect(
+      screen
+        .getByText(longQuery)
+        .closest(".explored-entry-semantic-summary")
+        ?.getAttribute("title"),
+    ).toContain(longQuery);
+    expect(
+      container
+        .querySelector(".explored-entry-semantic-summary")
+        ?.getAttribute("title"),
+    ).toContain("packages/client/src/features/deeply/nested/index.ts");
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(".explored-entry-tool"),
+        (entry) => entry.textContent,
+      ),
+    ).toEqual(["Read", "Read", "Search"]);
+  });
+
+  it("preserves collapse and raw-detail state while a live parent settles to rollout", () => {
+    const command = "sed -n '1,100p' src/session.ts";
+    const pending = {
+      ...toolCall(
+        "call-stable-parent",
+        "Bash",
+        { command, cwd: projectRoot },
+        "2026-05-28T00:00:00.000Z",
+      ),
+      displayActions: threeReadActions,
+    } satisfies ToolCallItem;
+    pending.sourceMessages[0]!._source = "sdk";
+    const durable = {
+      ...toolCall(
+        "call-stable-parent",
+        "Bash",
+        { command, cwd: projectRoot },
+        "2026-05-28T00:00:00.000Z",
+        { content: "durable combined output", isError: false },
+      ),
+      displayActions: threeReadActions,
+    } satisfies ToolCallItem;
+    durable.sourceMessages[0]!._source = "jsonl";
+
+    const renderGroup = (item: ToolCallItem) => {
+      const projection = projectionFor([item]);
+      return (
+        <I18nProvider>
+          <SessionMetadataProvider
+            projectId={projectId}
+            projectPath={projectRoot}
+            sessionId="session-1"
+          >
+            <ExploredToolGroup
+              id={projection.id}
+              projection={projection}
+              sessionProvider="codex"
+            />
+          </SessionMetadataProvider>
+        </I18nProvider>
+      );
+    };
+
+    const { container, rerender } = render(renderGroup(pending));
+    const group = container.querySelector<HTMLElement>(
+      '[data-render-type="explored"]',
+    );
+    expect(screen.getByText("Exploring")).toBeDefined();
+    expect(group?.dataset.renderId).toBe(
+      "explored-call-stable-parent-call-stable-parent",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show command details" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Hide command details" }),
+    ).toBeDefined();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse explored tools" }),
+    );
+    expect(
+      group?.style.getPropertyValue("--explored-group-intrinsic-height"),
+    ).toBe("26px");
+
+    rerender(renderGroup(durable));
+    expect(screen.getByText("Explored")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Expand explored tools" }),
+    ).toBeDefined();
+    expect(container.querySelector(".explored-group-body")).toBeNull();
+    expect(group?.dataset.renderId).toBe(
+      "explored-call-stable-parent-call-stable-parent",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand explored tools" }),
+    );
+    expect(screen.getByText("durable combined output")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Hide command details" }),
+    ).toBeDefined();
   });
 });

@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { APPROVAL_AUDIT_LOG_CAPABILITY } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileAccessInfo, ServerSettings } from "../../../api/client";
 import { LocalAccessSettings } from "../LocalAccessSettings";
@@ -15,9 +16,10 @@ const {
   hookState,
   mockDisconnect,
   mockGetFileAccessInfo,
-  mockSetRelayDebugEnabled,
+  mockUpdateSetting,
   mockUpdateSettings,
   remoteState,
+  versionState,
 } = vi.hoisted(() => ({
   hookState: {
     settings: null as ServerSettings | null,
@@ -26,18 +28,20 @@ const {
   },
   mockDisconnect: vi.fn(),
   mockGetFileAccessInfo: vi.fn(),
-  mockSetRelayDebugEnabled: vi.fn(),
+  mockUpdateSetting: vi.fn(),
   mockUpdateSettings: vi.fn(),
   remoteState: {
     connection: null as null | { disconnect: () => void },
   },
+  versionState: {
+    capabilities: [] as string[],
+  },
 }));
 
 vi.mock("../../../api/client", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../../api/client")>(
-      "../../../api/client",
-    );
+  const actual = await vi.importActual<typeof import("../../../api/client")>(
+    "../../../api/client",
+  );
   return {
     ...actual,
     api: {
@@ -53,13 +57,6 @@ vi.mock("../../../contexts/AuthContext", () => ({
 
 vi.mock("../../../contexts/RemoteConnectionContext", () => ({
   useOptionalRemoteConnection: () => remoteState.connection,
-}));
-
-vi.mock("../../../hooks/useDeveloperMode", () => ({
-  useDeveloperMode: () => ({
-    relayDebugEnabled: false,
-    setRelayDebugEnabled: mockSetRelayDebugEnabled,
-  }),
 }));
 
 vi.mock("../../../hooks/useNetworkBinding", () => ({
@@ -81,9 +78,17 @@ vi.mock("../../../hooks/useServerInfo", () => ({
 vi.mock("../../../hooks/useServerSettings", () => ({
   useServerSettings: () => ({
     ...hookState,
-    updateSetting: vi.fn(),
+    updateSetting: mockUpdateSetting,
     updateSettings: mockUpdateSettings,
     refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("../../../hooks/useVersion", () => ({
+  useVersion: () => ({
+    version: {
+      capabilities: versionState.capabilities,
+    },
   }),
 }));
 
@@ -114,14 +119,9 @@ const baseSettings: ServerSettings = {
 };
 
 function checkboxFor(labelKey: string): HTMLInputElement {
-  const item = screen.getByText(labelKey).closest(".settings-item");
-  const checkbox = item?.querySelector<HTMLInputElement>(
-    'input[type="checkbox"]',
-  );
-  if (!checkbox) {
-    throw new Error(`Missing checkbox for ${labelKey}`);
-  }
-  return checkbox;
+  return screen.getByRole("checkbox", {
+    name: labelKey,
+  }) as HTMLInputElement;
 }
 
 describe("LocalAccessSettings", () => {
@@ -131,7 +131,9 @@ describe("LocalAccessSettings", () => {
     hookState.error = null;
     remoteState.connection = { disconnect: mockDisconnect };
     mockGetFileAccessInfo.mockResolvedValue(fileAccessInfo);
+    mockUpdateSetting.mockResolvedValue(undefined);
     mockUpdateSettings.mockResolvedValue(undefined);
+    versionState.capabilities = [APPROVAL_AUDIT_LOG_CAPABILITY];
   });
 
   afterEach(() => {
@@ -143,9 +145,14 @@ describe("LocalAccessSettings", () => {
   it("shows file access controls in relay mode without direct port controls", async () => {
     render(<LocalAccessSettings />);
 
-    expect(await screen.findByText("fileAccessTitle")).toBeTruthy();
-    expect(screen.getByText("fileAccessHome")).toBeTruthy();
-    expect(screen.getByText("localAccessRelayDebugTitle")).toBeTruthy();
+    const fileAccessPanel = await screen.findByRole("group", {
+      name: "fileAccessTitle",
+    });
+    expect(fileAccessPanel.contains(screen.getByText("fileAccessHome"))).toBe(
+      true,
+    );
+    expect(screen.queryByText("developmentRelayDebugTitle")).toBeNull();
+    expect(screen.queryByText("localAccessRelayDebugTitle")).toBeNull();
     expect(screen.queryByText("localAccessListeningPortTitle")).toBeNull();
   });
 
@@ -173,5 +180,46 @@ describe("LocalAccessSettings", () => {
         },
       }),
     );
+  });
+
+  it("updates approval audit logging when the server supports it", async () => {
+    hookState.settings = {
+      ...baseSettings,
+      approvalAuditLogEnabled: false,
+    };
+
+    render(<LocalAccessSettings />);
+
+    const auditToggle = await screen.findByRole("checkbox", {
+      name: "localAccessApprovalAuditTitle",
+    });
+    expect(auditToggle).toHaveProperty("disabled", false);
+    expect(auditToggle).toHaveProperty("checked", false);
+
+    fireEvent.click(auditToggle);
+
+    expect(mockUpdateSetting).toHaveBeenCalledWith(
+      "approvalAuditLogEnabled",
+      true,
+    );
+  });
+
+  it("shows legacy approval audit logging as read-only without capability", async () => {
+    versionState.capabilities = [];
+    hookState.settings = {
+      ...baseSettings,
+      approvalAuditLogEnabled: false,
+    };
+
+    render(<LocalAccessSettings />);
+
+    const auditToggle = await screen.findByRole("checkbox", {
+      name: "localAccessApprovalAuditTitle",
+    });
+    expect(auditToggle).toHaveProperty("disabled", true);
+    expect(auditToggle).toHaveProperty("checked", true);
+    expect(
+      screen.getByText("localAccessApprovalAuditUnsupportedDescription"),
+    ).toBeTruthy();
   });
 });

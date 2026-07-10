@@ -13,6 +13,8 @@
     "i18n:missing": "node scripts/report-i18n-missing.mjs",
     "i18n:prune": "node scripts/prune-i18n-placeholders.mjs --write",
     "i18n:scan": "node scripts/find-raw-i18n-copy.mjs",
+    "console:scan": "node scripts/find-console-chatter.mjs",
+    "console:volume": "node scripts/report-client-log-volume.mjs",
     "dev": "node scripts/dev.js",
     "staging": "node scripts/staging.js",
     "dev:auto": "pnpm --filter server dev & pnpm --filter client dev",
@@ -52,12 +54,17 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.140.0"
+      "expectedVersion": "0.144.1",
+      "compatibleThroughVersion": "0.144.1"
+    },
+    "claudeCode": {
+      "compatibleThroughVersion": "2.1.205",
+      "claudeAgentSdkVersion": "0.3.205"
     }
   },
   "dependencies": {
     "tssrp6a": "^3.0.0",
     "tweetnacl": "^1.0.3"
   },
-  "version": "0.5.2"
+  "version": "0.6.1"
 }

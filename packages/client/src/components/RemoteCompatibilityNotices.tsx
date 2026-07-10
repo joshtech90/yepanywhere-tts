@@ -19,17 +19,21 @@ export function RemoteCompatibilityNotices({
   installId,
 }: RemoteCompatibilityNoticesProps) {
   const notices = useMemo(
-    () =>
-      getRemoteCompatibilityNotices({
+    () => {
+      if (!versionInfo) return [];
+
+      return getRemoteCompatibilityNotices({
         currentVersion: versionInfo?.current ?? null,
         latestVersion: versionInfo?.latest ?? null,
         updateAvailable: versionInfo?.updateAvailable ?? false,
         installSource: versionInfo?.installSource,
         resumeProtocolVersion: versionInfo?.resumeProtocolVersion,
+        remoteCompatibilityLevel: versionInfo?.remoteCompatibilityLevel,
         capabilities: versionInfo?.capabilities,
         relayUsername,
         installId,
-      }),
+      });
+    },
     [installId, relayUsername, versionInfo],
   );
   const { dismissNotice, snoozeNotice, visibleNotices } =

@@ -35,7 +35,94 @@ function createSummary(): SessionSummary {
   };
 }
 
+function createProcess(
+  projectId: UrlProjectId,
+  options: {
+    state?: { type: "idle" | "in-turn" | "waiting-input" };
+    queueDepth?: number;
+    retainingProviderWork?: boolean;
+    deferredQueueDepth?: number;
+    pendingInput?: unknown;
+    livenessStatus?: string;
+  } = {},
+) {
+  return {
+    projectId,
+    state: options.state ?? { type: "idle" },
+    queueDepth: options.queueDepth ?? 0,
+    isRetainingProviderWork: vi.fn(
+      () => options.retainingProviderWork ?? false,
+    ),
+    getDeferredQueueSummary: vi.fn(() =>
+      Array.from({ length: options.deferredQueueDepth ?? 0 }, () => ({})),
+    ),
+    getPendingInputRequest: vi.fn(() => options.pendingInput ?? null),
+    getLivenessSnapshot: vi.fn(() => ({
+      derivedStatus: options.livenessStatus ?? "verified-idle",
+    })),
+  };
+}
+
 describe("Projects Routes", () => {
+  it("enriches project list responses with Project Queue counts", async () => {
+    const project = createProject();
+    const routes = createProjectsRoutes({
+      scanner: {
+        listProjects: vi.fn(async () => [project]),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(),
+      projectQueueService: {
+        listAll: vi.fn(() => [
+          {
+            id: "queue-1",
+            projectId: project.id,
+            target: { type: "new-session" },
+            messagePreview: "Queued session",
+            message: { text: "Queued session" },
+            createdAt: "2026-03-10T09:45:00.000Z",
+            updatedAt: "2026-03-10T09:45:00.000Z",
+            status: "queued",
+            attachmentCount: 0,
+          },
+          {
+            id: "queue-2",
+            projectId: project.id,
+            target: { type: "existing-session", sessionId: "sess-1" },
+            messagePreview: "Sending now",
+            message: { text: "Sending now" },
+            createdAt: "2026-03-10T09:46:00.000Z",
+            updatedAt: "2026-03-10T09:46:00.000Z",
+            status: "dispatching",
+            attachmentCount: 0,
+          },
+          {
+            id: "queue-3",
+            projectId: project.id,
+            target: { type: "existing-session", sessionId: "sess-2" },
+            messagePreview: "Needs retry",
+            message: { text: "Needs retry" },
+            createdAt: "2026-03-10T09:47:00.000Z",
+            updatedAt: "2026-03-10T09:47:00.000Z",
+            status: "failed",
+            attachmentCount: 0,
+          },
+        ]),
+        listProject: vi.fn(),
+      } as unknown as Parameters<
+        typeof createProjectsRoutes
+      >[0]["projectQueueService"],
+    });
+
+    const response = await routes.request("/");
+    expect(response.status).toBe(200);
+
+    const json = await response.json();
+    expect(json.projects[0]).toMatchObject({
+      id: project.id,
+      projectQueueCount: 2,
+    });
+  });
+
   it("lists mixed-provider sessions through the shared provider resolver", async () => {
     const project = createProject();
     const summary = createSummary();
@@ -72,6 +159,55 @@ describe("Projects Routes", () => {
       id: "sess-1",
       title: "Codex project session",
       provider: "codex",
+    });
+  });
+
+  it("enriches single-project responses with live activity counts", async () => {
+    const project = {
+      ...createProject(),
+      id: toUrlProjectId("/tmp/project"),
+    };
+    const routes = createProjectsRoutes({
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(),
+      supervisor: {
+        getAllProcesses: vi.fn(() => [
+          createProcess(project.id),
+          createProcess(project.id, { state: { type: "in-turn" } }),
+          createProcess(toUrlProjectId("/tmp/other"), {
+            state: { type: "in-turn" },
+          }),
+        ]),
+        getQueueInfo: vi.fn(() => []),
+      } as unknown as Parameters<typeof createProjectsRoutes>[0]["supervisor"],
+      externalTracker: {
+        getExternalSessions: vi.fn(() => ["external-1", "external-2"]),
+        getExternalSessionInfoWithUrlId: vi
+          .fn()
+          .mockResolvedValueOnce({
+            projectId: project.id,
+            lastActivity: new Date("2026-03-10T09:47:00.000Z"),
+          })
+          .mockResolvedValueOnce({
+            projectId: toUrlProjectId("/tmp/other"),
+            lastActivity: new Date("2026-03-10T09:48:00.000Z"),
+          }),
+      } as unknown as Parameters<
+        typeof createProjectsRoutes
+      >[0]["externalTracker"],
+    });
+
+    const response = await routes.request(`/${project.id}`);
+    expect(response.status).toBe(200);
+
+    const json = await response.json();
+    expect(json.project).toMatchObject({
+      id: project.id,
+      activeOwnedCount: 2,
+      activeExternalCount: 1,
+      projectQueueBlockingCount: 2,
     });
   });
 

@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import { BottomOverscrollReload } from "./components/BottomOverscrollReload";
+import { CacheMissBillingToasts } from "./components/CacheMissBillingToasts";
 import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
 import { CodexUpdatePrompt } from "./components/CodexUpdatePrompt";
 import { ConnectionBar } from "./components/ConnectionBar";
@@ -8,14 +9,19 @@ import { FloatingActionButton } from "./components/FloatingActionButton";
 import { ReloadBanner } from "./components/ReloadBanner";
 import { OnboardingWizard } from "./components/onboarding";
 import { AuthProvider } from "./contexts/AuthContext";
+import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
 import { InboxProvider } from "./contexts/InboxContext";
 import { SchemaValidationProvider } from "./contexts/SchemaValidationContext";
+import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { useActivityBusConnection } from "./hooks/useActivityBusConnection";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
 import { useOnboarding } from "./hooks/useOnboarding";
-import { useReloadNotifications } from "./hooks/useReloadNotifications";
+import {
+  getVisibleReloadBanners,
+  useReloadNotifications,
+} from "./hooks/useReloadNotifications";
 import { useSeedCompactThreshold } from "./hooks/useSeedCompactThreshold";
 import { I18nProvider } from "./i18n";
 import { initClientLogCollection } from "./lib/diagnostics";
@@ -52,25 +58,42 @@ function AppContent({ children }: Props) {
     pendingReloads,
     reloadBackend,
     reloadFrontend,
+    scheduleSafeRestart,
+    cancelSafeRestart,
     dismiss,
     unsafeToRestart,
-    workerActivity,
+    interruptibleSessionCount,
+    queuedSessionMessageCount,
+    safeRestartState,
+    safeRestartMutating,
+    backendReloadSafetyKnown,
   } = useReloadNotifications();
+  const visibleReloads = getVisibleReloadBanners(
+    !!isManualReloadMode,
+    pendingReloads,
+    { backendReloadSafetyKnown },
+  );
 
   return (
     <>
       <ConnectionBar />
+      <CacheMissBillingToasts />
       {!isSessionDetailRoute && <ClientLogRecordingBadge />}
-      {isManualReloadMode && pendingReloads.backend && (
+      {visibleReloads.backend && (
         <ReloadBanner
           target="backend"
           onReload={reloadBackend}
           onDismiss={() => dismiss("backend")}
+          onRestartWhenSafe={scheduleSafeRestart}
+          onCancelSafeRestart={cancelSafeRestart}
           unsafeToRestart={unsafeToRestart}
-          activeWorkers={workerActivity.activeWorkers}
+          interruptibleSessionCount={interruptibleSessionCount}
+          queuedSessionMessageCount={queuedSessionMessageCount}
+          safeRestartState={safeRestartState}
+          safeRestartMutating={safeRestartMutating}
         />
       )}
-      {isManualReloadMode && pendingReloads.frontend && (
+      {visibleReloads.frontend && (
         <ReloadBanner
           target="frontend"
           onReload={reloadFrontend}
@@ -98,15 +121,18 @@ export function App({ children }: Props) {
     <I18nProvider>
       <ToastProvider>
         <AuthProvider>
-          <InboxProvider>
-            <SchemaValidationProvider>
-              <AppContent>{children}</AppContent>
-              {!isLoading && showWizard && (
-                <OnboardingWizard onComplete={completeOnboarding} />
-              )}
-              {!isLoading && !showWizard && <CodexUpdatePrompt />}
-            </SchemaValidationProvider>
-          </InboxProvider>
+          <ClientSummarySourceBinding />
+          <CurrentSourceRuntimeProvider>
+            <InboxProvider>
+              <SchemaValidationProvider>
+                <AppContent>{children}</AppContent>
+                {!isLoading && showWizard && (
+                  <OnboardingWizard onComplete={completeOnboarding} />
+                )}
+                {!isLoading && !showWizard && <CodexUpdatePrompt />}
+              </SchemaValidationProvider>
+            </InboxProvider>
+          </CurrentSourceRuntimeProvider>
         </AuthProvider>
       </ToastProvider>
     </I18nProvider>

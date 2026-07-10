@@ -11,9 +11,10 @@ export function useScrollPreservingToggle(
   toggleFn: () => void,
 ) {
   const btnRef = useRef<HTMLButtonElement>(null);
-  const pendingRef = useRef<{ scrollEl: Element; initialOffset: number } | null>(
-    null,
-  );
+  const pendingRef = useRef<{
+    scrollEl: Element;
+    initialOffset: number;
+  } | null>(null);
 
   const handleClick = useCallback(() => {
     const btn = btnRef.current;
@@ -39,6 +40,7 @@ export function useScrollPreservingToggle(
   // Runs synchronously after React commits the DOM — before the browser paints.
   // Corrects scrollTop so the button stays at the same viewport position.
   useLayoutEffect(() => {
+    void isToggled;
     const state = pendingRef.current;
     if (!state) return;
     pendingRef.current = null;

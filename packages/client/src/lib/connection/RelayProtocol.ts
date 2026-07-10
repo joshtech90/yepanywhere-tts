@@ -5,6 +5,7 @@ import type {
   RelayRequest,
   RelayResponse,
   RelaySpeechEvent,
+  RelayStagedUploadStart,
   RelaySubscribe,
   RelayUnsubscribe,
   RelayUploadComplete,
@@ -13,12 +14,12 @@ import type {
   RelayUploadProgress,
   RelayUploadStart,
   RemoteClientMessage,
+  StagedAttachmentRef,
   UploadedFile,
   YepMessage,
 } from "@yep-anywhere/shared";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import { generateUUID } from "../uuid";
-import { connectionManager } from "./ConnectionManager";
 import type {
   SessionSubscriptionOptions,
   StreamHandlers,
@@ -26,6 +27,8 @@ import type {
   UploadOptions,
 } from "./types";
 import { SubscriptionError } from "./types";
+
+export type BeginCriticalOperation = (label?: string) => () => void;
 
 /**
  * Transport callbacks injected by the owning connection class.
@@ -49,6 +52,8 @@ export interface RelayProtocolOptions {
   debugEnabled?: () => boolean;
   logPrefix?: string;
   onPong?: (id: string) => void;
+  onInboundEvent?: (event: RelayEvent) => void;
+  beginCriticalOperation?: BeginCriticalOperation;
 }
 
 function generateId(): string {
@@ -120,7 +125,8 @@ interface PendingRequest {
 }
 
 interface PendingUpload {
-  resolve: (file: UploadedFile) => void;
+  uploadKind: "session" | "draft-staging";
+  resolve: (file: UploadedFile | StagedAttachmentRef) => void;
   reject: (error: Error) => void;
   onProgress?: (bytesUploaded: number) => void;
 }
@@ -171,8 +177,31 @@ export class RelayProtocol {
   /**
    * Set the callback for pong responses.
    */
-  setOnPong(cb: (id: string) => void): void {
+  setOnPong(cb: ((id: string) => void) | undefined): void {
     this.options.onPong = cb;
+  }
+
+  /**
+   * Set the callback for inbound relay events.
+   *
+   * Used by source-bound transports to feed their owning ConnectionManager
+   * without relying on consumer stream handlers. Existing direct users omit
+   * this hook and keep today's handler-owned health feeding.
+   */
+  setOnInboundEvent(cb: ((event: RelayEvent) => void) | undefined): void {
+    this.options.onInboundEvent = cb;
+  }
+
+  /**
+   * Override the critical-operation guard used by multiplex uploads.
+   *
+   * Source-owned connections inject their transport manager here. Connections
+   * without an owning manager run uploads without a health-check guard.
+   */
+  setBeginCriticalOperation(
+    cb: BeginCriticalOperation | undefined,
+  ): void {
+    this.options.beginCriticalOperation = cb;
   }
 
   /**
@@ -247,6 +276,8 @@ export class RelayProtocol {
   }
 
   private handleEvent(event: RelayEvent): void {
+    this.options.onInboundEvent?.(event);
+
     const handlers = this.subscriptions.get(event.subscriptionId);
     const logEventDebug = this.debugEnabled || isActivityDebugEnabled();
 
@@ -334,7 +365,22 @@ export class RelayProtocol {
     const pending = this.pendingUploads.get(msg.uploadId);
     if (pending) {
       this.pendingUploads.delete(msg.uploadId);
-      pending.resolve(msg.file);
+      if (pending.uploadKind === "draft-staging") {
+        if (msg.stagedRef) {
+          pending.resolve(msg.stagedRef);
+          return;
+        }
+        pending.reject(
+          new Error("Upload completed without staged attachment metadata"),
+        );
+        return;
+      }
+
+      if (msg.file) {
+        pending.resolve(msg.file);
+        return;
+      }
+      pending.reject(new Error("Upload completed without file metadata"));
     }
   }
 
@@ -342,7 +388,11 @@ export class RelayProtocol {
     const pending = this.pendingUploads.get(msg.uploadId);
     if (pending) {
       this.pendingUploads.delete(msg.uploadId);
-      pending.reject(new Error(msg.error));
+      const error = new Error(msg.error) as Error & { code?: string };
+      if (msg.code) {
+        error.code = msg.code;
+      }
+      pending.reject(error);
     }
   }
 
@@ -696,7 +746,7 @@ export class RelayProtocol {
     options?: UploadOptions,
   ): Promise<UploadedFile> {
     const endCriticalOperation =
-      connectionManager.beginCriticalOperation("upload");
+      this.options.beginCriticalOperation?.("upload") ?? (() => undefined);
     try {
       await this.transport.ensureConnected();
 
@@ -705,7 +755,8 @@ export class RelayProtocol {
 
       const uploadPromise = new Promise<UploadedFile>((resolve, reject) => {
         this.pendingUploads.set(uploadId, {
-          resolve,
+          uploadKind: "session",
+          resolve: (file) => resolve(file as UploadedFile),
           reject,
           onProgress: options?.onProgress,
         });
@@ -724,6 +775,95 @@ export class RelayProtocol {
           uploadId,
           projectId,
           sessionId,
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type || "application/octet-stream",
+          ...(options?.imageDimensions?.width !== undefined
+            ? { width: options.imageDimensions.width }
+            : {}),
+          ...(options?.imageDimensions?.height !== undefined
+            ? { height: options.imageDimensions.height }
+            : {}),
+        };
+        this.transport.sendMessage(startMsg);
+
+        let offset = 0;
+        const reader = file.stream().getReader();
+
+        while (true) {
+          if (options?.signal?.aborted) {
+            reader.cancel();
+            throw new Error("Upload aborted");
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          let chunkOffset = 0;
+          while (chunkOffset < value.length) {
+            const chunkEnd = Math.min(chunkOffset + chunkSize, value.length);
+            const chunk = value.slice(chunkOffset, chunkEnd);
+
+            await this.transport.sendUploadChunk(uploadId, offset, chunk);
+
+            offset += chunk.length;
+            chunkOffset = chunkEnd;
+          }
+        }
+
+        const endMsg: RelayUploadEnd = {
+          type: "upload_end",
+          uploadId,
+        };
+        this.transport.sendMessage(endMsg);
+
+        return await uploadPromise;
+      } catch (err) {
+        this.pendingUploads.delete(uploadId);
+        throw err;
+      }
+    } finally {
+      endCriticalOperation();
+    }
+  }
+
+  async uploadStagedAttachment(
+    file: File,
+    options?: UploadOptions & { batchId?: string },
+  ): Promise<StagedAttachmentRef> {
+    const endCriticalOperation =
+      this.options.beginCriticalOperation?.("upload") ?? (() => undefined);
+    try {
+      await this.transport.ensureConnected();
+
+      const uploadId = generateId();
+      const chunkSize = options?.chunkSize ?? DEFAULT_CHUNK_SIZE;
+
+      const uploadPromise = new Promise<StagedAttachmentRef>(
+        (resolve, reject) => {
+          this.pendingUploads.set(uploadId, {
+            uploadKind: "draft-staging",
+            resolve: (file) => resolve(file as StagedAttachmentRef),
+            reject,
+            onProgress: options?.onProgress,
+          });
+
+          if (options?.signal) {
+            options.signal.addEventListener("abort", () => {
+              this.pendingUploads.delete(uploadId);
+              reject(new Error("Upload aborted"));
+            });
+          }
+        },
+      );
+
+      try {
+        const startMsg: RelayStagedUploadStart = {
+          type: "staged_upload_start",
+          uploadId,
+          ...(options?.batchId !== undefined
+            ? { batchId: options.batchId }
+            : {}),
           filename: file.name,
           size: file.size,
           mimeType: file.type || "application/octet-stream",

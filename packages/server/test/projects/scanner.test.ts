@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
 import { CodexSessionScanner } from "../../src/projects/codex-scanner.js";
+import { GeminiSessionScanner } from "../../src/projects/gemini-scanner.js";
 import { ProjectScanner } from "../../src/projects/scanner.js";
+import { WorkstreamService } from "../../src/services/WorkstreamService.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 import { EventBus } from "../../src/watcher/EventBus.js";
 
@@ -198,7 +200,7 @@ describe("ProjectScanner cache", () => {
     expect(afterEvent?.id).toBe(encodeProjectId("/home/user/project-two"));
   });
 
-  it("marks claude projects that also have codex sessions", async () => {
+  it("aggregates provider session counts for claude projects", async () => {
     const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
     tempDirs.push(projectsDir);
 
@@ -218,15 +220,32 @@ describe("ProjectScanner cache", () => {
         sessionDir: "/codex/sessions",
         activeOwnedCount: 0,
         activeExternalCount: 0,
-        lastActivity: "2025-01-01T00:00:00.000Z",
+        lastActivity: "2099-01-01T00:00:00.000Z",
         provider: "codex",
+      },
+    ]);
+    vi.spyOn(
+      GeminiSessionScanner.prototype,
+      "registerKnownPaths",
+    ).mockResolvedValue(undefined);
+    vi.spyOn(GeminiSessionScanner.prototype, "listProjects").mockResolvedValue([
+      {
+        id: encodeProjectId("/home/user/project-one"),
+        path: "/home/user/project-one",
+        name: "project-one",
+        sessionCount: 2,
+        sessionDir: "/gemini/tmp/project-one/chats",
+        activeOwnedCount: 0,
+        activeExternalCount: 0,
+        lastActivity: "2099-02-01T00:00:00.000Z",
+        provider: "gemini",
       },
     ]);
 
     const scanner = new ProjectScanner({
       projectsDir,
       enableCodex: true,
-      enableGemini: false,
+      enableGemini: true,
       cacheTtlMs: 60000,
     });
 
@@ -235,8 +254,94 @@ describe("ProjectScanner cache", () => {
     expect(projects[0]?.provider).toBe("claude");
     expect(projects[0]).toMatchObject({
       path: "/home/user/project-one",
+      sessionCount: 6,
+      sessionCountsByProvider: {
+        claude: 1,
+        codex: 3,
+        gemini: 2,
+      },
       hasCodexSessions: true,
+      hasGeminiSessions: true,
+      lastActivity: "2099-02-01T00:00:00.000Z",
     });
+  });
+
+  it("merges Windows drive project paths that differ only by case", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+
+    const canonicalPath = "C:/Users/sox/Documents/code/mclone";
+    const lowerCasePath = "C:/Users/sox/documents/code/mclone";
+
+    await createClaudeProject(
+      projectsDir,
+      "host-upper",
+      canonicalPath,
+      "sess-upper-1",
+    );
+    await createClaudeProject(
+      projectsDir,
+      "host-upper",
+      canonicalPath,
+      "sess-upper-2",
+    );
+    await createClaudeProject(
+      projectsDir,
+      "host-lower",
+      lowerCasePath,
+      "sess-lower-1",
+    );
+
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      cacheTtlMs: 60000,
+    });
+
+    const projects = await scanner.listProjects();
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: encodeProjectId(canonicalPath),
+      path: canonicalPath,
+      name: "mclone",
+      sessionCount: 3,
+    });
+
+    await expect(
+      scanner.getProject(encodeProjectId(lowerCasePath)),
+    ).resolves.toMatchObject({
+      id: encodeProjectId(canonicalPath),
+      path: canonicalPath,
+    });
+  });
+
+  it("keeps WSL-like project path casing distinct", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+
+    await createClaudeProject(
+      projectsDir,
+      "host-upper",
+      "/mnt/c/Users/sox/Documents/code/mclone",
+      "sess-upper",
+    );
+    await createClaudeProject(
+      projectsDir,
+      "host-lower",
+      "/mnt/c/Users/sox/documents/code/mclone",
+      "sess-lower",
+    );
+
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      cacheTtlMs: 60000,
+    });
+
+    const projects = await scanner.listProjects();
+    expect(projects).toHaveLength(2);
   });
 
   it("invalidates shared codex scanner cache on codex file-change events", async () => {
@@ -384,5 +489,56 @@ describe("ProjectScanner cache", () => {
     expect(projects.some((p) => p.path === "/home/user/codex-project")).toBe(
       false,
     );
+  });
+
+  it("groups known workstream checkout cwd paths under the canonical project", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    const dataDir = join(tmpdir(), `workstream-data-${randomUUID()}`);
+    tempDirs.push(projectsDir, dataDir);
+    const canonicalProjectPath = join(dataDir, "repo");
+    const lanePath = join(dataDir, "checkouts", "repo", "feature-lane");
+    await mkdir(canonicalProjectPath, { recursive: true });
+    await mkdir(lanePath, { recursive: true });
+
+    const workstreamService = new WorkstreamService({ dataDir });
+    await workstreamService.initialize();
+    await workstreamService.createWorkstream({
+      projectId: encodeProjectId(canonicalProjectPath),
+      label: "Feature lane",
+      path: lanePath,
+      branch: "main",
+      managedByYa: true,
+    });
+
+    await createClaudeProject(
+      projectsDir,
+      "localhost",
+      lanePath,
+      "sess-lane",
+    );
+
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      workstreamService,
+      cacheTtlMs: 60000,
+    });
+
+    const projects = await scanner.listProjects();
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: encodeProjectId(canonicalProjectPath),
+      path: canonicalProjectPath,
+      name: "repo",
+      sessionCount: 1,
+    });
+
+    await expect(
+      scanner.getOrCreateProject(encodeProjectId(lanePath)),
+    ).resolves.toMatchObject({
+      id: encodeProjectId(canonicalProjectPath),
+      path: canonicalProjectPath,
+    });
   });
 });

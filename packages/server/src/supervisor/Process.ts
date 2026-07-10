@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type {
+  DurableRecapMessage,
   EffortLevel,
   ModelInfo,
   PermissionRules,
   PromptSuggestionMode,
   ProviderName,
+  ProviderRuntimeStatus,
   RecapMode,
   SessionLivenessSnapshot,
   SessionWakeReason,
@@ -15,10 +17,13 @@ import type {
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
+  DEFAULT_RECAP_AFTER_SECONDS,
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   clampPatientPatienceSeconds,
+  normalizeRecapAfterSeconds,
+  stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
 import {
   extractIdFromAssistant,
@@ -32,6 +37,10 @@ import { getLogger } from "../logging/logger.js";
 import { getProjectName } from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
 import type { MessageQueue } from "../sdk/messageQueue.js";
+import type {
+  PersistedSessionQueuedMessage,
+  SessionQueuePersistenceService,
+} from "../services/SessionQueuePersistenceService.js";
 import { composeTimeAnchors } from "./composeTimeAnchor.js";
 import {
   type DeferredDeliverySettings,
@@ -57,6 +66,12 @@ import type {
   UserMessage,
 } from "../sdk/types.js";
 import {
+  getSystemMessageText,
+  isAwaySummaryMessage,
+  messageTimestampMs,
+  toDurableRecapMessage,
+} from "../sessions/recap-overlays.js";
+import {
   buildSessionLivenessSnapshot,
   type LivenessProbeResult,
   type LivenessProcessState,
@@ -73,10 +88,19 @@ import type {
 type Listener = (event: ProcessEvent) => void | Promise<void>;
 type ClaudeSessionState = "idle" | "running" | "requires_action";
 
-type DeferredQueueEntry = { message: UserMessage; timestamp: string };
+type DeferredQueueEntry = {
+  message: UserMessage;
+  timestamp: string;
+  persistedQueueId?: string;
+};
 type RecentAssistantRecapEntry = {
   completedAtMs: number;
   text: string;
+};
+type NativeRecapRecord = {
+  receivedAtMs: number;
+  text: string;
+  message: SDKMessage;
 };
 type PendingRecapRequest = {
   provider: AgentProvider;
@@ -85,6 +109,20 @@ type PendingRecapRequest = {
 type PromptCacheKeepaliveLease = {
   getInactivityMs: () => number | null;
 };
+
+export const NATIVE_RECAP_FALLBACK_GRACE_MS = 2_000;
+
+export interface RecapRequestResult {
+  supported: boolean;
+  emitted: boolean;
+  reason?: string;
+  /** The recap text, when one was emitted or a native recap won. */
+  text?: string;
+  /** YA-owned message row to persist as a viewer-only overlay. */
+  syntheticMessage?: DurableRecapMessage;
+}
+
+const CLAUDE_UNBOUNDED_MAX_RETRIES = 2_147_483_647;
 
 /**
  * Whether a queued entry should ride the verified-idle "patient" path instead
@@ -212,6 +250,118 @@ function isClaudeSdkApiErrorMessage(
     isClaudeSdkProvider(provider) &&
     message.type === "assistant" &&
     message.isApiErrorMessage === true
+  );
+}
+
+function isClaudeSdkApiRetryMessage(
+  provider: ProviderName,
+  message: SDKMessage,
+): boolean {
+  return (
+    isClaudeSdkProvider(provider) &&
+    message.type === "system" &&
+    message.subtype === "api_retry"
+  );
+}
+
+type ProviderRuntimeRetryStatus = Exclude<ProviderRuntimeStatus, null>;
+type ProviderRuntimeReason = ProviderRuntimeRetryStatus["reason"];
+
+function readFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  const number = readFiniteNumber(value);
+  if (number === undefined || number <= 0) {
+    return undefined;
+  }
+  return Math.trunc(number);
+}
+
+function normalizeProviderRuntimeReason(error: unknown): ProviderRuntimeReason {
+  switch (error) {
+    case "rate_limit":
+      return "rate_limit";
+    case "overloaded":
+      return "overloaded";
+    case "server_error":
+      return "server_error";
+    case "network":
+      return "network";
+    default:
+      return "unknown";
+  }
+}
+
+function normalizeMaxRetries(
+  value: unknown,
+): ProviderRuntimeRetryStatus["maxRetries"] | undefined {
+  const maxRetries = readPositiveInteger(value);
+  if (maxRetries === undefined) {
+    return undefined;
+  }
+  return maxRetries >= CLAUDE_UNBOUNDED_MAX_RETRIES ? "unbounded" : maxRetries;
+}
+
+function buildClaudeApiRetryStatus(
+  provider: ProviderName,
+  previous: ProviderRuntimeStatus,
+  message: SDKMessage,
+  receivedAt: Date,
+): ProviderRuntimeRetryStatus {
+  const lastSeenAt = receivedAt.toISOString();
+  const httpStatus = readPositiveInteger(message.error_status);
+  const attempt = readPositiveInteger(message.attempt);
+  const maxRetries = normalizeMaxRetries(message.max_retries);
+  const retryDelayMs = readFiniteNumber(message.retry_delay_ms);
+  const nonNegativeRetryDelayMs =
+    retryDelayMs !== undefined && retryDelayMs >= 0
+      ? Math.trunc(retryDelayMs)
+      : undefined;
+  const retryAt =
+    nonNegativeRetryDelayMs !== undefined
+      ? new Date(receivedAt.getTime() + nonNegativeRetryDelayMs).toISOString()
+      : undefined;
+
+  return {
+    kind: "retrying",
+    provider,
+    reason: normalizeProviderRuntimeReason(message.error),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    startedAt: previous?.kind === "retrying" ? previous.startedAt : lastSeenAt,
+    lastSeenAt,
+    ...(retryAt ? { retryAt } : {}),
+    ...(nonNegativeRetryDelayMs !== undefined
+      ? { retryDelayMs: nonNegativeRetryDelayMs }
+      : {}),
+    ...(attempt !== undefined ? { attempt } : {}),
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
+    eventCount: previous?.kind === "retrying" ? previous.eventCount + 1 : 1,
+    source: "claude.system.api_retry",
+  };
+}
+
+function providerRuntimeStatusesEqual(
+  a: ProviderRuntimeStatus,
+  b: ProviderRuntimeStatus,
+): boolean {
+  if (a === b) return true;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function isProviderRuntimeProgressMessage(message: SDKMessage): boolean {
+  return (
+    message.type === "assistant" ||
+    message.type === "stream_event" ||
+    message.type === "result"
   );
 }
 
@@ -388,12 +538,16 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   recapsEnabled?: boolean;
   /** How this process should answer away-recap requests. */
   recapMode?: RecapMode;
+  /** Browser-away duration before YA asks this process for a recap. */
+  recapAfterSeconds?: number;
   /** How this process should request native prompt suggestions. */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */
   helperSideModel?: string;
   /** Override deferred-delivery toggles (tests); defaults from server config. */
   deferredDelivery?: DeferredDeliveryOptions;
+  /** Durable store for long-lived patient queued messages. */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
 }
 
 export class Process {
@@ -411,6 +565,10 @@ export class Process {
   private legacyQueue: UserMessage[] = [];
   private messageQueue: MessageQueue | null;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
+  private sessionQueuePersistenceService:
+    | SessionQueuePersistenceService
+    | undefined;
+  private patientQueuePersistenceTail: Promise<void> = Promise.resolve();
   private abortFn: (() => void) | null;
   private _state: ProcessState = { type: "in-turn" };
   private listeners: Set<Listener> = new Set();
@@ -460,7 +618,11 @@ export class Process {
    */
   private recapInFlight = false;
   private pendingRecapRequest: PendingRecapRequest | null = null;
+  private lastNativeRecap: NativeRecapRecord | null = null;
+  private nativeRecapWaiters = new Set<() => void>();
+  private providerRuntimeStatus: ProviderRuntimeStatus = null;
   private _recapMode: RecapMode;
+  private _recapAfterSeconds: number;
   private _promptSuggestionMode: PromptSuggestionMode;
   private _helperSideModel: string;
 
@@ -585,6 +747,8 @@ export class Process {
     // Real SDK provides these, mock SDK doesn't
     this.messageQueue = options.queue ?? null;
     this.deferredDeliveryOverrides = options.deferredDelivery;
+    this.sessionQueuePersistenceService =
+      options.sessionQueuePersistenceService;
     this.abortFn = options.abortFn ?? null;
     this._permissionMode = options.permissionMode ?? "default";
     this._permissions = options.permissions;
@@ -613,6 +777,9 @@ export class Process {
     this.refreshPromptCacheFn = options.refreshPromptCacheFn ?? null;
     this._recapMode =
       options.recapMode ?? (options.recapsEnabled ? "side-session" : "off");
+    this._recapAfterSeconds = normalizeRecapAfterSeconds(
+      options.recapAfterSeconds ?? DEFAULT_RECAP_AFTER_SECONDS,
+    );
     this._promptSuggestionMode = options.promptSuggestionMode ?? "off";
     this._helperSideModel =
       options.helperSideModel ?? HELPER_SIDE_MODEL_CHEAPEST;
@@ -687,6 +854,10 @@ export class Process {
     return this._lastMessageTime;
   }
 
+  get lastPromptCacheRefreshTime(): Date | null {
+    return this.lastPromptCacheKeepaliveAt;
+  }
+
   /**
    * Check if the underlying CLI process is still alive.
    * Returns true if alive, false if dead, undefined if liveness check is unavailable.
@@ -715,6 +886,10 @@ export class Process {
     return this._recapMode;
   }
 
+  get recapAfterSeconds(): number {
+    return this._recapAfterSeconds;
+  }
+
   get helperSideModel(): string {
     return this._helperSideModel;
   }
@@ -725,10 +900,16 @@ export class Process {
 
   setRecapConfig(config: {
     recapMode?: RecapMode;
+    recapAfterSeconds?: number;
     helperSideModel?: string;
   }): void {
     if (config.recapMode !== undefined) {
       this._recapMode = config.recapMode;
+    }
+    if (config.recapAfterSeconds !== undefined) {
+      this._recapAfterSeconds = normalizeRecapAfterSeconds(
+        config.recapAfterSeconds,
+      );
     }
     if (config.helperSideModel !== undefined) {
       this._helperSideModel =
@@ -761,6 +942,16 @@ export class Process {
     );
   }
 
+  hasVolatileDeferredMessages(): boolean {
+    return this.deferredQueue.some(
+      (entry) => !isPatientDeferredEntry(entry, this.provider),
+    );
+  }
+
+  async waitForPatientQueuePersistenceIdle(): Promise<void> {
+    await this.patientQueuePersistenceTail;
+  }
+
   getLivenessSnapshot(now = new Date()): SessionLivenessSnapshot {
     const providerActivity = this.getProviderActivityFn?.();
     const providerRetention = this.getProviderRetentionSnapshot();
@@ -789,6 +980,20 @@ export class Process {
         retained: false,
         reasons: [],
       }
+    );
+  }
+
+  /**
+   * True when the process has settled to idle but the provider is still keeping
+   * background work alive (background tasks / session crons). Such a session is
+   * genuinely active — the liveness snapshot reports it as
+   * "verified-waiting-provider" — so inbox/sidebar surfaces should treat it as
+   * "in-turn" rather than idle.
+   */
+  isRetainingProviderWork(): boolean {
+    return (
+      this._state.type === "idle" &&
+      this.getProviderRetentionSnapshot().retained
     );
   }
 
@@ -1011,6 +1216,39 @@ export class Process {
     );
   }
 
+  private observeProviderRuntimeStatus(
+    message: SDKMessage,
+    receivedAt: Date,
+  ): void {
+    if (isClaudeSdkApiRetryMessage(this.provider, message)) {
+      this.setProviderRuntimeStatus(
+        buildClaudeApiRetryStatus(
+          this.provider,
+          this.providerRuntimeStatus,
+          message,
+          receivedAt,
+        ),
+      );
+      return;
+    }
+
+    if (isProviderRuntimeProgressMessage(message)) {
+      this.clearProviderRuntimeStatus();
+    }
+  }
+
+  private setProviderRuntimeStatus(status: ProviderRuntimeStatus): void {
+    if (providerRuntimeStatusesEqual(this.providerRuntimeStatus, status)) {
+      return;
+    }
+    this.providerRuntimeStatus = status;
+    this.emit({ type: "provider-runtime-status-change", status });
+  }
+
+  private clearProviderRuntimeStatus(): void {
+    this.setProviderRuntimeStatus(null);
+  }
+
   private toLivenessState(): LivenessProcessState {
     switch (this._state.type) {
       case "waiting-input":
@@ -1152,13 +1390,25 @@ export class Process {
 
     const interrupted = await this.interruptFn();
 
+    if (interrupted !== false) {
+      this.resolvePendingToolApprovals({
+        message: "Operation interrupted",
+        interrupt: true,
+      });
+      if (this._state.type === "waiting-input") {
+        this.transitionToInTurnForWake("tool-approval-resolved");
+      }
+    }
+
     // After interrupt, drain all queued messages (direct + deferred) and deliver
     // as a single concatenated batch with the interrupt preamble so the agent
     // knows to treat prior work as resumable.
     if (interrupted !== false && this.messageQueue) {
       const directDrained = this.messageQueue.drain();
-      const deferredDrained = this.deferredQueue.map((e) => e.message);
+      const deferredEntries = this.deferredQueue;
+      const deferredDrained = deferredEntries.map((e) => e.message);
       this.deferredQueue = [];
+      this.deletePersistedPatientDeferredEntries(deferredEntries, "promoted");
       this.emitDeferredQueueChange("promoted");
 
       const all = [
@@ -1400,17 +1650,12 @@ export class Process {
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.iteratorDone = true;
+    this.clearProviderRuntimeStatus();
 
-    // Resolve all pending tool approvals with denial
-    for (const pending of this.pendingToolApprovals.values()) {
-      pending.resolve({
-        behavior: "deny",
-        message: `Process terminated: ${reason}`,
-        interrupt: true,
-      });
-    }
-    this.pendingToolApprovals.clear();
-    this.pendingToolApprovalQueue = [];
+    this.resolvePendingToolApprovals({
+      message: `Process terminated: ${reason}`,
+      interrupt: true,
+    });
 
     this.setState({ type: "terminated", reason, error });
     this.emit({ type: "terminated", reason, error });
@@ -1446,6 +1691,10 @@ export class Process {
     });
   }
 
+  getProviderRuntimeStatus(): ProviderRuntimeStatus {
+    return this.providerRuntimeStatus;
+  }
+
   getInfo(): ProcessInfo {
     let activity: AgentActivity;
     if (this._state.type === "terminated") {
@@ -1453,7 +1702,8 @@ export class Process {
     } else if (this._state.type === "waiting-input") {
       activity = "waiting-input";
     } else if (this._state.type === "idle") {
-      activity = "idle";
+      // Idle but with provider-retained background work counts as active.
+      activity = this.isRetainingProviderWork() ? "in-turn" : "idle";
     } else {
       activity = "in-turn";
     }
@@ -1480,7 +1730,9 @@ export class Process {
       executor: this.executor,
       pid: this.pid,
       liveness: this.getLivenessSnapshot(),
+      providerRuntimeStatus: this.providerRuntimeStatus,
       recapMode: this._recapMode,
+      recapAfterSeconds: this._recapAfterSeconds,
       promptSuggestionMode: this._promptSuggestionMode,
       helperSideModel: this._helperSideModel,
     };
@@ -1603,13 +1855,85 @@ export class Process {
       .map((entry) => entry.text);
   }
 
+  private recordNativeRecap(message: SDKMessage, receivedAt: Date): void {
+    if (!isAwaySummaryMessage(message) || message.isSynthetic === true) {
+      return;
+    }
+    const text = getSystemMessageText(message).trim();
+    if (!text) {
+      return;
+    }
+    this.lastNativeRecap = {
+      receivedAtMs: messageTimestampMs(message) ?? receivedAt.getTime(),
+      text,
+      message,
+    };
+    for (const waiter of this.nativeRecapWaiters) {
+      waiter();
+    }
+  }
+
+  getNativeRecapSince(sinceMs?: number | null): NativeRecapRecord | null {
+    if (!this.lastNativeRecap) {
+      return null;
+    }
+    if (
+      sinceMs !== null &&
+      sinceMs !== undefined &&
+      this.lastNativeRecap.receivedAtMs <= sinceMs
+    ) {
+      return null;
+    }
+    return this.lastNativeRecap;
+  }
+
+  waitForNativeRecapSince(
+    sinceMs: number | null,
+    timeoutMs: number,
+  ): Promise<NativeRecapRecord | null> {
+    const existing = this.getNativeRecapSince(sinceMs);
+    if (existing || timeoutMs <= 0) {
+      return Promise.resolve(existing);
+    }
+
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let onNativeRecap: () => void;
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        this.nativeRecapWaiters.delete(onNativeRecap);
+      };
+      onNativeRecap = () => {
+        const recap = this.getNativeRecapSince(sinceMs);
+        if (!recap) {
+          return;
+        }
+        cleanup();
+        resolve(recap);
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+      this.nativeRecapWaiters.add(onNativeRecap);
+    });
+  }
+
   /**
    * Emit a synthetic system message (no provider involvement) into the
    * session's broadcast stream. Used for YA-side recaps so they reach SSE
    * subscribers via the same path as provider-emitted messages, without
    * touching the underlying JSONL transcript.
    */
-  emitSyntheticSystemMessage(subtype: string, content: string): void {
+  emitSyntheticSystemMessage(
+    subtype: "away_summary",
+    content: string,
+  ): DurableRecapMessage {
     const synthetic = this.withTimestamp({
       type: "system",
       subtype,
@@ -1617,9 +1941,15 @@ export class Process {
       session_id: this._sessionId,
       uuid: randomUUID(),
       isMeta: false,
+      isSynthetic: true,
     } as unknown as SDKMessage);
     this.currentBucket.push(synthetic);
     this.emit({ type: "message", message: synthetic });
+    const durable = toDurableRecapMessage(synthetic, "ya-synthetic");
+    if (!durable) {
+      throw new Error("failed to create durable synthetic recap message");
+    }
+    return durable;
   }
 
   /**
@@ -1637,14 +1967,7 @@ export class Process {
   async requestRecap(
     provider: AgentProvider,
     options?: { sinceMs?: number | null },
-  ): Promise<{
-    supported: boolean;
-    emitted: boolean;
-    reason?: string;
-    /** The recap text, when one was emitted — newer than any prior turn, so
-     *  callers may surface it as the session's current agent line. */
-    text?: string;
-  }> {
+  ): Promise<RecapRequestResult> {
     if (this._recapMode === "off") {
       return {
         supported: true,
@@ -1664,6 +1987,13 @@ export class Process {
         supported: true,
         emitted: false,
         reason: "native recaps are provider-owned",
+      };
+    }
+    if (this._recapMode === "fork") {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "forked recaps are supervisor-owned",
       };
     }
     if (!provider.supportsRecaps || !provider.generateSummary) {
@@ -1693,20 +2023,61 @@ export class Process {
     return this.generateAndEmitRecap(provider, sinceMs);
   }
 
-  private async generateAndEmitRecap(
+  async requestTailedRecapFallback(
     provider: AgentProvider,
-    sinceMs: number | null,
-  ): Promise<{
-    supported: boolean;
-    emitted: boolean;
-    reason?: string;
-    text?: string;
-  }> {
+    options?: { sinceMs?: number | null },
+  ): Promise<RecapRequestResult> {
     if (!provider.supportsRecaps || !provider.generateSummary) {
       return {
         supported: false,
         emitted: false,
         reason: "provider does not support recaps",
+      };
+    }
+
+    if (this.recapInFlight) {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recap already in flight",
+      };
+    }
+
+    const sinceMs = options?.sinceMs ?? null;
+    if (this._state.type === "in-turn") {
+      this.pendingRecapRequest = { provider, sinceMs };
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recap deferred until turn completes",
+      };
+    }
+
+    return this.generateAndEmitRecap(provider, sinceMs);
+  }
+
+  private async generateAndEmitRecap(
+    provider: AgentProvider,
+    sinceMs: number | null,
+  ): Promise<RecapRequestResult> {
+    if (!provider.supportsRecaps || !provider.generateSummary) {
+      return {
+        supported: false,
+        emitted: false,
+        reason: "provider does not support recaps",
+      };
+    }
+
+    const nativeRecap = await this.waitForNativeRecapSince(
+      sinceMs,
+      provider.supportsNativeRecaps ? NATIVE_RECAP_FALLBACK_GRACE_MS : 0,
+    );
+    if (nativeRecap) {
+      return {
+        supported: true,
+        emitted: true,
+        reason: "native recap emitted",
+        text: nativeRecap.text,
       };
     }
 
@@ -1736,8 +2107,20 @@ export class Process {
           reason: "provider returned empty recap",
         };
       }
-      this.emitSyntheticSystemMessage("away_summary", text);
-      return { supported: true, emitted: true, text };
+      const lateNativeRecap = this.getNativeRecapSince(sinceMs);
+      if (lateNativeRecap) {
+        return {
+          supported: true,
+          emitted: true,
+          reason: "native recap emitted",
+          text: lateNativeRecap.text,
+        };
+      }
+      const syntheticMessage = this.emitSyntheticSystemMessage(
+        "away_summary",
+        text,
+      );
+      return { supported: true, emitted: true, text, syntheticMessage };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const log = getLogger();
@@ -2077,6 +2460,174 @@ export class Process {
     );
   }
 
+  private enqueuePatientQueuePersistence(
+    action: () => Promise<void>,
+    context: Record<string, unknown>,
+  ): void {
+    this.patientQueuePersistenceTail = this.patientQueuePersistenceTail
+      .then(action, action)
+      .catch((error) => {
+        getLogger().warn(
+          {
+            event: "patient_queue_persistence_failed",
+            sessionId: this._sessionId,
+            processId: this.id,
+            projectId: this.projectId,
+            ...context,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Failed to persist patient queued-message state",
+        );
+      });
+  }
+
+  private persistPatientDeferredEntry(entry: DeferredQueueEntry): void {
+    if (
+      !this.sessionQueuePersistenceService ||
+      !isPatientDeferredEntry(entry, this.provider)
+    ) {
+      return;
+    }
+
+    const item = this.toPersistedPatientDeferredItem(entry, "queued");
+    if (!item) return;
+
+    this.enqueuePatientQueuePersistence(
+      async () => {
+        await this.sessionQueuePersistenceService?.upsertItem(item);
+      },
+      { action: "upsert", persistedQueueId: item.id },
+    );
+  }
+
+  private toPersistedPatientDeferredItem(
+    entry: DeferredQueueEntry,
+    status: PersistedSessionQueuedMessage["status"],
+    updatedAt = entry.timestamp,
+  ): PersistedSessionQueuedMessage | null {
+    if (
+      !this.sessionQueuePersistenceService ||
+      !isPatientDeferredEntry(entry, this.provider)
+    ) {
+      return null;
+    }
+
+    const id = entry.persistedQueueId ?? randomUUID();
+    entry.persistedQueueId = id;
+    const createdAt =
+      entry.message.metadata?.serverReceivedAt ?? entry.timestamp;
+    const source = entry.message.tempId
+      ? { tempId: entry.message.tempId }
+      : undefined;
+    const mode = entry.message.mode ?? this._permissionMode;
+    return {
+      id,
+      sessionId: this._sessionId,
+      projectId: this.projectId,
+      projectPath: this.projectPath,
+      provider: this.provider,
+      ...(this.executor ? { executor: this.executor } : {}),
+      ...(this.requestedModel ? { model: this.requestedModel } : {}),
+      ...(this.serviceTier ? { serviceTier: this.serviceTier } : {}),
+      ...(mode ? { mode } : {}),
+      kind: "patient",
+      message: entry.message,
+      createdAt,
+      updatedAt,
+      queuedAt: entry.timestamp,
+      status,
+      ...(source ? { source } : {}),
+    };
+  }
+
+  private deletePersistedPatientDeferredEntries(
+    entries: DeferredQueueEntry[],
+    reason: "cancelled" | "promoted",
+  ): void {
+    if (!this.sessionQueuePersistenceService) {
+      return;
+    }
+    const ids = entries
+      .filter((entry) => isPatientDeferredEntry(entry, this.provider))
+      .map((entry) => entry.persistedQueueId)
+      .filter((id): id is string => Boolean(id));
+    if (ids.length === 0) {
+      return;
+    }
+
+    this.enqueuePatientQueuePersistence(
+      async () => {
+        for (const id of ids) {
+          await this.sessionQueuePersistenceService?.deleteItem(id);
+        }
+      },
+      { action: "delete", reason, persistedQueueIds: ids },
+    );
+  }
+
+  async preservePatientDeferredMessagesForRestart(): Promise<number> {
+    if (!this.sessionQueuePersistenceService) {
+      return 0;
+    }
+
+    const entries = this.deferredQueue.filter((entry) =>
+      isPatientDeferredEntry(entry, this.provider),
+    );
+    if (entries.length === 0) {
+      return 0;
+    }
+
+    for (const entry of entries) {
+      if (!entry.persistedQueueId) {
+        this.persistPatientDeferredEntry(entry);
+      }
+    }
+
+    const pausedAt = new Date().toISOString();
+    const preserve = this.patientQueuePersistenceTail.then(async () => {
+      for (const entry of entries) {
+        const item = this.toPersistedPatientDeferredItem(
+          entry,
+          "paused-after-restart",
+          pausedAt,
+        );
+        if (!item) {
+          throw new Error("Failed to serialize patient queue entry");
+        }
+        await this.sessionQueuePersistenceService?.upsertItem(item);
+      }
+    });
+
+    this.patientQueuePersistenceTail = preserve.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    try {
+      await preserve;
+    } catch (error) {
+      getLogger().warn(
+        {
+          event: "patient_queue_preserve_failed",
+          sessionId: this._sessionId,
+          processId: this.id,
+          projectId: this.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to preserve patient queued-message state for restart",
+      );
+      return 0;
+    }
+
+    const preservedEntries = new Set(entries);
+    this.deferredQueue = this.deferredQueue.filter(
+      (entry) => !preservedEntries.has(entry),
+    );
+    this.emitDeferredQueueChange();
+    await this.patientQueuePersistenceTail;
+    return entries.length;
+  }
+
   /**
    * Add a message to the deferred queue.
    * Deferred messages are held server-side and auto-sent when the agent reaches
@@ -2088,6 +2639,8 @@ export class Process {
     message: UserMessage,
     options?: {
       promoteIfReady?: boolean;
+      persistedQueueId?: string;
+      timestamp?: string;
     },
   ): {
     success: boolean;
@@ -2117,6 +2670,23 @@ export class Process {
           error: result.error ?? "Failed to queue message",
         };
       }
+      // A recovered entry promoted straight through never enters the
+      // deferred queue, so release its durable row here; nothing else will.
+      const persistedQueueId = options?.persistedQueueId;
+      if (persistedQueueId) {
+        this.enqueuePatientQueuePersistence(
+          async () => {
+            await this.sessionQueuePersistenceService?.deleteItem(
+              persistedQueueId,
+            );
+          },
+          {
+            action: "delete",
+            reason: "promoted",
+            persistedQueueIds: [persistedQueueId],
+          },
+        );
+      }
       this.emitDeferredQueueChange("promoted", message.tempId);
       return {
         success: true,
@@ -2126,10 +2696,15 @@ export class Process {
       };
     }
 
-    this.deferredQueue.push({
+    const entry: DeferredQueueEntry = {
       message,
-      timestamp: new Date().toISOString(),
-    });
+      timestamp: options?.timestamp ?? new Date().toISOString(),
+      ...(options?.persistedQueueId
+        ? { persistedQueueId: options.persistedQueueId }
+        : {}),
+    };
+    this.deferredQueue.push(entry);
+    this.persistPatientDeferredEntry(entry);
     this.emitDeferredQueueChange("queued", message.tempId);
     return { success: true, deferred: true };
   }
@@ -2142,9 +2717,64 @@ export class Process {
       (entry) => entry.message.tempId === tempId,
     );
     if (index === -1) return false;
-    this.deferredQueue.splice(index, 1);
+    const [removed] = this.deferredQueue.splice(index, 1);
+    if (removed) {
+      this.deletePersistedPatientDeferredEntries([removed], "cancelled");
+    }
     this.emitDeferredQueueChange("cancelled", tempId);
     return true;
+  }
+
+  /**
+   * Cancel a self-sent steering message that YA has accepted but the provider
+   * has not consumed yet.
+   */
+  cancelUnconfirmedSteerMessage(tempId: string): boolean {
+    const removedFromMessageQueue =
+      this.messageQueue?.removeByTempId(tempId).length ?? 0;
+    const legacyQueueLength = this.legacyQueue.length;
+    this.legacyQueue = this.legacyQueue.filter(
+      (message) => !this.userMessageMatchesTempId(message, tempId),
+    );
+    const removedFromLegacyQueue = legacyQueueLength - this.legacyQueue.length;
+    const removedCount = removedFromMessageQueue + removedFromLegacyQueue;
+
+    if (removedCount === 0) {
+      return false;
+    }
+
+    this.removeBufferedEchoByTempId(tempId);
+    return true;
+  }
+
+  private userMessageMatchesTempId(
+    message: UserMessage,
+    tempId: string,
+  ): boolean {
+    return (
+      message.tempId === tempId || message.tempIds?.includes(tempId) === true
+    );
+  }
+
+  private sdkMessageMatchesTempId(
+    message: SDKMessage,
+    tempId: string,
+  ): boolean {
+    const messageTempId = message.tempId;
+    if (messageTempId === tempId) {
+      return true;
+    }
+    const tempIds = message.tempIds;
+    return Array.isArray(tempIds) && tempIds.includes(tempId);
+  }
+
+  private removeBufferedEchoByTempId(tempId: string): void {
+    this.currentBucket = this.currentBucket.filter(
+      (message) => !this.sdkMessageMatchesTempId(message, tempId),
+    );
+    this.previousBucket = this.previousBucket.filter(
+      (message) => !this.sdkMessageMatchesTempId(message, tempId),
+    );
   }
 
   /**
@@ -2188,9 +2818,11 @@ export class Process {
       return [];
     }
 
-    const drained = this.deferredQueue.map((entry) => entry.message);
+    const drainedEntries = this.deferredQueue;
+    const drained = drainedEntries.map((entry) => entry.message);
     const firstTempId = drained[0]?.tempId;
     this.deferredQueue = [];
+    this.deletePersistedPatientDeferredEntries(drainedEntries, reason);
     this.emitDeferredQueueChange(reason, firstTempId);
     return drained;
   }
@@ -2607,16 +3239,25 @@ export class Process {
    * Works for both real SDK (canUseTool callback) and mock SDK (input_request message).
    */
   getPendingInputRequest(): InputRequest | null {
-    // Check real SDK pending approvals queue first
-    const firstId = this.pendingToolApprovalQueue[0];
-    if (firstId !== undefined) {
-      return this.pendingToolApprovals.get(firstId)?.request ?? null;
-    }
-    // For mock SDK, check state directly
     if (this._state.type === "waiting-input") {
       return this._state.request;
     }
     return null;
+  }
+
+  private resolvePendingToolApprovals(options: {
+    message: string;
+    interrupt: true;
+  }): void {
+    for (const pending of this.pendingToolApprovals.values()) {
+      pending.resolve({
+        behavior: "deny",
+        message: options.message,
+        interrupt: options.interrupt,
+      });
+    }
+    this.pendingToolApprovals.clear();
+    this.pendingToolApprovalQueue = [];
   }
 
   subscribe(listener: Listener): () => void {
@@ -2662,6 +3303,7 @@ export class Process {
     this.clearIdleTimer();
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
+    this.clearProviderRuntimeStatus();
 
     // Call the SDK's abort function if available
     if (this.abortFn) {
@@ -2698,6 +3340,8 @@ export class Process {
         const receivedAt = new Date();
         this._lastMessageTime = receivedAt;
         this._lastProviderMessageTime = receivedAt;
+        this.recordNativeRecap(message, receivedAt);
+        this.observeProviderRuntimeStatus(message, receivedAt);
 
         // Store message in history for replay to late-joining clients.
         // Exclude stream_event messages - they're transient streaming deltas that
@@ -2869,6 +3513,7 @@ export class Process {
         `Process error: ${this._sessionId} - ${err.message}`,
       );
 
+      this.clearProviderRuntimeStatus();
       this.emit({ type: "error", error: err });
 
       // Detect process termination errors - set flag synchronously BEFORE markTerminated
@@ -2965,6 +3610,7 @@ export class Process {
 
   private transitionToIdle(): void {
     this.clearIdleTimer();
+    this.clearProviderRuntimeStatus();
 
     // Promote deferred messages as the same stitched user turn the provider
     // receives, so the live echo and later transcript catch-up agree.
@@ -2985,7 +3631,13 @@ export class Process {
       return;
     }
     this.pendingRecapRequest = null;
-    void this.generateAndEmitRecap(pending.provider, pending.sinceMs);
+    void this.generateAndEmitRecap(pending.provider, pending.sinceMs).then(
+      (result) => {
+        if (result.emitted) {
+          this.emit({ type: "recap-result", result });
+        }
+      },
+    );
   }
 
   /**
@@ -3123,9 +3775,15 @@ export class Process {
 
   /**
    * Promote patient deferred entries whose own patience window has elapsed
-   * since the session became verifiably quiet. Entries still waiting report
-   * the shortest remaining wait so the caller can schedule a precise
-   * re-check instead of polling.
+   * since the session became verifiably quiet. Only the leading join group is
+   * promoted per call — one verbatim provider turn when the batch window is 0
+   * (the common case). Bursting every ripe entry in a single pass would let the
+   * provider queue's iterator re-splice them into one `--------`-joined turn,
+   * defeating the batch-window setting; instead each promoted turn flips the
+   * process back in-turn, and the Supervisor re-arms this check on the next
+   * fresh idle boundary so the rest deliver one-per-"fully done" boundary (see
+   * observeProcessEvents). Entries still waiting report the shortest remaining
+   * wait so the caller can schedule a precise re-check instead of polling.
    */
   promoteEligiblePatientDeferredMessages(options: {
     /** Server-clock ms when the current verified-quiet period began. */
@@ -3165,43 +3823,127 @@ export class Process {
       return { promoted: false, nextPatienceMsRemaining };
     }
 
-    // Partition the eligible entries into join groups (compose-time gaps
-    // within the window). With the default window of 0 every entry is its own
-    // verbatim provider message. All groups are queued in this same pass —
-    // unlike the after-turn path — so quiet-window scheduling is unchanged.
+    // Promote only the leading join group this pass. Compose-time gaps within
+    // the window join into one turn; with the default window of 0 that is a
+    // single verbatim provider message. The remaining ripe entries are left in
+    // the queue and delivered one-per-boundary: queuePreparedMessage flips the
+    // process back in-turn for this turn, and when it finishes the Supervisor
+    // re-arms this check on the fresh idle boundary (observeProcessEvents). That
+    // is what makes "fully done" + "never batch" pop one message at a time.
     const { joinWindowSeconds } = this.resolveDeferredDelivery();
-    const promotedEntries = new Set<DeferredQueueEntry>();
-    let rest = eligible;
-    while (rest.length > 0) {
-      const group = this.leadingJoinGroup(rest, joinWindowSeconds);
-      rest = rest.slice(group.length);
-      const anchors = this.deferredComposeAnchors(group);
-      const providerMessages = group.map((entry, index) =>
-        this.prepareProviderMessage(entry.message, anchors[index]),
-      );
-      const providerTurn =
-        providerMessages.length === 1
-          ? providerMessages[0]!
-          : this.concatMessages(providerMessages);
-      const result = this.queuePreparedMessage(providerTurn, {
-        allowSteer: false,
-      });
-      if (!result.success) break;
-      for (const entry of group) {
-        promotedEntries.add(entry);
-      }
-    }
+    const group = this.leadingJoinGroup(eligible, joinWindowSeconds);
+    const anchors = this.deferredComposeAnchors(group);
+    const providerMessages = group.map((entry, index) =>
+      this.prepareProviderMessage(entry.message, anchors[index]),
+    );
+    const providerTurn =
+      providerMessages.length === 1
+        ? providerMessages[0]!
+        : this.concatMessages(providerMessages);
+    const result = this.queuePreparedMessage(providerTurn, {
+      allowSteer: false,
+    });
 
-    if (promotedEntries.size === 0) {
+    if (!result.success) {
       this.emitDeferredQueueChange("queued", eligible[0]?.message.tempId);
       return { promoted: false, nextPatienceMsRemaining };
     }
 
+    const promotedEntries = new Set<DeferredQueueEntry>(group);
     this.deferredQueue = this.deferredQueue.filter(
       (entry) => !promotedEntries.has(entry),
     );
-    this.emitDeferredQueueChange("promoted");
+    this.deletePersistedPatientDeferredEntries(group, "promoted");
+    this.emitDeferredQueueChange(
+      "promoted",
+      group.length === 1 ? group[0]!.message.tempId : undefined,
+    );
     return { promoted: true, nextPatienceMsRemaining };
+  }
+
+  /**
+   * A queued patient message rewritten for immediate steering: the steer
+   * delivery intent replaces the patient one (and its now-moot patience),
+   * and one recognized patient prefix is stripped because its "when done"
+   * wording no longer applies to an immediate send.
+   */
+  private toSteeredPatientMessage(message: UserMessage): UserMessage {
+    const { patienceSeconds: _patience, ...metadata } = message.metadata ?? {};
+    return {
+      ...message,
+      text: stripPatientQueuePrefix(message.text),
+      metadata: { ...metadata, deliveryIntent: "steer" },
+    };
+  }
+
+  /**
+   * Steer a queued patient entry — and every patient entry ahead of it, so
+   * earlier patient context is never skipped — into the session now instead
+   * of waiting for verified quiet. Regular deferred entries keep their queue
+   * positions. When the join window (queued-send batching) is enabled the
+   * group delivers as one concatenated steering turn; with the default
+   * window of 0 each entry is steered separately in queue order.
+   */
+  steerPatientDeferredMessagesThrough(tempId: string): {
+    success: boolean;
+    steered?: number;
+    error?: string;
+  } {
+    const targetIndex = this.deferredQueue.findIndex(
+      (entry) => entry.message.tempId === tempId,
+    );
+    if (targetIndex === -1) {
+      return { success: false, error: "Deferred message not found" };
+    }
+    const target = this.deferredQueue[targetIndex]!;
+    if (target.message.metadata?.deliveryIntent !== "patient") {
+      return { success: false, error: "Not a patient queued message" };
+    }
+
+    const group = this.deferredQueue
+      .slice(0, targetIndex + 1)
+      .filter((entry) => entry.message.metadata?.deliveryIntent === "patient");
+    const anchors = this.deferredComposeAnchors(group);
+    const steerMessages = group.map((entry, index) =>
+      this.prepareProviderMessage(
+        this.toSteeredPatientMessage(entry.message),
+        anchors[index],
+      ),
+    );
+
+    const { joinWindowSeconds } = this.resolveDeferredDelivery();
+    const turns =
+      joinWindowSeconds > 0 && steerMessages.length > 1
+        ? [{ providerTurn: this.concatMessages(steerMessages), entries: group }]
+        : steerMessages.map((message, index) => ({
+            providerTurn: message,
+            entries: [group[index]!],
+          }));
+
+    let steered = 0;
+    let error: string | undefined;
+    for (const turn of turns) {
+      const result = this.queuePreparedMessage(turn.providerTurn);
+      if (!result.success) {
+        error = result.error;
+        break;
+      }
+      const sentEntries = new Set(turn.entries);
+      this.deferredQueue = this.deferredQueue.filter(
+        (entry) => !sentEntries.has(entry),
+      );
+      this.deletePersistedPatientDeferredEntries(turn.entries, "promoted");
+      steered += turn.entries.length;
+    }
+
+    if (steered === 0) {
+      return { success: false, error: error ?? "Failed to steer message" };
+    }
+    this.emitDeferredQueueChange(
+      "promoted",
+      steered === 1 ? group[0]!.message.tempId : undefined,
+    );
+    return { success: true, steered };
   }
 
   /**
@@ -3316,6 +4058,7 @@ export class Process {
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.iteratorDone = true;
+    this.clearProviderRuntimeStatus();
 
     this.emit({ type: "idle-reap" });
 

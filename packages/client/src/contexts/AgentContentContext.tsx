@@ -3,13 +3,12 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { api } from "../api/client";
 import type { AgentContent, AgentContentMap } from "../hooks/useSession";
-import { getMessageId } from "../lib/mergeMessages";
-import type { Message } from "../types";
 
 interface AgentContentContextValue {
   /** Map of agentId → agent content (messages + status) */
@@ -35,8 +34,8 @@ interface AgentContentProviderProps {
   children: ReactNode;
   /** Live agentContent from useSession (for streaming updates) */
   agentContent: AgentContentMap;
-  /** Update agentContent state (for merging loaded content) */
-  setAgentContent: React.Dispatch<React.SetStateAction<AgentContentMap>>;
+  /** Merge loaded agent content through the session detail action layer */
+  mergeLoadedAgentContent: (agentId: string, content: AgentContent) => void;
   /** Mapping from Task tool_use_id → agentId (for rendering during streaming) */
   toolUseToAgent: Map<string, string>;
   projectId: string;
@@ -46,7 +45,7 @@ interface AgentContentProviderProps {
 export function AgentContentProvider({
   children,
   agentContent,
-  setAgentContent,
+  mergeLoadedAgentContent,
   toolUseToAgent,
   projectId,
 }: AgentContentProviderProps) {
@@ -98,38 +97,7 @@ export function AgentContentProvider({
         // Mark as loaded before merging
         loadedAgentsRef.current.add(agentId);
 
-        // Merge JSONL messages with any existing SSE content
-        // SSE may have captured messages that arrived after page load
-        setAgentContent((prev) => {
-          const existing = prev[agentId];
-          const existingMessages = existing?.messages ?? [];
-          const jsonlMessages = data.messages;
-
-          // Dedupe by message ID - prefer JSONL as canonical, add SSE-only messages
-          const messageMap = new Map<string, Message>();
-          for (const m of jsonlMessages) {
-            messageMap.set(getMessageId(m), m);
-          }
-          // Add any SSE messages not in JSONL (e.g., arrived after JSONL was read)
-          for (const m of existingMessages) {
-            const id = getMessageId(m);
-            if (!messageMap.has(id)) {
-              messageMap.set(id, m);
-            }
-          }
-
-          // Use status from server (inferred from JSONL) unless SSE shows running
-          const status =
-            existing?.status === "running" ? "running" : data.status;
-
-          return {
-            ...prev,
-            [agentId]: {
-              messages: Array.from(messageMap.values()),
-              status,
-            },
-          };
-        });
+        mergeLoadedAgentContent(agentId, data);
 
         return {
           messages: data.messages,
@@ -146,7 +114,7 @@ export function AgentContentProvider({
         });
       }
     },
-    [agentContent, loadingAgents, setAgentContent],
+    [agentContent, loadingAgents, mergeLoadedAgentContent],
   );
 
   const isLoading = useCallback(
@@ -154,13 +122,21 @@ export function AgentContentProvider({
     [loadingAgents],
   );
 
-  const value: AgentContentContextValue = {
-    agentContent,
-    toolUseToAgent,
-    loadAgentContent,
-    isLoading,
-    projectId,
-  };
+  // Memoize so the context value only changes when its contents actually
+  // change. Without this, every SessionPage re-render (≈1/s from status
+  // timers) produced a fresh value object, and context propagation re-renders
+  // every consumer (subagent Task/SpawnAgent rows and their nested rows)
+  // through their `memo` boundaries — a per-second O(subagent-rows) idle churn.
+  const value = useMemo<AgentContentContextValue>(
+    () => ({
+      agentContent,
+      toolUseToAgent,
+      loadAgentContent,
+      isLoading,
+      projectId,
+    }),
+    [agentContent, toolUseToAgent, loadAgentContent, isLoading, projectId],
+  );
 
   return (
     <AgentContentContext.Provider value={value}>

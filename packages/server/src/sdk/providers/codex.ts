@@ -9,7 +9,8 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import {
-  HELPER_SIDE_MODEL_CHEAPEST,
+  CODEX_TOOL_CORRELATION_FIELD,
+  createCodexToolCorrelation,
   type ModelInfo,
 } from "@yep-anywhere/shared";
 import {
@@ -23,6 +24,7 @@ import {
   isCodexInterruptedToolOutput,
   type CodexToolCallContext,
   normalizeCodexCommandExecutionOutput,
+  normalizeCodexCustomToolInvocation,
   normalizeCodexToolInvocation,
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
@@ -41,18 +43,10 @@ import type {
 } from "../types.js";
 import type { ToolApprovalResult } from "../types.js";
 import type {
-  AgentMessageDeltaNotification,
   AskForApproval as CodexAskForApproval,
-  CommandExecutionOutputDeltaNotification,
-  ErrorNotification as CodexErrorNotification,
-  FileChangeOutputDeltaNotification,
-  ItemCompletedNotification as CodexItemCompletedNotification,
-  ItemStartedNotification as CodexItemStartedNotification,
-  PlanDeltaNotification,
   PermissionsRequestApprovalParams,
   PermissionsRequestApprovalResponse,
   RawResponseItemCompletedNotification,
-  ReasoningSummaryTextDeltaNotification,
   SandboxMode as CodexSandboxMode,
   ThreadForkParams,
   ThreadForkResponse,
@@ -71,10 +65,8 @@ import type {
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
-  ThreadTokenUsageUpdatedNotification,
   ToolRequestUserInputParams,
   ToolRequestUserInputResponse,
-  TurnCompletedNotification,
   TurnInterruptParams,
   TurnInterruptResponse,
   TurnStartParams,
@@ -83,6 +75,40 @@ import type {
   TurnSteerResponse,
 } from "./codex-protocol/index.js";
 import { createAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
+import {
+  type AppServerModel,
+  getFallbackCodexModelsForCliVersion,
+  normalizeCodexModelList,
+  normalizeSemver,
+} from "./codex-model-catalog.js";
+import {
+  asCodexAgentMessageDeltaNotification,
+  asCodexCommandExecutionOutputDeltaNotification,
+  asCodexErrorNotification,
+  asCodexFileChangeOutputDeltaNotification,
+  asCodexItemCompletedNotification,
+  asCodexItemStartedNotification,
+  asCodexPlanDeltaNotification,
+  asCodexRawResponseItemCompletedNotification,
+  asCodexReasoningSummaryTextDeltaNotification,
+  asCodexThreadTokenUsageUpdatedNotification,
+  asCodexTurnCompletedNotification,
+  isCodexLiveDeltaNotificationMethod,
+  isCodexLiveDeltaSuppressionEnabled,
+} from "./codex-notification-guards.js";
+import {
+  captureCodexSummaryTextFromNotification,
+  captureCodexSummaryTextFromTurnItems,
+  cleanCodexRecapText,
+  cleanCodexSummaryText,
+  CODEX_RECAP_TIMEOUT_MS,
+  CODEX_SUMMARY_TIMEOUT_MS,
+  createCodexForkSummaryPrompt,
+  createCodexForkSummaryThreadResumeParams,
+  createCodexRecapPrompt,
+  joinCodexSummaryText,
+  resolveCodexRecapHelperModel,
+} from "./codex-summary-helpers.js";
 import { CODEX_BUILTIN_COMMANDS } from "./staticSlashCommands.js";
 import type {
   AgentProvider,
@@ -95,6 +121,8 @@ import type {
 
 const log = getLogger().child({ component: "codex-provider" });
 const execFileAsync = promisify(execFile);
+const CODEX_DESKTOP_BROWSER_SKILL_NAME =
+  "browser:control-in-app-browser";
 
 function logSdkCorrelationDebug(
   sessionId: string,
@@ -150,31 +178,8 @@ const MODEL_LIST_TIMEOUT_MS = 8000;
 const APP_SERVER_INIT_REQUEST_ID = 1;
 const APP_SERVER_MODEL_LIST_REQUEST_ID = 2;
 const APP_SERVER_SHUTDOWN_GRACE_MS = 1500;
-const CODEX_CLI_GPT55_MIN_VERSION = "0.124.0";
 const CODEX_FAILURE_TRACE_LIMIT = 12;
 const CODEX_FAILURE_PREVIEW_CHARS = 240;
-const CODEX_RECAP_TIMEOUT_MS = 20_000;
-const CODEX_SUMMARY_TIMEOUT_MS = 60_000;
-const CODEX_RECAP_MAX_TOTAL_CHARS = 6000;
-const CODEX_RECAP_CHEAPEST_MODEL_PREFERENCES = [
-  "gpt-5.4-mini",
-  "gpt-5.1-codex-mini",
-  "gpt-5.3-codex-spark",
-] as const;
-const CODEX_DISABLE_LIVE_DELTAS_ENV = "YEP_CODEX_DISABLE_LIVE_DELTAS";
-const CODEX_LIVE_DELTA_NOTIFICATION_METHODS = new Set<string>([
-  "item/agentMessage/delta",
-  "item/plan/delta",
-  "item/reasoning/summaryTextDelta",
-  "item/commandExecution/outputDelta",
-  "item/fileChange/outputDelta",
-]);
-function isCodexLiveDeltaSuppressionEnabled(): boolean {
-  return process.env[CODEX_DISABLE_LIVE_DELTAS_ENV] === "true";
-}
-function isCodexLiveDeltaNotificationMethod(method: string): boolean {
-  return CODEX_LIVE_DELTA_NOTIFICATION_METHODS.has(method);
-}
 const CODEX_THINKING_OFF_MIN_REASONING_EFFORT_PREFIXES = [
   "gpt-5.3-codex-spark",
 ] as const;
@@ -209,133 +214,14 @@ interface CodexForkAnchor {
 }
 
 /**
- * When enabled, declare Codex session originator as "Codex Desktop"
- * when initializing app-server sessions.
+ * When enabled, declare Codex session originator as "Codex Desktop" when
+ * initializing app-server sessions. Disabled by default so we report
+ * "yep-anywhere" as the originator, making Yep Anywhere usage visible in the
+ * Codex/ChatGPT token-usage UI.
  */
-const DECLARE_CODEX_ORIGINATOR = true;
+const DECLARE_CODEX_ORIGINATOR = false;
 const DECLARED_CODEX_ORIGINATOR = "Codex Desktop";
 const YEP_ANYWHERE_ORIGINATOR = "yep-anywhere";
-
-const PREFERRED_MODEL_ORDER = [
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
-  "gpt-5.2-codex",
-  "gpt-5.1-codex-max",
-  "gpt-5.2",
-  "gpt-5.1-codex-mini",
-] as const;
-
-const FALLBACK_CODEX_MODELS: ModelInfo[] = [
-  {
-    id: "gpt-5.5",
-    name: "GPT-5.5",
-    description:
-      "Frontier model for complex coding, research, and real-world work.",
-    defaultReasoningEffort: "medium",
-    supportedReasoningEfforts: [
-      {
-        reasoningEffort: "low",
-        description: "Fast responses with lighter reasoning",
-      },
-      {
-        reasoningEffort: "medium",
-        description: "Balances speed and reasoning depth for everyday tasks",
-      },
-      {
-        reasoningEffort: "high",
-        description: "Greater reasoning depth for complex problems",
-      },
-      {
-        reasoningEffort: "xhigh",
-        description: "Extra high reasoning depth for complex problems",
-      },
-    ],
-    inputModalities: ["text", "image"],
-    supportsPersonality: true,
-    serviceTiers: [
-      {
-        id: "priority",
-        name: "Fast",
-        description: "1.5x speed, increased usage",
-      },
-    ],
-  },
-  {
-    id: "gpt-5.4",
-    name: "GPT-5.4",
-    description: "Strong model for everyday coding.",
-    isDefault: true,
-    defaultReasoningEffort: "medium",
-    supportedReasoningEfforts: [
-      {
-        reasoningEffort: "low",
-        description: "Fast responses with lighter reasoning",
-      },
-      {
-        reasoningEffort: "medium",
-        description: "Balances speed and reasoning depth for everyday tasks",
-      },
-      {
-        reasoningEffort: "high",
-        description: "Greater reasoning depth for complex problems",
-      },
-      {
-        reasoningEffort: "xhigh",
-        description: "Extra high reasoning depth for complex problems",
-      },
-    ],
-    inputModalities: ["text", "image"],
-    supportsPersonality: true,
-    serviceTiers: [
-      {
-        id: "priority",
-        name: "Fast",
-        description: "1.5x speed, increased usage",
-      },
-    ],
-  },
-  {
-    id: "gpt-5.4-mini",
-    name: "GPT-5.4-Mini",
-    description:
-      "Small, fast, and cost-efficient model for simpler coding tasks.",
-    defaultReasoningEffort: "medium",
-    supportedReasoningEfforts: [
-      {
-        reasoningEffort: "low",
-        description: "Fast responses with lighter reasoning",
-      },
-      {
-        reasoningEffort: "medium",
-        description: "Balances speed and reasoning depth for everyday tasks",
-      },
-      {
-        reasoningEffort: "high",
-        description: "Greater reasoning depth for complex problems",
-      },
-      {
-        reasoningEffort: "xhigh",
-        description: "Extra high reasoning depth for complex problems",
-      },
-    ],
-    inputModalities: ["text", "image"],
-    supportsPersonality: true,
-  },
-  { id: "gpt-5.3-codex", name: "GPT-5.3-Codex" },
-  { id: "gpt-5.3-codex-spark", name: "GPT-5.3-Codex-Spark" },
-  { id: "gpt-5.2", name: "GPT-5.2" },
-];
-
-const LEGACY_FALLBACK_CODEX_MODELS: ModelInfo[] = [
-  { id: "gpt-5.3-codex", name: "GPT-5.3-Codex" },
-  { id: "gpt-5.2-codex", name: "GPT-5.2-Codex" },
-  { id: "gpt-5.1-codex-max", name: "GPT-5.1-Codex-Max" },
-  { id: "gpt-5.2", name: "GPT-5.2" },
-  { id: "gpt-5.1-codex-mini", name: "GPT-5.1-Codex-Mini" },
-];
 
 type JsonRpcId = string | number;
 
@@ -360,29 +246,6 @@ interface JsonRpcServerRequest extends JsonRpcNotification {
   id: JsonRpcId;
 }
 
-interface AppServerModel {
-  id: string;
-  model?: string;
-  displayName?: string;
-  description?: string;
-  upgrade?: string | null;
-  upgradeInfo?: { model?: string | null } | null;
-  hidden?: boolean | null;
-  isDefault?: boolean | null;
-  defaultReasoningEffort?: string | null;
-  supportedReasoningEfforts?: Array<{
-    reasoningEffort?: string | null;
-    description?: string | null;
-  }> | null;
-  inputModalities?: string[] | null;
-  supportsPersonality?: boolean | null;
-  serviceTiers?: Array<{
-    id?: string | null;
-    name?: string | null;
-    description?: string | null;
-  }> | null;
-}
-
 interface TokenUsageSnapshot {
   inputTokens: number;
   outputTokens: number;
@@ -395,43 +258,6 @@ interface CodexTurnRuntimeState {
   activeTurnId: string | null;
   activeToolCallIds: Set<string>;
   backgroundToolCallIds: Set<string>;
-}
-
-function normalizeSemver(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const match = raw.match(/(\d+)\.(\d+)\.(\d+)(?:-([\w.]+))?/);
-  if (!match) return null;
-  const [, major, minor, patch, pre] = match;
-  return pre
-    ? `${major}.${minor}.${patch}-${pre}`
-    : `${major}.${minor}.${patch}`;
-}
-
-function compareSemver(a: string, b: string): number {
-  const parsedA = splitSemver(a);
-  const parsedB = splitSemver(b);
-  for (let i = 0; i < 3; i++) {
-    const partA = parsedA.parts[i] ?? 0;
-    const partB = parsedB.parts[i] ?? 0;
-    if (partA !== partB) return partA < partB ? -1 : 1;
-  }
-  if (parsedA.pre === null && parsedB.pre === null) return 0;
-  if (parsedA.pre === null) return 1;
-  if (parsedB.pre === null) return -1;
-  return parsedA.pre < parsedB.pre ? -1 : parsedA.pre > parsedB.pre ? 1 : 0;
-}
-
-function splitSemver(version: string): { parts: number[]; pre: string | null } {
-  const dashIndex = version.indexOf("-");
-  const core = dashIndex === -1 ? version : version.slice(0, dashIndex);
-  const pre = dashIndex === -1 ? null : version.slice(dashIndex + 1);
-  return {
-    parts: core.split(".").map((part) => {
-      const parsed = Number.parseInt(part, 10);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }),
-    pre,
-  };
 }
 
 async function terminateChildProcess(
@@ -542,7 +368,10 @@ type NormalizedThreadItem =
       command: string;
       aggregated_output: string;
       exit_code?: number;
+      durationMs?: number;
       status: string;
+      cwd?: string;
+      commandActions?: unknown[];
     }
   | {
       id: string;
@@ -1105,7 +934,7 @@ export class CodexProvider implements AgentProvider {
   private async getModelsFromAppServer(): Promise<ModelInfo[]> {
     try {
       const appServerModels = await this.requestAppServerModelList();
-      return this.normalizeModelList(appServerModels);
+      return normalizeCodexModelList(appServerModels);
     } catch (error) {
       log.debug(
         { error },
@@ -1258,153 +1087,9 @@ export class CodexProvider implements AgentProvider {
     });
   }
 
-  private normalizeModelList(models: AppServerModel[]): ModelInfo[] {
-    const orderLookup = new Map<string, number>(
-      PREFERRED_MODEL_ORDER.map((id, idx) => [id, idx]),
-    );
-    const deduped = new Map<
-      string,
-      { model: ModelInfo; serverIndex: number }
-    >();
-
-    for (const [serverIndex, model] of models.entries()) {
-      if (model.hidden === true) continue;
-
-      const modelId = (model.model || model.id || "").trim();
-      if (!modelId) continue;
-
-      deduped.set(modelId, {
-        model: {
-          id: modelId,
-          name: this.formatModelName(model.displayName || modelId),
-          description: model.description,
-          ...(model.isDefault === true ? { isDefault: true } : {}),
-          ...this.normalizeModelReasoningMetadata(model),
-          ...(Array.isArray(model.inputModalities)
-            ? { inputModalities: model.inputModalities }
-            : {}),
-          ...(typeof model.supportsPersonality === "boolean"
-            ? { supportsPersonality: model.supportsPersonality }
-            : {}),
-          ...this.normalizeModelServiceTierMetadata(model),
-        },
-        serverIndex,
-      });
-
-      const upgradeId =
-        model.upgrade?.trim() ||
-        (typeof model.upgradeInfo?.model === "string"
-          ? model.upgradeInfo.model.trim()
-          : "");
-      if (upgradeId && !deduped.has(upgradeId)) {
-        deduped.set(upgradeId, {
-          model: {
-            id: upgradeId,
-            name: this.formatModelName(upgradeId),
-          },
-          serverIndex,
-        });
-      }
-    }
-
-    return [...deduped.values()]
-      .map((entry, index) => ({
-        model: entry.model,
-        index,
-        rank: this.getModelSortRank(
-          entry.model,
-          entry.serverIndex,
-          orderLookup,
-        ),
-      }))
-      .sort((a, b) => a.rank - b.rank || a.index - b.index)
-      .map((entry) => entry.model);
-  }
-
-  private normalizeModelReasoningMetadata(
-    model: AppServerModel,
-  ): Pick<ModelInfo, "defaultReasoningEffort" | "supportedReasoningEfforts"> {
-    const metadata: Pick<
-      ModelInfo,
-      "defaultReasoningEffort" | "supportedReasoningEfforts"
-    > = {};
-    if (typeof model.defaultReasoningEffort === "string") {
-      metadata.defaultReasoningEffort = model.defaultReasoningEffort;
-    }
-    if (Array.isArray(model.supportedReasoningEfforts)) {
-      const efforts = model.supportedReasoningEfforts
-        .map((effort) => {
-          if (typeof effort.reasoningEffort !== "string") return null;
-          return {
-            reasoningEffort: effort.reasoningEffort,
-            ...(typeof effort.description === "string"
-              ? { description: effort.description }
-              : {}),
-          };
-        })
-        .filter(
-          (
-            effort,
-          ): effort is {
-            reasoningEffort: string;
-            description?: string;
-          } => effort !== null,
-        );
-      if (efforts.length > 0) {
-        metadata.supportedReasoningEfforts = efforts;
-      }
-    }
-    return metadata;
-  }
-
-  private normalizeModelServiceTierMetadata(
-    model: AppServerModel,
-  ): Pick<ModelInfo, "serviceTiers"> {
-    if (!Array.isArray(model.serviceTiers)) {
-      return {};
-    }
-    const serviceTiers = model.serviceTiers
-      .map((tier) => {
-        const id = typeof tier.id === "string" ? tier.id.trim() : "";
-        const name = typeof tier.name === "string" ? tier.name.trim() : "";
-        if (!id || !name) return null;
-        return {
-          id,
-          name,
-          ...(typeof tier.description === "string"
-            ? { description: tier.description }
-            : {}),
-        };
-      })
-      .filter((tier): tier is NonNullable<typeof tier> => tier !== null);
-
-    return serviceTiers.length > 0 ? { serviceTiers } : {};
-  }
-
-  private getModelSortRank(
-    model: ModelInfo,
-    serverIndex: number,
-    orderLookup: Map<string, number>,
-  ): number {
-    if (model.id === "gpt-5.5") {
-      return 0;
-    }
-    if (model.isDefault) {
-      return 1;
-    }
-    const preferredRank = orderLookup.get(model.id);
-    if (preferredRank !== undefined) {
-      return 2 + preferredRank;
-    }
-    return 2 + PREFERRED_MODEL_ORDER.length + serverIndex;
-  }
-
   private async getFallbackCodexModels(): Promise<ModelInfo[]> {
     const version = await this.getInstalledCodexCliVersion();
-    if (version && compareSemver(version, CODEX_CLI_GPT55_MIN_VERSION) < 0) {
-      return LEGACY_FALLBACK_CODEX_MODELS;
-    }
-    return FALLBACK_CODEX_MODELS;
+    return getFallbackCodexModelsForCliVersion(version);
   }
 
   private async getInstalledCodexCliVersion(): Promise<string | null> {
@@ -1418,22 +1103,6 @@ export class CodexProvider implements AgentProvider {
     } catch {
       return null;
     }
-  }
-
-  private formatModelName(value: string): string {
-    return value
-      .trim()
-      .split("-")
-      .map((part) => {
-        const lower = part.toLowerCase();
-        if (lower === "gpt") return "GPT";
-        if (lower === "codex") return "Codex";
-        if (lower === "mini") return "Mini";
-        if (lower === "max") return "Max";
-        if (lower.length === 0) return "";
-        return lower.charAt(0).toUpperCase() + lower.slice(1);
-      })
-      .join("-");
   }
 
   private mapEffortToReasoningEffort(
@@ -2144,12 +1813,12 @@ export class CodexProvider implements AgentProvider {
     turnId: string,
   ): boolean {
     if (notification.method === "turn/completed") {
-      const params = this.asTurnCompletedNotification(notification.params);
+      const params = asCodexTurnCompletedNotification(notification.params);
       return params?.turn.id === turnId;
     }
 
     if (notification.method === "error") {
-      const params = this.asErrorNotification(notification.params);
+      const params = asCodexErrorNotification(notification.params);
       return params?.turnId === turnId && !params.willRetry;
     }
 
@@ -2161,7 +1830,7 @@ export class CodexProvider implements AgentProvider {
     runtimeState: CodexTurnRuntimeState,
   ): void {
     if (notification.method === "rawResponseItem/completed") {
-      const params = this.asRawResponseItemCompletedNotification(
+      const params = asCodexRawResponseItemCompletedNotification(
         notification.params,
       );
       const item =
@@ -2193,7 +1862,7 @@ export class CodexProvider implements AgentProvider {
     }
 
     if (notification.method === "item/completed") {
-      const params = this.asItemCompletedNotification(notification.params);
+      const params = asCodexItemCompletedNotification(notification.params);
       if (!params) return;
       const normalized = this.normalizeThreadItem(params.item);
       if (normalized?.type === "command_execution") {
@@ -2204,7 +1873,7 @@ export class CodexProvider implements AgentProvider {
     }
 
     if (notification.method === "item/started") {
-      const params = this.asItemStartedNotification(notification.params);
+      const params = asCodexItemStartedNotification(notification.params);
       if (!params) return;
       const normalized = this.normalizeThreadItem(params.item);
       if (normalized && this.isResultBackedThreadItem(normalized)) {
@@ -2316,7 +1985,7 @@ export class CodexProvider implements AgentProvider {
       threadId: options.sessionId,
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
-      config: null,
+      config: this.buildThreadConfigOverrides({}),
     };
     if (experimentalApiEnabled) {
       params.excludeTurns = true;
@@ -2423,17 +2092,31 @@ export class CodexProvider implements AgentProvider {
   }
 
   private buildThreadConfigOverrides(
-    options: StartSessionOptions,
-  ): Record<string, string> | null {
+    options: Pick<StartSessionOptions, "effort" | "thinking" | "model">,
+  ): NonNullable<ThreadStartParams["config"]> {
+    // The OpenAI browser plugin controls a desktop-owned browser backend that
+    // YA's Codex app-server host does not provide. Suppress the unavailable
+    // skill at thread scope so Codex follows YA's Playwright fallback instead
+    // of advertising a browser that fails during backend discovery.
+    const config: NonNullable<ThreadStartParams["config"]> = {
+      skills: {
+        config: [
+          {
+            name: CODEX_DESKTOP_BROWSER_SKILL_NAME,
+            enabled: false,
+          },
+        ],
+      },
+    };
     const reasoningEffort = this.mapEffortToReasoningEffort(
       options.effort,
       options.thinking,
       options.model,
     );
-    if (!reasoningEffort) {
-      return null;
+    if (reasoningEffort) {
+      config.model_reasoning_effort = reasoningEffort;
     }
-    return { model_reasoning_effort: reasoningEffort };
+    return config;
   }
 
   private createTurnStartParams(
@@ -2490,8 +2173,10 @@ export class CodexProvider implements AgentProvider {
     recentAssistantText: string[],
     requestedModel?: string,
   ): Promise<string> {
-    const userPrompt = this.createRecapPrompt(recentAssistantText);
-    const model = await this.resolveRecapHelperModel(requestedModel);
+    const userPrompt = createCodexRecapPrompt(recentAssistantText);
+    const model = await resolveCodexRecapHelperModel(requestedModel, () =>
+      this.getAvailableModels(),
+    );
     const codexCommand = await this.resolveCodexCommand();
     const abortController = new AbortController();
     let timedOut = false;
@@ -2541,7 +2226,12 @@ export class CodexProvider implements AgentProvider {
       );
 
       const textByItemId = new Map<string, string>();
-      this.captureRecapTextFromTurnItems(turnResult.turn.items, textByItemId);
+      const normalizeThreadItem = this.normalizeThreadItem.bind(this);
+      captureCodexSummaryTextFromTurnItems(
+        turnResult.turn.items,
+        textByItemId,
+        normalizeThreadItem,
+      );
 
       if (turnResult.turn.status === "failed") {
         throw new Error(
@@ -2554,12 +2244,16 @@ export class CodexProvider implements AgentProvider {
         const notification = await appServer.nextNotification(
           abortController.signal,
         );
-        this.captureRecapTextFromNotification(notification, textByItemId);
+        captureCodexSummaryTextFromNotification(
+          notification,
+          textByItemId,
+          normalizeThreadItem,
+        );
 
         if (notification.method !== "turn/completed") {
           continue;
         }
-        const completed = this.asTurnCompletedNotification(notification.params);
+        const completed = asCodexTurnCompletedNotification(notification.params);
         if (completed?.turn.status === "failed") {
           throw new Error(
             completed.turn.error?.message ?? "Codex recap generation failed",
@@ -2571,10 +2265,7 @@ export class CodexProvider implements AgentProvider {
         throw new Error("Timed out generating Codex recap");
       }
 
-      const cleaned = [...textByItemId.values()]
-        .join("\n")
-        .replace(/\s*\(disable recaps in \/config\)\s*$/u, "")
-        .trim();
+      const cleaned = cleanCodexRecapText(joinCodexSummaryText(textByItemId));
       if (!cleaned) {
         throw new Error("Recap generation returned empty text");
       }
@@ -2591,50 +2282,10 @@ export class CodexProvider implements AgentProvider {
     }
   }
 
-  private createRecapPrompt(recentAssistantText: string[]): string {
-    const trimmed = recentAssistantText
-      .map((text) => text.trim())
-      .filter((text) => text.length > 0);
-    if (trimmed.length === 0) {
-      throw new Error("No recent assistant text to summarize");
-    }
-
-    let total = 0;
-    const tail: string[] = [];
-    for (let i = trimmed.length - 1; i >= 0; i--) {
-      const entry = trimmed[i] ?? "";
-      if (total + entry.length > CODEX_RECAP_MAX_TOTAL_CHARS) {
-        break;
-      }
-      tail.unshift(entry);
-      total += entry.length;
-    }
-    if (tail.length === 0) {
-      const last = trimmed[trimmed.length - 1] ?? "";
-      tail.push(last.slice(-CODEX_RECAP_MAX_TOTAL_CHARS));
-    }
-
-    const transcript = tail
-      .map((text, index) => `--- Assistant turn ${index + 1} ---\n${text}`)
-      .join("\n\n");
-    return [
-      "The user stepped away and is coming back. Recap in under 40 words,",
-      "1-2 plain sentences, no markdown. Lead with the overall thrust of what",
-      "the assistant did or is doing; mention any pending next action.",
-      "Do not greet, do not ask a question, do not add a sign-off.",
-      "",
-      "Recent assistant output:",
-      transcript,
-    ].join("\n");
-  }
-
   private async generateForkBackedSummary(
     request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
   ): Promise<SummaryGenerationResult> {
-    const userPrompt =
-      request.purpose === "session-retitle"
-        ? this.createSessionRetitlePrompt(request)
-        : this.createForkAfterSummaryPrompt(request);
+    const userPrompt = createCodexForkSummaryPrompt(request);
     const codexCommand = await this.resolveCodexCommand();
     const appServer = new CodexAppServerClient(
       codexCommand,
@@ -2675,7 +2326,7 @@ export class CodexProvider implements AgentProvider {
 
       const threadResult = await appServer.request<ThreadResumeResponse>(
         "thread/resume",
-        this.createForkSummaryThreadResumeParams(
+        createCodexForkSummaryThreadResumeParams(
           request,
           experimentalApiEnabled,
         ),
@@ -2693,7 +2344,12 @@ export class CodexProvider implements AgentProvider {
       );
 
       const textByItemId = new Map<string, string>();
-      this.captureRecapTextFromTurnItems(turnResult.turn.items, textByItemId);
+      const normalizeThreadItem = this.normalizeThreadItem.bind(this);
+      captureCodexSummaryTextFromTurnItems(
+        turnResult.turn.items,
+        textByItemId,
+        normalizeThreadItem,
+      );
 
       if (turnResult.turn.status === "failed") {
         throw new Error(
@@ -2707,18 +2363,23 @@ export class CodexProvider implements AgentProvider {
         const notification = await appServer.nextNotification(
           abortController.signal,
         );
-        this.captureRecapTextFromNotification(notification, textByItemId);
+        captureCodexSummaryTextFromNotification(
+          notification,
+          textByItemId,
+          normalizeThreadItem,
+        );
 
         if (notification.method === "turn/completed") {
-          const completed = this.asTurnCompletedNotification(
+          const completed = asCodexTurnCompletedNotification(
             notification.params,
           );
           if (completed?.turn.id !== turnId) {
             continue;
           }
-          this.captureRecapTextFromTurnItems(
+          captureCodexSummaryTextFromTurnItems(
             completed.turn.items,
             textByItemId,
+            normalizeThreadItem,
           );
           if (completed.turn.status === "failed") {
             throw new Error(
@@ -2731,7 +2392,7 @@ export class CodexProvider implements AgentProvider {
         }
 
         if (notification.method === "error") {
-          const error = this.asErrorNotification(notification.params);
+          const error = asCodexErrorNotification(notification.params);
           if (error?.turnId === turnId && !error.willRetry) {
             throw new Error(
               error.error.message ?? "Codex summary generation failed",
@@ -2746,7 +2407,7 @@ export class CodexProvider implements AgentProvider {
         throw new Error("Timed out generating Codex summary");
       }
 
-      const cleaned = [...textByItemId.values()].join("\n").trim();
+      const cleaned = cleanCodexSummaryText(joinCodexSummaryText(textByItemId));
       if (!cleaned) {
         throw new Error("Summary generation returned empty text");
       }
@@ -2765,94 +2426,6 @@ export class CodexProvider implements AgentProvider {
       abortController.abort();
       await appServer.close();
     }
-  }
-
-  private createForkSummaryThreadResumeParams(
-    request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
-    experimentalApiEnabled = false,
-  ): CodexThreadResumeParamsForRequest {
-    const params: CodexThreadResumeParamsForRequest = {
-      threadId: request.generatorSessionId,
-      model: null,
-      cwd: request.cwd,
-      approvalPolicy: "untrusted",
-      sandbox: "read-only",
-      config: null,
-      developerInstructions:
-        request.purpose === "session-retitle"
-          ? "You are a title helper. Reply with the session title only, no preamble. Do not call tools."
-          : "You are a handoff summary helper. Reply with the summary text only, no preamble. Do not call tools.",
-    };
-    if (experimentalApiEnabled) {
-      params.excludeTurns = true;
-    }
-    return params;
-  }
-
-  private createForkAfterSummaryPrompt(
-    request: Extract<
-      SummaryGenerationRequest,
-      { purpose: "fork-after-summary" }
-    >,
-  ): string {
-    const instructions = request.instructions?.trim();
-    const boundaryContext = request.afterTurnContext?.trim();
-    return [
-      "The first non-empty line must be a concise title of at most 120 characters, with no trailing period.",
-      "Write it as: Title: <title>",
-      "Then leave one blank line before the handoff summary.",
-      "",
-      "Summarize the useful state after the retained fork boundary for a peer-agent handoff.",
-      `The target fork retains the conversation through completed-turn message id ${request.afterTurnMessageId}.`,
-      boundaryContext
-        ? `The retained boundary is the completed turn ending with this excerpt:\n${boundaryContext}`
-        : undefined,
-      "The target fork already includes the original request and the assistant/tool work through that selected completed turn.",
-      "Do not repeat setup, instruction loading, initial repository orientation, or investigation already present in that retained prefix.",
-      "Preserve decisions, constraints, current state, changed files, verification evidence, open risks, and the next useful action.",
-      "Do not continue the task. Write text that can be submitted as the next user turn in the target fork.",
-      instructions ? "" : undefined,
-      instructions ? "Additional user instructions:" : undefined,
-      instructions || undefined,
-    ]
-      .filter((part): part is string => part !== undefined)
-      .join("\n");
-  }
-
-  private createSessionRetitlePrompt(
-    request: Extract<SummaryGenerationRequest, { purpose: "session-retitle" }>,
-  ): string {
-    const lengthTarget = request.lengthTarget ?? 80;
-    const currentTitle = request.currentTitle?.trim();
-    return [
-      "What is a good new title for this session?",
-      "",
-      `Target length: under ${lengthTarget} characters.`,
-      currentTitle ? `Current title: ${currentTitle}` : undefined,
-      "Prefer a concrete task/result phrase over a generic chat title.",
-      "Return only the title. Do not quote it. Do not add a trailing period.",
-    ]
-      .filter((part): part is string => part !== undefined)
-      .join("\n");
-  }
-
-  private async resolveRecapHelperModel(
-    requestedModel: string | undefined,
-  ): Promise<string | null> {
-    if (!requestedModel || requestedModel !== HELPER_SIDE_MODEL_CHEAPEST) {
-      return requestedModel ?? null;
-    }
-
-    const models = await this.getAvailableModels();
-    for (const preferred of CODEX_RECAP_CHEAPEST_MODEL_PREFERENCES) {
-      if (models.some((model) => model.id === preferred)) {
-        return preferred;
-      }
-    }
-    return (
-      models.find((model) => model.id.toLowerCase().includes("mini"))?.id ??
-      null
-    );
   }
 
   private handleRecapServerRequest(
@@ -2895,75 +2468,6 @@ export class CodexProvider implements AgentProvider {
       default:
         return Promise.resolve({});
     }
-  }
-
-  private captureRecapTextFromTurnItems(
-    items: CodexThreadItem[],
-    textByItemId: Map<string, string>,
-  ): void {
-    for (const item of items) {
-      const normalized = this.normalizeThreadItem(item);
-      if (normalized?.type === "agent_message" && normalized.text.trim()) {
-        textByItemId.set(normalized.id, normalized.text);
-      }
-    }
-  }
-
-  private captureRecapTextFromNotification(
-    notification: JsonRpcNotification,
-    textByItemId: Map<string, string>,
-  ): void {
-    if (notification.method === "item/agentMessage/delta") {
-      const params = this.asAgentMessageDeltaNotification(notification.params);
-      if (!params?.delta) return;
-      textByItemId.set(
-        params.itemId,
-        `${textByItemId.get(params.itemId) ?? ""}${params.delta}`,
-      );
-      return;
-    }
-
-    if (notification.method === "item/completed") {
-      const params = this.asItemCompletedNotification(notification.params);
-      if (!params || textByItemId.has(params.item.id)) return;
-      const normalized = this.normalizeThreadItem(params.item);
-      if (normalized?.type === "agent_message" && normalized.text.trim()) {
-        textByItemId.set(normalized.id, normalized.text);
-      }
-      return;
-    }
-
-    if (notification.method !== "rawResponseItem/completed") {
-      return;
-    }
-    const params = this.asRawResponseItemCompletedNotification(
-      notification.params,
-    );
-    const text = this.extractRawResponseMessageText(params?.item);
-    if (params && text) {
-      textByItemId.set(`raw-${params.turnId}-${textByItemId.size}`, text);
-    }
-  }
-
-  private extractRawResponseMessageText(item: unknown): string | null {
-    if (!item || typeof item !== "object") return null;
-    const record = item as Record<string, unknown>;
-    if (record.type !== "message" || record.role !== "assistant") {
-      return null;
-    }
-    if (!Array.isArray(record.content)) {
-      return null;
-    }
-    const parts = record.content
-      .map((contentItem) => {
-        if (!contentItem || typeof contentItem !== "object") return "";
-        const contentRecord = contentItem as Record<string, unknown>;
-        return contentRecord.type === "output_text"
-          ? (this.getOptionalString(contentRecord.text) ?? "")
-          : "";
-      })
-      .filter((text) => text.length > 0);
-    return parts.length > 0 ? parts.join("\n") : null;
   }
 
   private createSessionConfigAckMessage(
@@ -3101,8 +2605,8 @@ export class CodexProvider implements AgentProvider {
       case "item/completed": {
         const params =
           notification.method === "item/started"
-            ? this.asItemStartedNotification(notification.params)
-            : this.asItemCompletedNotification(notification.params);
+            ? asCodexItemStartedNotification(notification.params)
+            : asCodexItemCompletedNotification(notification.params);
         const item =
           params?.item && typeof params.item === "object"
             ? (params.item as Record<string, unknown>)
@@ -3151,7 +2655,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "rawResponseItem/completed": {
-        const params = this.asRawResponseItemCompletedNotification(
+        const params = asCodexRawResponseItemCompletedNotification(
           notification.params,
         );
         const item =
@@ -3186,7 +2690,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "turn/completed": {
-        const params = this.asTurnCompletedNotification(notification.params);
+        const params = asCodexTurnCompletedNotification(notification.params);
         return base({
           sourceEvent: notification.method,
           turnId: params?.turn.id,
@@ -3204,7 +2708,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "error": {
-        const params = this.asErrorNotification(notification.params);
+        const params = asCodexErrorNotification(notification.params);
         const fallbackError = this.extractErrorRecord(notification.params);
         const errorMessage =
           params?.error.message ??
@@ -3391,7 +2895,7 @@ export class CodexProvider implements AgentProvider {
     turnId: string;
     snapshot: TokenUsageSnapshot;
   } | null {
-    const notification = this.asThreadTokenUsageUpdatedNotification(params);
+    const notification = asCodexThreadTokenUsageUpdatedNotification(params);
     if (!notification) return null;
 
     return {
@@ -3790,7 +3294,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "turn/completed": {
-        const params = this.asTurnCompletedNotification(notification.params);
+        const params = asCodexTurnCompletedNotification(notification.params);
         const turnId = params?.turn.id ?? null;
         const turnStatus = params?.turn.status;
         const usage = turnId ? usageByTurnId.get(turnId) : undefined;
@@ -3874,7 +3378,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "error": {
-        const params = this.asErrorNotification(notification.params);
+        const params = asCodexErrorNotification(notification.params);
         const errorMessage = params?.error.message;
         const message =
           (typeof errorMessage === "string" && errorMessage) ||
@@ -3910,8 +3414,8 @@ export class CodexProvider implements AgentProvider {
       case "item/completed": {
         const params =
           notification.method === "item/started"
-            ? this.asItemStartedNotification(notification.params)
-            : this.asItemCompletedNotification(notification.params);
+            ? asCodexItemStartedNotification(notification.params)
+            : asCodexItemCompletedNotification(notification.params);
         if (!params) return [];
 
         const normalized = this.normalizeThreadItem(params.item);
@@ -3952,7 +3456,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "item/agentMessage/delta": {
-        const params = this.asAgentMessageDeltaNotification(
+        const params = asCodexAgentMessageDeltaNotification(
           notification.params,
         );
         if (!params?.delta) return [];
@@ -3969,7 +3473,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "item/plan/delta": {
-        const params = this.asPlanDeltaNotification(notification.params);
+        const params = asCodexPlanDeltaNotification(notification.params);
         if (!params?.delta) return [];
         return [
           this.buildStreamingAssistantMessage(
@@ -3984,7 +3488,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "item/reasoning/summaryTextDelta": {
-        const params = this.asReasoningSummaryTextDeltaNotification(
+        const params = asCodexReasoningSummaryTextDeltaNotification(
           notification.params,
         );
         if (!params?.delta) return [];
@@ -4001,7 +3505,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "item/commandExecution/outputDelta": {
-        const params = this.asCommandExecutionOutputDeltaNotification(
+        const params = asCodexCommandExecutionOutputDeltaNotification(
           notification.params,
         );
         if (!params?.delta) return [];
@@ -4018,7 +3522,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "item/fileChange/outputDelta": {
-        const params = this.asFileChangeOutputDeltaNotification(
+        const params = asCodexFileChangeOutputDeltaNotification(
           notification.params,
         );
         if (!params?.delta) return [];
@@ -4035,7 +3539,7 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "rawResponseItem/completed": {
-        const params = this.asRawResponseItemCompletedNotification(
+        const params = asCodexRawResponseItemCompletedNotification(
           notification.params,
         );
         if (!params) return [];
@@ -4083,6 +3587,13 @@ export class CodexProvider implements AgentProvider {
       }
 
       case "command_execution": {
+        const commandActions =
+          (Array.isArray(itemRecord.commandActions)
+            ? itemRecord.commandActions
+            : Array.isArray(itemRecord.command_actions)
+              ? itemRecord.command_actions
+              : undefined) ?? undefined;
+        const cwd = this.getOptionalString(itemRecord.cwd);
         return {
           id,
           type: "command_execution",
@@ -4095,7 +3606,13 @@ export class CodexProvider implements AgentProvider {
             this.getOptionalNumber(itemRecord.exit_code) ??
             this.getOptionalNumber(itemRecord.exitCode) ??
             undefined,
+          durationMs:
+            this.getOptionalNumber(itemRecord.duration_ms) ??
+            this.getOptionalNumber(itemRecord.durationMs) ??
+            undefined,
           status: this.normalizeStatus(itemRecord.status),
+          ...(cwd ? { cwd } : {}),
+          ...(commandActions ? { commandActions } : {}),
         };
       }
 
@@ -4300,64 +3817,6 @@ export class CodexProvider implements AgentProvider {
     return status.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
   }
 
-  private asTurnCompletedNotification(
-    params: unknown,
-  ): TurnCompletedNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      !record.turn ||
-      typeof record.turn !== "object" ||
-      typeof (record.turn as { id?: unknown }).id !== "string"
-    ) {
-      return null;
-    }
-    return params as TurnCompletedNotification;
-  }
-
-  private asErrorNotification(params: unknown): CodexErrorNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.willRetry !== "boolean" ||
-      !record.error ||
-      typeof record.error !== "object" ||
-      typeof (record.error as { message?: unknown }).message !== "string"
-    ) {
-      return null;
-    }
-    return params as CodexErrorNotification;
-  }
-
-  private asThreadTokenUsageUpdatedNotification(
-    params: unknown,
-  ): ThreadTokenUsageUpdatedNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    const tokenUsage =
-      record.tokenUsage && typeof record.tokenUsage === "object"
-        ? (record.tokenUsage as Record<string, unknown>)
-        : null;
-    const last =
-      tokenUsage?.last && typeof tokenUsage.last === "object"
-        ? (tokenUsage.last as Record<string, unknown>)
-        : null;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      !last ||
-      typeof last.inputTokens !== "number" ||
-      typeof last.outputTokens !== "number" ||
-      typeof last.cachedInputTokens !== "number"
-    ) {
-      return null;
-    }
-    return params as ThreadTokenUsageUpdatedNotification;
-  }
-
   private asCommandExecutionRequestApprovalParams(
     params: unknown,
   ): CommandExecutionRequestApprovalParams | null {
@@ -4422,136 +3881,6 @@ export class CodexProvider implements AgentProvider {
     return params as ToolRequestUserInputParams;
   }
 
-  private asItemStartedNotification(
-    params: unknown,
-  ): CodexItemStartedNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      !record.item ||
-      typeof record.item !== "object"
-    ) {
-      return null;
-    }
-    return params as CodexItemStartedNotification;
-  }
-
-  private asItemCompletedNotification(
-    params: unknown,
-  ): CodexItemCompletedNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      !record.item ||
-      typeof record.item !== "object"
-    ) {
-      return null;
-    }
-    return params as CodexItemCompletedNotification;
-  }
-
-  private asAgentMessageDeltaNotification(
-    params: unknown,
-  ): AgentMessageDeltaNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.itemId !== "string" ||
-      typeof record.delta !== "string"
-    ) {
-      return null;
-    }
-    return params as AgentMessageDeltaNotification;
-  }
-
-  private asPlanDeltaNotification(
-    params: unknown,
-  ): PlanDeltaNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.itemId !== "string" ||
-      typeof record.delta !== "string"
-    ) {
-      return null;
-    }
-    return params as PlanDeltaNotification;
-  }
-
-  private asReasoningSummaryTextDeltaNotification(
-    params: unknown,
-  ): ReasoningSummaryTextDeltaNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.itemId !== "string" ||
-      typeof record.delta !== "string" ||
-      typeof record.summaryIndex !== "number"
-    ) {
-      return null;
-    }
-    return params as ReasoningSummaryTextDeltaNotification;
-  }
-
-  private asCommandExecutionOutputDeltaNotification(
-    params: unknown,
-  ): CommandExecutionOutputDeltaNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.itemId !== "string" ||
-      typeof record.delta !== "string"
-    ) {
-      return null;
-    }
-    return params as CommandExecutionOutputDeltaNotification;
-  }
-
-  private asFileChangeOutputDeltaNotification(
-    params: unknown,
-  ): FileChangeOutputDeltaNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      typeof record.itemId !== "string" ||
-      typeof record.delta !== "string"
-    ) {
-      return null;
-    }
-    return params as FileChangeOutputDeltaNotification;
-  }
-
-  private asRawResponseItemCompletedNotification(
-    params: unknown,
-  ): RawResponseItemCompletedNotification | null {
-    if (!params || typeof params !== "object") return null;
-    const record = params as Record<string, unknown>;
-    if (
-      typeof record.threadId !== "string" ||
-      typeof record.turnId !== "string" ||
-      !record.item ||
-      typeof record.item !== "object" ||
-      typeof (record.item as { type?: unknown }).type !== "string"
-    ) {
-      return null;
-    }
-    return params as RawResponseItemCompletedNotification;
-  }
-
   private buildItemEventKey(turnId: string, itemId: string): string {
     return `${turnId}:${itemId}`;
   }
@@ -4560,12 +3889,11 @@ export class CodexProvider implements AgentProvider {
     return `${itemId}-${turnId}`;
   }
 
-  // Tool items carry Codex's globally-unique call_id as their thread item id,
-  // and the durable rollout persists the same call_id on the matching response
-  // item. Key the rendered uuid on call_id alone (no turn scoping — call_id is
-  // already unique) so the streamed message and its durable backfill row share
-  // a uuid and dedup by id instead of the content+timestamp backstop. See
-  // topics/stream-durable-id-dedup.md (Codex tool calls).
+  // Native tool thread items carry Codex's globally-unique call_id as item.id,
+  // so this uuid aligns directly with the durable response item. A code-mode
+  // commandExecution instead carries an inner exec-* id while rollout stores
+  // the outer call_* id; the client reconciles that scoped exception via
+  // _codexToolCorrelation. See topics/stream-durable-id-dedup.md.
   private buildItemToolUuid(callId: string): string {
     return callId;
   }
@@ -4709,6 +4037,15 @@ export class CodexProvider implements AgentProvider {
       session_id: sessionId,
       uuid: this.buildItemResultUuid(itemId),
       _isStreaming: true,
+      ...(sourceEvent === "command_output_delta"
+        ? {
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "command_execution",
+              turnId,
+              itemId,
+            ),
+          }
+        : {}),
       message: {
         role: "user",
         content: [
@@ -4789,6 +4126,9 @@ export class CodexProvider implements AgentProvider {
                   id: callId,
                   name: normalizedInvocation.toolName,
                   input: normalizedInvocation.input,
+                  ...(normalizedInvocation.displayActions
+                    ? { _displayActions: normalizedInvocation.displayActions }
+                    : {}),
                 },
               ],
             },
@@ -4871,9 +4211,9 @@ export class CodexProvider implements AgentProvider {
         const input = this.getOptionalString(item.input);
         if (!callId || !rawToolName) return [];
 
-        const normalizedInvocation = normalizeCodexToolInvocation(
-          canonicalizeCodexToolName(rawToolName),
-          parseCodexToolArguments(input ?? undefined),
+        const normalizedInvocation = normalizeCodexCustomToolInvocation(
+          rawToolName,
+          input ?? "",
         );
         liveEventState.toolCallContexts.set(callId, {
           toolName: normalizedInvocation.toolName,
@@ -4892,6 +4232,11 @@ export class CodexProvider implements AgentProvider {
             type: "assistant",
             session_id: sessionId,
             uuid: this.buildItemToolUuid(callId),
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "custom_tool_call",
+              params.turnId,
+              callId,
+            ),
             message: {
               role: "assistant",
               content: [
@@ -4900,6 +4245,9 @@ export class CodexProvider implements AgentProvider {
                   id: callId,
                   name: normalizedInvocation.toolName,
                   input: normalizedInvocation.input,
+                  ...(normalizedInvocation.displayActions
+                    ? { _displayActions: normalizedInvocation.displayActions }
+                    : {}),
                 },
               ],
             },
@@ -4955,6 +4303,11 @@ export class CodexProvider implements AgentProvider {
             type: "user",
             session_id: sessionId,
             uuid: this.buildItemResultUuid(callId),
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "custom_tool_call",
+              params.turnId,
+              callId,
+            ),
             message: {
               role: "user",
               content: [toolResult],
@@ -5013,9 +4366,10 @@ export class CodexProvider implements AgentProvider {
   ): SDKMessage[] {
     const isComplete = sourceEvent === "item/completed";
     const observedAt = new Date().toISOString();
-    // Tool items key the uuid on call_id (item.id) so stream and durable rows
-    // dedup by id; message/reasoning items use a counter id (item-N) with no
-    // durable equivalent, so they stay turn-scoped and rely on the backstop.
+    // Native tool items key the uuid on call_id (item.id). Code-mode
+    // commandExecution items temporarily key on exec-* and carry correlation
+    // metadata for adoption of the outer durable call_* id client-side.
+    // Message/reasoning counters have no durable equivalent and stay scoped.
     const uuid = this.isToolBackedThreadItem(item)
       ? this.buildItemToolUuid(item.id)
       : `${item.id}-${turnId}`;
@@ -5074,8 +4428,15 @@ export class CodexProvider implements AgentProvider {
 
       case "command_execution": {
         const messages: SDKMessage[] = [];
+        const correlationStartedAt =
+          item.durationMs !== undefined
+            ? new Date(
+                Date.parse(observedAt) - Math.max(0, item.durationMs),
+              ).toISOString()
+            : observedAt;
         const normalizedInvocation = normalizeCodexToolInvocation("Bash", {
           command: item.command,
+          ...(item.cwd ? { cwd: item.cwd } : {}),
         });
         const toolContext: CodexToolCallContext = {
           toolName: normalizedInvocation.toolName,
@@ -5090,6 +4451,12 @@ export class CodexProvider implements AgentProvider {
             type: "assistant",
             session_id: sessionId,
             uuid,
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "command_execution",
+              turnId,
+              item.id,
+              correlationStartedAt,
+            ),
             message: {
               role: "assistant",
               content: [
@@ -5098,6 +4465,9 @@ export class CodexProvider implements AgentProvider {
                   id: item.id,
                   name: normalizedInvocation.toolName,
                   input: normalizedInvocation.input,
+                  ...(normalizedInvocation.displayActions
+                    ? { _displayActions: normalizedInvocation.displayActions }
+                    : {}),
                 },
               ],
             },
@@ -5144,6 +4514,12 @@ export class CodexProvider implements AgentProvider {
               type: "user",
               session_id: sessionId,
               uuid: `${uuid}-result`,
+              [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+                "command_execution",
+                turnId,
+                item.id,
+                correlationStartedAt,
+              ),
               message: {
                 role: "user",
                 content: [toolResultBlock],

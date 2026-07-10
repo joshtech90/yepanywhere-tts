@@ -33,6 +33,30 @@ describe("getMarkdownForVisibleSelection", () => {
     ).toBe("2. Same");
   });
 
+  it("keeps partial selections inside markdown block lines narrow", () => {
+    expect(
+      getMarkdownForVisibleSelection(
+        "- `MCLONE_UI_V2_HIT_DEBUG=1` logs/overlays pointer",
+        "MCLONE_UI_V2_HIT_DEBUG=1",
+      ),
+    ).toBe("MCLONE_UI_V2_HIT_DEBUG=1");
+    expect(
+      getMarkdownForVisibleSelection("## Debug switches", "Debug"),
+    ).toBe("Debug");
+  });
+
+  it("preserves block markers for whole rendered line selections", () => {
+    expect(
+      getMarkdownForVisibleSelection(
+        "- `MCLONE_UI_V2_HIT_DEBUG=1` logs/overlays pointer",
+        "MCLONE_UI_V2_HIT_DEBUG=1 logs/overlays pointer",
+      ),
+    ).toBe("- `MCLONE_UI_V2_HIT_DEBUG=1` logs/overlays pointer");
+    expect(
+      getMarkdownForVisibleSelection("## Debug switches", "Debug switches"),
+    ).toBe("## Debug switches");
+  });
+
   it("keeps plain partial selections narrow", () => {
     expect(getMarkdownForVisibleSelection("alpha beta gamma", "beta")).toBe(
       "beta",
@@ -78,6 +102,83 @@ describe("extractMarkdownSnippetsFromSelection", () => {
     unregister();
     root.remove();
   });
+
+  it("splits a selection across eligible regions and skips separators", () => {
+    const root = document.createElement("div");
+    const firstSource = document.createElement("span");
+    const separator = document.createElement("span");
+    const secondSource = document.createElement("span");
+    firstSource.textContent = "first quote";
+    separator.textContent = " local chrome ";
+    secondSource.textContent = "second quote";
+    root.append(firstSource, separator, secondSource);
+    document.body.append(root);
+    const unregisterFirst = registerMarkdownCopySource(
+      firstSource,
+      "first quote",
+    );
+    const unregisterSecond = registerMarkdownCopySource(
+      secondSource,
+      "second quote",
+    );
+
+    const range = document.createRange();
+    range.setStart(firstSource.firstChild as Node, 0);
+    range.setEnd(secondSource.firstChild as Node, "second quote".length);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    expect(extractMarkdownSnippetsFromSelection(root)).toMatchObject([
+      {
+        markdown: "first quote",
+        selectedText: "first quote",
+        sourceElement: firstSource,
+      },
+      {
+        markdown: "second quote",
+        selectedText: "second quote",
+        sourceElement: secondSource,
+      },
+    ]);
+
+    selection?.removeAllRanges();
+    unregisterFirst();
+    unregisterSecond();
+    root.remove();
+  });
+
+  it("copies only a selected inline token from a rendered list item", () => {
+    const root = document.createElement("div");
+    const source = document.createElement("div");
+    source.textContent =
+      "MCLONE_UI_V2_HIT_DEBUG=1 logs/overlays pointer, hovered rects";
+    root.append(source);
+    document.body.append(root);
+    const unregister = registerMarkdownCopySource(
+      source,
+      "- `MCLONE_UI_V2_HIT_DEBUG=1` logs/overlays pointer, hovered rects",
+    );
+
+    const range = document.createRange();
+    range.setStart(source.firstChild as Node, 0);
+    range.setEnd(source.firstChild as Node, "MCLONE_UI_V2_HIT_DEBUG=1".length);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    expect(extractMarkdownSnippetsFromSelection(root)).toMatchObject([
+      {
+        markdown: "MCLONE_UI_V2_HIT_DEBUG=1",
+        selectedText: "MCLONE_UI_V2_HIT_DEBUG=1",
+        sourceElement: source,
+      },
+    ]);
+
+    selection?.removeAllRanges();
+    unregister();
+    root.remove();
+  });
 });
 
 describe("getMarkdownSnippetForSubElement", () => {
@@ -100,6 +201,9 @@ describe("getMarkdownSnippetForSubElement", () => {
     expect(snippet?.markdown).toBe("Second paragraph.");
     expect(snippet?.selectedText).toContain("Second paragraph.");
     expect(snippet?.sourceElement).toBe(content);
+    expect(snippet?.range.startContainer.nodeType).toBe(Node.TEXT_NODE);
+    expect(snippet?.range.endContainer.nodeType).toBe(Node.TEXT_NODE);
+    expect(snippet?.range.toString()).toBe("Second paragraph.");
 
     unregister();
     root.remove();

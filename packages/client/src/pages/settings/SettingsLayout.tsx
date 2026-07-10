@@ -1,5 +1,11 @@
-import { useLayoutEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import {
+  DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
+  DEVICE_BRIDGE_CAPABILITY,
+  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
@@ -14,6 +20,7 @@ import { MainContent, useNavigationLayout } from "../../layouts";
 import { AboutSettings } from "./AboutSettings";
 import { AgentContextSettings } from "./AgentContextSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { CacheMissBillingSettings } from "./CacheMissBillingSettings";
 import { DevelopmentSettings } from "./DevelopmentSettings";
 import { DevicesSettings } from "./DevicesSettings";
 import { EmulatorSettings } from "./EmulatorSettings";
@@ -23,10 +30,15 @@ import { LocalAccessSettings } from "./LocalAccessSettings";
 import { MessageDeliverySettings } from "./MessageDeliverySettings";
 import { ModelSettings } from "./ModelSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
+import { PerformanceSettings } from "./PerformanceSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { RemoteExecutorsSettings } from "./RemoteExecutorsSettings";
 import { SettingsCategoryIcon } from "./SettingsCategoryIcons";
+import {
+  SettingsPaneTitleProvider,
+  useSettingsPaneTitleRegistration,
+} from "./SettingsPaneTitleContext";
 import {
   SettingsUndoProvider,
   useSettingsUndoRegistration,
@@ -38,8 +50,10 @@ import type { SettingsCategory } from "./types";
 // Map category IDs to their components
 const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
   appearance: AppearanceSettings,
+  performance: PerformanceSettings,
   toolbar: ToolbarSettings,
   model: ModelSettings,
+  "cache-miss-billing": CacheMissBillingSettings,
   "message-delivery": MessageDeliverySettings,
   "agent-context": AgentContextSettings,
   notifications: NotificationsSettings,
@@ -62,6 +76,34 @@ export const SETTINGS_TWO_COLUMN_MIN_WIDTH = 700;
 
 export function shouldUseSettingsTwoColumn(availableWidth: number): boolean {
   return availableWidth >= SETTINGS_TWO_COLUMN_MIN_WIDTH;
+}
+
+interface SettingsDetailNavigationState {
+  settingsDetailOpenedFromList?: true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+export function createSettingsDetailNavigationState(
+  openedFromList: boolean,
+): SettingsDetailNavigationState | undefined {
+  return openedFromList ? { settingsDetailOpenedFromList: true } : undefined;
+}
+
+export function shouldPopSettingsDetailBack(state: unknown): boolean {
+  return isRecord(state) && state.settingsDetailOpenedFromList === true;
+}
+
+export function shouldReplaceSettingsCategoryNavigation({
+  currentCategory,
+  useTwoColumnSettings,
+}: {
+  currentCategory: string | undefined;
+  useTwoColumnSettings: boolean;
+}): boolean {
+  return useTwoColumnSettings && !!currentCategory;
 }
 
 function getInitialSettingsWidth(): number {
@@ -98,6 +140,15 @@ function useSettingsContainerWidth(): [
   return [setContainer, width];
 }
 
+function scrollElementToTop(element: HTMLElement): void {
+  if (typeof element.scrollTo === "function") {
+    element.scrollTo({ top: 0, behavior: "auto" });
+    return;
+  }
+
+  element.scrollTop = 0;
+}
+
 interface SettingsCategoryItemProps {
   category: SettingsCategory;
   isActive: boolean;
@@ -131,32 +182,33 @@ export function SettingsLayout() {
   const { t } = useI18n();
   const { category } = useParams<{ category?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const basePath = useRemoteBasePath();
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
   const [settingsContainerRef, settingsContainerWidth] =
     useSettingsContainerWidth();
+  const settingsScrollContainerRef = useRef<HTMLElement | null>(null);
   const useTwoColumnSettings = shouldUseSettingsTwoColumn(
     settingsContainerWidth,
   );
   const { isManualReloadMode } = useReloadNotifications();
   const { version: versionInfo } = useVersion();
-  const capabilities = versionInfo?.capabilities ?? [];
   const {
     registration: undoRegistration,
     setRegistration: setUndoRegistration,
   } = useSettingsUndoRegistration();
+  const { title: paneTitle, setTitle: setPaneTitle } =
+    useSettingsPaneTitleRegistration();
 
-  // Build the list of categories, conditionally including emulator and dev
   const categories: SettingsCategory[] = [
     ...getSettingsCategories((key) => t(key as never)),
   ];
   if (
-    capabilities.includes("deviceBridge") ||
-    capabilities.includes("deviceBridge-download") ||
-    capabilities.includes("deviceBridge-available")
+    serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY) ||
+    serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY) ||
+    serverHasCapability(versionInfo, DEVICE_BRIDGE_AVAILABLE_CAPABILITY)
   ) {
-    // Insert before "about"
     const aboutIndex = categories.findIndex((c) => c.id === "about");
     categories.splice(
       aboutIndex >= 0 ? aboutIndex : categories.length,
@@ -172,18 +224,98 @@ export function SettingsLayout() {
   const effectiveCategory =
     category || (useTwoColumnSettings ? categories[0]?.id : undefined);
 
+  const setSettingsScrollContainerRef = useCallback(
+    (element: HTMLElement | null) => {
+      settingsScrollContainerRef.current = element;
+    },
+    [],
+  );
+
+  const scrollSettingsToTop = useCallback(() => {
+    const element = settingsScrollContainerRef.current;
+    if (element) {
+      scrollElementToTop(element);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    void location.key;
+    scrollSettingsToTop();
+  }, [location.key, scrollSettingsToTop]);
+
+  const navigateToSettingsRoot = () => {
+    if (shouldPopSettingsDetailBack(location.state)) {
+      navigate(-1);
+    } else {
+      navigate(`${basePath}/settings`, { replace: !!category });
+    }
+    scrollSettingsToTop();
+  };
+
+  const handleSettingsTitleClick = () => {
+    if (category) {
+      navigateToSettingsRoot();
+      return;
+    }
+
+    navigate(`${basePath}/settings`, { replace: true });
+    scrollSettingsToTop();
+  };
+
   const handleCategoryClick = (categoryId: string) => {
-    navigate(`${basePath}/settings/${categoryId}`);
+    const openedFromList =
+      !category || shouldPopSettingsDetailBack(location.state);
+    navigate(`${basePath}/settings/${categoryId}`, {
+      replace: shouldReplaceSettingsCategoryNavigation({
+        currentCategory: category,
+        useTwoColumnSettings,
+      }),
+      state: createSettingsDetailNavigationState(openedFromList),
+    });
   };
 
   const handleBack = () => {
-    navigate(`${basePath}/settings`);
+    navigateToSettingsRoot();
   };
 
-  // Get the component for the current category
   const CategoryComponent = effectiveCategory
     ? CATEGORY_COMPONENTS[effectiveCategory]
     : null;
+  const activeCategory = categories.find((c) => c.id === effectiveCategory);
+
+  // Top-strip title for the open pane: the pane registers it via
+  // useSettingsPaneTitle; fall back to the category label until that
+  // registers (and for the rare pane that sets nothing).
+  const resolvedPaneTitle =
+    paneTitle ?? activeCategory?.label ?? t("pageTitleSettings");
+  const breadcrumbDescription =
+    effectiveCategory === "model"
+      ? t("modelSettingsSessionDefaultsDescription")
+      : null;
+
+  // Settings breadcrumb shown in the header strip (two-column): a clickable
+  // "Settings" root plus the active pane title, so the strip names the page
+  // instead of just "Settings".
+  const settingsBreadcrumb = (
+    <span className="settings-breadcrumb">
+      <button
+        type="button"
+        className="session-title settings-breadcrumb-root"
+        onClick={handleSettingsTitleClick}
+      >
+        {t("pageTitleSettings")}
+      </button>
+      <span className="settings-breadcrumb-sep" aria-hidden="true">
+        ›
+      </span>
+      <span className="settings-breadcrumb-current">{resolvedPaneTitle}</span>
+      {breadcrumbDescription && (
+        <span className="settings-breadcrumb-description">
+          {breadcrumbDescription}
+        </span>
+      )}
+    </span>
+  );
 
   const canUndoSettingsChange = undoRegistration?.canUndo ?? false;
 
@@ -216,12 +348,16 @@ export function SettingsLayout() {
         >
           <PageHeader
             title={t("pageTitleSettings")}
+            onTitleClick={handleSettingsTitleClick}
             onOpenSidebar={openSidebar}
             onToggleSidebar={toggleSidebar}
             isWideScreen={isWideScreen}
             isSidebarCollapsed={isSidebarCollapsed}
           />
-          <main className="page-scroll-container">
+          <main
+            ref={setSettingsScrollContainerRef}
+            className="page-scroll-container"
+          >
             <div className="page-content-inner settings-category-list-shell">
               <div className="settings-category-list">
                 {categories.map((cat) => (
@@ -240,21 +376,25 @@ export function SettingsLayout() {
     }
 
     // Show category detail with back button
-    const currentCategory = categories.find((c) => c.id === category);
     return (
       <MainContent isWideScreen={isWideScreen} innerRef={settingsContainerRef}>
         <PageHeader
-          title={currentCategory?.label || t("pageTitleSettings")}
+          title={resolvedPaneTitle}
           onOpenSidebar={openSidebar}
           showBack
           onBack={handleBack}
           actions={undoButton}
         />
-        <main className="page-scroll-container">
+        <main
+          ref={setSettingsScrollContainerRef}
+          className="page-scroll-container"
+        >
           <div className="page-content-inner">
-            <SettingsUndoProvider value={setUndoRegistration}>
-              {CategoryComponent && <CategoryComponent />}
-            </SettingsUndoProvider>
+            <SettingsPaneTitleProvider value={setPaneTitle}>
+              <SettingsUndoProvider value={setUndoRegistration}>
+                {CategoryComponent && <CategoryComponent />}
+              </SettingsUndoProvider>
+            </SettingsPaneTitleProvider>
           </div>
         </main>
       </MainContent>
@@ -265,14 +405,18 @@ export function SettingsLayout() {
   return (
     <MainContent isWideScreen={isWideScreen} innerRef={settingsContainerRef}>
       <PageHeader
-        title={t("pageTitleSettings")}
+        title={resolvedPaneTitle}
+        titleElement={settingsBreadcrumb}
         onOpenSidebar={openSidebar}
         onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
         isSidebarCollapsed={isSidebarCollapsed}
         actions={undoButton}
       />
-      <main className="page-scroll-container">
+      <main
+        ref={setSettingsScrollContainerRef}
+        className="page-scroll-container"
+      >
         <div className="settings-two-column">
           <nav className="settings-category-nav">
             <div className="settings-category-list">
@@ -287,9 +431,11 @@ export function SettingsLayout() {
             </div>
           </nav>
           <div className="settings-content-panel">
-            <SettingsUndoProvider value={setUndoRegistration}>
-              {CategoryComponent && <CategoryComponent />}
-            </SettingsUndoProvider>
+            <SettingsPaneTitleProvider value={setPaneTitle}>
+              <SettingsUndoProvider value={setUndoRegistration}>
+                {CategoryComponent && <CategoryComponent />}
+              </SettingsUndoProvider>
+            </SettingsPaneTitleProvider>
           </div>
         </div>
       </main>

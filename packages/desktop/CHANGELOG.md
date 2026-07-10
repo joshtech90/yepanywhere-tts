@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.0.5] - 2026-06-27
+
+### Fixed
+- Task and plan lists no longer render an undersized in-progress indicator.
+- Patient message queue no longer merges multiple queued messages into a single turn.
+
+### Changed
+- Release builds are pinned to the macOS 26 CI runner image for reproducible signing and notarization.
+
+## [0.0.4] - 2026-06-27
+
+### Added
+- Desktop auto-update checks and updater endpoint.
+- Server output surface for viewing server logs in the desktop app.
+- Codex CLI support wired into the desktop server.
+
+### Changed
+- Canonicalized startup environment variables to the `YEP_` prefix, with migration from legacy names.
+- macOS builds are now signed with Developer ID and notarized; Windows builds are signed via Azure Trusted Signing.
+
 ## [0.0.3] - 2026-06-01
 
 ### Fixed

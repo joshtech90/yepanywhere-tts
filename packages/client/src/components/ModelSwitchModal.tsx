@@ -3,10 +3,19 @@ import type {
   ModelInfo,
   ProviderName,
 } from "@yep-anywhere/shared";
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api/client";
 import {
+  getEffortLevel,
   getShowThinkingSetting,
+  getThinkingMode,
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useI18n } from "../i18n";
@@ -31,6 +40,8 @@ interface ModelSwitchModalProps {
   processId?: string;
   sessionId: string;
   currentModel?: string;
+  /** Session provider, for effort labels/tones when no process is live. */
+  sessionProvider?: ProviderName;
   onModelChanged: (next: {
     processId: string;
     model?: string;
@@ -84,6 +95,7 @@ export function ModelSwitchModal({
   processId,
   sessionId,
   currentModel,
+  sessionProvider,
   onModelChanged,
   infoPane,
   initialTab,
@@ -114,11 +126,24 @@ export function ModelSwitchModal({
   const [activeTab, setActiveTab] = useState<"model" | "info">(
     initialTab ?? "model",
   );
+  const contentRef = useRef<HTMLDivElement>(null);
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!processId) {
+      // No live process: the status row shows what the next send will
+      // request. The idle-send path resolves thinking via
+      // getThinkingSetting() (getImplicitComposerThinking in SessionPage),
+      // which reads the same stored mode/effort the composer's thinking
+      // chooser edits while the session is idle.
+      const requestedMode = getThinkingMode();
+      const requestedEffort = getEffortLevel();
+      setProvider(sessionProvider ?? null);
+      setCurrentThinkingMode(requestedMode);
+      setThinkingModeState(requestedMode);
+      setCurrentEffortLevel(requestedEffort);
+      setEffortLevelState(requestedEffort);
       setLoading(false);
       return;
     }
@@ -171,7 +196,7 @@ export function ModelSwitchModal({
     return () => {
       cancelled = true;
     };
-  }, [currentModel, processId, sessionId, t]);
+  }, [currentModel, processId, sessionId, sessionProvider, t]);
 
   const selectedModelInfo = useMemo(
     () => models.find((model) => model.id === selectedModel) ?? null,
@@ -252,6 +277,11 @@ export function ModelSwitchModal({
     onClose();
   };
 
+  const handleTabChange = (tab: "model" | "info") => {
+    setActiveTab(tab);
+    contentRef.current?.closest(".modal-content")?.scrollTo({ top: 0 });
+  };
+
   const handleActivate = async () => {
     if (!onActivate || activating) return;
     setActivating(true);
@@ -317,7 +347,7 @@ export function ModelSwitchModal({
 
   return (
     <Modal title={t("modelSwitchTitle")} onClose={handleDismiss}>
-      <div className="model-switch-content">
+      <div ref={contentRef} className="model-switch-content">
         {infoPane && (
           <div className="model-switch-tabs" role="tablist">
             <button
@@ -325,7 +355,7 @@ export function ModelSwitchModal({
               role="tab"
               aria-selected={activeTab === "model"}
               className={`model-switch-tab ${activeTab === "model" ? "active" : ""}`}
-              onClick={() => setActiveTab("model")}
+              onClick={() => handleTabChange("model")}
             >
               {t("newSessionModelTitle")}
             </button>
@@ -334,7 +364,7 @@ export function ModelSwitchModal({
               role="tab"
               aria-selected={activeTab === "info"}
               className={`model-switch-tab ${activeTab === "info" ? "active" : ""}`}
-              onClick={() => setActiveTab("info")}
+              onClick={() => handleTabChange("info")}
             >
               {t("processInfoTitle")}
             </button>
@@ -352,7 +382,9 @@ export function ModelSwitchModal({
             <div className="model-switch-status">
               <div className="model-switch-status-row">
                 <span className="model-switch-status-marker">
-                  {t("modelSwitchCurrent")}
+                  {processId
+                    ? t("modelSwitchCurrent")
+                    : t("modelSwitchNextSend")}
                 </span>
                 <span
                   className={`model-switch-indicator-dot tone-${currentIndicatorTone}`}

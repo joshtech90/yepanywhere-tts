@@ -42,6 +42,34 @@ export {
   type TtsServiceOptions,
   type TtsStatus,
 } from "./TtsService.js";
+export {
+  ProjectQueueService,
+  ProjectQueueValidationError,
+  type ProjectQueueServiceOptions,
+} from "./ProjectQueueService.js";
+export {
+  WorkstreamService,
+  WorkstreamValidationError,
+  type CreateWorkstreamInput,
+  type ListProjectWorkstreamsOptions,
+  type WorkstreamServiceOptions,
+} from "./WorkstreamService.js";
+export {
+  SessionQueuePersistenceService,
+  SessionQueuePersistenceValidationError,
+  type PersistedSessionQueuedMessage,
+  type PersistedSessionQueueKind,
+  type PersistedSessionQueueStatus,
+  type SessionQueuePersistenceServiceOptions,
+} from "./SessionQueuePersistenceService.js";
+export {
+  ProjectQueueScheduler,
+  type ProjectIdleStatus,
+  type ProjectQueueExternalTracker,
+  type ProjectQueueProcessSnapshot,
+  type ProjectQueueSchedulerOptions,
+  type ProjectQueueSupervisor,
+} from "./ProjectQueueScheduler.js";
 
 export {
   SharingService,

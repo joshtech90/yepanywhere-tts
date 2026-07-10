@@ -1,4 +1,8 @@
 import {
+  VOICE_INPUT_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
+import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useId,
@@ -34,10 +38,12 @@ import {
   resolveParakeetModelBackend,
 } from "../../lib/speechProviders/parakeetModels";
 import { prewarmYaServerSpeechBackend } from "../../lib/speechProviders/YaServerProvider";
+import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 export function SpeechSettings() {
   const { t } = useI18n();
+  useSettingsPaneTitle(t("speechSettingsTitle"));
   const {
     voiceInputEnabled,
     setVoiceInputEnabled,
@@ -93,7 +99,9 @@ export function SpeechSettings() {
   );
   useSettingsUndoBaseline(undoState, restoreUndoState);
   const serverVoiceEnabled =
-    versionInfo?.capabilities?.includes("voiceInput") ?? true;
+    versionInfo?.capabilities === undefined
+      ? true
+      : serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
   const serverBackends = versionInfo?.voiceBackends ?? [];
   const backendStatuses = versionInfo?.voiceBackendStatuses ?? [];
   const discoverableServerBackends =
@@ -227,7 +235,6 @@ export function SpeechSettings() {
 
   return (
     <section className="settings-section">
-      <h2>{t("speechSettingsTitle")}</h2>
       <p className="settings-section-description">
         {t("speechSettingsDescription")}
       </p>

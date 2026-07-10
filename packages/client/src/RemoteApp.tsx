@@ -25,21 +25,30 @@ import { FloatingActionButton } from "./components/FloatingActionButton";
 import { HostOfflineModal } from "./components/HostOfflineModal";
 import { ReloadBanner } from "./components/ReloadBanner";
 import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNotices";
+import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
 import { InboxProvider } from "./contexts/InboxContext";
 import {
   RemoteConnectionProvider,
   useRemoteConnection,
 } from "./contexts/RemoteConnectionContext";
 import { SchemaValidationProvider } from "./contexts/SchemaValidationContext";
+import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
-import { useReloadNotifications } from "./hooks/useReloadNotifications";
+import {
+  getVisibleReloadBanners,
+  useReloadNotifications,
+} from "./hooks/useReloadNotifications";
+import { useActivityBusState } from "./hooks/useActivityBusState";
 import { useRemoteActivityBusConnection } from "./hooks/useRemoteActivityBusConnection";
 import { useRemoteBasePath } from "./hooks/useRemoteBasePath";
 import { useVersion } from "./hooks/useVersion";
-import { connectionManager } from "./lib/connection";
 import { initClientLogCollection } from "./lib/diagnostics";
+import {
+  getRelayCanonicalRedirectTarget,
+  getSafeRemoteReturnTarget,
+} from "./lib/remoteRoutePaths";
 
 interface Props {
   children: ReactNode;
@@ -61,11 +70,22 @@ export function ConnectedAppContent({ children }: { children: ReactNode }) {
     pendingReloads,
     reloadBackend,
     reloadFrontend,
+    scheduleSafeRestart,
+    cancelSafeRestart,
     dismiss,
     unsafeToRestart,
-    workerActivity,
+    interruptibleSessionCount,
+    queuedSessionMessageCount,
+    safeRestartState,
+    safeRestartMutating,
+    backendReloadSafetyKnown,
   } = useReloadNotifications();
   const isSessionDetailRoute = /\/sessions\/[^/]+/.test(location.pathname);
+  const visibleReloads = getVisibleReloadBanners(
+    !!isManualReloadMode,
+    pendingReloads,
+    { backendReloadSafetyKnown },
+  );
 
   return (
     <>
@@ -73,16 +93,21 @@ export function ConnectedAppContent({ children }: { children: ReactNode }) {
         versionInfo={versionInfo}
         relayUsername={currentRelayUsername}
       />
-      {isManualReloadMode && pendingReloads.backend && (
+      {visibleReloads.backend && (
         <ReloadBanner
           target="backend"
           onReload={reloadBackend}
           onDismiss={() => dismiss("backend")}
+          onRestartWhenSafe={scheduleSafeRestart}
+          onCancelSafeRestart={cancelSafeRestart}
           unsafeToRestart={unsafeToRestart}
-          activeWorkers={workerActivity.activeWorkers}
+          interruptibleSessionCount={interruptibleSessionCount}
+          queuedSessionMessageCount={queuedSessionMessageCount}
+          safeRestartState={safeRestartState}
+          safeRestartMutating={safeRestartMutating}
         />
       )}
-      {isManualReloadMode && pendingReloads.frontend && (
+      {visibleReloads.frontend && (
         <ReloadBanner
           target="frontend"
           onReload={reloadFrontend}
@@ -104,14 +129,17 @@ export function ConnectedAppContent({ children }: { children: ReactNode }) {
  * Renders <Outlet /> (login pages) when not connected.
  */
 export function UnauthenticatedGate() {
-  const { connection, isIntentionalDisconnect } = useRemoteConnection();
+  const { connection, currentRelayUsername, isIntentionalDisconnect } =
+    useRemoteConnection();
   const basePath = useRemoteBasePath();
   const location = useLocation();
 
   const loginParams = new URLSearchParams(location.search);
   const returnTo = loginParams.get("returnTo");
-  const safeReturnTo =
-    returnTo?.startsWith("/") && !returnTo.startsWith("//") ? returnTo : null;
+  const safeReturnTo = getSafeRemoteReturnTarget(
+    returnTo,
+    currentRelayUsername,
+  );
 
   // If connected and user didn't intentionally disconnect, redirect to app
   if (connection && !isIntentionalDisconnect) {
@@ -133,19 +161,19 @@ export function UnauthenticatedGate() {
 export function ConnectionGate() {
   const {
     connection,
+    currentRelayUsername,
     isAutoResuming,
     autoResumeError,
     clearAutoResumeError,
     retryAutoResume,
   } = useRemoteConnection();
+  const { connectionState } = useActivityBusState();
   const location = useLocation();
   const returnTo = `${location.pathname}${location.search}${location.hash}`;
-
-  // During reconnection, stay on the current page — don't redirect to /login.
-  // ConnectionManager is the source of truth; React connection state may be stale.
-  if (connectionManager.state === "reconnecting") {
-    return <Outlet />;
-  }
+  const relayCanonicalTarget = getRelayCanonicalRedirectTarget(
+    location,
+    currentRelayUsername,
+  );
 
   // During auto-resume, don't redirect - show loading state
   // This preserves the current URL so we stay on the same page after successful resume
@@ -156,6 +184,16 @@ export function ConnectionGate() {
         <p>Reconnecting...</p>
       </div>
     );
+  }
+
+  if (connection && relayCanonicalTarget) {
+    return <Navigate to={relayCanonicalTarget} replace />;
+  }
+
+  // During reconnection, stay on the current page — don't redirect to /login.
+  // SourceTransportStatus is the source of truth; React connection state may be stale.
+  if (connectionState === "reconnecting") {
+    return <Outlet />;
   }
 
   // Not connected (and not auto-resuming)
@@ -223,11 +261,14 @@ export function RemoteApp({ children }: Props) {
   return (
     <ToastProvider>
       <RemoteConnectionProvider>
-        <InboxProvider>
-          <SchemaValidationProvider>
-            <RemoteAppInner>{children}</RemoteAppInner>
-          </SchemaValidationProvider>
-        </InboxProvider>
+        <ClientSummarySourceBinding />
+        <CurrentSourceRuntimeProvider>
+          <InboxProvider>
+            <SchemaValidationProvider>
+              <RemoteAppInner>{children}</RemoteAppInner>
+            </SchemaValidationProvider>
+          </InboxProvider>
+        </CurrentSourceRuntimeProvider>
       </RemoteConnectionProvider>
     </ToastProvider>
   );

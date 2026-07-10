@@ -4,18 +4,23 @@
 
 import type {
   AgentActivity,
+  CacheMissBillingRecord,
   ContextUsage,
   PendingInputType,
+  ProjectQueueChangedEvent,
+  ProviderRuntimeStatus,
   PromptSuggestionMode,
+  SafeRestartChangedEvent,
   TranscriptDisplayObject,
   UrlProjectId,
+  WorkstreamsChangedEvent,
 } from "@yep-anywhere/shared";
 import type { SessionOwnership, SessionSummary } from "../supervisor/types.js";
 
 export type FileChangeType = "create" | "modify" | "delete";
 
 /** Provider that owns the watched directory */
-export type WatchProvider = "claude" | "gemini" | "codex";
+export type WatchProvider = "claude" | "gemini" | "codex" | "pi";
 
 export interface FileChangeEvent {
   type: "file-change";
@@ -96,6 +101,15 @@ export interface ProcessTerminatedEvent {
   timestamp: string;
 }
 
+/** Event emitted when provider runtime retry/failure status changes. */
+export interface ProviderRuntimeStatusChangedEvent {
+  type: "provider-runtime-status-changed";
+  sessionId: string;
+  projectId: UrlProjectId;
+  providerRuntimeStatus: ProviderRuntimeStatus;
+  timestamp: string;
+}
+
 /** Event emitted when a request is added to the worker queue */
 export interface QueueRequestAddedEvent {
   type: "queue-request-added";
@@ -127,10 +141,22 @@ export interface QueueRequestRemovedEvent {
 /** Event emitted when worker activity changes (for safe restart indicator) */
 export interface WorkerActivityEvent {
   type: "worker-activity-changed";
+  /** Owned provider processes, including idle retained workers. */
   activeWorkers: number;
+  /** Sessions that would interrupt active work if the server restarts now. */
+  interruptibleSessionCount: number;
+  /** Supervisor worker queue length. */
   queueLength: number;
-  /** True if any worker is running or waiting-input (unsafe to restart) */
+  /** In-memory user turns waiting in worker or live per-session queues. */
+  queuedSessionMessageCount?: number;
+  /** True if any session has interruptible active work. */
   hasActiveWork: boolean;
+  timestamp: string;
+}
+
+/** Event emitted when durable per-session queue state changes. */
+export interface SessionQueuePersistenceChangedEvent {
+  type: "session-queue-persistence-changed";
   timestamp: string;
 }
 
@@ -156,8 +182,14 @@ export interface SessionMetadataChangedEvent {
   heartbeatForceAfterMinutes?: number | null;
   /** Updated per-session prompt-suggestion preference (if changed) */
   promptSuggestionMode?: PromptSuggestionMode;
+  /** Updated per-session recap timing override (if changed) */
+  recapAfterSeconds?: number;
   /** Complete current set of saved viewer-only transcript objects. */
   transcriptDisplayObjects?: TranscriptDisplayObject[];
+  /** YA's effective project/working directory for this session, if changed. */
+  projectId?: UrlProjectId;
+  /** Provider transcript project when it differs from the effective project. */
+  transcriptProjectId?: UrlProjectId | null;
   timestamp: string;
 }
 
@@ -188,7 +220,7 @@ export interface SessionUpdatedEvent {
   contextUsage?: ContextUsage;
   /** Resolved model name (e.g., "claude-sonnet-4-5-20250929") */
   model?: string;
-  /** Capped excerpt of the most recent regular agent turn (hover card). */
+  /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
   timestamp: string;
 }
@@ -232,6 +264,14 @@ export interface BrowserTabDisconnectedEvent {
   timestamp: string;
 }
 
+/** Event emitted when cache-billing usage accounting shows a hit or likely miss. */
+export interface CacheMissBillingEvent {
+  type: "cache-miss-billing";
+  record: CacheMissBillingRecord;
+  showToast: boolean;
+  timestamp: string;
+}
+
 /** Union of all event types that can be emitted through the bus */
 export type BusEvent =
   | FileChangeEvent
@@ -242,16 +282,22 @@ export type BusEvent =
   | SessionSeenEvent
   | ProcessStateEvent
   | ProcessTerminatedEvent
+  | ProviderRuntimeStatusChangedEvent
   | QueueRequestAddedEvent
   | QueuePositionChangedEvent
   | QueueRequestRemovedEvent
   | WorkerActivityEvent
+  | SessionQueuePersistenceChangedEvent
+  | SafeRestartChangedEvent
+  | ProjectQueueChangedEvent
   | SessionMetadataChangedEvent
   | SessionAbortedEvent
   | SessionUpdatedEvent
   | NetworkBindingChangedEvent
   | BrowserTabConnectedEvent
-  | BrowserTabDisconnectedEvent;
+  | BrowserTabDisconnectedEvent
+  | CacheMissBillingEvent
+  | WorkstreamsChangedEvent;
 
 export type EventHandler<T = BusEvent> = (event: T) => void;
 

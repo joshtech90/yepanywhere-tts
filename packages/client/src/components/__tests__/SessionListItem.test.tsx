@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { DEFAULT_HOVERCARD_SHOW_DELAY_MS } from "../../hooks/useHoverCardAppearance";
 import { I18nProvider } from "../../i18n";
+import { activityBus } from "../../lib/activityBus";
 import { SessionListItem } from "../SessionListItem";
 
 const mockWindowOpen = vi.fn();
@@ -197,8 +198,9 @@ describe("SessionListItem links", () => {
             <SessionListItem
               sessionId="failed-1"
               projectId="project-1"
-              title="Short title"
+              title="Custom title"
               fullTitle="Full initial prompt that should be recoverable"
+              hasCustomTitle
               provider="claude"
               mode="compact"
             />
@@ -215,6 +217,139 @@ describe("SessionListItem links", () => {
         "Full initial prompt that should be recoverable",
       );
     });
+  });
+
+  it("opens the session in a new tab from the session menu", () => {
+    const onNavigate = vi.fn();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Menu new tab"
+              provider="claude"
+              mode="compact"
+              onNavigate={onNavigate}
+              basePath="/remote/test"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(mockWindowOpen).toHaveBeenCalledWith(
+      "/remote/test/projects/project-1/sessions/session-1",
+      "_blank",
+      "noopener",
+    );
+  });
+
+  it("uses custom titles for native row tooltips", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Custom title"
+              fullTitle="Original first turn"
+              hasCustomTitle
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: /Custom title/ }).getAttribute("title"),
+    ).toBe("Custom title");
+  });
+
+  it("shows a card-mode thinking dot when requested for active rows", () => {
+    const { container } = render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Active row"
+              activity="in-turn"
+              mode="card"
+              showActivityIndicator
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(container.querySelector(".thinking-indicator-dot")).toBeTruthy();
+  });
+
+  it("leaves card-mode activity hidden unless requested", () => {
+    const { container } = render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Active row"
+              activity="in-turn"
+              mode="card"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(container.querySelector(".thinking-indicator-dot")).toBeNull();
+  });
+
+  it("uses custom titles for session hover previews", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Custom title"
+              fullTitle="Original first turn"
+              initialPrompt="Original first turn"
+              hasCustomTitle
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Custom title/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
+    });
+
+    const hoverTurn = document.querySelector(".session-hovercard__turn");
+    expect(hoverTurn?.textContent).toBe("Custom title");
   });
 
   it("delays session hover previews", () => {
@@ -253,6 +388,49 @@ describe("SessionListItem links", () => {
       vi.advanceTimersByTime(1);
     });
     expect(screen.getByText("Delayed hover prompt")).toBeTruthy();
+  });
+
+  it("keeps a session hover preview open while the pointer is over the card", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Selectable hover"
+              initialPrompt="Selectable hover prompt"
+              lastAgentText="Selectable recap text"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Selectable hover/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
+    });
+
+    const hoverCard = document.querySelector(".session-hovercard");
+    expect(hoverCard).toBeTruthy();
+    expect(screen.getByText("Selectable recap text")).toBeTruthy();
+
+    fireEvent.mouseLeave(item!, { relatedTarget: hoverCard });
+    expect(screen.getByText("Selectable recap text")).toBeTruthy();
+
+    fireEvent.mouseLeave(hoverCard!);
+    expect(screen.queryByText("Selectable recap text")).toBeNull();
   });
 
   it("keeps only one session hover preview visible", () => {
@@ -405,6 +583,48 @@ describe("SessionListItem links", () => {
     });
 
     expect(screen.queryByText("Menu open prompt")).toBeNull();
+  });
+
+  it("emits a local metadata event after starring from the menu", async () => {
+    const updateSpy = vi
+      .spyOn(api, "updateSessionMetadata")
+      .mockResolvedValue({ updated: true });
+    const emitSpy = vi.spyOn(activityBus, "emitLocal");
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Star me"
+              provider="claude"
+              isStarred={false}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    fireEvent.click(screen.getByRole("button", { name: "Star" }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith("session-1", { starred: true });
+      expect(emitSpy).toHaveBeenCalledWith(
+        "session-metadata-changed",
+        expect.objectContaining({
+          type: "session-metadata-changed",
+          sessionId: "session-1",
+          starred: true,
+        }),
+      );
+    });
+
+    updateSpy.mockRestore();
+    emitSpy.mockRestore();
   });
 
   it("refreshes the preview on hover, before the show delay elapses", () => {

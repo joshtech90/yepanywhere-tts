@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import type {
   SessionLivenessSnapshot,
   UrlProjectId,
@@ -10,10 +10,14 @@ import type {
   SessionUpdatedEvent,
 } from "../../lib/activityBus";
 import type { SessionStatus } from "../../types";
-import { useSession } from "../useSession";
+import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
 
 const apiMocks = vi.hoisted(() => ({
+  getAgentMappings: vi.fn(),
+  getAgentSession: vi.fn(),
   getSessionMetadata: vi.fn(),
+  requestRecap: vi.fn(),
+  requestSessionRecap: vi.fn(),
   setPermissionMode: vi.fn(),
 }));
 
@@ -24,6 +28,12 @@ const sessionMessagesMock = vi.hoisted(() => ({
 
 const fetchNewMessages = vi.fn(async () => {});
 const fetchSessionMetadata = vi.fn(async () => {});
+const registerToolUseAgent = vi.fn();
+const mergeLoadedAgentContent = vi.fn();
+const updateAgentContextUsage = vi.fn();
+const clearAgentStreamingPlaceholders = vi.fn();
+const clearStreamingPlaceholders = vi.fn();
+const updateSession = vi.fn();
 
 let fileActivityOptions:
   | {
@@ -36,6 +46,15 @@ let fileActivityOptions:
 let sessionStreamHandler:
   | ((data: { eventType: string; [key: string]: unknown }) => void)
   | null = null;
+
+let streamingContentOptions:
+  | {
+      onAgentContextUsage?: (
+        agentId: string,
+        usage: { inputTokens: number; percentage: number },
+      ) => void;
+    }
+  | undefined;
 
 const PROJECT_ID = "proj-1" as unknown as UrlProjectId;
 
@@ -89,12 +108,42 @@ function installLocalStorageMock(): void {
   });
 }
 
+function installVisibilityStateMock(initial: DocumentVisibilityState) {
+  let visibilityState = initial;
+  const descriptor = Object.getOwnPropertyDescriptor(
+    document,
+    "visibilityState",
+  );
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => visibilityState,
+  });
+
+  return {
+    set(value: DocumentVisibilityState) {
+      visibilityState = value;
+    },
+    restore() {
+      if (descriptor) {
+        Object.defineProperty(document, "visibilityState", descriptor);
+      } else {
+        Reflect.deleteProperty(document, "visibilityState");
+      }
+    },
+  };
+}
+
 vi.mock("../useSessionMessages", () => ({
   useSessionMessages: vi.fn(() => ({
     messages: sessionMessagesMock.messages,
     agentContent: {},
     toolUseToAgent: new Map(),
     loading: false,
+    sessionLoadProgress: {
+      stage: "complete",
+      messageCount: sessionMessagesMock.messages.length,
+      updatedAtMs: 0,
+    },
     session: {
       id: "sess-1",
       projectId: "proj-1",
@@ -102,14 +151,15 @@ vi.mock("../useSessionMessages", () => ({
       model: "gpt-5.4",
       messages: [],
     },
-    setSession: vi.fn(),
+    updateSession,
     handleStreamingUpdate: vi.fn(),
     handleStreamMessageEvent: vi.fn(),
     handleStreamSubagentMessage: vi.fn(),
-    registerToolUseAgent: vi.fn(),
-    setAgentContent: vi.fn(),
-    setToolUseToAgent: vi.fn(),
-    setMessages: vi.fn(),
+    registerToolUseAgent,
+    mergeLoadedAgentContent,
+    updateAgentContextUsage,
+    clearAgentStreamingPlaceholders,
+    clearStreamingPlaceholders,
     fetchNewMessages,
     fetchSessionMetadata,
     pagination: undefined,
@@ -140,18 +190,34 @@ vi.mock("../useSessionWatchStream", () => ({
 }));
 
 vi.mock("../useStreamingContent", () => ({
-  useStreamingContent: vi.fn(() => ({
-    handleStreamEvent: vi.fn(() => false),
-    clearStreaming: vi.fn(),
-    cleanup: vi.fn(),
-  })),
+  useStreamingContent: vi.fn((options) => {
+    streamingContentOptions = options;
+    return {
+      handleStreamEvent: vi.fn(() => false),
+      clearStreaming: vi.fn(),
+      cleanup: vi.fn(),
+    };
+  }),
 }));
 
 describe("useSession completion reconciliation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    cleanup();
+    __resetAwayRecapTimersForTest();
     vi.clearAllMocks();
+    apiMocks.getAgentMappings.mockReset();
+    apiMocks.getAgentMappings.mockResolvedValue({ mappings: [] });
+    apiMocks.getAgentSession.mockReset();
+    apiMocks.getAgentSession.mockResolvedValue({
+      messages: [],
+      status: "completed",
+    });
     apiMocks.getSessionMetadata.mockReset();
+    apiMocks.requestRecap.mockReset();
+    apiMocks.requestRecap.mockResolvedValue({ supported: true });
+    apiMocks.requestSessionRecap.mockReset();
+    apiMocks.requestSessionRecap.mockResolvedValue({ supported: true });
     apiMocks.setPermissionMode.mockReset();
     apiMocks.setPermissionMode.mockResolvedValue({
       permissionMode: "acceptEdits",
@@ -160,6 +226,7 @@ describe("useSession completion reconciliation", () => {
     installLocalStorageMock();
     fileActivityOptions = undefined;
     sessionStreamHandler = null;
+    streamingContentOptions = undefined;
     sessionMessagesMock.messages = [];
     sessionMessagesMock.provider = "codex";
   });
@@ -289,6 +356,162 @@ describe("useSession completion reconciliation", () => {
     });
 
     expect(fetchNewMessages).not.toHaveBeenCalled();
+  });
+
+  it("hydrates reloaded pending task data through action wrappers", async () => {
+    sessionMessagesMock.messages = [
+      {
+        id: "msg-1",
+        type: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu-pending-1",
+            name: "Task",
+            input: {
+              description: "Research data",
+              subagent_type: "general-purpose",
+            },
+          },
+        ],
+      },
+    ];
+    apiMocks.getAgentMappings.mockResolvedValue({
+      mappings: [
+        {
+          toolUseId: "toolu-pending-1",
+          agentId: "agent-1",
+        },
+      ],
+    });
+    const agentContent = {
+      messages: [{ id: "agent-msg-1", type: "assistant", content: "done" }],
+      status: "completed",
+    };
+    apiMocks.getAgentSession.mockResolvedValue(agentContent);
+
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(registerToolUseAgent).toHaveBeenCalledWith(
+      "toolu-pending-1",
+      "agent-1",
+    );
+    expect(mergeLoadedAgentContent).toHaveBeenCalledWith(
+      "agent-1",
+      agentContent,
+    );
+  });
+
+  it("routes agent context usage through the action wrapper", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    const usage = { inputTokens: 2400, percentage: 48 };
+    act(() => {
+      streamingContentOptions?.onAgentContextUsage?.("agent-1", usage);
+    });
+
+    expect(updateAgentContextUsage).toHaveBeenCalledWith("agent-1", usage);
+  });
+
+  it("routes subagent placeholder cleanup through the action wrapper", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "assistant",
+        id: "assistant-1",
+        isSubagent: true,
+        parentToolUseId: "toolu-subagent-1",
+        content: "done",
+      });
+    });
+
+    expect(clearAgentStreamingPlaceholders).toHaveBeenCalledWith(
+      "toolu-subagent-1",
+    );
+  });
+
+  it("routes main placeholder cleanup through the action wrapper", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "assistant",
+        id: "assistant-1",
+        content: "done",
+      });
+    });
+
+    expect(clearStreamingPlaceholders).toHaveBeenCalledTimes(1);
+    expect(clearAgentStreamingPlaceholders).not.toHaveBeenCalled();
+  });
+
+  it("routes session metadata events through the action wrapper", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      fileActivityOptions?.onSessionUpdated?.({
+        type: "session-updated",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        title: "Renamed session",
+        messageCount: 42,
+        updatedAt: "2026-07-01T12:30:00.000Z",
+        contextUsage: { inputTokens: 1200, percentage: 24 },
+        model: "gpt-5.4",
+        timestamp: "2026-07-01T12:30:00.000Z",
+      });
+    });
+
+    expect(updateSession).toHaveBeenCalledTimes(1);
+    const updater = updateSession.mock.calls[0]?.[0] as (
+      previous: Record<string, unknown> | null,
+    ) => Record<string, unknown> | null;
+    expect(
+      updater({
+        id: "sess-1",
+        provider: "codex",
+        title: "Old title",
+      }),
+    ).toMatchObject({
+      title: "Renamed session",
+      messageCount: 42,
+      updatedAt: "2026-07-01T12:30:00.000Z",
+      contextUsage: { inputTokens: 1200, percentage: 24 },
+      model: "gpt-5.4",
+    });
   });
 
   it("syncs metadata process state when reconnect keeps ownership self", async () => {
@@ -811,9 +1034,7 @@ describe("useSession completion reconciliation", () => {
       "bypassPermissions",
     );
 
-    const { result } = renderHook(() =>
-      useSession(PROJECT_ID, "sess-1"),
-    );
+    const { result } = renderHook(() => useSession(PROJECT_ID, "sess-1"));
 
     expect(result.current.permissionMode).toBe("default");
     expect(apiMocks.setPermissionMode).not.toHaveBeenCalled();
@@ -874,7 +1095,9 @@ describe("useSession completion reconciliation", () => {
     });
 
     expect(result.current.permissionMode).toBe("acceptEdits");
-    expect(window.localStorage.getItem("yep-anywhere-permission-mode")).toBeNull();
+    expect(
+      window.localStorage.getItem("yep-anywhere-permission-mode"),
+    ).toBeNull();
 
     act(() => {
       fileActivityOptions?.onSessionStatusChange?.({
@@ -888,6 +1111,200 @@ describe("useSession completion reconciliation", () => {
 
     expect(result.current.status).toEqual({ owner: "none" });
     expect(result.current.permissionMode).toBe("acceptEdits");
+  });
+
+  it("uses the configured away threshold for recap requests", () => {
+    vi.setSystemTime(new Date("2026-04-24T00:00:00.000Z"));
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      renderHook(() =>
+        useSession(PROJECT_ID, "sess-1", {
+          owner: "self",
+          processId: "proc-1",
+          recapAfterSeconds: 2,
+          recapMode: "fork",
+        }),
+      );
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(1_999);
+        visibility.set("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(apiMocks.requestSessionRecap).not.toHaveBeenCalled();
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+        visibility.set("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledTimes(1);
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledWith(
+        PROJECT_ID,
+        "sess-1",
+        Date.parse("2026-04-24T00:00:01.999Z"),
+      );
+    } finally {
+      visibility.restore();
+    }
+  });
+
+  it("fires a background recap after the away threshold while still hidden", () => {
+    vi.setSystemTime(new Date("2026-04-24T00:00:00.000Z"));
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      renderHook(() =>
+        useSession(PROJECT_ID, "sess-bg", {
+          owner: "self",
+          processId: "proc-bg",
+          recapAfterSeconds: 2,
+          recapMode: "fork",
+        }),
+      );
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      // No return: the recap must fire in the background once the threshold passes.
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledTimes(1);
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledWith(
+        PROJECT_ID,
+        "sess-bg",
+        Date.parse("2026-04-24T00:00:00.000Z"),
+      );
+    } finally {
+      visibility.restore();
+    }
+  });
+
+  it("fires a background recap after navigating away from a live session", () => {
+    vi.setSystemTime(new Date("2026-04-24T00:00:00.000Z"));
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      const { unmount } = renderHook(() =>
+        useSession(PROJECT_ID, "sess-nav", {
+          owner: "self",
+          processId: "proc-nav",
+          recapAfterSeconds: 2,
+          recapMode: "fork",
+        }),
+      );
+
+      act(() => {
+        unmount();
+      });
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledTimes(1);
+      expect(apiMocks.requestSessionRecap).toHaveBeenCalledWith(
+        PROJECT_ID,
+        "sess-nav",
+        Date.parse("2026-04-24T00:00:00.000Z"),
+      );
+    } finally {
+      visibility.restore();
+    }
+  });
+
+  it("cancels the background recap when returning before the threshold", () => {
+    vi.setSystemTime(new Date("2026-04-24T00:00:00.000Z"));
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      renderHook(() =>
+        useSession(PROJECT_ID, "sess-cancel", {
+          owner: "self",
+          processId: "proc-cancel",
+          recapAfterSeconds: 5,
+          recapMode: "fork",
+        }),
+      );
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+        visibility.set("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+
+      expect(apiMocks.requestSessionRecap).not.toHaveBeenCalled();
+    } finally {
+      visibility.restore();
+    }
+  });
+
+  it("does not POST when recap mode is unknown (never live this view)", () => {
+    // A list-browsed session whose mode we never learned must not fire: the
+    // POST would only be skipped server-side. Recaps must be confirmed enabled.
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      renderHook(() => useSession(PROJECT_ID, "sess-noproc"));
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(600_000);
+      });
+
+      expect(apiMocks.requestSessionRecap).not.toHaveBeenCalled();
+    } finally {
+      visibility.restore();
+    }
+  });
+
+  it("does not POST when recaps are off for a live session", () => {
+    const visibility = installVisibilityStateMock("visible");
+
+    try {
+      renderHook(() =>
+        useSession(PROJECT_ID, "sess-off", {
+          owner: "self",
+          processId: "proc-off",
+          recapAfterSeconds: 2,
+          recapMode: "off",
+        }),
+      );
+
+      act(() => {
+        visibility.set("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      act(() => {
+        vi.advanceTimersByTime(600_000);
+      });
+
+      expect(apiMocks.requestSessionRecap).not.toHaveBeenCalled();
+    } finally {
+      visibility.restore();
+    }
   });
 });
 

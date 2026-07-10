@@ -3,7 +3,10 @@ import { BrowserNotificationToggle } from "../../components/BrowserNotificationT
 import { PushNotificationToggle } from "../../components/PushNotificationToggle";
 import { useBrowserNotifications } from "../../hooks/useBrowserNotifications";
 import { useConnectedDevices } from "../../hooks/useConnectedDevices";
-import { useNotificationSettings } from "../../hooks/useNotificationSettings";
+import {
+  type NotificationSettings,
+  useNotificationSettings,
+} from "../../hooks/useNotificationSettings";
 import { usePushNotifications } from "../../hooks/usePushNotifications";
 import {
   type PushDeliveryUrgency,
@@ -12,6 +15,7 @@ import {
   useSubscribedDevices,
 } from "../../hooks/useSubscribedDevices";
 import { useI18n } from "../../i18n";
+import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 /**
@@ -180,6 +184,58 @@ function isMobilePushDevice(device: UnifiedDevice): boolean {
   );
 }
 
+/**
+ * The server-side notification-type toggles, gated on having at least one
+ * push-subscribed device (without one, no notification could be delivered).
+ */
+const SERVER_NOTIFICATION_ROWS: ReadonlyArray<{
+  key: keyof NotificationSettings;
+  titleKey:
+    | "notificationsToolApprovalsTitle"
+    | "notificationsQuestionsTitle"
+    | "notificationsSessionHaltedTitle"
+    | "notificationsProjectInactiveTitle"
+    | "notificationsYaInactiveTitle";
+  descriptionKey:
+    | "notificationsToolApprovalsDescription"
+    | "notificationsQuestionsDescription"
+    | "notificationsSessionHaltedDescription"
+    | "notificationsProjectInactiveDescription"
+    | "notificationsYaInactiveDescription";
+  defaultValue: boolean;
+}> = [
+  {
+    key: "toolApproval",
+    titleKey: "notificationsToolApprovalsTitle",
+    descriptionKey: "notificationsToolApprovalsDescription",
+    defaultValue: true,
+  },
+  {
+    key: "userQuestion",
+    titleKey: "notificationsQuestionsTitle",
+    descriptionKey: "notificationsQuestionsDescription",
+    defaultValue: true,
+  },
+  {
+    key: "sessionHalted",
+    titleKey: "notificationsSessionHaltedTitle",
+    descriptionKey: "notificationsSessionHaltedDescription",
+    defaultValue: false,
+  },
+  {
+    key: "projectInactive",
+    titleKey: "notificationsProjectInactiveTitle",
+    descriptionKey: "notificationsProjectInactiveDescription",
+    defaultValue: false,
+  },
+  {
+    key: "yaInactive",
+    titleKey: "notificationsYaInactiveTitle",
+    descriptionKey: "notificationsYaInactiveDescription",
+    defaultValue: false,
+  },
+];
+
 function deliveryPriorityLabelKey(
   urgency: PushDeliveryUrgency,
 ):
@@ -195,6 +251,7 @@ function deliveryPriorityLabelKey(
 
 export function NotificationsSettings() {
   const { t } = useI18n();
+  useSettingsPaneTitle(t("settingsNotificationsTitle"));
   const { browserProfileId } = usePushNotifications();
   const { isMobile } = useBrowserNotifications();
   const {
@@ -224,7 +281,7 @@ export function NotificationsSettings() {
     message: string;
   } | null>(null);
 
-  // Header undo for the three server-side notification toggles. Push/browser
+  // Header undo for the server-side notification toggles. Push/browser
   // subscription state is device-permission-bound and not snapshot-undoable.
   const undoState = useMemo(
     () =>
@@ -233,6 +290,8 @@ export function NotificationsSettings() {
             toolApproval: settings.toolApproval,
             userQuestion: settings.userQuestion,
             sessionHalted: settings.sessionHalted,
+            projectInactive: settings.projectInactive,
+            yaInactive: settings.yaInactive,
           }
         : null,
     [settings],
@@ -242,6 +301,8 @@ export function NotificationsSettings() {
       void updateSetting("toolApproval", snapshot.toolApproval);
       void updateSetting("userQuestion", snapshot.userQuestion);
       void updateSetting("sessionHalted", snapshot.sessionHalted);
+      void updateSetting("projectInactive", snapshot.projectInactive);
+      void updateSetting("yaInactive", snapshot.yaInactive);
     },
     [updateSetting],
   );
@@ -306,9 +367,7 @@ export function NotificationsSettings() {
         setTestStatus({
           kind: "error",
           message:
-            err instanceof Error
-              ? err.message
-              : t("notificationsTestFailed"),
+            err instanceof Error ? err.message : t("notificationsTestFailed"),
         });
       } finally {
         markTesting([device.browserProfileId], false);
@@ -325,7 +384,9 @@ export function NotificationsSettings() {
   );
 
   const sendTestToMobileDevices = useCallback(async () => {
-    const targetIds = mobilePushDevices.map((device) => device.browserProfileId);
+    const targetIds = mobilePushDevices.map(
+      (device) => device.browserProfileId,
+    );
     if (targetIds.length === 0) return;
 
     markTesting(targetIds, true);
@@ -370,74 +431,57 @@ export function NotificationsSettings() {
     testDisplayUrgency,
   ]);
 
+  const serverTogglesGated = !hasSubscriptions;
+  const gatedTooltip = serverTogglesGated
+    ? t("notificationsNoSubscribedDevices")
+    : undefined;
+
   return (
     <>
-      {/* Server-side settings - what types of notifications are sent */}
+      {/* Push notifications, with the server-side notification types they
+          gate scoped underneath: without a subscribed device the server has
+          nowhere to deliver, so the type toggles are disabled. */}
       <section className="settings-section">
-        <h2>{t("notificationsServerTitle")}</h2>
+        <h2>{t("notificationsPushTitle")}</h2>
         <p className="settings-section-description">
-          {t("notificationsServerDescription")}
+          {t("notificationsPushDescription")}
         </p>
         <div className="settings-group">
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("notificationsToolApprovalsTitle")}</strong>
-              <p>{t("notificationsToolApprovalsDescription")}</p>
+          <PushNotificationToggle />
+        </div>
+        <div className="settings-subsection">
+          <h3>{t("notificationsServerTitle")}</h3>
+          <p className="settings-section-description">
+            {t("notificationsServerDescription")}
+          </p>
+          {serverTogglesGated && !devicesLoading && (
+            <div className="settings-info-box settings-subsection-hint">
+              <p>{t("notificationsNoSubscribedDevices")}</p>
             </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={settings?.toolApproval ?? true}
-                onChange={(e) =>
-                  updateSetting("toolApproval", e.target.checked)
-                }
-                disabled={settingsLoading || !hasSubscriptions}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("notificationsQuestionsTitle")}</strong>
-              <p>{t("notificationsQuestionsDescription")}</p>
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={settings?.userQuestion ?? true}
-                onChange={(e) =>
-                  updateSetting("userQuestion", e.target.checked)
-                }
-                disabled={settingsLoading || !hasSubscriptions}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("notificationsSessionHaltedTitle")}</strong>
-              <p>{t("notificationsSessionHaltedDescription")}</p>
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={settings?.sessionHalted ?? false}
-                onChange={(e) =>
-                  updateSetting("sessionHalted", e.target.checked)
-                }
-                disabled={settingsLoading || !hasSubscriptions}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-
-          {!hasSubscriptions && !devicesLoading && (
-            <p className="settings-hint">
-              {t("notificationsNoSubscribedDevices")}
-            </p>
           )}
+          <div className="settings-group">
+            {SERVER_NOTIFICATION_ROWS.map((row) => (
+              <div
+                key={row.key}
+                className="settings-item"
+                title={gatedTooltip}
+              >
+                <div className="settings-item-info">
+                  <strong>{t(row.titleKey)}</strong>
+                  <p>{t(row.descriptionKey)}</p>
+                </div>
+                <label className="toggle-switch" title={gatedTooltip}>
+                  <input
+                    type="checkbox"
+                    checked={settings?.[row.key] ?? row.defaultValue}
+                    onChange={(e) => updateSetting(row.key, e.target.checked)}
+                    disabled={settingsLoading || serverTogglesGated}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -453,17 +497,6 @@ export function NotificationsSettings() {
           </div>
         </section>
       )}
-
-      {/* Push notifications - service worker based */}
-      <section className="settings-section">
-        <h2>{t("notificationsPushTitle")}</h2>
-        <p className="settings-section-description">
-          {t("notificationsPushDescription")}
-        </p>
-        <div className="settings-group">
-          <PushNotificationToggle />
-        </div>
-      </section>
 
       {/* Unified devices list */}
       <section className="settings-section">
@@ -511,7 +544,9 @@ export function NotificationsSettings() {
                   aria-label={t("pushTestDeliveryPriority")}
                   value={testDeliveryUrgency}
                   onChange={(e) =>
-                    setTestDeliveryUrgency(e.target.value as PushDeliveryUrgency)
+                    setTestDeliveryUrgency(
+                      e.target.value as PushDeliveryUrgency,
+                    )
                   }
                   disabled={isTestingMobileDevices}
                 >

@@ -74,7 +74,7 @@ describe("UserPromptBlock", () => {
     ).toBeDefined();
   });
 
-  it("uses file_path name for Codex input_image attachments", () => {
+  it("uses file_path name for Codex input_image attachments", async () => {
     const content: ContentBlock[] = [
       {
         type: "text",
@@ -90,6 +90,12 @@ describe("UserPromptBlock", () => {
       <I18nProvider>
         <UserPromptBlock content={content} />
       </I18nProvider>,
+    );
+
+    // Let the chip's attachment-cache load settle (it rejects in jsdom)
+    // before the test ends, so its setState lands inside act.
+    await waitFor(() =>
+      expect(screen.queryByText("Loading...")).toBeNull(),
     );
 
     expect(screen.getByText(/Annotated image:/)).toBeDefined();
@@ -137,6 +143,49 @@ describe("UserPromptBlock", () => {
       "Fork session from before this turn",
       "Show starting here",
     ]);
+  });
+
+  it("marks an unconfirmed send with a margin tag whose tap explains it", () => {
+    render(
+      <I18nProvider>
+        <UserPromptBlock content="hello there" deliveryState="sent" />
+      </I18nProvider>,
+    );
+
+    const bubble = screen
+      .getByText("hello there")
+      .closest(".message-user-prompt");
+    expect(bubble?.classList.contains("user-prompt-unconfirmed")).toBe(true);
+
+    const marker = screen.getByRole("button", {
+      name: /waiting for the session to record it/i,
+    });
+    expect(marker.textContent).toBe("sent");
+    expect(marker.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("status")).toBeNull();
+
+    fireEvent.click(marker);
+    expect(marker.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("status").textContent).toMatch(
+      /isn't recorded in the session yet/,
+    );
+
+    fireEvent.click(marker);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("renders a confirmed send as the plain bubble with no marker", () => {
+    render(
+      <I18nProvider>
+        <UserPromptBlock content="hello there" deliveryState="confirmed" />
+      </I18nProvider>,
+    );
+
+    const bubble = screen
+      .getByText("hello there")
+      .closest(".message-user-prompt");
+    expect(bubble?.classList.contains("user-prompt-unconfirmed")).toBe(false);
+    expect(screen.queryByText("sent")).toBeNull();
   });
 
   it("does not fetch uploaded image previews until opened", async () => {

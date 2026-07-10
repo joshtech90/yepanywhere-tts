@@ -8,6 +8,8 @@ import {
 import { toUrlProjectId, type FileContentResponse } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
+import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
+import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import { FileViewer, type FileViewerSource } from "../FileViewer";
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
@@ -25,6 +27,18 @@ const originalScrollTopDescriptor = Object.getOwnPropertyDescriptor(
   HTMLElement.prototype,
   "scrollTop",
 );
+const originalCreateObjectUrlDescriptor = Object.getOwnPropertyDescriptor(
+  URL,
+  "createObjectURL",
+);
+const originalRevokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(
+  URL,
+  "revokeObjectURL",
+);
+const originalWindowOpenDescriptor = Object.getOwnPropertyDescriptor(
+  window,
+  "open",
+);
 
 function restorePrototypeProperty(
   name: keyof HTMLElement,
@@ -34,6 +48,18 @@ function restorePrototypeProperty(
     Object.defineProperty(HTMLElement.prototype, name, descriptor);
   } else {
     Reflect.deleteProperty(HTMLElement.prototype, name);
+  }
+}
+
+function restoreObjectProperty(
+  target: object,
+  name: PropertyKey,
+  descriptor: PropertyDescriptor | undefined,
+) {
+  if (descriptor) {
+    Object.defineProperty(target, name, descriptor);
+  } else {
+    Reflect.deleteProperty(target, name);
   }
 }
 
@@ -51,6 +77,8 @@ describe("FileViewer", () => {
 
   afterEach(() => {
     cleanup();
+    sessionStorage.clear();
+    window.history.replaceState({}, "", "/");
     vi.unstubAllGlobals();
     if (originalScrollIntoView) {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -67,6 +95,17 @@ describe("FileViewer", () => {
     restorePrototypeProperty("clientHeight", originalClientHeightDescriptor);
     restorePrototypeProperty("scrollHeight", originalScrollHeightDescriptor);
     restorePrototypeProperty("scrollTop", originalScrollTopDescriptor);
+    restoreObjectProperty(
+      URL,
+      "createObjectURL",
+      originalCreateObjectUrlDescriptor,
+    );
+    restoreObjectProperty(
+      URL,
+      "revokeObjectURL",
+      originalRevokeObjectUrlDescriptor,
+    );
+    restoreObjectProperty(window, "open", originalWindowOpenDescriptor);
   });
 
   it("shows project-relative headers for Windows absolute project paths", async () => {
@@ -110,6 +149,41 @@ describe("FileViewer", () => {
       undefined,
       "full",
     );
+  });
+
+  it("prefills a new session from the file viewer path", async () => {
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "src/App.ts",
+        size: 20,
+        mimeType: "text/typescript",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "export {};\n",
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="src/App.ts"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    const button = await screen.findByTitle("New session from path");
+    fireEvent.click(button);
+
+    expect(getNewSessionPrefill(LOCAL_CLIENT_SUMMARY_SOURCE_KEY)).toBe(
+      "src/App.ts",
+    );
+    expect(window.location.pathname).toBe("/new-session");
+    expect(window.location.search).toBe("?projectId=project-id");
   });
 
   it("marks and scrolls a line range 10% below the viewer top", async () => {
@@ -348,5 +422,71 @@ describe("FileViewer", () => {
     expect(
       container.querySelector(".markdown-preview-span-start"),
     ).toBeTruthy();
+  });
+
+  it("opens image previews as raw image tabs", async () => {
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "screenshots/result.png",
+        size: 128,
+        mimeType: "image/png",
+        isText: false,
+      },
+      rawUrl:
+        "/api/projects/project-id/files/raw?path=screenshots%2Fresult.png",
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+      fetchRawFileBlob: vi.fn(
+        async () => new Blob(["png"], { type: "image/png" }),
+      ),
+    };
+    const openMock = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:file-viewer-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(window, "open", {
+      configurable: true,
+      value: openMock,
+    });
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="screenshots/result.png"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    const imageLink = await screen.findByRole("link", {
+      name: "Open image in new tab",
+    });
+    expect(imageLink.getAttribute("href")).toBe(
+      "/api/projects/project-id/files/raw?path=screenshots%2Fresult.png",
+    );
+    expect(imageLink.getAttribute("target")).toBe("_blank");
+    expect(imageLink.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(
+      screen.getByRole("img", { name: "result.png" }).getAttribute("src"),
+    ).toBe("blob:file-viewer-image");
+
+    const openButton = container.querySelector<HTMLButtonElement>(
+      '.file-viewer-actions .file-viewer-action[title="Open image in new tab"]',
+    );
+    expect(openButton).not.toBeNull();
+    fireEvent.click(openButton as HTMLButtonElement);
+
+    expect(openMock).toHaveBeenCalledWith(
+      "/api/projects/project-id/files/raw?path=screenshots%2Fresult.png",
+      "_blank",
+      "noopener",
+    );
   });
 });

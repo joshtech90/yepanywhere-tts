@@ -3,10 +3,17 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
   AppContentBlock,
   AppSession,
+  SafeRestartPreservedWork,
   UrlProjectId,
 } from "@yep-anywhere/shared";
-import { DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES } from "@yep-anywhere/shared";
+import {
+  DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  buildEffectiveAgentContext,
+  clampProjectQueueQuietSeconds,
+} from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { compress } from "hono/compress";
 import { join } from "node:path";
 import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
@@ -40,7 +47,11 @@ import {
 } from "./projects/gemini-scanner.js";
 import { GROK_SESSIONS_DIR, PI_SESSIONS_DIR } from "./projects/paths.js";
 import { ProjectScanner } from "./projects/scanner.js";
-import { PushNotifier, type PushService } from "./push/index.js";
+import {
+  InactivityPushNotifier,
+  PushNotifier,
+  type PushService,
+} from "./push/index.js";
 import { createPushRoutes } from "./push/routes.js";
 import type { RecentsService } from "./recents/index.js";
 import type {
@@ -63,6 +74,10 @@ import { createInboxRoutes } from "./routes/inbox.js";
 import { createNetworkBindingRoutes } from "./routes/network-binding.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
 import { createProcessesRoutes } from "./routes/processes.js";
+import {
+  createGlobalProjectQueueRoutes,
+  createProjectQueueRoutes,
+} from "./routes/project-queue.js";
 import { createProjectsRoutes } from "./routes/projects.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
@@ -71,12 +86,17 @@ import {
   createPublicShareRoutes,
 } from "./routes/public-shares.js";
 import { createRecentsRoutes } from "./routes/recents.js";
-import { createServerAdminRoutes } from "./routes/server-admin.js";
+import {
+  createServerAdminRoutes,
+  triggerServerRestart,
+} from "./routes/server-admin.js";
 import { createEnvSettingsRoutes } from "./routes/env-settings.js";
 import { createServerInfoRoutes } from "./routes/server-info.js";
+import { createSessionIndexRoutes } from "./routes/session-index.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSharingRoutes } from "./routes/sharing.js";
+import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 
@@ -87,6 +107,7 @@ import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
 import { createVersionRoutes } from "./routes/version.js";
+import { createWorkstreamRoutes } from "./routes/workstreams.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import {
   configureProviderRuntime,
@@ -98,24 +119,39 @@ import type {
   RealClaudeSDKInterface,
 } from "./sdk/types.js";
 import type { PublicShareService } from "./services/PublicShareService.js";
+import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import type { BrowserProfileService } from "./services/BrowserProfileService.js";
 import { CodexUpdateChecker } from "./services/CodexUpdateChecker.js";
 import type { ConnectedBrowsersService } from "./services/ConnectedBrowsersService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
+import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
+import type { ProjectQueueService } from "./services/ProjectQueueService.js";
 import type { RelayClientService } from "./services/RelayClientService.js";
 import type { ServerSettingsService } from "./services/ServerSettingsService.js";
+import type { WorkstreamService } from "./services/WorkstreamService.js";
+import type {
+  PersistedSessionQueuedMessage,
+  SessionQueuePersistenceService,
+} from "./services/SessionQueuePersistenceService.js";
+import { SafeRestartService } from "./services/SafeRestartService.js";
 import type { SharingService } from "./services/SharingService.js";
 import type { SpeechBackendRegistry } from "./services/voice/registry.js";
 import { CodexSessionReader } from "./sessions/codex-reader.js";
+import { createCodexSessionDiscoveryIndex } from "./sessions/codex-discovery.js";
 import { GeminiSessionReader } from "./sessions/gemini-reader.js";
 import { GrokSessionReader } from "./sessions/grok-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
 import { PiSessionReader } from "./sessions/pi-reader.js";
 import { findSessionSummaryAcrossProviders } from "./sessions/provider-resolution.js";
+import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
-import type { ISessionReader } from "./sessions/types.js";
+import type { SummaryParserWorkerMode } from "./sessions/summary-parser-worker-protocol.js";
+import type {
+  GetSessionSummaryOptions,
+  ISessionReader,
+} from "./sessions/types.js";
 import { ExternalSessionTracker } from "./supervisor/ExternalSessionTracker.js";
 import {
   Supervisor,
@@ -143,8 +179,16 @@ export interface AppOptions {
   sessionMetadataService?: SessionMetadataService;
   /** ProjectMetadataService for persisting added projects */
   projectMetadataService?: ProjectMetadataService;
+  /** Durable project-scoped message queue service */
+  projectQueueService?: ProjectQueueService;
+  /** Durable store for long-lived patient queued messages */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
   /** SessionIndexService for caching session summaries */
   sessionIndexService?: SessionIndexService;
+  /** Claude summary parser child-process mode. Default off. */
+  claudeSummaryParserWorkerMode?: SummaryParserWorkerMode;
+  /** Codex summary parser child-process mode. Default on when unset. */
+  codexSummaryParserWorkerMode?: SummaryParserWorkerMode;
   /** Project scanner cache TTL in ms (0 = rescan every request). */
   projectScanCacheTtlMs?: number;
   /** Sessions older than this many days are hidden from default scans. 0 disables. */
@@ -161,6 +205,8 @@ export interface AppOptions {
   recentsService?: RecentsService;
   /** Maximum upload file size in bytes. 0 = unlimited */
   maxUploadSizeBytes?: number;
+  /** Attachment staging service for draft attachments. */
+  attachmentStagingService?: AttachmentStagingService;
   /** Maximum queue size for pending requests. 0 = unlimited */
   maxQueueSize?: number;
   /** AuthService for cookie-based auth (optional) */
@@ -210,6 +256,8 @@ export interface AppOptions {
   browserProfileService?: BrowserProfileService;
   /** ServerSettingsService for server-wide settings */
   serverSettingsService?: ServerSettingsService;
+  /** WorkstreamService for experimental per-project checkout lanes */
+  workstreamService?: WorkstreamService;
   /** ModelInfoService for cached model metadata (context windows, etc.) */
   modelInfoService?: ModelInfoService;
   /** SharingService for session sharing */
@@ -244,6 +292,8 @@ export interface AppResult {
   scanner: ProjectScanner;
   /** Session reader factory for debug API access */
   readerFactory: (project: Project) => ISessionReader;
+  /** Close cached session readers and their owned parser workers. */
+  disposeSessionReaders: () => Promise<void>;
 }
 
 function getMessageContentBlocks(message: Message): AppContentBlock[] {
@@ -270,10 +320,59 @@ function hasPendingToolCall(messages: Message[]): boolean {
   return pendingToolUseIds.size > 0;
 }
 
+function isRecoveredPatientQueueItem(
+  item: PersistedSessionQueuedMessage,
+): boolean {
+  return item.kind === "patient" && item.status === "paused-after-restart";
+}
+
+function getPreservedRestartWork(
+  sessionQueuePersistenceService: SessionQueuePersistenceService | undefined,
+): SafeRestartPreservedWork[] {
+  if (!sessionQueuePersistenceService) return [];
+
+  const recoveredPatientCount = sessionQueuePersistenceService
+    .list()
+    .filter(isRecoveredPatientQueueItem).length;
+
+  return recoveredPatientCount > 0
+    ? [
+        {
+          type: "recovered-session-queue",
+          count: recoveredPatientCount,
+        },
+      ]
+    : [];
+}
+
 export function createApp(options: AppOptions): AppResult {
   configureProviderRuntime({ codexCliPath: options.codexCliPath });
 
   const app = new Hono<{ Bindings: HttpBindings }>();
+  const attachmentStagingService =
+    options.attachmentStagingService ??
+    new AttachmentStagingService({
+      dataDir: options.dataDir,
+      maxUploadSizeBytes: options.maxUploadSizeBytes,
+    });
+  options.projectQueueService?.setAttachmentStagingService(
+    attachmentStagingService,
+  );
+
+  // Compress API responses (gzip/deflate). Large session payloads — multi-MB
+  // Codex transcripts — otherwise cross slow first-mile links uncompressed:
+  // Cloudflare-tunnel and Tailscale/LAN clients have nothing compressing the
+  // origin→edge hop (Cloudflare only compresses edge→browser, and cloudflared
+  // ships the origin response raw). Browsers send Accept-Encoding and decompress
+  // transparently, so no client changes are needed; the relay path compresses
+  // separately. The middleware safely skips WebSocket upgrades, SSE
+  // (text/event-stream), already-encoded responses, and sub-1KB bodies. It is a
+  // no-op for internal app.fetch() calls (relayed requests) which send no
+  // Accept-Encoding, but public-share links opened directly in a browser DO send
+  // it — and /public-api/shares/sessions/* serves the same multi-MB session JSON
+  // — so that prefix is covered too. Registered first so it wraps the response.
+  app.use("/api/*", compress());
+  app.use("/public-api/*", compress());
 
   // Security middleware: host validation, CORS, custom header requirement
   app.use("/api/*", hostCheckMiddleware);
@@ -323,7 +422,26 @@ export function createApp(options: AppOptions): AppResult {
   }
 
   // Create dependencies
-  const codexScanner = new CodexSessionScanner();
+  const codexDiscoveryIndexes = new Map<
+    string,
+    NonNullable<ReturnType<typeof createCodexSessionDiscoveryIndex>>
+  >();
+  const getCodexDiscoveryIndex = (sessionsDir: string) => {
+    const existing = codexDiscoveryIndexes.get(sessionsDir);
+    if (existing) return existing;
+    const created = createCodexSessionDiscoveryIndex(
+      options.dataDir,
+      sessionsDir,
+    );
+    if (created) {
+      codexDiscoveryIndexes.set(sessionsDir, created);
+    }
+    return created;
+  };
+  const codexDiscoveryIndex = getCodexDiscoveryIndex(CODEX_SESSIONS_DIR);
+  const codexScanner = new CodexSessionScanner(
+    codexDiscoveryIndex ? { discoveryIndex: codexDiscoveryIndex } : {},
+  );
   const geminiScanner = new GeminiSessionScanner();
   const projectScanCachePath = options.dataDir
     ? join(options.dataDir, "indexes", "project-scanner-cache.json")
@@ -334,11 +452,30 @@ export function createApp(options: AppOptions): AppResult {
     geminiScanner,
     projectScanCachePath,
     projectMetadataService: options.projectMetadataService,
+    workstreamService: options.workstreamService,
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
   const readerCache = new Map<string, ISessionReader>();
   const maxReaderCacheSize = 500;
+  const closeReader = async (
+    key: string,
+    reader: ISessionReader,
+  ): Promise<void> => {
+    if (!reader.close) return;
+    try {
+      await reader.close();
+    } catch (error) {
+      console.warn(`[App] Failed to close session reader ${key}:`, error);
+    }
+  };
+  const disposeSessionReaders = async (): Promise<void> => {
+    const entries = Array.from(readerCache.entries());
+    readerCache.clear();
+    await Promise.all(
+      entries.map(([key, reader]) => closeReader(key, reader)),
+    );
+  };
 
   const getOrCreateReader = <T extends ISessionReader>(
     key: string,
@@ -353,7 +490,9 @@ export function createApp(options: AppOptions): AppResult {
     while (readerCache.size > maxReaderCacheSize) {
       const oldestKey = readerCache.keys().next().value;
       if (!oldestKey) break;
+      const oldestReader = readerCache.get(oldestKey);
       readerCache.delete(oldestKey);
+      if (oldestReader) void closeReader(oldestKey, oldestReader);
     }
 
     return reader;
@@ -374,11 +513,15 @@ export function createApp(options: AppOptions): AppResult {
       case "codex-oss":
         return getOrCreateReader(
           `codex::${project.sessionDir}::${project.path}`,
-          () =>
-            new CodexSessionReader({
+          () => {
+            const discoveryIndex = getCodexDiscoveryIndex(project.sessionDir);
+            return new CodexSessionReader({
               sessionsDir: project.sessionDir,
               projectPath: project.path,
-            }),
+              summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+              ...(discoveryIndex ? { discoveryIndex } : {}),
+            });
+          },
         );
       case "gemini":
       case "gemini-acp":
@@ -400,6 +543,7 @@ export function createApp(options: AppOptions): AppResult {
             new ClaudeSessionReader({
               sessionDir: project.sessionDir,
               additionalDirs: project.mergedSessionDirs,
+              summaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
               getContextWindow: mis
                 ? (model, provider) => mis.getContextWindow(model, provider)
                 : undefined,
@@ -437,11 +581,15 @@ export function createApp(options: AppOptions): AppResult {
   const codexReaderFactory = (projectPath: string): CodexSessionReader =>
     getOrCreateReader(
       `codex-extra::${CODEX_SESSIONS_DIR}::${projectPath}`,
-      () =>
-        new CodexSessionReader({
+      () => {
+        const discoveryIndex = getCodexDiscoveryIndex(CODEX_SESSIONS_DIR);
+        return new CodexSessionReader({
           sessionsDir: CODEX_SESSIONS_DIR,
           projectPath,
-        }),
+          summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+          ...(discoveryIndex ? { discoveryIndex } : {}),
+        });
+      },
     );
   const geminiReaderFactory = (projectPath: string): GeminiSessionReader =>
     getOrCreateReader(
@@ -471,7 +619,11 @@ export function createApp(options: AppOptions): AppResult {
           projectPath,
         }),
     );
-  const getSessionSummary = async (sessionId: string, projectId: string) => {
+  const getSessionSummary = async (
+    sessionId: string,
+    projectId: string,
+    summaryOptions?: GetSessionSummaryOptions,
+  ) => {
     const project = await scanner.getProject(projectId);
     if (!project) return null;
     const resolved = await findSessionSummaryAcrossProviders(
@@ -482,6 +634,7 @@ export function createApp(options: AppOptions): AppResult {
         readerFactory,
         codexSessionsDir: CODEX_SESSIONS_DIR,
         codexReaderFactory,
+        codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
         geminiSessionsDir: GEMINI_TMP_DIR,
         geminiReaderFactory,
         geminiHashToCwd: geminiScanner.getHashToCwd(),
@@ -489,10 +642,17 @@ export function createApp(options: AppOptions): AppResult {
         grokReaderFactory,
         piSessionsDir: PI_SESSIONS_DIR,
         piReaderFactory,
+        claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
       },
       options.sessionMetadataService?.getProvider(sessionId),
+      summaryOptions,
     );
-    return resolved?.summary ?? null;
+    const summary = resolved?.summary ?? null;
+    if (!summary) return null;
+    return applyRecapOverlayToSummary(
+      summary,
+      options.sessionMetadataService?.getRecapMessages(sessionId) ?? [],
+    );
   };
   let supervisor: Supervisor;
   const getHeartbeatTurnCandidates = async (): Promise<
@@ -516,6 +676,7 @@ export function createApp(options: AppOptions): AppResult {
       readerFactory,
       codexSessionsDir: CODEX_SESSIONS_DIR,
       codexReaderFactory,
+      codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
       geminiSessionsDir: GEMINI_TMP_DIR,
       geminiReaderFactory,
       geminiHashToCwd: geminiScanner.getHashToCwd(),
@@ -523,6 +684,7 @@ export function createApp(options: AppOptions): AppResult {
       grokReaderFactory,
       piSessionsDir: PI_SESSIONS_DIR,
       piReaderFactory,
+      claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
     };
 
     for (const [sessionId, metadata] of heartbeatSessionIds) {
@@ -537,6 +699,7 @@ export function createApp(options: AppOptions): AppResult {
           project.id,
           providerResolutionDeps,
           metadata.provider,
+          { readMode: "head" },
         );
         if (!resolved) {
           continue;
@@ -577,9 +740,11 @@ export function createApp(options: AppOptions): AppResult {
     idleTimeoutMs: options.idleTimeoutMs,
     defaultPermissionMode: options.defaultPermissionMode,
     eventBus: options.eventBus,
+    sessionMetadataService: options.sessionMetadataService,
     maxWorkers: options.maxWorkers,
     idlePreemptThresholdMs: options.idlePreemptThresholdMs,
     maxQueueSize: options.maxQueueSize,
+    sessionQueuePersistenceService: options.sessionQueuePersistenceService,
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
       ? (sessionId, executor) =>
@@ -646,6 +811,8 @@ export function createApp(options: AppOptions): AppResult {
         inactivityMinutes,
       };
     },
+    getCacheMissBillingSettings: () =>
+      options.serverSettingsService?.getSetting("cacheMissBilling"),
   });
 
   // Create external session tracker if eventBus is available
@@ -661,6 +828,98 @@ export function createApp(options: AppOptions): AppResult {
       })
     : undefined;
 
+  let projectQueueScheduler: ProjectQueueScheduler | undefined;
+  if (options.eventBus && options.projectQueueService) {
+    projectQueueScheduler = new ProjectQueueScheduler({
+      eventBus: options.eventBus,
+      projectQueueService: options.projectQueueService,
+      supervisor,
+      attachmentStagingService,
+      sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+      externalTracker,
+      getIdleGraceMs: () =>
+        (clampProjectQueueQuietSeconds(
+          options.serverSettingsService?.getSetting("projectQueueQuietSeconds"),
+        ) ?? DEFAULT_PROJECT_QUEUE_QUIET_SECONDS) * 1000,
+      getGlobalInstructions: () =>
+        buildEffectiveAgentContext({
+          globalInstructions:
+            options.serverSettingsService?.getSetting("globalInstructions"),
+          hints: options.serverSettingsService?.getSetting("agentContextHints"),
+        }),
+      onSessionStarted: async ({ item, process }) => {
+        if (item.target.type !== "new-session") return;
+        const metadata = options.sessionMetadataService;
+        if (!metadata) return;
+
+        const provider = item.target.provider ?? process.provider;
+        if (provider) {
+          await metadata.setProvider(process.sessionId, provider);
+        }
+        if (item.target.executor) {
+          await metadata.setExecutor(process.sessionId, item.target.executor);
+        }
+        if (item.message.text.trim()) {
+          await metadata.setInitialPrompt(process.sessionId, item.message.text);
+        }
+        if (item.target.model) {
+          await metadata.setRequestedModel(
+            process.sessionId,
+            item.target.model,
+          );
+        }
+        await metadata.updateMetadata(process.sessionId, {
+          ...(process.promptSuggestionMode !== undefined
+            ? { promptSuggestionMode: process.promptSuggestionMode }
+            : {}),
+          ...(process.recapAfterSeconds !== undefined
+            ? { recapAfterSeconds: process.recapAfterSeconds }
+            : {}),
+        });
+      },
+    });
+  }
+
+  const isManualReloadMode =
+    process.env.NO_BACKEND_RELOAD === "true" ||
+    process.env.NO_FRONTEND_RELOAD === "true";
+
+  const safeRestartService =
+    options.eventBus && isManualReloadMode
+      ? new SafeRestartService({
+          eventBus: options.eventBus,
+          getWorkerActivity: () => supervisor.getWorkerActivity(),
+          getPreservedWork: () =>
+            getPreservedRestartWork(options.sessionQueuePersistenceService),
+          preparePreservedWork: async () => {
+            await supervisor.preserveRestartablePatientQueuesForRestart();
+          },
+          restart: () =>
+            triggerServerRestart({
+              notificationService: options.notificationService,
+              beforeRestart: disposeSessionReaders,
+            }),
+          pauseProjectQueueDispatch: async () => {
+            const service = options.projectQueueService;
+            if (!service || service.listAll().length === 0) return false;
+            if (service.isDispatchPaused()) return false;
+            await service.pauseDispatch("restart");
+            return true;
+          },
+          resumeProjectQueueDispatch: async () => {
+            const service = options.projectQueueService;
+            if (!service) return;
+            const dispatchState = service.getDispatchState();
+            if (
+              dispatchState.status === "paused" &&
+              dispatchState.reason === "restart"
+            ) {
+              await service.resumeDispatch();
+            }
+          },
+        })
+      : undefined;
+
   // Create PushNotifier if push notifications are enabled
   // This sends push notifications when sessions need user input
   if (options.eventBus && options.pushService) {
@@ -668,6 +927,17 @@ export function createApp(options: AppOptions): AppResult {
       eventBus: options.eventBus,
       pushService: options.pushService,
       supervisor,
+      connectedBrowsers: options.connectedBrowsers,
+    });
+  }
+
+  if (options.eventBus && options.pushService && options.projectQueueService) {
+    new InactivityPushNotifier({
+      eventBus: options.eventBus,
+      pushService: options.pushService,
+      supervisor,
+      projectQueueService: options.projectQueueService,
+      externalTracker,
       connectedBrowsers: options.connectedBrowsers,
     });
   }
@@ -747,8 +1017,18 @@ export function createApp(options: AppOptions): AppResult {
     createServerAdminRoutes({
       supervisor,
       notificationService: options.notificationService,
+      beforeRestart: disposeSessionReaders,
     }),
   );
+
+  if (options.sessionIndexService) {
+    app.route(
+      "/api/session-index",
+      createSessionIndexRoutes({
+        sessionIndexService: options.sessionIndexService,
+      }),
+    );
+  }
 
   // Network binding routes (runtime port/interface configuration)
   if (
@@ -808,6 +1088,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionMetadataService: options.sessionMetadataService,
       projectMetadataService: options.projectMetadataService,
+      projectQueueService: options.projectQueueService,
       sessionIndexService: options.sessionIndexService,
       codexScanner,
       codexSessionsDir: CODEX_SESSIONS_DIR,
@@ -822,6 +1103,48 @@ export function createApp(options: AppOptions): AppResult {
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
     }),
   );
+  if (options.projectQueueService) {
+    app.route(
+      "/api/project-queue",
+      createGlobalProjectQueueRoutes({
+        scanner,
+        readerFactory,
+        projectQueueService: options.projectQueueService,
+        projectQueueScheduler,
+        sessionIndexService: options.sessionIndexService,
+        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexReaderFactory,
+        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiReaderFactory,
+        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokReaderFactory,
+        piSessionsDir: PI_SESSIONS_DIR,
+        piReaderFactory,
+        sessionMetadataService: options.sessionMetadataService,
+        sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+      }),
+    );
+    app.route(
+      "/api/projects",
+      createProjectQueueRoutes({
+        scanner,
+        readerFactory,
+        projectQueueService: options.projectQueueService,
+        projectQueueScheduler,
+        sessionIndexService: options.sessionIndexService,
+        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexReaderFactory,
+        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiReaderFactory,
+        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokReaderFactory,
+        piSessionsDir: PI_SESSIONS_DIR,
+        piReaderFactory,
+        sessionMetadataService: options.sessionMetadataService,
+      }),
+    );
+  }
+  app.route("/api", createSupervisorQueueRoutes(supervisor));
   app.route(
     "/api",
     createSessionsRoutes({
@@ -830,6 +1153,7 @@ export function createApp(options: AppOptions): AppResult {
       readerFactory,
       externalTracker,
       notificationService: options.notificationService,
+      sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
       eventBus: options.eventBus,
       codexScanner,
@@ -843,7 +1167,9 @@ export function createApp(options: AppOptions): AppResult {
       piSessionsDir: PI_SESSIONS_DIR,
       piReaderFactory,
       serverSettingsService: options.serverSettingsService,
+      workstreamService: options.workstreamService,
       modelInfoService: options.modelInfoService,
+      sessionQueuePersistenceService: options.sessionQueuePersistenceService,
       dataDir: options.dataDir,
     }),
   );
@@ -885,6 +1211,7 @@ export function createApp(options: AppOptions): AppResult {
         }
       },
       sessionIndexService: options.sessionIndexService,
+      sessionMetadataService: options.sessionMetadataService,
     }),
   );
 
@@ -898,6 +1225,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      projectQueueService: options.projectQueueService,
       codexScanner,
       codexSessionsDir: CODEX_SESSIONS_DIR,
       codexReaderFactory,
@@ -952,6 +1280,17 @@ export function createApp(options: AppOptions): AppResult {
   // Git status routes
   app.route("/api/projects", createGitStatusRoutes({ scanner }));
 
+  if (options.serverSettingsService && options.workstreamService) {
+    app.route(
+      "/api/projects",
+      createWorkstreamRoutes({
+        scanner,
+        serverSettingsService: options.serverSettingsService,
+        workstreamService: options.workstreamService,
+      }),
+    );
+  }
+
   // Recents routes (recently visited sessions)
   if (options.recentsService) {
     app.route(
@@ -990,6 +1329,7 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings",
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
+        sessionMetadataService: options.sessionMetadataService,
         onAllowedHostsChanged: updateAllowedHosts,
         onFileAccessChanged: updateFileAccess,
         onRemoteSessionPersistenceChanged: options.remoteSessionService
@@ -1245,6 +1585,7 @@ export function createApp(options: AppOptions): AppResult {
         scanner,
         upgradeWebSocket: options.upgradeWebSocket,
         maxUploadSizeBytes: options.maxUploadSizeBytes,
+        attachmentStagingService,
       }),
     );
   }
@@ -1312,12 +1653,15 @@ export function createApp(options: AppOptions): AppResult {
     );
 
     // Dev routes (manual reload workflow) - mounted when manual reload is enabled
-    const isDevMode =
-      process.env.NO_BACKEND_RELOAD === "true" ||
-      process.env.NO_FRONTEND_RELOAD === "true";
-    if (isDevMode) {
+    if (isManualReloadMode) {
       console.log("[Dev] Mounting dev routes at /api/dev");
-      app.route("/api/dev", createDevRoutes({ eventBus: options.eventBus }));
+      app.route(
+        "/api/dev",
+        createDevRoutes({
+          eventBus: options.eventBus,
+          safeRestartService,
+        }),
+      );
     }
   }
 
@@ -1337,7 +1681,7 @@ export function createApp(options: AppOptions): AppResult {
     });
   }
 
-  return { app, supervisor, scanner, readerFactory };
+  return { app, supervisor, scanner, readerFactory, disposeSessionReaders };
 }
 
 // Default app for backwards compatibility (health check only)

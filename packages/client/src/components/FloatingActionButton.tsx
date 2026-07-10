@@ -4,11 +4,14 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useDefaultNewSessionModel } from "../hooks/useDefaultNewSessionModel";
 import { useDraftPersistence } from "../hooks/useDraftPersistence";
+import { createFabDraftKey } from "../hooks/useDrafts";
 import { useFabVisibility } from "../hooks/useFabVisibility";
 import { useFloatingActionButtonEnabled } from "../hooks/useFloatingActionButtonEnabled";
 import { setRecentProjectId } from "../hooks/useRecentProject";
@@ -16,6 +19,7 @@ import { setNewSessionPrefill } from "../lib/newSessionPrefill";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { generateUUID } from "../lib/uuid";
+import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import {
   clearSpeechInsertionRangeReplacement,
   createSpeechInsertionRange,
@@ -36,16 +40,38 @@ import type {
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
 } from "../lib/speechProviders/SpeechProvider";
+import { ProviderBadge } from "./ProviderBadge";
 import {
   VoiceInputButton,
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
 
-const FAB_DRAFT_KEY = "fab-draft";
-
 function createSpeechTargetId(): string {
   return `speech-target-${generateUUID()}`;
+}
+
+/**
+ * Informational default-model chip for the expanded floating composer: shows
+ * the provider + model a session started from here will launch with. Mounted
+ * only while expanded so the providers/settings fetch waits for the click.
+ * Changing the model happens on the New Session page this composer submits to.
+ */
+function FloatingComposerModelChip() {
+  const { t } = useI18n();
+  const defaultNewSessionModel = useDefaultNewSessionModel();
+  if (!defaultNewSessionModel) return null;
+  return (
+    <span
+      className="composer-model-chip-static"
+      title={t("floatingComposerModelChipTitle")}
+    >
+      <ProviderBadge
+        provider={defaultNewSessionModel.provider}
+        model={defaultNewSessionModel.modelId ?? undefined}
+      />
+    </span>
+  );
 }
 
 interface PendingSpeechFinal {
@@ -63,11 +89,15 @@ export function FloatingActionButton() {
   const navigate = useNavigate();
   const location = useLocation();
   const basePath = useRemoteBasePath();
+  const clientSummarySourceKey = useClientSummarySourceKey();
+  const fabDraftKey = useMemo(
+    () => createFabDraftKey(clientSummarySourceKey),
+    [clientSummarySourceKey],
+  );
   const fabVisibility = useFabVisibility();
   const { floatingActionButtonEnabled } = useFloatingActionButtonEnabled();
   const [isExpanded, setIsExpanded] = useState(false);
-  const [message, setMessage, draftControls] =
-    useDraftPersistence(FAB_DRAFT_KEY);
+  const [message, setMessage, draftControls] = useDraftPersistence(fabDraftKey);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
     null,
@@ -170,13 +200,21 @@ export function FloatingActionButton() {
   useEffect(() => {
     if (isExpanded) {
       textareaRef.current?.focus();
+      voiceButtonRef.current?.prewarm();
     }
   }, [isExpanded]);
 
   useLayoutEffect(() => {
     const pending = pendingTextareaSelectionRef.current;
     const textarea = textareaRef.current;
-    if (!pending || !textarea || textarea.value !== pending.value) return;
+    if (
+      !pending ||
+      !textarea ||
+      message !== pending.value ||
+      textarea.value !== pending.value
+    ) {
+      return;
+    }
     pendingTextareaSelectionRef.current = null;
     pending.restore(textarea);
   }, [message]);
@@ -206,7 +244,7 @@ export function FloatingActionButton() {
       if (!trimmed) return;
 
       // Store the message for NewSessionForm to pick up
-      setNewSessionPrefill(trimmed);
+      setNewSessionPrefill(clientSummarySourceKey, trimmed);
       draftControls.clearDraft();
       setIsExpanded(false);
 
@@ -220,7 +258,14 @@ export function FloatingActionButton() {
 
       navigate(`${basePath}/new-session`);
     },
-    [message, projectIdFromUrl, navigate, draftControls, basePath],
+    [
+      message,
+      projectIdFromUrl,
+      navigate,
+      draftControls,
+      basePath,
+      clientSummarySourceKey,
+    ],
   );
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -399,7 +444,8 @@ export function FloatingActionButton() {
   const handleVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
       const speechRange = metadata?.speechTargetId
-        ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ?? null)
+        ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ??
+          null)
         : speechInsertionRangeRef.current;
       const delayMs = metadata?.smartTurnCommand
         ? 0
@@ -476,10 +522,10 @@ export function FloatingActionButton() {
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
       return {
-        draftKey: FAB_DRAFT_KEY,
+        draftKey: fabDraftKey,
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
       };
-    }, []);
+    }, [fabDraftKey]);
 
   // Hide (but don't unmount) when not visible, on new-session page, or while
   // supervising an active session. On session pages it duplicates the sidebar
@@ -576,8 +622,10 @@ export function FloatingActionButton() {
                   clearPendingSpeechFinal();
                   if (speechInsertionRangesRef.current.size > 0) {
                     const nextRanges = new Map<string, SpeechInsertionRange>();
-                    for (const [targetId, range] of speechInsertionRangesRef
-                      .current) {
+                    for (const [
+                      targetId,
+                      range,
+                    ] of speechInsertionRangesRef.current) {
                       nextRanges.set(
                         targetId,
                         clearSpeechInsertionRangeReplacement(
@@ -628,6 +676,7 @@ export function FloatingActionButton() {
             )}
           </div>
           <div className="fab-input-toolbar">
+            <FloatingComposerModelChip />
             <VoiceInputButton
               ref={voiceButtonRef}
               onTranscript={handleVoiceTranscript}

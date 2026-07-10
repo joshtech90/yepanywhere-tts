@@ -1,40 +1,51 @@
 import type {
   AgentActivity,
   AgentContextHints,
-  BrowserProfilesResponse,
+  CacheMissBillingRecord,
+  CacheMissBillingSettings,
   ClientDefaults,
   ConnectionsResponse,
+  CreateProjectWorkstreamRequest,
+  CreateProjectWorkstreamResponse,
+  CreateProjectQueueItemRequest,
   CreatePublicSessionShareRequest,
   CreatePublicSessionShareResponse,
   DeviceInfo,
-  EnrichedRecentEntry,
-  FileContentResponse,
   FreezePublicSessionLiveSharesResponse,
-  GitStatusInfo,
   HelperTargetConfig,
   ModelInfo,
   NewSessionDefaults,
   PendingInputType,
+  ProjectQueueItemSummary,
+  ProjectQueueListResponse,
+  ProjectQueuePromoteNowRequest,
+  ProjectQueuePromoteNowResponse,
+  ProjectQueueResponse,
+  ProjectWorkstreamsResponse,
+  WorkstreamCheckoutPreviewResponse,
   PromptSuggestionMode,
   PromptCacheKeepaliveSettings,
   ProviderInfo,
   ProviderName,
+  ProviderRuntimeStatus,
   RecapMode,
   PublicSessionShareSessionStatusResponse,
   PublicSessionShareViewerActionResponse,
   RevokePublicSessionSharesResponse,
   SessionMetadataResponse,
+  SessionQueuedMessageSummary,
   SessionLivenessSnapshot,
   ShowThinking,
   SlashCommand,
   ThinkingOption,
   TranscriptDisplayObject,
+  UpdateProjectQueueItemRequest,
   UploadedFile,
+  UrlProjectId,
   UserQuestionAnswers,
   UserMessageMetadata,
+  WorkstreamId,
 } from "@yep-anywhere/shared";
-import { authEvents } from "../lib/authEvents";
-import { getGlobalConnection, isRemoteClient } from "../lib/connection";
 import type {
   AgentSession,
   InputRequest,
@@ -44,6 +55,16 @@ import type {
   SessionMetadata,
   SessionStatus,
 } from "../types";
+import { authApi } from "./authClient";
+import { browserProfilesApi } from "./browserProfilesClient";
+import { fileApi } from "./fileClient";
+import { gitApi } from "./gitClient";
+import { onboardingApi } from "./onboardingClient";
+import { getDesktopAuthToken } from "./plainFetch";
+import { pushApi, pushSettingsApi } from "./pushClient";
+import { recentsApi } from "./recentsClient";
+import { serverMetadataApi } from "./serverMetadataClient";
+import { fetchJSON } from "./sourceApiFetch";
 
 /** Pagination metadata for compact-boundary-based session loading */
 export interface PaginationInfo {
@@ -65,8 +86,11 @@ export interface InboxItem {
   projectName: string;
   sessionTitle: string | null;
   updatedAt: string;
+  customTitle?: string;
+  isStarred?: boolean;
   pendingInputType?: PendingInputType;
   activity?: AgentActivity;
+  activityInferredFromInboxTier?: boolean;
   hasUnread?: boolean;
 }
 
@@ -125,13 +149,7 @@ export interface GlobalSessionStats {
   executorCounts: Record<string, number>;
 }
 
-export interface DeferredQueueMessage {
-  tempId?: string;
-  content: string;
-  timestamp: string;
-  metadata?: UserMessageMetadata;
-  attachmentCount?: number;
-}
+export type DeferredQueueMessage = SessionQueuedMessageSummary;
 
 /** Minimal project info for filter dropdowns */
 export interface ProjectOption {
@@ -165,209 +183,47 @@ export interface SessionOptions {
   executor?: string;
   /** Recap behavior for future away-return triggers in this session. */
   recapMode?: RecapMode;
+  /** Browser-away duration before YA asks this session for a recap. */
+  recapAfterSeconds?: number;
   /** Prompt suggestion behavior for this session. */
   promptSuggestionMode?: PromptSuggestionMode;
   /** Session-level helper side model for simulated helper features. */
   helperSideModel?: string;
   /** Existing-session resume strategy. */
   resumeMode?: "full" | "compact-first";
+  /** Experimental project workstream lane for new project sessions. */
+  workstreamId?: WorkstreamId;
 }
 
 export type { UploadedFile } from "@yep-anywhere/shared";
 
-const API_BASE = "/api";
-
-/**
- * Desktop auth token read from URL query parameter (?desktop_token=...).
- * When present, sent as X-Desktop-Token header on every API request.
- * The Tauri desktop app passes this token to authenticate the iframe
- * without cookies or sessions — the token is valid for the server's lifetime.
- */
-let desktopAuthToken: string | null = null;
-if (typeof window !== "undefined") {
-  const params = new URLSearchParams(window.location.search);
-  const token = params.get("desktop_token");
-  if (token) {
-    desktopAuthToken = token;
-    // Strip token from URL to keep it out of history/bookmarks
-    params.delete("desktop_token");
-    const cleanUrl = params.toString()
-      ? `${window.location.pathname}?${params.toString()}${window.location.hash}`
-      : `${window.location.pathname}${window.location.hash}`;
-    window.history.replaceState({}, "", cleanUrl);
-  }
-}
-
 /** Get the desktop auth token (if running inside Tauri iframe). */
-export function getDesktopAuthToken(): string | null {
-  return desktopAuthToken;
-}
+export { getDesktopAuthToken };
 
-export interface AuthStatus {
-  /** Whether auth is enabled in settings */
-  enabled: boolean;
-  /** Whether user has a valid session (or auth is disabled) */
-  authenticated: boolean;
-  /** Whether initial account setup is needed */
-  setupRequired: boolean;
-  /** Whether auth is bypassed by --auth-disable flag (for recovery) */
-  disabledByEnv: boolean;
-  /** Path to auth.json file (for recovery instructions) */
-  authFilePath: string;
-  /** Whether the server has a desktop auth token (Tauri app) */
-  hasDesktopToken: boolean;
-  /** Whether unauthenticated localhost access is allowed */
-  localhostOpen: boolean;
-}
+export type { AuthStatus } from "./authClient";
 
-export async function fetchJSON<T>(
-  path: string,
-  options?: RequestInit,
-): Promise<T> {
-  // Route through global connection in remote mode (SecureConnection)
-  const globalConn = getGlobalConnection();
-  if (globalConn) {
-    return globalConn.fetch<T>(path, options);
-  }
+export type {
+  EnvSettingEntry,
+  EnvSettingsReport,
+  GetVersionOptions,
+  ServerInfo,
+  VersionInfo,
+} from "./serverMetadataClient";
 
-  // In remote client mode, we MUST have a SecureConnection
-  // If we reach this point, it means authentication hasn't completed yet
-  if (isRemoteClient()) {
-    throw new Error(
-      "Remote client requires SecureConnection - not authenticated",
-    );
-  }
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Yep-Anywhere": "true",
-  };
-  if (desktopAuthToken) {
-    headers["X-Desktop-Token"] = desktopAuthToken;
-  }
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    credentials: "include",
-    headers: {
-      ...headers,
-      ...options?.headers,
-    },
-  });
-
-  if (!res.ok) {
-    // Signal login required for 401 errors (but not for auth endpoints themselves)
-    if (res.status === 401 && !path.startsWith("/auth/")) {
-      console.log("[API] 401 response, signaling login required");
-      authEvents.signalLoginRequired();
-    }
-
-    // Try to parse error message from response body
-    let errorMessage = `API error: ${res.status} ${res.statusText}`;
-    try {
-      const body = await res.json();
-      if (body.error) {
-        errorMessage = body.error;
-      } else if (body.message) {
-        errorMessage = body.message;
-      }
-    } catch {
-      // Response body wasn't JSON, use default message
-    }
-
-    // Include setup required info in error for auth handling
-    const setupRequired = res.headers.get("X-Setup-Required") === "true";
-    const error = new Error(errorMessage) as Error & {
-      status: number;
-      setupRequired?: boolean;
-    };
-    error.status = res.status;
-    if (setupRequired) error.setupRequired = true;
-    throw error;
-  }
-
-  return res.json();
-}
+export { fetchJSON } from "./sourceApiFetch";
 
 // Re-export upload functions
 export {
+  buildStagedUploadUrl,
   buildUploadUrl,
   fileToChunks,
   UploadError,
   uploadChunks,
   uploadFile,
+  uploadStagedChunks,
+  uploadStagedFile,
   type UploadOptions,
 } from "./upload";
-
-export interface VersionInfo {
-  current: string;
-  latest: string | null;
-  updateAvailable: boolean;
-  /** Best-effort install source for update guidance. Undefined on older servers. */
-  installSource?: "npm-global" | "source" | "release-package" | "unknown";
-  /** Session resume protocol version supported by server (undefined on older servers). */
-  resumeProtocolVersion?: number;
-  /** Feature capabilities supported by the server. Undefined on older servers. */
-  capabilities?: string[];
-  /** Server-routed speech backend ids validated by the server. */
-  voiceBackends?: string[];
-  /** Configured server-routed speech backends, including validation state. */
-  voiceBackendStatuses?: Array<{
-    id: string;
-    label: string;
-    enabled: boolean;
-    validationStatus: "pending" | "enabled" | "disabled";
-    capabilities?: { streaming?: boolean; smartTurn?: boolean };
-    disabledReason?: string;
-  }>;
-  /** Capability map keyed by server-routed speech backend id. */
-  voiceBackendCapabilities?: Record<
-    string,
-    { streaming?: boolean; smartTurn?: boolean }
-  >;
-  /** Device bridge availability and update state. Undefined on older servers. */
-  deviceBridgeState?:
-    | "available"
-    | "downloadable"
-    | "update-available"
-    | "unavailable";
-  /** Installed managed bridge binary version when known. */
-  deviceBridgeVersion?: string | null;
-  /** Latest bridge release version when known. */
-  latestDeviceBridgeVersion?: string | null;
-  /** Server-learned browser defaults used when local storage has no explicit value. */
-  clientDefaults?: ClientDefaults;
-}
-
-export interface ServerInfo {
-  /** The host/interface the server is bound to (e.g., "127.0.0.1" or "0.0.0.0") */
-  host: string;
-  /** The port the server is listening on */
-  port: number;
-  /** Whether the server is bound to all interfaces (0.0.0.0) */
-  boundToAllInterfaces: boolean;
-  /** Whether the server is localhost-only */
-  localhostOnly: boolean;
-}
-
-/**
- * One documented startup env var. For set secrets, `value` is a redacted
- * preview produced server-side; the raw secret is never sent to the client.
- */
-export interface EnvSettingEntry {
-  name: string;
-  group: string;
-  description: string;
-  secret: boolean;
-  set: boolean;
-  value?: string;
-  /** Dynamic, runtime-computed caption (e.g. HOST's active listen addresses). */
-  note?: string;
-}
-
-export interface EnvSettingsReport {
-  entries: EnvSettingEntry[];
-}
 
 export interface NetworkInterface {
   /** Interface name (e.g., "eth0", "wlan0") */
@@ -408,16 +264,7 @@ export interface UpdateBindingResponse {
   redirectUrl?: string;
 }
 
-export interface GetVersionOptions {
-  /** Bypass the server's routine version cache and refresh from the update service. */
-  fresh?: boolean;
-}
-
 export const api = {
-  // Version API
-  getVersion: (options?: GetVersionOptions) =>
-    fetchJSON<VersionInfo>(options?.fresh ? "/version?fresh=1" : "/version"),
-
   // Text-to-speech (read aloud). Audio is returned as base64 so it travels
   // through the same (possibly encrypted relay) JSON channel as everything else.
   ttsStatus: () => fetchJSON<{ enabled: boolean; error?: string }>("/tts/status"),
@@ -433,11 +280,8 @@ export const api = {
       body: JSON.stringify({ text, format: "base64", preCleaned }),
     }),
 
-  // Server info API (host/port binding for Local Access settings)
-  getServerInfo: () => fetchJSON<ServerInfo>("/server-info"),
-
-  // Documented startup env vars (read-only; secrets redacted server-side)
-  getEnvSettings: () => fetchJSON<EnvSettingsReport>("/env-settings"),
+  // Server metadata/admin API
+  ...serverMetadataApi,
 
   // Network binding API (runtime port/interface configuration)
   getNetworkBinding: () => fetchJSON<NetworkBindingState>("/network-binding"),
@@ -451,12 +295,6 @@ export const api = {
   disableNetworkBinding: () =>
     fetchJSON<UpdateBindingResponse>("/network-binding", {
       method: "DELETE",
-    }),
-
-  // Server admin API
-  restartServer: () =>
-    fetchJSON<{ ok: boolean; message: string }>("/server/restart", {
-      method: "POST",
     }),
 
   // Provider API
@@ -501,6 +339,8 @@ export const api = {
       beforeMessageId?: string;
       tailTurns?: number;
       tailFrom?: string;
+      fullHistory?: boolean;
+      fullHistoryReason?: string;
     },
   ) => {
     const params = new URLSearchParams();
@@ -512,13 +352,18 @@ export const api = {
     if (options?.tailTurns !== undefined)
       params.set("tailTurns", String(options.tailTurns));
     if (options?.tailFrom) params.set("tailFrom", options.tailFrom);
+    if (options?.fullHistory) params.set("fullHistory", "1");
+    if (options?.fullHistoryReason)
+      params.set("fullHistoryReason", options.fullHistoryReason);
     const qs = params.toString();
     return fetchJSON<{
       session: SessionMetadata;
       messages: Message[];
       ownership: SessionStatus;
       pendingInputRequest?: InputRequest | null;
+      providerRuntimeStatus?: ProviderRuntimeStatus;
       slashCommands?: SlashCommand[] | null;
+      deferredMessages?: DeferredQueueMessage[];
       pagination?: PaginationInfo;
     }>(`/projects/${projectId}/sessions/${sessionId}${qs ? `?${qs}` : ""}`);
   },
@@ -532,6 +377,20 @@ export const api = {
       `/projects/${projectId}/sessions/${sessionId}/metadata`,
     ),
 
+  reclassifySessionProject: (
+    projectId: string,
+    sessionId: string,
+    targetProjectId: string,
+  ) =>
+    fetchJSON<{
+      updated: boolean;
+      projectId: UrlProjectId;
+      transcriptProjectId: UrlProjectId | null;
+    }>(`/projects/${projectId}/sessions/${sessionId}/project`, {
+      method: "PUT",
+      body: JSON.stringify({ projectId: targetProjectId }),
+    }),
+
   /**
    * Recompute the hover-card recent-activity excerpt for a non-running session
    * and push it to lists/hovers via a session-updated event. Fire-and-update:
@@ -541,6 +400,108 @@ export const api = {
     fetchJSON<{ lastAgentText: string | null }>(
       `/projects/${projectId}/sessions/${sessionId}/refresh-preview`,
       { method: "POST" },
+    ),
+
+  getProjectQueue: (projectId: string) =>
+    fetchJSON<ProjectQueueResponse>(`/projects/${projectId}/queue`),
+
+  getProjectWorkstreams: (projectId: string) =>
+    fetchJSON<ProjectWorkstreamsResponse>(`/projects/${projectId}/workstreams`),
+
+  getProjectWorkstreamCheckoutPreview: (projectId: string, label: string) => {
+    const params = new URLSearchParams({ label });
+    return fetchJSON<WorkstreamCheckoutPreviewResponse>(
+      `/projects/${projectId}/workstreams/checkout-preview?${params}`,
+    );
+  },
+
+  createProjectWorkstream: (
+    projectId: string,
+    request: CreateProjectWorkstreamRequest,
+  ) =>
+    fetchJSON<CreateProjectWorkstreamResponse>(
+      `/projects/${projectId}/workstreams`,
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+      },
+    ),
+
+  getProjectQueueItems: () =>
+    fetchJSON<ProjectQueueListResponse>("/project-queue"),
+
+  pauseProjectQueueDispatch: () =>
+    fetchJSON<ProjectQueueListResponse>("/project-queue/pause", {
+      method: "POST",
+    }),
+
+  resumeProjectQueueDispatch: () =>
+    fetchJSON<ProjectQueueListResponse>("/project-queue/resume", {
+      method: "POST",
+    }),
+
+  promoteProjectQueueNow: (
+    projectId: string,
+    request: ProjectQueuePromoteNowRequest = {},
+  ) =>
+    fetchJSON<ProjectQueuePromoteNowResponse>(
+      `/project-queue/${encodeURIComponent(projectId)}/promote-now`,
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+      },
+    ),
+
+  createProjectQueueItem: (
+    projectId: string,
+    request: CreateProjectQueueItemRequest,
+  ) =>
+    fetchJSON<{
+      item: ProjectQueueItemSummary;
+      queue: ProjectQueueResponse;
+    }>(`/projects/${projectId}/queue`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+
+  updateProjectQueueItem: (
+    projectId: string,
+    itemId: string,
+    request: UpdateProjectQueueItemRequest,
+  ) =>
+    fetchJSON<{
+      item: ProjectQueueItemSummary;
+      queue: ProjectQueueResponse;
+    }>(`/projects/${projectId}/queue/${encodeURIComponent(itemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    }),
+
+  deleteProjectQueueItem: (projectId: string, itemId: string) =>
+    fetchJSON<{
+      deleted: boolean;
+      queue: ProjectQueueResponse;
+    }>(`/projects/${projectId}/queue/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    }),
+
+  retryProjectQueueItem: (projectId: string, itemId: string) =>
+    fetchJSON<{
+      item: ProjectQueueItemSummary;
+      queue: ProjectQueueResponse;
+    }>(`/projects/${projectId}/queue/${encodeURIComponent(itemId)}/retry`, {
+      method: "POST",
+    }),
+
+  moveProjectQueueItemToTop: (projectId: string, itemId: string) =>
+    fetchJSON<{
+      item: ProjectQueueItemSummary;
+      queue: ProjectQueueResponse;
+    }>(
+      `/projects/${projectId}/queue/${encodeURIComponent(itemId)}/move-to-top`,
+      {
+        method: "POST",
+      },
     ),
 
   /**
@@ -577,6 +538,7 @@ export const api = {
       model?: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions`, {
       method: "POST",
@@ -590,8 +552,10 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
+        workstreamId: options?.workstreamId,
         attachments,
         clientTimestamp,
         messageMetadata,
@@ -609,6 +573,7 @@ export const api = {
       projectId: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions/create`, {
       method: "POST",
@@ -621,8 +586,10 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
+        workstreamId: options?.workstreamId,
       }),
     }),
 
@@ -639,6 +606,7 @@ export const api = {
       projectId: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
     }>(`/sessions`, {
       method: "POST",
@@ -652,6 +620,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
         attachments,
@@ -667,6 +636,7 @@ export const api = {
       projectId: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
     }>(`/sessions/create`, {
       method: "POST",
@@ -679,6 +649,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
       }),
@@ -698,6 +669,7 @@ export const api = {
       processId: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
       resume?: {
         requestedMode: "full" | "compact-first";
@@ -717,6 +689,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
         resumeMode: options?.resumeMode,
@@ -741,12 +714,14 @@ export const api = {
       model?: string;
       provider?: ProviderName;
       executor?: string;
+      recapAfterSeconds?: number;
     },
   ) =>
     fetchJSON<{
       processId: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions/${sessionId}/reactivate`, {
       method: "POST",
@@ -755,6 +730,7 @@ export const api = {
         model: options?.model,
         provider: options?.provider,
         executor: options?.executor,
+        recapAfterSeconds: options?.recapAfterSeconds,
       }),
     }),
 
@@ -777,6 +753,7 @@ export const api = {
       title?: string;
       permissionMode: PermissionMode;
       modeVersion: number;
+      recapAfterSeconds?: number;
       restartedFrom: string;
       forkUpToMessageId?: string;
       oldProcessId?: string;
@@ -794,6 +771,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         recapMode: options?.recapMode,
+        recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
         reason: options?.reason,
@@ -939,6 +917,66 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  cancelUnconfirmedSteerMessage: (sessionId: string, tempId: string) =>
+    fetchJSON<{ cancelled: boolean }>(
+      `/sessions/${sessionId}/steering/${encodeURIComponent(tempId)}`,
+      { method: "DELETE" },
+    ),
+
+  steerDeferredMessagesThrough: (sessionId: string, tempId: string) =>
+    fetchJSON<{
+      steered: boolean;
+      count?: number;
+      deferredMessages: DeferredQueueMessage[];
+    }>(`/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}/steer`, {
+      method: "POST",
+    }),
+
+  deleteRecoveredQueuedMessage: (sessionId: string, queueId: string) =>
+    fetchJSON<{ deleted: boolean; deferredMessages: DeferredQueueMessage[] }>(
+      `/sessions/${sessionId}/recovered-queue/${encodeURIComponent(queueId)}`,
+      { method: "DELETE" },
+    ),
+
+  resumeRecoveredQueuedMessage: (sessionId: string, queueId: string) =>
+    fetchJSON<{
+      resumed: boolean;
+      resumedCount?: number;
+      deferred?: boolean;
+      promoted?: boolean;
+      position?: number;
+      processId: string;
+      processState?: "idle" | "in-turn" | "waiting-input";
+      permissionMode?: PermissionMode;
+      modeVersion?: number;
+      recapAfterSeconds?: number;
+      deferredMessages: DeferredQueueMessage[];
+      serverTimestamp: number;
+    }>(
+      `/sessions/${sessionId}/recovered-queue/${encodeURIComponent(
+        queueId,
+      )}/resume`,
+      { method: "POST" },
+    ),
+
+  steerRecoveredQueuedMessage: (sessionId: string, queueId: string) =>
+    fetchJSON<{
+      steered: boolean;
+      count?: number;
+      processId: string;
+      processState?: "idle" | "in-turn" | "waiting-input";
+      permissionMode?: PermissionMode;
+      modeVersion?: number;
+      recapAfterSeconds?: number;
+      deferredMessages: DeferredQueueMessage[];
+      serverTimestamp: number;
+    }>(
+      `/sessions/${sessionId}/recovered-queue/${encodeURIComponent(
+        queueId,
+      )}/steer`,
+      { method: "POST" },
+    ),
+
   abortProcess: (processId: string) =>
     fetchJSON<{ aborted: boolean }>(`/processes/${processId}/abort`, {
       method: "POST",
@@ -961,14 +999,36 @@ export const api = {
       },
     ),
 
+  // Session-keyed away recap: survives a server restart that killed the
+  // process. A cold fork-mode session is revived server-side and recapped.
+  requestSessionRecap: (
+    projectId: string,
+    sessionId: string,
+    hiddenSinceMs?: number,
+  ) =>
+    fetchJSON<{ supported: boolean; emitted: boolean; reason?: string }>(
+      `/projects/${projectId}/sessions/${sessionId}/recap`,
+      {
+        method: "POST",
+        ...(hiddenSinceMs === undefined
+          ? {}
+          : { body: JSON.stringify({ hiddenSinceMs }) }),
+      },
+    ),
+
   setProcessRecapConfig: (
     processId: string,
-    config: { recapMode?: RecapMode; helperSideModel?: string },
+    config: {
+      recapMode?: RecapMode;
+      recapAfterSeconds?: number;
+      helperSideModel?: string;
+    },
   ) =>
     fetchJSON<{
       success: boolean;
       processId: string;
       recapMode: RecapMode;
+      recapAfterSeconds: number;
       helperSideModel: string;
     }>(`/processes/${processId}/recap-config`, {
       method: "POST",
@@ -1053,7 +1113,9 @@ export const api = {
         /** YA model id (launch alias) for keying per-model settings. */
         requestedModel?: string;
         liveness?: SessionLivenessSnapshot;
+        providerRuntimeStatus?: ProviderRuntimeStatus;
         recapMode?: RecapMode;
+        recapAfterSeconds?: number;
         promptSuggestionMode?: PromptSuggestionMode;
         helperSideModel?: string;
       } | null;
@@ -1120,173 +1182,18 @@ export const api = {
     }),
 
   // Push notification API
-  getPushPublicKey: () =>
-    fetchJSON<{ publicKey: string }>("/push/vapid-public-key"),
-
-  subscribePush: (
-    browserProfileId: string,
-    subscription: PushSubscriptionJSON,
-    deviceName?: string,
-  ) =>
-    fetchJSON<{ success: boolean; browserProfileId: string }>(
-      "/push/subscribe",
-      {
-        method: "POST",
-        body: JSON.stringify({ browserProfileId, subscription, deviceName }),
-      },
-    ),
-
-  unsubscribePush: (browserProfileId: string) =>
-    fetchJSON<{ success: boolean; browserProfileId: string }>(
-      "/push/unsubscribe",
-      {
-        method: "POST",
-        body: JSON.stringify({ browserProfileId }),
-      },
-    ),
-
-  getPushSubscriptions: () =>
-    fetchJSON<{
-      count: number;
-      subscriptions: Array<{
-        browserProfileId: string;
-        createdAt: string;
-        deviceName?: string;
-        endpointDomain: string;
-        deviceType: "android" | "ios" | "mobile" | "desktop" | "unknown";
-      }>;
-    }>("/push/subscriptions"),
-
-  testPush: (
-    browserProfileId: string,
-    message?: string,
-    urgency?: "normal" | "persistent" | "silent",
-    deliveryUrgency?: "very-low" | "low" | "normal" | "high",
-  ) =>
-    fetchJSON<{ success: boolean }>("/push/test", {
-      method: "POST",
-      body: JSON.stringify({
-        browserProfileId,
-        message,
-        urgency,
-        deliveryUrgency,
-      }),
-    }),
-
-  deletePushSubscription: (browserProfileId: string) =>
-    fetchJSON<{ success: boolean }>(
-      `/push/subscriptions/${encodeURIComponent(browserProfileId)}`,
-      { method: "DELETE" },
-    ),
+  ...pushApi,
 
   // Connected devices API
   getConnections: () => fetchJSON<ConnectionsResponse>("/connections"),
 
-  getNotificationSettings: () =>
-    fetchJSON<{
-      settings: {
-        toolApproval: boolean;
-        userQuestion: boolean;
-        sessionHalted: boolean;
-      };
-    }>("/push/settings"),
-
-  updateNotificationSettings: (
-    settings: Partial<{
-      toolApproval: boolean;
-      userQuestion: boolean;
-      sessionHalted: boolean;
-    }>,
-  ) =>
-    fetchJSON<{
-      settings: {
-        toolApproval: boolean;
-        userQuestion: boolean;
-        sessionHalted: boolean;
-      };
-    }>("/push/settings", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    }),
+  ...pushSettingsApi,
 
   // File API
-  getFile: (
-    projectId: string,
-    path: string,
-    highlight = false,
-    lineNumber?: number,
-    lineEnd?: number,
-    viewMode?: "full" | "range",
-  ) => {
-    const params = new URLSearchParams({ path });
-    if (highlight) params.set("highlight", "true");
-    if (lineNumber !== undefined) params.set("line", String(lineNumber));
-    if (lineEnd !== undefined) params.set("lineEnd", String(lineEnd));
-    if (viewMode === "range") params.set("view", "range");
-    return fetchJSON<FileContentResponse>(
-      `/projects/${projectId}/files?${params.toString()}`,
-    );
-  },
-
-  getFileRawUrl: (projectId: string, path: string, download = false) => {
-    const params = new URLSearchParams({ path });
-    if (download) params.set("download", "true");
-    return `/api/projects/${projectId}/files/raw?${params.toString()}`;
-  },
-
-  /**
-   * Expand diff context to show full file.
-   * Returns syntax-highlighted diff with the entire file as context.
-   * Uses originalFile from SDK Edit result (never truncated, verified up to 150KB+).
-   */
-  expandDiffContext: (
-    projectId: string,
-    filePath: string,
-    oldString: string,
-    newString: string,
-    originalFile: string,
-  ) =>
-    fetchJSON<{
-      structuredPatch: Array<{
-        oldStart: number;
-        oldLines: number;
-        newStart: number;
-        newLines: number;
-        lines: string[];
-      }>;
-      diffHtml: string;
-    }>(`/projects/${projectId}/diff/expand`, {
-      method: "POST",
-      body: JSON.stringify({ filePath, oldString, newString, originalFile }),
-    }),
+  ...fileApi,
 
   // Git status API
-  getGitStatus: (projectId: string) =>
-    fetchJSON<GitStatusInfo>(`/projects/${projectId}/git`),
-
-  getGitDiff: (
-    projectId: string,
-    params: {
-      path: string;
-      staged: boolean;
-      status: string;
-      fullContext?: boolean;
-    },
-  ) =>
-    fetchJSON<{
-      diffHtml: string;
-      structuredPatch: Array<{
-        oldStart: number;
-        oldLines: number;
-        newStart: number;
-        newLines: number;
-        lines: string[];
-      }>;
-      markdownHtml?: string;
-    }>(`/projects/${projectId}/git/diff`, {
-      method: "POST",
-      body: JSON.stringify(params),
-    }),
+  ...gitApi,
 
   // Inbox API
   getInbox: (projectId?: string) =>
@@ -1325,94 +1232,16 @@ export const api = {
     }>("/sessions/stats"),
 
   // Auth API
-  getAuthStatus: () => fetchJSON<AuthStatus>("/auth/status"),
-
-  /** Enable auth with a password (fresh setup while auth is currently disabled) */
-  enableAuth: (password: string) =>
-    fetchJSON<{ success: boolean }>("/auth/enable", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    }),
-
-  /** Disable auth (requires authenticated session) */
-  disableAuth: () =>
-    fetchJSON<{ success: boolean }>("/auth/disable", {
-      method: "POST",
-    }),
-
-  /** @deprecated Use enableAuth instead */
-  setupAccount: (password: string) =>
-    fetchJSON<{ success: boolean }>("/auth/setup", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    }),
-
-  login: (password: string) =>
-    fetchJSON<{ success: boolean }>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    }),
-
-  logout: () =>
-    fetchJSON<{ success: boolean }>("/auth/logout", {
-      method: "POST",
-    }),
-
-  changePassword: (newPassword: string) =>
-    fetchJSON<{ success: boolean }>("/auth/change-password", {
-      method: "POST",
-      body: JSON.stringify({ newPassword }),
-    }),
-
-  /** Toggle unauthenticated localhost access (desktop token floor bypass) */
-  setLocalhostAccess: (open: boolean) =>
-    fetchJSON<{ success: boolean; localhostOpen: boolean }>(
-      "/auth/localhost-access",
-      {
-        method: "POST",
-        body: JSON.stringify({ open }),
-      },
-    ),
+  ...authApi,
 
   // Recents API
-  getRecents: (limit?: number) =>
-    fetchJSON<{
-      recents: Array<EnrichedRecentEntry>;
-    }>(limit ? `/recents?limit=${limit}` : "/recents"),
-
-  recordVisit: (sessionId: string, projectId: string) =>
-    fetchJSON<{ recorded: boolean }>("/recents/visit", {
-      method: "POST",
-      body: JSON.stringify({ sessionId, projectId }),
-    }),
-
-  clearRecents: () =>
-    fetchJSON<{ cleared: boolean }>("/recents", {
-      method: "DELETE",
-    }),
+  ...recentsApi,
 
   // Onboarding API (first-run wizard state)
-  getOnboardingStatus: () => fetchJSON<{ complete: boolean }>("/onboarding"),
-
-  completeOnboarding: () =>
-    fetchJSON<{ success: boolean }>("/onboarding/complete", {
-      method: "POST",
-    }),
-
-  resetOnboarding: () =>
-    fetchJSON<{ success: boolean }>("/onboarding/reset", {
-      method: "POST",
-    }),
+  ...onboardingApi,
 
   // Browser profiles API (device origin tracking)
-  getBrowserProfiles: () =>
-    fetchJSON<BrowserProfilesResponse>("/browser-profiles"),
-
-  deleteBrowserProfile: (browserProfileId: string) =>
-    fetchJSON<{ deleted: boolean }>(
-      `/browser-profiles/${encodeURIComponent(browserProfileId)}`,
-      { method: "DELETE" },
-    ),
+  ...browserProfilesApi,
 
   // Server settings API (persistent server configuration)
   getServerSettings: () => fetchJSON<{ settings: ServerSettings }>("/settings"),
@@ -1430,6 +1259,13 @@ export const api = {
 
   // Read-only file-access info (env-pin state + resolved hint paths)
   getFileAccessInfo: () => fetchJSON<FileAccessInfo>("/settings/file-access"),
+
+  getCacheMissBillingEvents: (limit = 200) =>
+    fetchJSON<{ events: CacheMissBillingRecord[] }>(
+      `/settings/cache-miss-billing/events?limit=${encodeURIComponent(
+        String(limit),
+      )}`,
+    ),
 
   discoverHelperTargetModels: (baseUrl: string) =>
     fetchJSON<{ baseUrl: string; models: ModelInfo[] }>(
@@ -1632,8 +1468,12 @@ export interface ServerSettings {
   persistRemoteSessionsToDisk: boolean;
   /** Whether the server is requesting browser clients to upload diagnostic logs */
   clientLogCollectionRequested?: boolean;
+  /** Whether approve/deny decisions are written to the server audit log */
+  approvalAuditLogEnabled?: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled?: boolean;
+  /** Whether experimental workstream surfaces and APIs are enabled */
+  workstreamsEnabled?: boolean;
   /** Base URL for the hosted YA client */
   yaClientBaseUrl?: string | null;
   /** @deprecated Use yaClientBaseUrl. */
@@ -1668,6 +1508,8 @@ export interface ServerSettings {
   newSessionDefaults?: NewSessionDefaults;
   /** Provider-scoped prompt-cache keepalive settings */
   promptCacheKeepalive?: PromptCacheKeepaliveSettings;
+  /** Usage-accounting monitor for suspected prompt-cache billing misses */
+  cacheMissBilling?: CacheMissBillingSettings;
   /** Browser-client defaults used when local storage has no explicit value */
   clientDefaults?: ClientDefaults;
   /** Server-routed speech audio retention policy */
@@ -1692,6 +1534,8 @@ export interface ServerSettings {
   deferredJoinWindowSeconds?: number;
   /** Whether delivered queued turns receive compose-time staleness anchors. */
   composeAnchorsEnabled?: boolean;
+  /** Seconds Project Queue waits after whole-project idle before promotion. */
+  projectQueueQuietSeconds?: number;
 }
 
 export type RelayClientStatus =

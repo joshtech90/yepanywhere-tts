@@ -1,3 +1,7 @@
+import {
+  APPROVAL_AUDIT_LOG_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
@@ -8,11 +12,12 @@ import {
 import { FilterDropdown } from "../../components/FilterDropdown";
 import { useOptionalAuth } from "../../contexts/AuthContext";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
-import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useNetworkBinding } from "../../hooks/useNetworkBinding";
 import { useServerInfo } from "../../hooks/useServerInfo";
 import { useServerSettings } from "../../hooks/useServerSettings";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { useSettingsUndo } from "./SettingsUndoContext";
 
 /** File-access form state — `custom` is edited as newline-separated text. */
@@ -47,7 +52,10 @@ function fileAccessFormToSettings(form: FileAccessForm): FileAccessSettings {
   };
 }
 
-function fileAccessEquals(a: FileAccessSettings, b: FileAccessSettings): boolean {
+function fileAccessEquals(
+  a: FileAccessSettings,
+  b: FileAccessSettings,
+): boolean {
   return (
     a.projects === b.projects &&
     a.uploads === b.uploads &&
@@ -66,10 +74,11 @@ function isWholeDiskPath(line: string): boolean {
 
 export function LocalAccessSettings() {
   const { t } = useI18n();
+  useSettingsPaneTitle(t("settingsLocalAccessTitle"));
   const auth = useOptionalAuth();
   const remoteConnection = useOptionalRemoteConnection();
-  const { relayDebugEnabled, setRelayDebugEnabled } = useDeveloperMode();
   const { serverInfo, loading: serverInfoLoading } = useServerInfo();
+  const { version: versionInfo } = useVersion();
   const {
     binding,
     loading: bindingLoading,
@@ -81,7 +90,15 @@ export function LocalAccessSettings() {
     isLoading: settingsLoading,
     error: settingsError,
     updateSettings: updateServerSettings,
+    updateSetting: updateServerSetting,
   } = useServerSettings();
+  const supportsApprovalAuditLog = serverHasCapability(
+    versionInfo,
+    APPROVAL_AUDIT_LOG_CAPABILITY,
+  );
+  const approvalAuditLogEnabled = supportsApprovalAuditLog
+    ? (serverSettings?.approvalAuditLogEnabled ?? false)
+    : true;
 
   // Network binding form state
   const [localhostPort, setLocalhostPort] = useState<string>("");
@@ -152,7 +169,9 @@ export function LocalAccessSettings() {
       setAllowedHostsText(ah ?? "");
     }
     setFileAccess(
-      settingsToFileAccessForm(serverSettings.fileAccess ?? DEFAULT_FILE_ACCESS),
+      settingsToFileAccessForm(
+        serverSettings.fileAccess ?? DEFAULT_FILE_ACCESS,
+      ),
     );
     setFormInitialized(true);
   }, [auth, binding, formInitialized, serverSettings]);
@@ -165,7 +184,9 @@ export function LocalAccessSettings() {
     }
 
     setFileAccess(
-      settingsToFileAccessForm(serverSettings.fileAccess ?? DEFAULT_FILE_ACCESS),
+      settingsToFileAccessForm(
+        serverSettings.fileAccess ?? DEFAULT_FILE_ACCESS,
+      ),
     );
     setFormInitialized(true);
   }, [auth, formInitialized, remoteConnection, serverSettings]);
@@ -302,120 +323,171 @@ export function LocalAccessSettings() {
   }, [auth, binding, serverSettings]);
   useSettingsUndo(hasChanges, resetFormFromServer);
 
-  const renderFileAccessSettings = () => (
-    <>
-      {/* File access — which local paths the HTTP file doors may read */}
-      <div className="settings-item">
-        <div className="settings-item-info">
-          <strong>{t("fileAccessTitle")}</strong>
-          <p>{t("fileAccessDescription")}</p>
+  const renderFileAccessSettings = () => {
+    const hasWholeDiskCustomPath = fileAccess.customText
+      .split("\n")
+      .some((line) => isWholeDiskPath(line));
+
+    return (
+      <div
+        className="settings-item file-access-settings-panel"
+        role="group"
+        aria-labelledby="file-access-settings-title"
+        aria-describedby="file-access-settings-description"
+      >
+        <div className="file-access-settings-header">
+          <strong id="file-access-settings-title">{t("fileAccessTitle")}</strong>
+          <p id="file-access-settings-description">
+            {t("fileAccessDescription")}
+          </p>
         </div>
-      </div>
-      {fileAccessInfo?.envPinned ? (
-        <div className="settings-item settings-item-inline-field">
-          <div className="settings-item-info">
-            <strong>{t("fileAccessAllowedFoldersTitle")}</strong>
-            <p>{t("fileAccessEnvPinnedHint")}</p>
-          </div>
-          <span className="settings-value-readonly">
-            {fileAccessInfo.envPaths.length > 0
-              ? fileAccessInfo.envPaths.join(", ")
-              : t("fileAccessNone")}{" "}
-            <span className="settings-hint">{t("fileAccessSetViaEnv")}</span>
-          </span>
-        </div>
-      ) : (
-        <>
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("fileAccessProjects")}</strong>
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={fileAccess.projects}
-                onChange={(e) =>
-                  patchFileAccess({ projects: e.target.checked })
-                }
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("fileAccessUploads")}</strong>
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={fileAccess.uploads}
-                onChange={(e) =>
-                  patchFileAccess({ uploads: e.target.checked })
-                }
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("fileAccessTemp")}</strong>
-              {fileAccessInfo && fileAccessInfo.tempPaths.length > 0 && (
-                <p className="settings-hint">
-                  {fileAccessInfo.tempPaths.join(", ")}
-                </p>
-              )}
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={fileAccess.temp}
-                onChange={(e) => patchFileAccess({ temp: e.target.checked })}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("fileAccessHome")}</strong>
-              <p>{t("fileAccessHomeDescription")}</p>
-            </div>
-            {fileAccess.home && (
-              <span className="settings-status-badge settings-status-warning">
-                {t("fileAccessHomeCaution")}
+
+        {fileAccessInfo?.envPinned ? (
+          <div className="file-access-settings-list">
+            <div className="file-access-setting-row file-access-setting-row--readonly">
+              <div className="settings-item-info">
+                <strong>{t("fileAccessAllowedFoldersTitle")}</strong>
+                <p>{t("fileAccessEnvPinnedHint")}</p>
+              </div>
+              <span className="settings-value-readonly">
+                {fileAccessInfo.envPaths.length > 0
+                  ? fileAccessInfo.envPaths.join(", ")
+                  : t("fileAccessNone")}{" "}
+                <span className="settings-hint">
+                  {t("fileAccessSetViaEnv")}
+                </span>
               </span>
-            )}
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={fileAccess.home}
-                onChange={(e) => patchFileAccess({ home: e.target.checked })}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          <div className="settings-item settings-item-inline-field">
-            <div className="settings-item-info">
-              <strong>{t("fileAccessCustomTitle")}</strong>
-              <p>{t("fileAccessCustomDescription")}</p>
             </div>
-            <textarea
-              className="settings-input"
-              rows={3}
-              value={fileAccess.customText}
-              placeholder={t("fileAccessCustomPlaceholder")}
-              onChange={(e) =>
-                patchFileAccess({ customText: e.target.value })
-              }
-            />
           </div>
-          {fileAccess.customText
-            .split("\n")
-            .some((line) => isWholeDiskPath(line)) && (
-            <p className="form-warning">{t("fileAccessWholeDiskWarning")}</p>
-          )}
-        </>
-      )}
-    </>
+        ) : (
+          <>
+            <div className="file-access-settings-list">
+              <div className="file-access-setting-row">
+                <div className="settings-item-info">
+                  <strong>{t("fileAccessProjects")}</strong>
+                </div>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t("fileAccessProjects")}
+                    checked={fileAccess.projects}
+                    onChange={(e) =>
+                      patchFileAccess({ projects: e.target.checked })
+                    }
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              <div className="file-access-setting-row">
+                <div className="settings-item-info">
+                  <strong>{t("fileAccessUploads")}</strong>
+                </div>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t("fileAccessUploads")}
+                    checked={fileAccess.uploads}
+                    onChange={(e) =>
+                      patchFileAccess({ uploads: e.target.checked })
+                    }
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              <div className="file-access-setting-row">
+                <div className="settings-item-info">
+                  <strong>{t("fileAccessTemp")}</strong>
+                  {fileAccessInfo && fileAccessInfo.tempPaths.length > 0 && (
+                    <p className="settings-hint">
+                      {fileAccessInfo.tempPaths.join(", ")}
+                    </p>
+                  )}
+                </div>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t("fileAccessTemp")}
+                    checked={fileAccess.temp}
+                    onChange={(e) =>
+                      patchFileAccess({ temp: e.target.checked })
+                    }
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              <div className="file-access-setting-row">
+                <div className="settings-item-info">
+                  <strong>{t("fileAccessHome")}</strong>
+                  <p>{t("fileAccessHomeDescription")}</p>
+                </div>
+                {fileAccess.home && (
+                  <span className="settings-status-badge settings-status-warning">
+                    {t("fileAccessHomeCaution")}
+                  </span>
+                )}
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t("fileAccessHome")}
+                    checked={fileAccess.home}
+                    onChange={(e) =>
+                      patchFileAccess({ home: e.target.checked })
+                    }
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+              <div className="file-access-setting-row file-access-setting-row--field">
+                <div className="settings-item-info">
+                  <strong>{t("fileAccessCustomTitle")}</strong>
+                  <p>{t("fileAccessCustomDescription")}</p>
+                </div>
+                <textarea
+                  className="settings-input"
+                  rows={3}
+                  aria-label={t("fileAccessCustomTitle")}
+                  value={fileAccess.customText}
+                  placeholder={t("fileAccessCustomPlaceholder")}
+                  onChange={(e) =>
+                    patchFileAccess({ customText: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+            {hasWholeDiskCustomPath && (
+              <p className="form-warning file-access-settings-warning">
+                {t("fileAccessWholeDiskWarning")}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderApprovalAuditSettings = () => (
+    <div className="settings-item">
+      <div className="settings-item-info">
+        <strong>{t("localAccessApprovalAuditTitle")}</strong>
+        <p>
+          {supportsApprovalAuditLog
+            ? t("localAccessApprovalAuditDescription")
+            : t("localAccessApprovalAuditUnsupportedDescription")}
+        </p>
+      </div>
+      <label className="toggle-switch">
+        <input
+          type="checkbox"
+          checked={approvalAuditLogEnabled}
+          disabled={!supportsApprovalAuditLog || !serverSettings}
+          onChange={(e) =>
+            updateServerSetting("approvalAuditLogEnabled", e.target.checked)
+          }
+          aria-label={t("localAccessApprovalAuditTitle")}
+        />
+        <span className="toggle-slider" />
+      </label>
+    </div>
   );
 
   const handleApplyChanges = async () => {
@@ -543,7 +615,6 @@ export function LocalAccessSettings() {
     if (isLoading) {
       return (
         <section className="settings-section">
-          <h2>{t("settingsLocalAccessTitle")}</h2>
           <p className="settings-section-description">
             {t("localAccessLoading")}
           </p>
@@ -556,7 +627,6 @@ export function LocalAccessSettings() {
 
     return (
       <section className="settings-section">
-        <h2>{t("settingsLocalAccessTitle")}</h2>
         <p className="settings-section-description">
           {t("localAccessDescription")}
         </p>
@@ -905,6 +975,8 @@ export function LocalAccessSettings() {
           </div>
         </form>
 
+        <div className="settings-group">{renderApprovalAuditSettings()}</div>
+
         {/* Logout - shown when auth is enabled */}
         {auth.authEnabled && auth.isAuthenticated && (
           <div className="settings-group">
@@ -933,7 +1005,6 @@ export function LocalAccessSettings() {
 
     return (
       <section className="settings-section">
-        <h2>{t("settingsLocalAccessTitle")}</h2>
         <p className="settings-section-description">
           {t("localAccessRemoteDescription")}
         </p>
@@ -971,6 +1042,8 @@ export function LocalAccessSettings() {
           </div>
         )}
 
+        <div className="settings-group">{renderApprovalAuditSettings()}</div>
+
         <div className="settings-group">
           <div className="settings-item">
             <div className="settings-item-info">
@@ -984,20 +1057,6 @@ export function LocalAccessSettings() {
             >
               {t("remoteAccessLogout")}
             </button>
-          </div>
-          <div className="settings-item">
-            <div className="settings-item-info">
-              <strong>{t("localAccessRelayDebugTitle")}</strong>
-              <p>{t("localAccessRelayDebugDescription")}</p>
-            </div>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={relayDebugEnabled}
-                onChange={(e) => setRelayDebugEnabled(e.target.checked)}
-              />
-              <span className="toggle-slider" />
-            </label>
           </div>
         </div>
       </section>

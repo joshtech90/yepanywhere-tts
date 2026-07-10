@@ -138,7 +138,7 @@ function codexPersistedEntries(): CodexSessionEntry[] {
         type: "function_call",
         name: "exec_command",
         call_id: "call-read",
-        arguments: '{"cmd":"cat src/readme.md"}',
+        arguments: '{"cmd":"Get-Content -Path src/readme.md -TotalCount 2"}',
       },
     },
     {
@@ -181,8 +181,23 @@ function codexPersistedEntries(): CodexSessionEntry[] {
       },
     },
     {
-      type: "response_item",
+      // Real Codex persists the exit code in a structured exec_command_end
+      // event; the later function_call_output is deduped. Without this the
+      // reloaded Bash result would drop exitCode and drift from the live
+      // stream — see topics/stream-persisted-render-parity.md.
+      type: "event_msg",
       timestamp: "2026-03-05T12:00:06.000Z",
+      payload: {
+        type: "exec_command_end",
+        call_id: "call-bash",
+        aggregated_output: "done\n",
+        exit_code: 0,
+        status: "completed",
+      },
+    } as CodexSessionEntry,
+    {
+      type: "response_item",
+      timestamp: "2026-03-05T12:00:06.500Z",
       payload: {
         type: "function_call_output",
         call_id: "call-bash",
@@ -243,7 +258,7 @@ function codexStreamMessages(): Array<Record<string, unknown>> {
     {
       id: "call-read",
       type: "command_execution",
-      command: "cat src/readme.md",
+      command: String.raw`"C:\Users\sox\AppData\Local\Microsoft\WindowsApps\pwsh.exe" -Command 'Get-Content -Path src/readme.md -TotalCount 2'`,
       aggregated_output: "# Old heading\nsecond line\n",
       exit_code: 0,
       status: "completed",
@@ -820,7 +835,8 @@ describe("Render Parity Harness", () => {
     let summaryTextCount = 0;
     for (const msg of state) {
       const message = (msg as { message?: { content?: unknown } }).message;
-      const content = message?.content ?? (msg as { content?: unknown }).content;
+      const content =
+        message?.content ?? (msg as { content?: unknown }).content;
       if (typeof content === "string") {
         if (content.includes("const x = 1;")) summaryTextCount += 1;
         continue;

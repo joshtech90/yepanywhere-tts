@@ -189,11 +189,12 @@ streaming/confidence surface exists.
 - `NewSessionForm` and the active session composer toolbar build
   speech-method dropdowns from the same advertised active backend list. The
   dropdown is shown only when more than one method is available.
-- `useModelSettings` persists a server-scoped `speechMethod`. When there is
-  no explicit local choice, server-learned `clientDefaults.speech` from
-  `/api/version` supplies the client default. Speech setting changes write both
-  the local explicit value and a partial server client-default update so a later
-  browser with no explicit local override inherits the most recent UI choice.
+- `useModelSettings` persists an explicit browser-local `speechMethod` under
+  `yep-anywhere-speech-method`. When there is no explicit local choice,
+  server-learned `clientDefaults.speech` from `/api/version` supplies the
+  client default. Speech setting changes write both the local explicit value
+  and a partial server client-default update so a later browser with no
+  explicit local override inherits the most recent UI choice.
   If neither local nor server default exists, the effective runtime default
   prefers direct Grok streaming when `ya-grok` is configured, otherwise active
   server-routed STT over browser-native, with `ya-deepgram` ranked ahead of
@@ -279,8 +280,17 @@ streaming/confidence surface exists.
   when Keep Mic Warm is enabled. The shared stream is keyed by the selected mic
   device, requests the same raw speech constraints for batch and streaming
   paths (mono / 16 kHz / 16-bit ideals, echo cancellation, noise suppression,
-  and auto gain off), survives provider disposal during STT backend switches,
-  and is released when Keep Mic Warm is disabled or the selected mic changes.
+  and auto gain off), and survives provider disposal during STT backend
+  switches. Provider disposal cancels that provider's active capture and
+  subscriptions; shared idle warm mic ownership is separate from provider
+  lifetime and may survive disposal/backend replacement when Keep Mic Warm is
+  still enabled and the selected mic/constraints are compatible. Idle warm
+  ownership is gated by page visibility rather than focus: a visible but
+  unfocused YA page may keep the idle stream warm, a hidden page releases only
+  the idle warm stream, and active ASR capture/finalization is never stopped
+  merely because the page loses focus or becomes hidden. The idle warm stream is
+  released when Keep Mic Warm is disabled, the selected mic changes, the tab
+  closes, the page becomes hidden, or the shared release path explicitly runs.
 - Browser-native STT does not consume YA's shared mic stream: Chrome owns the
   Web Speech capture path. Its UI treats `SpeechRecognition.onstart` only as a
   start acknowledgement; red/listening state waits for Web Speech

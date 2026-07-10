@@ -1,9 +1,10 @@
 import type {
-  AppContentBlock,
+  EffortLevel,
   PromptSuggestionMode,
   ProviderName,
+  ProjectQueueItemSummary,
   PublicSessionShareSessionStatusResponse,
-  ThinkingOption,
+  ThinkingMode,
   TranscriptDisplayObject,
   UploadedFile,
   UserQuestionAnswers,
@@ -18,11 +19,8 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
-import {
-  BtwAsidePane,
-  BtwAsideTranscript,
-  type BtwAsideTranscriptTurn,
-} from "../components/BtwAsidePane";
+import { BtwAsidePane } from "../components/BtwAsidePane";
+import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
 import { getForkSummaryAutoOpen } from "../hooks/useForkSummaryAutoOpen";
@@ -51,6 +49,7 @@ import { ViewerCountIndicator } from "../components/ViewerCountIndicator";
 import { AgentContentProvider } from "../contexts/AgentContentContext";
 import { RenderModeProvider } from "../contexts/RenderModeContext";
 import { SessionMetadataProvider } from "../contexts/SessionMetadataContext";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
   StreamingMarkdownProvider,
   useStreamingMarkdownContext,
@@ -61,23 +60,39 @@ import {
   getAttachmentUploadLongEdgePx,
   useAttachmentUploadQuality,
 } from "../hooks/useAttachmentUploadQuality";
-import { useConnection } from "../hooks/useConnection";
 import { useDeveloperMode } from "../hooks/useDeveloperMode";
 import { useAutoReadAloud } from "../hooks/useAutoReadAloud";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import type { DraftControls } from "../hooks/useDraftPersistence";
 import { useEngagementTracking } from "../hooks/useEngagementTracking";
+import { useBtwAsides } from "../hooks/useBtwAsides";
+import { useGeneratedTitleEnabled } from "../hooks/useGeneratedTitleEnabled";
+import { useGeneratedTitleLength } from "../hooks/useGeneratedTitleLength";
 import {
   getModelSetting,
   getThinkingSetting,
   getShowThinkingSetting,
 } from "../hooks/useModelSettings";
-import { useProject } from "../hooks/useProjects";
+import { useProjectQueues } from "../hooks/useProjectQueues";
+import { useProject, useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { recordSessionVisit } from "../hooks/useRecentSessions";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
+import type { SessionLoadProgress } from "../hooks/useSessionMessages";
+import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
+import { useVersion } from "../hooks/useVersion";
+import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
+import {
+  deleteDraftAttachmentRef,
+  validateDraftAttachmentRefs,
+} from "../lib/draftAttachmentStaging";
+import {
+  hasAttachmentNavigationRisk,
+  useAttachmentNavigationGuard,
+} from "../lib/attachmentNavigationGuard";
 import {
   type StreamingMarkdownCallbacks,
   useSession,
@@ -86,11 +101,12 @@ import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { toBrowserAppHref } from "../lib/appHref";
 import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
-import { getBtwSplitRouting, getBtwToolbarMode } from "../lib/btwAsideRouting";
 import {
-  buildBtwAsideParentHref,
-  getBtwAsideSessionDisplayTitle,
-} from "../lib/btwAsideSessions";
+  useActiveProjectSessionIds,
+  useClientSummarySourceKey,
+  useProviderRuntimeStatusForSession,
+} from "../lib/clientSummaryStore";
+import { activityBus } from "../lib/activityBus";
 import {
   getRecallSubmissionAfterQueuedCancel,
   type LastComposerSubmission,
@@ -98,9 +114,42 @@ import {
 } from "../lib/composerRecall";
 import { buildCorrectionText } from "../lib/correctionText";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
-import { prepareImageUpload } from "../lib/imageAttachmentResize";
+import {
+  liveThinkingSelectionFromProcess,
+  thinkingOptionFromProcess,
+  thinkingOptionFromSelection,
+} from "../lib/liveThinkingConfig";
 import { preprocessMessages } from "../lib/preprocessMessages";
+import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
+import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
+import {
+  type ComposerAttachment,
+  isComposerStagedAttachment,
+  revokeAttachmentPreviewUrls,
+  toPersistedStagedAttachmentRef,
+} from "../lib/sessionComposerAttachments";
+import {
+  appendComposerTransferDraft,
+  appendSlashCommandDraft,
+  collectComposerAttachmentsForSubmission as collectComposerAttachmentsForSubmissionHelper,
+  createComposerDraftAttachmentState,
+  getComposerTransferReplacement,
+  materializeComposerAttachmentsForSubmission,
+  type PreparedComposerSubmission,
+  uploadComposerAttachmentFile,
+} from "../lib/sessionComposerSubmission";
 import { resolveSessionProviderCapabilities } from "../lib/providerCapabilities";
+import {
+  serverSupportsProjectQueue,
+  shouldShowProjectQueueAffordance,
+} from "../lib/projectQueueVisibility";
+import {
+  createSessionDraftStorageKey,
+  saveSessionDraft,
+} from "../lib/sessionDraftStorage";
+import {
+  turnContentText,
+} from "../lib/sessionMessageText";
 import {
   getEstimatedServerOffsetMs,
   getServerClockTimestamp,
@@ -112,35 +161,25 @@ import {
   createSessionNavigationState,
   parseSessionNavigationState,
 } from "../lib/sessionNavigationState";
+import { getPublicShareInitialPrompt } from "../lib/sessionPublicSharePrompt";
+import {
+  composeGeneratedRetitle,
+  createSessionRetitleSubmittedTurnText,
+  type GeneratedRetitleInsertion,
+  resolveSessionPageTitle,
+} from "../lib/sessionTitleHelpers";
 import {
   CLIENT_SLASH_COMMANDS,
   resolveComposerSlashTurn,
 } from "../lib/slashCommands";
 import { generateUUID } from "../lib/uuid";
-import type { Message } from "../types";
-import { getSessionDisplayTitle } from "../utils";
+import type { Message, Project } from "../types";
 
-const PENDING_ELSEWHERE_DISMISS_KEY_PREFIX =
-  "yepanywhere:pending-elsewhere-dismissed:";
 const PUBLIC_SHARE_STATUS_POLL_MS = 5000;
-const PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH = 700;
-const BTW_ASIDE_POLL_MS = 1500;
-const BTW_ASIDE_MAX_POLLS = 160;
-const BTW_ASIDE_PREVIEW_MAX_LENGTH = 700;
-const BTW_ASIDE_PROMPT_MARKER = "[YA /btw aside]";
 const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
   "Claude session cannot be safely resumed because the Claude SDK recorded an API-error response as the latest assistant message. Start a handoff session instead.";
-const BTW_ASIDE_FORK_PROVIDERS = new Set<ProviderName>([
-  "claude",
-  "codex",
-  "codex-oss",
-]);
-
-interface PreparedComposerSubmission {
-  outgoingText: string;
-  thinking?: ThinkingOption;
-  slashCommand?: "fast" | "run";
-}
+const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
+const EMPTY_PROJECT_QUEUE_ITEMS: readonly ProjectQueueItemSummary[] = [];
 
 interface LiveModelConfig {
   model?: string;
@@ -150,53 +189,6 @@ interface LiveModelConfig {
   thinking?: { type: string };
   effort?: string;
   promptSuggestionMode?: PromptSuggestionMode;
-}
-
-type BtwAsideStatus =
-  | "draft"
-  | "starting"
-  | "running"
-  | "complete"
-  | "failed"
-  | "stopped";
-
-interface BtwAside {
-  id: string;
-  sessionId?: string;
-  baseMessageCount: number;
-  request: string;
-  followUps: string[];
-  status: BtwAsideStatus;
-  error?: string;
-  preview?: string;
-  responses: string[];
-  turns?: BtwAsideTranscriptTurn[];
-  processId?: string;
-  createdAt: string;
-  updatedAt: string;
-  historyAt?: string;
-  expanded?: boolean;
-}
-
-function providerSupportsBtwAsideFork(
-  provider: ProviderName | undefined,
-): boolean {
-  return provider ? BTW_ASIDE_FORK_PROVIDERS.has(provider) : false;
-}
-
-/** Plain text of a turn's content (string or text blocks); for fork-prefill
- *  and the turn-notch copy action. See topics/fork-from-turn.md. */
-function turnContentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter(
-      (b): b is { type: "text"; text: string } =>
-        (b as { type?: string })?.type === "text" &&
-        typeof (b as { text?: unknown }).text === "string",
-    )
-    .map((b) => b.text)
-    .join("\n");
 }
 
 function messageKey(message: Message | undefined): string | undefined {
@@ -213,33 +205,6 @@ function isSessionSetupTurnText(text: string): boolean {
     trimmed.startsWith("# AGENTS.md instructions") ||
     trimmed.startsWith("<environment_context>")
   );
-}
-
-function appendComposerTransferDraft(
-  currentDraft: string,
-  text: string,
-): string {
-  const current = currentDraft.trimEnd();
-  const addition = text.trim();
-  if (!current) {
-    return addition;
-  }
-  if (!addition) {
-    return current;
-  }
-  return `${current}\n\n${addition}`;
-}
-
-function appendSlashCommandDraft(
-  currentDraft: string,
-  command: string,
-): string {
-  const normalizedCommand = command.startsWith("/") ? command : `/${command}`;
-  const current = currentDraft.trimEnd();
-  if (/^\/[^\s/]*$/.test(current)) {
-    return `${normalizedCommand} `;
-  }
-  return current ? `${current} ${normalizedCommand} ` : `${normalizedCommand} `;
 }
 
 function isMissingDeferredQueueEntryError(error: unknown): boolean {
@@ -270,317 +235,10 @@ function requiresHandoffAfterClaudeResumeError(
   );
 }
 
-function messageContentToPlainText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .map((block) => {
-      if (!block || typeof block !== "object") {
-        return "";
-      }
-      const value = block as AppContentBlock;
-      if (value.type === "text" && typeof value.text === "string") {
-        return value.text;
-      }
-      if (value.type === "thinking" && typeof value.thinking === "string") {
-        return value.thinking;
-      }
-      return typeof value.content === "string" ? value.content : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function messageContentToBtwLiveText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .map((block) => {
-      if (!block || typeof block !== "object") {
-        return "";
-      }
-      const value = block as AppContentBlock & Record<string, unknown>;
-      if (value.type === "text" && typeof value.text === "string") {
-        return value.text;
-      }
-      if (value.type === "thinking" && typeof value.thinking === "string") {
-        return `Thinking: ${truncateBtwPreview(value.thinking)}`;
-      }
-      if (value.type === "tool_use" && typeof value.name === "string") {
-        const input = value.input as Record<string, unknown> | undefined;
-        const detail =
-          (typeof input?.command === "string" && input.command) ||
-          (typeof input?.cmd === "string" && input.cmd) ||
-          (typeof input?.file_path === "string" && input.file_path) ||
-          (typeof input?.query === "string" && input.query) ||
-          (typeof input?.url === "string" && input.url) ||
-          "";
-        return detail
-          ? `Using ${value.name}: ${truncateBtwPreview(detail)}`
-          : `Using ${value.name}`;
-      }
-      return typeof value.content === "string" ? value.content : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function truncateBtwPreview(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= BTW_ASIDE_PREVIEW_MAX_LENGTH) {
-    return normalized;
-  }
-  return `${normalized.slice(0, BTW_ASIDE_PREVIEW_MAX_LENGTH - 3).trimEnd()}...`;
-}
-
-function getMessagePlainText(message: Message | undefined): string {
-  return (
-    messageContentToPlainText(message?.content) ||
-    messageContentToPlainText(message?.message?.content)
-  );
-}
-
-function isAssistantRole(message: Message | undefined): message is Message {
-  return (
-    message?.type === "assistant" ||
-    message?.role === "assistant" ||
-    message?.message?.role === "assistant"
-  );
-}
-
-function isUserRole(message: Message | undefined): message is Message {
-  return (
-    message?.type === "user" ||
-    message?.role === "user" ||
-    message?.message?.role === "user"
-  );
-}
-
-function getLatestAssistantText(messages: Message[]): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!isAssistantRole(message)) {
-      continue;
-    }
-
-    const text = getMessagePlainText(message);
-    if (text.trim()) {
-      return truncateBtwPreview(text);
-    }
-  }
-  return null;
-}
-
-function findLatestBtwPromptIndex(messages: Message[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (
-      getMessagePlainText(messages[index] ?? {}).includes(
-        BTW_ASIDE_PROMPT_MARKER,
-      )
-    ) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function findFirstBtwPromptIndex(messages: Message[]): number {
-  for (let index = 0; index < messages.length; index += 1) {
-    if (
-      getMessagePlainText(messages[index] ?? {}).includes(
-        BTW_ASIDE_PROMPT_MARKER,
-      )
-    ) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function getBtwSideRequestFromPromptText(text: string): string | null {
-  const requestMarker = "[Side request]";
-  const requestIndex = text.indexOf(requestMarker);
-  if (requestIndex < 0) {
-    return null;
-  }
-  const request = text.slice(requestIndex + requestMarker.length).trim();
-  return request || null;
-}
-
-function getBtwTranscriptTurns(
-  messages: Message[],
-  baseMessageCount: number,
-): BtwAsideTranscriptTurn[] {
-  const firstBtwPromptIndex = findFirstBtwPromptIndex(messages);
-  const startIndex =
-    firstBtwPromptIndex >= 0
-      ? firstBtwPromptIndex
-      : Math.min(Math.max(0, baseMessageCount), messages.length);
-
-  return messages
-    .slice(startIndex)
-    .flatMap((message, relativeIndex): BtwAsideTranscriptTurn[] => {
-      const messageId =
-        typeof message.uuid === "string"
-          ? message.uuid
-          : typeof message.id === "string"
-            ? message.id
-            : `message-${startIndex + relativeIndex}`;
-
-      if (isUserRole(message)) {
-        const request = getBtwSideRequestFromPromptText(
-          getMessagePlainText(message),
-        );
-        return request
-          ? [{ id: `${messageId}-user`, role: "user", text: request }]
-          : [];
-      }
-
-      if (!isAssistantRole(message)) {
-        return [];
-      }
-
-      const assistantMessage = message as Message;
-      const text = (
-        messageContentToBtwLiveText(assistantMessage.content) ||
-        messageContentToBtwLiveText(assistantMessage.message?.content)
-      ).trim();
-      return text
-        ? [{ id: `${messageId}-assistant`, role: "assistant", text }]
-        : [];
-    });
-}
-
-function getBtwRequestFromMessages(messages: Message[]): string | null {
-  const promptIndex = findLatestBtwPromptIndex(messages);
-  if (promptIndex < 0) {
-    return null;
-  }
-  const text = getMessagePlainText(messages[promptIndex] ?? {});
-  return getBtwSideRequestFromPromptText(text);
-}
-
-function buildBtwAsideInitialPrompt(prompt: string): string {
-  return [
-    BTW_ASIDE_PROMPT_MARKER,
-    "You are a forked side session running alongside a still-active parent session.",
-    "The transcript above this turn was produced by that parent; call it 'Mother'.",
-    "Earlier assistant turns are Mother's actions, not your own; when reasoning about or referring back to them, treat them as Mother's and attribute them in writing ('Mother said X', 'Mother edited Y') rather than using first person.",
-    "Your view of Mother's work is frozen at fork time; Mother may have continued since.",
-    "Mother is responsible for the main task; do not continue, take over, or report on it unless the side request below explicitly asks you to.",
-    "You share Mother's working directory. Prefer read-only investigation; if writes are necessary, scope them tightly to avoid colliding with Mother's edits.",
-    "Answer only the side request below. End with a short report block (1-5 lines) suitable for the user to paste back to Mother verbatim.",
-    "",
-    "[Side request]",
-    prompt,
-  ].join("\n");
-}
-
-function buildBtwAsideFollowupPrompt(prompt: string): string {
-  return [
-    BTW_ASIDE_PROMPT_MARKER,
-    "(Continuing the side session. Mother remains responsible for the main task; refer to Mother's prior turns as 'Mother said ...'; share working directory with care; end with a short paste-ready report.)",
-    "",
-    "[Side request]",
-    prompt,
-  ].join("\n");
-}
-
-function normalizePublicShareInitialPrompt(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (
-    trimmed.startsWith("# AGENTS.md instructions") ||
-    trimmed.startsWith("<environment_context>")
-  ) {
-    return null;
-  }
-  const normalized = trimmed.replace(/\s+/g, " ");
-  return normalized.length > PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH
-    ? `${normalized.slice(0, PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH - 3).trimEnd()}...`
-    : normalized;
-}
-
 function parsePositiveIntegerParam(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function getPublicShareInitialPrompt(messages: unknown[]): string | null {
-  for (const message of messages) {
-    if (!message || typeof message !== "object") {
-      continue;
-    }
-    const entry = message as {
-      content?: unknown;
-      message?: { content?: unknown };
-      type?: unknown;
-    };
-    if (entry.type !== "user") {
-      continue;
-    }
-    const content =
-      messageContentToPlainText(entry.content) ||
-      messageContentToPlainText(entry.message?.content);
-    const preview = normalizePublicShareInitialPrompt(content);
-    if (preview) {
-      return preview;
-    }
-  }
-  return null;
-}
-
-function parseCodexConfigAck(
-  message: { [key: string]: unknown } | null | undefined,
-): {
-  model?: string;
-  thinking?: { type: string };
-  effort?: string;
-} | null {
-  if (message?.type !== "system" || message.subtype !== "config_ack") {
-    return null;
-  }
-
-  const configModel =
-    typeof message.configModel === "string" ? message.configModel.trim() : "";
-  const configThinking =
-    typeof message.configThinking === "string"
-      ? message.configThinking.trim().toLowerCase()
-      : "";
-
-  const ack: {
-    model?: string;
-    thinking?: { type: string };
-    effort?: string;
-  } = {};
-
-  if (configModel) {
-    ack.model = configModel;
-  }
-
-  if (configThinking.startsWith("effort ")) {
-    const acknowledgedEffort = configThinking.slice("effort ".length).trim();
-    if (acknowledgedEffort === "none") {
-      ack.thinking = { type: "disabled" };
-      ack.effort = "none";
-    } else if (acknowledgedEffort) {
-      ack.thinking = { type: "enabled" };
-      ack.effort = acknowledgedEffort;
-    }
-  }
-
-  return ack.model || ack.thinking || ack.effort ? ack : null;
 }
 
 function isSameLiveModelConfig(
@@ -599,11 +257,6 @@ function isSameLiveModelConfig(
 
 type TitleEditMode = "manual" | "retitle";
 
-interface GeneratedRetitleInsertion {
-  prefix: string;
-  suffix: string;
-}
-
 interface GeneratedRetitleState {
   requestId: number;
   status: "generating" | "ready" | "error";
@@ -613,30 +266,31 @@ interface GeneratedRetitleState {
   deferredInsertion?: GeneratedRetitleInsertion;
 }
 
-const SESSION_RETITLE_LENGTH_TARGET = 72;
-
-function createSessionRetitleSubmittedTurnText(
-  currentTitle: string,
-  lengthTarget: number,
-): string {
-  const title = currentTitle.trim();
-  return [
-    "What is a good new title for this session?",
-    "",
-    `Target length: under ${lengthTarget} characters.`,
-    title ? `Current title: ${title}` : undefined,
-    "Prefer a concrete task/result phrase over a generic chat title.",
-    "Return only the title. Do not quote it. Do not add a trailing period.",
-  ]
-    .filter((part): part is string => part !== undefined)
-    .join("\n");
+export interface SessionPageRouteLocation {
+  pathname: string;
+  search: string;
+  state: unknown;
 }
 
-export function SessionPage() {
-  const { projectId, sessionId } = useParams<{
+export interface SessionPageProps {
+  projectId?: string;
+  sessionId?: string;
+  routeLocation?: SessionPageRouteLocation;
+  isDomLingerParked?: boolean;
+}
+
+export function SessionPage({
+  projectId: projectIdProp,
+  sessionId: sessionIdProp,
+  routeLocation,
+  isDomLingerParked = false,
+}: SessionPageProps = {}) {
+  const params = useParams<{
     projectId: string;
     sessionId: string;
   }>();
+  const projectId = projectIdProp ?? params.projectId;
+  const sessionId = sessionIdProp ?? params.sessionId;
 
   // Guard against missing params - this shouldn't happen with proper routing
   if (!projectId || !sessionId) {
@@ -652,6 +306,8 @@ export function SessionPage() {
           key={sessionId}
           projectId={projectId}
           sessionId={sessionId}
+          routeLocation={routeLocation}
+          isDomLingerParked={isDomLingerParked}
         />
       </RenderModeProvider>
     </StreamingMarkdownProvider>
@@ -663,20 +319,71 @@ function SessionPageInvalidRoute() {
   return <div className="error">{t("sessionInvalidUrl")}</div>;
 }
 
+function getSessionLoadingProgressText(
+  progress: SessionLoadProgress,
+  t: ReturnType<typeof useI18n>["t"],
+): string | null {
+  switch (progress.stage) {
+    case "fetching":
+      return null;
+    case "rendering":
+      return t("sessionLoadingRenderingTranscript", {
+        count: progress.messageCount ?? 0,
+      });
+    case "idle":
+    case "complete":
+    case "error":
+      return null;
+  }
+}
+
+const SESSION_LOADING_PROGRESS_DETAILS_DELAY_MS = 1500;
+
 function SessionPageContent({
   projectId,
   sessionId,
+  routeLocation,
+  isDomLingerParked,
 }: {
   projectId: string;
   sessionId: string;
+  routeLocation?: SessionPageRouteLocation;
+  isDomLingerParked: boolean;
 }) {
   const { t } = useI18n();
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
   const basePath = useRemoteBasePath();
   const { project } = useProject(projectId);
+  const { projects } = useProjects();
+  const activeProjectSessionIds = useActiveProjectSessionIds(projectId);
+  const clientSummarySourceKey = useClientSummarySourceKey();
+  const sourceRuntime = useCurrentSourceRuntime();
+  const sourceApi = sourceRuntime.api;
+  const sourceSummary = sourceRuntime.summary;
+  const sourceTransport = sourceRuntime.transport;
+  const sessionDraftReference = useMemo(
+    () => ({
+      sourceKey: clientSummarySourceKey,
+      sessionId,
+    }),
+    [clientSummarySourceKey, sessionId],
+  );
+  const sessionDraftKey = useMemo(
+    () => createSessionDraftStorageKey(sessionDraftReference),
+    [sessionDraftReference],
+  );
+  const { version: versionInfo } = useVersion();
+  const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const projectQueueProjectIds = useMemo(
+    () =>
+      supportsProjectQueue ? [projectId] : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
+    [projectId, supportsProjectQueue],
+  );
+  const projectQueues = useProjectQueues(projectQueueProjectIds);
   const navigate = useNavigate();
-  const location = useLocation();
+  const currentLocation = useLocation();
+  const location = routeLocation ?? currentLocation;
   // Get initial status and title from navigation state (passed by NewSessionPage)
   // This allows SSE to connect immediately and show optimistic title without waiting for getSession
   // Also get model/provider so ProviderBadge can render immediately
@@ -695,6 +402,37 @@ function SessionPageContent({
   const clientTailActive =
     clientTailParams.tailTurns !== undefined ||
     clientTailParams.tailFrom !== undefined;
+  const { sessionLoadingProgressEnabled } = useSessionLoadingProgress();
+  const {
+    sessionOffscreenTranscriptRenderingEnabled,
+    sessionScrollBehaviorMode,
+  } = useSessionPerformanceSettings();
+  const [
+    sessionLoadingProgressDetailsVisible,
+    setSessionLoadingProgressDetailsVisible,
+  ] = useState(false);
+  useEffect(() => {
+    void clientTailParams;
+    void projectId;
+    void sessionId;
+    setSessionLoadingProgressDetailsVisible(false);
+    if (!sessionLoadingProgressEnabled) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setSessionLoadingProgressDetailsVisible(true);
+    }, SESSION_LOADING_PROGRESS_DETAILS_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [clientTailParams, projectId, sessionId, sessionLoadingProgressEnabled]);
+  const sessionOptions = useMemo(
+    () => ({
+      ...clientTailParams,
+      detailedLoadingProgress: sessionLoadingProgressEnabled,
+    }),
+    [clientTailParams, sessionLoadingProgressEnabled],
+  );
 
   const updateClientTailParams = useCallback(
     (update: { tailTurns?: number; tailFrom?: string }) => {
@@ -745,10 +483,10 @@ function SessionPageContent({
 
   const {
     session,
-    setSession,
+    updateSession,
     messages,
     agentContent,
-    setAgentContent,
+    mergeLoadedAgentContent,
     toolUseToAgent,
     markdownAugments,
     status,
@@ -760,6 +498,7 @@ function SessionPageContent({
     actualSessionId,
     permissionMode,
     loading,
+    sessionLoadProgress,
     error,
     sessionUpdatesConnected,
     lastStreamActivityAt,
@@ -773,11 +512,14 @@ function SessionPageContent({
     updatePendingMessage,
     deferredMessages,
     setDeferredMessages,
+    removeUnconfirmedSelfSend,
     slashCommands,
     setSessionModel,
     pagination,
     loadingOlder,
     loadOlderMessages,
+    initialScrollSnapshot,
+    updateRouteScrollSnapshot,
     reconnectStream,
     promptSuggestion,
     dismissPromptSuggestion,
@@ -786,8 +528,14 @@ function SessionPageContent({
     sessionId,
     initialStatus,
     streamingMarkdownCallbacks,
-    clientTailParams,
+    sessionOptions,
   );
+  const providerRuntimeStatus =
+    useProviderRuntimeStatusForSession(actualSessionId);
+  const sessionLoadingProgressText =
+    sessionLoadingProgressEnabled && sessionLoadingProgressDetailsVisible
+      ? getSessionLoadingProgressText(sessionLoadProgress, t)
+      : null;
 
   // Auto read-aloud: speak the last assistant message when a turn finishes.
   const { enabled: autoReadEnabled, toggle: toggleAutoRead } = useAutoReadAloud(
@@ -806,11 +554,65 @@ function SessionPageContent({
 
   // Developer mode settings
   const { showConnectionBars } = useDeveloperMode();
+  const { generatedTitleLength } = useGeneratedTitleLength();
+  const { generatedTitleEnabled } = useGeneratedTitleEnabled();
   const { settings: serverSettings } = useServerSettings();
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareGlobalStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
   });
+  const projectQueueBlockingCount = project?.projectQueueBlockingCount ?? null;
+  const currentSessionBlocksProjectQueue =
+    status.owner === "external" ||
+    processState === "in-turn" ||
+    processState === "waiting-input" ||
+    pendingInputRequest !== null ||
+    (sessionLiveness !== null &&
+      sessionLiveness.derivedStatus !== "verified-idle") ||
+    deferredMessages.length > 0;
+  const projectQueueItemsForProject = supportsProjectQueue
+    ? (projectQueues.queuesByProject[projectId] ?? EMPTY_PROJECT_QUEUE_ITEMS)
+    : EMPTY_PROJECT_QUEUE_ITEMS;
+  const projectQueueItemCount = projectQueueItemsForProject.length;
+  const inlineProjectQueueMessages = useMemo(
+    () =>
+      projectQueueItemsForProject.flatMap((item, index) => {
+        if (
+          item.target.type !== "existing-session" ||
+          item.target.sessionId !== sessionId
+        ) {
+          return [];
+        }
+        return [
+          {
+            id: item.id,
+            content:
+              item.message.text ||
+              item.messagePreview ||
+              t("projectQueueAttachmentOnly"),
+            timestamp: item.createdAt,
+            status: item.status,
+            projectPosition: index + 1,
+            attachmentCount: item.attachmentCount,
+            attachments: item.message.attachments,
+            lastError: item.lastError,
+            isMutating: projectQueues.mutatingItemId === item.id,
+          },
+        ];
+      }),
+    [projectQueueItemsForProject, projectQueues.mutatingItemId, sessionId, t],
+  );
+  const showProjectQueueAction =
+    supportsProjectQueue &&
+    shouldShowProjectQueueAffordance({
+      projectId,
+      currentSessionId: sessionId,
+      currentSessionBlocksProjectQueue,
+      currentSessionHasSessionQueueBacklog: deferredMessages.length > 0,
+      activeProjectSessionIds,
+      projectQueueBlockingCount,
+      projectQueueItemCount,
+    });
 
   // Session connection bar state for active session update streams
   const { connectionState } = useActivityBusState();
@@ -837,32 +639,65 @@ function SessionPageContent({
   // Effective provider/model for immediate display before session data loads
   const effectiveProvider = session?.provider ?? initialProvider;
   const effectiveModel = session?.model ?? initialModel;
-  const supportsBtwAsides = providerSupportsBtwAsideFork(effectiveProvider);
   const [liveModelConfig, setLiveModelConfig] =
     useState<LiveModelConfig | null>(null);
+  const { showToast } = useToastContext();
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const draftControlsRef = useRef<DraftControls | null>(null);
   const [composerDraftForAnchors, setComposerDraftForAnchors] = useState("");
+  const [composerDraftChangeForAnchors, setComposerDraftChangeForAnchors] =
+    useState<DraftTextChangeMetadata>({ mayAffectQuoteAnchors: true });
   const [quoteClearSignal, setQuoteClearSignal] = useState(0);
   const pendingMotherComposerTransferRef = useRef<string | null>(null);
   const lastComposerSubmissionRef = useRef<LastComposerSubmission | null>(null);
   const lastSentComposerSubmissionRef = useRef<SentComposerSubmission | null>(
     null,
   );
-  const [btwAsides, setBtwAsides] = useState<BtwAside[]>([]);
-  const [focusedBtwAsideId, setFocusedBtwAsideId] = useState<string | null>(
-    null,
-  );
-  // Wide-screen split pane (side-by-side parent + focused aside). Collapsed
-  // hides the pane while keeping the aside focused for composer routing.
-  const [btwSidePaneCollapsed, setBtwSidePaneCollapsed] = useState(false);
-  // Draft text for the in-pane aside composer (cleared on focus change; not
-  // persisted to localStorage in this initial ship).
-  const [asideDraft, setAsideDraft] = useState("");
-  const asideComposerRef = useRef<HTMLTextAreaElement | null>(null);
-  const btwAsidesRef = useRef<BtwAside[]>([]);
-  const hydratedBtwSessionIdsRef = useRef<Set<string>>(new Set());
+  const {
+    asideComposerRef,
+    asideDraft,
+    btwSidePaneCollapsed,
+    btwToolbarMode,
+    childSessionParentHref,
+    composerStickyBtwAsides,
+    focusedBtwAside,
+    focusedBtwAsideId,
+    handleBtwShortcut,
+    handleDoneBtwAside,
+    handleStopBtwAside,
+    handleStopBtwAsideFromTranscript,
+    hideBtwAside,
+    historyBtwAsides,
+    mainComposerForAside,
+    resetBtwAsides,
+    runBtwAsideTurn,
+    setAsideDraft,
+    setBtwSidePaneCollapsed,
+    setFocusedBtwAsideId,
+    showBtwSidePane,
+    startBtwAside,
+    stickyBtwAsides,
+    supportsBtwAsides,
+    toggleBtwAsideExpanded,
+    wantBtwSplitLayout,
+  } = useBtwAsides({
+    basePath,
+    projectId,
+    sessionId,
+    actualSessionId,
+    locationSearch: location.search,
+    sourceApi,
+    effectiveProvider,
+    isWideScreen,
+    permissionMode,
+    liveModel: liveModelConfig?.model,
+    sessionModel: session?.model,
+    sessionExecutor: session?.executor,
+    parentSessionId: session?.parentSessionId,
+    showToast,
+    onNavigateToParentAside: navigate,
+  });
   const [correctionDraft, setCorrectionDraft] = useState<{
     messageId: string;
     originalText: string;
@@ -876,14 +711,16 @@ function SessionPageContent({
   );
   const attemptedForkSummaryAutoOpenRef = useRef<Set<string>>(new Set());
   // File attachment state
-  const [attachments, setAttachments] = useState<UploadedFile[]>([]);
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>([]);
+  const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  const draftAttachmentBatchIdRef = useRef<string | null>(null);
+  const draftAttachmentHydrationRef = useRef(0);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
   const [attachmentQuality] = useAttachmentUploadQuality();
   // Track in-flight upload promises so handleSend can wait for them
-  const pendingUploadsRef = useRef<Map<string, Promise<UploadedFile | null>>>(
-    new Map(),
-  );
-  const { showToast } = useToastContext();
+  const pendingUploadsRef = useRef<
+    Map<string, Promise<ComposerAttachment | null>>
+  >(new Map());
   const updateTranscriptDisplayObjectsForSession = useCallback(
     (
       targetSessionId: string,
@@ -891,7 +728,7 @@ function SessionPageContent({
         objects: TranscriptDisplayObject[],
       ) => TranscriptDisplayObject[],
     ) => {
-      setSession((current) => {
+      updateSession((current) => {
         if (!current || current.id !== targetSessionId) {
           return current;
         }
@@ -903,7 +740,7 @@ function SessionPageContent({
         };
       });
     },
-    [setSession],
+    [updateSession],
   );
 
   const rememberSentSubmission = useCallback((text: string, id: string) => {
@@ -920,8 +757,98 @@ function SessionPageContent({
     lastComposerSubmissionRef.current = submission;
   }, []);
 
-  // Connection for uploads (uses WebSocket when enabled)
-  const connection = useConnection();
+  const stagedAttachmentUploadsEnabled = supportsProjectQueue;
+  const stagedComposerAttachmentRefs = attachments
+    .filter(isComposerStagedAttachment)
+    .map(toPersistedStagedAttachmentRef);
+  const attachmentNavigationGuardActive = hasAttachmentNavigationRisk({
+    pendingUploadCount: uploadProgress.length,
+    transientAttachmentCount: stagedAttachmentUploadsEnabled
+      ? 0
+      : attachments.filter(
+          (attachment) => !isComposerStagedAttachment(attachment),
+        ).length,
+    stagedRefs: stagedComposerAttachmentRefs,
+    draftState: draftControlsRef.current?.getAttachmentState() ?? null,
+  });
+  useAttachmentNavigationGuard(attachmentNavigationGuardActive);
+
+  const writeDraftAttachmentState = useCallback(
+    (nextAttachments: readonly ComposerAttachment[]) => {
+      const draftState = createComposerDraftAttachmentState(nextAttachments);
+      if (!draftState) {
+        draftAttachmentBatchIdRef.current = null;
+        draftControlsRef.current?.setAttachmentState(null);
+        return;
+      }
+
+      draftAttachmentBatchIdRef.current = draftState.batchId;
+      draftControlsRef.current?.setAttachmentState(draftState);
+    },
+    [],
+  );
+
+  const setComposerAttachments = useCallback(
+    (
+      updater:
+        | ComposerAttachment[]
+        | ((previous: readonly ComposerAttachment[]) => ComposerAttachment[]),
+      options?: {
+        persistDraft?: boolean;
+        revokeRemovedPreviewUrls?: boolean;
+      },
+    ) => {
+      const previous = attachmentsRef.current;
+      const next = typeof updater === "function" ? updater(previous) : updater;
+
+      if (options?.revokeRemovedPreviewUrls) {
+        const nextIds = new Set(next.map((attachment) => attachment.id));
+        revokeAttachmentPreviewUrls(
+          previous.filter((attachment) => !nextIds.has(attachment.id)),
+        );
+      }
+
+      attachmentsRef.current = next;
+      setAttachmentsState(next);
+      if (options?.persistDraft !== false) {
+        writeDraftAttachmentState(next);
+      }
+    },
+    [writeDraftAttachmentState],
+  );
+
+  useEffect(() => {
+    return () => {
+      revokeAttachmentPreviewUrls(attachmentsRef.current);
+    };
+  }, []);
+
+  const ensureDraftAttachmentBatchId = useCallback(() => {
+    const existing =
+      draftControlsRef.current?.getAttachmentState()?.batchId ??
+      draftAttachmentBatchIdRef.current;
+    if (existing) {
+      draftAttachmentBatchIdRef.current = existing;
+      return existing;
+    }
+    const batchId = generateUUID();
+    draftAttachmentBatchIdRef.current = batchId;
+    return batchId;
+  }, []);
+
+  const materializeComposerAttachments = useCallback(
+    async (
+      composerAttachments: readonly ComposerAttachment[],
+    ): Promise<UploadedFile[]> => {
+      return materializeComposerAttachmentsForSubmission({
+        attachments: composerAttachments,
+        sourceTransport,
+        projectId,
+        sessionId,
+      });
+    },
+    [sourceTransport, projectId, sessionId],
+  );
 
   const supportsManualCompact =
     status.owner === "self" && slashCommands.includes("compact");
@@ -984,6 +911,29 @@ function SessionPageContent({
   const { generallySupportsSteering, supportsSteerNow } = providerCapabilities;
   const currentOwnedProcessId =
     status.owner === "self" ? status.processId : undefined;
+  const liveThinkingSelection = useMemo(() => {
+    if (status.owner !== "self" || !liveModelConfig) {
+      return null;
+    }
+    return liveThinkingSelectionFromProcess(
+      liveModelConfig.thinking,
+      liveModelConfig.effort,
+      currentProviderInfo,
+    );
+  }, [currentProviderInfo, liveModelConfig, status.owner]);
+  const getImplicitComposerThinking = useCallback(() => {
+    if (status.owner === "self") {
+      if (!liveModelConfig) {
+        return undefined;
+      }
+      return thinkingOptionFromProcess(
+        liveModelConfig.thinking,
+        liveModelConfig.effort,
+        currentProviderInfo,
+      );
+    }
+    return getThinkingSetting();
+  }, [currentProviderInfo, liveModelConfig, status.owner]);
 
   // "Fork before…": real prefix fork up to the message before this user
   // turn; the fork opens cold with an empty composer (rewind-and-continue).
@@ -1219,6 +1169,25 @@ function SessionPageContent({
       `${window.location.origin}${basePath}/projects/${projectId}/sessions/${targetSessionId}`,
     [basePath, projectId],
   );
+  // Stable identities for props passed into the memoized MessageList. Inline
+  // arrows here re-render the whole (un-virtualized) transcript on every
+  // per-second SessionPage tick; see topics/transcript-virtualization.md.
+  const handleCancelForkSummary = useCallback(
+    (objectId: string) => {
+      void cancelForkSummaryJob(objectId);
+    },
+    [cancelForkSummaryJob],
+  );
+  const handleToggleForkSummaryAutoOpen = useCallback(
+    (objectId: string, value: boolean) => {
+      void setForkSummaryAutoOpen(objectId, value);
+    },
+    [setForkSummaryAutoOpen],
+  );
+  const getComposerDraftForAnchors = useCallback(
+    () => draftControlsRef.current?.getDraft() ?? "",
+    [],
+  );
   useEffect(() => {
     for (const object of session?.transcriptDisplayObjects ?? []) {
       if (
@@ -1379,7 +1348,13 @@ function SessionPageContent({
         });
         if (prefill.trim()) {
           try {
-            localStorage.setItem(`draft-message-${result.sessionId}`, prefill);
+            saveSessionDraft(
+              {
+                sourceKey: clientSummarySourceKey,
+                sessionId: result.sessionId,
+              },
+              prefill,
+            );
           } catch {
             // localStorage unavailable/full — fork still proceeds, just no seed.
           }
@@ -1395,7 +1370,16 @@ function SessionPageContent({
         );
       }
     },
-    [messages, projectId, actualSessionId, navigate, basePath, showToast, t],
+    [
+      messages,
+      projectId,
+      actualSessionId,
+      navigate,
+      basePath,
+      showToast,
+      t,
+      clientSummarySourceKey,
+    ],
   );
   const copyUserMessage = useCallback(
     (messageId: string) => {
@@ -1464,6 +1448,13 @@ function SessionPageContent({
               }
             : null,
         );
+        if (process?.recapAfterSeconds !== undefined) {
+          setStatus((prev) =>
+            prev.owner === "self" && prev.processId === process.id
+              ? { ...prev, recapAfterSeconds: process.recapAfterSeconds }
+              : prev,
+          );
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -1474,7 +1465,7 @@ function SessionPageContent({
     return () => {
       cancelled = true;
     };
-  }, [actualSessionId, currentOwnedProcessId]);
+  }, [actualSessionId, currentOwnedProcessId, setStatus]);
 
   const latestCodexConfigAck = useMemo(() => {
     if (effectiveProvider !== "codex" && effectiveProvider !== "codex-oss") {
@@ -1540,7 +1531,12 @@ function SessionPageContent({
 
   // Recent sessions dropdown state
   const [showRecentSessions, setShowRecentSessions] = useState(false);
-  const titleButtonRef = useRef<HTMLButtonElement>(null);
+  const titleRowRef = useRef<HTMLDivElement>(null);
+  const [showProjectReclassifyMenu, setShowProjectReclassifyMenu] =
+    useState(false);
+  const [isReclassifyingProject, setIsReclassifyingProject] = useState(false);
+  const projectBreadcrumbRef = useRef<HTMLAnchorElement>(null);
+  const projectReclassifyMenuRef = useRef<HTMLDivElement>(null);
 
   // Local metadata state (for optimistic updates)
   // Reset when session changes to avoid showing stale data from previous session
@@ -1576,6 +1572,7 @@ function SessionPageContent({
 
   // Reset local metadata state when sessionId changes
   useEffect(() => {
+    void sessionId;
     setLocalCustomTitle(undefined);
     setLocalIsArchived(undefined);
     setLocalIsStarred(undefined);
@@ -1587,6 +1584,108 @@ function SessionPageContent({
     setLocalHasUnread(undefined);
   }, [sessionId]);
 
+  const projectReclassifyOptions = useMemo(
+    () =>
+      projects
+        .filter((candidate) => candidate.id !== projectId)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [projectId, projects],
+  );
+
+  useEffect(() => {
+    if (isDomLingerParked || !showProjectReclassifyMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        projectBreadcrumbRef.current?.contains(target) ||
+        projectReclassifyMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setShowProjectReclassifyMenu(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowProjectReclassifyMenu(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isDomLingerParked, showProjectReclassifyMenu]);
+
+  const handleProjectBreadcrumbContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (projectReclassifyOptions.length === 0) {
+        return;
+      }
+      setShowRecentSessions(false);
+      setShowProjectReclassifyMenu(true);
+    },
+    [projectReclassifyOptions.length],
+  );
+
+  const handleReclassifySessionProject = useCallback(
+    async (targetProject: Project) => {
+      if (targetProject.id === projectId || isReclassifyingProject) {
+        return;
+      }
+
+      setIsReclassifyingProject(true);
+      try {
+        const result = await api.reclassifySessionProject(
+          projectId,
+          actualSessionId,
+          targetProject.id,
+        );
+        activityBus.emitLocal("session-metadata-changed", {
+          type: "session-metadata-changed",
+          sessionId: actualSessionId,
+          projectId: result.projectId,
+          transcriptProjectId: result.transcriptProjectId,
+          timestamp: new Date().toISOString(),
+        });
+        setShowProjectReclassifyMenu(false);
+        showToast(
+          t("sessionReclassifiedProject", { project: targetProject.name }),
+          "success",
+        );
+        navigate(
+          `${basePath}/projects/${result.projectId}/sessions/${actualSessionId}${location.search}`,
+          {
+            replace: true,
+            state: location.state,
+          },
+        );
+      } catch (err) {
+        console.error("Failed to move session to project:", err);
+        showToast(t("sessionReclassifyProjectFailed"), "error");
+      } finally {
+        setIsReclassifyingProject(false);
+      }
+    },
+    [
+      actualSessionId,
+      basePath,
+      isReclassifyingProject,
+      location.search,
+      location.state,
+      navigate,
+      projectId,
+      showToast,
+      t,
+    ],
+  );
+
   // Record session visit for recents tracking
   useEffect(() => {
     recordSessionVisit(sessionId, projectId);
@@ -1595,6 +1694,9 @@ function SessionPageContent({
   // Navigate to new session ID when temp ID is replaced with real SDK session ID
   // This ensures the URL stays in sync with the actual session
   useEffect(() => {
+    if (isDomLingerParked) {
+      return;
+    }
     if (actualSessionId && actualSessionId !== sessionId) {
       // Use replace to avoid creating a history entry for the temp ID
       navigate(
@@ -1612,11 +1714,15 @@ function SessionPageContent({
     navigate,
     location.state,
     basePath,
+    isDomLingerParked,
   ]);
 
   // Navigate to the session reader canonical project when the API followed
   // a provider-native redirect from a stale project-scoped link.
   useEffect(() => {
+    if (isDomLingerParked) {
+      return;
+    }
     const canonicalProjectId = session?.projectId;
     if (!canonicalProjectId || canonicalProjectId === projectId) {
       return;
@@ -1636,24 +1742,29 @@ function SessionPageContent({
     location.state,
     navigate,
     projectId,
+    isDomLingerParked,
     session?.projectId,
   ]);
 
   useEffect(() => {
+    void sessionId;
     setCorrectionDraft(null);
-    setBtwAsides([]);
-    btwAsidesRef.current = [];
-    setFocusedBtwAsideId(null);
-    hydratedBtwSessionIdsRef.current.clear();
+    setComposerAttachments([], {
+      persistDraft: false,
+      revokeRemovedPreviewUrls: true,
+    });
+    resetBtwAsides();
     lastComposerSubmissionRef.current = null;
     lastSentComposerSubmissionRef.current = null;
-  }, [sessionId]);
+    draftAttachmentBatchIdRef.current = null;
+    draftAttachmentHydrationRef.current += 1;
+  }, [resetBtwAsides, sessionId, setComposerAttachments]);
 
   const handleCancelCorrection = useCallback(() => {
     setCorrectionDraft(null);
     draftControlsRef.current?.clearDraft();
-    setAttachments([]);
-  }, []);
+    setComposerAttachments([], { revokeRemovedPreviewUrls: true });
+  }, [setComposerAttachments]);
 
   const handleCorrectLatestUserMessage = useCallback(
     (messageId: string, content: string) => {
@@ -1669,10 +1780,10 @@ function SessionPageContent({
       }
 
       draftControls.setDraft(content);
-      setAttachments([]);
+      setComposerAttachments([], { revokeRemovedPreviewUrls: true });
       setCorrectionDraft({ messageId, originalText: content });
     },
-    [showToast, t],
+    [setComposerAttachments, showToast, t],
   );
 
   const getOutgoingMessageText = useCallback(
@@ -1782,6 +1893,8 @@ function SessionPageContent({
       ? sessionUpdatedAt
       : lastStreamActivityAt;
   }, [sessionUpdatedAt, lastStreamActivityAt]);
+  const [transcriptPositionTimestampMs, setTranscriptPositionTimestampMs] =
+    useState<number | null>(null);
 
   useEngagementTracking({
     sessionId,
@@ -1789,8 +1902,22 @@ function SessionPageContent({
     updatedAt: sessionUpdatedAt,
     lastSeenAt: session?.lastSeenAt,
     hasUnread: session?.hasUnread,
-    enabled: status.owner !== "external",
+    enabled: status.owner !== "external" && !isDomLingerParked,
   });
+
+  const collectComposerAttachmentsForSubmission = useCallback(
+    async (options?: { pendingMessageId?: string }) => {
+      return collectComposerAttachmentsForSubmissionHelper({
+        currentAttachments: attachmentsRef.current,
+        pendingUploads: [...pendingUploadsRef.current.values()],
+        setComposerAttachments,
+        pendingMessageId: options?.pendingMessageId,
+        updatePendingMessage,
+        uploadingStatus: t("sessionUploading"),
+      });
+    },
+    [setComposerAttachments, t, updatePendingMessage],
+  );
 
   const handleSend = async (
     text: string,
@@ -1801,7 +1928,7 @@ function SessionPageContent({
       return;
     }
     const { outgoingText, slashCommand } = prepared;
-    const thinking = prepared.thinking ?? getThinkingSetting();
+    const thinking = prepared.thinking ?? getImplicitComposerThinking();
     // Display preference for thinking rows; sent for compatibility while the
     // server requests provider summaries independently.
     const showThinking = getShowThinkingSetting();
@@ -1833,33 +1960,19 @@ function SessionPageContent({
       serverOffsetMs: getEstimatedServerOffsetMs(),
     });
 
-    // Capture already-completed attachments
-    const currentAttachments = [...attachments];
-
-    // Wait for any in-flight uploads to complete before sending
-    const pendingAtSendTime = [...pendingUploadsRef.current.values()];
-    if (pendingAtSendTime.length > 0) {
-      updatePendingMessage(tempId, { status: t("sessionUploading") });
-      setAttachments([]); // Clear input area immediately
-      const results = await Promise.all(pendingAtSendTime);
-      for (const result of results) {
-        if (result) currentAttachments.push(result);
-      }
-      // Remove uploaded files that handleAttach added to state during the wait
-      // (they're already captured in currentAttachments). Preserve any new uploads
-      // started after send was clicked.
-      const sentIds = new Set(currentAttachments.map((a) => a.id));
-      setAttachments((prev) => prev.filter((a) => !sentIds.has(a.id)));
-      updatePendingMessage(tempId, { status: undefined });
-    } else {
-      setAttachments([]);
-    }
-
-    if (currentAttachments.length > 0) {
-      updatePendingMessage(tempId, { attachments: currentAttachments });
-    }
+    let currentAttachments = [...attachmentsRef.current];
+    let uploadedAttachments: UploadedFile[] = [];
 
     try {
+      currentAttachments = await collectComposerAttachmentsForSubmission({
+        pendingMessageId: tempId,
+      });
+      uploadedAttachments =
+        await materializeComposerAttachments(currentAttachments);
+      if (uploadedAttachments.length > 0) {
+        updatePendingMessage(tempId, { attachments: uploadedAttachments });
+      }
+
       const requestSentAtMs = Date.now();
       if (status.owner === "none") {
         // Resume the session with current permission mode and model settings
@@ -1880,7 +1993,7 @@ function SessionPageContent({
             provider: effectiveProvider,
             executor: session?.executor,
           },
-          currentAttachments.length > 0 ? currentAttachments : undefined,
+          uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
           tempId,
           clientTimestamp,
           metadata,
@@ -1911,6 +2024,7 @@ function SessionPageContent({
           processId: result.processId,
           permissionMode: result.permissionMode,
           modeVersion: result.modeVersion,
+          recapAfterSeconds: result.recapAfterSeconds,
         });
       } else {
         // Queue to existing process with current permission mode and thinking setting
@@ -1918,7 +2032,7 @@ function SessionPageContent({
           sessionId,
           outgoingText,
           permissionMode,
-          currentAttachments.length > 0 ? currentAttachments : undefined,
+          uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
           tempId,
           thinking,
           undefined, // deferred
@@ -1952,14 +2066,20 @@ function SessionPageContent({
           setIsCompacting(true);
         }
         // If process was restarted due to thinking mode change, reconnect stream
-        if (result.restarted && result.processId) {
-          setStatus({ owner: "self", processId: result.processId });
+        const restartedProcessId = result.restarted ? result.processId : null;
+        if (restartedProcessId) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? { ...prev, processId: restartedProcessId }
+              : { owner: "self", processId: restartedProcessId },
+          );
           reconnectStream();
         }
       }
       // Success - clear the draft from localStorage
       rememberSentSubmission(text, tempId);
       draftControlsRef.current?.clearDraft();
+      revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
     } catch (err) {
@@ -1991,7 +2111,7 @@ function SessionPageContent({
               provider: effectiveProvider,
               executor: session?.executor,
             },
-            currentAttachments.length > 0 ? currentAttachments : undefined,
+            uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
             tempId,
             clientTimestamp,
             metadata,
@@ -2021,9 +2141,11 @@ function SessionPageContent({
             processId: result.processId,
             permissionMode: result.permissionMode,
             modeVersion: result.modeVersion,
+            recapAfterSeconds: result.recapAfterSeconds,
           });
           rememberSentSubmission(text, tempId);
           draftControlsRef.current?.clearDraft();
+          revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
           return;
@@ -2043,7 +2165,7 @@ function SessionPageContent({
       // Remove from pending queue and restore draft on error
       removePendingMessage(tempId);
       draftControlsRef.current?.restoreFromStorage();
-      setAttachments(currentAttachments); // Restore attachments on error
+      setComposerAttachments(currentAttachments, { persistDraft: false });
       setProcessState("idle");
       const errorMsg =
         finalError instanceof Error ? finalError.message : String(finalError);
@@ -2062,6 +2184,8 @@ function SessionPageContent({
       }
     }
   };
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
 
   const handleQueue = async (
     text: string,
@@ -2072,7 +2196,7 @@ function SessionPageContent({
       return;
     }
     const { outgoingText, slashCommand } = prepared;
-    const thinking = prepared.thinking ?? getThinkingSetting();
+    const thinking = prepared.thinking ?? getImplicitComposerThinking();
     // Display preference for thinking rows; sent for compatibility while the
     // server requests provider summaries independently.
     const showThinking = getShowThinkingSetting();
@@ -2099,30 +2223,19 @@ function SessionPageContent({
       serverOffsetMs: getEstimatedServerOffsetMs(),
     });
 
-    // Capture already-completed attachments
-    const currentAttachments = [...attachments];
-
-    // Wait for any in-flight uploads to complete before queuing
-    const pendingAtSendTime = [...pendingUploadsRef.current.values()];
-    if (pendingAtSendTime.length > 0) {
-      setAttachments([]);
-      const results = await Promise.all(pendingAtSendTime);
-      for (const result of results) {
-        if (result) currentAttachments.push(result);
-      }
-      const sentIds = new Set(currentAttachments.map((a) => a.id));
-      setAttachments((prev) => prev.filter((a) => !sentIds.has(a.id)));
-    } else {
-      setAttachments([]);
-    }
+    let currentAttachments = [...attachmentsRef.current];
+    let uploadedAttachments: UploadedFile[] = [];
 
     try {
+      currentAttachments = await collectComposerAttachmentsForSubmission();
+      uploadedAttachments =
+        await materializeComposerAttachments(currentAttachments);
       const requestSentAtMs = Date.now();
       const result = await api.queueMessage(
         sessionId,
         outgoingText,
         permissionMode,
-        currentAttachments.length > 0 ? currentAttachments : undefined,
+        uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
         tempId,
         thinking,
         true, // deferred
@@ -2170,6 +2283,7 @@ function SessionPageContent({
         };
       }
       draftControlsRef.current?.clearDraft();
+      revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
     } catch (err) {
@@ -2201,7 +2315,7 @@ function SessionPageContent({
               provider: effectiveProvider,
               executor: session?.executor,
             },
-            currentAttachments.length > 0 ? currentAttachments : undefined,
+            uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
             tempId,
             clientTimestamp,
             metadata,
@@ -2216,9 +2330,11 @@ function SessionPageContent({
             processId: result.processId,
             permissionMode: result.permissionMode,
             modeVersion: result.modeVersion,
+            recapAfterSeconds: result.recapAfterSeconds,
           });
           rememberSentSubmission(text, tempId);
           draftControlsRef.current?.clearDraft();
+          revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
           return;
@@ -2235,7 +2351,7 @@ function SessionPageContent({
       }
 
       draftControlsRef.current?.restoreFromStorage();
-      setAttachments(currentAttachments);
+      setComposerAttachments(currentAttachments, { persistDraft: false });
       const errorMsg =
         finalError instanceof Error ? finalError.message : String(finalError);
       if (
@@ -2253,6 +2369,108 @@ function SessionPageContent({
       }
     }
   };
+
+  const handleProjectQueue = async (
+    text: string,
+    metadata?: MessageSubmissionMetadata,
+  ) => {
+    const prepared = prepareComposerSubmission(text);
+    if (!prepared) {
+      return;
+    }
+    const { outgoingText, slashCommand } = prepared;
+    const thinking = prepared.thinking ?? getImplicitComposerThinking();
+    const showThinking = getShowThinkingSetting();
+    const actionAtMs = Date.now();
+    const clientTimestamp = getServerClockTimestamp(actionAtMs);
+
+    let currentAttachments = [...attachmentsRef.current];
+    let uploadedAttachments: UploadedFile[] = [];
+
+    try {
+      currentAttachments = await collectComposerAttachmentsForSubmission();
+      uploadedAttachments =
+        await materializeComposerAttachments(currentAttachments);
+      logSessionUiTrace("composer-project-queue-start", {
+        sessionId,
+        projectId,
+        permissionMode,
+        thinking,
+        slashCommand: slashCommand ?? null,
+        textLength: outgoingText.length,
+        attachmentCount: uploadedAttachments.length,
+        clientTimestamp,
+        serverOffsetMs: getEstimatedServerOffsetMs(),
+      });
+      const requestSentAtMs = Date.now();
+      const response = await api.createProjectQueueItem(projectId, {
+        target: {
+          type: "existing-session",
+          sessionId,
+          mode: permissionMode,
+          model: session?.model ?? getModelSetting(),
+          thinking,
+          showThinking,
+          provider: effectiveProvider,
+          executor: session?.executor,
+        },
+        message: {
+          text: outgoingText,
+          mode: permissionMode,
+          ...(uploadedAttachments.length > 0
+            ? { attachments: uploadedAttachments }
+            : {}),
+          metadata: {
+            ...metadata,
+            deliveryIntent: "deferred",
+            clientTimestamp,
+          },
+        },
+        createdFrom: {
+          sessionId,
+          client: "toolbar",
+        },
+      });
+      sourceSummary.reportProjectQueueCollectionSnapshot(response.queue);
+      logSessionUiTrace("composer-project-queue-result", {
+        sessionId,
+        projectId,
+        uploadWaitMs: requestSentAtMs - actionAtMs,
+      });
+      draftControlsRef.current?.clearDraft();
+      revokeAttachmentPreviewUrls(currentAttachments);
+      setCorrectionDraft(null);
+      clearQuoteAnchors();
+      showToast(t("projectQueueSessionQueuedToast"), "success");
+    } catch (err) {
+      console.error("Failed to queue project message:", err);
+      logSessionUiTrace("composer-project-queue-error", {
+        sessionId,
+        projectId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      draftControlsRef.current?.restoreFromStorage();
+      setComposerAttachments(currentAttachments, { persistDraft: false });
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      showToast(t("projectQueueSubmitFailed", { message: errorMsg }), "error");
+    }
+  };
+
+  const handleCancelProjectQueueItem = useCallback(
+    async (itemId: string) => {
+      try {
+        await projectQueues.deleteItem(projectId, itemId);
+      } catch (err) {
+        console.error("Failed to cancel Project Queue item:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("projectQueueInlineCancelFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [projectId, projectQueues.deleteItem, showToast, t],
+  );
 
   const handleCancelDeferred = useCallback(
     async (tempId: string) => {
@@ -2283,10 +2501,132 @@ function SessionPageContent({
     [deferredMessages, sessionId, showToast, t],
   );
 
+  const handleCancelUnconfirmedUserMessage = useCallback(
+    async (tempId: string) => {
+      try {
+        await api.cancelUnconfirmedSteerMessage(sessionId, tempId);
+        removeUnconfirmedSelfSend(tempId);
+        if (
+          lastComposerSubmissionRef.current?.kind === "sent" &&
+          lastComposerSubmissionRef.current.id === tempId
+        ) {
+          lastComposerSubmissionRef.current = null;
+        }
+        if (lastSentComposerSubmissionRef.current?.id === tempId) {
+          lastSentComposerSubmissionRef.current = null;
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionUnconfirmedSteerCancelFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [removeUnconfirmedSelfSend, sessionId, showToast, t],
+  );
+
+  const handleSteerDeferred = useCallback(
+    async (tempId: string) => {
+      // No optimistic removal: the chips clear when the server's next
+      // deferred-queue state (without the steered entries) is mirrored.
+      try {
+        await api.steerDeferredMessagesThrough(sessionId, tempId);
+      } catch (err) {
+        console.error("Failed to steer deferred message:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionDeferredSteerFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [sessionId, showToast, t],
+  );
+
+  const handleDeleteRecoveredDeferred = useCallback(
+    async (queueId: string) => {
+      try {
+        const result = await api.deleteRecoveredQueuedMessage(
+          sessionId,
+          queueId,
+        );
+        setDeferredMessages(result.deferredMessages ?? []);
+      } catch (err) {
+        console.error("Failed to delete recovered queued message:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionRecoveredQueuedDeleteFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [sessionId, setDeferredMessages, showToast, t],
+  );
+
+  const handleResumeRecoveredDeferred = useCallback(
+    async (queueId: string) => {
+      try {
+        const result = await api.resumeRecoveredQueuedMessage(
+          sessionId,
+          queueId,
+        );
+        setStatus({
+          owner: "self",
+          processId: result.processId,
+          permissionMode: result.permissionMode,
+          modeVersion: result.modeVersion,
+          recapAfterSeconds: result.recapAfterSeconds,
+        });
+        setProcessState(result.processState ?? "idle");
+        setDeferredMessages(result.deferredMessages ?? []);
+      } catch (err) {
+        console.error("Failed to resume recovered queued message:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionRecoveredQueuedResumeFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [sessionId, setDeferredMessages, setProcessState, setStatus, showToast, t],
+  );
+
+  const handleSteerRecoveredDeferred = useCallback(
+    async (queueId: string) => {
+      try {
+        const result = await api.steerRecoveredQueuedMessage(
+          sessionId,
+          queueId,
+        );
+        setStatus({
+          owner: "self",
+          processId: result.processId,
+          permissionMode: result.permissionMode,
+          modeVersion: result.modeVersion,
+          recapAfterSeconds: result.recapAfterSeconds,
+        });
+        setProcessState(result.processState ?? "idle");
+        setDeferredMessages(result.deferredMessages ?? []);
+      } catch (err) {
+        console.error("Failed to steer recovered queued message:", err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionDeferredSteerFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [sessionId, setDeferredMessages, setProcessState, setStatus, showToast, t],
+  );
+
   const handleCancelLatestDeferred = useCallback(() => {
     const latest = [...deferredMessages]
       .reverse()
-      .find((message) => message.tempId);
+      .find(
+        (message) =>
+          message.tempId && message.status !== "paused-after-restart",
+      );
     if (!latest?.tempId) {
       return false;
     }
@@ -2316,12 +2656,12 @@ function SessionPageContent({
     ) {
       void handleCancelDeferred(lastSubmission.tempId);
       draftControls.setDraft(lastSubmission.text);
-      setAttachments([]);
+      setComposerAttachments([], { revokeRemovedPreviewUrls: true });
       return true;
     }
 
     draftControls.setDraft(lastSubmission.text);
-    setAttachments([]);
+    setComposerAttachments([], { revokeRemovedPreviewUrls: true });
     setCorrectionDraft({
       messageId:
         lastSubmission.kind === "sent"
@@ -2330,7 +2670,7 @@ function SessionPageContent({
       originalText: lastSubmission.text,
     });
     return true;
-  }, [deferredMessages, handleCancelDeferred]);
+  }, [deferredMessages, handleCancelDeferred, setComposerAttachments]);
 
   const handleModelChanged = useCallback(
     (next: {
@@ -2359,13 +2699,86 @@ function SessionPageContent({
         );
       }
       if (status.owner === "self") {
-        if (status.processId !== next.processId) {
-          setStatus({ owner: "self", processId: next.processId });
+        if (currentOwnedProcessId !== next.processId) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? { ...prev, processId: next.processId }
+              : { owner: "self", processId: next.processId },
+          );
           reconnectStream();
         }
       }
     },
-    [reconnectStream, setSessionModel, showToast, status.owner, t],
+    [
+      reconnectStream,
+      setSessionModel,
+      showToast,
+      currentOwnedProcessId,
+      status.owner,
+      t,
+      setStatus,
+    ],
+  );
+
+  const handleLiveThinkingChange = useCallback(
+    async (mode: ThinkingMode, effortLevel: EffortLevel) => {
+      if (status.owner !== "self" || !currentOwnedProcessId) {
+        return;
+      }
+      try {
+        const result = await api.setProcessConfig(currentOwnedProcessId, {
+          thinking: thinkingOptionFromSelection(mode, effortLevel),
+          showThinking: getShowThinkingSetting(),
+        });
+        setLiveModelConfig((prev) => ({
+          model: result.model ?? prev?.model,
+          requestedModel: result.model ?? prev?.requestedModel,
+          thinking: result.thinking,
+          effort: result.effort,
+          promptSuggestionMode: prev?.promptSuggestionMode,
+        }));
+        if (result.processId !== currentOwnedProcessId) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? { ...prev, processId: result.processId }
+              : { owner: "self", processId: result.processId },
+          );
+          reconnectStream();
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error("Failed to change thinking:", err);
+        showToast(
+          t("sessionThinkingChangeFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [
+      currentOwnedProcessId,
+      reconnectStream,
+      showToast,
+      status.owner,
+      t,
+      setStatus,
+    ],
+  );
+
+  const handleSetLiveThinkingMode = useCallback(
+    (mode: ThinkingMode) => {
+      void handleLiveThinkingChange(
+        mode,
+        liveThinkingSelection?.effortLevel ?? "high",
+      );
+    },
+    [handleLiveThinkingChange, liveThinkingSelection],
+  );
+
+  const handleSetLiveThinkingEffort = useCallback(
+    (effortLevel: EffortLevel) => {
+      void handleLiveThinkingChange("on", effortLevel);
+    },
+    [handleLiveThinkingChange],
   );
 
   const handleCompactSession = useCallback(
@@ -2395,350 +2808,10 @@ function SessionPageContent({
     ],
   );
 
-  const focusedBtwAside = focusedBtwAsideId
-    ? (btwAsides.find((aside) => aside.id === focusedBtwAsideId) ?? null)
-    : null;
-  const requestedBtwSessionId = useMemo(() => {
-    const value = new URLSearchParams(location.search).get("btw")?.trim();
-    return value || null;
-  }, [location.search]);
-  const childSessionParentHref = session?.parentSessionId
-    ? buildBtwAsideParentHref(
-        basePath,
-        projectId,
-        session.parentSessionId,
-        sessionId,
-      )
-    : null;
-
-  useEffect(() => {
-    btwAsidesRef.current = btwAsides;
-  }, [btwAsides]);
-
-  const updateBtwAside = useCallback(
-    (id: string, updater: (aside: BtwAside) => BtwAside) => {
-      setBtwAsides((current) =>
-        current.map((aside) => (aside.id === id ? updater(aside) : aside)),
-      );
-    },
-    [],
-  );
-
-  const materializeBtwAside = useCallback((asideId: string) => {
-    const historyAt = new Date().toISOString();
-    setBtwAsides((current) =>
-      current.map((aside) =>
-        aside.id === asideId && !aside.historyAt
-          ? { ...aside, historyAt, updatedAt: historyAt }
-          : aside,
-      ),
-    );
-  }, []);
-
-  const pollBtwAside = useCallback(
-    (asideId: string, asideSessionId: string) => {
-      let polls = 0;
-
-      const poll = async () => {
-        polls += 1;
-        try {
-          const result = await api.getSession(projectId, asideSessionId);
-          const nextStatus: BtwAsideStatus =
-            result.ownership.owner === "none" ? "complete" : "running";
-          updateBtwAside(asideId, (aside) => {
-            const turns = getBtwTranscriptTurns(
-              result.messages,
-              aside.baseMessageCount,
-            );
-            const responses = turns
-              .filter((turn) => turn.role === "assistant")
-              .map((turn) => turn.text);
-            const preview =
-              responses.length > 0
-                ? truncateBtwPreview(responses[responses.length - 1] ?? "")
-                : getLatestAssistantText(result.messages);
-            return {
-              ...aside,
-              status: nextStatus,
-              preview: preview ?? aside.preview,
-              responses: responses.length > 0 ? responses : aside.responses,
-              turns: turns.length > 0 ? turns : aside.turns,
-              historyAt:
-                nextStatus === "complete"
-                  ? (aside.historyAt ?? new Date().toISOString())
-                  : aside.historyAt,
-              updatedAt: new Date().toISOString(),
-            };
-          });
-          if (nextStatus === "complete" || polls >= BTW_ASIDE_MAX_POLLS) {
-            return;
-          }
-        } catch (err) {
-          if (polls >= BTW_ASIDE_MAX_POLLS) {
-            updateBtwAside(asideId, (aside) => ({
-              ...aside,
-              status: "failed",
-              error: err instanceof Error ? err.message : String(err),
-              historyAt: aside.historyAt ?? new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            }));
-            return;
-          }
-        }
-        window.setTimeout(poll, BTW_ASIDE_POLL_MS);
-      };
-
-      window.setTimeout(poll, BTW_ASIDE_POLL_MS);
-    },
-    [projectId, updateBtwAside],
-  );
-
-  const runBtwAsideTurn = useCallback(
-    async (sourceAside: BtwAside, prompt: string, isInitialTurn: boolean) => {
-      const trimmed = prompt.trim();
-      if (!trimmed) {
-        return;
-      }
-
-      updateBtwAside(sourceAside.id, (aside) => ({
-        ...aside,
-        request: isInitialTurn && !aside.request ? trimmed : aside.request,
-        followUps: isInitialTurn
-          ? aside.followUps
-          : [...aside.followUps, trimmed],
-        turns: isInitialTurn
-          ? aside.turns?.length
-            ? aside.turns
-            : [
-                {
-                  id: `${sourceAside.id}-request`,
-                  role: "user",
-                  text: trimmed,
-                },
-              ]
-          : [
-              ...(aside.turns ?? []),
-              {
-                id: `${sourceAside.id}-followup-${aside.followUps.length}`,
-                role: "user",
-                text: trimmed,
-              },
-            ],
-        status: aside.sessionId ? "running" : "starting",
-        error: undefined,
-        updatedAt: new Date().toISOString(),
-      }));
-
-      try {
-        const providerName = effectiveProvider;
-        if (!providerSupportsBtwAsideFork(providerName)) {
-          throw new Error(
-            "/btw asides are available only for providers with a wired fork path",
-          );
-        }
-        let asideSessionId = sourceAside.sessionId;
-        if (!asideSessionId) {
-          const titlePreview = truncateBtwPreview(trimmed).slice(0, 80);
-          const clone = await api.cloneSession(
-            projectId,
-            actualSessionId,
-            `/btw ${titlePreview}`,
-            providerName,
-            actualSessionId,
-          );
-          asideSessionId = clone.sessionId;
-          updateBtwAside(sourceAside.id, (aside) => ({
-            ...aside,
-            sessionId: asideSessionId,
-            baseMessageCount: clone.messageCount,
-            status: "starting",
-            updatedAt: new Date().toISOString(),
-          }));
-        }
-
-        const clientTimestamp = getServerClockTimestamp(Date.now());
-        const result = await api.resumeSession(
-          projectId,
-          asideSessionId,
-          isInitialTurn
-            ? buildBtwAsideInitialPrompt(trimmed)
-            : buildBtwAsideFollowupPrompt(trimmed),
-          {
-            mode: permissionMode,
-            model:
-              liveModelConfig?.model ?? session?.model ?? getModelSetting(),
-            thinking: getThinkingSetting(),
-            showThinking: getShowThinkingSetting(),
-            provider: providerName,
-            executor: session?.executor,
-          },
-          undefined,
-          generateUUID(),
-          clientTimestamp,
-        );
-
-        updateBtwAside(sourceAside.id, (aside) => ({
-          ...aside,
-          sessionId: asideSessionId,
-          status: "running",
-          processId: result.processId,
-          updatedAt: new Date().toISOString(),
-        }));
-        pollBtwAside(sourceAside.id, asideSessionId);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        updateBtwAside(sourceAside.id, (aside) => ({
-          ...aside,
-          status: "failed",
-          error: message,
-          historyAt: aside.historyAt ?? new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }));
-        showToast(`Failed to start /btw aside: ${message}`, "error");
-      }
-    },
-    [
-      actualSessionId,
-      effectiveProvider,
-      liveModelConfig?.model,
-      permissionMode,
-      pollBtwAside,
-      projectId,
-      session?.executor,
-      session?.model,
-      showToast,
-      updateBtwAside,
-    ],
-  );
-
-  const startBtwAside = useCallback(
-    (text: string): boolean => {
-      if (!supportsBtwAsides) {
-        showToast(
-          "/btw asides are available only for providers with a wired fork path.",
-          "error",
-        );
-        return false;
-      }
-
-      const trimmed = text.trim();
-      const now = new Date().toISOString();
-      const asideId = generateUUID();
-      const aside: BtwAside = {
-        id: asideId,
-        baseMessageCount: 0,
-        request: trimmed,
-        followUps: [],
-        status: trimmed ? "starting" : "draft",
-        responses: [],
-        turns: trimmed
-          ? [
-              {
-                id: `${asideId}-request`,
-                role: "user",
-                text: trimmed,
-              },
-            ]
-          : [],
-        createdAt: now,
-        updatedAt: now,
-        expanded: false,
-      };
-
-      setBtwAsides((current) => [...current, aside]);
-      if (!trimmed) {
-        setFocusedBtwAsideId(aside.id);
-        return true;
-      }
-
-      void runBtwAsideTurn(aside, trimmed, true);
-      return true;
-    },
-    [runBtwAsideTurn, showToast, supportsBtwAsides],
-  );
-
-  useEffect(() => {
-    if (!requestedBtwSessionId || requestedBtwSessionId === sessionId) {
-      return;
-    }
-
-    const existingAside = btwAsidesRef.current.find(
-      (aside) => aside.sessionId === requestedBtwSessionId,
-    );
-    if (existingAside) {
-      setFocusedBtwAsideId(existingAside.id);
-      return;
-    }
-
-    if (hydratedBtwSessionIdsRef.current.has(requestedBtwSessionId)) {
-      return;
-    }
-    hydratedBtwSessionIdsRef.current.add(requestedBtwSessionId);
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const result = await api.getSession(projectId, requestedBtwSessionId);
-        if (cancelled) {
-          return;
-        }
-
-        const request =
-          getBtwRequestFromMessages(result.messages) ??
-          getBtwAsideSessionDisplayTitle(
-            result.session.customTitle ?? result.session.title ?? "Aside",
-          );
-        const turns = getBtwTranscriptTurns(result.messages, 0);
-        const responses = turns
-          .filter((turn) => turn.role === "assistant")
-          .map((turn) => turn.text);
-        const preview =
-          responses.length > 0
-            ? truncateBtwPreview(responses[responses.length - 1] ?? "")
-            : (getLatestAssistantText(result.messages) ?? undefined);
-        const now = new Date().toISOString();
-        const asideId = generateUUID();
-        const hydratedAside: BtwAside = {
-          id: asideId,
-          sessionId: requestedBtwSessionId,
-          baseMessageCount: 0,
-          request,
-          followUps: [],
-          status: result.ownership.owner === "none" ? "complete" : "running",
-          preview,
-          responses,
-          turns,
-          processId:
-            result.ownership.owner === "self"
-              ? result.ownership.processId
-              : undefined,
-          createdAt: result.session.createdAt ?? now,
-          updatedAt: result.session.updatedAt ?? now,
-          expanded: true,
-        };
-
-        setBtwAsides((current) =>
-          current.some((aside) => aside.sessionId === requestedBtwSessionId)
-            ? current
-            : [...current, hydratedAside],
-        );
-        setFocusedBtwAsideId(asideId);
-      } catch (err) {
-        hydratedBtwSessionIdsRef.current.delete(requestedBtwSessionId);
-        const message = err instanceof Error ? err.message : String(err);
-        showToast(`Failed to load /btw aside: ${message}`, "error");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, requestedBtwSessionId, sessionId, showToast]);
-
   const handleFocusedBtwSend = useCallback(
     (text: string) => {
       if (!focusedBtwAside) {
-        void handleSend(text);
+        void handleSendRef.current(text);
         return;
       }
       void runBtwAsideTurn(
@@ -2747,133 +2820,7 @@ function SessionPageContent({
         focusedBtwAside.status === "draft" && !focusedBtwAside.sessionId,
       );
     },
-    [focusedBtwAside, handleSend, runBtwAsideTurn],
-  );
-
-  const hideBtwAside = useCallback(
-    (asideId: string) => {
-      materializeBtwAside(asideId);
-      setFocusedBtwAsideId((current) => (current === asideId ? null : current));
-    },
-    [materializeBtwAside],
-  );
-
-  const toggleBtwAsideExpanded = useCallback(
-    (asideId: string) => {
-      updateBtwAside(asideId, (aside) => ({
-        ...aside,
-        expanded: !aside.expanded,
-        updatedAt: new Date().toISOString(),
-      }));
-    },
-    [updateBtwAside],
-  );
-
-  // Reset wide-screen split-pane collapse whenever the focus moves between
-  // asides or back to Mother — explicit collapse only persists for one focus.
-  // Also drop the in-pane composer draft so a stale half-typed turn does not
-  // resurface under a different aside.
-  useEffect(() => {
-    setBtwSidePaneCollapsed(false);
-    setAsideDraft("");
-  }, [focusedBtwAsideId]);
-
-  const handleStopBtwAside = useCallback(
-    async (asideId: string) => {
-      const aside = btwAsides.find((item) => item.id === asideId);
-      if (!aside) return;
-      if (!aside.processId) {
-        hideBtwAside(asideId);
-        return;
-      }
-
-      try {
-        const result = await api.interruptProcess(aside.processId);
-        if (!result.interrupted && !result.aborted) {
-          await api.abortProcess(aside.processId);
-        }
-        const stoppedAt = new Date().toISOString();
-        updateBtwAside(asideId, (current) => ({
-          ...current,
-          status: "stopped",
-          historyAt: current.historyAt ?? stoppedAt,
-          updatedAt: stoppedAt,
-        }));
-      } catch (err) {
-        try {
-          await api.abortProcess(aside.processId);
-          const stoppedAt = new Date().toISOString();
-          updateBtwAside(asideId, (current) => ({
-            ...current,
-            status: "stopped",
-            historyAt: current.historyAt ?? stoppedAt,
-            updatedAt: stoppedAt,
-          }));
-        } catch {
-          const message = err instanceof Error ? err.message : String(err);
-          updateBtwAside(asideId, (current) => ({
-            ...current,
-            status: "failed",
-            error: message,
-            historyAt: current.historyAt ?? new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }));
-        }
-      }
-      setFocusedBtwAsideId((current) => (current === asideId ? null : current));
-    },
-    [btwAsides, hideBtwAside, updateBtwAside],
-  );
-  const handleDoneBtwAside = useCallback(() => {
-    setFocusedBtwAsideId(null);
-  }, []);
-  const handleStopBtwAsideFromTranscript = useCallback(
-    (asideId: string) => {
-      void handleStopBtwAside(asideId);
-    },
-    [handleStopBtwAside],
-  );
-
-  const stickyBtwAsides = useMemo(
-    () => btwAsides.filter((aside) => !aside.historyAt),
-    [btwAsides],
-  );
-  // Wide-screen split-pane layout: focus and footer routing are separate. A
-  // focused aside can own the pane composer while Mother's footer remains on
-  // Mother; collapsed/narrow layouts route the footer into the aside.
-  const hasFocusedBtwAside = !!focusedBtwAside;
-  const {
-    wantSplitLayout: wantBtwSplitLayout,
-    showSidePane: showBtwSidePane,
-    footerRoutesToAside: mainComposerForAside,
-  } = getBtwSplitRouting({
-    isWideScreen,
-    hasFocusedAside: hasFocusedBtwAside,
-    sidePaneCollapsed: btwSidePaneCollapsed,
-  });
-  const composerStickyBtwAsides = useMemo(() => {
-    if (showBtwSidePane && focusedBtwAside) {
-      return stickyBtwAsides.filter((aside) => aside.id !== focusedBtwAside.id);
-    }
-    return stickyBtwAsides;
-  }, [stickyBtwAsides, showBtwSidePane, focusedBtwAside]);
-  const btwToolbarMode = getBtwToolbarMode({
-    hasChildParentHref: !!childSessionParentHref,
-    hasFocusedAside: hasFocusedBtwAside,
-    footerRoutesToAside: mainComposerForAside,
-    paneComposerVisible: showBtwSidePane,
-    hasAvailableAsides: stickyBtwAsides.length > 0,
-  });
-  const historyBtwAsides = useMemo(
-    () =>
-      btwAsides
-        .filter((aside) => aside.historyAt)
-        .map((aside) => ({
-          ...aside,
-          isFocused: focusedBtwAsideId === aside.id,
-          canStop: aside.status === "starting" || aside.status === "running",
-        })),
-    [btwAsides, focusedBtwAsideId],
+    [focusedBtwAside, runBtwAsideTurn],
   );
 
   const applyMotherComposerTransfer = useCallback(
@@ -2885,6 +2832,14 @@ function SessionPageContent({
     [showToast],
   );
 
+  const handleComposerDraftTextChange = useCallback(
+    (draft: string, metadata: DraftTextChangeMetadata) => {
+      setComposerDraftForAnchors(draft);
+      setComposerDraftChangeForAnchors(metadata);
+    },
+    [],
+  );
+
   const insertQuotedSelection = useCallback(
     (quotedText: string): string | null => {
       const controls = draftControlsRef.current;
@@ -2893,20 +2848,31 @@ function SessionPageContent({
         return null;
       }
       const insertedText = quotedText.trimEnd();
-      const appendedDraft = appendComposerTransferDraft(
-        controls.getDraft(),
+      const currentDraft = controls.getDraft();
+      const transfer = getComposerTransferReplacement(
+        currentDraft,
         insertedText,
       );
-      const nextDraft = quotedText.endsWith("\n")
-        ? `${appendedDraft}\n`
-        : appendedDraft;
-      controls.setDraft(nextDraft);
-      setComposerDraftForAnchors(nextDraft);
+      const replacement = quotedText.endsWith("\n")
+        ? `${transfer.replacement}\n`
+        : transfer.replacement;
+      const nextDraft = `${currentDraft.slice(0, transfer.start)}${replacement}${currentDraft.slice(transfer.end)}`;
+      const undoableDraft = controls.replaceDraftRangeUndoably?.(
+        transfer.start,
+        transfer.end,
+        replacement,
+      );
+      const finalDraft = undoableDraft ?? nextDraft;
+      if (undoableDraft === null || !controls.replaceDraftRangeUndoably) {
+        controls.setDraft(nextDraft);
+      }
+      setComposerDraftForAnchors(finalDraft);
+      setComposerDraftChangeForAnchors({ mayAffectQuoteAnchors: true });
       requestAnimationFrame(() => {
         controls.focus?.();
-        controls.setSelectionRange?.(nextDraft.length, nextDraft.length);
+        controls.setSelectionRange?.(finalDraft.length, finalDraft.length);
       });
-      return nextDraft;
+      return finalDraft;
     },
     [showToast, t],
   );
@@ -2930,17 +2896,83 @@ function SessionPageContent({
     [applyMotherComposerTransfer, mainComposerForAside],
   );
 
+  const hydrateDraftAttachments = useCallback(
+    async (controls = draftControlsRef.current) => {
+      if (
+        mainComposerForAside ||
+        !controls ||
+        !stagedAttachmentUploadsEnabled
+      ) {
+        return;
+      }
+
+      const state = controls.getAttachmentState();
+      if (!state) {
+        setComposerAttachments([], {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        });
+        return;
+      }
+
+      const hydrationId = draftAttachmentHydrationRef.current + 1;
+      draftAttachmentHydrationRef.current = hydrationId;
+
+      try {
+        const refs = await validateDraftAttachmentRefs(sourceTransport, state);
+        if (draftAttachmentHydrationRef.current !== hydrationId) {
+          return;
+        }
+        const nextState = createComposerDraftAttachmentState(refs);
+        draftAttachmentBatchIdRef.current = nextState?.batchId ?? null;
+        controls.setAttachmentState(nextState);
+        setComposerAttachments(refs, {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        });
+      } catch (err) {
+        if (draftAttachmentHydrationRef.current !== hydrationId) {
+          return;
+        }
+        console.warn(
+          "[SessionPage] Failed to validate draft attachments:",
+          err,
+        );
+        controls.setAttachmentState(null);
+        setComposerAttachments([], {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        });
+        showToast(t("sessionDraftAttachmentsUnavailable"), "info");
+      }
+    },
+    [
+      sourceTransport,
+      mainComposerForAside,
+      setComposerAttachments,
+      showToast,
+      stagedAttachmentUploadsEnabled,
+      t,
+    ],
+  );
+
   const handleDraftControlsReady = useCallback(
     (controls: DraftControls) => {
       draftControlsRef.current = controls;
       flushPendingMotherComposerTransfer(controls);
+      void hydrateDraftAttachments(controls);
     },
-    [flushPendingMotherComposerTransfer],
+    [flushPendingMotherComposerTransfer, hydrateDraftAttachments],
   );
 
   useEffect(() => {
     flushPendingMotherComposerTransfer();
   }, [flushPendingMotherComposerTransfer]);
+
+  useEffect(() => {
+    void sessionDraftKey;
+    void hydrateDraftAttachments();
+  }, [hydrateDraftAttachments, sessionDraftKey]);
 
   const transferBtwTurnToMotherComposer = useCallback(
     (text: string) => {
@@ -2962,7 +2994,7 @@ function SessionPageContent({
       }
       applyMotherComposerTransfer(controls, trimmed);
     },
-    [applyMotherComposerTransfer, mainComposerForAside],
+    [applyMotherComposerTransfer, mainComposerForAside, setFocusedBtwAsideId],
   );
 
   const handleCustomCommand = useCallback(
@@ -3023,45 +3055,6 @@ function SessionPageContent({
       controls.setDraft(appendSlashCommandDraft(controls.getDraft(), bare));
     },
     [handleCustomCommand],
-  );
-
-  const handleBtwShortcut = useCallback(
-    (text: string): boolean => {
-      if (childSessionParentHref) {
-        navigate(childSessionParentHref);
-        return false;
-      }
-
-      if (!supportsBtwAsides) {
-        return false;
-      }
-
-      if (focusedBtwAside) {
-        if (showBtwSidePane) {
-          window.setTimeout(() => asideComposerRef.current?.focus(), 0);
-          return false;
-        }
-        setFocusedBtwAsideId(null);
-        return false;
-      }
-
-      if (!text.trim() && stickyBtwAsides.length > 0) {
-        const latestAside = stickyBtwAsides[stickyBtwAsides.length - 1];
-        setFocusedBtwAsideId(latestAside?.id ?? null);
-        return false;
-      }
-
-      return startBtwAside(text);
-    },
-    [
-      childSessionParentHref,
-      focusedBtwAside,
-      navigate,
-      showBtwSidePane,
-      startBtwAside,
-      stickyBtwAsides,
-      supportsBtwAsides,
-    ],
   );
 
   const liveBadgeModel = liveModelConfig?.model ?? effectiveModel;
@@ -3251,6 +3244,9 @@ function SessionPageContent({
   // so handleSend can wait for in-flight uploads before sending
   const handleAttach = useCallback(
     (files: File[]) => {
+      const draftBatchId = stagedAttachmentUploadsEnabled
+        ? ensureDraftAttachmentBatchId()
+        : null;
       for (const file of files) {
         const tempId = generateUUID();
 
@@ -3267,44 +3263,38 @@ function SessionPageContent({
         ]);
 
         // Start upload and track promise for handleSend to await
-        const uploadPromise = (async () => {
-          const preparedImage = file.type.startsWith("image/")
-            ? await prepareImageUpload(
-                file,
-                getAttachmentUploadLongEdgePx(attachmentQuality),
-              )
-            : { file };
-          const uploadFile = preparedImage.file;
-          return connection.upload(projectId, sessionId, uploadFile, {
-            onProgress: (bytesUploaded) => {
-              setUploadProgress((prev) =>
-                prev.map((p) =>
-                  p.fileId === tempId
-                    ? {
-                        ...p,
-                        bytesUploaded,
-                        percent: Math.round(
-                          (bytesUploaded / uploadFile.size) * 100,
-                        ),
-                      }
-                    : p,
-                ),
-              );
-            },
-            ...(preparedImage.width !== undefined &&
-            preparedImage.height !== undefined
-              ? {
-                  imageDimensions: {
-                    width: preparedImage.width,
-                    height: preparedImage.height,
-                  },
-                }
-              : {}),
-          });
-        })()
+        const uploadPromise = uploadComposerAttachmentFile({
+          file,
+          sourceTransport,
+          projectId,
+          sessionId,
+          maxLongEdgePx: getAttachmentUploadLongEdgePx(attachmentQuality),
+          stagedBatchId:
+            stagedAttachmentUploadsEnabled && draftBatchId
+              ? draftBatchId
+              : null,
+          onProgress: (bytesUploaded, uploadFile) => {
+            setUploadProgress((prev) =>
+              prev.map((p) =>
+                p.fileId === tempId
+                  ? {
+                      ...p,
+                      bytesUploaded,
+                      percent: Math.round(
+                        (bytesUploaded / uploadFile.size) * 100,
+                      ),
+                    }
+                  : p,
+              ),
+            );
+          },
+        })
           .then(
             (uploaded) => {
-              if (uploaded.mimeType.startsWith("image/")) {
+              if (
+                !isComposerStagedAttachment(uploaded) &&
+                uploaded.mimeType.startsWith("image/")
+              ) {
                 void storeUploadedAttachmentPreview(uploaded, file).catch(
                   (err) => {
                     console.warn(
@@ -3314,7 +3304,7 @@ function SessionPageContent({
                   },
                 );
               }
-              setAttachments((prev) => [...prev, uploaded]);
+              setComposerAttachments((prev) => [...prev, uploaded]);
               return uploaded;
             },
             (err) => {
@@ -3328,7 +3318,7 @@ function SessionPageContent({
                 }),
                 "error",
               );
-              return null as UploadedFile | null;
+              return null as ComposerAttachment | null;
             },
           )
           .finally(() => {
@@ -3341,12 +3331,44 @@ function SessionPageContent({
         pendingUploadsRef.current.set(tempId, uploadPromise);
       }
     },
-    [projectId, sessionId, showToast, connection, t, attachmentQuality],
+    [
+      attachmentQuality,
+      sourceTransport,
+      ensureDraftAttachmentBatchId,
+      projectId,
+      sessionId,
+      setComposerAttachments,
+      showToast,
+      stagedAttachmentUploadsEnabled,
+      t,
+    ],
   );
 
-  const handleRemoveAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+  const handleRemoveAttachment = useCallback(
+    (id: string) => {
+      const removed = attachmentsRef.current.find(
+        (attachment) => attachment.id === id,
+      );
+      setComposerAttachments(
+        (prev) => prev.filter((attachment) => attachment.id !== id),
+        { revokeRemovedPreviewUrls: true },
+      );
+
+      if (removed && isComposerStagedAttachment(removed)) {
+        deleteDraftAttachmentRef(
+          sourceTransport,
+          removed.batchId,
+          removed.id,
+        ).catch((err) => {
+          console.warn(
+            "[SessionPage] Failed to delete staged attachment:",
+            err,
+          );
+        });
+      }
+    },
+    [sourceTransport, setComposerAttachments],
+  );
 
   // Check if pending request is an AskUserQuestion
   const isAskUserQuestion = pendingInputRequest?.toolName === "AskUserQuestion";
@@ -3368,21 +3390,17 @@ function SessionPageContent({
     pendingToolCall != null &&
     pendingElsewhereDismissedToolId === pendingToolCall.id;
   const pendingElsewhereDismissKey = useMemo(
-    () => `${PENDING_ELSEWHERE_DISMISS_KEY_PREFIX}${actualSessionId}`,
-    [actualSessionId],
+    () =>
+      createPendingElsewhereDismissKey(clientSummarySourceKey, actualSessionId),
+    [actualSessionId, clientSummarySourceKey],
   );
 
-  // Compute display title - priority:
-  // 1. Local custom title (user renamed in this session)
-  // 2. Session title from server
-  // 3. Initial title from navigation state (optimistic, before server responds)
-  // 4. "Untitled" as final fallback
-  const sessionTitle = getSessionDisplayTitle(session);
-  const displayTitle =
-    localCustomTitle ??
-    (sessionTitle !== "Untitled" ? sessionTitle : null) ??
-    initialTitle ??
-    t("sessionUntitled");
+  const { displayTitle, titleTooltip } = resolveSessionPageTitle({
+    initialTitle,
+    localCustomTitle,
+    session,
+    untitledTitle: t("sessionUntitled"),
+  });
   const isArchived = localIsArchived ?? session?.isArchived ?? false;
   const isStarred = localIsStarred ?? session?.isStarred ?? false;
   const heartbeatTurnsEnabled =
@@ -3425,7 +3443,7 @@ function SessionPageContent({
   }, [pendingElsewhereDismissKey]);
 
   // Update browser tab title
-  useDocumentTitle(project?.name, displayTitle);
+  useDocumentTitle(project?.name, displayTitle, !isDomLingerParked);
 
   const setRetitleState = (state: GeneratedRetitleState | null) => {
     generatedRetitleRef.current = state;
@@ -3455,11 +3473,6 @@ function SessionPageContent({
     };
   };
 
-  const composeGeneratedRetitle = (
-    title: string,
-    insertion: GeneratedRetitleInsertion,
-  ): string => `${insertion.prefix}${title}${insertion.suffix}`;
-
   const saveTitleValue = async (nextTitle: string) => {
     const trimmed = nextTitle.trim();
     if (!trimmed || isRenaming) return;
@@ -3474,6 +3487,12 @@ function SessionPageContent({
     try {
       await api.updateSessionMetadata(sessionId, { title: trimmed });
       setLocalCustomTitle(trimmed);
+      activityBus.emitLocal("session-metadata-changed", {
+        type: "session-metadata-changed",
+        sessionId,
+        title: trimmed,
+        timestamp: new Date().toISOString(),
+      });
       setIsEditingTitle(false);
       setTitleEditMode("manual");
       setRenameValue("");
@@ -3488,6 +3507,7 @@ function SessionPageContent({
   };
 
   const handleStartEditingTitle = () => {
+    setShowRecentSessions(false);
     invalidateGeneratedRetitle();
     setTitleEditMode("manual");
     setRenameValue(displayTitle);
@@ -3508,7 +3528,7 @@ function SessionPageContent({
     retitleRequestIdRef.current = requestId;
     const submittedTurnText = createSessionRetitleSubmittedTurnText(
       displayTitle,
-      SESSION_RETITLE_LENGTH_TARGET,
+      generatedTitleLength,
     );
     if (!supportsForkFromTurn) {
       setRetitleState({
@@ -3532,7 +3552,7 @@ function SessionPageContent({
       try {
         const result = await api.proposeSessionRetitle(projectId, sessionId, {
           currentTitle: displayTitle,
-          lengthTarget: SESSION_RETITLE_LENGTH_TARGET,
+          lengthTarget: generatedTitleLength,
         });
         if (retitleRequestIdRef.current !== requestId) return;
         const current = generatedRetitleRef.current;
@@ -3574,6 +3594,8 @@ function SessionPageContent({
     setTitleEditMode("manual");
     setRenameValue("");
   };
+  const handleCancelEditingTitleRef = useRef(handleCancelEditingTitle);
+  handleCancelEditingTitleRef.current = handleCancelEditingTitle;
 
   // On blur, save if value changed (handles mobile keyboard dismiss on Enter)
   const handleTitleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
@@ -3637,15 +3659,15 @@ function SessionPageContent({
   };
 
   useEffect(() => {
-    if (!isEditingTitle) return;
+    if (isDomLingerParked || !isEditingTitle) return;
     const handleWindowKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      handleCancelEditingTitle();
+      handleCancelEditingTitleRef.current();
     };
     window.addEventListener("keydown", handleWindowKeyDown);
     return () => window.removeEventListener("keydown", handleWindowKeyDown);
-  }, [isEditingTitle, handleCancelEditingTitle]);
+  }, [isDomLingerParked, isEditingTitle]);
 
   const handleToggleArchive = async () => {
     const newArchived = !isArchived;
@@ -3928,18 +3950,56 @@ function SessionPageContent({
             )}
             {/* Project breadcrumb */}
             {project?.name && (
-              <Link
-                to={`${basePath}/sessions?project=${projectId}`}
-                className="project-breadcrumb"
-                title={project.name}
-                aria-label={project.name}
-              >
-                {project.name.length > 12
-                  ? `${project.name.slice(0, 12)}...`
-                  : project.name}
-              </Link>
+              <div className="project-breadcrumb-wrapper">
+                <Link
+                  ref={projectBreadcrumbRef}
+                  to={`${basePath}/sessions?project=${projectId}`}
+                  className="project-breadcrumb"
+                  title={project.name}
+                  aria-label={project.name}
+                  onContextMenu={handleProjectBreadcrumbContextMenu}
+                >
+                  {project.name.length > 12
+                    ? `${project.name.slice(0, 12)}...`
+                    : project.name}
+                </Link>
+                {showProjectReclassifyMenu && (
+                  <div
+                    ref={projectReclassifyMenuRef}
+                    className="project-reclassify-menu"
+                    role="menu"
+                    aria-label={t("sessionReclassifyProjectMenu")}
+                  >
+                    <div className="project-reclassify-title">
+                      {t("sessionReclassifyProjectMenu")}
+                    </div>
+                    <div className="project-reclassify-list">
+                      {projectReclassifyOptions.map((candidate) => (
+                        <button
+                          key={candidate.id}
+                          type="button"
+                          className="project-reclassify-option"
+                          role="menuitem"
+                          disabled={isReclassifyingProject}
+                          onClick={() =>
+                            void handleReclassifySessionProject(candidate)
+                          }
+                          title={candidate.path}
+                        >
+                          <span className="project-reclassify-name">
+                            {candidate.name}
+                          </span>
+                          <span className="project-reclassify-path">
+                            {candidate.path}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
-            <div className="session-title-row">
+            <div ref={titleRowRef} className="session-title-row">
               {isStarred && (
                 <svg
                   className="star-indicator-inline"
@@ -3960,7 +4020,14 @@ function SessionPageContent({
                 <span className="session-title-skeleton" />
               ) : isEditingTitle ? (
                 <div ref={titleEditControlsRef} className="session-title-edit">
-                  <div className="session-title-edit-row">
+                  <div
+                    className="session-title-edit-row"
+                    title={
+                      generatedRetitle?.deferredInsertion
+                        ? generatedRetitle.submittedTurnText
+                        : undefined
+                    }
+                  >
                     <input
                       ref={renameInputRef}
                       type="text"
@@ -3970,7 +4037,7 @@ function SessionPageContent({
                       }
                       placeholder={
                         generatedRetitle?.deferredInsertion
-                          ? t("sessionRetitleGenerating")
+                          ? t("sessionRetitleDeferred")
                           : undefined
                       }
                       onChange={(e) => setRenameValue(e.target.value)}
@@ -4035,8 +4102,16 @@ function SessionPageContent({
                       disabled={
                         isRenaming || !!generatedRetitle?.deferredInsertion
                       }
-                      title={t("sessionRetitleSaveAsTyped")}
-                      aria-label={t("sessionRetitleSaveAsTyped")}
+                      title={
+                        titleEditMode === "retitle"
+                          ? t("sessionRetitleSaveAsTyped")
+                          : t("sessionTitleSave")
+                      }
+                      aria-label={
+                        titleEditMode === "retitle"
+                          ? t("sessionRetitleSaveAsTyped")
+                          : t("sessionTitleSave")
+                      }
                     >
                       <svg
                         width="15"
@@ -4079,72 +4154,56 @@ function SessionPageContent({
                       </svg>
                     </button>
                   </div>
-                  {titleEditMode === "retitle" && generatedRetitle && (
-                    <div
-                      className={`session-title-retitle-status is-${generatedRetitle.status}${
-                        generatedRetitle.deferredInsertion ? " is-armed" : ""
-                      }`}
-                      title={
-                        generatedRetitle.status === "generating" ||
-                        generatedRetitle.deferredInsertion
-                          ? generatedRetitle.submittedTurnText
-                          : undefined
-                      }
-                    >
-                      {generatedRetitle.deferredInsertion
-                        ? t("sessionRetitleDeferred")
-                        : generatedRetitle.status === "generating"
+                  {titleEditMode === "retitle" &&
+                    generatedRetitle &&
+                    !generatedRetitle.deferredInsertion && (
+                      <div
+                        className={`session-title-retitle-status is-${generatedRetitle.status}`}
+                        title={
+                          generatedRetitle.status === "generating"
+                            ? generatedRetitle.submittedTurnText
+                            : undefined
+                        }
+                      >
+                        {generatedRetitle.status === "generating"
                           ? t("sessionRetitleGenerating")
                           : generatedRetitle.status === "ready" &&
                               generatedRetitle.title
                             ? `${t("sessionRetitleProposalLabel")} ${generatedRetitle.title}`
                             : (generatedRetitle.error ??
                               t("sessionRetitleFailed"))}
-                    </div>
-                  )}
+                      </div>
+                    )}
                 </div>
               ) : (
                 <>
                   <button
                     type="button"
-                    className="session-title session-title-retitle-trigger"
-                    onClick={() => handleStartRetitleTitle()}
-                    title={session?.fullTitle ?? displayTitle}
+                    className="session-title session-title-recent-trigger"
+                    onClick={() => setShowRecentSessions(!showRecentSessions)}
+                    title={titleTooltip}
+                    aria-haspopup="menu"
+                    aria-expanded={showRecentSessions}
                   >
                     <span className="session-title-text">{displayTitle}</span>
                   </button>
-                  {supportsForkFromTurn && (
-                    <button
-                      type="button"
-                      className="session-title-generate-trigger"
-                      onClick={handleGenerateAndApplyTitle}
-                      title={t("sessionGenerateNewTitle")}
-                      aria-label={t("sessionGenerateNewTitle")}
-                    >
-                      <svg
-                        width="15"
-                        height="15"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
-                        <path d="m11 8 4 4-4 4" />
-                        <path d="M8 12h7" />
-                      </svg>
-                    </button>
-                  )}
                   <button
-                    ref={titleButtonRef}
                     type="button"
-                    className="session-title-chevron-trigger"
+                    className={`session-title-chevron-trigger${
+                      showRecentSessions ? " is-open" : ""
+                    }`}
                     onClick={() => setShowRecentSessions(!showRecentSessions)}
-                    title={t("sessionRecentSessions")}
-                    aria-label={t("sessionRecentSessions")}
+                    title={
+                      showRecentSessions
+                        ? t("sessionCloseRecentSessions")
+                        : t("sessionRecentSessions")
+                    }
+                    aria-label={
+                      showRecentSessions
+                        ? t("sessionCloseRecentSessions")
+                        : t("sessionRecentSessions")
+                    }
+                    aria-expanded={showRecentSessions}
                   >
                     <svg
                       className="session-title-chevron"
@@ -4161,12 +4220,38 @@ function SessionPageContent({
                       <polyline points="6 9 12 15 18 9" />
                     </svg>
                   </button>
+                  {supportsForkFromTurn && generatedTitleEnabled && (
+                    <button
+                      type="button"
+                      className="session-title-generate-trigger"
+                      onClick={handleGenerateAndApplyTitle}
+                      title={t("sessionGenerateNewTitle")}
+                      aria-label={t("sessionGenerateNewTitle")}
+                    >
+                      <svg
+                        className="session-title-generate-icon"
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
+                        <path d="m11 8 4 4-4 4" />
+                        <path d="M8 12h7" />
+                      </svg>
+                    </button>
+                  )}
                   <RecentSessionsDropdown
                     currentSessionId={sessionId}
                     isOpen={showRecentSessions}
                     onClose={() => setShowRecentSessions(false)}
                     onNavigate={() => setShowRecentSessions(false)}
-                    triggerRef={titleButtonRef}
+                    triggerRef={titleRowRef}
                     basePath={basePath}
                   />
                 </>
@@ -4191,6 +4276,11 @@ function SessionPageContent({
                   onToggleArchive={handleToggleArchive}
                   onToggleRead={handleToggleRead}
                   onRename={handleStartEditingTitle}
+                  onGenerateTitle={
+                    supportsForkFromTurn
+                      ? handleGenerateAndApplyTitle
+                      : undefined
+                  }
                   onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
                   onConfigureRecaps={
                     status.owner === "self"
@@ -4230,6 +4320,9 @@ function SessionPageContent({
                   onShare={showPublicShareControls ? handleShare : undefined}
                   useFixedPositioning
                   useEllipsisIcon
+                  onOpenChange={(open) => {
+                    if (open) setShowRecentSessions(false);
+                  }}
                 />
               )}
             </div>
@@ -4287,8 +4380,15 @@ function SessionPageContent({
             )}
             {canStopOwnedProcess && (
               <ThinkingIndicator
-                variant="pill"
+                variant="icon"
                 className="session-header-thinking"
+                label={
+                  providerRuntimeStatus
+                    ? t("toolbarProviderRuntimeAria", {
+                        summary: t("processInfoRuntimeRetrying"),
+                      })
+                    : undefined
+                }
               />
             )}
             {!loading && effectiveProvider && (
@@ -4348,7 +4448,15 @@ function SessionPageContent({
           provider={effectiveProvider}
           currentModel={liveBadgeModel}
           onClose={() => setShowRecapModal(false)}
-          onSaved={() => {
+          onSaved={(settings) => {
+            setStatus((prev) =>
+              prev.owner === "self" && prev.processId === status.processId
+                ? {
+                    ...prev,
+                    recapAfterSeconds: settings.recapAfterSeconds,
+                  }
+                : prev,
+            );
             showToast(t("sessionRecapSaved"), "success");
           }}
         />
@@ -4376,6 +4484,7 @@ function SessionPageContent({
           processId={status.owner === "self" ? status.processId : undefined}
           sessionId={actualSessionId}
           currentModel={session?.model}
+          sessionProvider={effectiveProvider}
           onModelChanged={handleModelChanged}
           initialTab={modelPanelInitialTab}
           infoPane={
@@ -4387,6 +4496,7 @@ function SessionPageContent({
                 status={status}
                 processState={processState}
                 sessionLiveness={sessionLiveness}
+                providerRuntimeStatus={providerRuntimeStatus}
                 contextUsage={session.contextUsage}
                 originator={session.originator}
                 cliVersion={session.cliVersion}
@@ -4404,7 +4514,13 @@ function SessionPageContent({
               projectId,
               actualSessionId,
             );
-            setStatus({ owner: "self", processId: result.processId });
+            setStatus({
+              owner: "self",
+              processId: result.processId,
+              permissionMode: result.permissionMode,
+              modeVersion: result.modeVersion,
+              recapAfterSeconds: result.recapAfterSeconds,
+            });
           }}
           onClose={() => setShowModelSwitchModal(false)}
         />
@@ -4443,6 +4559,7 @@ function SessionPageContent({
                   processId: result.processId,
                   permissionMode: result.permissionMode,
                   modeVersion: result.modeVersion,
+                  recapAfterSeconds: result.recapAfterSeconds,
                 },
                 initialTitle: result.title,
                 initialModel: result.model ?? liveBadgeModel,
@@ -4478,7 +4595,14 @@ function SessionPageContent({
       >
         <main className="session-messages">
           {loading ? (
-            <div className="loading">{t("sessionLoading")}</div>
+            <div className="loading">
+              <div>{t("sessionLoading")}</div>
+              {sessionLoadingProgressText && (
+                <div className="loading-detail">
+                  {sessionLoadingProgressText}
+                </div>
+              )}
+            </div>
           ) : (
             <SessionMetadataProvider
               projectId={projectId}
@@ -4487,7 +4611,7 @@ function SessionPageContent({
             >
               <AgentContentProvider
                 agentContent={agentContent}
-                setAgentContent={setAgentContent}
+                mergeLoadedAgentContent={mergeLoadedAgentContent}
                 toolUseToAgent={toolUseToAgent}
                 projectId={projectId}
                 sessionId={sessionId}
@@ -4501,6 +4625,7 @@ function SessionPageContent({
                   scrollTrigger={scrollTrigger}
                   pendingMessages={pendingMessages}
                   deferredMessages={deferredMessages}
+                  projectQueueMessages={inlineProjectQueueMessages}
                   btwAsides={historyBtwAsides}
                   onFocusBtwAside={setFocusedBtwAsideId}
                   onDoneBtwAside={handleDoneBtwAside}
@@ -4508,12 +4633,19 @@ function SessionPageContent({
                   onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
                   onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
                   onQuoteSelection={insertQuotedSelection}
-                  getComposerDraft={() =>
-                    draftControlsRef.current?.getDraft() ?? ""
-                  }
+                  getComposerDraft={getComposerDraftForAnchors}
                   composerDraft={composerDraftForAnchors}
+                  composerDraftChange={composerDraftChangeForAnchors}
                   quoteClearSignal={quoteClearSignal}
                   onCancelDeferred={handleCancelDeferred}
+                  onCancelUnconfirmedUserMessage={
+                    handleCancelUnconfirmedUserMessage
+                  }
+                  onSteerDeferred={handleSteerDeferred}
+                  onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
+                  onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
+                  onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
+                  onCancelProjectQueueMessage={handleCancelProjectQueueItem}
                   onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
                   onTrimBeforeUserMessage={trimClientFromUserMessage}
                   onForkBeforeUserMessage={
@@ -4529,14 +4661,25 @@ function SessionPageContent({
                   loadingOlder={loadingOlder}
                   onLoadOlderMessages={loadOlderMessages}
                   clientTailActive={clientTailActive}
+                  progressiveRenderEnabled={sessionLoadingProgressEnabled}
+                  progressiveRenderStatusVisible={
+                    sessionLoadingProgressDetailsVisible
+                  }
+                  progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                  initialScrollSnapshot={initialScrollSnapshot}
+                  onScrollSnapshotChange={updateRouteScrollSnapshot}
+                  scrollBehaviorMode={sessionScrollBehaviorMode}
+                  offscreenTranscriptRenderingEnabled={
+                    sessionOffscreenTranscriptRenderingEnabled
+                  }
                   getForkSummaryTargetHref={getForkSummaryTargetHref}
-                  onCancelForkSummary={(objectId) => {
-                    void cancelForkSummaryJob(objectId);
-                  }}
-                  onToggleForkSummaryAutoOpen={(objectId, value) => {
-                    void setForkSummaryAutoOpen(objectId, value);
-                  }}
+                  onCancelForkSummary={handleCancelForkSummary}
+                  onToggleForkSummaryAutoOpen={handleToggleForkSummaryAutoOpen}
                   onFollowForkSummary={followForkSummary}
+                  onTranscriptPositionTimestampChange={
+                    setTranscriptPositionTimestampMs
+                  }
+                  inert={isDomLingerParked}
                 />
               </AgentContentProvider>
             </SessionMetadataProvider>
@@ -4572,109 +4715,16 @@ function SessionPageContent({
             className={`session-connection-bar session-connection-${sessionConnectionStatus}`}
           />
           <div className="session-input-inner">
-            {composerStickyBtwAsides.length > 0 && (
-              <div
-                className="btw-aside-stack"
-                role="region"
-                aria-label="/btw asides"
-              >
-                {composerStickyBtwAsides.map((aside) => {
-                  const isFocused = focusedBtwAsideId === aside.id;
-                  const canExpand = Boolean(
-                    aside.request ||
-                      aside.followUps.length > 0 ||
-                      aside.responses.length > 0 ||
-                      (aside.turns?.length ?? 0) > 0,
-                  );
-                  return (
-                    <div
-                      key={aside.id}
-                      className={`btw-aside-card is-${aside.status} ${
-                        isFocused ? "is-focused" : ""
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        className="btw-aside-main"
-                        onClick={() => setFocusedBtwAsideId(aside.id)}
-                      >
-                        <span className="btw-aside-meta">
-                          /btw {aside.status}
-                        </span>
-                        <span className="btw-aside-request">
-                          {aside.request || "New aside"}
-                        </span>
-                        {aside.followUps.length > 0 && (
-                          <span className="btw-aside-followups">
-                            +{aside.followUps.length} follow-up
-                            {aside.followUps.length === 1 ? "" : "s"}
-                          </span>
-                        )}
-                        {aside.preview && (
-                          <span className="btw-aside-preview">
-                            {aside.preview}
-                          </span>
-                        )}
-                        {aside.error && (
-                          <span className="btw-aside-error">{aside.error}</span>
-                        )}
-                      </button>
-                      {aside.expanded && canExpand && (
-                        <BtwAsideTranscript
-                          aside={aside}
-                          autoScrollLatest
-                          onTransferToComposer={transferBtwTurnToMotherComposer}
-                        />
-                      )}
-                      <div className="btw-aside-actions">
-                        {canExpand && (
-                          <button
-                            type="button"
-                            className="btw-aside-action"
-                            onClick={() => toggleBtwAsideExpanded(aside.id)}
-                          >
-                            {aside.expanded ? "Less" : "Show"}
-                          </button>
-                        )}
-                        {isFocused && (
-                          <button
-                            type="button"
-                            className="btw-aside-action"
-                            onClick={() => hideBtwAside(aside.id)}
-                            title={t("btwAsideReturnComposerTitle")}
-                          >
-                            Done
-                          </button>
-                        )}
-                        {(aside.status === "starting" ||
-                          aside.status === "running") && (
-                          <button
-                            type="button"
-                            className="btw-aside-action btw-aside-action-stop"
-                            onClick={() => void handleStopBtwAside(aside.id)}
-                            title={
-                              isFocused
-                                ? "Stop this /btw aside and return to the main session"
-                                : "Stop this /btw aside"
-                            }
-                          >
-                            Stop
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="btw-aside-action"
-                          onClick={() => hideBtwAside(aside.id)}
-                          title={t("btwAsideMoveToHistoryTitle")}
-                        >
-                          Hide
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <BtwAsideStickyCards
+              asides={composerStickyBtwAsides}
+              focusedAsideId={focusedBtwAsideId}
+              onFocusAside={setFocusedBtwAsideId}
+              onToggleAsideExpanded={toggleBtwAsideExpanded}
+              onDoneAside={hideBtwAside}
+              onHideAside={hideBtwAside}
+              onStopAside={(asideId) => void handleStopBtwAside(asideId)}
+              onTransferToComposer={transferBtwTurnToMotherComposer}
+            />
 
             {/* User question panel */}
             {pendingInputRequest &&
@@ -4713,13 +4763,25 @@ function SessionPageContent({
                     onSelectSlashCommand={handleToolbarSlashCommand}
                     thinkingProvider={effectiveProvider}
                     thinkingModel={liveBadgeModel}
+                    liveThinkingSelection={
+                      liveThinkingSelection
+                        ? {
+                            mode: liveThinkingSelection.mode,
+                            level: liveThinkingSelection.effortLevel,
+                            onSetMode: handleSetLiveThinkingMode,
+                            onSetEffort: handleSetLiveThinkingEffort,
+                          }
+                        : undefined
+                    }
                     contextRequestedModel={liveModelConfig?.requestedModel}
                     heartbeatEnabled={heartbeatTurnsEnabled}
                     onToggleHeartbeat={handleToggleHeartbeat}
                     onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
                     contextUsage={session?.contextUsage}
                     lastActivityAt={activityAt}
+                    positionTimestampMs={transcriptPositionTimestampMs}
                     sessionLiveness={sessionLiveness}
+                    providerRuntimeStatus={providerRuntimeStatus}
                     isRunning={status.owner === "self"}
                     isThinking={canStopOwnedProcess}
                     onStop={handleAbort}
@@ -4756,6 +4818,11 @@ function SessionPageContent({
                     ? handleQueue
                     : undefined
                 }
+                onProjectQueue={
+                  !mainComposerForAside && showProjectQueueAction
+                    ? handleProjectQueue
+                    : undefined
+                }
                 primaryActionKind={
                   mainComposerForAside ? "send" : primaryComposerAction
                 }
@@ -4782,10 +4849,15 @@ function SessionPageContent({
                 draftKey={
                   mainComposerForAside && focusedBtwAside
                     ? `draft-btw-${focusedBtwAside.sessionId ?? focusedBtwAside.id}`
-                    : `draft-message-${sessionId}`
+                    : sessionDraftKey
+                }
+                draftIndex={
+                  mainComposerForAside && focusedBtwAside
+                    ? undefined
+                    : sessionDraftReference
                 }
                 onDraftControlsReady={handleDraftControlsReady}
-                onDraftTextChange={setComposerDraftForAnchors}
+                onDraftTextChange={handleComposerDraftTextChange}
                 correctionActive={
                   !mainComposerForAside && correctionDraft !== null
                 }
@@ -4802,7 +4874,9 @@ function SessionPageContent({
                 }
                 contextUsage={session?.contextUsage}
                 lastActivityAt={activityAt}
+                positionTimestampMs={transcriptPositionTimestampMs}
                 sessionLiveness={sessionLiveness}
+                providerRuntimeStatus={providerRuntimeStatus}
                 projectId={projectId}
                 sessionId={sessionId}
                 attachments={mainComposerForAside ? [] : attachments}
@@ -4825,6 +4899,16 @@ function SessionPageContent({
                 btwToolbarMode={btwToolbarMode}
                 thinkingProvider={effectiveProvider}
                 thinkingModel={liveBadgeModel}
+                liveThinkingSelection={
+                  liveThinkingSelection
+                    ? {
+                        mode: liveThinkingSelection.mode,
+                        level: liveThinkingSelection.effortLevel,
+                        onSetMode: handleSetLiveThinkingMode,
+                        onSetEffort: handleSetLiveThinkingEffort,
+                      }
+                    : undefined
+                }
                 contextRequestedModel={liveModelConfig?.requestedModel}
                 heartbeatEnabled={heartbeatTurnsEnabled}
                 onToggleHeartbeat={handleToggleHeartbeat}

@@ -3,104 +3,52 @@
  */
 
 import {
-  ALL_PERMISSION_MODES,
-  ALL_PROVIDERS,
-  type AgentContextHints,
-  type BusyComposerDefaultAction,
-  type ClientDefaults,
-  type CollapsedComposerButtonPreference,
-  type GrokSpeechAudioClientDefault,
-  HELPER_SIDE_MODEL_CHEAPEST,
-  HELPER_SIDE_MODEL_SAME_AS_MAIN,
-  type HelperTargetConfig,
-  type ModelInfo,
-  type NewSessionDefaults,
+  DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  MAX_PROJECT_QUEUE_QUIET_SECONDS,
+  PROMPT_CACHE_KEEPALIVE_MODES,
+  clampProjectQueueQuietSeconds,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
-  type PermissionMode,
-  DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
-  PROMPT_CACHE_KEEPALIVE_MODES,
-  type PromptCacheKeepaliveMode,
-  type PromptCacheKeepaliveSettings,
-  PROMPT_SUGGESTION_MODES,
-  type PromptSuggestionMode,
-  type ProviderName,
-  RECAP_MODES,
-  type RecapMode,
-  type SessionToolbarVisibilityClientDefaults,
-  type SpeechSmartTurnClientDefault,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
-import {
-  type FileAccessSettings,
-  getFileAccessInfo,
-  normalizeFileAccess,
-} from "../middleware/file-access.js";
+import { type FileAccessSettings, getFileAccessInfo } from "../middleware/file-access.js";
+import type { SessionMetadataService } from "../metadata/index.js";
 import { testSSHConnection } from "../sdk/remote-spawn.js";
 import type { PublicShareService } from "../services/PublicShareService.js";
 import type {
   CodexUpdatePolicy,
   ServerSettings,
   ServerSettingsService,
-  SpeechAudioRetentionSettings,
 } from "../services/ServerSettingsService.js";
 import {
   CODEX_UPDATE_POLICIES,
   DEFAULT_SERVER_SETTINGS,
-  DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS,
-  DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES,
 } from "../services/ServerSettingsService.js";
 import {
   isValidSshHostAlias,
   normalizeSshHostAlias,
 } from "../utils/sshHostAlias.js";
 
-const HELPER_TARGET_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-const MAX_HELPER_TARGETS = 20;
-const HELPER_TARGET_MODEL_DISCOVERY_TIMEOUT_MS = 5000;
-const SESSION_TOOLBAR_VISIBILITY_CLIENT_DEFAULT_KEYS = [
-  "modeSelector",
-  "steerNow",
-  "attachments",
-  "slashMenu",
-  "thinkingToggle",
-  "renderMode",
-  "microphone",
-  "waveform",
-  "shortcutsHelp",
-  "contextUsage",
-  "btw",
-  "nudge",
-  "sessionStatus",
-] as const satisfies readonly (keyof SessionToolbarVisibilityClientDefaults)[];
-const CLIENT_DEFAULT_KEYS = [
-  "speech",
-  "busyComposerDefaultAction",
-  "collapsedComposerButton",
-  "sessionToolbarVisibility",
-  "steerNowDefault",
-  "patientQueueDefault",
-  "compactAtContextPercent",
-] as const;
-const BUSY_COMPOSER_DEFAULT_ACTIONS = [
-  "steer",
-  "queue",
-] as const satisfies readonly BusyComposerDefaultAction[];
-const COLLAPSED_COMPOSER_BUTTON_PREFERENCES = [
-  "primary",
-  "alternate",
-  "microphone",
-] as const satisfies readonly CollapsedComposerButtonPreference[];
-const SPEECH_CLIENT_DEFAULT_KEYS = [
-  "voiceInputEnabled",
-  "speechMethod",
-  "speechSmartTurnSettings",
-  "grokSpeechAudioSettings",
-] as const;
-const MAX_SPEECH_SMART_TURN_TIMEOUT_MS = 10000;
+import {
+  discoverOpenAiCompatibleModels,
+  mergeClientDefaults,
+  normalizeOpenAiCompatibleBaseUrl,
+  parseAgentContextHints,
+  parseCacheMissBilling,
+  parseClientDefaults,
+  parseFileAccess,
+  parseHelperTargets,
+  parseHostAliasList,
+  parseNewSessionDefaults,
+  parsePromptCacheKeepalive,
+  parseSpeechAudioRetention,
+} from "./settings-parsers.js";
 
 export interface SettingsRoutesDeps {
   serverSettingsService: ServerSettingsService;
+  /** Server-stored per-session cache-billing evidence log. */
+  sessionMetadataService?: SessionMetadataService;
   /** Callback to apply allowedHosts changes at runtime */
   onAllowedHostsChanged?: (value: string | undefined) => void;
   /** Callback to apply fileAccess changes at runtime */
@@ -121,719 +69,11 @@ export interface SettingsRoutesDeps {
   publicShareService?: PublicShareService;
 }
 
-function parseHostAliasList(rawHosts: unknown[]): {
-  hosts: string[];
-  invalidHost?: string;
-} {
-  const hosts: string[] = [];
-
-  for (const rawHost of rawHosts) {
-    if (typeof rawHost !== "string") continue;
-
-    const host = normalizeSshHostAlias(rawHost);
-    if (!host) continue;
-    if (!isValidSshHostAlias(host)) {
-      return { hosts: [], invalidHost: host };
-    }
-
-    hosts.push(host);
-  }
-
-  return { hosts };
-}
-
-function normalizeOpenAiCompatibleBaseUrl(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `http://${trimmed}`;
-
-  try {
-    const url = new URL(withScheme);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (url.pathname === "" || url.pathname === "/") {
-      url.pathname = "/v1";
-    }
-
-    const normalized = url.toString();
-    return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Returns:
- * - `null` when the payload is invalid
- * - `undefined` when the setting should be cleared
- * - an array when valid helper targets should be saved
- */
-function parseHelperTargets(
-  raw: unknown,
-): HelperTargetConfig[] | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (!Array.isArray(raw) || raw.length > MAX_HELPER_TARGETS) return null;
-
-  const seenIds = new Set<string>();
-  const parsed: HelperTargetConfig[] = [];
-
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") return null;
-    const input = entry as Record<string, unknown>;
-    const id = typeof input.id === "string" ? input.id.trim() : "";
-    const name = typeof input.name === "string" ? input.name.trim() : "";
-    const baseUrl = normalizeOpenAiCompatibleBaseUrl(input.baseUrl);
-    const model = typeof input.model === "string" ? input.model.trim() : "";
-
-    if (
-      !HELPER_TARGET_ID_PATTERN.test(id) ||
-      seenIds.has(id) ||
-      !name ||
-      name.length > 80 ||
-      input.kind !== "openai-compatible" ||
-      !baseUrl ||
-      model.length > 200
-    ) {
-      return null;
-    }
-
-    seenIds.add(id);
-    parsed.push({
-      id,
-      name,
-      kind: "openai-compatible",
-      baseUrl,
-      ...(model ? { model } : {}),
-    });
-  }
-
-  return parsed;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-const MAX_FILE_ACCESS_CUSTOM_ENTRIES = 100;
-const MAX_FILE_ACCESS_CUSTOM_LENGTH = 1024;
-
-/**
- * Returns:
- * - `null` when the payload is invalid
- * - `undefined` when the setting should be cleared (reset to secure defaults)
- * - a normalized object when valid
- */
-function parseFileAccess(raw: unknown): FileAccessSettings | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (!isRecord(raw)) return null;
-
-  const allowedKeys = new Set([
-    "projects",
-    "uploads",
-    "temp",
-    "home",
-    "custom",
-  ]);
-  for (const key of Object.keys(raw)) {
-    if (!allowedKeys.has(key)) return null;
-  }
-  for (const key of ["projects", "uploads", "temp", "home"] as const) {
-    if (key in raw && typeof raw[key] !== "boolean") return null;
-  }
-  if ("custom" in raw) {
-    if (
-      !Array.isArray(raw.custom) ||
-      raw.custom.length > MAX_FILE_ACCESS_CUSTOM_ENTRIES
-    ) {
-      return null;
-    }
-    for (const entry of raw.custom) {
-      if (
-        typeof entry !== "string" ||
-        entry.length > MAX_FILE_ACCESS_CUSTOM_LENGTH
-      ) {
-        return null;
-      }
-    }
-  }
-
-  return normalizeFileAccess({
-    projects: raw.projects as boolean | undefined,
-    uploads: raw.uploads as boolean | undefined,
-    temp: raw.temp as boolean | undefined,
-    home: raw.home as boolean | undefined,
-    custom: (raw.custom as string[] | undefined) ?? [],
-  });
-}
-
-function parseOpenAiModelsResponse(raw: unknown): ModelInfo[] | null {
-  if (!isRecord(raw) || !Array.isArray(raw.data)) return null;
-
-  const models: ModelInfo[] = [];
-  for (const entry of raw.data) {
-    if (!isRecord(entry) || typeof entry.id !== "string" || !entry.id.trim()) {
-      continue;
-    }
-    const metadata = isRecord(entry.metadata) ? entry.metadata : undefined;
-    const rawContextWindow =
-      typeof entry.max_model_len === "number"
-        ? entry.max_model_len
-        : typeof entry.maxModelLen === "number"
-          ? entry.maxModelLen
-          : typeof metadata?.max_model_len === "number"
-            ? metadata.max_model_len
-            : undefined;
-    const contextWindow =
-      rawContextWindow !== undefined && Number.isFinite(rawContextWindow)
-        ? rawContextWindow
-        : undefined;
-
-    models.push({
-      id: entry.id,
-      name: entry.id,
-      ...(contextWindow ? { contextWindow } : {}),
-    });
-  }
-
-  return models;
-}
-
-function parseAgentContextHints(
-  raw: unknown,
-  current: AgentContextHints | undefined,
-): AgentContextHints | null {
-  if (raw === undefined || raw === null) return {};
-  if (!isRecord(raw)) return null;
-
-  const parsed: AgentContextHints = { ...current };
-  if ("latexMathRendering" in raw) {
-    if (typeof raw.latexMathRendering !== "boolean") return null;
-    parsed.latexMathRendering = raw.latexMathRendering;
-  }
-
-  return parsed;
-}
-
-async function discoverOpenAiCompatibleModels(
-  baseUrl: string,
-): Promise<ModelInfo[] | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    HELPER_TARGET_MODEL_DISCOVERY_TIMEOUT_MS,
-  );
-
-  try {
-    const response = await fetch(`${baseUrl}/models`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    return parseOpenAiModelsResponse(await response.json());
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/**
- * Returns:
- * - `null` when the payload is invalid
- * - `undefined` when the setting should be cleared
- * - an object when valid defaults should be saved
- */
-function parseNewSessionDefaults(
-  raw: unknown,
-): NewSessionDefaults | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (typeof raw !== "object") return null;
-
-  const input = raw as Record<string, unknown>;
-  const parsed: NewSessionDefaults = {};
-
-  if ("provider" in input) {
-    if (
-      input.provider !== undefined &&
-      input.provider !== null &&
-      input.provider !== "" &&
-      !ALL_PROVIDERS.includes(input.provider as ProviderName)
-    ) {
-      return null;
-    }
-    if (typeof input.provider === "string" && input.provider.length > 0) {
-      parsed.provider = input.provider as ProviderName;
-    }
-  }
-
-  if ("model" in input) {
-    if (
-      input.model !== undefined &&
-      input.model !== null &&
-      input.model !== "" &&
-      typeof input.model !== "string"
-    ) {
-      return null;
-    }
-    if (typeof input.model === "string" && input.model.length > 0) {
-      parsed.model = input.model;
-    }
-  }
-
-  if ("permissionMode" in input) {
-    if (
-      input.permissionMode !== undefined &&
-      input.permissionMode !== null &&
-      input.permissionMode !== "" &&
-      !ALL_PERMISSION_MODES.includes(input.permissionMode as PermissionMode)
-    ) {
-      return null;
-    }
-    if (
-      typeof input.permissionMode === "string" &&
-      input.permissionMode.length > 0
-    ) {
-      parsed.permissionMode = input.permissionMode as PermissionMode;
-    }
-  }
-
-  if ("recapMode" in input) {
-    if (
-      input.recapMode !== undefined &&
-      input.recapMode !== null &&
-      input.recapMode !== "" &&
-      !RECAP_MODES.includes(input.recapMode as RecapMode)
-    ) {
-      return null;
-    }
-    if (typeof input.recapMode === "string" && input.recapMode.length > 0) {
-      parsed.recapMode = input.recapMode as RecapMode;
-    }
-  }
-
-  if ("promptSuggestionMode" in input) {
-    if (
-      input.promptSuggestionMode !== undefined &&
-      input.promptSuggestionMode !== null &&
-      input.promptSuggestionMode !== "" &&
-      !PROMPT_SUGGESTION_MODES.includes(
-        input.promptSuggestionMode as PromptSuggestionMode,
-      )
-    ) {
-      return null;
-    }
-    if (
-      typeof input.promptSuggestionMode === "string" &&
-      input.promptSuggestionMode.length > 0
-    ) {
-      parsed.promptSuggestionMode =
-        input.promptSuggestionMode as PromptSuggestionMode;
-    }
-  }
-
-  if ("helperSideModel" in input) {
-    if (
-      input.helperSideModel !== undefined &&
-      input.helperSideModel !== null &&
-      input.helperSideModel !== "" &&
-      typeof input.helperSideModel !== "string"
-    ) {
-      return null;
-    }
-    if (
-      typeof input.helperSideModel === "string" &&
-      input.helperSideModel.length > 0
-    ) {
-      parsed.helperSideModel =
-        input.helperSideModel === HELPER_SIDE_MODEL_SAME_AS_MAIN
-          ? HELPER_SIDE_MODEL_SAME_AS_MAIN
-          : input.helperSideModel === HELPER_SIDE_MODEL_CHEAPEST
-            ? HELPER_SIDE_MODEL_CHEAPEST
-            : input.helperSideModel.slice(0, 200);
-    }
-  }
-
-  return Object.keys(parsed).length > 0 ? parsed : undefined;
-}
-
-function parseSpeechSmartTurnClientDefault(
-  raw: unknown,
-): SpeechSmartTurnClientDefault | null {
-  if (!isRecord(raw)) return null;
-  if (
-    typeof raw.enabled !== "boolean" ||
-    typeof raw.threshold !== "number" ||
-    typeof raw.timeoutMs !== "number" ||
-    !Number.isFinite(raw.threshold) ||
-    !Number.isFinite(raw.timeoutMs) ||
-    raw.threshold < 0 ||
-    raw.threshold > 1 ||
-    raw.timeoutMs < 0 ||
-    raw.timeoutMs > MAX_SPEECH_SMART_TURN_TIMEOUT_MS
-  ) {
-    return null;
-  }
-  return {
-    enabled: raw.enabled,
-    threshold: raw.threshold,
-    timeoutMs: Math.round(raw.timeoutMs),
-  };
-}
-
-function parseGrokSpeechAudioClientDefault(
-  raw: unknown,
-): GrokSpeechAudioClientDefault | null {
-  if (!isRecord(raw)) return null;
-  if (raw.uplinkMode !== "pcm16" && raw.uplinkMode !== "browser-compressed") {
-    return null;
-  }
-  return { uplinkMode: raw.uplinkMode };
-}
-
-function parseSessionToolbarVisibilityClientDefaults(
-  raw: unknown,
-): SessionToolbarVisibilityClientDefaults | undefined | null {
-  if (raw === undefined || raw === null || raw === "") return undefined;
-  if (!isRecord(raw)) return null;
-
-  const allowedKeys = new Set<string>(
-    SESSION_TOOLBAR_VISIBILITY_CLIENT_DEFAULT_KEYS,
-  );
-  for (const key of Object.keys(raw)) {
-    if (!allowedKeys.has(key)) return null;
-  }
-
-  const parsed: SessionToolbarVisibilityClientDefaults = {};
-  for (const key of SESSION_TOOLBAR_VISIBILITY_CLIENT_DEFAULT_KEYS) {
-    if (!(key in raw)) continue;
-    const value = raw[key];
-    if (typeof value !== "boolean") return null;
-    parsed[key] = value;
-  }
-  return Object.keys(parsed).length > 0 ? parsed : null;
-}
-
-// Per-model compaction thresholds: each value is "compact at X% of that
-// model's context window". Reject non-numbers (the slider only ever sends
-// numbers), but treat out-of-range like the load path does — keep 1–99 and
-// drop anything else (including >= 100 = "off"). An empty result clears the
-// setting. The returned map is authoritative: the client always sends the
-// full map, so mergeClientDefaults replaces rather than per-model merges,
-// which is what makes turning a model "off" (dropping its key) take effect.
-function parseCompactAtContextPercent(
-  raw: unknown,
-): Record<string, number> | undefined | null {
-  if (raw === undefined || raw === null || raw === "") return undefined;
-  if (!isRecord(raw)) return null;
-  const cleaned: Record<string, number> = {};
-  for (const [modelId, value] of Object.entries(raw)) {
-    if (typeof value !== "number" || !Number.isFinite(value)) return null;
-    const pct = Math.round(value);
-    if (pct > 0 && pct < 100) cleaned[modelId] = pct;
-  }
-  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
-}
-
-function parseClientDefaults(raw: unknown): ClientDefaults | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (!isRecord(raw)) return null;
-
-  const allowedKeys = new Set<string>(CLIENT_DEFAULT_KEYS);
-  for (const key of Object.keys(raw)) {
-    if (!allowedKeys.has(key)) return null;
-  }
-  if (Object.keys(raw).length === 0) return null;
-
-  const parsed: ClientDefaults = {};
-  if ("speech" in raw) {
-    if (raw.speech === undefined || raw.speech === null || raw.speech === "") {
-      parsed.speech = undefined;
-    } else if (!isRecord(raw.speech)) {
-      return null;
-    } else {
-      const allowedSpeechKeys = new Set<string>(SPEECH_CLIENT_DEFAULT_KEYS);
-      for (const key of Object.keys(raw.speech)) {
-        if (!allowedSpeechKeys.has(key)) return null;
-      }
-
-      const speech: NonNullable<ClientDefaults["speech"]> = {};
-      if ("voiceInputEnabled" in raw.speech) {
-        if (typeof raw.speech.voiceInputEnabled !== "boolean") return null;
-        speech.voiceInputEnabled = raw.speech.voiceInputEnabled;
-      }
-      if ("speechMethod" in raw.speech) {
-        if (
-          typeof raw.speech.speechMethod !== "string" ||
-          raw.speech.speechMethod.trim().length === 0
-        ) {
-          return null;
-        }
-        speech.speechMethod = raw.speech.speechMethod.trim().slice(0, 120);
-      }
-      if ("speechSmartTurnSettings" in raw.speech) {
-        const parsedSmartTurn = parseSpeechSmartTurnClientDefault(
-          raw.speech.speechSmartTurnSettings,
-        );
-        if (!parsedSmartTurn) return null;
-        speech.speechSmartTurnSettings = parsedSmartTurn;
-      }
-      if ("grokSpeechAudioSettings" in raw.speech) {
-        const parsedGrokAudio = parseGrokSpeechAudioClientDefault(
-          raw.speech.grokSpeechAudioSettings,
-        );
-        if (!parsedGrokAudio) return null;
-        speech.grokSpeechAudioSettings = parsedGrokAudio;
-      }
-      if (Object.keys(speech).length === 0) return null;
-      parsed.speech = speech;
-    }
-  }
-  if ("busyComposerDefaultAction" in raw) {
-    if (
-      raw.busyComposerDefaultAction === undefined ||
-      raw.busyComposerDefaultAction === null
-    ) {
-      parsed.busyComposerDefaultAction = undefined;
-    } else if (
-      !BUSY_COMPOSER_DEFAULT_ACTIONS.includes(
-        raw.busyComposerDefaultAction as BusyComposerDefaultAction,
-      )
-    ) {
-      return null;
-    } else {
-      parsed.busyComposerDefaultAction =
-        raw.busyComposerDefaultAction as BusyComposerDefaultAction;
-    }
-  }
-  if ("collapsedComposerButton" in raw) {
-    if (
-      raw.collapsedComposerButton === undefined ||
-      raw.collapsedComposerButton === null
-    ) {
-      parsed.collapsedComposerButton = undefined;
-    } else if (
-      !COLLAPSED_COMPOSER_BUTTON_PREFERENCES.includes(
-        raw.collapsedComposerButton as CollapsedComposerButtonPreference,
-      )
-    ) {
-      return null;
-    } else {
-      parsed.collapsedComposerButton =
-        raw.collapsedComposerButton as CollapsedComposerButtonPreference;
-    }
-  }
-  if ("steerNowDefault" in raw) {
-    if (raw.steerNowDefault === undefined || raw.steerNowDefault === null) {
-      parsed.steerNowDefault = undefined;
-    } else if (typeof raw.steerNowDefault !== "boolean") {
-      return null;
-    } else {
-      parsed.steerNowDefault = raw.steerNowDefault;
-    }
-  }
-  if ("patientQueueDefault" in raw) {
-    if (
-      raw.patientQueueDefault === undefined ||
-      raw.patientQueueDefault === null
-    ) {
-      parsed.patientQueueDefault = undefined;
-    } else if (typeof raw.patientQueueDefault !== "boolean") {
-      return null;
-    } else {
-      parsed.patientQueueDefault = raw.patientQueueDefault;
-    }
-  }
-  if ("sessionToolbarVisibility" in raw) {
-    const parsedVisibility = parseSessionToolbarVisibilityClientDefaults(
-      raw.sessionToolbarVisibility,
-    );
-    if (parsedVisibility === null) return null;
-    parsed.sessionToolbarVisibility = parsedVisibility;
-  }
-  if ("compactAtContextPercent" in raw) {
-    const parsedCompact = parseCompactAtContextPercent(
-      raw.compactAtContextPercent,
-    );
-    if (parsedCompact === null) return null;
-    parsed.compactAtContextPercent = parsedCompact;
-  }
-
-  return Object.keys(parsed).length > 0 ? parsed : undefined;
-}
-
-function mergeClientDefaults(
-  current: ClientDefaults | undefined,
-  update: ClientDefaults | undefined,
-): ClientDefaults | undefined {
-  if (!update) return undefined;
-  const merged: ClientDefaults = { ...current };
-  if ("speech" in update) {
-    if (update.speech === undefined) {
-      delete merged.speech;
-    } else {
-      merged.speech = {
-        ...current?.speech,
-        ...update.speech,
-      };
-    }
-  }
-  if ("busyComposerDefaultAction" in update) {
-    if (update.busyComposerDefaultAction === undefined) {
-      delete merged.busyComposerDefaultAction;
-    } else {
-      merged.busyComposerDefaultAction = update.busyComposerDefaultAction;
-    }
-  }
-  if ("collapsedComposerButton" in update) {
-    if (update.collapsedComposerButton === undefined) {
-      delete merged.collapsedComposerButton;
-    } else {
-      merged.collapsedComposerButton = update.collapsedComposerButton;
-    }
-  }
-  if ("steerNowDefault" in update) {
-    if (update.steerNowDefault === undefined) {
-      delete merged.steerNowDefault;
-    } else {
-      merged.steerNowDefault = update.steerNowDefault;
-    }
-  }
-  if ("patientQueueDefault" in update) {
-    if (update.patientQueueDefault === undefined) {
-      delete merged.patientQueueDefault;
-    } else {
-      merged.patientQueueDefault = update.patientQueueDefault;
-    }
-  }
-  if ("sessionToolbarVisibility" in update) {
-    if (update.sessionToolbarVisibility === undefined) {
-      delete merged.sessionToolbarVisibility;
-    } else {
-      merged.sessionToolbarVisibility = {
-        ...current?.sessionToolbarVisibility,
-        ...update.sessionToolbarVisibility,
-      };
-    }
-  }
-  if ("compactAtContextPercent" in update) {
-    // Replace the whole map (not a per-model merge): the client always sends
-    // the complete map, so a model dropped from it means "off" for that model.
-    if (update.compactAtContextPercent === undefined) {
-      delete merged.compactAtContextPercent;
-    } else {
-      merged.compactAtContextPercent = update.compactAtContextPercent;
-    }
-  }
-  return Object.keys(merged).length > 0 ? merged : undefined;
-}
-
-function parseSpeechAudioRetention(
-  raw: unknown,
-): SpeechAudioRetentionSettings | null {
-  if (raw === undefined || raw === null) {
-    return DEFAULT_SERVER_SETTINGS.speechAudioRetention;
-  }
-  if (!isRecord(raw)) return null;
-
-  const enabled =
-    typeof raw.enabled === "boolean"
-      ? raw.enabled
-      : DEFAULT_SERVER_SETTINGS.speechAudioRetention.enabled;
-  const maxAgeDays =
-    raw.maxAgeDays === undefined || raw.maxAgeDays === null
-      ? DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS
-      : raw.maxAgeDays;
-  const maxBytes =
-    raw.maxBytes === undefined || raw.maxBytes === null
-      ? DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES
-      : raw.maxBytes;
-
-  if (
-    typeof maxAgeDays !== "number" ||
-    !Number.isInteger(maxAgeDays) ||
-    maxAgeDays < 1 ||
-    maxAgeDays > 3650
-  ) {
-    return null;
-  }
-  if (
-    typeof maxBytes !== "number" ||
-    !Number.isInteger(maxBytes) ||
-    maxBytes < 1024 * 1024 ||
-    maxBytes > 100 * 1024 * 1024 * 1024
-  ) {
-    return null;
-  }
-
-  return { enabled, maxAgeDays, maxBytes };
-}
-
-function parsePromptCacheKeepalive(
-  raw: unknown,
-): PromptCacheKeepaliveSettings | undefined | null {
-  if (raw === undefined) return null;
-  if (raw === null || raw === "") return undefined;
-  if (!isRecord(raw)) return null;
-
-  const rawProviders = raw.providers;
-  if (rawProviders === undefined || rawProviders === null) return {};
-  if (!isRecord(rawProviders)) return null;
-
-  const providers: PromptCacheKeepaliveSettings["providers"] = {};
-  for (const [providerName, rawProviderSetting] of Object.entries(
-    rawProviders,
-  )) {
-    if (!ALL_PROVIDERS.includes(providerName as ProviderName)) return null;
-    if (rawProviderSetting === undefined || rawProviderSetting === null) {
-      continue;
-    }
-    if (!isRecord(rawProviderSetting)) return null;
-
-    const setting: {
-      mode?: PromptCacheKeepaliveMode;
-      inactivityMinutes?: number;
-    } = {};
-    if ("mode" in rawProviderSetting) {
-      if (
-        typeof rawProviderSetting.mode !== "string" ||
-        !PROMPT_CACHE_KEEPALIVE_MODES.includes(
-          rawProviderSetting.mode as PromptCacheKeepaliveMode,
-        )
-      ) {
-        return null;
-      }
-      setting.mode = rawProviderSetting.mode as PromptCacheKeepaliveMode;
-    }
-    if ("inactivityMinutes" in rawProviderSetting) {
-      const value = rawProviderSetting.inactivityMinutes;
-      if (
-        typeof value !== "number" ||
-        !Number.isInteger(value) ||
-        value < 1 ||
-        value > 1440
-      ) {
-        return null;
-      }
-      setting.inactivityMinutes = value;
-    }
-    if (Object.keys(setting).length > 0) {
-      providers[providerName as ProviderName] = setting;
-    }
-  }
-
-  return { providers };
-}
-
 export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
   const app = new Hono();
   const {
     serverSettingsService,
+    sessionMetadataService,
     onAllowedHostsChanged,
     onFileAccessChanged,
     onRemoteSessionPersistenceChanged,
@@ -851,6 +91,21 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
   app.get("/", (c) => {
     const settings = serverSettingsService.getSettings();
     return c.json({ settings });
+  });
+
+  /**
+   * GET /api/settings/cache-miss-billing/events
+   * Read the server-stored prompt-cache billing evidence log.
+   */
+  app.get("/cache-miss-billing/events", (c) => {
+    const rawLimit = Number(c.req.query("limit") ?? 200);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), 500)
+        : 200;
+    return c.json({
+      events: sessionMetadataService?.getCacheMissBillingEvents(limit) ?? [],
+    });
   });
 
   /**
@@ -881,8 +136,14 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     if (typeof body.clientLogCollectionRequested === "boolean") {
       updates.clientLogCollectionRequested = body.clientLogCollectionRequested;
     }
+    if (typeof body.approvalAuditLogEnabled === "boolean") {
+      updates.approvalAuditLogEnabled = body.approvalAuditLogEnabled;
+    }
     if (typeof body.publicSharesEnabled === "boolean") {
       updates.publicSharesEnabled = body.publicSharesEnabled;
+    }
+    if (typeof body.workstreamsEnabled === "boolean") {
+      updates.workstreamsEnabled = body.workstreamsEnabled;
     }
     if (typeof body.composeAnchorsEnabled === "boolean") {
       updates.composeAnchorsEnabled = body.composeAnchorsEnabled;
@@ -904,6 +165,30 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           {
             error:
               "deferredJoinWindowSeconds must be a non-negative number of seconds (0 = never join)",
+          },
+          400,
+        );
+      }
+    }
+    if ("projectQueueQuietSeconds" in body) {
+      if (
+        body.projectQueueQuietSeconds === undefined ||
+        body.projectQueueQuietSeconds === null
+      ) {
+        updates.projectQueueQuietSeconds = DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
+      } else if (
+        typeof body.projectQueueQuietSeconds === "number" &&
+        Number.isFinite(body.projectQueueQuietSeconds) &&
+        body.projectQueueQuietSeconds >= 0 &&
+        body.projectQueueQuietSeconds <= MAX_PROJECT_QUEUE_QUIET_SECONDS
+      ) {
+        updates.projectQueueQuietSeconds =
+          clampProjectQueueQuietSeconds(body.projectQueueQuietSeconds) ??
+          DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
+      } else {
+        return c.json(
+          {
+            error: `projectQueueQuietSeconds must be a number of seconds from 0 to ${MAX_PROJECT_QUEUE_QUIET_SECONDS}`,
           },
           400,
         );
@@ -1167,6 +452,22 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         );
       }
       updates.promptCacheKeepalive = parsedKeepalive;
+    }
+
+    if ("cacheMissBilling" in body) {
+      const parsedCacheMissBilling = parseCacheMissBilling(
+        body.cacheMissBilling,
+      );
+      if (parsedCacheMissBilling === null) {
+        return c.json(
+          {
+            error:
+              "cacheMissBilling must use booleans for enabled/showToasts, freshness windows 1-1440, and minimumInputTokens 1-5000000",
+          },
+          400,
+        );
+      }
+      updates.cacheMissBilling = parsedCacheMissBilling;
     }
 
     if (typeof body.lifecycleWebhooksEnabled === "boolean") {

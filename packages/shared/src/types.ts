@@ -1,3 +1,5 @@
+import type { UrlProjectId } from "./projectId.js";
+
 /**
  * Provider name - which AI agent provider to use.
  * - "claude": Claude via Anthropic SDK
@@ -121,8 +123,27 @@ export interface ProviderImageSizing {
   note?: string;
 }
 
-export const RECAP_MODES = ["off", "native", "side-session"] as const;
+export const RECAP_MODES = ["off", "side-session", "fork", "native"] as const;
 export type RecapMode = (typeof RECAP_MODES)[number];
+export const DEFAULT_RECAP_AFTER_SECONDS = 5 * 60;
+export const MIN_RECAP_AFTER_SECONDS = 1;
+export const MAX_RECAP_AFTER_SECONDS = 24 * 60 * 60;
+
+export function clampRecapAfterSeconds(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_RECAP_AFTER_SECONDS;
+  return Math.min(
+    MAX_RECAP_AFTER_SECONDS,
+    Math.max(MIN_RECAP_AFTER_SECONDS, Math.round(value)),
+  );
+}
+
+export function normalizeRecapAfterSeconds(
+  value: number | null | undefined,
+): number {
+  return typeof value === "number"
+    ? clampRecapAfterSeconds(value)
+    : DEFAULT_RECAP_AFTER_SECONDS;
+}
 
 export const PROMPT_SUGGESTION_MODES = ["off", "native"] as const;
 export type PromptSuggestionMode = (typeof PROMPT_SUGGESTION_MODES)[number];
@@ -131,6 +152,95 @@ export const PROMPT_CACHE_KEEPALIVE_MODES = ["auto", "off"] as const;
 export type PromptCacheKeepaliveMode =
   (typeof PROMPT_CACHE_KEEPALIVE_MODES)[number];
 export const DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES = 40;
+
+export const DEFAULT_CACHE_MISS_BILLING_FRESH_WINDOW_MINUTES = 60;
+export const DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES: Partial<
+  Record<ProviderName, number>
+> = {
+  claude: 60,
+  codex: 10,
+};
+export const DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS = 50_000;
+
+export interface CacheMissBillingSettings {
+  /** Enable usage-accounting detection and durable server-side evidence logs. */
+  enabled?: boolean;
+  /** Show an in-app popup when an unexpected recompute is recorded. */
+  showToasts?: boolean;
+  /** Fallback freshness window when a provider has no explicit override. */
+  freshWindowMinutes?: number;
+  /** Provider-specific windows where YA expects zero uncached prefix cost. */
+  providerFreshWindowMinutes?: Partial<Record<ProviderName, number>>;
+  /** Minimum uncached input size before YA records a billing-relevant recompute. */
+  minimumInputTokens?: number;
+}
+
+export type CacheMissBillingReason =
+  | "fork-prefix-cache-miss"
+  | "warm-session-cache-miss"
+  | "fork-prefix-cache-hit"
+  | "warm-session-cache-hit";
+
+export type CacheMissBillingOutcome =
+  | "unexpected-recompute"
+  | "expected-cache-hit";
+
+export interface ExpectedInputCostState {
+  /** YA's best provider-specific expectation before reading usage accounting. */
+  state: "expected-free";
+  /** Expected normal-price uncached tokens for the retained context prefix. */
+  expectedUncachedPrefixTokens: 0;
+  source: "fork" | "warm-session";
+  /** True when YA believes the retained/cacheable prefix is byte-identical. */
+  prefixByteIdentical: true;
+  /** Why YA believes the cacheable prefix matches a recent provider prefix. */
+  prefixBasis: "provider-fork-byte-identical" | "same-session-prefix";
+  /** True when the provider cache should still be inside its freshness window. */
+  freshEnough: true;
+  providerFreshWindowMinutes: number;
+}
+
+export interface CacheMissBillingUsage {
+  /** Provider-reported uncached input tokens for the observed turn. */
+  inputTokens: number;
+  /** Provider-reported cached-read input tokens, when visible. */
+  cacheReadTokens?: number;
+  /** Provider-reported cache-creation/write input tokens, when visible. */
+  cacheCreationTokens?: number;
+  /** Provider-reported output tokens, when visible. */
+  outputTokens?: number;
+  /** Input tokens YA believes were billed at normal input cost. */
+  uncachedInputTokens: number;
+}
+
+export interface CacheMissBillingRecord {
+  id: string;
+  timestamp: string;
+  provider: ProviderName;
+  sessionId: string;
+  projectId: UrlProjectId;
+  sessionPath: string;
+  parentSessionId?: string;
+  reason: CacheMissBillingReason;
+  outcome: CacheMissBillingOutcome;
+  messageId?: string;
+  messageIndex?: number;
+  observedUsage: CacheMissBillingUsage;
+  expectedInputCost: ExpectedInputCostState;
+  freshWindowMinutes: number;
+  elapsedSinceExpectedCacheMs?: number;
+  expectedCacheSource: "fork" | "warm-session";
+}
+
+export const DEFAULT_CACHE_MISS_BILLING_SETTINGS: Required<CacheMissBillingSettings> =
+  {
+    enabled: false,
+    showToasts: true,
+    freshWindowMinutes: DEFAULT_CACHE_MISS_BILLING_FRESH_WINDOW_MINUTES,
+    providerFreshWindowMinutes:
+      DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES,
+    minimumInputTokens: DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS,
+  };
 
 export interface PromptCacheKeepaliveProviderInfo {
   /** Whether this provider can refresh/cache-touch without polluting session context. */
@@ -281,16 +391,33 @@ export const ALL_PERMISSION_MODES: readonly PermissionMode[] = [
 /**
  * Saved defaults for the new session form.
  */
-export interface NewSessionDefaults {
-  provider?: ProviderName;
+export interface ProviderSessionDefaults {
   model?: string;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
+  /** Provider-work thinking mode for new sessions on this provider. */
+  thinkingMode?: ThinkingMode;
+  /** Provider-local effort level for new sessions on this provider. */
+  effortLevel?: EffortLevel;
+  /** Provider-local helper model for tailed recaps. */
+  helperSideModel?: string;
+}
+
+export interface NewSessionDefaults {
+  provider?: ProviderName;
+  /** @deprecated Use providers[provider].model. Preserved for migration. */
+  model?: string;
+  /** @deprecated Use providers[provider].serviceTier. Preserved for migration. */
+  serviceTier?: string;
   permissionMode?: PermissionMode;
   recapMode?: RecapMode;
+  /**
+   * Browser-away duration before YA asks the live process for a recap.
+   */
+  recapAfterSeconds?: number;
   promptSuggestionMode?: PromptSuggestionMode;
-  /** Provider-mapped helper side model or helper-target:<id>. */
-  helperSideModel?: string;
+  /** Provider/model economics defaults keyed by provider. */
+  providers?: Partial<Record<ProviderName, ProviderSessionDefaults>>;
 }
 
 export interface SpeechSmartTurnClientDefault {
@@ -310,20 +437,38 @@ export interface SpeechClientDefaults {
   grokSpeechAudioSettings?: GrokSpeechAudioClientDefault;
 }
 
-export interface SessionToolbarVisibilityClientDefaults {
-  modeSelector?: boolean;
-  steerNow?: boolean;
-  attachments?: boolean;
-  slashMenu?: boolean;
-  thinkingToggle?: boolean;
-  renderMode?: boolean;
-  microphone?: boolean;
-  waveform?: boolean;
-  shortcutsHelp?: boolean;
-  contextUsage?: boolean;
-  btw?: boolean;
-  nudge?: boolean;
-  sessionStatus?: boolean;
+/**
+ * How eagerly a session-toolbar control collapses into the `...` overflow menu
+ * as the composer narrows ("narrowing priority"). `first` collapses first,
+ * `mid` next, `last` collapses last; `pin` never collapses. Ordered
+ * highest-survival first.
+ */
+export type ToolbarNarrowingPriority = "pin" | "last" | "mid" | "first";
+
+/**
+ * A session-toolbar control's single presence setting: `hidden` keeps it off
+ * the toolbar entirely; any narrowing-priority tier shows it with that
+ * collapse behavior. There is no separate visibility boolean — hiding a
+ * control forgets its previous tier.
+ */
+export type ToolbarControlPresence = "hidden" | ToolbarNarrowingPriority;
+
+/** Per-control presence defaults for controls with no local override. */
+export interface SessionToolbarPresenceClientDefaults {
+  modeSelector?: ToolbarControlPresence;
+  steerNow?: ToolbarControlPresence;
+  attachments?: ToolbarControlPresence;
+  slashMenu?: ToolbarControlPresence;
+  thinkingToggle?: ToolbarControlPresence;
+  renderMode?: ToolbarControlPresence;
+  microphone?: ToolbarControlPresence;
+  waveform?: ToolbarControlPresence;
+  shortcutsHelp?: ToolbarControlPresence;
+  contextUsage?: ToolbarControlPresence;
+  btw?: ToolbarControlPresence;
+  nudge?: ToolbarControlPresence;
+  sessionStatus?: ToolbarControlPresence;
+  projectQueue?: ToolbarControlPresence;
 }
 
 export type BusyComposerDefaultAction = "steer" | "queue";
@@ -332,6 +477,8 @@ export type CollapsedComposerButtonPreference =
   | "primary"
   | "alternate"
   | "microphone";
+
+export const DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED = true;
 
 export interface ClientDefaults {
   /** Defaults used by browser clients when local storage has no explicit value. */
@@ -358,8 +505,14 @@ export interface ClientDefaults {
    * (`deferred`).
    */
   patientQueueDefault?: boolean;
-  /** Session toolbar visibility defaults for controls with no local override. */
-  sessionToolbarVisibility?: SessionToolbarVisibilityClientDefaults;
+  /**
+   * When true, Ctrl+Enter uses Project Queue whenever the Project Queue
+   * affordance is available. Off leaves Ctrl+Enter bound to the regular
+   * per-session alternate action.
+   */
+  projectQueueCtrlEnterEnabled?: boolean;
+  /** Session toolbar presence defaults for controls with no local override. */
+  sessionToolbarPresence?: SessionToolbarPresenceClientDefaults;
   /**
    * Preemptive compaction thresholds, keyed by model id, each a percent (1–99)
    * of that model's context window. When a model's live context reaches its
@@ -513,6 +666,7 @@ export type SessionOwnership =
       processId: string;
       permissionMode?: PermissionMode;
       modeVersion?: number;
+      recapAfterSeconds?: number;
     }
   | { owner: "external" };
 

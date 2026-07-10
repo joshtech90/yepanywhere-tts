@@ -1,4 +1,7 @@
-import type { TranscriptDisplayObject } from "@yep-anywhere/shared";
+import type {
+  ToolDisplayAction,
+  TranscriptDisplayObject,
+} from "@yep-anywhere/shared";
 import type { ContentBlock, Message } from "../types";
 
 /**
@@ -49,6 +52,8 @@ export interface ToolCallItem extends RenderItemBase {
   id: string; // tool_use.id
   toolName: string; // tool_use.name
   toolInput: unknown; // tool_use.input
+  /** Derived semantics carried for grouping; renderers ignore them for now. */
+  displayActions?: ToolDisplayAction[];
   toolResult?: ToolResultData; // undefined while pending
   /** "incomplete" means the turn ended without YA observing a result. */
   status: "pending" | "complete" | "error" | "aborted" | "incomplete";
@@ -104,6 +109,7 @@ export interface SystemItem extends RenderItemBase {
   id: string;
   subtype: "compact_boundary" | "status" | "init" | string;
   content: string;
+  details?: Array<string | ContentBlock[]>;
   /** For status subtype: the current status (e.g., "compacting") */
   status?: "compacting" | null;
   /** For config_ack subtype: whether it differs from the previous config ack */

@@ -3,6 +3,7 @@ import {
   ALL_PROVIDERS,
   type PermissionMode,
   type ProviderName,
+  normalizeRecapAfterSeconds,
 } from "@yep-anywhere/shared";
 
 export interface InitialSessionStatus {
@@ -10,6 +11,7 @@ export interface InitialSessionStatus {
   processId: string;
   permissionMode?: PermissionMode;
   modeVersion?: number;
+  recapAfterSeconds?: number;
 }
 
 export interface SessionNavigationState {
@@ -38,9 +40,7 @@ function isPermissionMode(value: unknown): value is PermissionMode {
 }
 
 function normalizeModeVersion(value: unknown): number | undefined {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? value
     : undefined;
 }
@@ -64,6 +64,14 @@ export function normalizeInitialSessionStatus(
       ? { permissionMode: value.permissionMode }
       : {}),
     ...(modeVersion !== undefined ? { modeVersion } : {}),
+    ...(typeof value.recapAfterSeconds === "number" &&
+    Number.isFinite(value.recapAfterSeconds)
+      ? {
+          recapAfterSeconds: normalizeRecapAfterSeconds(
+            value.recapAfterSeconds,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -96,6 +104,8 @@ export function createSessionNavigationState(
     ...(state.initialStatus ? { initialStatus: state.initialStatus } : {}),
     ...(state.initialTitle ? { initialTitle: state.initialTitle } : {}),
     ...(state.initialModel ? { initialModel: state.initialModel } : {}),
-    ...(state.initialProvider ? { initialProvider: state.initialProvider } : {}),
+    ...(state.initialProvider
+      ? { initialProvider: state.initialProvider }
+      : {}),
   };
 }

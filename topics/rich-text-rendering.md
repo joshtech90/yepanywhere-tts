@@ -31,7 +31,9 @@ a standalone `**heading**`. Subsequent standalone `**heading**` lines become
 collapsible outline sections; a blank line immediately after a heading is
 suppressed so the visual grouping follows the heading/body structure. Inline
 backtick spans and fenced or indented fixed-font blocks get monospace treatment.
-Other thinking text remains plain pre-wrapped text.
+Non-code lines that are only an HTML comment are treated as display placeholders
+and suppressed; comment-like lines inside fenced or indented code remain source
+text. Other thinking text remains plain pre-wrapped text.
 
 Provider formats observed so far:
 
@@ -60,6 +62,12 @@ These run unconditionally and are not user-configurable:
   previews hydrate those local image references through embedded bounded media
   blobs when present, falling back to the share-scoped relay route rather than
   navigating to authenticated local file APIs.
+- **Assistant inline-code project file links** — when authenticated session
+  Markdown renders with project context, inline-code filename references such
+  as `` `topics/security.md` `` link to the project file viewer only if the
+  target currently exists under the project root. The Markdown parser's
+  existing `codespan` token is the detection boundary; YA does not reparse raw
+  assistant Markdown for this.
 - **Line numbers** — shown in the plain-text fallback path (no Shiki highlight).
 
 ## File Content Viewer Contract

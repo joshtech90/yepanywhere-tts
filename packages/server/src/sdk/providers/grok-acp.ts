@@ -140,7 +140,7 @@ export interface GrokACPProviderConfig {
  */
 export class GrokACPProvider implements AgentProvider {
   readonly name: ProviderName = "grok";
-  readonly displayName = "Grok Build (ACP)";
+  readonly displayName = "Grok Build";
   readonly supportsPermissionMode = true;
   readonly supportsThinkingToggle = true; // Effort via CLI --effort flag (attempted even if model cache says false)
   readonly supportsSlashCommands = true;
@@ -349,8 +349,7 @@ export class GrokACPProvider implements AgentProvider {
     try {
       const connectStart = Date.now();
       const xaiApiKey = this.ambientXaiApiKey;
-      const passXaiApiKey =
-        this.useAmbientXaiApiKey && xaiApiKey !== undefined;
+      const passXaiApiKey = this.useAmbientXaiApiKey && xaiApiKey !== undefined;
       await client.connect({
         command: grokPath,
         args,

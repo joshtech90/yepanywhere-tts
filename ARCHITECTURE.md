@@ -30,6 +30,9 @@ linked docs when the details change.
   reconnect across multiple subscriptions. Distributed hook-and-context state
   (no Redux/Zustand). Streaming text and markdown go through ref-based DOM
   updates with adaptive 100–750 ms throttling, not React state per token.
+  [`topics/client-source-runtime-topology.md`](topics/client-source-runtime-topology.md)
+  records the desired next source-runtime boundary above the current
+  one-source-at-a-time UI.
 - **Relay** (optional) is a dumb pipe carrying NaCl-encrypted frames between
   client and server when neither has a routable address to the other.
 
@@ -44,6 +47,33 @@ section below for what would have to change at higher fan-out.
 - [`packages/client/RENDERING_PERFORMANCE.md`](packages/client/RENDERING_PERFORMANCE.md)
   — the React render/update pipeline, what's coalesced, what stays immediate,
   the streaming-markdown ref pattern, and the review checklist.
+- [`topics/client-source-runtime-topology.md`](topics/client-source-runtime-topology.md)
+  — vision for explicit per-source client runtimes so local/direct/relay YA
+  servers can own their API transport, activity stream, summary stores, and
+  session-detail services without hidden current-source globals.
+- [`topics/session-id-remap.md`](topics/session-id-remap.md) — problem
+  statement for startup-time temporary session IDs that later canonicalize,
+  including the activity event and client summary-store merge shape needed to
+  avoid duplicate sidebar/list rows.
+- [`topics/source-transport.md`](topics/source-transport.md) — proposal for a
+  source-bound transport facade that makes localhost, plain multiplex
+  WebSocket, and secure/relay modes explicit without hiding channel status.
+- [`topics/session-detail-data-layer.md`](topics/session-detail-data-layer.md)
+  — lower-level vision for a canonical client session-detail data layer
+  between provider stream/REST inputs and transcript DOM rendering; see the
+  linked tactical plan before reshaping `useSession`, `useSessionMessages`,
+  transcript augments, subagents, or same-tab message caches.
+- [`topics/stream-persisted-render-parity.md`](topics/stream-persisted-render-parity.md)
+  — graded convergence contract between the active live tail and the durable
+  provider transcript: strong structural stability for paired tool calls,
+  bounded optimistic/live-only detail near the tail, and no YA shadow
+  transcript replacing provider persistence as source of truth.
+- [`topics/session-media-handles.md`](topics/session-media-handles.md) —
+  problem statement and latent proposal for replacing transcript inline
+  base64 image/blob payloads with authenticated server media handles.
+- [`topics/disk-full-degraded-mode.md`](topics/disk-full-degraded-mode.md)
+  — problem statement and latent proposal for keeping relay/local control
+  paths alive when optional disk writers hit `ENOSPC`.
 - [`docs/project/connection-matrix.md`](docs/project/connection-matrix.md) —
   the four client transport modes (Direct / WS / SecureConnection /
   SecureConnection-via-relay) and which auth/encoding each uses.
@@ -227,6 +257,28 @@ search anchors, and the augment-on-DOM streaming path; each needs verification.
 **Trigger.** Defer until a real long-session profile shows row count is the
 dominant cost, not formatter work. The `RenderProfile` markers documented in
 `RENDERING_PERFORMANCE.md` are the right tool to confirm.
+
+### Disk-pressure degraded mode
+
+**Problem today.** Optional disk writers can still be process-fatal if they
+emit an unhandled Node stream `error`. A local `ENOSPC` can therefore kill the
+YA server and drop relay access even though the relay client reconnects while
+the process is alive.
+
+**Proposal.** Treat optional diagnostics as degradable, fail upload/user-action
+writes explicitly, and surface disk-pressure state through diagnostics when the
+same policy starts appearing across multiple writers. See
+[`topics/disk-full-degraded-mode.md`](topics/disk-full-degraded-mode.md).
+
+**Cost.** Small for stream hardening; larger if YA adds log rotation, shared
+persistence policy, or remote-visible disk health.
+
+**Benefit.** Remote and local control paths stay available under disk pressure,
+and users get clear write-failure errors instead of a dead server.
+
+**Trigger.** The narrow stream-hardening trigger has been met by an observed
+`ENOSPC` process exit. Broader degraded-mode work should wait for the triggers
+listed in the topic doc.
 
 ---
 

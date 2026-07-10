@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionIndexService } from "../../src/indexes/index.js";
 import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
+import { createApp } from "../../src/app.js";
 import { createProcessesRoutes } from "../../src/routes/processes.js";
+import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
 import type { Supervisor } from "../../src/supervisor/Supervisor.js";
 import type {
@@ -62,7 +64,7 @@ describe("Processes Routes", () => {
     const summary = createSummary();
 
     const getSessionSummary = vi.fn(async () => summary);
-    const getSessionTitle = vi.fn(async () => null);
+    const getSessionSummaryWithCache = vi.fn(async () => null);
 
     const routes = createProcessesRoutes({
       supervisor: {
@@ -79,7 +81,8 @@ describe("Processes Routes", () => {
           }) as unknown as ISessionReader,
       ),
       sessionIndexService: {
-        getSessionTitle,
+        getSessionSummaryWithCache,
+        getSessionTitle: vi.fn(async () => null),
       } as unknown as SessionIndexService,
       sessionMetadataService: {
         getMetadata: vi.fn(() => undefined),
@@ -94,13 +97,82 @@ describe("Processes Routes", () => {
     expect(json.processes[0]?.sessionTitle).toBe("Fix the agents page titles");
     expect(json.terminatedProcesses).toEqual([]);
 
-    expect(getSessionTitle).toHaveBeenCalledWith(
+    expect(getSessionSummaryWithCache).toHaveBeenCalledWith(
       "/tmp/project/.sessions",
       "proj-1",
       "sess-1",
       expect.anything(),
     );
     expect(getSessionSummary).toHaveBeenCalledWith("sess-1", "proj-1");
+  });
+
+  it("prefers persisted custom titles over generated session titles", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const summary = createSummary();
+
+    const getSessionSummary = vi.fn(async () => summary);
+    const getMetadata = vi.fn(() => ({
+      customTitle: "Use this custom title",
+    }));
+
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcessInfoList: vi.fn(() => [process]),
+        getRecentlyTerminatedProcesses: vi.fn(() => []),
+      } as unknown as Supervisor,
+      scanner: {
+        getProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary,
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata,
+      } as unknown as SessionMetadataService,
+    });
+
+    const response = await routes.request("/");
+    expect(response.status).toBe(200);
+
+    const json = await response.json();
+    expect(json.processes).toHaveLength(1);
+    expect(json.processes[0]?.sessionTitle).toBe("Use this custom title");
+    expect(getMetadata).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("wires app session metadata into process title enrichment", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const getMetadata = vi.fn(() => ({
+      customTitle: "Wired custom title",
+    }));
+
+    const { app, supervisor, scanner } = createApp({
+      sdk: new MockClaudeSDK(),
+      sessionIndexService: {
+        getSessionSummaryWithCache: vi.fn(async () => createSummary()),
+        getSessionTitle: vi.fn(async () => "Generated title"),
+      } as unknown as SessionIndexService,
+      sessionMetadataService: {
+        getProvider: vi.fn(() => undefined),
+        getMetadata,
+      } as unknown as SessionMetadataService,
+    });
+
+    vi.spyOn(supervisor, "getProcessInfoList").mockReturnValue([process]);
+    vi.spyOn(scanner, "getProject").mockResolvedValue(project);
+
+    const response = await app.request("/api/processes");
+    expect(response.status).toBe(200);
+
+    const json = await response.json();
+    expect(json.processes).toHaveLength(1);
+    expect(json.processes[0]?.sessionTitle).toBe("Wired custom title");
+    expect(getMetadata).toHaveBeenCalledWith("sess-1");
   });
 
   it("uses the process provider session source for mixed-provider projects", async () => {
@@ -118,7 +190,7 @@ describe("Processes Routes", () => {
     const codexReader = {
       getSessionSummary: vi.fn(async () => summary),
     } as unknown as ISessionReader;
-    const getSessionTitle = vi.fn(async () => summary.title);
+    const getSessionSummaryWithCache = vi.fn(async () => summary);
 
     const routes = createProcessesRoutes({
       supervisor: {
@@ -134,7 +206,8 @@ describe("Processes Routes", () => {
         sessionDir: "/tmp/codex-sessions",
       })),
       sessionIndexService: {
-        getSessionTitle,
+        getSessionSummaryWithCache,
+        getSessionTitle: vi.fn(async () => null),
       } as unknown as SessionIndexService,
     });
 
@@ -145,16 +218,13 @@ describe("Processes Routes", () => {
     expect(json.processes).toHaveLength(1);
     expect(json.processes[0]?.sessionTitle).toBe("Fix the agents page titles");
 
-    expect(vi.mocked(codexReader.getSessionSummary)).toHaveBeenCalledWith(
-      "sess-1",
-      "proj-1",
-    );
-    expect(getSessionTitle).toHaveBeenCalledWith(
+    expect(getSessionSummaryWithCache).toHaveBeenCalledWith(
       "/tmp/codex-sessions",
       "proj-1",
       "sess-1",
       codexReader,
     );
+    expect(vi.mocked(codexReader.getSessionSummary)).not.toHaveBeenCalled();
     expect(vi.mocked(claudeReader.getSessionSummary)).not.toHaveBeenCalled();
   });
 

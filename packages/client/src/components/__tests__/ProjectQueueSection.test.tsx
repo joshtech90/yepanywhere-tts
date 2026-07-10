@@ -1,0 +1,403 @@
+// @vitest-environment jsdom
+
+import type {
+  ProjectQueueDispatchState,
+  ProjectQueueItemSummary,
+  ProjectQueueProjectStatus,
+  ProjectQueueRecoveredSessionQueueSummary,
+} from "@yep-anywhere/shared";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../../i18n";
+import type { Project } from "../../types";
+import { ProjectQueueSection } from "../ProjectQueueSection";
+
+const PROJECT_ID = "project-1" as ProjectQueueItemSummary["projectId"];
+const OTHER_PROJECT_ID = "project-2" as ProjectQueueItemSummary["projectId"];
+
+const project: Project = {
+  id: PROJECT_ID,
+  name: "Alpha",
+  path: "/tmp/alpha",
+  sessionCount: 2,
+  activeOwnedCount: 0,
+  activeExternalCount: 0,
+  lastActivity: null,
+};
+
+const otherProject: Project = {
+  id: OTHER_PROJECT_ID,
+  name: "Beta",
+  path: "/tmp/beta",
+  sessionCount: 1,
+  activeOwnedCount: 0,
+  activeExternalCount: 0,
+  lastActivity: null,
+};
+
+function makeItem(
+  id: string,
+  status: ProjectQueueItemSummary["status"] = "queued",
+  overrides: Partial<ProjectQueueItemSummary> = {},
+): ProjectQueueItemSummary {
+  return {
+    id,
+    projectId: PROJECT_ID,
+    target: { type: "existing-session", sessionId: "session-abcdef" },
+    messagePreview: `Queued message ${id}`,
+    message: { text: `Queued message ${id}` },
+    createdAt: "2026-06-27T00:00:00.000Z",
+    updatedAt: "2026-06-27T00:00:00.000Z",
+    status,
+    attachmentCount: 0,
+    ...(status === "failed" ? { lastError: "Provider unavailable" } : {}),
+    ...overrides,
+  };
+}
+
+function makeRecoveredSessionQueue(
+  overrides: Partial<ProjectQueueRecoveredSessionQueueSummary> = {},
+): ProjectQueueRecoveredSessionQueueSummary {
+  return {
+    id: "recovered-1",
+    sessionId: "session-recovered",
+    sessionTitle: "Recovered session",
+    projectId: PROJECT_ID,
+    content: "Recovered queued message",
+    timestamp: "2026-06-30T00:00:00.000Z",
+    queuedAt: "2026-06-30T00:00:00.000Z",
+    createdAt: "2026-06-30T00:00:00.000Z",
+    updatedAt: "2026-06-30T00:00:00.000Z",
+    kind: "patient",
+    status: "paused-after-restart",
+    ...overrides,
+  };
+}
+
+function renderSection(
+  items: ProjectQueueItemSummary[],
+  handlers = {
+    onPauseDispatch: vi.fn(),
+    onResumeDispatch: vi.fn(),
+    onPromoteNow: vi.fn(),
+    onDeleteItem: vi.fn(),
+    onRetryItem: vi.fn(),
+    onMoveItemToTop: vi.fn(),
+    onUpdateItem: vi.fn(),
+  },
+  highlightedItemId?: string,
+  dispatchState: ProjectQueueDispatchState = { status: "running" },
+  recoveredSessionQueues: ProjectQueueRecoveredSessionQueueSummary[] = [],
+  projectStatusesByProject: Record<string, ProjectQueueProjectStatus> = {},
+  projects: Project[] = [project, otherProject],
+) {
+  render(
+    <I18nProvider>
+      <MemoryRouter>
+        <ProjectQueueSection
+          projects={projects}
+          items={items}
+          recoveredSessionQueues={recoveredSessionQueues}
+          loading={false}
+          error={null}
+          mutatingItemId={null}
+          mutatingDispatchState={false}
+          mutatingPromoteItemId={null}
+          dispatchState={dispatchState}
+          projectStatusesByProject={projectStatusesByProject}
+          highlightedItemId={highlightedItemId}
+          onPauseDispatch={handlers.onPauseDispatch}
+          onResumeDispatch={handlers.onResumeDispatch}
+          onPromoteNow={handlers.onPromoteNow}
+          onDeleteItem={handlers.onDeleteItem}
+          onRetryItem={handlers.onRetryItem}
+          onMoveItemToTop={handlers.onMoveItemToTop}
+          onUpdateItem={handlers.onUpdateItem}
+        />
+      </MemoryRouter>
+    </I18nProvider>,
+  );
+  return handlers;
+}
+
+function makeProjectStatus(
+  state: ProjectQueueProjectStatus["state"],
+  overrides: Partial<ProjectQueueProjectStatus> = {},
+): ProjectQueueProjectStatus {
+  const blocked = state === "blocked";
+  return {
+    projectId: PROJECT_ID,
+    state,
+    idle: !blocked,
+    blockers: blocked ? ["session-abcdef:in-turn"] : [],
+    dispatchPaused: state === "paused",
+    inFlight: state === "dispatching",
+    quietWindowMs: 30_000,
+    itemCount: 1,
+    nextItemId: "1",
+    ...overrides,
+  };
+}
+
+describe("ProjectQueueSection", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders queued items with project, target, and delete action", () => {
+    const handlers = renderSection([makeItem("1")]);
+
+    expect(screen.getByRole("heading", { name: "Project Queue" })).toBeTruthy();
+    expect(screen.getByText("Alpha")).toBeTruthy();
+    expect(screen.getByText("Queued message 1")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Session session-" })
+        .getAttribute("href"),
+    ).toBe("/projects/project-1/sessions/session-abcdef");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(handlers.onDeleteItem).toHaveBeenCalledWith("project-1", "1");
+  });
+
+  it("renders target session titles when available", () => {
+    renderSection([
+      makeItem("1", "queued", {
+        targetTitle: "Investigate failing build",
+        targetFullTitle: "Investigate failing build in CI",
+      }),
+    ]);
+
+    expect(
+      screen.getByRole("link", { name: "Investigate failing build" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Session session-" })).toBeNull();
+  });
+
+  it("groups queued items by project name while preserving project order", () => {
+    renderSection([
+      makeItem("beta-1", "queued", {
+        projectId: OTHER_PROJECT_ID,
+        messagePreview: "Beta first queued item",
+        message: { text: "Beta first queued item" },
+      }),
+      makeItem("alpha-1", "queued", {
+        messagePreview: "Alpha queued item",
+        message: { text: "Alpha queued item" },
+      }),
+      makeItem("beta-2", "queued", {
+        projectId: OTHER_PROJECT_ID,
+        messagePreview: "Beta second queued item",
+        message: { text: "Beta second queued item" },
+      }),
+    ]);
+
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Beta" })).toBeTruthy();
+
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("Alpha")).toBeLessThan(text.indexOf("Beta"));
+    expect(text.indexOf("Beta first queued item")).toBeLessThan(
+      text.indexOf("Beta second queued item"),
+    );
+  });
+
+  it("renders recovered session queues above project queue items", () => {
+    renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [makeRecoveredSessionQueue()],
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Paused Session Queue" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Recovered queued message")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Recovered session" })
+        .getAttribute("href"),
+    ).toBe("/projects/project-1/sessions/session-recovered");
+
+    const text = document.body.textContent ?? "";
+    expect(text.indexOf("Recovered queued message")).toBeLessThan(
+      text.indexOf("Queued message 1"),
+    );
+  });
+
+  it("shows recovered session queues without project queue controls", () => {
+    renderSection([], undefined, undefined, { status: "running" }, [
+      makeRecoveredSessionQueue(),
+    ]);
+
+    expect(screen.getByText("Recovered queued message")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    expect(screen.queryByText("0 queued")).toBeNull();
+  });
+
+  it("pauses dispatch from the header", () => {
+    const handlers = renderSection([makeItem("1")]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    expect(handlers.onPauseDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes paused-after-restart dispatch from the header", () => {
+    const handlers = renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      {
+        status: "paused",
+        reason: "restart",
+        pausedAt: "2026-06-30T00:00:00.000Z",
+      },
+      [],
+      { [PROJECT_ID]: makeProjectStatus("paused") },
+    );
+
+    expect(
+      screen.getByText("Dispatch is paused after server restart."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/After Resume, the next item may still wait up to 30s/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+
+    expect(handlers.onResumeDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers retry and shows errors for failed items", () => {
+    const handlers = renderSection([makeItem("2", "failed")]);
+
+    expect(screen.getByText("Provider unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(handlers.onRetryItem).toHaveBeenCalledWith("project-1", "2");
+  });
+
+  it("offers move-to-top only for non-leading movable items", () => {
+    const handlers = renderSection([makeItem("1"), makeItem("2")]);
+
+    const moveButtons = screen.getAllByRole("button", { name: "Move to top" });
+    expect(moveButtons).toHaveLength(1);
+    fireEvent.click(moveButtons[0]!);
+
+    expect(handlers.onMoveItemToTop).toHaveBeenCalledWith("project-1", "2");
+  });
+
+  it("keeps move-to-top project-local while paused", () => {
+    const handlers = renderSection(
+      [
+        makeItem("other", "queued", { projectId: OTHER_PROJECT_ID }),
+        makeItem("1"),
+        makeItem("2"),
+      ],
+      undefined,
+      undefined,
+      {
+        status: "paused",
+        reason: "manual",
+        pausedAt: "2026-06-30T00:00:00.000Z",
+      },
+      [],
+      {
+        [PROJECT_ID]: makeProjectStatus("paused"),
+        [OTHER_PROJECT_ID]: makeProjectStatus("paused", {
+          projectId: OTHER_PROJECT_ID,
+        }),
+      },
+    );
+
+    const moveButtons = screen.getAllByRole("button", { name: "Move to top" });
+    expect(moveButtons).toHaveLength(1);
+    fireEvent.click(moveButtons[0]!);
+
+    expect(handlers.onMoveItemToTop).toHaveBeenCalledWith("project-1", "2");
+  });
+
+  it("starts a queued item immediately when only the quiet window remains", () => {
+    const handlers = renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [],
+      { [PROJECT_ID]: makeProjectStatus("waiting-quiet") },
+    );
+
+    expect(screen.getByText(/Waiting for project quiet/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start now" }));
+
+    expect(handlers.onPromoteNow).toHaveBeenCalledWith("project-1", "1", {
+      force: false,
+    });
+  });
+
+  it("surfaces a force-start override when blockers remain", () => {
+    const handlers = renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [],
+      { [PROJECT_ID]: makeProjectStatus("blocked") },
+    );
+
+    expect(screen.getByText(/Blocked: session- in turn/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Force start" }));
+
+    expect(handlers.onPromoteNow).toHaveBeenCalledWith("project-1", "1", {
+      force: true,
+    });
+  });
+
+  it("highlights a linked queue item", () => {
+    renderSection([makeItem("1"), makeItem("2")], undefined, "2");
+
+    const highlighted = document.querySelector(
+      '[data-project-queue-item-id="2"]',
+    );
+    expect(
+      highlighted?.classList.contains("project-queue-item--highlighted"),
+    ).toBe(true);
+  });
+
+  it("edits queued item text", async () => {
+    const handlers = renderSection([makeItem("4")]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Project Queue message"), {
+      target: { value: "Edited queued work" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(handlers.onUpdateItem).toHaveBeenCalledWith("project-1", "4", {
+        text: "Edited queued work",
+      }),
+    );
+  });
+
+  it("disables cancellation while dispatching", () => {
+    renderSection([makeItem("3", "dispatching")]);
+
+    expect(
+      (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.getByText("Sending")).toBeTruthy();
+  });
+});

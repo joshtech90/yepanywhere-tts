@@ -1,17 +1,28 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Outlet,
   useLocation,
   useOutletContext,
-  useParams,
 } from "react-router-dom";
 import { Sidebar } from "../components/Sidebar";
+import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
+import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import {
   DESKTOP_BREAKPOINT,
   MIN_CONTENT_WIDTH,
   useSidebarWidth,
 } from "../hooks/useSidebarWidth";
+import { useRetainSidebarSessionFeeds } from "../hooks/useSidebarSessionFeeds";
 
 export interface NavigationLayoutContext {
   /** Open the mobile sidebar */
@@ -25,6 +36,32 @@ export interface NavigationLayoutContext {
 }
 
 const NOOP = () => {};
+const SESSION_DOM_LINGER_TTL_MS = 60_000;
+const NavigationLayoutReactContext =
+  createContext<NavigationLayoutContext | null>(null);
+
+interface SessionRouteLocationSnapshot {
+  pathname: string;
+  search: string;
+  state: unknown;
+}
+
+interface SessionDomLingerRoute {
+  key: string;
+  projectId: string;
+  sessionId: string;
+  location: SessionRouteLocationSnapshot;
+  status: "active" | "parked";
+  parkedAtMs?: number;
+  expiresAtMs?: number;
+}
+
+interface NavigationLayoutProps {
+  sessionElement?: (
+    route: SessionDomLingerRoute,
+    options: { parked: boolean },
+  ) => ReactNode;
+}
 
 interface ResponsiveLayoutState {
   isWideScreen: boolean;
@@ -55,14 +92,61 @@ function responsiveLayoutStateEquals(
   );
 }
 
+function createSessionDomLingerKey(options: {
+  sourceKey: string;
+  projectId: string;
+  sessionId: string;
+  search: string;
+}): string {
+  return [
+    encodeURIComponent(options.sourceKey),
+    encodeURIComponent(options.projectId),
+    encodeURIComponent(options.sessionId),
+    encodeURIComponent(options.search),
+  ].join(":");
+}
+
+function readSessionRouteFromPathname(
+  pathname: string,
+): { projectId: string; sessionId: string } | null {
+  const match = pathname.match(
+    /(?:^|\/)projects\/([^/]+)\/sessions\/([^/]+)\/?$/,
+  );
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  return {
+    projectId: decodeURIComponent(match[1]),
+    sessionId: decodeURIComponent(match[2]),
+  };
+}
+
+function isContentFrameRoutePathname(pathname: string): boolean {
+  return /(?:^|\/)projects\/[^/]+\/file\/?$/.test(pathname);
+}
+
+export function SessionDomLingerRouteMarker() {
+  return null;
+}
+
 /**
  * Shared layout for all pages that need a sidebar.
  * Renders the Sidebar once so it persists across route changes.
  */
-export function NavigationLayout() {
-  // Extract sessionId from URL for highlighting in sidebar (works for session pages)
-  const { sessionId } = useParams<{ sessionId?: string }>();
+export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
+  useRetainSidebarSessionFeeds();
+  const { sessionDomLingerEnabled } = useSessionPerformanceSettings();
+
   const location = useLocation();
+  const currentSessionMatch = useMemo(
+    () => readSessionRouteFromPathname(location.pathname),
+    [location.pathname],
+  );
+  const isContentFrameRoute = useMemo(
+    () => isContentFrameRoutePathname(location.pathname),
+    [location.pathname],
+  );
+  const sourceKey = useClientSummarySourceKey();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const forceExpandedSidebar =
     new URLSearchParams(location.search).get("sidebar") === "expanded";
@@ -120,6 +204,12 @@ export function NavigationLayout() {
     }
   }, [canShowExpandedSidebar, isWideScreen, sidebarOpen]);
 
+  useEffect(() => {
+    if (isContentFrameRoute && sidebarOpen) {
+      setSidebarOpen(false);
+    }
+  }, [isContentFrameRoute, sidebarOpen]);
+
   // Smart toggle: if viewport can support expanded, toggle preference; otherwise open overlay
   const handleToggleExpanded = useCallback(() => {
     if (canShowExpandedSidebar) {
@@ -163,14 +253,105 @@ export function NavigationLayout() {
     () => ({ width: effectivelyCollapsed ? undefined : sidebarWidth }),
     [effectivelyCollapsed, sidebarWidth],
   );
+  const currentSessionRoute = useMemo<SessionDomLingerRoute | null>(() => {
+    if (!currentSessionMatch) {
+      return null;
+    }
+    const { projectId, sessionId } = currentSessionMatch;
+    return {
+      key: createSessionDomLingerKey({
+        sourceKey,
+        projectId,
+        sessionId,
+        search: location.search,
+      }),
+      projectId,
+      sessionId,
+      location: {
+        pathname: location.pathname,
+        search: location.search,
+        state: location.state,
+      },
+      status: "active",
+    };
+  }, [
+    currentSessionMatch,
+    location.pathname,
+    location.search,
+    location.state,
+    sourceKey,
+  ]);
+  const [lingerRoute, setLingerRoute] =
+    useState<SessionDomLingerRoute | null>(() => currentSessionRoute);
+  const sessionLayerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!sessionDomLingerEnabled) {
+      setLingerRoute(currentSessionRoute);
+      return;
+    }
+    if (currentSessionRoute) {
+      setLingerRoute(currentSessionRoute);
+      return;
+    }
+    setLingerRoute((previous) => {
+      if (!previous || previous.status === "parked") {
+        return previous;
+      }
+      const now = Date.now();
+      return {
+        ...previous,
+        status: "parked",
+        parkedAtMs: now,
+        expiresAtMs: now + SESSION_DOM_LINGER_TTL_MS,
+      };
+    });
+  }, [currentSessionRoute, sessionDomLingerEnabled]);
+
+  useEffect(() => {
+    if (lingerRoute?.status !== "parked") {
+      return;
+    }
+    const timeoutMs = Math.max(0, (lingerRoute.expiresAtMs ?? 0) - Date.now());
+    const timer = window.setTimeout(() => {
+      setLingerRoute((previous) =>
+        previous?.key === lingerRoute.key && previous.status === "parked"
+          ? null
+          : previous,
+      );
+    }, timeoutMs);
+    return () => window.clearTimeout(timer);
+  }, [lingerRoute]);
+
+  const parkedSessionRoute =
+    sessionDomLingerEnabled && !currentSessionRoute ? lingerRoute : null;
+  const renderedSessionRoute = currentSessionRoute ?? parkedSessionRoute;
+  const sessionLayerVisible = Boolean(
+    currentSessionRoute &&
+      renderedSessionRoute &&
+      currentSessionRoute.key === renderedSessionRoute.key,
+  );
+  const sessionLayerParked = Boolean(renderedSessionRoute && !sessionLayerVisible);
+
+  useEffect(() => {
+    const element = sessionLayerRef.current as
+      | (HTMLDivElement & { inert?: boolean })
+      | null;
+    if (!element) {
+      return;
+    }
+    element.inert = sessionLayerParked;
+  }, [sessionLayerParked]);
 
   return (
     <div
-      className={`session-page ${isWideScreen ? "desktop-layout" : ""} ${isResizing ? "resizing" : ""}`}
+      className={`session-page ${isWideScreen ? "desktop-layout" : ""} ${
+        isContentFrameRoute ? "content-frame-layout" : ""
+      } ${isResizing ? "resizing" : ""}`}
       style={containerStyle}
     >
       {/* Desktop sidebar - always visible on wide screens */}
-      {isWideScreen && (
+      {isWideScreen && !isContentFrameRoute && (
         <aside
           className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
           style={desktopSidebarStyle}
@@ -179,7 +360,7 @@ export function NavigationLayout() {
             isOpen={true}
             onClose={NOOP}
             onNavigate={NOOP}
-            currentSessionId={sessionId}
+            currentSessionId={currentSessionMatch?.sessionId}
             isDesktop={true}
             isCollapsed={effectivelyCollapsed}
             onToggleExpanded={handleToggleExpanded}
@@ -192,17 +373,44 @@ export function NavigationLayout() {
       )}
 
       {/* Mobile sidebar - modal overlay (also used for constrained desktop overlay) */}
-      {(!isWideScreen || sidebarOpen) && (
+      {!isContentFrameRoute && (!isWideScreen || sidebarOpen) && (
         <Sidebar
           isOpen={sidebarOpen}
           onClose={closeSidebar}
           onNavigate={closeSidebar}
-          currentSessionId={sessionId}
+          currentSessionId={currentSessionMatch?.sessionId}
         />
       )}
 
-      {/* Child route content */}
-      <Outlet context={context} />
+      <NavigationLayoutReactContext.Provider value={context}>
+        <div className="navigation-route-stack">
+          {renderedSessionRoute && sessionElement && (
+            <div
+              key={renderedSessionRoute.key}
+              ref={sessionLayerRef}
+              className={`navigation-route-layer session-dom-linger-layer ${
+                sessionLayerVisible ? "is-active" : "is-parked"
+              }`}
+              aria-hidden={sessionLayerParked ? true : undefined}
+              data-session-dom-linger={
+                sessionLayerVisible ? "active" : "parked"
+              }
+            >
+              {sessionElement(renderedSessionRoute, {
+                parked: sessionLayerParked,
+              })}
+            </div>
+          )}
+          <div
+            className={`navigation-route-layer navigation-route-foreground ${
+              sessionLayerVisible ? "is-hidden" : "is-active"
+            }`}
+            aria-hidden={sessionLayerVisible ? true : undefined}
+          >
+            <Outlet context={context} />
+          </div>
+        </div>
+      </NavigationLayoutReactContext.Provider>
     </div>
   );
 }
@@ -211,5 +419,13 @@ export function NavigationLayout() {
  * Hook for child routes to access the shared navigation layout context.
  */
 export function useNavigationLayout(): NavigationLayoutContext {
-  return useOutletContext<NavigationLayoutContext>();
+  const context = useContext(NavigationLayoutReactContext);
+  const outletContext = useOutletContext<NavigationLayoutContext | null>();
+  if (context) {
+    return context;
+  }
+  if (outletContext) {
+    return outletContext;
+  }
+  throw new Error("useNavigationLayout must be used under NavigationLayout");
 }

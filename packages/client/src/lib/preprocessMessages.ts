@@ -8,6 +8,13 @@ import type {
   ToolResultData,
   UserPromptItem,
 } from "../types/renderItems";
+import {
+  formatCommandTurn,
+  isCompactionLocalCommandOutput,
+  isLocalCommandCaveatOnly,
+  parseCommandTurn,
+  parseLocalCommandStdout,
+} from "./commandTurn";
 import { getMessageId } from "./mergeMessages";
 import {
   isTaskNotificationMessage,
@@ -72,7 +79,11 @@ export function preprocessMessages(
     );
   }
 
-  const enrichedItems = enrichWriteStdinWithCommand(items);
+  const compactCoalescedItems = coalesceCompactBoundaryItems(items);
+  const slashCommandCoalescedItems = coalesceSlashCommandSkillBodies(
+    compactCoalescedItems,
+  );
+  const enrichedItems = enrichWriteStdinWithCommand(slashCommandCoalescedItems);
   return collapseSessionSetupRuns(enrichedItems);
 }
 
@@ -118,6 +129,11 @@ const SESSION_SETUP_PREFIXES = [
   "<environment_context>",
 ];
 
+const STARTUP_INSTRUCTIONS_SETUP_RE =
+  /^(?:<recommended_plugins>[\s\S]*?<\/recommended_plugins>\s*)?# AGENTS\.md instructions/u;
+
+const RESUME_ENVIRONMENT_CONTEXT_MAX_GAP_MS = 5_000;
+
 const INTERNAL_REASONING_PLACEHOLDER = "Reasoning [internal]";
 
 function getPromptText(content: string | ContentBlock[]): string {
@@ -142,6 +158,255 @@ function getPreprocessMessageContent(
   );
 }
 
+function isCompactSummaryMessage(msg: Message): boolean {
+  return msg.isCompactSummary === true;
+}
+
+function isCompactCommand(command: string): boolean {
+  const normalized = command.trim().replace(/^\/+/, "").toLowerCase();
+  return normalized === "compact" || normalized === "compress";
+}
+
+function systemLocalCommandContent(content: unknown): string | null {
+  if (typeof content !== "string") {
+    return null;
+  }
+
+  if (isLocalCommandCaveatOnly(content)) {
+    return null;
+  }
+
+  const commandTurn = parseCommandTurn(content);
+  if (commandTurn) {
+    return isCompactCommand(commandTurn.command)
+      ? null
+      : formatCommandTurn(commandTurn);
+  }
+
+  const localCommandStdout = parseLocalCommandStdout(content);
+  if (localCommandStdout !== null) {
+    if (!localCommandStdout) {
+      return null;
+    }
+    return isCompactionLocalCommandOutput(localCommandStdout)
+      ? null
+      : localCommandStdout;
+  }
+
+  const trimmedContent = content.trim();
+  return trimmedContent ? trimmedContent : null;
+}
+
+function compactMetadataDetail(msg: Message): string | null {
+  const metadata = (msg as { compactMetadata?: unknown }).compactMetadata;
+  if (!isRecord(metadata)) {
+    return null;
+  }
+  return `compactMetadata:\n${JSON.stringify(metadata, null, 2)}`;
+}
+
+function compactBoundaryDetails(msg: Message): Array<string | ContentBlock[]> {
+  const details: Array<string | ContentBlock[]> = [];
+  const metadata = compactMetadataDetail(msg);
+  if (metadata) {
+    details.push(metadata);
+  }
+  return details;
+}
+
+function compactSummaryDetails(
+  content: string | ContentBlock[] | undefined,
+): Array<string | ContentBlock[]> {
+  return content === undefined ? [] : [content];
+}
+
+function contentBlocksText(content: string | ContentBlock[]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  return content
+    .map((block) =>
+      block.type === "text" && typeof block.text === "string" ? block.text : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isCompactBoundaryItem(
+  item: RenderItem,
+): item is SystemItem & { subtype: "compact_boundary" } {
+  return item.type === "system" && item.subtype === "compact_boundary";
+}
+
+function hasSystemCompactBoundarySource(item: SystemItem): boolean {
+  return item.sourceMessages.some(
+    (source) =>
+      source.type === "system" &&
+      (source as { subtype?: string }).subtype === "compact_boundary",
+  );
+}
+
+function mergeCompactBoundaryRun(
+  run: Array<SystemItem & { subtype: "compact_boundary" }>,
+): SystemItem {
+  const first = run[0];
+  if (!first) {
+    throw new Error("Cannot merge an empty compact boundary run");
+  }
+  const preferred = run.find(hasSystemCompactBoundarySource) ?? first;
+  const sourceMessages = run.flatMap((item) => item.sourceMessages);
+  const details = run.flatMap((item) => item.details ?? []);
+  return {
+    type: "system",
+    id: preferred.id,
+    subtype: "compact_boundary",
+    content: preferred.content,
+    status: preferred.status,
+    configChanged: preferred.configChanged,
+    isSubagent: preferred.isSubagent,
+    sourceMessages,
+    details: details.length > 0 ? details : undefined,
+  };
+}
+
+function coalesceCompactBoundaryItems(items: RenderItem[]): RenderItem[] {
+  const coalesced: RenderItem[] = [];
+  let index = 0;
+
+  while (index < items.length) {
+    const item = items[index];
+    if (!item || !isCompactBoundaryItem(item)) {
+      if (item) {
+        coalesced.push(item);
+      }
+      index += 1;
+      continue;
+    }
+
+    const run: Array<SystemItem & { subtype: "compact_boundary" }> = [item];
+    let runIndex = index + 1;
+    while (runIndex < items.length) {
+      const runItem = items[runIndex];
+      if (!runItem || !isCompactBoundaryItem(runItem)) {
+        break;
+      }
+      run.push(runItem);
+      runIndex += 1;
+    }
+    coalesced.push(mergeCompactBoundaryRun(run));
+    index = runIndex;
+  }
+
+  return coalesced;
+}
+
+function isLocalCommandItem(
+  item: RenderItem,
+): item is SystemItem & { subtype: "local_command" } {
+  return item.type === "system" && item.subtype === "local_command";
+}
+
+function isSlashCommandSkillBodyItem(item: RenderItem): item is UserPromptItem {
+  if (item.type !== "user_prompt") {
+    return false;
+  }
+  if (!item.sourceMessages.some((message) => message.isMeta === true)) {
+    return false;
+  }
+  return contentBlocksText(item.content)
+    .trimStart()
+    .startsWith("Base directory for this skill:");
+}
+
+function messagePromptId(message: Message): string | null {
+  const promptId = (message as { promptId?: unknown }).promptId;
+  return typeof promptId === "string" && promptId ? promptId : null;
+}
+
+function isLinkedSlashCommandSkillBody(
+  commandItem: SystemItem,
+  skillItem: UserPromptItem,
+): boolean {
+  const commandIds = new Set(
+    commandItem.sourceMessages.map(getMessageId).filter(Boolean),
+  );
+  const skillParentUuids = skillItem.sourceMessages
+    .map((message) =>
+      typeof message.parentUuid === "string" ? message.parentUuid : null,
+    )
+    .filter((parentUuid): parentUuid is string => parentUuid !== null);
+  if (skillParentUuids.length > 0 && commandIds.size > 0) {
+    return skillParentUuids.some((parentUuid) => commandIds.has(parentUuid));
+  }
+
+  const commandPromptIds = new Set(
+    commandItem.sourceMessages
+      .map(messagePromptId)
+      .filter((promptId): promptId is string => promptId !== null),
+  );
+  const skillPromptIds = skillItem.sourceMessages
+    .map(messagePromptId)
+    .filter((promptId): promptId is string => promptId !== null);
+  if (skillPromptIds.length > 0 && commandPromptIds.size > 0) {
+    return skillPromptIds.some((promptId) => commandPromptIds.has(promptId));
+  }
+
+  return true;
+}
+
+function mergeSlashCommandSkillBody(
+  commandItem: SystemItem & { subtype: "local_command" },
+  skillItem: UserPromptItem,
+): SystemItem {
+  return {
+    ...commandItem,
+    sourceMessages: [
+      ...commandItem.sourceMessages,
+      ...skillItem.sourceMessages,
+    ],
+    details: [...(commandItem.details ?? []), skillItem.content],
+  };
+}
+
+function coalesceSlashCommandSkillBodies(items: RenderItem[]): RenderItem[] {
+  const coalesced: RenderItem[] = [];
+  let index = 0;
+
+  while (index < items.length) {
+    const item = items[index];
+    const nextItem = items[index + 1];
+    if (
+      item &&
+      nextItem &&
+      isLocalCommandItem(item) &&
+      isSlashCommandSkillBodyItem(nextItem) &&
+      isLinkedSlashCommandSkillBody(item, nextItem)
+    ) {
+      coalesced.push(mergeSlashCommandSkillBody(item, nextItem));
+      index += 2;
+      continue;
+    }
+
+    if (item) {
+      coalesced.push(item);
+    }
+    index += 1;
+  }
+
+  return coalesced;
+}
+
+function isSlashCommandSkillBodyMessage(msg: Message): boolean {
+  const content = getPreprocessMessageContent(msg);
+  return (
+    msg.isMeta === true &&
+    content !== undefined &&
+    contentBlocksText(content)
+      .trimStart()
+      .startsWith("Base directory for this skill:")
+  );
+}
+
 function isUserPromptMessage(msg: Message): boolean {
   const content = getPreprocessMessageContent(msg);
   const role =
@@ -156,10 +421,25 @@ function isUserPromptMessage(msg: Message): boolean {
   if (isTaskNotificationMessage(msg)) {
     return false;
   }
+  if (isCompactSummaryMessage(msg)) {
+    return false;
+  }
+  if (isSlashCommandSkillBodyMessage(msg)) {
+    return false;
+  }
   if (Array.isArray(content)) {
     return !content.every((block) => block.type === "tool_result");
   }
-  return typeof content === "string";
+  if (typeof content !== "string") {
+    return false;
+  }
+  if (msg.isMeta === true && isLocalCommandCaveatOnly(content)) {
+    return false;
+  }
+  if (parseLocalCommandStdout(content) !== null) {
+    return false;
+  }
+  return !parseCommandTurn(content);
 }
 
 function isDisplayableThinking(
@@ -171,7 +451,49 @@ function isDisplayableThinking(
 
 function isSessionSetupPrompt(item: UserPromptItem): boolean {
   const text = getPromptText(item.content).trimStart();
-  return SESSION_SETUP_PREFIXES.some((prefix) => text.startsWith(prefix));
+  return (
+    STARTUP_INSTRUCTIONS_SETUP_RE.test(text) ||
+    SESSION_SETUP_PREFIXES.some((prefix) => text.startsWith(prefix))
+  );
+}
+
+function isEnvironmentContextSetupPrompt(item: UserPromptItem): boolean {
+  return getPromptText(item.content)
+    .trimStart()
+    .startsWith("<environment_context>");
+}
+
+function itemTimestampMs(item: RenderItem): number | null {
+  const timestamp = item.sourceMessages
+    .map((message) =>
+      typeof message.timestamp === "string"
+        ? Date.parse(message.timestamp)
+        : NaN,
+    )
+    .find(Number.isFinite);
+  return timestamp === undefined ? null : timestamp;
+}
+
+function isImmediateResumeEnvironmentContext(
+  setupItem: UserPromptItem,
+  nextItem: RenderItem | undefined,
+): boolean {
+  if (
+    !isEnvironmentContextSetupPrompt(setupItem) ||
+    nextItem?.type !== "user_prompt" ||
+    isSessionSetupPrompt(nextItem)
+  ) {
+    return false;
+  }
+
+  const setupMs = itemTimestampMs(setupItem);
+  const nextMs = itemTimestampMs(nextItem);
+  if (setupMs === null || nextMs === null) {
+    return false;
+  }
+
+  const gapMs = nextMs - setupMs;
+  return gapMs >= 0 && gapMs <= RESUME_ENVIRONMENT_CONTEXT_MAX_GAP_MS;
 }
 
 function collapseSessionSetupRuns(items: RenderItem[]): RenderItem[] {
@@ -195,6 +517,16 @@ function collapseSessionSetupRuns(items: RenderItem[]): RenderItem[] {
       }
       setupItems.push(runItem);
       runIndex += 1;
+    }
+
+    const singleSetupItem = setupItems.length === 1 ? setupItems[0] : undefined;
+    const shouldSuppressSingleSetupItem =
+      singleSetupItem !== undefined &&
+      isImmediateResumeEnvironmentContext(singleSetupItem, items[runIndex]);
+
+    if (shouldSuppressSingleSetupItem) {
+      index = runIndex;
+      continue;
     }
 
     // Preserve likely user-authored single setup-like messages mid-session.
@@ -260,6 +592,21 @@ function processMessage(
   // Handle system entries (compact_boundary, status, etc.)
   if (msg.type === "system") {
     const subtype = (msg as { subtype?: string }).subtype ?? "unknown";
+    if (subtype === "local_command") {
+      const content = systemLocalCommandContent(msg.content);
+      if (content !== null) {
+        items.push({
+          type: "system",
+          id: msgId,
+          subtype,
+          content,
+          sourceMessages: [msg],
+          isSubagent: msg.isSubagent,
+        });
+      }
+      return;
+    }
+
     // Render compact_boundary as a visible system message
     if (
       subtype === "compact_boundary" ||
@@ -291,6 +638,11 @@ function processMessage(
             ? stripAwaySummaryHintSuffix(content)
             : content,
         sourceMessages: [msg],
+        ...(subtype === "compact_boundary"
+          ? {
+              details: compactBoundaryDetails(msg),
+            }
+          : {}),
         ...(subtype === "config_ack"
           ? {
               configChanged:
@@ -340,6 +692,54 @@ function processMessage(
   // String content = user prompt (only if type is user)
   if (typeof content === "string") {
     if (isUserMessage) {
+      if (isCompactSummaryMessage(msg)) {
+        items.push({
+          type: "system",
+          id: msgId,
+          subtype: "compact_boundary",
+          content: "Context compacted",
+          details: compactSummaryDetails(content),
+          sourceMessages: [msg],
+          isSubagent: msg.isSubagent,
+        });
+        return;
+      }
+      if (msg.isMeta === true && isLocalCommandCaveatOnly(content)) {
+        return;
+      }
+      const commandTurn = parseCommandTurn(content);
+      if (commandTurn) {
+        if (isCompactCommand(commandTurn.command)) {
+          return;
+        }
+        items.push({
+          type: "system",
+          id: msgId,
+          subtype: "local_command",
+          content: formatCommandTurn(commandTurn),
+          sourceMessages: [msg],
+          isSubagent: msg.isSubagent,
+        });
+        return;
+      }
+      const localCommandStdout = parseLocalCommandStdout(content);
+      if (localCommandStdout !== null) {
+        if (!localCommandStdout) {
+          return;
+        }
+        if (isCompactionLocalCommandOutput(localCommandStdout)) {
+          return;
+        }
+        items.push({
+          type: "system",
+          id: msgId,
+          subtype: "local_command",
+          content: localCommandStdout,
+          sourceMessages: [msg],
+          isSubagent: msg.isSubagent,
+        });
+        return;
+      }
       // SDK-injected task notifications render as a system/event chip, not a
       // user bubble. Gated on origin.kind (non-heuristic), then the XML body is
       // parsed for the chip's structured fields.
@@ -470,6 +870,7 @@ function processMessage(
               existingItem,
               msg,
               block.input,
+              block._displayActions,
             );
             if (existingItem.status === "pending") {
               pendingToolCalls.set(block.id, existingIndex);
@@ -488,6 +889,9 @@ function processMessage(
           id: block.id,
           toolName: block.name,
           toolInput: block.input,
+          ...(block._displayActions
+            ? { displayActions: block._displayActions }
+            : {}),
           toolResult: undefined,
           status: isOrphaned ? "incomplete" : "pending",
           sourceMessages: [msg],
@@ -533,11 +937,13 @@ function updateToolCallSnapshot(
   item: ToolCallItem,
   message: Message,
   toolInput: unknown,
+  displayActions: ToolCallItem["displayActions"],
 ): ToolCallItem {
   const withSource = appendSourceMessage(item, message);
   return {
     ...withSource,
     toolInput,
+    displayActions,
   };
 }
 
@@ -695,6 +1101,7 @@ function attachToolResult(
     id: item.id,
     toolName: item.toolName,
     toolInput: item.toolInput,
+    ...(item.displayActions ? { displayActions: item.displayActions } : {}),
     toolResult: resultData,
     status,
     sourceMessages: appendSourceMessage(item, resultMessage).sourceMessages,

@@ -1,33 +1,31 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  type ClientSummarySourceKey,
+  useClientSummarySourceKey,
+  useDraftSessionIds,
+} from "../lib/clientSummaryStore";
+import {
+  hasDraftContentValue,
+  readDraftTextValue,
+} from "../lib/draftEnvelope";
 
-const DRAFT_KEY_PREFIX = "draft-message-";
-const NEW_SESSION_DRAFT_KEY = "draft-new-session";
-const NEW_SESSION_DRAFT_KEY_PREFIX = "draft-new-session-";
+const NEW_SESSION_DRAFT_KEY_PREFIX = "draft-new-session:";
+const FAB_DRAFT_KEY_PREFIX = "fab-draft:";
 
-/**
- * Scan all localStorage keys to find sessions with non-empty drafts.
- * Iterates keys by prefix rather than checking per-session — fast when
- * total localStorage key count is small (typically ~10-20 keys).
- *
- * This is the only function that touches storage directly. To migrate
- * to IndexedDB or another backend, replace this function.
- */
-function scanDrafts(): Set<string> {
-  const result = new Set<string>();
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(DRAFT_KEY_PREFIX)) {
-        const value = localStorage.getItem(key);
-        if (value?.trim()) {
-          result.add(key.slice(DRAFT_KEY_PREFIX.length));
-        }
-      }
-    }
-  } catch {
-    // localStorage might be unavailable
-  }
-  return result;
+function encodeDraftKeyPart(value: string): string {
+  return encodeURIComponent(value);
+}
+
+export function createNewSessionDraftKey(
+  sourceKey: ClientSummarySourceKey,
+  projectId?: string,
+): string {
+  const base = `${NEW_SESSION_DRAFT_KEY_PREFIX}${encodeDraftKeyPart(sourceKey)}`;
+  return projectId ? `${base}:${encodeDraftKeyPart(projectId)}` : base;
+}
+
+export function createFabDraftKey(sourceKey: ClientSummarySourceKey): string {
+  return `${FAB_DRAFT_KEY_PREFIX}${encodeDraftKeyPart(sourceKey)}`;
 }
 
 /**
@@ -44,36 +42,12 @@ export function setsEqual<T>(prev: Set<T>, next: Set<T>): Set<T> {
 
 /**
  * Hook to track which sessions have draft messages in localStorage.
- * Returns a Set of session IDs with non-empty drafts.
+ * Returns session IDs with non-empty drafts.
  *
- * Listens for cross-tab storage events and polls every 1s for same-tab changes.
+ * The client summary store owns the mounted storage listener and polling feed.
  */
-export function useDrafts(): Set<string> {
-  const [drafts, setDrafts] = useState(scanDrafts);
-
-  const scan = useCallback(() => {
-    setDrafts((prev) => setsEqual(prev, scanDrafts()));
-  }, []);
-
-  // Listen for storage events (changes from other tabs)
-  useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key?.startsWith(DRAFT_KEY_PREFIX)) {
-        scan();
-      }
-    };
-
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, [scan]);
-
-  // Poll for same-tab changes (storage event doesn't fire for same-tab)
-  useEffect(() => {
-    const interval = setInterval(scan, 1000);
-    return () => clearInterval(interval);
-  }, [scan]);
-
-  return drafts;
+export function useDrafts(): ReadonlySet<string> {
+  return useDraftSessionIds();
 }
 
 /**
@@ -81,13 +55,14 @@ export function useDrafts(): Set<string> {
  * Listens for storage events and polls for same-tab changes.
  */
 export function useNewSessionDraft(projectId?: string): boolean {
+  const sourceKey = useClientSummarySourceKey();
   const [hasDraft, setHasDraft] = useState(() =>
-    checkNewSessionDraft(projectId),
+    checkNewSessionDraft(sourceKey, projectId),
   );
 
   const check = useCallback(() => {
-    setHasDraft(checkNewSessionDraft(projectId));
-  }, [projectId]);
+    setHasDraft(checkNewSessionDraft(sourceKey, projectId));
+  }, [projectId, sourceKey]);
 
   // Re-check when projectId changes
   useEffect(() => {
@@ -97,14 +72,14 @@ export function useNewSessionDraft(projectId?: string): boolean {
   // Listen for storage events (changes from other tabs)
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
-      if (getNewSessionDraftKeys(projectId).includes(e.key ?? "")) {
+      if (getNewSessionDraftKeys(sourceKey, projectId).includes(e.key ?? "")) {
         check();
       }
     };
 
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, [check, projectId]);
+  }, [check, projectId, sourceKey]);
 
   // Poll for same-tab changes (storage event doesn't fire for same-tab)
   useEffect(() => {
@@ -115,29 +90,71 @@ export function useNewSessionDraft(projectId?: string): boolean {
   return hasDraft;
 }
 
-function checkNewSessionDraft(projectId: string | undefined): boolean {
+function checkNewSessionDraft(
+  sourceKey: ClientSummarySourceKey,
+  projectId: string | undefined,
+): boolean {
   try {
-    return getNewSessionDraftKeys(projectId).some((key) => {
+    return getNewSessionDraftKeys(sourceKey, projectId).some((key) => {
       const value = localStorage.getItem(key);
-      return !!value?.trim();
+      return hasDraftContentValue(value);
     });
   } catch {
     return false;
   }
 }
 
-function getNewSessionDraftKeys(projectId: string | undefined): string[] {
+function getNewSessionDraftKeys(
+  sourceKey: ClientSummarySourceKey,
+  projectId: string | undefined,
+): string[] {
+  const sharedKey = createNewSessionDraftKey(sourceKey);
   return projectId
-    ? [NEW_SESSION_DRAFT_KEY, `${NEW_SESSION_DRAFT_KEY_PREFIX}${projectId}`]
-    : [NEW_SESSION_DRAFT_KEY];
+    ? [sharedKey, createNewSessionDraftKey(sourceKey, projectId)]
+    : [sharedKey];
 }
 
-// Tool prompt draft storage keys
-const TOOL_PROMPT_DRAFT_PREFIX = "draft-tool-prompt-";
+const TOOL_APPROVAL_FEEDBACK_DRAFT_KEY_PREFIX = "draft-tool-approval-feedback:";
+const QUESTION_OTHER_DRAFT_KEY_PREFIX = "draft-question-other:";
+
+export function createToolApprovalFeedbackDraftKey(
+  sourceKey: ClientSummarySourceKey,
+  sessionId: string,
+): string {
+  return `${TOOL_APPROVAL_FEEDBACK_DRAFT_KEY_PREFIX}${encodeDraftKeyPart(sourceKey)}:${encodeDraftKeyPart(sessionId)}`;
+}
+
+export function createQuestionOtherDraftKey(
+  sourceKey: ClientSummarySourceKey,
+  sessionId: string,
+): string {
+  return `${QUESTION_OTHER_DRAFT_KEY_PREFIX}${encodeDraftKeyPart(sourceKey)}:${encodeDraftKeyPart(sessionId)}`;
+}
+
+function readStringDraft(key: string): string {
+  try {
+    return readDraftTextValue(localStorage.getItem(key));
+  } catch {
+    return "";
+  }
+}
+
+function readQuestionOtherDrafts(key: string): Record<string, string> {
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) return {};
+    const parsed: unknown = JSON.parse(stored);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Hook to persist draft text for tool approval feedback.
- * Keyed by sessionId, not by specific tool call.
+ * Keyed by source and sessionId, not by specific tool call.
  *
  * @param sessionId - The session ID
  * @returns [value, setValue, clearValue] tuple
@@ -145,15 +162,14 @@ const TOOL_PROMPT_DRAFT_PREFIX = "draft-tool-prompt-";
 export function useToolApprovalFeedbackDraft(
   sessionId: string,
 ): [string, (value: string) => void, () => void] {
-  const key = `${TOOL_PROMPT_DRAFT_PREFIX}${sessionId}-toolApprovalFeedback`;
+  const sourceKey = useClientSummarySourceKey();
+  const key = createToolApprovalFeedbackDraftKey(sourceKey, sessionId);
 
-  const [value, setValueState] = useState<string>(() => {
-    try {
-      return localStorage.getItem(key) ?? "";
-    } catch {
-      return "";
-    }
-  });
+  const [value, setValueState] = useState<string>(() => readStringDraft(key));
+
+  useEffect(() => {
+    setValueState(readStringDraft(key));
+  }, [key]);
 
   const setValue = useCallback(
     (newValue: string) => {
@@ -185,7 +201,7 @@ export function useToolApprovalFeedbackDraft(
 
 /**
  * Hook to persist "Other" text inputs for AskUserQuestion panels.
- * Stores a map of question text -> otherText, keyed by sessionId.
+ * Stores a map of question text -> otherText, keyed by source and sessionId.
  *
  * For multi-stage questions (multiple tabs), each question's "Other"
  * input is stored separately under the same session key. When navigating
@@ -201,18 +217,16 @@ export function useQuestionOtherDrafts(
   (question: string, value: string) => void,
   () => void,
 ] {
-  const key = `${TOOL_PROMPT_DRAFT_PREFIX}${sessionId}-questionOther`;
+  const sourceKey = useClientSummarySourceKey();
+  const key = createQuestionOtherDraftKey(sourceKey, sessionId);
 
   const [otherTexts, setOtherTextsState] = useState<Record<string, string>>(
-    () => {
-      try {
-        const stored = localStorage.getItem(key);
-        return stored ? JSON.parse(stored) : {};
-      } catch {
-        return {};
-      }
-    },
+    () => readQuestionOtherDrafts(key),
   );
+
+  useEffect(() => {
+    setOtherTextsState(readQuestionOtherDrafts(key));
+  }, [key]);
 
   const setOtherText = useCallback(
     (question: string, value: string) => {

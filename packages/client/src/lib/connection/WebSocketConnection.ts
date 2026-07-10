@@ -1,6 +1,7 @@
 import type {
   DeviceServerMessage,
   RemoteClientMessage,
+  StagedAttachmentRef,
   UploadedFile,
   YepMessage,
 } from "@yep-anywhere/shared";
@@ -11,7 +12,8 @@ import {
   encodeUploadChunkFrame,
   isBinaryData,
 } from "@yep-anywhere/shared";
-import { getDesktopAuthToken } from "../../api/client";
+import { getDesktopAuthToken } from "../../api/plainFetch";
+import type { ConnectionManager } from "./ConnectionManager";
 import { RelayProtocol } from "./RelayProtocol";
 import type {
   Connection,
@@ -21,6 +23,32 @@ import type {
   UploadOptions,
 } from "./types";
 import { WebSocketCloseError } from "./types";
+
+export interface WebSocketConnectionSocket {
+  readyState: number;
+  binaryType: BinaryType;
+  onerror: ((event: Event) => void) | null;
+  onclose: ((event: CloseEvent) => void) | null;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onopen: ((event: Event) => void) | null;
+  send(data: string | ArrayBuffer | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+}
+
+export type WebSocketConnectionFactory = (
+  url: string,
+) => WebSocketConnectionSocket;
+
+export type WebSocketConnectionSocketState =
+  | "connecting"
+  | "connected"
+  | "disconnected";
+
+export interface WebSocketConnectionOptions {
+  createWebSocket?: WebSocketConnectionFactory;
+  connectionManager?: ConnectionManager;
+  onSocketStateChange?: (state: WebSocketConnectionSocketState) => void;
+}
 
 /**
  * Connection to yepanywhere server using WebSocket transport.
@@ -32,11 +60,14 @@ import { WebSocketCloseError } from "./types";
 export class WebSocketConnection implements Connection {
   readonly mode = "direct" as const;
 
-  private ws: WebSocket | null = null;
+  private ws: WebSocketConnectionSocket | null = null;
   private connectionPromise: Promise<void> | null = null;
   private protocol: RelayProtocol;
+  private options: WebSocketConnectionOptions;
+  private externalOnPong: ((id: string) => void) | undefined;
 
-  constructor() {
+  constructor(options: WebSocketConnectionOptions = {}) {
+    this.options = options;
     this.protocol = new RelayProtocol(
       {
         sendMessage: (msg) => this.send(msg),
@@ -49,7 +80,29 @@ export class WebSocketConnection implements Connection {
         ensureConnected: () => this.ensureConnected(),
         isConnected: () => this.ws?.readyState === WebSocket.OPEN,
       },
-      { logPrefix: "[WebSocketConnection]" },
+      {
+        logPrefix: "[WebSocketConnection]",
+      },
+    );
+    this.setConnectionManager(options.connectionManager ?? null);
+  }
+
+  setConnectionManager(manager: ConnectionManager | null): void {
+    this.options.connectionManager = manager ?? undefined;
+    this.updateProtocolPongHandler();
+    this.protocol.setOnInboundEvent(
+      manager
+        ? (event) => {
+            if (event.eventType === "heartbeat") {
+              manager.recordHeartbeat();
+            } else {
+              manager.recordEvent();
+            }
+          }
+        : undefined,
+    );
+    this.protocol.setBeginCriticalOperation(
+      manager ? (label) => manager.beginCriticalOperation(label) : undefined,
     );
   }
 
@@ -64,7 +117,7 @@ export class WebSocketConnection implements Connection {
     return base;
   }
 
-  private async ensureConnected(): Promise<void> {
+  async ensureConnected(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -85,8 +138,11 @@ export class WebSocketConnection implements Connection {
     return new Promise((resolve, reject) => {
       const wsUrl = this.getWsUrl();
       console.log("[WebSocketConnection] Connecting to", wsUrl);
+      this.options.onSocketStateChange?.("connecting");
 
-      const ws = new WebSocket(wsUrl);
+      const ws = this.options.createWebSocket
+        ? this.options.createWebSocket(wsUrl)
+        : new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
 
       ws.onerror = (event) => {
@@ -100,6 +156,8 @@ export class WebSocketConnection implements Connection {
         const closeError = new WebSocketCloseError(event.code, event.reason);
         this.protocol.rejectAllPending(closeError);
         this.protocol.notifySubscriptionsClosed(closeError);
+        this.options.onSocketStateChange?.("disconnected");
+        this.options.connectionManager?.handleClose(closeError);
       };
 
       ws.onmessage = (event) => {
@@ -117,6 +175,8 @@ export class WebSocketConnection implements Connection {
         clearTimeout(timeout);
         console.log("[WebSocketConnection] Connected");
         this.ws = ws;
+        this.options.connectionManager?.markConnected();
+        this.options.onSocketStateChange?.("connected");
         resolve();
       };
     });
@@ -214,6 +274,13 @@ export class WebSocketConnection implements Connection {
     return this.protocol.upload(projectId, sessionId, file, options);
   }
 
+  async uploadStagedAttachment(
+    file: File,
+    options?: UploadOptions & { batchId?: string },
+  ): Promise<StagedAttachmentRef> {
+    return this.protocol.uploadStagedAttachment(file, options);
+  }
+
   /**
    * Send a keepalive ping to verify the connection is alive.
    */
@@ -225,7 +292,21 @@ export class WebSocketConnection implements Connection {
    * Register a callback for pong responses.
    */
   setOnPong(cb: (id: string) => void): void {
-    this.protocol.setOnPong(cb);
+    this.externalOnPong = cb;
+    this.updateProtocolPongHandler();
+  }
+
+  private updateProtocolPongHandler(): void {
+    const manager = this.options.connectionManager;
+    const externalOnPong = this.externalOnPong;
+    this.protocol.setOnPong(
+      manager || externalOnPong
+        ? (id) => {
+            manager?.receivePong(id);
+            externalOnPong?.(id);
+          }
+        : undefined,
+    );
   }
 
   /**
@@ -261,21 +342,13 @@ export class WebSocketConnection implements Connection {
     this.protocol.close();
 
     if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.onopen = null;
       this.ws.close();
       this.ws = null;
     }
+    this.options.onSocketStateChange?.("disconnected");
   }
-}
-
-/**
- * Singleton WebSocketConnection instance.
- * Created lazily to avoid connecting until needed.
- */
-let wsConnectionInstance: WebSocketConnection | null = null;
-
-export function getWebSocketConnection(): WebSocketConnection {
-  if (!wsConnectionInstance) {
-    wsConnectionInstance = new WebSocketConnection();
-  }
-  return wsConnectionInstance;
 }

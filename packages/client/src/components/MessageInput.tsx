@@ -1,10 +1,12 @@
 import {
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
+  DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   type BusyComposerDefaultAction,
   clampPatientPatienceSeconds,
   type CollapsedComposerButtonPreference,
+  type EffortLevel,
   type SessionLivenessSnapshot,
-  type UploadedFile,
+  type ThinkingMode,
   type UserMessageCompositionMetadata,
   type UserMessageDeliveryIntent,
   type UserMessageSpeechMetadata,
@@ -25,11 +27,25 @@ import {
   type DraftControls,
   useDraftPersistence,
 } from "../hooks/useDraftPersistence";
+import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
+import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
+import {
+  getDraftTextChangeMetadata,
+  type DraftTextChangeMetadata,
+  type DraftTextEdit,
+} from "../lib/commentAnchors";
+import {
+  clearTextareaContentsUndoably,
+  countDraftLines,
+  getInsertedTextForEdit,
+  replaceTextareaRangeUndoably,
+  resizeComposerTextarea,
+  scrollCollapsedTextareaToCursor,
+} from "../lib/composerTextarea";
 import { hasCoarsePointer } from "../lib/deviceDetection";
-import { generateUUID } from "../lib/uuid";
 import type {
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
@@ -43,6 +59,7 @@ import {
   getSpeechTranscriptInsertionParts,
   getSpeechTranscriptReplacementParts,
   mapSpeechInsertionRangeThroughEdit,
+  mapSpeechInsertionRangeThroughReplacement,
   retargetSpeechInsertionRangeReplacement,
   type SpeechInsertionRange,
 } from "../lib/speechRecognition";
@@ -51,9 +68,22 @@ import {
   hasNonWhitespaceEdit,
   type PendingTextareaSelectionRestore,
 } from "../lib/speechDraftTransaction";
-import { getSlashCommandMenuParts } from "../lib/slashCommands";
+import {
+  getLeadingSlashQuery,
+  getSlashCommandMenuParts,
+  normalizeSlashCommandForMatch,
+} from "../lib/slashCommands";
+import {
+  createClientSpeechTurnId,
+  createSpeechTargetId,
+} from "../lib/speechTargets";
 import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
-import type { ContextUsage, PermissionMode } from "../types";
+import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+import type {
+  ContextUsage,
+  PermissionMode,
+  ProviderRuntimeStatus,
+} from "../types";
 import { AttachmentChip } from "./AttachmentChip";
 import { MessageInputToolbar } from "./MessageInputToolbar";
 import {
@@ -71,6 +101,17 @@ export interface UploadProgress {
   percent: number;
 }
 
+export interface MessageInputAttachment {
+  id: string;
+  originalName: string;
+  path?: string;
+  mimeType: string;
+  size: number;
+  width?: number;
+  height?: number;
+  previewUrl?: string;
+}
+
 export interface MessageSubmissionMetadata {
   deliveryIntent: UserMessageDeliveryIntent;
   patienceSeconds?: number;
@@ -85,8 +126,11 @@ interface PendingSpeechFinal {
   metadata?: SpeechTranscriptionResultMetadata;
 }
 
-const EXPANDED_COMPOSER_MAX_VIEWPORT_RATIO = 0.5;
-const FALLBACK_TEXTAREA_LINE_HEIGHT_PX = 20;
+interface PendingDraftInputEdit {
+  start: number;
+  end: number;
+  inputType?: string;
+}
 
 /** Format file size in human-readable form */
 function formatSize(bytes: number): string {
@@ -97,146 +141,12 @@ function formatSize(bytes: number): string {
   return `${Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10}\u202fgb`;
 }
 
-function clearTextareaContentsUndoably(textarea: HTMLTextAreaElement): void {
-  const previousLength = textarea.value.length;
-  if (previousLength === 0) return;
-
-  textarea.focus();
-  textarea.setSelectionRange(0, previousLength);
-
-  // React state-only clears bypass native undo; this legacy edit command still
-  // participates in the browser textarea undo stack.
-  try {
-    if (document.execCommand?.("delete")) {
-      return;
-    }
-  } catch {
-    // Fall back to a direct textarea edit below.
-  }
-
-  textarea.setRangeText("", 0, previousLength, "start");
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function createClientSpeechTurnId(): string {
-  return generateUUID();
-}
-
-function createSpeechTargetId(): string {
-  return `speech-target-${generateUUID()}`;
-}
-
-function getLeadingSlashQuery(text: string): string | null {
-  const match = text.match(/^\/([^\s/]*)$/);
-  return match ? (match[1] ?? "").toLowerCase() : null;
-}
-
-function readPixelValue(value: string): number {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function getTextareaMinimumHeight(textarea: HTMLTextAreaElement): number {
-  const computed = window.getComputedStyle(textarea);
-  const fontSize =
-    readPixelValue(computed.fontSize) || FALLBACK_TEXTAREA_LINE_HEIGHT_PX;
-  const lineHeight = readPixelValue(computed.lineHeight) || fontSize * 1.35;
-  const verticalPadding =
-    readPixelValue(computed.paddingTop) +
-    readPixelValue(computed.paddingBottom);
-  const verticalBorder =
-    readPixelValue(computed.borderTopWidth) +
-    readPixelValue(computed.borderBottomWidth);
-  return lineHeight * textarea.rows + verticalPadding + verticalBorder;
-}
-
-function getComposerChromeHeight(textarea: HTMLTextAreaElement): number {
-  const composer = textarea.closest(".message-input");
-  if (!(composer instanceof HTMLElement)) return 0;
-  return Math.max(
-    0,
-    composer.getBoundingClientRect().height -
-      textarea.getBoundingClientRect().height,
-  );
-}
-
-function getExpandedComposerMaxTextareaHeight(
-  textarea: HTMLTextAreaElement,
-  minimumHeight: number,
-): number {
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) {
-    return Number.POSITIVE_INFINITY;
-  }
-  const chromeHeight = getComposerChromeHeight(textarea);
-  return Math.max(
-    minimumHeight,
-    Math.floor(
-      viewportHeight * EXPANDED_COMPOSER_MAX_VIEWPORT_RATIO - chromeHeight,
-    ),
-  );
-}
-
-function resizeComposerTextarea(
-  textarea: HTMLTextAreaElement,
-  collapsed: boolean | undefined,
-): void {
-  if (collapsed) {
-    textarea.style.height = "";
-    textarea.style.overflowY = "";
-    return;
-  }
-
-  const minimumHeight = getTextareaMinimumHeight(textarea);
-  textarea.style.height = "auto";
-  const contentHeight = Math.max(textarea.scrollHeight, minimumHeight);
-  const maxHeight = getExpandedComposerMaxTextareaHeight(
-    textarea,
-    minimumHeight,
-  );
-  const nextHeight = Math.min(contentHeight, maxHeight);
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = contentHeight > nextHeight + 1 ? "auto" : "hidden";
-}
-
-function countDraftLines(text: string): number {
-  return text.length === 0 ? 1 : text.split(/\r\n|\r|\n/).length;
-}
-
-function getTextareaLineHeightPx(textarea: HTMLTextAreaElement): number {
-  const computed = window.getComputedStyle(textarea);
-  const fontSize =
-    readPixelValue(computed.fontSize) || FALLBACK_TEXTAREA_LINE_HEIGHT_PX;
-  return readPixelValue(computed.lineHeight) || fontSize * 1.35;
-}
-
-function scrollCollapsedTextareaToCursor(textarea: HTMLTextAreaElement): void {
-  const value = textarea.value;
-  const caret = Math.max(
-    0,
-    Math.min(textarea.selectionStart ?? value.length, value.length),
-  );
-  const lineHeight = getTextareaLineHeightPx(textarea);
-  const maxScrollTop = Math.max(
-    0,
-    textarea.scrollHeight - textarea.clientHeight,
-  );
-  if (caret >= value.length) {
-    textarea.scrollTop = maxScrollTop;
-    return;
-  }
-
-  const hardLineIndex = countDraftLines(value.slice(0, caret)) - 1;
-  textarea.scrollTop = Math.min(
-    maxScrollTop,
-    Math.max(0, hardLineIndex * lineHeight),
-  );
-}
-
 interface Props {
   onSend: (text: string, metadata?: MessageSubmissionMetadata) => void;
   /** Queue a deferred message (sent when agent's turn ends). Only provided when agent is running. */
   onQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
+  /** Queue through the project-level idle gate. Hidden unless opted in. */
+  onProjectQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
   disabled?: boolean;
   placeholder?: string;
   mode?: PermissionMode;
@@ -247,24 +157,32 @@ interface Props {
   isThinking?: boolean;
   onStop?: () => void;
   draftKey: string; // localStorage key for draft persistence
+  draftIndex?: {
+    sourceKey: ClientSummarySourceKey;
+    sessionId: string;
+  };
   /** Collapse to single-line but keep visible and focusable (for when approval panel is showing) */
   collapsed?: boolean;
   /** Callback to receive draft controls for success/failure handling */
   onDraftControlsReady?: (controls: DraftControls) => void;
   /** Notify parent of draft edits for UI linked to the composer text. */
-  onDraftTextChange?: (text: string) => void;
+  onDraftTextChange?: (text: string, metadata: DraftTextChangeMetadata) => void;
   /** Context usage for displaying usage indicator */
   contextUsage?: ContextUsage;
   /** Last session activity timestamp for stale composer liveness display. */
   lastActivityAt?: string | null;
+  /** Timestamp for the hovered/scrolled transcript position, shown near activity age. */
+  positionTimestampMs?: number | null;
   /** Server-derived provider/session liveness evidence. */
   sessionLiveness?: SessionLivenessSnapshot | null;
+  /** Provider-owned retry/failure status for the active turn. */
+  providerRuntimeStatus?: ProviderRuntimeStatus;
   /** Project ID for uploads (required to enable attach button) */
   projectId?: string;
   /** Session ID for uploads (required to enable attach button) */
   sessionId?: string;
   /** Completed file attachments */
-  attachments?: UploadedFile[];
+  attachments?: MessageInputAttachment[];
   /** Callback when user selects files to attach */
   onAttach?: (files: File[]) => void;
   /** Callback when user removes an attachment */
@@ -296,6 +214,13 @@ interface Props {
   /** Provider/model context used by the thinking effort chooser. */
   thinkingProvider?: string;
   thinkingModel?: string;
+  /** Live process thinking selection for owned active sessions. */
+  liveThinkingSelection?: {
+    mode: ThinkingMode;
+    level: EffortLevel;
+    onSetMode: (mode: ThinkingMode) => void;
+    onSetEffort: (level: EffortLevel) => void;
+  };
   /** YA model id for the context quick-edit's per-model threshold keying. */
   contextRequestedModel?: string;
   /** Whether heartbeat turns are currently enabled for this session */
@@ -341,6 +266,7 @@ interface Props {
 export function MessageInput({
   onSend,
   onQueue,
+  onProjectQueue,
   disabled,
   placeholder,
   mode = "default",
@@ -350,12 +276,15 @@ export function MessageInput({
   isThinking,
   onStop,
   draftKey,
+  draftIndex,
   collapsed: externalCollapsed,
   onDraftControlsReady,
   onDraftTextChange,
   contextUsage,
   lastActivityAt,
+  positionTimestampMs,
   sessionLiveness,
+  providerRuntimeStatus,
   projectId,
   sessionId,
   attachments = [],
@@ -375,6 +304,7 @@ export function MessageInput({
   btwToolbarMode,
   thinkingProvider,
   thinkingModel,
+  liveThinkingSelection,
   contextRequestedModel,
   heartbeatEnabled = false,
   patientQueuePatienceSeconds,
@@ -390,7 +320,10 @@ export function MessageInput({
   onForkSummaryShortcut,
 }: Props) {
   const { t } = useI18n();
-  const [text, setText, controls] = useDraftPersistence(draftKey);
+  const { visibility: toolbarVisibility } = useSessionToolbarPresence();
+  const [text, setText, controls] = useDraftPersistence(draftKey, {
+    sessionDraft: draftIndex,
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
@@ -404,6 +337,10 @@ export function MessageInput({
     new Map(),
   );
   const pendingSpeechFinalRef = useRef<PendingSpeechFinal | null>(null);
+  const pendingDraftInputRef = useRef<PendingDraftInputEdit | null>(null);
+  const draftTextChangeMetadataRef = useRef<DraftTextChangeMetadata | null>(
+    null,
+  );
   // True once the user manually edits (non-whitespace) during the active mic
   // transaction; holds an automatic Smart Turn endpoint send. Speech-inserted
   // finals go through setDraft (not onChange) and never set this.
@@ -428,13 +365,19 @@ export function MessageInput({
   const matchingSlashCommands = useMemo(() => {
     if (slashQuery === null) return [];
     return slashCommands.filter((command) =>
-      command.toLowerCase().startsWith(slashQuery),
+      normalizeSlashCommandForMatch(command).startsWith(slashQuery),
     );
   }, [slashCommands, slashQuery]);
+  const hasExactSlashCommand =
+    slashQuery !== null &&
+    matchingSlashCommands.some(
+      (command) => normalizeSlashCommandForMatch(command) === slashQuery,
+    );
   const showSlashSuggestions =
     !collapsed &&
     !disabled &&
     slashQuery !== null &&
+    !hasExactSlashCommand &&
     dismissedSlashQuery !== slashQuery &&
     matchingSlashCommands.length > 0;
   const canSubmit = forkSummaryMode
@@ -514,10 +457,12 @@ export function MessageInput({
         ]
       : speechRangeTags;
   const speechMirrorSegments = getSpeechMirrorSegments(text, speechPendingTags);
+  const slashSelectionResetKey = `${slashQuery}\0${matchingSlashCommands.length}`;
 
   useEffect(() => {
+    void slashSelectionResetKey;
     setSelectedSlashIndex(0);
-  }, [slashQuery, matchingSlashCommands.length]);
+  }, [slashSelectionResetKey]);
 
   const basePrimaryActionKind =
     primaryActionKind ??
@@ -548,6 +493,15 @@ export function MessageInput({
   // of promoting at the next end of turn.
   const patientQueueEnabled =
     version?.clientDefaults?.patientQueueDefault ?? false;
+  const projectQueueCtrlEnterEnabled =
+    version?.clientDefaults?.projectQueueCtrlEnterEnabled ??
+    DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
+  const projectQueueShortcutAvailable =
+    projectQueueCtrlEnterEnabled &&
+    serverSupportsProjectQueue(version) &&
+    toolbarVisibility.projectQueue &&
+    !!onProjectQueue &&
+    !forkSummaryMode;
   const [steerNowOverride, setSteerNowOverride] = useState<boolean | null>(
     null,
   );
@@ -666,6 +620,108 @@ export function MessageInput({
     [effectivePatientQueuePatienceSeconds, steerNowEnabled, supportsSteerNow],
   );
 
+  const noteDraftTextChange = useCallback(
+    (
+      previousText: string,
+      nextText: string,
+      edit?: Omit<DraftTextEdit, "insertedText"> & { insertedText?: string },
+    ) => {
+      const insertedText =
+        edit?.insertedText ??
+        (edit
+          ? getInsertedTextForEdit(previousText, nextText, edit.start, edit.end)
+          : "");
+      draftTextChangeMetadataRef.current = getDraftTextChangeMetadata(
+        previousText,
+        nextText,
+        edit ? { ...edit, insertedText } : undefined,
+      );
+    },
+    [],
+  );
+
+  const replaceDraftRangeUndoably = useCallback(
+    (start: number, end: number, replacement: string): string | null => {
+      const textarea = textareaRef.current;
+      if (!textarea) return null;
+
+      const previousText = controls.getDraft();
+      const replacementStart = Math.max(
+        0,
+        Math.min(start, previousText.length),
+      );
+      const replacementEnd = Math.max(
+        replacementStart,
+        Math.min(end, previousText.length),
+      );
+      const nextText = `${previousText.slice(0, replacementStart)}${replacement}${previousText.slice(replacementEnd)}`;
+      if (nextText === previousText) return nextText;
+
+      noteDraftTextChange(previousText, nextText, {
+        start: replacementStart,
+        end: replacementEnd,
+        insertedText: replacement,
+        inputType: replacement ? "insertText" : "deleteContent",
+      });
+      replaceTextareaRangeUndoably(
+        textarea,
+        replacementStart,
+        replacementEnd,
+        replacement,
+      );
+      if (textarea.value !== nextText) {
+        textarea.value = nextText;
+      }
+
+      const pendingFinal = pendingSpeechFinalRef.current;
+      if (pendingFinal) {
+        clearTimeout(pendingFinal.timer);
+        pendingSpeechFinalRef.current = null;
+      }
+      if (speechInsertionRangesRef.current.size > 0) {
+        const nextRanges = new Map<string, SpeechInsertionRange>();
+        for (const [targetId, range] of speechInsertionRangesRef.current) {
+          nextRanges.set(
+            targetId,
+            clearSpeechInsertionRangeReplacement(
+              mapSpeechInsertionRangeThroughReplacement(
+                range,
+                replacementStart,
+                replacementEnd,
+                replacement.length,
+              ),
+            ),
+          );
+        }
+        speechInsertionRangesRef.current = nextRanges;
+        speechInsertionRangeRef.current =
+          activeSpeechTargetIdRef.current !== null
+            ? (nextRanges.get(activeSpeechTargetIdRef.current) ?? null)
+            : null;
+      }
+      if (
+        activeSpeechTargetIdRef.current !== null &&
+        hasNonWhitespaceEdit(previousText, nextText)
+      ) {
+        composerEditedDuringSpeechRef.current = true;
+      }
+      noteComposerEdit(nextText);
+      setText(nextText);
+      const nextSlashQuery = getLeadingSlashQuery(nextText);
+      if (nextSlashQuery !== dismissedSlashQuery) {
+        setDismissedSlashQuery(null);
+      }
+      return nextText;
+    },
+    [
+      controls,
+      dismissedSlashQuery,
+      noteComposerEdit,
+      noteDraftTextChange,
+      setText,
+    ],
+  );
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files?.length && onAttach) {
@@ -680,8 +736,9 @@ export function MessageInput({
       focus: () => textareaRef.current?.focus(),
       setSelectionRange: (start, end) =>
         textareaRef.current?.setSelectionRange(start, end),
+      replaceDraftRangeUndoably,
     }),
-    [controls],
+    [controls, replaceDraftRangeUndoably],
   );
 
   // Provide controls to parent via callback
@@ -690,13 +747,24 @@ export function MessageInput({
   }, [draftControls, onDraftControlsReady]);
 
   useEffect(() => {
-    onDraftTextChange?.(text);
+    const metadata = draftTextChangeMetadataRef.current ?? {
+      mayAffectQuoteAnchors: true,
+    };
+    draftTextChangeMetadataRef.current = null;
+    onDraftTextChange?.(text, metadata);
   }, [onDraftTextChange, text]);
 
   useLayoutEffect(() => {
     const pending = pendingTextareaSelectionRef.current;
     const textarea = textareaRef.current;
-    if (!pending || !textarea || textarea.value !== pending.value) return;
+    if (
+      !pending ||
+      !textarea ||
+      text !== pending.value ||
+      textarea.value !== pending.value
+    ) {
+      return;
+    }
     pendingTextareaSelectionRef.current = null;
     pending.restore(textarea);
   }, [text]);
@@ -718,6 +786,7 @@ export function MessageInput({
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    void text;
 
     resizeComposerTextarea(textarea, collapsed);
 
@@ -877,6 +946,35 @@ export function MessageInput({
     resetCompositionMetadata,
   ]);
 
+  const handleProjectQueue = useCallback(() => {
+    if (!onProjectQueue) return;
+
+    // Stop voice recording and get any pending interim text
+    const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
+
+    let finalText = controls.getDraft().trimEnd();
+    if (pendingVoice) {
+      finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
+    }
+
+    const hasContent = finalText.trim() || attachments.length > 0;
+    if (hasContent && !disabled) {
+      const metadata = buildSubmissionMetadata("deferred");
+      controls.clearInput();
+      resetCompositionMetadata();
+      setInterimTranscript("");
+      onProjectQueue(finalText.trim(), metadata);
+      textareaRef.current?.focus();
+    }
+  }, [
+    attachments.length,
+    buildSubmissionMetadata,
+    controls,
+    disabled,
+    onProjectQueue,
+    resetCompositionMetadata,
+  ]);
+
   const handleBtwClick = useCallback(() => {
     if (disabled || !onBtwShortcut) return;
     const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
@@ -987,12 +1085,17 @@ export function MessageInput({
         : trimmed
           ? `${trimmed} ${normalizedCommand} `
           : `${normalizedCommand} `;
+      noteDraftTextChange(text, nextText, {
+        start: slashDraft ? 0 : trimmed.length,
+        end: text.length,
+        inputType: "insertText",
+      });
       noteComposerEdit(nextText);
       setText(nextText);
       setDismissedSlashQuery(null);
       textareaRef.current?.focus();
     },
-    [text, setText, onCustomCommand, noteComposerEdit],
+    [text, setText, onCustomCommand, noteComposerEdit, noteDraftTextChange],
   );
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -1156,6 +1259,12 @@ export function MessageInput({
           clearTextareaContentsUndoably(textareaRef.current);
         }
         setInterimTranscript("");
+        noteDraftTextChange(text, "", {
+          start: 0,
+          end: text.length,
+          insertedText: "",
+          inputType: "deleteContent",
+        });
         setText("");
         resetCompositionMetadata();
         controls.flushDraft();
@@ -1179,6 +1288,12 @@ export function MessageInput({
       !text.trim()
     ) {
       e.preventDefault();
+      noteDraftTextChange(text, promptSuggestion, {
+        start: 0,
+        end: text.length,
+        insertedText: promptSuggestion,
+        inputType: "insertText",
+      });
       noteComposerEdit(promptSuggestion);
       setText(promptSuggestion);
       onDismissPromptSuggestion?.();
@@ -1198,6 +1313,18 @@ export function MessageInput({
       ) {
         e.preventDefault();
         handleForkWithoutSummary();
+        return;
+      }
+
+      if (
+        projectQueueShortcutAvailable &&
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        handleProjectQueue();
         return;
       }
 
@@ -1641,8 +1768,33 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={text}
+              onBeforeInput={(event) => {
+                const nativeEvent = event.nativeEvent as InputEvent;
+                pendingDraftInputRef.current = {
+                  start: event.currentTarget.selectionStart,
+                  end: event.currentTarget.selectionEnd,
+                  inputType: nativeEvent.inputType,
+                };
+              }}
               onChange={(e) => {
                 const nextText = e.target.value;
+                const pendingInput = pendingDraftInputRef.current;
+                pendingDraftInputRef.current = null;
+                noteDraftTextChange(
+                  text,
+                  nextText,
+                  pendingInput
+                    ? {
+                        ...pendingInput,
+                        insertedText: getInsertedTextForEdit(
+                          text,
+                          nextText,
+                          pendingInput.start,
+                          pendingInput.end,
+                        ),
+                      }
+                    : undefined,
+                );
                 clearPendingSpeechFinal();
                 if (speechInsertionRangesRef.current.size > 0) {
                   const nextRanges = new Map<string, SpeechInsertionRange>();
@@ -1863,6 +2015,7 @@ export function MessageInput({
                   sizeLabel={formatSize(file.size)}
                   imageWidth={file.width}
                   imageHeight={file.height}
+                  previewUrl={file.previewUrl}
                   onRemove={
                     onRemoveAttachment
                       ? () => onRemoveAttachment(file.id)
@@ -1947,13 +2100,16 @@ export function MessageInput({
             btwToolbarMode={btwToolbarMode}
             thinkingProvider={thinkingProvider}
             thinkingModel={thinkingModel}
+            liveThinkingSelection={liveThinkingSelection}
             contextRequestedModel={contextRequestedModel}
             heartbeatEnabled={heartbeatEnabled}
             onToggleHeartbeat={onToggleHeartbeat}
             onConfigureHeartbeat={onConfigureHeartbeat}
             contextUsage={contextUsage}
             lastActivityAt={lastActivityAt}
+            positionTimestampMs={positionTimestampMs}
             sessionLiveness={sessionLiveness}
+            providerRuntimeStatus={providerRuntimeStatus}
             showSteerNowMode={supportsSteerNow && hasActiveDualActions}
             steerNowEnabled={steerNowEnabled}
             onToggleSteerNow={() => setSteerNowOverride(!steerNowEnabled)}
@@ -1976,6 +2132,11 @@ export function MessageInput({
                   : handleSubmit
             }
             onQueue={onQueue ? handleQueue : undefined}
+            onProjectQueue={
+              onProjectQueue && !forkSummaryMode
+                ? handleProjectQueue
+                : undefined
+            }
             onSteer={hasActiveDualActions ? handleSteer : undefined}
             primaryActionKind={effectivePrimaryActionKind}
             sendOverride={

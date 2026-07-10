@@ -16,6 +16,9 @@ See also:
   *displayed* (compacted to project-relative) across these surfaces.
 - [`attachment-storage.md`](attachment-storage.md) — where uploaded attachments
   live and the allow-list behind `/api/local-image` and `/api/local-file`.
+- [`session-media-handles.md`](session-media-handles.md) — proposed transcript
+  media handles for inline base64 provider payloads that should be fetched
+  lazily instead of retained in session JSON.
 - [`relay-origin-and-share-gating.md`](relay-origin-and-share-gating.md) — why
   the relay origin has no API, and the public-share serving path.
 - `docs/tactical/009-local-resource-link-routing.md` — the working log of the
@@ -108,6 +111,32 @@ and the route it pulls from.
   the same `FileViewer`, but backed by a share-scoped source
   (`publicShareFileViewerSource.ts`) that fetches `/public-api/shares/:secret/
   files/raw` through the relay+secret path. Relay-safe.
+
+## Proposed refinement: anchored attachment hover preview
+
+Current state: image attachment chips already show a full-image hover preview
+after a brief linger (`AttachmentChip.tsx`, `HOVER_PREVIEW_LINGER_MS = 450`),
+but the preview is a centered, viewport-fixed overlay. It does not choose a
+direction from the thumbnail or avoid covering nearby context except by hiding
+when the click modal opens.
+
+Desired behavior for all image attachment thumbnails (composer, sent user
+turns, and parsed user-prompt blocks):
+
+- Keep the short hover delay so incidental cursor travel does not flash an
+  image.
+- Anchor the enlarged preview to the hovered thumbnail, not the center of the
+  viewport.
+- Choose the side with the most available space (prefer below/above when they
+  can show the image at useful size; otherwise left/right), and flip when the
+  first choice cannot fit.
+- Resize the preview to fit inside the viewport with a small margin while
+  preserving aspect ratio; never create page scrollbars or crop the image.
+- Fetch/display bytes through the existing attachment preview path
+  (`useCachedAttachmentImage` / `useRemoteImage`) so relay mode and cached
+  thumbnail/full-image behavior stay unchanged.
+- Leave touch behavior on the explicit click modal; hover-only enlargement is a
+  desktop affordance.
 
 ## Which route serves the file (the "doors")
 

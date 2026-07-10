@@ -6,6 +6,10 @@
 
 Topic: composer-bottom-bar-overflow
 
+See also: [toolbar-settings-ui.md](toolbar-settings-ui.md) — the settings pane
+that lets users set each control's narrowing priority (which drives the tier
+classes this engine collapses).
+
 ## Concern
 
 The session composer bottom row can contain delivery controls, Stop, queue and
@@ -17,6 +21,12 @@ they can reach a control.
 
 ## Contract
 
+- Collapse/restore obeys the repo-wide fixed-order rule: widening restores
+  controls in exactly the reverse order narrowing removed them, with the same
+  width always yielding the same set
+  ([`ui-architecture.md`](ui-architecture.md) § Narrowing/Widening Stability
+  Principle). The tier ladder in `useMeasuredComposerOverflow` satisfies it by
+  construction.
 - Bottom-row controls should be represented as one ordered responsive control
   list with shared spacing and collapse rules, including shortcut help (`?`) and
   context percentage circle/text. The visual layout may still have left and
@@ -63,10 +73,12 @@ they can reach a control.
   only until that total fits the toolbar width.
 - Hidden controls must remain reachable by tap/click from the popup menu, not
   disappear.
-- The eligible set should include controls from both the left and right toolbar
+- The eligible set includes controls from both the left and right toolbar
   containers. Permission mode, attachment, slash, thinking, render/formula,
-  heartbeat/pulse, and shortcut help may all collapse when space is tight; the
-  exact priority order can be refined later.
+  heartbeat/pulse, shortcut help, session status, context usage, `/btw`, Steer
+  Now, and Project Queue may all collapse when the user assigns a non-`pin`
+  priority. Send, Stop, pending approvals/questions, microphone, and the active
+  waveform remain inline/pinned by their own contracts.
 - At squeeze widths, permission mode should use a pure icon/dot presentation
   rather than carrying text such as `Bypass` inline.
 - Overflow priority does not require arbitrary reshuffling of the normal
@@ -78,6 +90,83 @@ they can reach a control.
   should cause the lower-priority middle controls consumed by `...` to be
   recalculated from the current rendered state, not frozen from an earlier
   toolbar membership snapshot.
+
+## Freshness / position-age presentation
+
+The composer status row can carry three status chips: session liveness, the
+last-activity **freshness** ("M ago"), and the transcript **position age**
+("at N ago" — the compose age of the message at the current scroll position).
+The freshness and position age are session/scroll information the user wants
+even on narrow screens, so they follow a fit-driven rule distinct from the
+liveness chip:
+
+- **Inline-expanded when there is room** for the expanded status row; the
+  liveness chip and expanded last-activity wording ("Last activity 35m") stay
+  inline under the `sessionStatus` visibility toggle
+  ([session-ui-customization.md](session-ui-customization.md)).
+- **Floated over the composer when there is not room** (the same measured
+  `requiredWidth > clientWidth` "compact" signal that drives control overflow,
+  or a mobile viewport — not a hardcoded breakpoint). The float carries only
+  the two ages, never the liveness chip: floated, the liveness time degrades
+  to a context-free "now"/"5m" pill over the composer, styled unlike the
+  inline row it came from (observed 2026-07-03 as a mystery "now" pill during
+  streaming). The view enforces this — the liveness chip is inline-only.
+- **The float is decoupled from the `sessionStatus` toggle** so that
+  width-constrained clients still get the ages. This matters because
+  `sessionStatus` defaults *off* on mobile (the inline row would crowd the
+  cramped toolbar); a float consumes no inline space, so that justification
+  does not apply to it. Without decoupling, mobile users see neither age.
+- **When `sessionStatus` is off the ages float at *every* width, not only on
+  narrow viewports.** The governing rule is "float whenever the ages cannot be
+  the inline expanded row" — which is true both when the toolbar is compact
+  *and* when the toggle is off (no inline row exists at any width). An earlier
+  cut floated only in compact mode, so a *wide* desktop client that hid Session
+  Status saw the ages vanish entirely and read it as a silently-changed
+  setting. `MessageInputToolbar.tsx` expresses this as
+  `statusFloats = isCompactStatusMode || !visibility.sessionStatus`, used for
+  the float gate, the forced position/last-activity chips, the `.status-floats`
+  class, and suppressing the long "Last activity 35m" prefix (float uses the
+  compact "M ago" form). A consequence accepted by design: a user who
+  explicitly hid Session Status still gets the age float (at any width, and when
+  the toolbar is cramped).
+- **"at N ago" is follow-mode-safe.** `positionTimestampMs` is null at the
+  scroll bottom (`MessageList`), so the position age never shows in follow
+  mode (composing at the bottom); only the freshness can. A secondary guard
+  drops it when its label would duplicate the freshness label; a current
+  position ("now") always counts as duplicating — the freshness chip hides
+  itself when current, and that hidden freshness is still "the same time" —
+  so "at now" never renders. The edge that
+  survives: at the bottom while hovering a turn-rail marker,
+  `hoveredMarkerTimestampMs` re-supplies a position age (an explicit inspect
+  gesture, not passive follow).
+- These are non-interactive status (`pointer-events: none`), so — unlike the
+  interactive row participants above — they are exempt from the "controls that
+  occupy bottom-row space must occupy measured layout space" rule; the float
+  is intentionally absolute and out of flow.
+
+Implementation: the float reuses the existing `.status-floats
+.composer-status-ages` positioning; the age content is gated in
+`MessageInputToolbar.tsx` by `hasPositionAge` / `hasLastActivityAge` (toggle-
+independent) OR'd with the inline sessionStatus-gated flags. To keep the
+compact-mode fit measurement stable (the ResizeObserver sums the measured
+status element's width), the same element carries the ages in both inline and
+float presentations rather than swapping to a separate probe.
+
+The compact signal measures **content demand, never rendered size, and exits
+with slack**. Two latch/oscillation traps live here:
+
+- `.message-input-left` is `flex: 1`, so measuring rendered sizes
+  (`scrollWidth`) feeds growth back into the decision: once the status
+  floats out of the row, the left section absorbs the freed room, keeping
+  `requiredWidth > clientWidth` at any window width — compact latched
+  forever, and near-equality plus integer rounding could also flip it
+  spuriously on wide windows. `sectionDemand` instead sums each section's
+  in-flow children (stretchy `flex-grow` fillers such as the speech waveform
+  count as their flex basis).
+- Exiting compact requires `COMPACT_STATUS_EXIT_SLACK_PX` of headroom beyond
+  fitting, because the float omits the liveness chip and restyles the ages:
+  demand measured while floating understates the inline row it would return
+  to, and an exact threshold would oscillate at the boundary.
 
 ## Priority Notes
 
@@ -113,8 +202,12 @@ they can reach a control.
   selected `...` button: mode and attachment use the available left side, while
   slash, thinking, render/formula, heartbeat/pulse, and shortcut help spill to
   the right when left space would be tight.
-- Context percentage, microphone, queue/patient controls, Stop, and send remain
-  inline in that first pass.
+- 2026-07-01 follow-up: right-side controls gained real overflow menu copies
+  where the Toolbar settings priority editor exposes them: session status,
+  context percentage, `/btw`, Steer Now, and Project Queue. Their defaults
+  remain `pin`; assigning `first`/`mid`/`last` makes them participate in the
+  same measured tier engine as the existing left-side controls. Send, Stop,
+  pending approval/question, microphone, and the active waveform stay pinned.
 - Active-microphone waveform landed on 2026-06-19 as a configurable,
   default-on session-toolbar element. It is an elastic child of the
   measured left control list: real YA-controlled capture samples fill whatever

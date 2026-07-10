@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useId, useState } from "react";
-import type {
-  HelperTargetConfig,
-  ModelInfo,
-} from "@yep-anywhere/shared";
+import type { HelperTargetConfig, ModelInfo } from "@yep-anywhere/shared";
 import { api, type ServerSettings } from "../../api/client";
 import { useToastContext } from "../../contexts/ToastContext";
 import { useCodexUpdateStatus } from "../../hooks/useCodexUpdateStatus";
 import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useI18n } from "../../i18n";
+import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import {
   helperTargetDescription,
   helperTargetValue,
@@ -18,6 +16,8 @@ import { getAllProviders } from "../../providers/registry";
 const DEFAULT_OLLAMA_SYSTEM_PROMPT =
   "You are a helpful coding assistant. You help users with software engineering tasks. You have access to tools for reading files, editing files, running shell commands, and searching code. Use tools when needed to answer questions or make changes. Be concise and direct.";
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
+// Re-enable with topics/openai-compatible-helper-sessions.md.
+const SHOW_HELPER_TARGETS_SETTINGS = false;
 
 interface HelperTargetDraft {
   id?: string;
@@ -587,8 +587,7 @@ function CodexUpdatePanel() {
         {updateAvailable ? (
           <span>
             <strong>{t("providersCodexUpdateAvailable")}</strong>{" "}
-            {status.installed} →{" "}
-            {status.latest}
+            {status.installed} → {status.latest}
           </span>
         ) : (
           <span className="settings-hint">
@@ -641,12 +640,12 @@ function CodexUpdatePanel() {
                 ? t("providersCodexUpdateInstalling")
                 : t("providersCodexUpdateNow")}
             </button>
-          ) : (
+          ) : status.manualInstallCommand ? (
             <span className="settings-hint">
               {t("providersCodexUpdateWithInstaller")}
             </span>
-          )}
-          {status.manualInstallCommand && (
+          ) : null}
+          {status.manualInstallCommand ? (
             <>
               <code
                 style={{
@@ -666,7 +665,11 @@ function CodexUpdatePanel() {
                 {t("remoteSetupCopy")}
               </button>
             </>
-          )}
+          ) : status.updateMethod === "manual" ? (
+            <span className="settings-hint">
+              {t("providersCodexUpdateManualInstallHint")}
+            </span>
+          ) : null}
         </div>
       )}
 
@@ -791,6 +794,7 @@ function ClaudeLoginCommandPanel({
 
 export function ProvidersSettings() {
   const { t } = useI18n();
+  useSettingsPaneTitle(t("providersSectionTitle"));
   const { showToast } = useToastContext();
   const { providers: serverProviders } = useProviders();
   const { settings, updateSetting } = useServerSettings();
@@ -823,16 +827,17 @@ export function ProvidersSettings() {
 
   return (
     <section className="settings-section">
-      <h2>{t("providersSectionTitle")}</h2>
       <p className="settings-section-description">
         {t("providersSectionDescription")}
       </p>
-      <div className="settings-group">
-        <HelperTargetsSettings
-          settings={settings}
-          updateSetting={updateSetting}
-        />
-      </div>
+      {SHOW_HELPER_TARGETS_SETTINGS && (
+        <div className="settings-group">
+          <HelperTargetsSettings
+            settings={settings}
+            updateSetting={updateSetting}
+          />
+        </div>
+      )}
       <div className="settings-group">
         {providerDisplayList.map((provider) => (
           <div key={provider.id} className="settings-item">

@@ -89,8 +89,6 @@ export function extractMarkdownSnippetsFromSelection(
   }
 
   const snippets: MarkdownSelectionSnippet[] = [];
-  const selectedTextParts: string[] = [];
-  const coveredTextParts: string[] = [];
   const sourceElements = Array.from(
     root.querySelectorAll<HTMLElement>(`[${MARKDOWN_COPY_SOURCE_ATTR}]`),
   );
@@ -99,11 +97,6 @@ export function extractMarkdownSnippetsFromSelection(
     const range = selection.getRangeAt(rangeIndex);
     if (!rangeIntersectsNode(range, root)) {
       continue;
-    }
-
-    const rootRangeText = getRangeTextWithinElement(range, root);
-    if (rootRangeText?.selectedText.trim()) {
-      selectedTextParts.push(rootRangeText.selectedText);
     }
 
     for (const element of sourceElements) {
@@ -120,7 +113,6 @@ export function extractMarkdownSnippetsFromSelection(
       if (!rangeText?.selectedText.trim()) {
         continue;
       }
-      coveredTextParts.push(rangeText.selectedText);
 
       const markdown =
         getMarkdownForVisibleSelection(source, rangeText.selectedText, {
@@ -139,13 +131,6 @@ export function extractMarkdownSnippetsFromSelection(
     }
   }
 
-  if (
-    normalizeSelectedTextForCoverage(selectedTextParts.join("\n")) !==
-    normalizeSelectedTextForCoverage(coveredTextParts.join("\n"))
-  ) {
-    return [];
-  }
-
   return snippets;
 }
 
@@ -156,8 +141,7 @@ export function getMarkdownSnippetForElement(
   if (!source?.trim()) {
     return null;
   }
-  const range = element.ownerDocument.createRange();
-  range.selectNodeContents(element);
+  const range = createTextContentRange(element);
   return {
     markdown: trimBoundaryNewlines(source),
     selectedText: element.innerText || element.textContent || source,
@@ -185,8 +169,7 @@ export function getMarkdownSnippetForSubElement(
     return null;
   }
   const doc = blockElement.ownerDocument;
-  const range = doc.createRange();
-  range.selectNodeContents(blockElement);
+  const range = createTextContentRange(blockElement);
 
   const beforeRange = doc.createRange();
   beforeRange.selectNodeContents(sourceElement);
@@ -206,6 +189,34 @@ export function getMarkdownSnippetForSubElement(
     sourceElement,
     range,
   };
+}
+
+function createTextContentRange(element: HTMLElement): Range {
+  const range = element.ownerDocument.createRange();
+  const walker = element.ownerDocument.createTreeWalker(
+    element,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) =>
+        node.textContent && node.textContent.length > 0
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT,
+    },
+  );
+  const first = walker.nextNode();
+  if (!first) {
+    range.selectNodeContents(element);
+    return range;
+  }
+
+  let last = first;
+  for (let next = walker.nextNode(); next; next = walker.nextNode()) {
+    last = next;
+  }
+
+  range.setStart(first, 0);
+  range.setEnd(last, last.textContent?.length ?? 0);
+  return range;
 }
 
 export function getMarkdownForVisibleSelection(
@@ -283,7 +294,15 @@ export function getMarkdownForVisibleSelection(
 
   for (const lineIndex of touchedLineIndexes) {
     const line = sourceMap.lines[lineIndex];
-    if (!line?.forceWholeLine) {
+    if (
+      !line?.forceWholeLine ||
+      !selectionCoversWholeVisibleLine(
+        sourceMap.visible,
+        line,
+        visibleStart,
+        visibleEnd,
+      )
+    ) {
       continue;
     }
     sourceStart = Math.min(sourceStart, line.sourceStart);
@@ -291,6 +310,34 @@ export function getMarkdownForVisibleSelection(
   }
 
   return trimBoundaryNewlines(normalizedSource.slice(sourceStart, sourceEnd));
+}
+
+function selectionCoversWholeVisibleLine(
+  visible: string,
+  line: VisibleLine,
+  selectionStart: number,
+  selectionEnd: number,
+): boolean {
+  let contentStart = line.visibleStart;
+  let contentEnd = line.visibleEnd;
+
+  while (
+    contentStart < contentEnd &&
+    isHorizontalWhitespace(visible[contentStart] ?? "")
+  ) {
+    contentStart += 1;
+  }
+  while (
+    contentEnd > contentStart &&
+    isHorizontalWhitespace(visible[contentEnd - 1] ?? "")
+  ) {
+    contentEnd -= 1;
+  }
+
+  if (contentStart === contentEnd) {
+    return false;
+  }
+  return selectionStart <= contentStart && selectionEnd >= contentEnd;
 }
 
 function findExactSourceSelection(
@@ -317,8 +364,8 @@ function trimBoundaryNewlines(value: string): string {
   return normalizeLineEndings(value).replace(/^\n+|\n+$/g, "");
 }
 
-function normalizeSelectedTextForCoverage(value: string): string {
-  return normalizeLineEndings(value).replace(/\s+/g, " ").trim();
+function isHorizontalWhitespace(value: string): boolean {
+  return value === " " || value === "\t" || value === "\u00a0";
 }
 
 function rangeIntersectsNode(range: Range, node: Node): boolean {

@@ -2,7 +2,9 @@
 
 > Queued ("deferred") messages are server-owned state. The client renders the
 > server's list and issues add/cancel requests. It never keeps its own copy of
-> the queue, never reconciles by text, and never persists the queue to disk.
+> the queue or reconciles by text. Long-lived patient entries are durable
+> server state while queued; short-term direct/deferred entries remain
+> process-local.
 
 Topic: queued-messages
 
@@ -21,6 +23,12 @@ busy/idle composer contract lives in
 This note is narrower: it governs *where queued-message state lives and how the
 client learns about it*.
 
+Terminology warning: current code stores both short-term `deferred` entries and
+long-lived `patient` entries in `Process.deferredQueue`. In product discussion,
+"the queued messages worth preserving" usually means the patient queue: visible,
+cancellable entries that wait for verified idle and can remain pending for many
+minutes.
+
 ## Principles
 
 1. **Server-authoritative.** The single source of truth is the in-process
@@ -37,10 +45,12 @@ client learns about it*.
 3. **Identity is a server-owned id, never text.** Messages are addressed by id.
    Three queued messages that all say "proceed" are three distinct ids and are
    never collapsed, matched, or de-duplicated by their content.
-4. **Ephemeral by design.** The queue lives in the Process. It dies when the
-   process restarts and dies when the session stops. It is not persisted to
-   disk, and that is acceptable — losing the queue on process death is expected
-   behavior, not a failure to defend against.
+4. **Patient persistence only.** Short-term deferred and direct queues live in
+   the Process and die when the process restarts or the session stops. Patient
+   entries are durable server state while queued. Restart-loaded patient entries
+   surface as `paused-after-restart` queue chips and require an explicit action:
+   resume (rejoin the patient queue and wait for verified quiet), steer (deliver
+   now), or delete.
 5. **No optimism.** Queuing and cancelling behave exactly like sending a normal
    session message: the composer disables, the request goes to the server, and
    the UI only changes when confirmed server state comes back. No optimistic
@@ -59,15 +69,18 @@ client learns about it*.
 - **Cancel (delete).** Issue the delete request; the chip disappears only when
   the next server state no longer contains it. A delete of an already-gone id is
   a no-op.
-- **Process restart / session stop.** The queue is gone. Clients reflect the
-  empty (or rebuilt) server state on their next sync. No local resurrection of
-  "recovered" entries.
+- **Process restart / session stop.** Short-term direct/deferred queue state is
+  gone. Persisted patient entries load as `paused-after-restart`; clients
+  reflect those server-reported entries on the next sync and never resurrect
+  queue state locally.
 
 ## Surface
 
 - **List:** the client receives the queue from the server only — the `connected`
-  event payload on (re)connect and `deferred-queue` SSE events on change. No GET
-  fallback is required for correctness; the connection stream is the channel.
+  event payload on (re)connect and `deferred-queue` SSE events on change.
+  Session detail/metadata responses may also decorate recovered
+  `paused-after-restart` patient entries for initial load after a server
+  restart.
 - **Add:** `POST` a queue request; the server appends and broadcasts the new
   list.
 - **Cancel:** `DELETE` by id; the server removes and broadcasts the new list.
@@ -90,11 +103,58 @@ not rejected. The point of this note is to ship a correct minimum first.
 - **Editing a queued message.** To change a queued message, cancel it and queue
   a new one. (Future: in-place edit can be added on top of the server model.)
 - **Reordering / reshuffling the queue.** (Future: server-side reorder by id.)
-- **Steering a queued message into the active turn.**
+- **Steering a queued message into the active turn.** (Landed 2026-07-03 for
+  patient entries, on top of the server model: the chip's `Steer now` action
+  steers that entry plus every patient entry ahead of it, and appears on
+  restart-recovered chips too, where it resumes-through before steering — see
+  [message-control-steer-queue-btw-later-interrupt.md](message-control-steer-queue-btw-later-interrupt.md)
+  § Patient countdown and promotion.)
 - **"Jump to context" / nearest-timestamp navigation** from a queued chip.
-- **Disk persistence** of the queue.
+- **Disk persistence of short-term direct/deferred queues.** A planned durable
+  slice is patient-only; direct `MessageQueue` entries and short-term
+  `deliveryIntent: "deferred"` entries only exist while a session is active, and
+  active sessions already block safe restart until those entries drain.
 - **Optimistic UI** for add or delete.
 - **Any fuzzy or content-based matching**, ordering inference, or client merge.
+
+## Patient persistence revision
+
+`docs/tactical/037-session-queue-persistence-prep.md` tracks the planned
+revision. The agreed live persistence shape is intentionally narrow:
+
+- persist only `deliveryIntent: "patient"` entries, the long-lived visible queue
+  that waits for verified idle;
+- load persisted patient entries after server restart as paused-after-restart,
+  never auto-send them on startup;
+- continue rendering queue state from server-owned state, not browser storage;
+- keep short-term `deliveryIntent: "deferred"` entries ephemeral because they
+  are tied to an active session and should promote before safe restart is
+  possible;
+- keep direct `MessageQueue` entries ephemeral for the same restart semantics;
+- do not use text matching to recover, deduplicate, or remove entries.
+
+Status as of 2026-06-30 (revised 2026-07-03): live patient queue write/delete
+is wired into `Process`/Supervisor. A queued patient entry is written to the
+server persistence service, and cancel/promotion/drain removes it — including
+the promote-straight-through path, which consumes the entry's durable row even
+though no queue entry exists to drain later. Startup-loaded paused entries are
+surfaced through session detail/metadata responses and can be deleted by
+durable queue id. Per-entry resume resumes *through* the clicked entry: a
+non-head resume also resumes every recovered entry before it, so compose order
+is preserved rather than rejected. Recovered chips also expose `Steer now`
+(`POST /sessions/:id/recovered-queue/:queueId/steer`), which resumes-through
+and then steers the group into the session immediately. Both actions reject
+only when a live patient entry *newer* than the clicked entry exists
+(delivering older recovered content behind it would break compose order);
+regular-lane deferred entries never block recovered work, since that lane may
+pass patient work by design. Safe restart
+reports recovered patient entries as preserved work, not blockers, and converts
+live patient entries to `paused-after-restart` once active sessions plus
+short-term/direct queue blockers have drained. Project Queue promotion treats
+persisted recovered patient entries as project-busy so project-level work
+cannot jump ahead of preserved per-session work. The Projects page shows a
+read-only recovered queue overview grouped by session; management remains on
+the session page, and project-level resume-all controls are still pending.
 
 ## What we are removing and why
 

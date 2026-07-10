@@ -1,15 +1,37 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { gunzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { MockClaudeSDK, createMockScenario } from "../../src/sdk/mock.js";
+import type { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(__dirname, "..", "fixtures", "agents");
+
+async function readOptionalText(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  }
+}
+
+function createSettingsServiceForAuditLog(
+  enabled: boolean,
+): ServerSettingsService {
+  return {
+    getSetting: (key: string) =>
+      key === "approvalAuditLogEnabled" ? enabled : undefined,
+  } as unknown as ServerSettingsService;
+}
 
 describe("Sessions API", () => {
   let mockSdk: MockClaudeSDK;
@@ -346,6 +368,180 @@ describe("Sessions API", () => {
     });
   });
 
+  describe("GET /api/projects/:projectId/sessions/:sessionId", () => {
+    const projectPath = "/home/user/myproject";
+
+    async function writeCompactedSession(name: string) {
+      const encodedPath = projectPath.replace(/[/\\:]/g, "-");
+      const sessionDir = join(testDir, "localhost", encodedPath);
+      const timestamp = (second: number) =>
+        `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+      const user = (uuid: string, parentUuid: string | null, second: number) =>
+        ({
+          type: "user",
+          cwd: projectPath,
+          sessionId: name,
+          uuid,
+          ...(parentUuid ? { parentUuid } : {}),
+          timestamp: timestamp(second),
+          message: { role: "user", content: uuid },
+        }) satisfies Record<string, unknown>;
+      const assistant = (
+        uuid: string,
+        parentUuid: string,
+        second: number,
+      ) =>
+        ({
+          type: "assistant",
+          cwd: projectPath,
+          sessionId: name,
+          uuid,
+          parentUuid,
+          timestamp: timestamp(second),
+          message: { role: "assistant", content: uuid },
+        }) satisfies Record<string, unknown>;
+      const compactBoundary = (
+        uuid: string,
+        logicalParentUuid: string,
+        second: number,
+      ) =>
+        ({
+          type: "system",
+          subtype: "compact_boundary",
+          cwd: projectPath,
+          sessionId: name,
+          uuid,
+          parentUuid: null,
+          logicalParentUuid,
+          timestamp: timestamp(second),
+          content: "Conversation compacted",
+          compactMetadata: { trigger: "auto", preTokens: 100000 + second },
+        }) satisfies Record<string, unknown>;
+
+      const entries = [
+        user("u1", null, 1),
+        assistant("a1", "u1", 2),
+        compactBoundary("cb1", "a1", 3),
+        user("u2", "cb1", 4),
+        assistant("a2", "u2", 5),
+        compactBoundary("cb2", "a2", 6),
+        user("u3", "cb2", 7),
+        assistant("a3", "u3", 8),
+        compactBoundary("cb3", "a3", 9),
+        user("u4", "cb3", 10),
+      ];
+
+      await writeFile(
+        join(sessionDir, `${name}.jsonl`),
+        `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      );
+    }
+
+    it("defaults no-query detail requests to a compact tail", async () => {
+      await writeCompactedSession("sess-compact-default");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-compact-default`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
+        .toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
+      expect(json.pagination).toMatchObject({
+        hasOlderMessages: true,
+        returnedMessageCount: 5,
+        totalCompactions: 3,
+        truncatedBeforeMessageId: "cb2",
+      });
+    });
+
+    it("returns full transcript only when fullHistory=1 is explicit", async () => {
+      await writeCompactedSession("sess-compact-full");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-compact-full?fullHistory=1&fullHistoryReason=test`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
+        .toEqual(["u1", "a1", "cb1", "u2", "a2", "cb2", "u3", "a3", "cb3", "u4"]);
+      expect(json.pagination).toBeUndefined();
+    });
+
+    it("preserves explicit compact-tail bounds", async () => {
+      await writeCompactedSession("sess-compact-explicit");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-compact-explicit?tailCompactions=1`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
+        .toEqual(["cb3", "u4"]);
+      expect(json.pagination).toMatchObject({
+        hasOlderMessages: true,
+        returnedMessageCount: 2,
+        totalCompactions: 3,
+        truncatedBeforeMessageId: "cb3",
+      });
+    });
+
+    it("applies turn tails inside the default compact scope", async () => {
+      await writeCompactedSession("sess-compact-turn-tail");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-compact-turn-tail?tailTurns=20`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
+        .toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
+      expect(json.pagination).toMatchObject({
+        hasOlderMessages: true,
+        returnedMessageCount: 5,
+        totalCompactions: 3,
+        totalUserTurns: 4,
+        truncatedBeforeMessageId: "cb2",
+        truncatedBy: "compact_boundary",
+      });
+    });
+
+    it("allows full-history scope to be narrowed by user turns", async () => {
+      await writeCompactedSession("sess-full-turn-tail");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-full-turn-tail?fullHistory=1&fullHistoryReason=test&tailTurns=2`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
+        .toEqual(["u3", "a3", "cb3", "u4"]);
+      expect(json.pagination).toMatchObject({
+        hasOlderMessages: true,
+        returnedMessageCount: 4,
+        totalCompactions: 3,
+        totalUserTurns: 4,
+        truncatedBeforeMessageId: "u3",
+        truncatedBy: "user_turn",
+      });
+    });
+  });
+
   describe("POST /api/sessions/:sessionId/input", () => {
     it("returns 404 if no active process", async () => {
       const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
@@ -568,6 +764,136 @@ describe("Sessions API", () => {
       expect(json.pendingInputRequest).toBeNull();
     });
 
+    it("writes approval audit entries only when enabled", async () => {
+      const logPath = join(testDir, "logs", "approval-decisions.jsonl");
+
+      mockSdk.addScenario({
+        messages: [
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sess-tool-audit-disabled",
+          },
+          {
+            type: "system",
+            subtype: "input_request",
+            input_request: {
+              id: "req-audit-disabled",
+              type: "tool-approval",
+              prompt: "Allow Bash?",
+              toolName: "Bash",
+              toolInput: { command: "echo disabled" },
+            },
+          },
+        ],
+        delayMs: 5,
+      });
+      const disabledApp = createApp({
+        sdk: mockSdk,
+        projectsDir: testDir,
+        dataDir: testDir,
+        serverSettingsService: createSettingsServiceForAuditLog(false),
+      }).app;
+
+      const disabledStart = await disabledApp.request(
+        `/api/projects/${projectId}/sessions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({ message: "hello" }),
+        },
+      );
+      expect(disabledStart.status).toBe(200);
+      const disabledSession = await disabledStart.json();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const disabledInput = await disabledApp.request(
+        `/api/sessions/${disabledSession.sessionId}/input`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            requestId: "req-audit-disabled",
+            response: "approve",
+          }),
+        },
+      );
+      expect(disabledInput.status).toBe(200);
+      expect(await readOptionalText(logPath)).toBe("");
+
+      mockSdk.addScenario({
+        messages: [
+          {
+            type: "system",
+            subtype: "init",
+            session_id: "sess-tool-audit-enabled",
+          },
+          {
+            type: "system",
+            subtype: "input_request",
+            input_request: {
+              id: "req-audit-enabled",
+              type: "tool-approval",
+              prompt: "Allow Bash?",
+              toolName: "Bash",
+              toolInput: { command: "echo enabled" },
+            },
+          },
+        ],
+        delayMs: 5,
+      });
+      const enabledApp = createApp({
+        sdk: mockSdk,
+        projectsDir: testDir,
+        dataDir: testDir,
+        serverSettingsService: createSettingsServiceForAuditLog(true),
+      }).app;
+
+      const enabledStart = await enabledApp.request(
+        `/api/projects/${projectId}/sessions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({ message: "hello" }),
+        },
+      );
+      expect(enabledStart.status).toBe(200);
+      const enabledSession = await enabledStart.json();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const enabledInput = await enabledApp.request(
+        `/api/sessions/${enabledSession.sessionId}/input`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            requestId: "req-audit-enabled",
+            response: "approve",
+          }),
+        },
+      );
+      expect(enabledInput.status).toBe(200);
+      const auditLines = (await readOptionalText(logPath)).trim().split("\n");
+      expect(auditLines).toHaveLength(1);
+      expect(JSON.parse(auditLines[0] ?? "{}")).toMatchObject({
+        requestId: "req-audit-enabled",
+        normalizedResponse: "approve",
+        accepted: true,
+      });
+    });
+
     it("accepts deny response with correct requestId", async () => {
       const requestId = `req-${Date.now()}`;
       // Create a session with tool approval
@@ -727,6 +1053,65 @@ describe("Sessions API", () => {
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.status).toBe("running");
+    });
+  });
+
+  // Guards the `app.use("/api/*", compress())` wiring in app.ts. Runs on the
+  // CI Node-20 floor, so it also catches any CompressionStream regression there.
+  describe("GET /api/projects/:projectId/sessions/:sessionId (compression)", () => {
+    const projectPath = "/home/user/myproject";
+
+    async function writeBigSession(name: string) {
+      const encodedPath = projectPath.replace(/[/\\:]/g, "-");
+      const sessionDir = join(testDir, "localhost", encodedPath);
+      // Comfortably exceeds the 1KB compress threshold so encoding kicks in.
+      const bigText = "the quick brown fox jumps over the lazy dog ".repeat(400);
+      const line = JSON.stringify({
+        type: "user",
+        cwd: projectPath,
+        sessionId: name,
+        uuid: `${name}-u1`,
+        timestamp: "2026-01-01T00:00:00Z",
+        message: { role: "user", content: bigText },
+      });
+      await writeFile(join(sessionDir, `${name}.jsonl`), `${line}\n`);
+    }
+
+    it("gzip-encodes large responses when the client accepts it", async () => {
+      await writeBigSession("sess-big");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-big`,
+        { headers: { "X-Yep-Anywhere": "true", "Accept-Encoding": "gzip" } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-encoding")).toBe("gzip");
+      // Encoded responses drop Content-Length in favor of chunked streaming.
+      expect(res.headers.get("content-length")).toBeNull();
+
+      // Body is gzip on the wire — decode it and confirm a clean round-trip.
+      const raw = Buffer.from(await res.arrayBuffer());
+      const json = JSON.parse(gunzipSync(raw).toString("utf-8"));
+      expect(Array.isArray(json.messages)).toBe(true);
+      expect(json.messages.length).toBeGreaterThan(0);
+    });
+
+    it("leaves responses uncompressed when Accept-Encoding is absent", async () => {
+      await writeBigSession("sess-plain");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-plain`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-encoding")).toBeNull();
+      // Plain body parses directly (no manual decode needed).
+      const json = await res.json();
+      expect(Array.isArray(json.messages)).toBe(true);
     });
   });
 });

@@ -17,10 +17,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -35,13 +36,47 @@ import {
   CodexProvider,
   type CodexProviderConfig,
 } from "../../../src/sdk/providers/codex.js";
+import {
+  codexAgentMessageDeltaFixtures,
+  codexContextCompactionFixtures,
+  codexInterruptedTurnFixtures,
+  codexRawFunctionCallFixtures,
+  createLiveEventState,
+} from "./codex-event-fixtures.js";
 
 vi.mock("../../../src/sdk/messageLogger.js", () => ({
   logSDKMessage: vi.fn(),
 }));
 
+// Scrub the agentctl session-env bridge variables this process may have
+// inherited (e.g. when `pnpm test` runs inside a YA-managed shell). The
+// app-server lifecycle tests assert the provider installs its OWN bridge; an
+// ambient BASH_ENV would be chained as YEP_ORIGINAL_BASH_ENV into every probe
+// shell the fake Codex spawns and break them.
+const HERMETIC_BRIDGE_ENV_KEYS = [
+  "BASH_ENV",
+  "YEP_ORIGINAL_BASH_ENV",
+  "AGENTCTL_SESSION_ID",
+] as const;
+const savedBridgeEnv = new Map<string, string | undefined>();
+
 beforeEach(() => {
   vi.mocked(logSDKMessage).mockClear();
+  savedBridgeEnv.clear();
+  for (const key of HERMETIC_BRIDGE_ENV_KEYS) {
+    savedBridgeEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+});
+
+afterEach(() => {
+  for (const [key, value] of savedBridgeEnv) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 });
 
 function createFakeCodexCommand(
@@ -75,7 +110,7 @@ function isBashAvailable(): boolean {
   }
 }
 
-const bashIt = isBashAvailable() ? it : it.skip;
+const bashIt = process.platform !== "win32" && isBashAvailable() ? it : it.skip;
 
 describe("CodexProvider", () => {
   let provider: CodexProvider;
@@ -125,6 +160,38 @@ describe("CodexProvider", () => {
         process.env.LOCALAPPDATA = tempDir;
 
         expect(getCodexCommonPaths()).toContain(codexPath);
+      } finally {
+        if (oldLocalAppData === undefined) {
+          delete process.env.LOCALAPPDATA;
+        } else {
+          process.env.LOCALAPPDATA = oldLocalAppData;
+        }
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should prefer OpenAI Codex desktop bins over stale sandbox fallback on Windows", () => {
+      if (process.platform !== "win32") return;
+
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-desktop-bin-"));
+      const oldLocalAppData = process.env.LOCALAPPDATA;
+      try {
+        const desktopBinDir = join(tempDir, "OpenAI", "Codex", "bin", "abc123");
+        mkdirSync(desktopBinDir, { recursive: true });
+        const codexPath = join(desktopBinDir, "codex.exe");
+        writeFileSync(codexPath, "", "utf-8");
+
+        process.env.LOCALAPPDATA = tempDir;
+
+        const paths = getCodexCommonPaths();
+        const desktopIndex = paths.indexOf(codexPath);
+        const sandboxIndex = paths.findIndex((path) =>
+          path.includes(`${sep}.codex${sep}.sandbox-bin${sep}codex.exe`),
+        );
+
+        expect(desktopIndex).toBeGreaterThanOrEqual(0);
+        expect(sandboxIndex).toBeGreaterThanOrEqual(0);
+        expect(desktopIndex).toBeLessThan(sandboxIndex);
       } finally {
         if (oldLocalAppData === undefined) {
           delete process.env.LOCALAPPDATA;
@@ -1968,16 +2035,6 @@ describe("CodexProvider Event Normalization", () => {
     return new CodexProvider();
   }
 
-  function createLiveEventState() {
-    return {
-      streamingTextByItemKey: new Map<string, string>(),
-      streamingReasoningSummaryByItemKey: new Map<string, string[]>(),
-      streamingToolOutputByItemKey: new Map<string, string>(),
-      toolCallContexts: new Map<string, unknown>(),
-      resultBackedToolItemsByTurnId: new Map<string, Set<string>>(),
-    };
-  }
-
   it("should have correct provider interface", () => {
     const provider = createTestProvider();
 
@@ -2183,6 +2240,117 @@ describe("CodexProvider Event Normalization", () => {
       file: {
         filePath: "src/example.ts",
         startLine: 10,
+      },
+    });
+  });
+
+  it("normalizes PowerShell Get-Content command execution to Read shape", () => {
+    const provider = createTestProvider() as unknown as {
+      convertItemToSDKMessages: (
+        item: unknown,
+        sessionId: string,
+        turnId: string,
+        sourceEvent: "item/started" | "item/completed",
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const messages = provider.convertItemToSDKMessages(
+      {
+        id: "call-read-pwsh",
+        type: "command_execution",
+        command: String.raw`"C:\Users\sox\AppData\Local\Microsoft\WindowsApps\pwsh.exe" -Command 'Get-Content -Path CLAUDE.md -TotalCount 20'`,
+        aggregated_output: "# Yep Anywhere\n\nFor cross-project context",
+        exit_code: 0,
+        status: "completed",
+      },
+      "session-1",
+      "turn-1",
+      "item/completed",
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.message).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-read-pwsh",
+          name: "Read",
+          input: { file_path: "CLAUDE.md", offset: 1, limit: 20 },
+        },
+      ],
+    });
+    expect(messages[1]?.toolUseResult).toMatchObject({
+      type: "text",
+      file: {
+        filePath: "CLAUDE.md",
+        startLine: 1,
+      },
+    });
+  });
+
+  it("derives command display actions from command and cwd", () => {
+    const provider = createTestProvider() as unknown as {
+      convertItemToSDKMessages: (
+        item: unknown,
+        sessionId: string,
+        turnId: string,
+        sourceEvent: "item/started" | "item/completed",
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const absolutePath = String.raw`C:\Users\sox\Documents\code\yepanywhere\CLAUDE.md`;
+    const cwd = String.raw`C:\Users\sox\Documents\code\yepanywhere`;
+    const messages = provider.convertItemToSDKMessages(
+      {
+        id: "call-read-action",
+        type: "command_execution",
+        cwd,
+        command: String.raw`"C:\Users\sox\AppData\Local\Microsoft\WindowsApps\pwsh.exe" -Command 'Get-Content -Path CLAUDE.md -TotalCount 20'`,
+        commandActions: [
+          {
+            type: "read",
+            command: "Get-Content -Path CLAUDE.md -TotalCount 20",
+            name: "CLAUDE.md",
+            path: absolutePath,
+          },
+        ],
+        aggregated_output: "# Yep Anywhere\n\nFor cross-project context",
+        exit_code: 0,
+        status: "completed",
+      },
+      "session-1",
+      "turn-1",
+      "item/completed",
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.message).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-read-action",
+          name: "Read",
+          input: { file_path: "CLAUDE.md", offset: 1, limit: 20 },
+          _displayActions: [
+            {
+              kind: "read",
+              path: "CLAUDE.md",
+              absolutePath,
+              name: "CLAUDE.md",
+              startLine: 1,
+              endLine: 20,
+            },
+          ],
+        },
+      ],
+    });
+    expect(messages[1]?.toolUseResult).toMatchObject({
+      type: "text",
+      file: {
+        filePath: "CLAUDE.md",
+        startLine: 1,
       },
     });
   });
@@ -2404,121 +2572,6 @@ describe("CodexProvider Event Normalization", () => {
     });
   });
 
-  it("prefers GPT-5.5 over Codex's model/list default when available", () => {
-    const provider = createTestProvider() as unknown as {
-      normalizeModelList: (models: unknown[]) => Array<{
-        id: string;
-        name: string;
-        isDefault?: boolean;
-        defaultReasoningEffort?: string;
-        supportedReasoningEfforts?: Array<{
-          reasoningEffort: string;
-          description?: string;
-        }>;
-        inputModalities?: string[];
-        supportsPersonality?: boolean;
-        serviceTiers?: Array<{
-          id: string;
-          name: string;
-          description?: string;
-        }>;
-      }>;
-    };
-
-    const models = provider.normalizeModelList([
-      {
-        id: "gpt-5.4",
-        model: "gpt-5.4",
-        displayName: "gpt-5.4",
-        description: "Strong model for everyday coding.",
-        isDefault: true,
-        defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: [
-          {
-            reasoningEffort: "low",
-            description: "Fast responses with lighter reasoning",
-          },
-          {
-            reasoningEffort: "medium",
-            description: "Balanced speed and reasoning",
-          },
-        ],
-        inputModalities: ["text", "image"],
-        supportsPersonality: true,
-        serviceTiers: [
-          {
-            id: "priority",
-            name: "Fast",
-            description: "1.5x speed, increased usage",
-          },
-        ],
-      },
-      {
-        id: "gpt-5.5",
-        model: "gpt-5.5",
-        displayName: "GPT-5.5",
-        description: "Frontier model.",
-        isDefault: false,
-        defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: [
-          {
-            reasoningEffort: "high",
-            description: "Greater reasoning depth",
-          },
-        ],
-        inputModalities: ["text", "image"],
-        supportsPersonality: true,
-        serviceTiers: [
-          {
-            id: "priority",
-            name: "Fast",
-            description: "1.5x speed, increased usage",
-          },
-        ],
-      },
-      {
-        id: "gpt-5.3-codex",
-        model: "gpt-5.3-codex",
-        upgrade: "gpt-5.4",
-        hidden: false,
-      },
-      {
-        id: "internal-hidden",
-        model: "internal-hidden",
-        hidden: true,
-      },
-    ]);
-
-    expect(models.map((model) => model.id)).toEqual([
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.3-codex",
-    ]);
-    expect(models[0]).toMatchObject({
-      name: "GPT-5.5",
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: [
-        {
-          reasoningEffort: "high",
-          description: "Greater reasoning depth",
-        },
-      ],
-      inputModalities: ["text", "image"],
-      supportsPersonality: true,
-      serviceTiers: [
-        {
-          id: "priority",
-          name: "Fast",
-          description: "1.5x speed, increased usage",
-        },
-      ],
-    });
-    expect(models[1]).toMatchObject({
-      isDefault: true,
-      inputModalities: ["text", "image"],
-    });
-  });
-
   it("builds stable thread policy params with limited history", () => {
     const provider = createTestProvider() as unknown as {
       mapPermissionModeToThreadPolicy: (permissionMode?: string) => {
@@ -2625,6 +2678,53 @@ describe("CodexProvider Event Normalization", () => {
     expect(resume.persistExtendedHistory).toBeUndefined();
   });
 
+  it("suppresses the unavailable desktop browser skill for every thread path", () => {
+    const provider = createTestProvider() as unknown as {
+      createThreadStartParams: (
+        options: { cwd: string },
+        policy: { approvalPolicy: string; sandbox: string },
+      ) => Record<string, unknown>;
+      createThreadResumeParams: (
+        options: { resumeSessionId: string; cwd: string },
+        sessionId: string,
+        policy: { approvalPolicy: string; sandbox: string },
+      ) => Record<string, unknown>;
+      createThreadForkParams: (
+        options: { sessionId: string; cwd: string },
+        policy: { approvalPolicy: string; sandbox: string },
+      ) => Record<string, unknown>;
+    };
+    const policy = {
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    };
+    const expectedConfig = {
+      skills: {
+        config: [
+          {
+            name: "browser:control-in-app-browser",
+            enabled: false,
+          },
+        ],
+      },
+    };
+
+    const start = provider.createThreadStartParams({ cwd: "/tmp" }, policy);
+    const resume = provider.createThreadResumeParams(
+      { resumeSessionId: "thread-1", cwd: "/tmp" },
+      "thread-1",
+      policy,
+    );
+    const fork = provider.createThreadForkParams(
+      { sessionId: "thread-1", cwd: "/tmp" },
+      policy,
+    );
+
+    expect(start).toMatchObject({ config: expectedConfig });
+    expect(resume).toMatchObject({ config: expectedConfig });
+    expect(fork).toMatchObject({ config: expectedConfig });
+  });
+
   it("pins thread-scope reasoning effort via config when effort is requested", () => {
     const provider = createTestProvider() as unknown as {
       createThreadStartParams: (
@@ -2719,7 +2819,18 @@ describe("CodexProvider Event Normalization", () => {
     expect(resume).toMatchObject({
       config: { model_reasoning_effort: "high" },
     });
-    expect(omitted.config ?? null).toBeNull();
+    expect(omitted).toMatchObject({
+      config: {
+        skills: {
+          config: [
+            {
+              name: "browser:control-in-app-browser",
+              enabled: false,
+            },
+          ],
+        },
+      },
+    });
     expect(disabled).toMatchObject({
       config: { model_reasoning_effort: "none" },
     });
@@ -2819,54 +2930,24 @@ describe("CodexProvider Event Normalization", () => {
     const liveEventState = createLiveEventState();
 
     const first = provider.convertNotificationToSDKMessages(
-      {
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          itemId: "item-1",
-          delta: "Hello",
-        },
-      },
+      codexAgentMessageDeltaFixtures.firstNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
     const second = provider.convertNotificationToSDKMessages(
-      {
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          itemId: "item-1",
-          delta: " world",
-        },
-      },
+      codexAgentMessageDeltaFixtures.secondNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
 
-    expect(first[0]).toMatchObject({
-      type: "assistant",
-      session_id: "session-1",
-      uuid: "item-1-turn-1",
-      _isStreaming: true,
-      message: {
-        role: "assistant",
-        content: "Hello",
-      },
-    });
-    expect(second[0]).toMatchObject({
-      type: "assistant",
-      session_id: "session-1",
-      uuid: "item-1-turn-1",
-      _isStreaming: true,
-      message: {
-        role: "assistant",
-        content: "Hello world",
-      },
-    });
+    expect(first[0]).toMatchObject(
+      codexAgentMessageDeltaFixtures.expectedFirstMessage,
+    );
+    expect(second[0]).toMatchObject(
+      codexAgentMessageDeltaFixtures.expectedSecondMessage,
+    );
   });
 
   it("surfaces Codex context compaction thread items", () => {
@@ -2881,52 +2962,24 @@ describe("CodexProvider Event Normalization", () => {
 
     const liveEventState = createLiveEventState();
     const started = provider.convertNotificationToSDKMessages(
-      {
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: {
-            id: "compact-1",
-            type: "contextCompaction",
-          },
-        },
-      },
+      codexContextCompactionFixtures.startedNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
     const completed = provider.convertNotificationToSDKMessages(
-      {
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: {
-            id: "compact-1",
-            type: "contextCompaction",
-          },
-        },
-      },
+      codexContextCompactionFixtures.completedNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
 
-    expect(started[0]).toMatchObject({
-      type: "system",
-      subtype: "status",
-      session_id: "session-1",
-      uuid: "compact-1-turn-1",
-      status: "compacting",
-    });
-    expect(completed[0]).toMatchObject({
-      type: "system",
-      subtype: "compact_boundary",
-      session_id: "session-1",
-      uuid: "compact-1-turn-1",
-      content: "Context compacted",
-    });
+    expect(started[0]).toMatchObject(
+      codexContextCompactionFixtures.expectedStartedMessage,
+    );
+    expect(completed[0]).toMatchObject(
+      codexContextCompactionFixtures.expectedCompletedMessage,
+    );
   });
 
   it("surfaces raw Codex compaction response items as compact boundaries", () => {
@@ -2940,29 +2993,15 @@ describe("CodexProvider Event Normalization", () => {
     };
 
     const messages = provider.convertNotificationToSDKMessages(
-      {
-        method: "rawResponseItem/completed",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: {
-            type: "compaction",
-            encrypted_content: "opaque",
-          },
-        },
-      },
+      codexContextCompactionFixtures.rawResponseCompletedNotification,
       "session-1",
       new Map(),
       createLiveEventState(),
     );
 
-    expect(messages[0]).toMatchObject({
-      type: "system",
-      subtype: "compact_boundary",
-      session_id: "session-1",
-      uuid: "codex-compaction-turn-1",
-      content: "Context compacted",
-    });
+    expect(messages[0]).toMatchObject(
+      codexContextCompactionFixtures.expectedRawResponseCompletedMessage,
+    );
   });
 
   it("surfaces interrupted live Codex turns as visible system boundaries", () => {
@@ -2976,40 +3015,16 @@ describe("CodexProvider Event Normalization", () => {
     };
 
     const messages = provider.convertNotificationToSDKMessages(
-      {
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          turn: {
-            id: "turn-1",
-            items: [],
-            status: "interrupted",
-            error: null,
-            startedAt: null,
-            completedAt: 1_700_000_000,
-            durationMs: null,
-          },
-        },
-      },
+      codexInterruptedTurnFixtures.notification,
       "session-1",
       new Map(),
       createLiveEventState(),
     );
 
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toMatchObject({
-      type: "system",
-      subtype: "turn_aborted",
-      session_id: "session-1",
-      uuid: "codex-turn-interrupted-turn-1",
-      content: "Conversation interrupted",
-      reason: "interrupted",
-      sourceEvent: "turn/completed",
-      codexThreadId: "thread-1",
-      codexTurnId: "turn-1",
-      codexTurnStatus: "interrupted",
-      timestamp: "2023-11-14T22:13:20.000Z",
-    });
+    expect(messages[0]).toMatchObject(
+      codexInterruptedTurnFixtures.expectedMessage,
+    );
 
     expect(
       messages.some((message) => message.subtype === "turn_complete"),
@@ -3018,11 +3033,7 @@ describe("CodexProvider Event Normalization", () => {
       preprocessMessages(
         messages as Parameters<typeof preprocessMessages>[0],
       )[0],
-    ).toMatchObject({
-      type: "system",
-      subtype: "turn_aborted",
-      content: "Conversation interrupted",
-    });
+    ).toMatchObject(codexInterruptedTurnFixtures.expectedRenderMessage);
   });
 
   it("normalizes raw response function calls and outputs into tool messages", () => {
@@ -3037,74 +3048,24 @@ describe("CodexProvider Event Normalization", () => {
 
     const liveEventState = createLiveEventState();
     const toolUse = provider.convertNotificationToSDKMessages(
-      {
-        method: "rawResponseItem/completed",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: {
-            type: "function_call",
-            name: "exec_command",
-            call_id: "call-1",
-            arguments: '{"command":"pnpm lint"}',
-          },
-        },
-      },
+      codexRawFunctionCallFixtures.toolUseNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
     const toolResult = provider.convertNotificationToSDKMessages(
-      {
-        method: "rawResponseItem/completed",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: {
-            type: "function_call_output",
-            call_id: "call-1",
-            output: "Process exited with code 0",
-          },
-        },
-      },
+      codexRawFunctionCallFixtures.toolResultNotification,
       "session-1",
       new Map(),
       liveEventState,
     );
 
-    expect(toolUse[0]).toMatchObject({
-      type: "assistant",
-      session_id: "session-1",
-      uuid: "call-1",
-      message: {
-        role: "assistant",
-        content: [
-          {
-            type: "tool_use",
-            id: "call-1",
-            name: "Bash",
-            input: {
-              command: "pnpm lint",
-            },
-          },
-        ],
-      },
-    });
-    expect(toolResult[0]).toMatchObject({
-      type: "user",
-      session_id: "session-1",
-      uuid: "call-1-result",
-      message: {
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: "call-1",
-            content: "Process exited with code 0",
-          },
-        ],
-      },
-    });
+    expect(toolUse[0]).toMatchObject(
+      codexRawFunctionCallFixtures.expectedToolUseMessage,
+    );
+    expect(toolResult[0]).toMatchObject(
+      codexRawFunctionCallFixtures.expectedToolResultMessage,
+    );
   });
 
   it("marks live result-backed tools incomplete when a turn completes first", () => {

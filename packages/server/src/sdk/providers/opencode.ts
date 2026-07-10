@@ -38,6 +38,13 @@ import {
   mapOpenCodeQuestionAnswers,
   normalizeOpenCodeTool,
 } from "./opencode-tools.js";
+import {
+  getLocalGlmModelDescription,
+  LOCAL_GLM_MODEL_PREFIX,
+  type OpenCodeModelSelection,
+  parseOpenCodeModelSelection,
+  parseOpenCodeModelVariants,
+} from "./opencode-models.js";
 import type {
   CanUseTool,
   ContentBlock,
@@ -81,11 +88,6 @@ export interface OpenCodeProviderConfig {
 
 /** Port counter for unique port assignment */
 let nextPort = 14100;
-
-interface OpenCodeModelSelection {
-  providerID: string;
-  modelID: string;
-}
 
 interface OpenCodeRuntimeState {
   baseUrl: string;
@@ -138,28 +140,6 @@ interface OpenCodeFilePartInput {
   filename?: string;
 }
 
-const LOCAL_GLM_MODEL_PREFIX = "local-glm/";
-
-function getLocalGlmModelDescription(modelId: string): string {
-  const servedModelName = modelId.slice(LOCAL_GLM_MODEL_PREFIX.length);
-  const vllmModelArg =
-    servedModelName === "Qwen/Qwen3.6-27B"
-      ? "Qwen/Qwen3.6-27B-FP8"
-      : servedModelName;
-  const command = [
-    "pixi run vllm serve",
-    vllmModelArg,
-    "--served-model-name",
-    servedModelName,
-    "--tool-call-parser qwen3_coder",
-    "--reasoning-parser qwen3",
-    "--enable-auto-tool-choice",
-    "--port 8001",
-  ].join(" ");
-
-  return `Start matching vLLM server: ${command}`;
-}
-
 /**
  * Get next available port for OpenCode server.
  */
@@ -167,90 +147,9 @@ function getNextPort(): number {
   return nextPort++;
 }
 
-function parseOpenCodeModelSelection(
-  model: string | undefined,
-): OpenCodeModelSelection | undefined {
-  if (!model || model === "default" || model === "auto") {
-    return undefined;
-  }
-
-  const slashIndex = model.indexOf("/");
-  if (slashIndex <= 0 || slashIndex === model.length - 1) {
-    throw new Error(
-      `OpenCode model must use provider/model format, got "${model}"`,
-    );
-  }
-
-  return {
-    providerID: model.slice(0, slashIndex),
-    modelID: model.slice(slashIndex + 1),
-  };
-}
-
-const OPENCODE_EFFORT_LEVELS = new Set<EffortLevel>([
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-]);
-
-/**
- * Parse `opencode models --verbose` output (header `provider/id` lines followed
- * by pretty-printed JSON model defs) into a map of model key -> the reasoning
- * effort levels that model's `variants` expose. OpenCode passes effort by
- * naming a variant in the message body; the variant keys
- * (low/medium/high/xhigh/max) coincide with YA's EffortLevel.
- */
-export function parseOpenCodeModelVariants(
-  stdout: string,
-): Map<string, EffortLevel[]> {
-  const map = new Map<string, EffortLevel[]>();
-  let header: string | null = null;
-  let block: string[] | null = null;
-  for (const line of stdout.split("\n")) {
-    if (block === null) {
-      if (line === "{") {
-        block = [line];
-      } else if (line.trim() && line.includes("/") && !line.startsWith(" ")) {
-        header = line.trim();
-      }
-      continue;
-    }
-    block.push(line);
-    if (line !== "}") continue;
-    // Top-level closing brace (column 0) ends the model def block.
-    try {
-      const def = JSON.parse(block.join("\n")) as {
-        id?: string;
-        providerID?: string;
-        variants?: Record<string, unknown>;
-      };
-      const key =
-        header ??
-        (def.providerID && def.id ? `${def.providerID}/${def.id}` : null);
-      if (key && def.variants && typeof def.variants === "object") {
-        const levels = Object.keys(def.variants).filter((v): v is EffortLevel =>
-          OPENCODE_EFFORT_LEVELS.has(v as EffortLevel),
-        );
-        if (levels.length > 0) {
-          map.set(key, levels);
-        }
-      }
-    } catch {
-      // Skip unparseable block.
-    }
-    block = null;
-    header = null;
-  }
-  return map;
-}
-
 function isProcessStillAlive(process: ChildProcess): boolean {
   return (
-    !process.killed &&
-    process.exitCode === null &&
-    process.signalCode === null
+    !process.killed && process.exitCode === null && process.signalCode === null
   );
 }
 
@@ -272,7 +171,9 @@ function updateOpenCodeRuntimeEvent(
   }
 }
 
-function getOpenCodeEventSessionId(event: OpenCodeSSEEvent): string | undefined {
+function getOpenCodeEventSessionId(
+  event: OpenCodeSSEEvent,
+): string | undefined {
   switch (event.type) {
     case "session.status":
     case "session.idle":
@@ -471,10 +372,16 @@ export class OpenCodeProvider implements AgentProvider {
       );
 
       serverProcess.stdout?.on("data", (chunk: Buffer) => {
-        log.debug({ port, line: chunk.toString().trim() }, "OpenCode server stdout");
+        log.debug(
+          { port, line: chunk.toString().trim() },
+          "OpenCode server stdout",
+        );
       });
       serverProcess.stderr?.on("data", (chunk: Buffer) => {
-        log.debug({ port, line: chunk.toString().trim() }, "OpenCode server stderr");
+        log.debug(
+          { port, line: chunk.toString().trim() },
+          "OpenCode server stderr",
+        );
       });
     } catch (error) {
       return this.errorSession(
@@ -500,12 +407,17 @@ export class OpenCodeProvider implements AgentProvider {
       try {
         const sessionResponse = await fetch(`${baseUrl}/session`, {
           method: "POST",
-          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ title: "Yep Anywhere Session" }),
         });
 
         if (!sessionResponse.ok) {
-          throw new Error(`Failed to create session: ${sessionResponse.status}`);
+          throw new Error(
+            `Failed to create session: ${sessionResponse.status}`,
+          );
         }
 
         const sessionData = (await sessionResponse.json()) as { id: string };
@@ -569,9 +481,7 @@ export class OpenCodeProvider implements AgentProvider {
    * Stop the current OpenCode turn without killing the per-session server,
    * via POST /session/:id/abort. Returns true when the request succeeds.
    */
-  private async interruptTurn(
-    runtime: OpenCodeRuntimeState,
-  ): Promise<boolean> {
+  private async interruptTurn(runtime: OpenCodeRuntimeState): Promise<boolean> {
     const log = getLogger();
     try {
       const response = await fetch(
@@ -667,10 +577,7 @@ export class OpenCodeProvider implements AgentProvider {
       }
 
       const statusMap = statuses as Record<string, unknown>;
-      const hasStatus = Object.hasOwn(
-        statusMap,
-        runtime.opencodeSessionId,
-      );
+      const hasStatus = Object.hasOwn(statusMap, runtime.opencodeSessionId);
       if (!hasStatus) {
         return {
           status: "idle",
@@ -1048,14 +955,15 @@ export class OpenCodeProvider implements AgentProvider {
           `Failed to send message: ${response.status} ${errorText}`,
         );
       }
-      const responsePayload = (await response.json().catch(() => null)) as
-        | OpenCodeMessageResponse
-        | null;
+      const responsePayload = (await response
+        .json()
+        .catch(() => null)) as OpenCodeMessageResponse | null;
       if (!streamState.sawAssistantContent) {
-        const fallbackMessages = this.convertOpenCodeMessageResponseToSDKMessages(
-          responsePayload,
-          sessionId,
-        );
+        const fallbackMessages =
+          this.convertOpenCodeMessageResponseToSDKMessages(
+            responsePayload,
+            sessionId,
+          );
         if (fallbackMessages.length > 0) {
           streamState.sawAssistantContent = true;
           streamState.usedPostBodyFallback = true;

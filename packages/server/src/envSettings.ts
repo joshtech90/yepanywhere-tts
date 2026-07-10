@@ -224,10 +224,15 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description: "Override the Grok sessions directory.",
   },
   {
+    name: "PI_SESSIONS_DIR",
+    group: "Sessions & scanning",
+    description: "Override the pi sessions directory.",
+  },
+  {
     name: "CODEX_WATCH_PERIODIC_RESCAN_MS",
     group: "Sessions & scanning",
     description:
-      "Periodic full-rescan interval for the Codex session watcher (ms). 0 disables; on by default on macOS/Windows.",
+      "Minimum periodic full-rescan interval for the Codex session watcher (ms). The watcher adapts upward when rescans are slow. 0 disables; on by default on macOS/Windows.",
   },
   {
     name: "SESSION_INDEX_FULL_VALIDATION_MS",
@@ -248,6 +253,24 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
       "Age (ms) after which a session index write lock is considered stale.",
   },
   {
+    name: "SESSION_INDEX_SUMMARY_PARSE_CONCURRENCY",
+    group: "Sessions & scanning",
+    description:
+      "Maximum concurrent session-summary parses during cold index fills. Default 1.",
+  },
+  {
+    name: "CLAUDE_SUMMARY_PARSER_WORKER",
+    group: "Sessions & scanning",
+    description:
+      "Claude summary parser child-process mode (off|on|required). Default off.",
+  },
+  {
+    name: "CODEX_SUMMARY_PARSER_WORKER",
+    group: "Sessions & scanning",
+    description:
+      "Codex summary parser child-process mode (off|on|required). Default on when unset; explicit blank/invalid values are off.",
+  },
+  {
     name: "PROJECT_SCAN_CACHE_TTL_MS",
     group: "Sessions & scanning",
     description: "Project scanner cache TTL (ms). 0 rescans every request.",
@@ -256,7 +279,7 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "SESSION_AUTO_ARCHIVE_DAYS",
     group: "Sessions & scanning",
     description:
-      "Days of inactivity before a session is auto-archived. 0 disables.",
+      "Days of inactivity before a session is hidden from default lists. Default 0 disables.",
   },
 
   // Processes & workers
@@ -353,6 +376,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     group: "Providers & features",
     description: "Alternate path hint for the Claude Code CLI executable.",
   },
+  {
+    name: "PI_EXECUTABLE",
+    group: "Providers & features",
+    description:
+      "Full path to the pi CLI executable for the pi provider, e.g. ~/.local/bin/pi or an npm global bin's pi file. Checked before PATH lookup; directories are not searched.",
+  },
 
   // Speech & transcription
   {
@@ -422,6 +451,18 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "NEMO_DEVICE",
     group: "Speech & transcription",
     description: "Device for the ya-nemo backend (default auto).",
+  },
+  {
+    name: "HF_HUB_CACHE",
+    group: "Speech & transcription",
+    description:
+      "Hugging Face hub cache directory for local STT model weights (ya-whisper/parakeet/nemo). YA mirrors HF's own resolution, so this overrides HF_HOME/hub and the default ~/.cache/huggingface/hub.",
+  },
+  {
+    name: "HF_HOME",
+    group: "Speech & transcription",
+    description:
+      "Hugging Face home directory; YA uses {HF_HOME}/hub as the local STT model cache when HF_HUB_CACHE is unset.",
   },
 
   // Logging
@@ -530,6 +571,17 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "SESSION_INDEX_LOG_PERF",
     group: "Diagnostics & development",
     description: "Log session-index performance timings.",
+  },
+  {
+    name: "CODEX_READER_LOG_PARSE",
+    group: "Diagnostics & development",
+    description:
+      "Log Codex entry-read parse/cache timings and memory deltas.",
+  },
+  {
+    name: "CLAUDE_READER_LOG_PARSE",
+    group: "Diagnostics & development",
+    description: "Log Claude summary stream timings and memory deltas.",
   },
   {
     name: "SESSION_FOCUSED_WATCH_LOG_EVENTS",

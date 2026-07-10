@@ -225,6 +225,21 @@ function mergePublicShareResponse(
   };
 }
 
+export function getPublicShareCautionKey(
+  mode: PublicSessionShareMode | null,
+):
+  | "publicShareLiveSecretWarning"
+  | "publicShareReadOnlySecretCaution"
+  | null {
+  if (mode === "live") {
+    return "publicShareLiveSecretWarning";
+  }
+  if (mode === "frozen") {
+    return "publicShareReadOnlySecretCaution";
+  }
+  return null;
+}
+
 export function PublicSharePage() {
   const { t } = useI18n();
   const { secret } = useParams<{ secret: string }>();
@@ -296,22 +311,27 @@ export function PublicSharePage() {
     ? t("publicShareRetrying")
     : t("publicShareLoading");
   const isFetching = loading || retrying;
+  const cautionKey = getPublicShareCautionKey(mode);
+  const cautionLabel = cautionKey ? t(cautionKey) : null;
 
-  const refresh = useCallback(async (afterMessageId?: string) => {
-    if (!secret || !relayUsername) {
-      throw new Error(t("publicShareMissingRelay"));
-    }
-    if (relayConfig.error) {
-      throw new Error(relayConfig.error);
-    }
-    return await fetchPublicShareViaRelay({
-      afterMessageId,
-      relayUrl: relayConfig.url,
-      relayUsername,
-      secret,
-      viewerId,
-    });
-  }, [relayConfig.error, relayConfig.url, relayUsername, secret, t, viewerId]);
+  const refresh = useCallback(
+    async (afterMessageId?: string) => {
+      if (!secret || !relayUsername) {
+        throw new Error(t("publicShareMissingRelay"));
+      }
+      if (relayConfig.error) {
+        throw new Error(relayConfig.error);
+      }
+      return await fetchPublicShareViaRelay({
+        afterMessageId,
+        relayUrl: relayConfig.url,
+        relayUsername,
+        secret,
+        viewerId,
+      });
+    },
+    [relayConfig.error, relayConfig.url, relayUsername, secret, t, viewerId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -351,7 +371,9 @@ export function PublicSharePage() {
           return;
         }
         setRetrying(false);
-        setError(err instanceof Error ? err.message : t("publicShareUnavailable"));
+        setError(
+          err instanceof Error ? err.message : t("publicShareUnavailable"),
+        );
       }
     };
 
@@ -387,6 +409,12 @@ export function PublicSharePage() {
     const handleActivation = (event: MouseEvent) => {
       const anchor = getAnchorFromEventTarget(event.target);
       if (!anchor) {
+        return;
+      }
+      if (anchor.getAttribute("data-ya-private-project-file-link") === "true") {
+        event.preventDefault();
+        event.stopPropagation();
+        setLinkNotice(t("publicShareLocalFileLinksUnavailable"));
         return;
       }
       const href = anchor?.getAttribute("href");
@@ -495,6 +523,14 @@ export function PublicSharePage() {
         ref={scrollRef}
         onScroll={handleScroll}
       >
+        {cautionLabel && (
+          <div
+            className={`public-share-caution public-share-caution--${mode}`}
+            role="note"
+          >
+            {cautionLabel}
+          </div>
+        )}
         <ToastProvider>
           <SchemaValidationProvider>
             <StreamingMarkdownProvider>
@@ -522,10 +558,7 @@ export function PublicSharePage() {
               ) : (
                 <div className="public-share-empty">
                   {isFetching && (
-                    <span
-                      className="public-share-spinner"
-                      aria-hidden="true"
-                    />
+                    <span className="public-share-spinner" aria-hidden="true" />
                   )}
                   {loadStatusLabel}
                 </div>

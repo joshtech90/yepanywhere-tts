@@ -5,10 +5,15 @@ import {
   type UrlProjectId,
   asDirProjectId,
 } from "@yep-anywhere/shared";
-import { encodeProjectId } from "../projects/paths.js";
+import {
+  decodeProjectId,
+  encodeProjectId,
+  getProjectName,
+} from "../projects/paths.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { readFirstLine } from "../utils/jsonl.js";
 import { BatchProcessor } from "../watcher/BatchProcessor.js";
+import type { GetSessionSummaryOptions } from "../sessions/types.js";
 import type {
   BusEvent,
   EventBus,
@@ -40,6 +45,10 @@ interface ExternalSessionInfo {
 /** Default grace period after abort before external detection resumes (30 seconds) */
 const DEFAULT_ABORT_GRACE_MS = 30000;
 
+function getProjectNameForProjectId(projectId: UrlProjectId): string {
+  return getProjectName(decodeProjectId(projectId));
+}
+
 export interface ExternalSessionTrackerOptions {
   eventBus: EventBus;
   supervisor: Supervisor;
@@ -52,6 +61,7 @@ export interface ExternalSessionTrackerOptions {
   getSessionSummary?: (
     sessionId: string,
     projectId: UrlProjectId,
+    options?: GetSessionSummaryOptions,
   ) => Promise<SessionSummary | null>;
 }
 
@@ -75,6 +85,7 @@ export class ExternalSessionTracker {
   private getSessionSummary?: (
     sessionId: string,
     projectId: UrlProjectId,
+    options?: GetSessionSummaryOptions,
   ) => Promise<SessionSummary | null>;
   /** Batches session parsing to prevent OOM from concurrent file reads */
   private sessionParser: BatchProcessor<SessionSummary | null>;
@@ -162,7 +173,11 @@ export class ExternalSessionTracker {
 
             const event: SessionCreatedEvent = {
               type: "session-created",
-              session: summary,
+              session: {
+                ...summary,
+                projectName:
+                  summary.projectName ?? getProjectNameForProjectId(projectId),
+              },
               timestamp: now,
             };
             this.eventBus.emit(event);
@@ -358,6 +373,11 @@ export class ExternalSessionTracker {
       return;
     }
 
+    if (event.provider === "pi") {
+      await this.handlePiFileChange(event);
+      return;
+    }
+
     // Parse sessionId and projectId from path
     // Format: projects/<projectId>/<sessionId>.jsonl
     const parsed = this.parseSessionPath(event.relativePath);
@@ -375,7 +395,7 @@ export class ExternalSessionTracker {
         const getSessionSummary = this.getSessionSummary;
         const projectId = process.projectId;
         this.sessionParser.enqueue(sessionId, async () => {
-          return getSessionSummary(sessionId, projectId);
+          return getSessionSummary(sessionId, projectId, { readMode: "head" });
         });
       }
       return;
@@ -440,7 +460,7 @@ export class ExternalSessionTracker {
         const getSessionSummary = this.getSessionSummary;
         const projectId = process.projectId;
         this.sessionParser.enqueue(sessionId, async () => {
-          return getSessionSummary(sessionId, projectId);
+          return getSessionSummary(sessionId, projectId, { readMode: "head" });
         });
       }
       return;
@@ -517,6 +537,7 @@ export class ExternalSessionTracker {
       const summary: SessionSummary = {
         id: sessionId,
         projectId,
+        projectName: getProjectNameForProjectId(projectId),
         title: null,
         fullTitle: null,
         createdAt: meta.timestamp,
@@ -536,6 +557,102 @@ export class ExternalSessionTracker {
       this.createdSessions.add(sessionId);
     } catch {
       // Ignore failures until next file change
+    }
+  }
+
+  private async handlePiFileChange(event: FileChangeEvent): Promise<void> {
+    const meta = await this.readPiSessionHeader(event.path);
+    if (!meta) return;
+
+    const process = this.supervisor.getProcessForSession(meta.id);
+    if (process) {
+      this.removeExternal(meta.id);
+      if (this.getSessionSummary) {
+        const getSessionSummary = this.getSessionSummary;
+        const projectId = process.projectId;
+        this.sessionParser.enqueue(meta.id, async () => {
+          return getSessionSummary(meta.id, projectId, { readMode: "head" });
+        });
+      }
+      return;
+    }
+
+    if (this.isInAbortGracePeriod(meta.id)) {
+      return;
+    }
+
+    const projectId = encodeProjectId(meta.cwd);
+    this.markExternal(meta.id, { provider: event.provider, projectId });
+    await this.ensurePiSessionCreated(meta, event.path, projectId);
+  }
+
+  private async readPiSessionHeader(filePath: string): Promise<{
+    id: string;
+    cwd: string;
+    timestamp: string;
+    model?: string;
+  } | null> {
+    try {
+      const firstLine = await readFirstLine(filePath);
+      if (!firstLine) return null;
+
+      const parsed = JSON.parse(firstLine) as {
+        type?: string;
+        id?: string;
+        cwd?: string;
+        timestamp?: string;
+      };
+      if (
+        parsed.type !== "session" ||
+        !parsed.id ||
+        !parsed.cwd ||
+        !parsed.timestamp
+      ) {
+        return null;
+      }
+
+      return {
+        id: parsed.id,
+        cwd: parsed.cwd,
+        timestamp: parsed.timestamp,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async ensurePiSessionCreated(
+    meta: { id: string; cwd: string; timestamp: string; model?: string },
+    filePath: string,
+    projectId: UrlProjectId,
+  ): Promise<void> {
+    if (this.createdSessions.has(meta.id)) return;
+
+    try {
+      const stats = await stat(filePath);
+      const summary: SessionSummary = {
+        id: meta.id,
+        projectId,
+        projectName: getProjectName(meta.cwd),
+        title: null,
+        fullTitle: null,
+        createdAt: meta.timestamp,
+        updatedAt: stats.mtime.toISOString(),
+        messageCount: 0,
+        ownership: { owner: "external" },
+        provider: "pi",
+        model: meta.model,
+      };
+
+      const event: SessionCreatedEvent = {
+        type: "session-created",
+        session: summary,
+        timestamp: new Date().toISOString(),
+      };
+      this.eventBus.emit(event);
+      this.createdSessions.add(meta.id);
+    } catch {
+      // Ignore failures until the next file change.
     }
   }
 
@@ -561,7 +678,9 @@ export class ExternalSessionTracker {
         this.sessionParser.enqueue(sessionId, async () => {
           const project = await this.resolveProjectForSession(info);
           if (!project) return null;
-          return getSessionSummary(sessionId, project.id as UrlProjectId);
+          return getSessionSummary(sessionId, project.id as UrlProjectId, {
+            readMode: "head",
+          });
         });
       }
     } else {
@@ -582,7 +701,9 @@ export class ExternalSessionTracker {
         this.sessionParser.enqueue(sessionId, async () => {
           const project = await this.resolveProjectForSession(externalInfo);
           if (!project) return null;
-          return getSessionSummary(sessionId, project.id as UrlProjectId);
+          return getSessionSummary(sessionId, project.id as UrlProjectId, {
+            readMode: "head",
+          });
         });
       }
 

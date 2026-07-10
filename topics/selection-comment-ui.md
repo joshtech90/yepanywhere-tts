@@ -18,16 +18,20 @@ See also:
 
 Topic: selection-comment-ui
 
-Status: **Phase 1 shipped 2026-06-23; the two contract gaps fixed 2026-06-23.**
+Status: **Phase 1 shipped 2026-06-23; the two early contract gaps fixed
+2026-06-23; the dedicated assistant quote lane fixed 2026-06-25; initial
+Phase 2 scope widening shipped 2026-07-01.**
 Assistant text blocks can be quoted via selection typing, a floating selection
 `>` button, or per-paragraph `>` circles; the resulting `>` block is inserted
 into the composer and the selected source span is tinted until the quote is
-removed or sent. Wider quotable surfaces and right-mouse line-select remain
-design/follow-up work.
+removed or sent. Thinking summaries, user turns, Ran/Bash command and output
+text, Grep preview/content text, and recap rows now use the same selection
+pipeline. Right-mouse line-select and per-section quote lanes for
+non-assistant-prose surfaces remain design/follow-up work.
 
 ## Resolved gaps (Phase 1)
 
-Both were fixed 2026-06-23, verified in the running app.
+The early Phase 1 gaps were fixed 2026-06-23, verified in the running app.
 
 - **Floating `>` button on small/partial selections — fixed.** The button did
   appear for short selections, but was mispositioned: it is placed (top/left)
@@ -48,6 +52,29 @@ Both were fixed 2026-06-23, verified in the running app.
   paragraphs are measured (e.g. while streaming). Circles keep the existing
   hover-reveal and Appearance always-show behavior; the rail never intercepts
   pointer events, so text selection is unaffected.
+- **Dedicated right-side quote lane — fixed.** The per-paragraph `>` circles now
+  live in a reserved right-side rail beside assistant prose, with the ordinary
+  copy/render controls to its left. Assistant text no longer renders underneath
+  the paragraph reply affordance, and the quote rail stays visually separate
+  from the scrollbar-side turn notches.
+- **Subtle comment tint — fixed 2026-06-25.** The source anchor paint is a
+  transparent green `background-color` rather than a saturated wash. It must
+  stay visible but quiet in both dark and light themes, and it must not depend
+  on undefined theme tokens such as `--bg-primary`.
+- **Selection `>` button follows drag end — fixed 2026-06-25.** Mouse/touch
+  selection completion repositions the floating `>` from the `pointerup`
+  endpoint. Downward drags place the button below the pointer so the button does
+  not cover the selected text; range geometry remains the fallback for keyboard
+  selection and scroll/resize.
+- **Paragraph quote buttons tint the quoted paragraph — fixed 2026-06-25.**
+  Paragraph and whole-block quote actions create text-node-backed highlight
+  ranges and re-resolve them when a composer update replaces rendered markdown
+  text nodes, so clicking a paragraph `>` leaves the same source-anchor
+  indication as a manual selection quote.
+- **Quote insertion is undoable — fixed 2026-06-25.** Selection and paragraph
+  quote actions route the composer append through the textarea range edit path
+  when available, so one `Ctrl-Z` removes the inserted quote text and lets anchor
+  reconciliation clear the source tint.
 
 ## Vocabulary
 
@@ -92,6 +119,15 @@ The quote block itself:
 - Each source line is prefixed `> `. A selection spanning multiple blocks
   yields one `> ` block per source block, blank-line separated (the existing
   copy path already splits per source element and joins with `\n\n`).
+- A highlight crossing consecutive or alternating eligible text regions yields
+  one quote block per eligible region, in document order. Ineligible UI chrome
+  between them — tool names, local status labels such as the generated "Ran"
+  row label, buttons, timestamps, separators, collapsed-preview controls — is
+  ignored and must not cancel the quote action.
+- Eligible text is transcript/content text explicitly registered by the
+  renderer. For tool rows, the Bash/Ran command text and rendered command/output
+  bodies are eligible; locally generated row labels and controls are not unless
+  a renderer deliberately registers them as content.
 - If the composer already holds text, two blank-line-separated newlines come
   first — this is exactly the existing `appendComposerTransferDraft` rule, not
   a new one.
@@ -112,6 +148,11 @@ hence a tint:
 Additional quote-comments add more anchored ranges to the same tint. Clearing all
 matching `>`-prefixed quote lines from the composer, or sending the turn, clears
 all corresponding tints.
+
+The draft reconciler is edit-metadata-gated: with no live anchors it does
+nothing, and with live anchors it skips ordinary textarea edits that cannot
+touch a quote-prefixed line. When reconciliation is needed, the composer draft's
+`>` line signatures are computed once and reused across all anchors.
 
 ## Reuse map (mostly assembly, not new machinery)
 
@@ -169,6 +210,30 @@ namespace) would let a reload that restores the draft also restore the tint.
 Follow-up, not v1.
 
 ## Cruxes / hard parts
+
+## Unfulfilled UI contract gaps
+
+The shipped phase fixed basic quote-comment insertion, but several requested UI
+contracts remain open:
+
+- **Right-click/right-drag paragraph selection.** Selecting whole paragraphs (or
+  line/block ranges) by right-click-dragging was part of the intended advanced
+  selection path. It is not yet implemented. The gesture should feed the same
+  quote-comment action as ordinary text selection, producing a range that maps
+  back to source markdown rather than a DOM-only scrape.
+- **Selection-local `>` button.** Any completed selection in agent output should
+  surface a `>` quote-comment button positioned relative to the mouse/touch end
+  point at selection-drag end. It must not depend on selecting a large span or
+  landing near a particular paragraph action rail. The current floating button
+  exists, but this contract is broader: every valid selection should get a
+  visible nearby action.
+- **System output quote lane when Phase 2 widens scope.** The assistant
+  paragraph lane now exists; when quote buttons are added to system output,
+  thinking summaries, or tool sections, they should use the same reserved-lane
+  contract rather than overlaying output text or adjacent controls.
+
+These are UI-surface obligations for the same quote-comment primitive; do not
+build a parallel quote path for them.
 
 ### Tint paint over rendered markdown
 
@@ -252,6 +317,12 @@ already covers whole-paragraph quoting on those platforms.
   user turns, thinking summaries (see below), and other rendered agent output.
   Each surface needs a registered markdown/text copy-source so the shared
   extractor can recover its source; the pipeline itself does not change.
+  Initial scope widening shipped 2026-07-01 for thinking summaries, user
+  prompts, Bash/Ran command text, fixed-font tool output after ANSI stripping,
+  Grep preview/content text, and recap rows. The extractor now returns every
+  eligible source snippet a selection intersects, so a drag crossing
+  user/assistant/tool/system regions produces separate blank-line-separated
+  quote blocks while skipping unregistered UI chrome.
 
   **Thinking summaries — quote while streaming *or* finished.** We want to
   select and comment on a thinking-summary item even mid-stream, not only once
@@ -283,6 +354,15 @@ already covers whole-paragraph quoting on those platforms.
 
 - **Anchor persistence across reload** (follow-up; tint re-attaches to a
   restored draft).
+
+## Prototype proposals
+
+- **Hover replied-to area → show follow-up text.** When a quote block has
+  non-`>` comment text following it in the composer, hovering the tinted source
+  anchor could show that reply text in a tooltip. This is not a committed
+  behavior yet: it needs draft parsing that maps each quote block to the
+  following non-quote paragraph as the draft changes, and it must avoid turning
+  every subtle source tint into persistent tooltip clutter.
 
 ## Default-preserving note
 

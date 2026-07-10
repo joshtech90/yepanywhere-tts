@@ -23,10 +23,7 @@ export type ComposerSlashTurn =
   | { kind: "custom"; command: string; argument: string }
   | { kind: "error"; command: "fast" | "run"; message: string };
 
-const COMMAND_DISPLAY: Record<
-  string,
-  { label: string; shortcut: string }
-> = {
+const COMMAND_DISPLAY: Record<string, { label: string; shortcut: string }> = {
   fast: { label: "fast turn", shortcut: "/f" },
   run: { label: "run exactly", shortcut: "/r" },
   btw: { label: "btw aside", shortcut: "/b" },
@@ -56,6 +53,15 @@ export function getSlashCommandMenuParts(command: string): {
     rest: label.slice(display.shortcut.length),
     label,
   };
+}
+
+export function getLeadingSlashQuery(text: string): string | null {
+  const match = text.match(/^\/([^\s/]*)$/);
+  return match ? (match[1] ?? "").toLowerCase() : null;
+}
+
+export function normalizeSlashCommandForMatch(command: string): string {
+  return command.replace(/^\/+/, "").toLowerCase();
 }
 
 export function parseComposerSlashCommand(
