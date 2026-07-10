@@ -172,8 +172,27 @@ import {
   CLIENT_SLASH_COMMANDS,
   resolveComposerSlashTurn,
 } from "../lib/slashCommands";
+import { messageContentToPlainText } from "../lib/sessionMessageText";
 import { generateUUID } from "../lib/uuid";
 import type { Message, Project } from "../types";
+
+// Helpers for auto read-aloud: pull the plain text out of the last assistant
+// message when a turn finishes. Kept local to this page (upstream moved a copy
+// of these into useBtwAsides for its own use).
+function getMessagePlainText(message: Message | undefined): string {
+  return (
+    messageContentToPlainText(message?.content) ||
+    messageContentToPlainText(message?.message?.content)
+  );
+}
+
+function isAssistantRole(message: Message | undefined): message is Message {
+  return (
+    message?.type === "assistant" ||
+    message?.role === "assistant" ||
+    message?.message?.role === "assistant"
+  );
+}
 
 const PUBLIC_SHARE_STATUS_POLL_MS = 5000;
 const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
