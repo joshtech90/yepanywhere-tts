@@ -32,6 +32,9 @@ vi.mock("../../i18n", () => ({
         sessionQueuedInlineEditLabel: "Edit queued message text",
         sessionQueuedInlineSave: "Save edit",
         sessionQueuedInlineCancel: "Cancel edit (Esc)",
+        userPromptCopyAction: "Copy message text",
+        userPromptEditAction: "Edit latest message",
+        userPromptShowStartingHere: "Show starting here",
       })[key] ?? key,
   }),
 }));
