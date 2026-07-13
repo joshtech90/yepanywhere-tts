@@ -14,6 +14,10 @@ JSON_QUELLE="/Users/joscha/Documents/Google Cloud API/Google Cloud JSON joschasg
 TLS_CERT="$DATA_DIR/tls/cert.crt"
 TLS_KEY="$DATA_DIR/tls/cert.key"
 
+# launchd uebernimmt nicht den interaktiven Shell-PATH. Beide Orte enthalten
+# auf diesem Mac global installierte CLIs (unter anderem Codex/codex-auth).
+export PATH="/opt/homebrew/bin:$HOME/.npm-global/bin:$PATH"
+
 # Node 20 (aendert das normale Node nicht)
 if [ -d /opt/homebrew/opt/node@20/bin ]; then
   export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
