@@ -41,8 +41,10 @@ if [ -n "$ALT_PIDS" ]; then
 fi
 
 # Server im Vordergrund dieses Prozesses starten (launchd haelt ihn am Leben).
-exec env ENABLED_PROVIDERS=claude PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
+# Claude- und Codex-Sessions gemeinsam anzeigen. Ohne CODEX_SESSIONS_DIR-
+# Override nutzt YA automatisch CODEX_HOME/sessions (normal: ~/.codex/sessions),
+# was auch bei Account-Wechseln via codex-auth stabil bleibt.
+exec env ENABLED_PROVIDERS=claude,codex PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
   CLI_HOST_OVERRIDE=true \
   TLS_CERT_PATH="$TLS_CERT" TLS_KEY_PATH="$TLS_KEY" \
-  CODEX_SESSIONS_DIR="$HOME/.yep-anywhere/_empty-codex" \
   "$NODE_BIN" packages/server/dist/index.js
