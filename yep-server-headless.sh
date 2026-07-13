@@ -45,9 +45,11 @@ if [ -n "$ALT_PIDS" ]; then
 fi
 
 # Server im Vordergrund dieses Prozesses starten (launchd haelt ihn am Leben).
-# Claude- und Codex-Sessions gemeinsam anzeigen. Ohne CODEX_SESSIONS_DIR-
-# Override nutzt YA automatisch CODEX_HOME/sessions (normal: ~/.codex/sessions),
-# was auch bei Account-Wechseln via codex-auth stabil bleibt.
+# Account Control wechselt diesen Symlink erst, nachdem alle Codex-Prozesse
+# beendet wurden. Sessions/Config/Skills sind in jedem Profil auf ~/.codex
+# verlinkt und bleiben deshalb account-uebergreifend gemeinsam. YA nutzt ohne
+# CODEX_SESSIONS_DIR-Override automatisch CODEX_HOME/sessions.
+export CODEX_HOME="$HOME/.codex-active"
 exec env ENABLED_PROVIDERS=claude,codex PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
   CLI_HOST_OVERRIDE=true \
   TLS_CERT_PATH="$TLS_CERT" TLS_KEY_PATH="$TLS_KEY" \
