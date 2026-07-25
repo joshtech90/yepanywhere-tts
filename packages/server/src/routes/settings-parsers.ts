@@ -11,6 +11,7 @@ import {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   type HelperTargetConfig,
+  type HostIdentity,
   type ModelInfo,
   type NewSessionDefaults,
   type PermissionMode,
@@ -29,6 +30,7 @@ import {
   type SpeechSmartTurnClientDefault,
   type ThinkingMode,
   type ToolbarControlPresence,
+  normalizeHostIdentityIcon,
 } from "@yep-anywhere/shared";
 import {
   type FileAccessSettings,
@@ -63,6 +65,7 @@ const SESSION_TOOLBAR_PRESENCE_CLIENT_DEFAULT_KEYS = [
   "nudge",
   "sessionStatus",
   "projectQueue",
+  "projectQueueNewSessionShortcut",
 ] as const satisfies readonly (keyof SessionToolbarPresenceClientDefaults)[];
 const TOOLBAR_CONTROL_PRESENCES = [
   "hidden",
@@ -73,6 +76,7 @@ const TOOLBAR_CONTROL_PRESENCES = [
 ] as const satisfies readonly ToolbarControlPresence[];
 const CLIENT_DEFAULT_KEYS = [
   "speech",
+  "bangCommandsEnabled",
   "busyComposerDefaultAction",
   "collapsedComposerButton",
   "sessionToolbarPresence",
@@ -284,7 +288,9 @@ const MAX_FILE_ACCESS_CUSTOM_LENGTH = 1024;
  * - `undefined` when the setting should be cleared (reset to secure defaults)
  * - a normalized object when valid
  */
-export function parseFileAccess(raw: unknown): FileAccessSettings | undefined | null {
+export function parseFileAccess(
+  raw: unknown,
+): FileAccessSettings | undefined | null {
   if (raw === undefined) return null;
   if (raw === null || raw === "") return undefined;
   if (!isRecord(raw)) return null;
@@ -374,6 +380,21 @@ export function parseAgentContextHints(
   }
 
   return parsed;
+}
+
+export function parseHostIdentity(
+  raw: unknown,
+): HostIdentity | undefined | null {
+  if (raw === null || raw === "") return undefined;
+  if (!isRecord(raw)) return null;
+  for (const key of Object.keys(raw)) {
+    if (key !== "icon") return null;
+  }
+  if (raw.icon === undefined || raw.icon === null || raw.icon === "") {
+    return undefined;
+  }
+  const icon = normalizeHostIdentityIcon(raw.icon);
+  return icon ? { icon } : null;
 }
 
 export async function discoverOpenAiCompatibleModels(
@@ -623,7 +644,9 @@ function parseCompactAtContextPercent(
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
-export function parseClientDefaults(raw: unknown): ClientDefaults | undefined | null {
+export function parseClientDefaults(
+  raw: unknown,
+): ClientDefaults | undefined | null {
   if (raw === undefined) return null;
   if (raw === null || raw === "") return undefined;
   if (!isRecord(raw)) return null;
@@ -635,6 +658,18 @@ export function parseClientDefaults(raw: unknown): ClientDefaults | undefined | 
   if (Object.keys(raw).length === 0) return null;
 
   const parsed: ClientDefaults = {};
+  if ("bangCommandsEnabled" in raw) {
+    if (
+      raw.bangCommandsEnabled === undefined ||
+      raw.bangCommandsEnabled === null
+    ) {
+      parsed.bangCommandsEnabled = undefined;
+    } else if (typeof raw.bangCommandsEnabled !== "boolean") {
+      return null;
+    } else {
+      parsed.bangCommandsEnabled = raw.bangCommandsEnabled;
+    }
+  }
   if ("speech" in raw) {
     if (raw.speech === undefined || raw.speech === null || raw.speech === "") {
       parsed.speech = undefined;
@@ -769,6 +804,13 @@ export function mergeClientDefaults(
 ): ClientDefaults | undefined {
   if (!update) return undefined;
   const merged: ClientDefaults = { ...current };
+  if ("bangCommandsEnabled" in update) {
+    if (update.bangCommandsEnabled === undefined) {
+      delete merged.bangCommandsEnabled;
+    } else {
+      merged.bangCommandsEnabled = update.bangCommandsEnabled;
+    }
+  }
   if ("speech" in update) {
     if (update.speech === undefined) {
       delete merged.speech;

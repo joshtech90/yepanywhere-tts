@@ -58,6 +58,170 @@ function createSummary(): SessionSummary {
 }
 
 describe("Processes Routes", () => {
+  it("returns PID shutdown verification for an aborted process", async () => {
+    const abortProcessWithVerification = vi.fn(async () => ({
+      processId: "proc-1",
+      sessionId: "sess-1",
+      pid: 43210,
+      verifiedStopped: true as const,
+      verification: "pid" as const,
+    }));
+    const routes = createProcessesRoutes({
+      supervisor: {
+        abortProcessWithVerification,
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+    });
+
+    const response = await routes.request("/proc-1/abort", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      aborted: true,
+      processId: "proc-1",
+      sessionId: "sess-1",
+      pid: 43210,
+      verifiedStopped: true,
+      verification: "pid",
+    });
+  });
+
+  it("exempts the session from auto-resume when the kill opts in", async () => {
+    const abortProcessWithVerification = vi.fn(async () => ({
+      processId: "proc-1",
+      sessionId: "sess-1",
+      pid: 43210,
+      verifiedStopped: true as const,
+      verification: "pid" as const,
+    }));
+    const blockSessionResume = vi.fn(async () => ({
+      heartbeatDisabled: true,
+      autoResumeDisabled: true,
+    }));
+    const routes = createProcessesRoutes({
+      supervisor: {
+        abortProcessWithVerification,
+        getProcess: vi.fn(() => ({
+          sessionId: "sess-1",
+          provider: "codex",
+        })),
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+      blockSessionResume,
+    });
+
+    const response = await routes.request("/proc-1/abort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blockResume: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(blockSessionResume).toHaveBeenCalledWith({
+      sessionId: "sess-1",
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      aborted: true,
+      resumeExemption: {
+        heartbeatDisabled: true,
+        autoResumeDisabled: true,
+      },
+    });
+  });
+
+  it("reports when shutdown succeeds but the resume exemption fails", async () => {
+    const routes = createProcessesRoutes({
+      supervisor: {
+        abortProcessWithVerification: vi.fn(async () => ({
+          processId: "proc-1",
+          sessionId: "sess-1",
+          pid: 43210,
+          verifiedStopped: true as const,
+          verification: "pid" as const,
+        })),
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+      blockSessionResume: vi.fn(async () => {
+        throw new Error("metadata is read-only");
+      }),
+    });
+
+    const response = await routes.request("/proc-1/abort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blockResume: true }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      aborted: true,
+      verifiedStopped: true,
+      resumeExemption: {
+        heartbeatDisabled: false,
+        autoResumeDisabled: false,
+        error: "metadata is read-only",
+      },
+    });
+  });
+
+  it("does not touch resume state on a plain abort", async () => {
+    const blockSessionResume = vi.fn();
+    const routes = createProcessesRoutes({
+      supervisor: {
+        abortProcessWithVerification: vi.fn(async () => ({
+          processId: "proc-1",
+          sessionId: "sess-1",
+          verifiedStopped: true as const,
+          verification: "provider" as const,
+        })),
+        getProcess: vi.fn(() => ({
+          sessionId: "sess-1",
+          provider: "codex",
+        })),
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+      blockSessionResume,
+    });
+
+    const response = await routes.request("/proc-1/abort", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    expect(blockSessionResume).not.toHaveBeenCalled();
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("resumeExemption");
+  });
+
+  it("reports a failed shutdown verification instead of claiming success", async () => {
+    const routes = createProcessesRoutes({
+      supervisor: {
+        abortProcessWithVerification: vi.fn(async () => {
+          throw new Error("Provider PID 43210 is still running after abort");
+        }),
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+    });
+
+    const response = await routes.request("/proc-1/abort", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Provider PID 43210 is still running after abort",
+      processId: "proc-1",
+      verifiedStopped: false,
+    });
+  });
+
   it("falls back to the live summary title when the index lookup misses", async () => {
     const project = createProject();
     const process = createProcessInfo();
@@ -104,6 +268,56 @@ describe("Processes Routes", () => {
       expect.anything(),
     );
     expect(getSessionSummary).toHaveBeenCalledWith("sess-1", "proj-1");
+  });
+
+  it("attaches provider child work to its canonical parent process", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const summary = createSummary();
+    const listProviderChildSessions = vi.fn(async () => [
+      {
+        id: "child-native-1",
+        parentSessionId: "sess-1",
+        title: "Review the restart guard",
+        agentType: "reviewer",
+        toolUseId: "call-spawn-1",
+        updatedAt: "2026-03-10T09:46:30.000Z",
+      },
+    ]);
+
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcessInfoList: vi.fn(() => [process]),
+      } as unknown as Supervisor,
+      scanner: {
+        getProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => summary),
+            listProviderChildSessions,
+          }) as unknown as ISessionReader,
+      ),
+    });
+
+    const response = await routes.request("/");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      processes: [
+        {
+          sessionId: "sess-1",
+          providerChildren: [
+            {
+              id: "child-native-1",
+              parentSessionId: "sess-1",
+              title: "Review the restart guard",
+            },
+          ],
+        },
+      ],
+    });
+    expect(listProviderChildSessions).toHaveBeenCalledWith("sess-1");
   });
 
   it("prefers persisted custom titles over generated session titles", async () => {

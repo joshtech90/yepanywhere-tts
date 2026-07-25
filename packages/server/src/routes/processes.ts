@@ -15,6 +15,7 @@ import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { getProvider } from "../sdk/providers/index.js";
+import type { ResumeExemptionResult } from "../sessions/resume-exemption.js";
 import type { ISessionReader } from "../sessions/types.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { ProcessInfo, Project } from "../supervisor/types.js";
@@ -29,6 +30,14 @@ export interface ProcessesDeps {
   ) => { reader: ISessionReader; sessionDir: string };
   sessionIndexService?: SessionIndexService;
   sessionMetadataService?: SessionMetadataService;
+  /**
+   * Exempt an explicitly killed session from YA-owned auto-resume. Invoked
+   * only when the abort request opts in via `blockResume` and only after the
+   * provider process shutdown has been verified.
+   */
+  blockSessionResume?: (args: {
+    sessionId: string;
+  }) => Promise<ResumeExemptionResult>;
 }
 
 /**
@@ -122,6 +131,13 @@ async function enrichProcessInfo(
       enriched.contextUsage = summary.contextUsage;
     }
 
+    const providerChildren = await reader.listProviderChildSessions?.(
+      process.sessionId,
+    );
+    if (providerChildren?.length) {
+      enriched.providerChildren = providerChildren;
+    }
+
     return enriched;
   } catch {
     // Ignore errors - just return process without enrichment
@@ -161,15 +177,56 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
   });
 
   // POST /api/processes/:processId/abort - Kill a process
+  // Optional JSON body: { blockResume?: boolean }. When true (the explicit
+  // Kill gesture), the session is also exempted from auto-resume after the
+  // shutdown is verified — see ProcessesDeps.blockSessionResume.
   routes.post("/:processId/abort", async (c) => {
     const processId = c.req.param("processId");
+    const body = await c.req
+      .json<{ blockResume?: unknown }>()
+      .catch(() => ({}) as { blockResume?: unknown });
+    const blockResume = body.blockResume === true;
 
-    const aborted = await deps.supervisor.abortProcess(processId);
-    if (!aborted) {
-      return c.json({ error: "Process not found" }, 404);
+    try {
+      const result =
+        await deps.supervisor.abortProcessWithVerification(processId);
+      if (!result) {
+        return c.json({ error: "Process not found" }, 404);
+      }
+
+      let resumeExemption: ResumeExemptionResult | undefined;
+      if (blockResume && deps.blockSessionResume) {
+        try {
+          resumeExemption = await deps.blockSessionResume({
+            sessionId: result.sessionId,
+          });
+        } catch (error) {
+          resumeExemption = {
+            heartbeatDisabled: false,
+            autoResumeDisabled: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+
+      return c.json({
+        aborted: true,
+        ...result,
+        ...(resumeExemption ? { resumeExemption } : {}),
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to verify provider process shutdown",
+          processId,
+          verifiedStopped: false,
+        },
+        500,
+      );
     }
-
-    return c.json({ aborted: true });
   });
 
   // POST /api/processes/:processId/interrupt - Interrupt current turn gracefully

@@ -5,9 +5,12 @@
   "scripts": {
     "setup:core": "pnpm --filter yep-anywhere --filter @yep-anywhere/server... --filter @yep-anywhere/client... install",
     "setup-vapid": "tsx scripts/setup-vapid.ts",
-    "clone-references": "node scripts/clone-references.mjs",
+    "clone-references": "node scripts/clone-references.mjs --sync",
+    "references:sync": "node scripts/clone-references.mjs --sync",
+    "references:check": "node scripts/clone-references.mjs --check",
     "codex:protocol:update": "node scripts/update-codex-protocol.mjs",
     "codex:protocol:check": "node scripts/update-codex-protocol.mjs --check",
+    "codex:user-turns:audit": "tsx scripts/audit-codex-user-turn-provenance.ts",
     "i18n:check": "node scripts/prune-i18n-placeholders.mjs --check",
     "i18n:health": "node scripts/prune-i18n-placeholders.mjs --health",
     "i18n:missing": "node scripts/report-i18n-missing.mjs",
@@ -39,8 +42,8 @@
     "lint": "node scripts/biome.cjs lint .",
     "format": "node scripts/biome.cjs format --write .",
     "prepare": "husky",
-    "site:dev": "cd site && npm run dev",
-    "site:build": "cd site && npm run build"
+    "site:dev": "node scripts/run-site-npm.mjs dev",
+    "site:build": "node scripts/run-site-npm.mjs build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
@@ -50,21 +53,21 @@
   },
   "packageManager": "pnpm@9.15.1",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.12"
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.144.1",
-      "compatibleThroughVersion": "0.144.1"
+      "expectedVersion": "0.145.0",
+      "compatibleThroughVersion": "0.145.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.205",
-      "claudeAgentSdkVersion": "0.3.205"
+      "compatibleThroughVersion": "2.1.218",
+      "claudeAgentSdkVersion": "0.3.218"
     }
   },
   "dependencies": {
     "tssrp6a": "^3.0.0",
     "tweetnacl": "^1.0.3"
   },
-  "version": "0.6.1"
+  "version": "0.6.2"
 }

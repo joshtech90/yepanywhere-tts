@@ -175,6 +175,70 @@ describe("SessionIndexService", () => {
       expect(changed).toBeNull();
       expect(getSessionSummary).toHaveBeenCalledTimes(1);
     });
+
+    it("repairs persisted Claude titles captured from meta rows", async () => {
+      const sessionId = "meta-command";
+      const filePath = join(sessionDir, `${sessionId}.jsonl`);
+      await writeFile(
+        filePath,
+        `${[
+          JSON.stringify({
+            type: "user",
+            isMeta: true,
+            message: {
+              content:
+                "<local-command-caveat>Caveat: local command messages follow.</local-command-caveat>",
+            },
+            uuid: "meta-1",
+            timestamp: "2026-07-24T17:15:43.435Z",
+          }),
+          JSON.stringify({
+            type: "user",
+            message: {
+              content:
+                "<command-name>/effort</command-name>\n" +
+                "<command-message>effort</command-message>\n" +
+                "<command-args></command-args>",
+            },
+            uuid: "command-1",
+            parentUuid: "meta-1",
+            timestamp: "2026-07-24T17:15:43.435Z",
+          }),
+        ].join("\n")}\n`,
+      );
+      const fileStats = await stat(filePath);
+      const getSessionSummary = vi.spyOn(reader, "getSessionSummary");
+      await writeFile(
+        service.getIndexPath(sessionDir),
+        JSON.stringify({
+          version: 3,
+          projectId,
+          sessions: {
+            [sessionId]: {
+              title:
+                "<local-command-caveat>Caveat: local command messages follow.</local-command-caveat>",
+              fullTitle:
+                "<local-command-caveat>Caveat: local command messages follow.</local-command-caveat>",
+              createdAt: "2026-07-24T17:15:43.435Z",
+              updatedAt: "2026-07-24T17:15:43.435Z",
+              messageCount: 2,
+              indexedBytes: fileStats.size,
+              fileMtime: fileStats.mtimeMs,
+              provider: "claude",
+            },
+          },
+        }),
+      );
+
+      const sessions = await service.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+
+      expect(sessions[0]?.title).toBe("/effort");
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("cache miss", () => {
@@ -342,6 +406,42 @@ describe("SessionIndexService", () => {
         reader,
       );
       expect(sessions).toHaveLength(1);
+    });
+
+    it("reuses the structurally compatible unshipped version 4 index", async () => {
+      await createSession("session-1", "Content that should not be reparsed");
+      const fileStats = await stat(join(sessionDir, "session-1.jsonl"));
+      const getSessionSummary = vi.spyOn(reader, "getSessionSummary");
+
+      const indexPath = service.getIndexPath(sessionDir);
+      await writeFile(
+        indexPath,
+        JSON.stringify({
+          version: 4,
+          projectId,
+          sessions: {
+            "session-1": {
+              title: "Pre-release cached title",
+              fullTitle: "Pre-release cached title",
+              createdAt: new Date(fileStats.mtimeMs).toISOString(),
+              updatedAt: new Date(fileStats.mtimeMs).toISOString(),
+              messageCount: 1,
+              indexedBytes: fileStats.size,
+              fileMtime: fileStats.mtimeMs,
+              provider: "claude",
+            },
+          },
+        }),
+      );
+
+      const sessions = await service.getSessionsWithCache(
+        sessionDir,
+        projectId,
+        reader,
+      );
+
+      expect(sessions[0]?.title).toBe("Pre-release cached title");
+      expect(getSessionSummary).not.toHaveBeenCalled();
     });
   });
 

@@ -4,6 +4,7 @@ import type {
   ContextUsage,
   PendingInputType,
   ProjectQueueChangedEvent,
+  ProviderName,
   ProviderRuntimeStatus,
   PromptSuggestionMode,
   SafeRestartChangedEvent,
@@ -57,6 +58,16 @@ export interface SessionStatusEvent {
 export interface SessionCreatedEvent {
   type: "session-created";
   session: SessionSummary;
+  timestamp: string;
+}
+
+export interface SessionIdRemappedEvent {
+  type: "session-id-remapped";
+  oldSessionId: string;
+  newSessionId: string;
+  projectId: UrlProjectId;
+  processId: string;
+  provider: ProviderName;
   timestamp: string;
 }
 
@@ -212,6 +223,7 @@ export interface ActivityEventMap {
   "file-change": FileChangeEvent;
   "session-status-changed": SessionStatusEvent;
   "session-created": SessionCreatedEvent;
+  "session-id-remapped": SessionIdRemappedEvent;
   "session-updated": SessionUpdatedEvent;
   "session-seen": SessionSeenEvent;
   "process-state-changed": ProcessStateEvent;
@@ -342,17 +354,6 @@ class ActivityBus {
       releaseStream();
     };
   }
-
-  /**
-   * Deprecated compatibility no-op. Connection hooks should retain a source
-   * stream instead of asking the bus to choose a transport.
-   */
-  connect(): void {}
-
-  /**
-   * Deprecated compatibility no-op. Releasing the retain closes streams.
-   */
-  disconnect(): void {}
 
   private getOrCreateStreamRecord(
     sourceKey: SourceKey,
@@ -511,6 +512,7 @@ class ActivityBus {
       "file-change",
       "session-status-changed",
       "session-created",
+      "session-id-remapped",
       "session-updated",
       "session-seen",
       "process-state-changed",

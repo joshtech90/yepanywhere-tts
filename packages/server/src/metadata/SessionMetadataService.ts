@@ -50,6 +50,8 @@ export interface SessionMetadata {
   initialPrompt?: string;
   /** Whether this session is opted in to heartbeat turns */
   heartbeatTurnsEnabled?: boolean;
+  /** Explicit Kill blocks YA-owned automatic resume without hiding history. */
+  autoResumeDisabled?: boolean;
   /** Optional per-session idle threshold override in minutes */
   heartbeatTurnsAfterMinutes?: number;
   /** Optional per-session heartbeat text override */
@@ -136,15 +138,23 @@ export class SessionMetadataService {
         if (!metadata.transcriptDisplayObjects) {
           continue;
         }
-        const recovered = metadata.transcriptDisplayObjects.map((object) =>
-          object.status === "generating"
-            ? {
-                ...object,
-                status: "error" as const,
-                error: "Fork summary interrupted by server restart",
-              }
-            : object,
-        );
+        const recovered = metadata.transcriptDisplayObjects.map((object) => {
+          if (object.status === "generating") {
+            return {
+              ...object,
+              status: "error" as const,
+              error: "Fork summary interrupted by server restart",
+            };
+          }
+          if (object.kind === "bang-command" && object.status === "running") {
+            return {
+              ...object,
+              status: "killed" as const,
+              error: "Interrupted by server restart",
+            };
+          }
+          return object;
+        });
         if (
           recovered.some(
             (object, index) =>
@@ -242,6 +252,26 @@ export class SessionMetadataService {
       };
     });
     await this.save();
+  }
+
+  /** All sessions that carry display objects, for cross-session views. */
+  listTranscriptDisplayObjectSessions(): Array<{
+    sessionId: string;
+    workingProjectId?: UrlProjectId;
+    objects: TranscriptDisplayObject[];
+  }> {
+    return Object.entries(this.state.sessions).flatMap(
+      ([sessionId, metadata]) =>
+        metadata.transcriptDisplayObjects?.length
+          ? [
+              {
+                sessionId,
+                workingProjectId: metadata.workingProjectId,
+                objects: [...metadata.transcriptDisplayObjects],
+              },
+            ]
+          : [],
+    );
   }
 
   async addTranscriptDisplayObject(
@@ -502,6 +532,7 @@ export class SessionMetadataService {
       starred?: boolean;
       parentSessionId?: string | null;
       heartbeatTurnsEnabled?: boolean;
+      autoResumeDisabled?: boolean;
       heartbeatTurnsAfterMinutes?: number | null;
       heartbeatTurnText?: string | null;
       heartbeatForceAfterMinutes?: number | null;
@@ -536,6 +567,13 @@ export class SessionMetadataService {
       if (updates.heartbeatTurnsEnabled !== undefined) {
         result.heartbeatTurnsEnabled =
           updates.heartbeatTurnsEnabled || undefined;
+        if (updates.heartbeatTurnsEnabled) {
+          result.autoResumeDisabled = undefined;
+        }
+      }
+
+      if (updates.autoResumeDisabled !== undefined) {
+        result.autoResumeDisabled = updates.autoResumeDisabled || undefined;
       }
 
       if (updates.heartbeatTurnsAfterMinutes !== undefined) {
@@ -609,6 +647,9 @@ export class SessionMetadataService {
     if (updated.initialPrompt) cleaned.initialPrompt = updated.initialPrompt;
     if (updated.heartbeatTurnsEnabled) {
       cleaned.heartbeatTurnsEnabled = updated.heartbeatTurnsEnabled;
+    }
+    if (updated.autoResumeDisabled) {
+      cleaned.autoResumeDisabled = updated.autoResumeDisabled;
     }
     if (updated.heartbeatTurnsAfterMinutes !== undefined) {
       cleaned.heartbeatTurnsAfterMinutes = updated.heartbeatTurnsAfterMinutes;

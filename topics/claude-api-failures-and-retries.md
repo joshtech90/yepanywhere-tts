@@ -221,6 +221,30 @@ The read/resume guard remains necessary for old transcripts, external Claude
 processes, and explicit launch overrides that allow the finite retry budget to
 be exhausted.
 
+## Model switch during a held retry
+
+Claude owns the retry delay inside the current SDK query. YA does not reject a
+send based on a separate rate-limit clock: while that query remains active, a
+new user message is steered or deferred behind the same provider turn. Before
+2026-07-23, changing the Claude model called the SDK's model setter for a later
+request but did not cancel the request already sleeping on the old model's
+retry schedule.
+
+Session `6ed5ccec-0f4f-4c2a-beb4-5d428a01b918` demonstrated the failure:
+
+- Claude persisted a synthetic Fable rate-limit assistant row at
+  `2026-07-23T05:33:27.578Z`.
+- `/model` selected Opus at `05:33:54`, followed by queued `continue`
+  operations at `05:34:14` and `05:35:26`; neither became a durable user turn.
+- After YA recreated the provider process, `continue` became a real user row at
+  `06:13:06` and Opus answered at `06:13:09`.
+
+The recovery contract is now status-sensitive: a model switch while YA has an
+explicit Claude `api_retry` status applies the new model and interrupts that
+retrying turn. An ordinary active turn is not interrupted; its model change
+continues to apply at the next turn boundary. This is a user override of
+Claude's retry ownership, not a second YA retry or resend loop.
+
 ## Verified: retries are not rendered (and why)
 
 The `api_retry` messages never reach the UI, for two stacked reasons:
@@ -232,12 +256,12 @@ The `api_retry` messages never reach the UI, for two stacked reasons:
   from any reload / catch-up / resume (all of which read the transcript).
 - **Dropped by the client even live.** The server forwards everything
   (`shouldEmitMessage()` is hardcoded `true`, Process.ts:159), so the client
-  does receive `api_retry` on the live stream. But `preprocessMessages`
-  (`packages/client/src/lib/preprocessMessages.ts`) renders only an allowlist of
-  `system` subtypes (`compact_boundary`, `turn_aborted`, `config_ack`,
-  `away_summary`, `subagent_activity`); all others hit "Skip other system
-  entries … they're internal" (~L300) and are discarded. `api_retry` is in that
-  dropped set.
+  does receive `api_retry` on the live stream. But `messageProjection.ts`
+  (`packages/client/src/lib/transcriptProjection/messageProjection.ts`) renders
+  only an allowlist of `system` subtypes (`compact_boundary`, `turn_aborted`,
+  `config_ack`, `away_summary`, `subagent_activity`); all others hit "Skip other
+  system entries … they're internal" (~L300) and are discarded. `api_retry` is
+  in that dropped set.
 
 The terminal error is visible only because it is an `assistant` message whose
 text content is literally `"API Error: 529 Overloaded…"` — ordinary assistant

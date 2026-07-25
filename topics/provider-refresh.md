@@ -9,6 +9,7 @@ Topic: provider-refresh
 
 Related topics: [claude](claude.md), [grok](grok.md),
 [opencode-backend](opencode-backend.md),
+[pi-provider](pi-provider.md),
 [provider-state-machine](provider-state-machine.md),
 [provider-model-glyphs](provider-model-glyphs.md),
 [cost-efficiency](cost-efficiency.md).
@@ -123,6 +124,57 @@ protocol subset was last audited against. It is not a minimum supported version:
 older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
+
+Current source refresh, 2026-07-23:
+
+- Installed Codex and npm `@openai/codex` `latest` are `0.145.0`. The official
+  `rust-v0.145.0` source is commit
+  `25af12f7e61572b0bc18ddb1008be543b91519b0`; root compatibility and expected
+  protocol markers now record `0.145.0`.
+- `pnpm codex:protocol:check` found two added and fifteen changed files in YA's
+  checked-in subset. Regeneration adds `ResponseItemId` and `SleepItem`; input
+  content admits audio; web search can carry structured results; thread
+  history exposes direct-input readiness and backward cursors; fork/resume,
+  usage, workspace-root, and MCP app-context types match the current server.
+- The new fields are additive or stronger aliases for values YA already treats
+  opaquely. YA does not send the new optional fork, audio, or runtime-workspace
+  controls, and no normalizer or provider-control change is required.
+- The no-token `model/list` probe contains Sol, GPT-5.5, Terra, Luna, GPT-5.4,
+  GPT-5.4-Mini, and GPT-5.3-Codex-Spark. GPT-5.4 and GPT-5.4-Mini return after
+  their 0.144.6 removal, so YA now restores both in the fallback catalog for
+  0.145.0 and newer while preserving the reduced fallback for 0.144.6 through
+  0.144.x.
+
+Status: Codex 0.145.0 app-server protocol compatibility is refreshed in
+generated source, and its version-gated fallback matches the live catalog.
+
+Current source refresh, 2026-07-19:
+
+- Installed Codex and npm `@openai/codex` `latest` are `0.144.6`. The official
+  `rust-v0.144.1..rust-v0.144.6` source diff changes no generated app-server
+  protocol type, and `pnpm codex:protocol:check` remains clean. The no-op audit
+  advances `compatibleThroughVersion` to `0.144.6`; `expectedVersion` remains
+  `0.144.1` because the checked-in subset did not regenerate.
+- The no-token `model/list` catalog now contains Sol, Terra, Luna, GPT-5.5, and
+  GPT-5.3-Codex-Spark. GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex, and GPT-5.2 are no
+  longer advertised. YA keeps the original 0.144.0-0.144.5 fallback for those
+  executables and uses the reduced catalog for 0.144.6 through 0.144.x. The
+  real-turn probe was also corrected to read the current paginated `data`
+  response.
+- The official 0.144.6 hotfix corrects Sol, Terra, and Luna context windows to
+  272,000 tokens. YA now uses that value for live normalized and fallback
+  GPT-5.6 model metadata while retaining the older 258,000-token default for
+  earlier or unidentified Codex models.
+- The persisted transcript census found `thread_rolled_back`, an operational
+  event YA does not render but must retain in the schema. After adding it, all
+  983,521 lines across 467 local Codex rollouts validate.
+- Non-generated upstream drift preserves acknowledged model and reasoning
+  effort across thread resume. `ModelMessages` also gained optional
+  `auto_review.policy`; it is model-manager copy, not a new YA app-server event
+  or persisted transcript type.
+
+Status: Codex 0.144.6 runtime/catalog compatibility is refreshed. No new
+app-server control or user-visible message renderer is required.
 
 Current source refresh, 2026-07-10:
 
@@ -334,6 +386,50 @@ Difference detectors:
 - Model ids, effort levels, or context windows change enough to make fallback
   constants or model glyph rules misleading.
 
+Current source refresh, 2026-07-23:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.215` to `0.3.218`;
+  its bundled and independently installed runtime report Claude Code
+  `2.1.218`. Root compatibility markers record that pair.
+- The SDK changes are additive on YA-consumed surfaces: usage may identify the
+  canonical model/provider, rewind results may list skipped links, teammate
+  messages and timing records carry more provenance, and the bridge adds a
+  rename callback. `set_model` accepting null and sandbox filesystem
+  `disabled` do not change YA's existing calls.
+- The deprecated `bubble` agent-definition mode was removed. YA does not use
+  that mode, and the provider's model/command discovery, setting, interrupt,
+  and MCP controls remain type-compatible.
+
+Status: Claude Code 2.1.218 / SDK 0.3.218 package and control compatibility is
+refreshed; no YA runtime behavior change is required.
+
+Current source refresh, 2026-07-19:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.205` to `0.3.215`;
+  its bundled executable and the independently installed `claude` both report
+  Claude Code `2.1.215`. Root compatibility markers now record that pair.
+- The SDK retains every `SDKMessage` union member YA already knew; drift is
+  additive within existing messages. Notable fields include assistant
+  `aborted`, `timestamp`, and `resumed_from_incomplete_thinking`; tool-progress
+  heartbeats and subagent retry detail; expanded terminal reasons; permission
+  rationale fields; and `SessionStart` source `fork`.
+- Persisted transcript coverage added provider connector `attachment`,
+  `permission-mode`, leaf-based `last-prompt`, queue `popAll`, plus system
+  `turn_duration`, `away_summary`, `scheduled_task_fire`, and `local_command`.
+  All 104,553 lines across 200 local Claude transcripts now validate.
+- No existing Claude provider control call changed incompatibly, and the full
+  repository typecheck passes with SDK 0.3.215. The 2.1.215 release itself only
+  stops Claude from invoking `/verify` and `/code-review` autonomously.
+
+Optional follow-ups: render the new tool-progress heartbeat/subagent retry
+detail in activity UI; surface truncated `aborted` assistant frames distinctly;
+and use structured permission rationale to improve approval copy. These are
+additive UX work, not compatibility blockers, and should remain provider-native
+and default-preserving.
+
+Status: Claude Code 2.1.215 / SDK 0.3.215 runtime, type, and persisted-session
+compatibility is refreshed.
+
 Current source refresh, 2026-07-09:
 
 - `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.199` to `0.3.205`.
@@ -468,9 +564,10 @@ No checked-in generated Claude protocol needs regeneration.
 
 ## Grok ACP
 
-Grok Build is beta and its local installation is the best source of truth for
-the provider YA actually launches. Public docs are secondary to the installed
-CLI docs and local caches.
+The local installation is the source of truth for the provider YA actually
+launches. The first-party public source is the best implementation reference,
+but its version and `SOURCE_REV` must be checked because it is periodically
+synced and may trail the released binary.
 
 Primary sources:
 
@@ -481,6 +578,8 @@ Primary sources:
 - local docs under `~/.grok/docs/user-guide/`, especially
   `15-agent-mode.md`, `17-sessions.md`, `03-keyboard-shortcuts.md`,
   `11-custom-models.md`, and `22-permissions-and-safety.md`;
+- first-party `xai-org/grok-build` source, including its package version and
+  root `SOURCE_REV`;
 - `packages/server/src/sdk/providers/grok-acp.ts`;
 - `packages/server/src/sessions/grok-reader.ts`;
 - ACP SDK dependency `@agentclientprotocol/sdk`;
@@ -498,35 +597,47 @@ grok agent stdio --help
 
 Difference detectors:
 
-- `grok models` or `models_cache.json` contains model ids or metadata not
-  represented by `GROK_MODELS`, or the default model changes.
+- `grok models` or `models_cache.json` changes visible ids, metadata, cache
+  shape, or the default in a way the dynamic normalizer does not preserve.
 - `grok agent` flags move between top-level, `agent`, and `agent stdio`
   positions; YA currently places effort/model flags before `agent stdio`.
-- Local docs add or remove ACP methods, permission modes, interject/steering
-  semantics, session storage files, compaction behavior, or custom-model
-  credential precedence.
+- Local docs or first-party source add or remove ACP methods, reverse
+  extension requests, permission modes, interject/steering semantics, session
+  storage files, compaction behavior, or custom-model credential precedence.
 - ACP update or permission request shapes no longer match `GrokACPProvider`
   normalization tests.
 - `@agentclientprotocol/sdk` changes enough to alter `ACPClient` request,
   notification, or permission typings.
 
-Current read-only audit, 2026-06-05:
+Enacted audit, 2026-07-23:
 
-- Installed Grok is `grok 0.2.22 (967574cb1) [stable]`; the topic and provider
-  header still contain `0.2.3` and `0.1.220` evidence.
-- Local user-guide docs were refreshed at `2026-06-05 01:01 UTC`.
-- `grok models` reports default `grok-build` and available
-  `grok-composer-2.5-fast` plus `grok-build`.
-- `models_cache.json` now stores models in an object keyed by id and includes
-  `grok-composer-2.5-fast`; YA's provider still hardcodes only `grok-build`.
-- `grok agent --help` exposes `-m/--model`, `--reasoning-effort`, and
-  `--always-approve`; `grok agent stdio --help` still has no subcommand flags.
-- `@agentclientprotocol/sdk` is pinned/current at `0.12.0`; latest npm version
-  is `0.24.0`.
+- Installed Grok is `grok 0.2.111 (94172f2aa4) [stable]`.
+- `grok models` advertises only/default `grok-4.5`.
+  `models_cache.json` reports a 500k context window and low/medium/high effort,
+  with high as the default.
+- YA now discovers the CLI-visible catalog and enriches it from the cache
+  instead of hardcoding `grok-build`; that id remains an unreadable-catalog
+  fallback for older installations.
+- A live initialize probe reported ACP protocol version 1, agent version
+  0.2.111, `grok-4.5`, and the current slash-command inventory.
+- Standard update types now also include current-mode, config-option, and
+  session-info metadata. Grok persists `_x.ai/session/update` retry and
+  turn-completed notifications. Neither is a missing transcript message type
+  for current YA surfaces.
+- The first-party Apache-2.0 `xai-org/grok-build` source was inspected at git
+  `a5727c5960452e7527a154b25cb5bf00cda0545e`, source revision
+  `30192d2eef5d91a8fff0e53957de5bd05b43398c`, package version 0.2.110.
+- That source exposed two blocking reverse requests:
+  `x.ai/ask_user_question` and `x.ai/exit_plan_mode`. YA now maps them to its
+  existing pending-input flows and fails closed when input cannot be obtained.
+- `@agentclientprotocol/sdk` remains pinned at 0.12.0. Its existing extension
+  method API and standard update union cover these Grok surfaces, so no
+  dependency upgrade is needed.
+- A live assistant/tool smoke is still due: the current account completed
+  initialize/session setup but returned HTTP 402 on the model call.
 
-Status: Grok ACP is due for at least a doc/header/model-catalog refresh, and
-possibly a source refresh if YA should expose `grok-composer-2.5-fast` or adapt
-to the newer ACP SDK.
+Status: Grok ACP source and docs are current through installed 0.2.111 and
+public source 0.2.110, subject to the live-prompt coverage gap above.
 
 ## OpenCode
 
@@ -597,7 +708,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.199` | `0.3.199` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.218` | `0.3.218` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

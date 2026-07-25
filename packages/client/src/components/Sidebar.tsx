@@ -12,6 +12,7 @@ import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext
 import { useNewSessionDraft } from "../hooks/useDrafts";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProjects } from "../hooks/useProjects";
+import { useProcesses } from "../hooks/useProcesses";
 import {
   getProjectIdFromLocation,
   resolvePreferredProjectId,
@@ -28,6 +29,7 @@ import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../hooks/useSidebarWidth";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
+import { bangCommandsAreEnabled } from "../lib/bangCommandAvailability";
 import { isNearScrollEnd } from "../lib/predictiveScroll";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import { sessionCollectionRecordToGlobalSessionItem } from "../lib/sessionCollectionRecords";
@@ -353,6 +355,16 @@ export function Sidebar({
     poll: publicSharesEnabled,
   });
   const publicShareControlsVisible = publicShareStatus?.canCreate ?? false;
+  const { processes, terminatedProcesses } = useProcesses();
+  const providerChildrenBySessionId = useMemo(
+    () =>
+      new Map(
+        [...processes, ...terminatedProcesses]
+          .filter((process) => process.providerChildren?.length)
+          .map((process) => [process.sessionId, process.providerChildren]),
+      ),
+    [processes, terminatedProcesses],
+  );
 
   const {
     globalQuery,
@@ -378,6 +390,10 @@ export function Sidebar({
 
   // Server capabilities for feature gating
   const { version: versionInfo } = useVersion();
+  const bangCommandsEnabled = bangCommandsAreEnabled(
+    versionInfo,
+    serverSettings?.clientDefaults,
+  );
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
   const supportsSourceControl = serverHasCapability(
     versionInfo,
@@ -793,18 +809,10 @@ export function Sidebar({
     [currentSessionId],
   );
 
-  // Active/queued rows are pinned above idle rows. They used to bypass duplicate
-  // collapsing entirely, so a single conversation whose SDK session id had
-  // rotated (each resume/fork mints a new id under the same title, and the stale
-  // ids keep a live-state activity) showed one pinned row per id. Run the pinned
-  // set through the same conservative collapser as idle rows: it protects the
-  // current, self-owned, and lineage rows the contract requires to stay visible
-  // (topics/session-list-hidden-duplicates.md), so only rotated ghosts (owner
-  // "none"/"external", no live supervision) fold away. Preserve the pinned
-  // ordering by filtering the original list rather than taking the collapser's
-  // recency-sorted output; collapsed rows join the recent section's hidden-
-  // duplicates disclosure. Queue membership is only an ordering signal here.
-  const recentPinnedAll = useMemo(
+  // Active and queued rows are actionable live state, not title duplicates.
+  // Keep every pinned row visible; stale activity must be corrected where the
+  // source identity changes rather than hidden by a presentation heuristic.
+  const recentPinned = useMemo(
     () =>
       recentDaySessions.filter(
         (session) =>
@@ -812,28 +820,6 @@ export function Sidebar({
       ),
     [projectQueuedSessionIds, recentDaySessions],
   );
-
-  const { recentPinned, hiddenPinned } = useMemo(() => {
-    if (!sidebarDuplicateHidingEnabled) {
-      return {
-        recentPinned: recentPinnedAll,
-        hiddenPinned: [] as SidebarSessionItem[],
-      };
-    }
-    const { hidden } = groupDuplicateSessions(recentPinnedAll);
-    if (hidden.length === 0) {
-      return { recentPinned: recentPinnedAll, hiddenPinned: [] };
-    }
-    const hiddenIds = new Set(hidden.map((session) => session.id));
-    return {
-      recentPinned: recentPinnedAll.filter(
-        (session) => !hiddenIds.has(session.id),
-      ),
-      hiddenPinned: recentPinnedAll.filter((session) =>
-        hiddenIds.has(session.id),
-      ),
-    };
-  }, [groupDuplicateSessions, recentPinnedAll, sidebarDuplicateHidingEnabled]);
 
   const { visibleRecent, hiddenRecent } = useMemo(() => {
     const idle = recentDaySessions.filter(
@@ -859,15 +845,6 @@ export function Sidebar({
     const { visible, hidden } = groupDuplicateSessions(olderSessions);
     return { visibleOlder: visible, hiddenOlder: hidden };
   }, [groupDuplicateSessions, olderSessions, sidebarDuplicateHidingEnabled]);
-
-  // Duplicates collapsed out of the pinned set share the recent section's
-  // hidden-duplicates disclosure, freshest first.
-  const hiddenRecentAll = useMemo(() => {
-    if (hiddenPinned.length === 0) return hiddenRecent;
-    return [...hiddenPinned, ...hiddenRecent].sort(
-      (a, b) => updatedAtMs(b) - updatedAtMs(a),
-    );
-  }, [hiddenPinned, hiddenRecent]);
 
   // Dev-only: surface how a single logical conversation fans out across rotated
   // session ids (and flag any true repeated id, which the collapse cannot fix).
@@ -898,6 +875,7 @@ export function Sidebar({
         createdAt={session.createdAt}
         updatedAt={session.updatedAt}
         parentSessionId={session.parentSessionId}
+        providerChildren={providerChildrenBySessionId.get(session.id)}
         status={session.ownership}
         pendingInputType={session.pendingInputType}
         hasUnread={session.hasUnread}
@@ -1055,6 +1033,15 @@ export function Sidebar({
               onClick={onNavigate}
               basePath={basePath}
             />
+            {bangCommandsEnabled && (
+              <SidebarNavItem
+                to="/bang-commands"
+                icon={SidebarIcons.bang}
+                label={t("sidebarBangCommands")}
+                onClick={onNavigate}
+                basePath={basePath}
+              />
+            )}
             <SidebarNavItem
               to="/projects"
               icon={SidebarIcons.projects}
@@ -1220,7 +1207,7 @@ export function Sidebar({
                 >
                   {recentPinned.map(renderCompactSession)}
                   {visibleRecent.map(renderCompactSession)}
-                  {hiddenRecentAll.length > 0 && (
+                  {hiddenRecent.length > 0 && (
                     <li className="sidebar-hidden-dups">
                       <button
                         type="button"
@@ -1230,12 +1217,12 @@ export function Sidebar({
                       >
                         {showHiddenRecent ? "−" : "+"}{" "}
                         {t("sidebarHiddenDuplicateSessions", {
-                          count: hiddenRecentAll.length,
+                          count: hiddenRecent.length,
                         })}
                       </button>
                       {showHiddenRecent && (
                         <ul className="sidebar-session-list sidebar-hidden-sublist">
-                          {hiddenRecentAll.map(renderCompactSession)}
+                          {hiddenRecent.map(renderCompactSession)}
                         </ul>
                       )}
                     </li>

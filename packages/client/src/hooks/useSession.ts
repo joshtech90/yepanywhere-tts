@@ -18,7 +18,10 @@ import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
 import { hasUnconfirmedSelfSends } from "../lib/deliveryState";
 import { getMessageId } from "../lib/mergeMessages";
 import { findPendingTasks } from "../lib/pendingTasks";
-import { extractSessionIdFromFileEvent } from "../lib/sessionFile";
+import {
+  extractParentSessionIdFromAgentFileEvent,
+  extractSessionIdFromFileEvent,
+} from "../lib/sessionFile";
 import type {
   InputRequest,
   Message,
@@ -499,6 +502,11 @@ export function useSession(
     tailTurns?: number;
     tailFrom?: string;
     detailedLoadingProgress?: boolean;
+    onConfigurationError?: (failure: {
+      setting: "effort";
+      requestedValue?: string;
+      message: string;
+    }) => void;
   },
 ) {
   const sourceSummary = useCurrentSourceRuntime().summary;
@@ -893,10 +901,12 @@ export function useSession(
     removeUnconfirmedSelfSend,
     fetchNewMessages,
     pagination,
+    activeWindowTrimRevision,
     loadingOlder,
     loadOlderMessages,
     initialScrollSnapshot,
     updateRouteScrollSnapshot,
+    updateActiveWindowFollowingBottom,
     restoredFromSnapshot,
   } = useSessionMessages({
     projectId,
@@ -1092,65 +1102,62 @@ export function useSession(
   // Track if we've loaded pending agents for this session
   const pendingAgentsLoadedRef = useRef<string | null>(null);
 
-  // Load pending agent content on session load
-  // This handles page reload while Tasks are running: loads agent content-so-far
+  const loadPendingAgents = useCallback(async () => {
+    // Find pending Tasks (tool_use without matching tool_result)
+    const pendingTasks = findPendingTasks(messages);
+    if (pendingTasks.length === 0) return;
+
+    try {
+      // Get agent mappings (toolUseId → agentId)
+      const { mappings } = await api.getAgentMappings(projectId, sessionId);
+      const mappingsMap = new Map(
+        mappings.map((m) => [m.toolUseId, m.agentId]),
+      );
+
+      // Register loaded mappings so TaskRenderer can access agent content
+      // after page reload through the same reducer/store path as streaming.
+      for (const [toolUseId, agentId] of mappingsMap) {
+        registerToolUseAgent(toolUseId, agentId);
+      }
+
+      // Load content for each pending task that has an agent file
+      for (const task of pendingTasks) {
+        const agentId = mappingsMap.get(task.toolUseId);
+        if (!agentId) continue;
+
+        try {
+          const agentData = await api.getAgentSession(
+            projectId,
+            sessionId,
+            agentId,
+          );
+
+          mergeLoadedAgentContent(agentId, agentData);
+        } catch {
+          // Skip agents that can't be loaded
+        }
+      }
+    } catch {
+      // Silent fail for agent mappings - not critical
+    }
+  }, [
+    mergeLoadedAgentContent,
+    messages,
+    projectId,
+    registerToolUseAgent,
+    sessionId,
+  ]);
+
+  // Load pending agent content on session load. This handles page reload while
+  // Tasks are running by loading child content-so-far.
   useEffect(() => {
     // Only run once per session after initial load
     if (loading || pendingAgentsLoadedRef.current === sessionId) return;
     if (messages.length === 0) return;
 
-    const loadPendingAgents = async () => {
-      // Mark as loaded to prevent re-running
-      pendingAgentsLoadedRef.current = sessionId;
-
-      // Find pending Tasks (tool_use without matching tool_result)
-      const pendingTasks = findPendingTasks(messages);
-      if (pendingTasks.length === 0) return;
-
-      try {
-        // Get agent mappings (toolUseId → agentId)
-        const { mappings } = await api.getAgentMappings(projectId, sessionId);
-        const mappingsMap = new Map(
-          mappings.map((m) => [m.toolUseId, m.agentId]),
-        );
-
-        // Register loaded mappings so TaskRenderer can access agent content
-        // after page reload through the same reducer/store path as streaming.
-        for (const [toolUseId, agentId] of mappingsMap) {
-          registerToolUseAgent(toolUseId, agentId);
-        }
-
-        // Load content for each pending task that has an agent file
-        for (const task of pendingTasks) {
-          const agentId = mappingsMap.get(task.toolUseId);
-          if (!agentId) continue;
-
-          try {
-            const agentData = await api.getAgentSession(
-              projectId,
-              sessionId,
-              agentId,
-            );
-
-            mergeLoadedAgentContent(agentId, agentData);
-          } catch {
-            // Skip agents that can't be loaded
-          }
-        }
-      } catch {
-        // Silent fail for agent mappings - not critical
-      }
-    };
-
-    loadPendingAgents();
-  }, [
-    loading,
-    messages,
-    mergeLoadedAgentContent,
-    projectId,
-    registerToolUseAgent,
-    sessionId,
-  ]);
+    pendingAgentsLoadedRef.current = sessionId;
+    void loadPendingAgents();
+  }, [loading, loadPendingAgents, messages, sessionId]);
 
   // Leading + trailing edge throttle:
   // - Leading: fires immediately on first call
@@ -1185,6 +1192,18 @@ export function useSession(
         return;
       }
 
+      if (event.fileType === "agent-session") {
+        const parentSessionId = extractParentSessionIdFromAgentFileEvent(event);
+        if (parentSessionId !== sessionId) return;
+
+        // The JSONL can be created just before its metadata sidecar. Refresh on
+        // either create so the exact tool-call → child mapping becomes visible.
+        if (event.changeType === "create") {
+          void loadPendingAgents();
+        }
+        return;
+      }
+
       // Check if file matches current session (exact match to avoid false positives)
       // File format is: projects/<projectId>/<sessionId>.jsonl
       const fileSessionId = extractSessionIdFromFileEvent(event);
@@ -1206,7 +1225,7 @@ export function useSession(
       // For external/idle sessions: fetch both messages and metadata via API
       throttledFetch();
     },
-    [sessionId, status.owner, throttledFetch],
+    [loadPendingAgents, sessionId, status.owner, throttledFetch],
   );
 
   // Handle session content updates via stream (title, messageCount, updatedAt, contextUsage)
@@ -1545,11 +1564,12 @@ export function useSession(
         if (msgType === "assistant") {
           // Check if this is a subagent message
           // Use parentToolUseId as the routing key (it's the Task tool_use id)
-          const isSubagentMsg =
-            sdkMessage.isSubagent &&
-            typeof sdkMessage.parentToolUseId === "string";
-          const msgAgentId = isSubagentMsg
-            ? (sdkMessage.parentToolUseId as string)
+          const msgAgentId = sdkMessage.isSubagent
+            ? typeof sdkMessage.agentId === "string"
+              ? sdkMessage.agentId
+              : typeof sdkMessage.parentToolUseId === "string"
+                ? sdkMessage.parentToolUseId
+                : undefined
             : undefined;
 
           // Clear streaming state via hook
@@ -1663,23 +1683,40 @@ export function useSession(
 
         // Route subagent messages to agentContent instead of main messages
         // This keeps the parent session's DAG clean and allows proper nesting in UI
-        // Use parentToolUseId as the routing key (it's the Task tool_use id)
-        if (
-          sdkMessage.isSubagent &&
-          typeof sdkMessage.parentToolUseId === "string"
-        ) {
-          const agentId = sdkMessage.parentToolUseId;
+        const subagentId = sdkMessage.isSubagent
+          ? typeof sdkMessage.agentId === "string"
+            ? sdkMessage.agentId
+            : typeof sdkMessage.parentToolUseId === "string"
+              ? sdkMessage.parentToolUseId
+              : undefined
+          : undefined;
+        if (subagentId) {
+          const parentToolUseId =
+            typeof sdkMessage.parentToolUseId === "string"
+              ? sdkMessage.parentToolUseId
+              : undefined;
+          if (parentToolUseId) {
+            registerToolUseAgent(parentToolUseId, subagentId);
+          }
 
-          // Capture toolUseId → agentId mapping on first subagent message
-          // This allows TaskRenderer to access agentContent immediately
-          // Note: Since agentId === parentToolUseId === toolUseId, the mapping is identity
-          registerToolUseAgent(agentId, agentId);
-
-          handleStreamSubagentMessage(incoming, agentId);
+          handleStreamSubagentMessage(incoming, subagentId);
           return; // Don't add to main messages
         }
 
         handleStreamMessageEvent(incoming);
+      } else if (data.eventType === "configuration-error") {
+        const setting = data.setting;
+        const message = data.message;
+        if (setting === "effort" && typeof message === "string") {
+          options?.onConfigurationError?.({
+            setting,
+            requestedValue:
+              typeof data.requestedValue === "string"
+                ? data.requestedValue
+                : undefined,
+            message,
+          });
+        }
       } else if (data.eventType === "status") {
         const statusData = data as {
           eventType: string;
@@ -1764,9 +1801,13 @@ export function useSession(
         const completeData = data as {
           eventType: string;
           sessionId?: string;
+          providerRuntimeStatus?: ProviderRuntimeStatus;
         };
         logSessionUiTrace("stream-complete", { sessionId });
-        reportProviderRuntimeStatus(completeData.sessionId ?? sessionId, null);
+        reportProviderRuntimeStatus(
+          completeData.sessionId ?? sessionId,
+          completeData.providerRuntimeStatus,
+        );
         setProcessState("idle");
         setStatus({ owner: "none" });
         setSessionLiveness(null);
@@ -1993,6 +2034,7 @@ export function useSession(
       reportProviderRuntimeStatus,
       session?.provider,
       session?.model,
+      options?.onConfigurationError,
     ],
   );
 
@@ -2095,10 +2137,12 @@ export function useSession(
     promptSuggestion, // Predicted next user prompt from prompt_suggestion SDK message
     dismissPromptSuggestion: () => setPromptSuggestion(null),
     pagination, // Compact-boundary pagination metadata
+    activeWindowTrimRevision, // Ephemeral accepted auto-trim render signal
     loadingOlder, // Whether older messages are being loaded
     loadOlderMessages, // Load next chunk of older messages
     initialScrollSnapshot, // Retained same-tab route scroll anchor
     updateRouteScrollSnapshot, // Update retained same-tab route scroll anchor
+    updateActiveWindowFollowingBottom, // Immediate active-window follow intent
     restoredFromSnapshot, // Initial render came from retained same-tab data
     reconnectStream, // Force session stream reconnection (e.g., after process restart)
   };

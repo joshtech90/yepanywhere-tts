@@ -199,7 +199,7 @@ export interface StartSessionOptions {
 export interface StartSessionResult {
   iterator: AsyncIterableIterator<SDKMessage>;
   queue: MessageQueue;
-  abort: () => void;
+  abort: () => void | Promise<void>;
   /** Check if the underlying CLI process is still alive (undefined = not available) */
   isProcessAlive?: () => boolean;
   /** OS PID of the spawned agent child process (undefined if not available) */
@@ -216,6 +216,13 @@ export interface StartSessionResult {
    * Only supported by Claude SDK 0.2.7+.
    */
   setMaxThinkingTokens?: (tokens: number | null) => Promise<void>;
+  /**
+   * Change the effort used by subsequent Claude responses without restarting.
+   * undefined clears the session-scoped override.
+   */
+  setEffort?: (
+    effort?: import("@yep-anywhere/shared").EffortLevel,
+  ) => Promise<void>;
   /**
    * Interrupt the current turn gracefully without killing the process.
    * Only supported by Claude SDK 0.2.7+.

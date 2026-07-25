@@ -66,6 +66,11 @@ export interface AppContentBlock {
  * - content: copied to top level from message.content
  * - role: added based on message type
  */
+export type CodexUserTurnMessageProvenance =
+  | "paired"
+  | "event-only"
+  | "legacy-response";
+
 export interface AppMessageExtensions {
   /**
    * Message identifier - copied from uuid by SessionReader.
@@ -103,6 +108,13 @@ export interface AppMessageExtensions {
    * - "jsonl": Message was read from disk (authoritative)
    */
   _source?: "sdk" | "jsonl";
+
+  /**
+   * Codex durable user-turn provenance. Present when the server classified a
+   * normalized user message from rollout lifecycle evidence or its legacy
+   * compatibility path. Clients must prefer this over setup-text heuristics.
+   */
+  codexUserTurnProvenance?: CodexUserTurnMessageProvenance;
 
   /**
    * True if this message is still being streamed (incomplete).
@@ -194,6 +206,22 @@ export type ProviderRuntimeStatus =
       maxRetries?: number | "unbounded";
       eventCount: number;
       source: string;
+      message?: string;
+      details?: string;
+      turnId?: string;
+      requestId?: string;
+    }
+  | {
+      kind: "terminal";
+      provider: ProviderName;
+      reason: ProviderRuntimeRetryReason;
+      message: string;
+      occurredAt: string;
+      source: string;
+      turnId?: string;
+      requestId?: string;
+      scope?: "turn" | "provider_process";
+      details?: string;
     }
   | null;
 
@@ -221,6 +249,8 @@ export interface ContextUsage {
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** Default context window size for Codex cloud sessions when metadata is missing */
 export const CODEX_DEFAULT_CONTEXT_WINDOW = 258_000;
+/** GPT-5.6 Sol, Terra, and Luna context window in Codex 0.144.6+. */
+export const CODEX_GPT56_CONTEXT_WINDOW = 272_000;
 export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
 
 /**
@@ -238,7 +268,8 @@ export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
  * GPT models:
  * - GPT-4: 128K (varies by variant)
  * - GPT-4o: 128K
- * - GPT-5 / Codex 5.x: ~258K
+ * - GPT-5.6 Sol/Terra/Luna: 272K
+ * - Earlier GPT-5 / Codex 5.x: ~258K
  */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude models - 1M context
@@ -289,6 +320,10 @@ export function getModelContextWindow(
 
   if (lowerModel.includes("[1m]")) {
     return CLAUDE_EXTENDED_CONTEXT_WINDOW;
+  }
+
+  if (lowerModel.includes("gpt-5.6")) {
+    return CODEX_GPT56_CONTEXT_WINDOW;
   }
 
   // Handle model IDs that may include provider namespace or other prefixes.
@@ -386,7 +421,34 @@ export interface ForkSummaryTranscriptDisplayObject {
   error?: string;
 }
 
-export type TranscriptDisplayObject = ForkSummaryTranscriptDisplayObject;
+export interface BangCommandTranscriptDisplayObject {
+  id: string;
+  kind: "bang-command";
+  createdAt: string;
+  /** Message after which the object is placed; "" places before the first item. */
+  placementAfterMessageId: string;
+  /** Shell command line as typed after the !! prefix. */
+  command: string;
+  /** Absolute project directory the command ran in. */
+  cwd: string;
+  status: "running" | "done" | "error" | "killed";
+  exitCode?: number;
+  durationMs?: number;
+  /** Bounded tail of captured output; full output is fetched on demand. */
+  stdoutPreview?: string;
+  stderrPreview?: string;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  /** True when the stored full output was capped, not merely the preview. */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+  /** Spawn/timeout/kill reason when status is error or killed. */
+  error?: string;
+}
+
+export type TranscriptDisplayObject =
+  | ForkSummaryTranscriptDisplayObject
+  | BangCommandTranscriptDisplayObject;
 
 export interface DurableRecapMessage extends AppMessageExtensions {
   type: "system";
@@ -542,6 +604,27 @@ export type AgentStatus = "pending" | "running" | "completed" | "failed";
 export interface AgentSession {
   messages: AppMessage[];
   status: AgentStatus;
+  agentType?: string;
+  description?: string;
+  spawnDepth?: number;
+}
+
+/**
+ * Provider-launched child work attached to a canonical YA parent session.
+ * `id` is provider-native and must not be used as a YA session URL ID.
+ */
+export interface ProviderChildSessionSummary {
+  id: string;
+  parentSessionId: string;
+  /** Provider-supplied task description or child name. */
+  title?: string;
+  /** Provider role/type, such as general-purpose, Explore, or reviewer. */
+  agentType?: string;
+  /** Parent transcript tool call that launched this child, when available. */
+  toolUseId?: string;
+  /** Provider-reported nesting depth, when available. */
+  spawnDepth?: number;
+  updatedAt: string;
 }
 
 // =============================================================================

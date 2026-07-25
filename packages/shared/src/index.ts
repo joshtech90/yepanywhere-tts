@@ -12,6 +12,12 @@ export {
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
 } from "./agent-context.js";
 
+export type { HostIdentity } from "./host-identity.js";
+export {
+  MAX_HOST_IDENTITY_ICON_CODE_UNITS,
+  normalizeHostIdentityIcon,
+} from "./host-identity.js";
+
 // File path detection (shared between server and client)
 export type { DetectedFilePath, TextSegment } from "./filePathDetection.js";
 export {
@@ -38,6 +44,12 @@ export {
 
 // ANSI escape rendering (shared between server and client)
 export { hasAnsiEscapes, renderAnsiToHtml } from "./ansi-renderer.js";
+export {
+  looksLikeToon,
+  parseToonDocument,
+  toonDocumentToMarkdown,
+  type ToonTable,
+} from "./toon.js";
 
 export type {
   ProviderName,
@@ -240,11 +252,16 @@ export {
 } from "./project-queue.js";
 export {
   APPROVAL_AUDIT_LOG_CAPABILITY,
+  BANG_COMMANDS_CAPABILITY,
+  BROWSER_SETTINGS_BACKUP_CAPABILITY,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
+  HOST_IDENTITY_CAPABILITY,
+  HOST_AWAKE_CONTROL_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
+  PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   SERVER_CAPABILITIES,
   VOICE_INPUT_CAPABILITY,
   serverHasCapability,
@@ -254,6 +271,27 @@ export {
   type ServerCapabilityName,
   type ServerCapabilitySource,
 } from "./server-capabilities.js";
+
+export {
+  DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
+  HOST_AWAKE_MODES,
+  MAX_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
+  MIN_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
+  isHostAwakeBatteryFloorPercent,
+  isHostAwakeMode,
+  type HostAwakeFeatureSupport,
+  type HostAwakeMode,
+  type HostAwakePowerSource,
+  type HostAwakeState,
+  type HostAwakeStatus,
+} from "./host-awake.js";
+
+export {
+  BROWSER_SETTINGS_BACKUP_VERSION,
+  type BrowserSettingsBackup,
+  type BrowserSettingsBackupResponse,
+  type BrowserSettingsBackupValues,
+} from "./browser-settings-backup.js";
 
 export type {
   CreateProjectWorkstreamRequest,
@@ -328,6 +366,7 @@ export type {
   AppContentBlock,
   // Message extensions
   AppMessageExtensions,
+  CodexUserTurnMessageProvenance,
   AppUserMessage,
   AppAssistantMessage,
   AppSystemMessage,
@@ -343,6 +382,7 @@ export type {
   SessionOwnership,
   SessionSandboxPolicy,
   DurableRecapMessage,
+  BangCommandTranscriptDisplayObject,
   ForkSummaryTranscriptDisplayObject,
   TranscriptDisplayObject,
   AppSessionSummary,
@@ -355,6 +395,7 @@ export type {
   // Agent session types
   AgentStatus,
   AgentSession,
+  ProviderChildSessionSummary,
   // Input request types
   UserQuestionAnswer,
   UserQuestionAnswers,
@@ -377,6 +418,11 @@ export type {
   ToolDisplaySearchAction,
 } from "./tool-display-actions.js";
 export type {
+  CodexWebRunLine,
+  CodexWebRunPage,
+  CodexWebRunResult,
+} from "./codex-web-run.js";
+export type {
   CodexToolCorrelationMetadata,
   CodexToolCorrelationOrigin,
 } from "./codex-tool-correlation.js";
@@ -395,6 +441,7 @@ export {
   // Context window utilities
   DEFAULT_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
+  CODEX_GPT56_CONTEXT_WINDOW,
   getModelContextWindow,
 } from "./app-types.js";
 

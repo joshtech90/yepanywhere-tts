@@ -1,5 +1,7 @@
+import { parseToonDocument } from "@yep-anywhere/shared";
 import katex from "katex";
 import {
+  type ClipboardEventHandler,
   type ReactNode,
   useCallback,
   useEffect,
@@ -12,13 +14,21 @@ import {
   type PublicShareContextValue,
   usePublicShareContext,
 } from "../../contexts/PublicShareContext";
-import { useRenderModeToggle } from "../../contexts/RenderModeContext";
+import {
+  type RenderMode,
+  useRenderModeToggle,
+} from "../../contexts/RenderModeContext";
 import { useOptionalSessionMetadata } from "../../contexts/SessionMetadataContext";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
+import { useTooltipMode } from "../../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../../lib/appHref";
 import { profileRenderWork } from "../../lib/diagnostics/renderProfiler";
-import { registerMarkdownCopySource } from "../../lib/markdownSelectionCopy";
+import {
+  extractMarkdownSnippetsFromSelection,
+  registerMarkdownCopySource,
+} from "../../lib/markdownSelectionCopy";
 import { useScrollPreservingToggle } from "../../lib/scrollAnchor";
+import { copySemanticHtmlSelectionToClipboard } from "../../lib/semanticHtmlClipboard";
 import { makeDisplayPath } from "../../lib/text";
 import { FileViewerModal } from "../FilePathLink";
 import { createPublicShareFileViewerSource } from "../publicShareFileViewerSource";
@@ -28,6 +38,7 @@ interface FixedFontMathToggleProps {
   sourceText: string;
   sourceView: ReactNode;
   renderRenderedView: (html: string) => ReactNode;
+  initialMode?: RenderMode;
   diffAware?: boolean;
   baseFilePath?: string;
   precomputedRendered?: RenderedMathResult;
@@ -190,7 +201,7 @@ function renderMarkdownFileLink(
   const absoluteFilePath = `/${filePath}`;
   const titlePath = makeDisplayPath(absoluteFilePath, options.projectPath);
   return {
-    html: `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}" title="${escapeHtmlAttribute(`${titlePath}\nClick to view, middle-click to open in new tab`)}">${labelHtml}</a>`,
+    html: `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}" data-tooltip="${escapeHtmlAttribute(titlePath)}">${labelHtml}</a>`,
     changed: true,
   };
 }
@@ -200,7 +211,7 @@ function renderKatexHtml(tex: string, displayMode: boolean): string {
     return katex.renderToString(tex, {
       throwOnError: false,
       displayMode,
-      output: "html",
+      output: "htmlAndMathml",
       strict: "ignore",
       trust: false,
     });
@@ -210,26 +221,61 @@ function renderKatexHtml(tex: string, displayMode: boolean): string {
   }
 }
 
+function isEscapedDelimiter(sourceText: string, start: number): boolean {
+  let precedingBackslashes = 0;
+  for (let index = start - 1; index >= 0; index -= 1) {
+    if (sourceText[index] !== "\\") break;
+    precedingBackslashes += 1;
+  }
+  return precedingBackslashes % 2 === 1;
+}
+
+function findUnescapedDelimiter(
+  sourceText: string,
+  delimiter: string,
+  start: number,
+): number {
+  let cursor = start;
+  while (cursor < sourceText.length) {
+    const match = sourceText.indexOf(delimiter, cursor);
+    if (match < 0 || !isEscapedDelimiter(sourceText, match)) {
+      return match;
+    }
+    cursor = match + delimiter.length;
+  }
+  return -1;
+}
+
 function tryMatchBlockMath(
   sourceText: string,
   start: number,
 ): { end: number; html: string } | null {
-  if (!sourceText.startsWith("$$", start)) {
+  const delimiters = sourceText.startsWith("$$", start)
+    ? { close: "$$", open: "$$" }
+    : sourceText.startsWith("\\[", start) &&
+        !isEscapedDelimiter(sourceText, start)
+      ? { close: "\\]", open: "\\[" }
+      : null;
+  if (!delimiters) {
     return null;
   }
 
-  const end = sourceText.indexOf("$$", start + 2);
+  const end = findUnescapedDelimiter(
+    sourceText,
+    delimiters.close,
+    start + delimiters.open.length,
+  );
   if (end < 0) {
     return null;
   }
 
-  const tex = sourceText.slice(start + 2, end).trim();
+  const tex = sourceText.slice(start + delimiters.open.length, end).trim();
   if (!tex) {
     return null;
   }
 
   return {
-    end: end + 2,
+    end: end + delimiters.close.length,
     html: renderKatexHtml(tex, true),
   };
 }
@@ -238,6 +284,24 @@ function tryMatchInlineMath(
   sourceText: string,
   start: number,
 ): { end: number; html: string } | null {
+  if (
+    sourceText.startsWith("\\(", start) &&
+    !isEscapedDelimiter(sourceText, start)
+  ) {
+    const end = findUnescapedDelimiter(sourceText, "\\)", start + 2);
+    if (end < 0) {
+      return null;
+    }
+    const tex = sourceText.slice(start + 2, end).trim();
+    if (!tex || tex.includes("\n")) {
+      return null;
+    }
+    return {
+      end: end + 2,
+      html: renderKatexHtml(tex, false),
+    };
+  }
+
   if (sourceText[start] !== "$") {
     return null;
   }
@@ -457,12 +521,16 @@ function renderInlineFixedFontContent(
       }
     }
 
-    const inlineMath = tryMatchInlineMath(sourceText, cursor);
-    if (inlineMath) {
+    const blockMath = tryMatchBlockMath(sourceText, cursor);
+    const inlineMath = blockMath
+      ? null
+      : tryMatchInlineMath(sourceText, cursor);
+    const math = blockMath ?? inlineMath;
+    if (math) {
       flushPlain(cursor);
-      html += inlineMath.html;
+      html += math.html;
       changed = true;
-      cursor = inlineMath.end;
+      cursor = math.end;
       plainStart = cursor;
       continue;
     }
@@ -587,6 +655,45 @@ function renderMarkdownTable(
   };
 }
 
+/**
+ * A TOON flat table (acli's opt-in tabular format) at this position renders
+ * as a real table, sharing the markdown-table styling. Gated on a strict
+ * header + row-count parse so ordinary output never misfires.
+ */
+function renderToonBlock(
+  lines: DiffAwareLine[],
+  start: number,
+  diffAware: boolean,
+): { end: number; html: string } | null {
+  if (diffAware) return null;
+  const headerLine = lines[start]?.content.trim() ?? "";
+  const headerMatch = headerLine.match(/^[\w.-]+\[(\d+)\]\{[^}]*\}:$/);
+  if (!headerMatch) return null;
+  const end = start + 1 + Number(headerMatch[1]);
+  if (end > lines.length) return null;
+  const tables = parseToonDocument(
+    lines
+      .slice(start, end)
+      .map((line) => line.content)
+      .join("\n"),
+  );
+  const table = tables?.length === 1 ? tables[0] : undefined;
+  if (!table) return null;
+  const headerHtml = `<thead><tr>${table.columns
+    .map((column) => `<th>${escapeHtml(column)}</th>`)
+    .join("")}</tr></thead>`;
+  const bodyHtml = table.rows
+    .map(
+      (row) =>
+        `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`,
+    )
+    .join("");
+  return {
+    end,
+    html: `<div class="fixed-font-markdown-block"><table class="fixed-font-markdown-table">${headerHtml}<tbody>${bodyHtml}</tbody></table></div>`,
+  };
+}
+
 function renderMarkdownLineContent(
   content: string,
   options: RenderOptions = {},
@@ -650,6 +757,36 @@ function renderMarkdownLineContent(
   return inline;
 }
 
+function renderStandaloneDisplayMath(
+  lines: DiffAwareLine[],
+  start: number,
+  diffAware: boolean,
+): { end: number; html: string } | null {
+  if (diffAware) return null;
+
+  const opening = lines[start]?.content.trim();
+  const closing = opening === "$$" ? "$$" : opening === "\\[" ? "\\]" : null;
+  if (!closing) return null;
+
+  let end = start + 1;
+  while (end < lines.length && lines[end]?.content.trim() !== closing) {
+    end += 1;
+  }
+  if (end >= lines.length) return null;
+
+  const tex = lines
+    .slice(start + 1, end)
+    .map((line) => line.content)
+    .join("\n")
+    .trim();
+  if (!tex) return null;
+
+  return {
+    end: end + 1,
+    html: renderKatexHtml(tex, true),
+  };
+}
+
 function renderRichLine(
   line: DiffAwareLine,
   rendered: ReturnType<typeof renderMarkdownLineContent>,
@@ -688,6 +825,23 @@ function renderFixedFontRichContentInner(
   let index = 0;
 
   while (index < lines.length) {
+    const displayMath = renderStandaloneDisplayMath(lines, index, diffAware);
+    if (displayMath) {
+      html += displayMath.html;
+      if (displayMath.end < lines.length) html += "\n";
+      changed = true;
+      index = displayMath.end;
+      continue;
+    }
+
+    const toon = renderToonBlock(lines, index, diffAware);
+    if (toon) {
+      html += toon.html;
+      changed = true;
+      index = toon.end;
+      continue;
+    }
+
     const table = renderMarkdownTable(lines, index, renderOptions);
     if (table) {
       html += table.html;
@@ -739,6 +893,8 @@ export function mayHaveFixedFontRichContent(sourceText: string): boolean {
 
   if (
     sourceText.includes("$") ||
+    sourceText.includes("\\(") ||
+    sourceText.includes("\\[") ||
     sourceText.includes("`") ||
     sourceText.includes("[") ||
     sourceText.includes("**") ||
@@ -759,18 +915,32 @@ export function hasFixedFontRichContent(
   return renderFixedFontRichContent(sourceText, options).changed;
 }
 
+function applyRenderedTooltipMode(
+  html: string,
+  tooltipMode: "themed" | "native",
+): string {
+  return tooltipMode === "themed"
+    ? html
+    : html.replace(
+        / data-tooltip="([^"]*)"/g,
+        (_match, text: string) => ` title="${text}"`,
+      );
+}
+
 export function FixedFontMathToggle({
   sourceText,
   sourceView,
   renderRenderedView,
   diffAware,
   baseFilePath,
+  initialMode,
   precomputedRendered,
   renderMode = "rich",
 }: FixedFontMathToggleProps) {
   const sessionMetadata = useOptionalSessionMetadata();
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
+  const tooltipMode = useTooltipMode();
   const [viewerLink, setViewerLink] = useState<{
     filePath: string;
     href: string | null;
@@ -813,12 +983,17 @@ export function FixedFontMathToggle({
   const { showRendered, toggleLocalMode } = useRenderModeToggle(
     rendered.changed,
     {
+      initialMode,
       renderWhenDisabled: false,
       resetDependencies: [sourceText, renderMode],
     },
   );
   const { btnRef: toggleBtnRef, handleClick: handleToggleClick } =
     useScrollPreservingToggle(showRendered, toggleLocalMode);
+  const presentedHtml = useMemo(
+    () => applyRenderedTooltipMode(rendered.html, tooltipMode),
+    [rendered.html, tooltipMode],
+  );
 
   useEffect(() => {
     const element = copySourceRef.current;
@@ -854,16 +1029,38 @@ export function FixedFontMathToggle({
     },
     [],
   );
+  const handleRenderedCopy: ClipboardEventHandler<HTMLDivElement> = useCallback(
+    (event) => {
+      const sourceRoot = copySourceRef.current;
+      const markdown = sourceRoot
+        ? extractMarkdownSnippetsFromSelection(sourceRoot)
+            .map((snippet) => snippet.markdown)
+            .join("\n\n")
+        : "";
+      const copied = copySemanticHtmlSelectionToClipboard(
+        event.nativeEvent,
+        event.currentTarget,
+      );
+      if (copied && markdown) {
+        event.clipboardData.setData("text/plain", markdown);
+      }
+    },
+    [],
+  );
   const viewerProjectId =
     sessionMetadata?.projectId ?? publicShare?.projectId ?? "";
 
   return (
-    <div ref={copySourceRef} className="fixed-font-render-toggle">
+    <div
+      ref={copySourceRef}
+      className="fixed-font-render-toggle"
+      data-render-mode={showRendered && rendered.changed ? "rendered" : "source"}
+    >
       {showRendered && rendered.changed ? (
         // biome-ignore lint/a11y/noStaticElementInteractions: click is delegated to rendered file links inside the HTML
         // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation remains on descendant links
-        <div onClick={handleRenderedClick}>
-          {renderRenderedView(rendered.html)}
+        <div onClick={handleRenderedClick} onCopy={handleRenderedCopy}>
+          {renderRenderedView(presentedHtml)}
         </div>
       ) : (
         sourceView

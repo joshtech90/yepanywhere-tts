@@ -42,7 +42,8 @@ A YA-initiated compaction has two halves, both satisfied by reusing
 
 - **Result contract** — it drives a real `compact_boundary` system message,
   which the client renders as a collapsed "Context compacted" item
-  (`preprocessMessages.ts`, system-subtype branch). Same as native.
+  (`transcriptProjection/messageProjection.ts`, system-subtype branch). Same as
+  native.
 - **Visibility contract** — the `/compact` command itself is hidden (above), so
   no spurious user bubble. Same as native.
 
@@ -113,16 +114,42 @@ Codex summary reader also skips the row when deriving the first-turn session
 title; the session-summary index version advances with that interpretation so
 already-cached plugin-prefixed titles are rebuilt after restart.
 
+### Codex user-turn provenance (landed 2026-07-10)
+
+The startup-prefix rule above did not cover Codex's optional composition of
+recommended plugins plus environment context when no `AGENTS.md` exists. YA
+now follows Codex's persisted lifecycle instead of treating user-role syntax as
+authorship: an accepted prompt is the user-role response item immediately
+followed by an `event_msg/user_message`. The event witnesses provenance; the
+response item remains the rich rendering payload and the duplicate event is
+consumed.
+
+Unpaired current-format response items are provider context and do not render,
+title the session, or count as user turns. Rollouts with no user-message events
+retain an exact-marker legacy fallback so unknown older or foreign prompts are
+not silently erased. The same classifier now owns durable normalization, title
+extraction, and message counting. New or modified sessions use that corrected
+summary interpretation immediately; unchanged cached summaries correct
+gradually without a proactive global cache rebuild. See
+[`codex-user-turn-provenance.md`](codex-user-turn-provenance.md) for upstream
+source receipts and the local-corpus audit.
+
+The downstream cleanup now carries `codexUserTurnProvenance` on normalized
+Codex user turns. Client setup recognition is only a compatibility fallback for
+unprovenanced historical rows, is centralized in `codexLegacySetup.ts`, and
+requires complete marked setup blocks. Explicitly paired prompts and live SDK
+echoes always win over text resemblance, including a human-authored literal
+`<environment_context>...</environment_context>` prompt.
+
 Remaining Part 2 scope: broader resume-from-full init text can still render as
 normal turns. It predates the compaction work and needs its own classification,
 not a local CSS hide.
 
-## "Show hidden" — future exploration (no implementation yet)
+## "Show hidden" — not planned
 
-Hidden turns are currently fully suppressed. The intended direction is to make
-them **hyper-collapsed** (outline/modal, like the collapsed-system style, or
-more) rather than fully gone, so the user keeps visibility into the effective
-context — e.g. the system prompt / initial AGENTS-load result, recalled as once
-showing as an expandable turn. The single hide chokepoint exists precisely so
-this can be added in one place: flip "suppress" to "emit with a hidden marker"
-and give the client one render path for hidden items.
+Hidden turns are currently fully suppressed. YA previously exposed some setup
+context through an auto-collapsed `Session setup` item, and the legacy client
+fallback still recognizes old unprovenanced rows. There is no current product
+requirement to restore that surface for server-classified context. Reconsider
+only if a concrete debugging or transparency need emerges; it is not
+outstanding work for the Codex authorship fix.

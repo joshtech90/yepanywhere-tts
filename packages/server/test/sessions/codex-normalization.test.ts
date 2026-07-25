@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CodexSessionEntry } from "@yep-anywhere/shared";
 import { describe, expect, it, vi } from "vitest";
-import { preprocessMessages } from "../../../client/src/lib/preprocessMessages.ts";
+import { compileTranscriptProjection } from "../../../client/src/lib/transcriptProjection/compiler.ts";
 import { normalizeSession } from "../../src/sessions/normalization.js";
 import type { LoadedSession } from "../../src/sessions/types.js";
 
@@ -52,9 +52,9 @@ function loadCodexFixtureEntries(name: string): CodexSessionEntry[] {
 
 describe("Codex Normalization", () => {
   it("normalizes a codex session as a flat list without parentUuid", () => {
-    // 1. User message (event_msg) - will be deduped because of item #3
-    // 2. Assistant message (response_item)
-    // 3. User message (response_item)
+    // 1. Assistant message (response_item)
+    // 2. User message (response_item)
+    // 3. User provenance witness (event_msg, consumed as a duplicate)
     const entries: CodexSessionEntry[] = [
       {
         type: "response_item",
@@ -66,23 +66,22 @@ describe("Codex Normalization", () => {
         },
       },
       {
-        type: "event_msg",
-        timestamp: "2024-01-01T00:00:02Z",
-        payload: {
-          type: "user_message",
-          message: "How are you?",
-        },
-      },
-      // Duplicate user message event (should be deduped/shadowed by response_item)
-      // Actually, we want to test that if a response_item exists, event_msgs are ignored.
-      // So we add a response_item for the user message.
-      {
         type: "response_item",
         timestamp: "2024-01-01T00:00:02Z",
         payload: {
           type: "message",
           role: "user",
           content: [{ type: "input_text", text: "How are you?" }],
+        },
+      },
+      // Codex persists the rich response item first, then the user_message
+      // event that witnesses its user-authored provenance.
+      {
+        type: "event_msg",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "user_message",
+          message: "How are you?",
         },
       },
     ];
@@ -229,7 +228,7 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages[0]?.orphanedToolUseIds).toEqual(["call-orphaned"]);
 
-    const renderItems = preprocessMessages(result.messages);
+    const renderItems = compileTranscriptProjection(result.messages);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "call-orphaned",
@@ -272,7 +271,7 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages[0]?.orphanedToolUseIds).toEqual(["call-bg"]);
 
-    const renderItems = preprocessMessages(result.messages);
+    const renderItems = compileTranscriptProjection(result.messages);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "call-bg",
@@ -319,7 +318,7 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages[0]?.orphanedToolUseIds).toBeUndefined();
 
-    const renderItems = preprocessMessages(result.messages);
+    const renderItems = compileTranscriptProjection(result.messages);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "call-bg",
@@ -372,7 +371,7 @@ describe("Codex Normalization", () => {
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const renderItems = preprocessMessages(result.messages);
+      const renderItems = compileTranscriptProjection(result.messages);
       expect(renderItems[0]).toMatchObject({
         type: "tool_call",
         id: "call-fast",
@@ -455,7 +454,7 @@ describe("Codex Normalization", () => {
     ).toBe(false);
     expect(result.messages[0]?.orphanedToolUseIds).toEqual(["call-sleep"]);
 
-    const renderItems = preprocessMessages(result.messages);
+    const renderItems = compileTranscriptProjection(result.messages);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "call-sleep",
@@ -481,7 +480,7 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages[0]?.orphanedToolUseIds).toBeUndefined();
 
-    const renderItems = preprocessMessages(result.messages);
+    const renderItems = compileTranscriptProjection(result.messages);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "call-pending",
@@ -1105,6 +1104,174 @@ describe("Codex Normalization", () => {
     expect(toolResultMessage?.toolUseResult).toMatchObject({ ok: true });
   });
 
+  it("normalizes code-mode exec with JS-literal (unquoted-key) arguments to Bash", () => {
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:01Z",
+        payload: {
+          type: "custom_tool_call",
+          call_id: "call-js-literal",
+          name: "exec",
+          input:
+            'const r = await tools.exec_command({cmd:"pwd && ls",workdir:"/repo",yield_time_ms:10000,max_output_tokens:30000}); text(r.output);',
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call-js-literal",
+          output: [
+            {
+              type: "input_text",
+              text: "Script completed\nWall time 0.1 seconds\nOutput:\n",
+            },
+            { type: "input_text", text: "/repo\nREADME.md\n" },
+          ],
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages).toHaveLength(2);
+
+    const toolUseContent = result.messages[0]?.message?.content;
+    const toolUseBlock = Array.isArray(toolUseContent)
+      ? toolUseContent[0]
+      : toolUseContent;
+    expect(toolUseBlock).toMatchObject({
+      type: "tool_use",
+      id: "call-js-literal",
+      name: "Bash",
+      input: { command: "pwd && ls", workdir: "/repo" },
+    });
+
+    expect(result.messages[1]?.toolUseResult).toMatchObject({
+      stdout: "/repo\nREADME.md\n",
+      stderr: "",
+      // Runtime recovered from the shell envelope (§ Command execution
+      // metadata in topics/provider-output-contract.md).
+      durationSeconds: 0.1,
+    });
+  });
+
+  it("normalizes wait calls to WriteStdin and unwraps unified-exec chunk output", () => {
+    const chunk = {
+      chunk_id: "5cc06a",
+      wall_time_seconds: 22.4,
+      exit_code: 0,
+      original_token_count: 5047,
+      output: "started job serial=1 pid=1981745\nlog: /repo/run.log\n",
+    };
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:01Z",
+        payload: {
+          type: "function_call",
+          call_id: "call-wait",
+          name: "wait",
+          arguments: '{"cell_id":"39","yield_time_ms":10000,"max_tokens":12000}',
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-wait",
+          output: [
+            {
+              type: "input_text",
+              text: "Script completed\nWall time 8.2 seconds\nOutput:\n",
+            },
+            { type: "input_text", text: JSON.stringify(chunk) },
+          ],
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages).toHaveLength(2);
+
+    const toolUseContent = result.messages[0]?.message?.content;
+    const toolUseBlock = Array.isArray(toolUseContent)
+      ? toolUseContent[0]
+      : toolUseContent;
+    expect(toolUseBlock).toMatchObject({
+      type: "tool_use",
+      id: "call-wait",
+      name: "WriteStdin",
+      input: { cell_id: "39" },
+    });
+
+    const resultContent = result.messages[1]?.message?.content;
+    const resultBlock = Array.isArray(resultContent)
+      ? resultContent[0]
+      : resultContent;
+    expect(resultBlock).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "call-wait",
+      content: chunk.output,
+    });
+    expect(result.messages[1]?.toolUseResult).toMatchObject({
+      chunk_id: "5cc06a",
+      exit_code: 0,
+      // Normalized command metadata and stdout alias ride alongside the
+      // raw chunk fields (§ Command execution metadata).
+      stdout: chunk.output,
+      exitCode: 0,
+      durationSeconds: 22.4,
+    });
+  });
+
+  it("marks a failed unified-exec chunk as an error", () => {
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:01Z",
+        payload: {
+          type: "function_call",
+          call_id: "call-wait-fail",
+          name: "wait",
+          arguments: '{"cell_id":"7"}',
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-wait-fail",
+          output: [
+            {
+              type: "input_text",
+              text: "Script completed\nWall time 1.0 seconds\nOutput:\n",
+            },
+            {
+              type: "input_text",
+              text: '{"chunk_id":"aa","exit_code":2,"output":"boom\\n"}',
+            },
+          ],
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    const resultContent = result.messages[1]?.message?.content;
+    const resultBlock = Array.isArray(resultContent)
+      ? resultContent[0]
+      : resultContent;
+    expect(resultBlock).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "call-wait-fail",
+      content: "boom\n",
+      is_error: true,
+    });
+  });
+
   it("normalizes new tooling fixture (update_plan + write_stdin) with readable output text", () => {
     const entries = loadCodexFixtureEntries("new-tooling-format");
 
@@ -1158,7 +1325,7 @@ describe("Codex Normalization", () => {
     const entries = loadCodexFixtureEntries("write-stdin-linked-command");
 
     const normalized = normalizeSession(buildLoadedSession(entries));
-    const renderItems = preprocessMessages(normalized.messages);
+    const renderItems = compileTranscriptProjection(normalized.messages);
 
     const writeStdinItem = renderItems.find(
       (item) =>
@@ -1199,6 +1366,14 @@ describe("Codex Normalization", () => {
               image_url: "data:image/png;base64,AAAA",
             },
           ],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2024-01-01T00:00:01Z",
+        payload: {
+          type: "user_message",
+          message: "Please review this.\n<image>\nThanks.",
         },
       },
     ];
@@ -1336,6 +1511,9 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]?.message?.role).toBe("user");
+    expect(result.messages[0]?.codexUserTurnProvenance).toBe(
+      "legacy-response",
+    );
     const content = result.messages[0]?.message?.content;
     expect(Array.isArray(content) ? content[0] : content).toMatchObject({
       type: "text",
@@ -1383,11 +1561,87 @@ describe("Codex Normalization", () => {
     const result = normalizeSession(buildLoadedSession(entries));
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]?.message?.role).toBe("user");
+    expect(result.messages[0]?.codexUserTurnProvenance).toBe(
+      "legacy-response",
+    );
     const content = result.messages[0]?.message?.content;
     expect(Array.isArray(content) ? content[0] : content).toMatchObject({
       type: "text",
       text: "actual user turn",
     });
+  });
+
+  it("skips plugin and environment context without AGENTS instructions", () => {
+    const actualPrompt = "actual user turn";
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2026-07-10T17:09:45.684Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<recommended_plugins>\n- GitHub\n</recommended_plugins>",
+            },
+            {
+              type: "input_text",
+              text: "<environment_context>\n<cwd>/repo</cwd>\n</environment_context>",
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-10T17:09:45.686Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: actualPrompt }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-10T17:09:45.686Z",
+        payload: { type: "user_message", message: actualPrompt },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.codexUserTurnProvenance).toBe("paired");
+    expect(result.messages[0]?.message?.content).toEqual([
+      { type: "text", text: actualPrompt },
+    ]);
+  });
+
+  it("preserves a paired user prompt that looks like environment context", () => {
+    const actualPrompt =
+      "<environment_context>\nI typed this myself\n</environment_context>";
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2026-07-10T17:09:45.686Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: actualPrompt }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-10T17:09:45.686Z",
+        payload: { type: "user_message", message: actualPrompt },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.codexUserTurnProvenance).toBe("paired");
+    expect(result.messages[0]?.message?.content).toEqual([
+      { type: "text", text: actualPrompt },
+    ]);
   });
 
   it("emits turn_aborted as a visible system entry", () => {

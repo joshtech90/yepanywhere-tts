@@ -47,9 +47,12 @@
 - Provider read/edit disciplines (native edit formats vs YA's one canonical Read/Edit/Write presentation)
 - Collapse/expand mode (brainstorm: default-collapse more actions; expand subagent progress as pure outline UI)
 - Session hover card recent activity (add last regular agent turn excerpt to the row tooltip; fire it on all-sessions + search too)
+- Tooltip interactions (native fallback, themed pointer-rest delay, warm adjacent scanning, and future rendered hidden tails)
 - Turn-notch actions / fork-from-turn (fork already exists; proposal: expose fork/copy/trim from scrollbar notches + seed compose with the forked turn)
 - Turn-rail marker layout (hit targets sized to neighbor gaps; optional PAVA de-cluster spread behind one off-by-default constant)
 - Client global store (coarse normalized sessions/projects/project queues/inbox summary cache, not transcript state)
+- Session summary fidelity (bounded list projections, complete-index isolation,
+  and partial-observation nondowngrade rules)
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)
 - Session media handles (problem statement for lazy transcript image/blob
   payloads behind authenticated server media IDs)
@@ -60,3 +63,20 @@
 - Module boundary refactor discipline (move-only slices, naming and
   coordination rules, tripwire matrix, and verification tiers for the
   large-file extraction campaign)
+- Portable transcript compiler (stable server ingest, bounded window + prefix
+  facts, and shared semantic projection for web/Android/iOS native renderers)
+- Agents multi-session activity preview (default-off condensed live activity
+  for active processes and last-output previews for recently idle ones)
+- Bang commands (`!!` composer messages run local shell commands as
+  persistent inline display objects, never entering provider context; tab
+  completion, rendered output, cross-session history)
+- Interactives (proposal: zero-setup container for agent-built project web
+  apps — opinionated template, committed files, registry, icon links,
+  YA-server-only reach via relay or auto Cloudflare tunnel, meta-UI comment
+  channel)
+- Rich interviews (banked: multi-round structured-input flows rendered inline
+  from declared formats; revisit atop interactives machinery)
+- Server plugin arch (banked no: settings-gated loadable server code;
+  monolith convenience wins absent a contributing community)
+- Project settings overrides (banked seed: project-scoped overrides beating
+  global settings; mechanically easy, visualization is the cost)

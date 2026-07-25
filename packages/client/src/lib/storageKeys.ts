@@ -49,6 +49,9 @@ export const UI_KEYS = {
   // Legacy pre-presence keys, read once for migration then removed.
   sessionToolbarVisibility: "yep-anywhere-session-toolbar-visibility",
   sessionToolbarPriority: "yep-anywhere-session-toolbar-priority",
+  tooltipMode: "yep-anywhere-tooltip-mode",
+  tooltipDelayMs: "yep-anywhere-tooltip-delay-ms",
+  // Legacy per-hover-card delay; seeds the shared tooltip delay at one third.
   sessionHoverCardShowDelayMs: "yep-anywhere-session-hover-card-show-delay-ms",
   sessionHoverCardMaxHeightPx: "yep-anywhere-session-hover-card-max-height-px",
   sessionGeneratedTitleEnabled: "yep-anywhere-session-generated-title-enabled",
@@ -60,6 +63,8 @@ export const UI_KEYS = {
   sessionDomLinger: "yep-anywhere-session-dom-linger-enabled",
   sessionOffscreenTranscriptRendering:
     "yep-anywhere-session-offscreen-transcript-rendering-enabled",
+  sessionActiveWindowTrim:
+    "yep-anywhere-session-active-window-trim-enabled",
   // Legacy boolean toggle; seeds the budget preference until the slider
   // is first used, and stays coherent for older bundles.
   sessionTranscriptCache: "yep-anywhere-session-transcript-cache-enabled",

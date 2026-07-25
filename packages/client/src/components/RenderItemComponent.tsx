@@ -1,6 +1,7 @@
 import { memo, useCallback, useRef } from "react";
 import {
   MESSAGE_STALE_THRESHOLD_MS,
+  getEarliestMessageTimestampMs,
   getLatestMessageTimestampMs,
 } from "../lib/messageAge";
 import {
@@ -12,6 +13,10 @@ import type { CommentAnchor } from "../lib/commentAnchors";
 import type { ContentBlock } from "../types";
 import type { RenderItem } from "../types/renderItems";
 import { MessageAge } from "./MessageAge";
+import {
+  BangCommandDisplayObject,
+  type BangCommandHandlers,
+} from "./BangCommandDisplayObject";
 import { ForkSummaryDisplayObject } from "./ForkSummaryDisplayObject";
 import { SessionSetupBlock } from "./blocks/SessionSetupBlock";
 import { TaskNotificationBlock } from "./blocks/TaskNotificationBlock";
@@ -41,6 +46,7 @@ interface Props {
   onCancelForkSummary?: (objectId: string) => void;
   onToggleForkSummaryAutoOpen?: (objectId: string, value: boolean) => void;
   onFollowForkSummary?: (objectId: string) => void;
+  bangCommandHandlers?: BangCommandHandlers;
 }
 
 function getMessageIdLike(message: Record<string, unknown>): string {
@@ -246,6 +252,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
   onCancelForkSummary,
   onToggleForkSummaryAutoOpen,
   onFollowForkSummary,
+  bangCommandHandlers,
 }: Props) {
   const staticAgeNowMsRef = useRef(Date.now());
   const timestampMs = getLatestMessageTimestampMs(item.sourceMessages);
@@ -324,6 +331,12 @@ export const RenderItemComponent = memo(function RenderItemComponent({
             toolResult={item.toolResult}
             status={item.status}
             sessionProvider={sessionProvider}
+            startTimestampMs={getEarliestMessageTimestampMs(
+              item.sourceMessages,
+            )}
+            resultTimestampMs={
+              item.sourceMessages.length > 1 ? timestampMs : null
+            }
           />
         );
 
@@ -351,22 +364,32 @@ export const RenderItemComponent = memo(function RenderItemComponent({
       case "session_setup":
         return <SessionSetupBlock title={item.title} prompts={item.prompts} />;
 
-      case "transcript_display_object":
+      case "transcript_display_object": {
+        const displayObject = item.object;
+        if (displayObject.kind === "bang-command") {
+          return (
+            <BangCommandDisplayObject
+              object={displayObject}
+              handlers={bangCommandHandlers}
+            />
+          );
+        }
         return (
           <ForkSummaryDisplayObject
-            object={item.object}
+            object={displayObject}
             targetHref={
-              item.object.targetSessionId
-                ? getForkSummaryTargetHref?.(item.object.targetSessionId)
+              displayObject.targetSessionId
+                ? getForkSummaryTargetHref?.(displayObject.targetSessionId)
                 : undefined
             }
-            onCancel={() => onCancelForkSummary?.(item.object.id)}
+            onCancel={() => onCancelForkSummary?.(displayObject.id)}
             onToggleAutoOpen={(value) =>
-              onToggleForkSummaryAutoOpen?.(item.object.id, value)
+              onToggleForkSummaryAutoOpen?.(displayObject.id, value)
             }
-            onFollow={() => onFollowForkSummary?.(item.object.id)}
+            onFollow={() => onFollowForkSummary?.(displayObject.id)}
           />
         );
+      }
 
       case "task_notification":
         return <TaskNotificationBlock item={item} />;
@@ -387,12 +410,13 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         const isCompacting =
           item.subtype === "status" && item.status === "compacting";
         const isError = item.subtype === "error";
+        const isWarning = item.subtype === "warning";
         const isConfigAck = item.subtype === "config_ack";
         const isLocalCommand = item.subtype === "local_command";
         const isSubagentActivity = item.subtype === "subagent_activity";
         const isHighlightedConfigAck =
           isConfigAck && item.configChanged !== false;
-        const icon = isError
+        const icon = isError || isWarning
           ? "!"
           : isConfigAck
             ? "✓"
@@ -406,7 +430,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         }
         return (
           <div
-            className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""} ${isLocalCommand ? "system-message-local-command" : ""}`}
+            className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isWarning ? "system-message-warning" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""} ${isLocalCommand ? "system-message-local-command" : ""}`}
           >
             <span
               className={`system-message-icon ${isCompacting ? "spinning" : ""}`}

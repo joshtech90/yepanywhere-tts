@@ -3,6 +3,8 @@ import type {
   AgentContextHints,
   CacheMissBillingRecord,
   CacheMissBillingSettings,
+  BrowserSettingsBackupResponse,
+  BrowserSettingsBackupValues,
   ClientDefaults,
   ConnectionsResponse,
   CreateProjectWorkstreamRequest,
@@ -13,6 +15,9 @@ import type {
   DeviceInfo,
   FreezePublicSessionLiveSharesResponse,
   HelperTargetConfig,
+  HostAwakeMode,
+  HostAwakeStatus,
+  HostIdentity,
   ModelInfo,
   NewSessionDefaults,
   PendingInputType,
@@ -872,6 +877,68 @@ export const api = {
       },
     ),
 
+  runBangCommand: (
+    projectId: string,
+    sessionId: string,
+    command: string,
+    placementAfterMessageId: string,
+  ) =>
+    fetchJSON<{
+      displayObject: TranscriptDisplayObject;
+      transcriptDisplayObjects: TranscriptDisplayObject[];
+    }>(`/projects/${projectId}/sessions/${sessionId}/bang-commands`, {
+      method: "POST",
+      body: JSON.stringify({ command, placementAfterMessageId }),
+    }),
+
+  killBangCommand: (projectId: string, sessionId: string, objectId: string) =>
+    fetchJSON<{ killed: boolean }>(
+      `/projects/${projectId}/sessions/${sessionId}/bang-commands/${objectId}/kill`,
+      { method: "POST" },
+    ),
+
+  fetchBangCommandOutput: (
+    projectId: string,
+    sessionId: string,
+    objectId: string,
+  ) =>
+    fetchJSON<{
+      stdout: string;
+      stderr: string;
+      stdoutHtml: string;
+      mode: "markdown" | "json" | "ansi" | "toon" | "raw";
+      responseTruncated: boolean;
+    }>(
+      `/projects/${projectId}/sessions/${sessionId}/bang-commands/${objectId}/output`,
+    ),
+
+  deleteBangCommand: (projectId: string, sessionId: string, objectId: string) =>
+    fetchJSON<{
+      removed: boolean;
+      transcriptDisplayObjects: TranscriptDisplayObject[];
+    }>(`/projects/${projectId}/sessions/${sessionId}/bang-commands/${objectId}`, {
+      method: "DELETE",
+    }),
+
+  fetchBangCompletions: (
+    projectId: string,
+    token: string,
+    kind: "command" | "path",
+    line: string,
+  ) =>
+    fetchJSON<{ completions: string[] }>(
+      `/projects/${projectId}/bang-completions?token=${encodeURIComponent(token)}&kind=${kind}&line=${encodeURIComponent(line)}`,
+    ),
+
+  fetchBangCommandHistory: () =>
+    fetchJSON<{
+      entries: Array<{
+        sessionId: string;
+        projectId?: string;
+        object: TranscriptDisplayObject;
+      }>;
+    }>("/bang-commands"),
+
   queueMessage: (
     sessionId: string,
     message: string,
@@ -977,9 +1044,25 @@ export const api = {
       { method: "POST" },
     ),
 
-  abortProcess: (processId: string) =>
-    fetchJSON<{ aborted: boolean }>(`/processes/${processId}/abort`, {
+  abortProcess: (processId: string, options?: { blockResume?: boolean }) =>
+    fetchJSON<{
+      aborted: true;
+      processId: string;
+      sessionId: string;
+      pid?: number;
+      verifiedStopped: true;
+      verification: "pid" | "provider" | "iterator";
+      /** Present when the abort also exempted the session from auto-resume. */
+      resumeExemption?: {
+        heartbeatDisabled: boolean;
+        autoResumeDisabled: boolean;
+        error?: string;
+      };
+    }>(`/processes/${processId}/abort`, {
       method: "POST",
+      ...(options?.blockResume
+        ? { body: JSON.stringify({ blockResume: true }) }
+        : {}),
     }),
 
   interruptProcess: (processId: string) =>
@@ -1246,6 +1329,11 @@ export const api = {
   // Server settings API (persistent server configuration)
   getServerSettings: () => fetchJSON<{ settings: ServerSettings }>("/settings"),
 
+  getHostAwakeStatus: (forceRefresh = false) =>
+    fetchJSON<{ status: HostAwakeStatus }>(
+      `/settings/host-awake/status${forceRefresh ? "?refresh=1" : ""}`,
+    ),
+
   updateServerSettings: (settings: Partial<ServerSettings>) =>
     fetchJSON<{ settings: ServerSettings }>("/settings", {
       method: "PUT",
@@ -1255,6 +1343,18 @@ export const api = {
         // and empty string as "clear this value", but plain JSON drops undefined keys.
         (_key, value) => (value === undefined ? null : value),
       ),
+    }),
+
+  getBrowserSettingsBackup: () =>
+    fetchJSON<BrowserSettingsBackupResponse>("/settings/browser-backup"),
+
+  saveBrowserSettingsBackup: (input: {
+    version: number;
+    values: BrowserSettingsBackupValues;
+  }) =>
+    fetchJSON<BrowserSettingsBackupResponse>("/settings/browser-backup", {
+      method: "PUT",
+      body: JSON.stringify(input),
     }),
 
   // Read-only file-access info (env-pin state + resolved hint paths)
@@ -1476,6 +1576,12 @@ export interface ServerSettings {
   workstreamsEnabled?: boolean;
   /** Base URL for the hosted YA client */
   yaClientBaseUrl?: string | null;
+  /** Optional visual marker identifying the connected YA host. */
+  hostIdentity?: HostIdentity;
+  /** Process-lifetime operating-system idle-sleep assertion mode. */
+  hostAwakeMode?: HostAwakeMode;
+  /** Battery level at or below which the host-awake assertion is released. */
+  hostAwakeBatteryFloorPercent?: number;
   /** @deprecated Use yaClientBaseUrl. */
   publicShareViewerBaseUrl?: string | null;
   /** SSH host aliases for remote executors */

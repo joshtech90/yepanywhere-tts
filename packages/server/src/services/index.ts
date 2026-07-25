@@ -31,6 +31,12 @@ export {
 } from "./BrowserProfileService.js";
 
 export {
+  BrowserSettingsBackupService,
+  BrowserSettingsBackupValidationError,
+  type BrowserSettingsBackupServiceOptions,
+} from "./BrowserSettingsBackupService.js";
+
+export {
   ServerSettingsService,
   type ServerSettings,
   type ServerSettingsServiceOptions,
@@ -42,6 +48,13 @@ export {
   type TtsServiceOptions,
   type TtsStatus,
 } from "./TtsService.js";
+
+export {
+  HostAwakeService,
+  createHostAwakeBackend,
+  type HostAwakeServiceOptions,
+  type HostAwakeSupportCheck,
+} from "./host-awake/HostAwakeService.js";
 export {
   ProjectQueueService,
   ProjectQueueValidationError,

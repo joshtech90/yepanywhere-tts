@@ -61,12 +61,15 @@ import type {
 import { createRemoteAccessRoutes } from "./remote-access/index.js";
 import { createActivityRoutes } from "./routes/activity.js";
 import { createBrowserProfilesRoutes } from "./routes/browser-profiles.js";
+import { createBrowserSettingsBackupRoutes } from "./routes/browser-settings-backup.js";
 import { createClientLogsRoutes } from "./routes/client-logs.js";
 import { createConnectionsRoutes } from "./routes/connections.js";
 import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
 import { createDevRoutes } from "./routes/dev.js";
 import { createDeviceRoutes } from "./routes/devices.js";
 import { createFilesRoutes } from "./routes/files.js";
+import { createBangCommandsRoutes } from "./routes/bang-commands.js";
+import { BangCommandService } from "./services/BangCommandService.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
 import { createGlobalSessionsRoutes } from "./routes/global-sessions.js";
 import { health } from "./routes/health.js";
@@ -121,8 +124,10 @@ import type {
 import type { PublicShareService } from "./services/PublicShareService.js";
 import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import type { BrowserProfileService } from "./services/BrowserProfileService.js";
+import type { BrowserSettingsBackupService } from "./services/BrowserSettingsBackupService.js";
 import { CodexUpdateChecker } from "./services/CodexUpdateChecker.js";
 import type { ConnectedBrowsersService } from "./services/ConnectedBrowsersService.js";
+import type { HostAwakeService } from "./services/host-awake/HostAwakeService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
@@ -143,10 +148,17 @@ import { GeminiSessionReader } from "./sessions/gemini-reader.js";
 import { GrokSessionReader } from "./sessions/grok-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
 import { PiSessionReader } from "./sessions/pi-reader.js";
-import { findSessionSummaryAcrossProviders } from "./sessions/provider-resolution.js";
+import {
+  findSessionListSummaryAcrossProviders,
+  findSessionSummaryAcrossProviders,
+} from "./sessions/provider-resolution.js";
 import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
+import {
+  isUnownedHeartbeatResumeEligible,
+  type ResumeExemptionResult,
+} from "./sessions/resume-exemption.js";
 import type { SummaryParserWorkerMode } from "./sessions/summary-parser-worker-protocol.js";
 import type {
   GetSessionSummaryOptions,
@@ -167,6 +179,7 @@ export interface AppOptions {
   /** Real SDK interface with full features */
   realSdk?: RealClaudeSDKInterface;
   projectsDir?: string; // override for testing
+  codexSessionsDir?: string; // override for testing
   idleTimeoutMs?: number;
   defaultPermissionMode?: PermissionMode;
   /** EventBus for file change events */
@@ -254,8 +267,12 @@ export interface AppOptions {
   connectedBrowsers?: ConnectedBrowsersService;
   /** BrowserProfileService for tracking browser profile origins */
   browserProfileService?: BrowserProfileService;
+  /** Explicit server-stored backup of portable browser UI settings */
+  browserSettingsBackupService?: BrowserSettingsBackupService;
   /** ServerSettingsService for server-wide settings */
   serverSettingsService?: ServerSettingsService;
+  /** Process-global operating-system sleep assertion policy. */
+  hostAwakeService?: HostAwakeService;
   /** WorkstreamService for experimental per-project checkout lanes */
   workstreamService?: WorkstreamService;
   /** ModelInfoService for cached model metadata (context windows, etc.) */
@@ -347,6 +364,7 @@ function getPreservedRestartWork(
 
 export function createApp(options: AppOptions): AppResult {
   configureProviderRuntime({ codexCliPath: options.codexCliPath });
+  const codexSessionsDir = options.codexSessionsDir ?? CODEX_SESSIONS_DIR;
 
   const app = new Hono<{ Bindings: HttpBindings }>();
   const attachmentStagingService =
@@ -438,9 +456,11 @@ export function createApp(options: AppOptions): AppResult {
     }
     return created;
   };
-  const codexDiscoveryIndex = getCodexDiscoveryIndex(CODEX_SESSIONS_DIR);
+  const codexDiscoveryIndex = getCodexDiscoveryIndex(codexSessionsDir);
   const codexScanner = new CodexSessionScanner(
-    codexDiscoveryIndex ? { discoveryIndex: codexDiscoveryIndex } : {},
+    codexDiscoveryIndex
+      ? { sessionsDir: codexSessionsDir, discoveryIndex: codexDiscoveryIndex }
+      : { sessionsDir: codexSessionsDir },
   );
   const geminiScanner = new GeminiSessionScanner();
   const projectScanCachePath = options.dataDir
@@ -456,6 +476,14 @@ export function createApp(options: AppOptions): AppResult {
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
+  const bangCommandService =
+    options.sessionMetadataService && options.dataDir
+      ? new BangCommandService({
+          dataDir: options.dataDir,
+          sessionMetadataService: options.sessionMetadataService,
+          eventBus: options.eventBus,
+        })
+      : null;
   const readerCache = new Map<string, ISessionReader>();
   const maxReaderCacheSize = 500;
   const closeReader = async (
@@ -470,11 +498,10 @@ export function createApp(options: AppOptions): AppResult {
     }
   };
   const disposeSessionReaders = async (): Promise<void> => {
+    await bangCommandService?.dispose();
     const entries = Array.from(readerCache.entries());
     readerCache.clear();
-    await Promise.all(
-      entries.map(([key, reader]) => closeReader(key, reader)),
-    );
+    await Promise.all(entries.map(([key, reader]) => closeReader(key, reader)));
   };
 
   const getOrCreateReader = <T extends ISessionReader>(
@@ -580,11 +607,11 @@ export function createApp(options: AppOptions): AppResult {
   };
   const codexReaderFactory = (projectPath: string): CodexSessionReader =>
     getOrCreateReader(
-      `codex-extra::${CODEX_SESSIONS_DIR}::${projectPath}`,
+      `codex-extra::${codexSessionsDir}::${projectPath}`,
       () => {
-        const discoveryIndex = getCodexDiscoveryIndex(CODEX_SESSIONS_DIR);
+        const discoveryIndex = getCodexDiscoveryIndex(codexSessionsDir);
         return new CodexSessionReader({
-          sessionsDir: CODEX_SESSIONS_DIR,
+          sessionsDir: codexSessionsDir,
           projectPath,
           summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
           ...(discoveryIndex ? { discoveryIndex } : {}),
@@ -632,7 +659,7 @@ export function createApp(options: AppOptions): AppResult {
       project.id,
       {
         readerFactory,
-        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexSessionsDir,
         codexReaderFactory,
         codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
         geminiSessionsDir: GEMINI_TMP_DIR,
@@ -654,6 +681,34 @@ export function createApp(options: AppOptions): AppResult {
       options.sessionMetadataService?.getRecapMessages(sessionId) ?? [],
     );
   };
+  const getSessionListSummary = async (
+    sessionId: string,
+    projectId: string,
+  ) => {
+    const project = await scanner.getProject(projectId);
+    if (!project) return null;
+    const resolved = await findSessionListSummaryAcrossProviders(
+      project,
+      sessionId,
+      project.id,
+      {
+        readerFactory,
+        codexSessionsDir,
+        codexReaderFactory,
+        codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiReaderFactory,
+        geminiHashToCwd: geminiScanner.getHashToCwd(),
+        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokReaderFactory,
+        piSessionsDir: PI_SESSIONS_DIR,
+        piReaderFactory,
+        claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
+      },
+      options.sessionMetadataService?.getProvider(sessionId),
+    );
+    return resolved?.summary ?? null;
+  };
   let supervisor: Supervisor;
   const getHeartbeatTurnCandidates = async (): Promise<
     HeartbeatTurnCandidate[]
@@ -664,7 +719,7 @@ export function createApp(options: AppOptions): AppResult {
     }
 
     const heartbeatSessionIds = Object.entries(metadataBySession).filter(
-      ([, metadata]) => metadata.heartbeatTurnsEnabled,
+      ([, metadata]) => isUnownedHeartbeatResumeEligible(metadata),
     );
     if (heartbeatSessionIds.length === 0) {
       return [];
@@ -674,7 +729,7 @@ export function createApp(options: AppOptions): AppResult {
     const candidates: HeartbeatTurnCandidate[] = [];
     const providerResolutionDeps = {
       readerFactory,
-      codexSessionsDir: CODEX_SESSIONS_DIR,
+      codexSessionsDir,
       codexReaderFactory,
       codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
       geminiSessionsDir: GEMINI_TMP_DIR,
@@ -693,13 +748,12 @@ export function createApp(options: AppOptions): AppResult {
       }
 
       for (const project of projects) {
-        const resolved = await findSessionSummaryAcrossProviders(
+        const resolved = await findSessionListSummaryAcrossProviders(
           project,
           sessionId,
           project.id,
           providerResolutionDeps,
           metadata.provider,
-          { readMode: "head" },
         );
         if (!resolved) {
           continue;
@@ -722,7 +776,7 @@ export function createApp(options: AppOptions): AppResult {
           projectId: project.id,
           projectPath: project.path,
           provider: resolved.summary.provider,
-          model: resolved.summary.model,
+          model: metadata.requestedModel,
           executor: metadata.executor,
           updatedAt: resolved.summary.updatedAt,
           hasPendingToolCall: true,
@@ -825,6 +879,7 @@ export function createApp(options: AppOptions): AppResult {
         // Callback to get session summary for new external sessions
         // projectId is now UrlProjectId (base64url) - ExternalSessionTracker converts it
         getSessionSummary,
+        getSessionListSummary,
       })
     : undefined;
 
@@ -959,6 +1014,7 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/version",
     createVersionRoutes({
+      browserSettingsBackupAvailable: !!options.browserSettingsBackupService,
       getDeviceBridgeState: () => {
         if (!options.deviceBridgeService) return "unavailable";
         return options.deviceBridgeService.hasBinary()
@@ -1091,7 +1147,7 @@ export function createApp(options: AppOptions): AppResult {
       projectQueueService: options.projectQueueService,
       sessionIndexService: options.sessionIndexService,
       codexScanner,
-      codexSessionsDir: CODEX_SESSIONS_DIR,
+      codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
       geminiSessionsDir: GEMINI_TMP_DIR,
@@ -1112,7 +1168,7 @@ export function createApp(options: AppOptions): AppResult {
         projectQueueService: options.projectQueueService,
         projectQueueScheduler,
         sessionIndexService: options.sessionIndexService,
-        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexSessionsDir,
         codexReaderFactory,
         geminiSessionsDir: GEMINI_TMP_DIR,
         geminiReaderFactory,
@@ -1132,7 +1188,7 @@ export function createApp(options: AppOptions): AppResult {
         projectQueueService: options.projectQueueService,
         projectQueueScheduler,
         sessionIndexService: options.sessionIndexService,
-        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexSessionsDir,
         codexReaderFactory,
         geminiSessionsDir: GEMINI_TMP_DIR,
         geminiReaderFactory,
@@ -1145,6 +1201,33 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
   app.route("/api", createSupervisorQueueRoutes(supervisor));
+  if (options.sessionMetadataService && bangCommandService) {
+    app.route(
+      "/api",
+      createBangCommandsRoutes({
+        scanner,
+        sessionMetadataService: options.sessionMetadataService,
+        bangCommandService,
+        bangCommandsEnabled: () =>
+          options.serverSettingsService?.getSetting("clientDefaults")
+            ?.bangCommandsEnabled === true,
+        sessionBelongsToProject: async (project, sessionId) => {
+          const metadataProjectId =
+            options.sessionMetadataService?.getMetadata(
+              sessionId,
+            )?.workingProjectId;
+          if (metadataProjectId) {
+            return metadataProjectId === project.id;
+          }
+          const process = supervisor.getProcessForSession(sessionId);
+          if (process) {
+            return process.projectId === project.id;
+          }
+          return (await getSessionListSummary(sessionId, project.id)) !== null;
+        },
+      }),
+    );
+  }
   app.route(
     "/api",
     createSessionsRoutes({
@@ -1157,7 +1240,7 @@ export function createApp(options: AppOptions): AppResult {
       sessionMetadataService: options.sessionMetadataService,
       eventBus: options.eventBus,
       codexScanner,
-      codexSessionsDir: CODEX_SESSIONS_DIR,
+      codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
       geminiSessionsDir: GEMINI_TMP_DIR,
@@ -1190,7 +1273,7 @@ export function createApp(options: AppOptions): AppResult {
           case "codex-oss":
             return {
               reader: codexReaderFactory(project.path),
-              sessionDir: CODEX_SESSIONS_DIR,
+              sessionDir: codexSessionsDir,
             };
           case "gemini":
           case "gemini-acp":
@@ -1212,6 +1295,30 @@ export function createApp(options: AppOptions): AppResult {
       },
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      // Explicit Kill blocks YA's automatic resume gate while preserving the
+      // provider transcript for history and deliberate manual continuation.
+      blockSessionResume: async ({ sessionId }) => {
+        const metadata = options.sessionMetadataService;
+        if (!metadata) {
+          throw new Error("Session metadata service is unavailable");
+        }
+        const heartbeatWasEnabled =
+          metadata.getMetadata(sessionId)?.heartbeatTurnsEnabled === true;
+        await metadata.updateMetadata(sessionId, {
+          heartbeatTurnsEnabled: false,
+          autoResumeDisabled: true,
+        });
+
+        const result: ResumeExemptionResult = {
+          heartbeatDisabled: heartbeatWasEnabled,
+          autoResumeDisabled: true,
+        };
+        console.log(
+          `[Processes] Blocked auto-resume for killed session ${sessionId}` +
+            ` (heartbeatDisabled=${result.heartbeatDisabled})`,
+        );
+        return result;
+      },
     }),
   );
 
@@ -1227,7 +1334,7 @@ export function createApp(options: AppOptions): AppResult {
       sessionMetadataService: options.sessionMetadataService,
       projectQueueService: options.projectQueueService,
       codexScanner,
-      codexSessionsDir: CODEX_SESSIONS_DIR,
+      codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
       geminiSessionsDir: GEMINI_TMP_DIR,
@@ -1252,7 +1359,7 @@ export function createApp(options: AppOptions): AppResult {
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
       codexScanner,
-      codexSessionsDir: CODEX_SESSIONS_DIR,
+      codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
       geminiSessionsDir: GEMINI_TMP_DIR,
@@ -1301,7 +1408,7 @@ export function createApp(options: AppOptions): AppResult {
         readerFactory,
         sessionIndexService: options.sessionIndexService,
         codexScanner,
-        codexSessionsDir: CODEX_SESSIONS_DIR,
+        codexSessionsDir,
         codexReaderFactory,
         geminiScanner,
         geminiSessionsDir: GEMINI_TMP_DIR,
@@ -1329,6 +1436,7 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings",
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
+        hostAwakeService: options.hostAwakeService,
         sessionMetadataService: options.sessionMetadataService,
         onAllowedHostsChanged: updateAllowedHosts,
         onFileAccessChanged: updateFileAccess,
@@ -1349,6 +1457,14 @@ export function createApp(options: AppOptions): AppResult {
           grokACPProvider.setUseAmbientXaiApiKey(enabled);
         },
         publicShareService: options.publicShareService,
+      }),
+    );
+  }
+  if (options.browserSettingsBackupService) {
+    app.route(
+      "/api/settings/browser-backup",
+      createBrowserSettingsBackupRoutes({
+        browserSettingsBackupService: options.browserSettingsBackupService,
       }),
     );
   }
@@ -1457,7 +1573,12 @@ export function createApp(options: AppOptions): AppResult {
       sessionId: string,
     ): Promise<Pick<
       AppSession,
-      "customTitle" | "provider" | "title" | "updatedAt"
+      | "customTitle"
+      | "fullTitle"
+      | "initialPrompt"
+      | "provider"
+      | "title"
+      | "updatedAt"
     > | null> => {
       const response = await app.fetch(
         new Request(
@@ -1472,7 +1593,12 @@ export function createApp(options: AppOptions): AppResult {
       const body = (await response.json()) as {
         session?: Pick<
           AppSession,
-          "customTitle" | "provider" | "title" | "updatedAt"
+          | "customTitle"
+          | "fullTitle"
+          | "initialPrompt"
+          | "provider"
+          | "title"
+          | "updatedAt"
         >;
       };
       return body.session ?? null;

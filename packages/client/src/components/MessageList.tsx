@@ -24,10 +24,11 @@ import { useI18n } from "../i18n";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import {
   formatCompactRelativeAge,
+  getEarliestMessageTimestampMs,
   getLatestMessageTimestampMs,
   MESSAGE_STALE_THRESHOLD_MS,
 } from "../lib/messageAge";
-import type { ActiveToolApproval } from "../lib/preprocessMessages";
+import type { ActiveToolApproval } from "../lib/transcriptProjection/types";
 import type { SessionIsearchScope } from "../lib/sessionIsearchGuide";
 import {
   decideSessionScrollRestore,
@@ -75,6 +76,7 @@ import {
 import { ExploredToolGroup } from "./blocks/ExploredToolGroup";
 import { MessageAge } from "./MessageAge";
 import { ProcessingIndicator } from "./ProcessingIndicator";
+import type { BangCommandHandlers } from "./BangCommandDisplayObject";
 import { RenderItemComponent } from "./RenderItemComponent";
 import {
   UserTurnNavigator,
@@ -392,6 +394,7 @@ interface InlineProjectQueueMessage {
   attachments?: UploadedFile[];
   lastError?: string;
   isMutating?: boolean;
+  canEdit?: boolean;
 }
 
 function formatQueuedAge(timestampMs: number, nowMs: number): string {
@@ -480,10 +483,14 @@ interface Props {
   getComposerDraft?: () => string;
   composerDraft?: string;
   composerDraftChange?: DraftTextChangeMetadata;
+  /** Whether the composer is empty enough to take a queued item for editing. */
+  canEditQueuedMessages?: boolean;
   /** Clear all comment anchors after the quoted turn is sent. */
   quoteClearSignal?: number;
   /** Callback to cancel a deferred message */
   onCancelDeferred?: (tempId: string) => void;
+  /** Move a live deferred message back into an empty composer. */
+  onEditDeferred?: (tempId: string) => void;
   /** Callback to cancel an optimistic steering send before the provider acts. */
   onCancelUnconfirmedUserMessage?: (tempId: string) => void;
   /** Steer a patient queued message, and earlier patient entries, into the session now */
@@ -496,6 +503,10 @@ interface Props {
   onDeleteRecoveredDeferred?: (queueId: string) => void;
   /** Callback to cancel a Project Queue item */
   onCancelProjectQueueMessage?: (itemId: string) => void;
+  /** Move a Project Queue item back into an empty composer. */
+  onEditProjectQueueMessage?: (itemId: string) => void;
+  /** Force a Project Queue item into the active session now. */
+  onSteerProjectQueueMessage?: (itemId: string) => void;
   /** Callback to correct the latest actually-sent user message */
   onCorrectLatestUserMessage?: (messageId: string, content: string) => void;
   /** Callback to aggressively reload the client transcript from a user turn */
@@ -512,6 +523,8 @@ interface Props {
   activeToolApproval?: ActiveToolApproval;
   /** Whether there are older messages not yet loaded */
   hasOlderMessages?: boolean;
+  /** Ephemeral signal incremented after an accepted active-window prefix trim. */
+  activeWindowTrimRevision?: number;
   /** Whether older messages are currently being loaded */
   loadingOlder?: boolean;
   /** Callback to load the next chunk of older messages */
@@ -526,6 +539,8 @@ interface Props {
   progressiveRenderKey?: string;
   initialScrollSnapshot?: SessionRouteScrollSnapshot | null;
   onScrollSnapshotChange?: (snapshot: SessionRouteScrollSnapshot) => void;
+  /** Immediate live-tail intent; unlike route snapshots, this is not debounced. */
+  onFollowingBottomChange?: (followingBottom: boolean) => void;
   scrollBehaviorMode?: SessionScrollBehaviorMode;
   /** Allow CSS to skip rendering transcript rows outside the viewport. */
   offscreenTranscriptRenderingEnabled?: boolean;
@@ -535,6 +550,7 @@ interface Props {
   onCancelForkSummary?: (objectId: string) => void;
   onToggleForkSummaryAutoOpen?: (objectId: string, value: boolean) => void;
   onFollowForkSummary?: (objectId: string) => void;
+  bangCommandHandlers?: BangCommandHandlers;
 }
 
 function XIcon({ size = 14 }: { size?: number }) {
@@ -552,6 +568,25 @@ function XIcon({ size = 14 }: { size?: number }) {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function PencilIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
     </svg>
   );
 }
@@ -678,6 +713,90 @@ function BtwAsideTimelineCard({
   );
 }
 
+interface QueuedMessageActionsProps {
+  variant: "session" | "project";
+  text: string;
+  canEdit: boolean;
+  disabled?: boolean;
+  onEdit?: () => void;
+  onSteer?: () => void;
+  steerLabel?: string;
+  onCancel?: () => void;
+}
+
+function QueuedMessageActions({
+  variant,
+  text,
+  canEdit,
+  disabled = false,
+  onEdit,
+  onSteer,
+  steerLabel,
+  onCancel,
+}: QueuedMessageActionsProps) {
+  const { t } = useI18n();
+  const isProject = variant === "project";
+  const editLabel = isProject
+    ? t("projectQueueInlineEdit")
+    : t("sessionQueuedEdit");
+  const cancelLabel = isProject
+    ? t("projectQueueInlineCancel")
+    : t("sessionQueuedCancel");
+
+  return (
+    <div className="deferred-message-actions" data-queue-actions={variant}>
+      <CopyTextButton
+        text={text}
+        label={isProject ? t("projectQueueInlineCopy") : t("sessionQueuedCopy")}
+        className="deferred-message-action deferred-message-action-copy"
+        showTextLabel
+        onClick={(event) => event.stopPropagation()}
+      />
+      {canEdit && onEdit ? (
+        <button
+          type="button"
+          className="deferred-message-action deferred-message-action-edit"
+          disabled={disabled}
+          onClick={onEdit}
+          aria-label={editLabel}
+          title={editLabel}
+        >
+          <PencilIcon />
+          <span>{t("projectQueueEdit")}</span>
+        </button>
+      ) : null}
+      {onSteer ? (
+        <button
+          type="button"
+          className="deferred-message-action deferred-message-action-steer"
+          disabled={disabled}
+          onClick={onSteer}
+          aria-label={steerLabel ?? t("sessionSteerQueuedMessageNow")}
+          title={steerLabel ?? t("sessionSteerQueuedMessageNow")}
+        >
+          <PlayIcon />
+          <span>{t("sessionSteerNow")}</span>
+        </button>
+      ) : null}
+      {onCancel ? (
+        <button
+          type="button"
+          className={`deferred-message-action deferred-message-action-cancel ${
+            isProject ? "project-queue-inline-message-cancel" : ""
+          }`}
+          disabled={disabled}
+          onClick={onCancel}
+          aria-label={cancelLabel}
+          title={cancelLabel}
+        >
+          <XIcon />
+          <span>{t("projectQueueCancel")}</span>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export const MessageList = memo(function MessageList({
   messages,
   transcriptDisplayObjects = EMPTY_TRANSCRIPT_DISPLAY_OBJECTS,
@@ -699,14 +818,18 @@ export const MessageList = memo(function MessageList({
   getComposerDraft,
   composerDraft = "",
   composerDraftChange,
+  canEditQueuedMessages,
   quoteClearSignal = 0,
   onCancelDeferred,
+  onEditDeferred,
   onCancelUnconfirmedUserMessage,
   onSteerDeferred,
   onResumeRecoveredDeferred,
   onSteerRecoveredDeferred,
   onDeleteRecoveredDeferred,
   onCancelProjectQueueMessage,
+  onEditProjectQueueMessage,
+  onSteerProjectQueueMessage,
   onCorrectLatestUserMessage,
   onTrimBeforeUserMessage,
   onForkBeforeUserMessage,
@@ -715,6 +838,7 @@ export const MessageList = memo(function MessageList({
   markdownAugments,
   activeToolApproval,
   hasOlderMessages = false,
+  activeWindowTrimRevision = 0,
   loadingOlder = false,
   onLoadOlderMessages,
   clientTailActive = false,
@@ -723,6 +847,7 @@ export const MessageList = memo(function MessageList({
   progressiveRenderKey,
   initialScrollSnapshot = null,
   onScrollSnapshotChange,
+  onFollowingBottomChange,
   scrollBehaviorMode = DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
   offscreenTranscriptRenderingEnabled = false,
   inert = false,
@@ -731,6 +856,7 @@ export const MessageList = memo(function MessageList({
   onCancelForkSummary,
   onToggleForkSummaryAutoOpen,
   onFollowForkSummary,
+  bangCommandHandlers,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -762,6 +888,11 @@ export const MessageList = memo(function MessageList({
   const previousProgressiveRevealActiveRef = useRef(false);
   const scrollSnapshotWritesSuppressedRef = useRef(false);
   const previousScrollSnapshotWritesSuppressedRef = useRef(false);
+  const previousActiveWindowTrimRevisionRef = useRef(
+    activeWindowTrimRevision,
+  );
+  const onFollowingBottomChangeRef = useRef(onFollowingBottomChange);
+  onFollowingBottomChangeRef.current = onFollowingBottomChange;
   const [thinkingItemsVisible, setThinkingItemsVisible] = useState(() => {
     // "Show thinking" preference seeds the render gate's default; "default"
     // falls back to the live eye-toggle value. The eye icon still overrides
@@ -785,13 +916,21 @@ export const MessageList = memo(function MessageList({
   const [hoveredMarkerTimestampMs, setHoveredMarkerTimestampMs] = useState<
     number | null
   >(null);
+  const [hoveredRowTimestampMs, setHoveredRowTimestampMs] = useState<
+    number | null
+  >(null);
   const [scrollPositionTimestampMs, setScrollPositionTimestampMs] = useState<
     number | null
   >(null);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
   const [newOutputBelowVisible, setNewOutputBelowVisible] = useState(false);
   const { t } = useI18n();
+  const queuedEditAvailable =
+    canEditQueuedMessages ?? composerDraft.trim().length === 0;
   const nowMs = useRelativeNow();
+  const reportFollowingBottom = useCallback((followingBottom: boolean) => {
+    onFollowingBottomChangeRef.current?.(followingBottom);
+  }, []);
 
   // Scroll to bottom, marking it as programmatic so scroll handler ignores it
   const scrollToBottom = useCallback(
@@ -809,6 +948,7 @@ export const MessageList = memo(function MessageList({
       }
       lastHeightRef.current = container.scrollHeight;
       setIsScrolledToBottom(true);
+      reportFollowingBottom(true);
       setScrollPositionTimestampMs(null);
       setNewOutputBelowVisible(false);
 
@@ -857,7 +997,7 @@ export const MessageList = memo(function MessageList({
         }
       }, 50);
     },
-    [],
+    [reportFollowingBottom],
   );
 
   const clearForcedCurrentScrollTimers = useCallback(() => {
@@ -889,8 +1029,13 @@ export const MessageList = memo(function MessageList({
         lastHeightRef.current = container.scrollHeight;
       }
       setIsScrolledToBottom(false);
+      reportFollowingBottom(false);
     },
-    [clearFollowUpScrollTimer, clearForcedCurrentScrollTimers],
+    [
+      clearFollowUpScrollTimer,
+      clearForcedCurrentScrollTimers,
+      reportFollowingBottom,
+    ],
   );
 
   const forceScrollToCurrent = useCallback(
@@ -1127,13 +1272,62 @@ export const MessageList = memo(function MessageList({
     updateScrollPositionTimestamp({ atBottom: isScrolledToBottom });
   }, [isScrolledToBottom, updateScrollPositionTimestamp]);
 
+  // Row-start times for the transcript hover override: hovering a row (or a
+  // turn-rail marker, which wins) retargets the composer "at N ago" from the
+  // scroll position to that specific turn's start time — a tool row's start
+  // is its command start. Mouse over the composer or dead space resolves no
+  // row, restoring the scroll-position status quo.
+  const rowStartTimestampsById = useMemo(() => {
+    const byId = new Map<string, number>();
+    for (const item of displayRenderItems) {
+      const timestampMs = getEarliestMessageTimestampMs(item.sourceMessages);
+      if (timestampMs !== null) {
+        byId.set(item.id, timestampMs);
+      }
+    }
+    return byId;
+  }, [displayRenderItems]);
+
+  const handleTranscriptPointerOver = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType && event.pointerType !== "mouse") {
+        return;
+      }
+      // Projected child rows (explored-group entries, asides) carry render
+      // ids absent from the items map; walk out to the owning item row.
+      let row =
+        (event.target as Element | null)?.closest?.("[data-render-id]") ??
+        null;
+      let timestampMs: number | null = null;
+      while (row) {
+        const id = (row as HTMLElement).dataset.renderId;
+        const mapped = id ? rowStartTimestampsById.get(id) : undefined;
+        if (mapped !== undefined) {
+          timestampMs = mapped;
+          break;
+        }
+        row = row.parentElement?.closest?.("[data-render-id]") ?? null;
+      }
+      setHoveredRowTimestampMs((current) =>
+        current === timestampMs ? current : timestampMs,
+      );
+    },
+    [rowStartTimestampsById],
+  );
+
+  const handleTranscriptPointerLeave = useCallback(() => {
+    setHoveredRowTimestampMs(null);
+  }, []);
+
   useEffect(() => {
     const contextualTimestampMs =
       hoveredMarkerTimestampMs ??
+      hoveredRowTimestampMs ??
       (isScrolledToBottom ? null : scrollPositionTimestampMs);
     onTranscriptPositionTimestampChange?.(contextualTimestampMs);
   }, [
     hoveredMarkerTimestampMs,
+    hoveredRowTimestampMs,
     isScrolledToBottom,
     onTranscriptPositionTimestampChange,
     scrollPositionTimestampMs,
@@ -1427,6 +1621,26 @@ export const MessageList = memo(function MessageList({
     }
     publishScrollSnapshot();
   }, [inert, publishScrollSnapshot, scrollSnapshotWritesSuppressed]);
+
+  useLayoutEffect(() => {
+    const previousRevision = previousActiveWindowTrimRevisionRef.current;
+    previousActiveWindowTrimRevisionRef.current = activeWindowTrimRevision;
+    if (activeWindowTrimRevision <= previousRevision) {
+      return;
+    }
+
+    const container = containerRef.current?.parentElement;
+    if (container && shouldAutoScrollRef.current) {
+      scrollToBottom(container);
+    }
+    // Replace any route-memory anchor that referenced a removed prefix row,
+    // including when a user-scroll race correctly prevents a forced jump.
+    publishScrollSnapshot();
+  }, [
+    activeWindowTrimRevision,
+    publishScrollSnapshot,
+    scrollToBottom,
+  ]);
 
   const getThinkingItemExpanded = useCallback(
     (item: RenderItem) =>
@@ -1770,9 +1984,14 @@ export const MessageList = memo(function MessageList({
       clearForcedCurrentScrollTimers();
     }
     setIsScrolledToBottom(atBottom);
+    reportFollowingBottom(atBottom);
     updateScrollPositionTimestampRef.current({ atBottom });
     schedulePublishScrollSnapshot();
-  }, [clearForcedCurrentScrollTimers, schedulePublishScrollSnapshot]);
+  }, [
+    clearForcedCurrentScrollTimers,
+    reportFollowingBottom,
+    schedulePublishScrollSnapshot,
+  ]);
 
   // Attach scroll listener to parent container
   useEffect(() => {
@@ -1984,6 +2203,7 @@ export const MessageList = memo(function MessageList({
         lastHeightRef.current = resizeContainer.scrollHeight;
         shouldAutoScrollRef.current = false;
         setIsScrolledToBottom(false);
+        reportFollowingBottom(false);
 
         requestAnimationFrame(() => {
           isProgrammaticScrollRef.current = false;
@@ -1998,7 +2218,7 @@ export const MessageList = memo(function MessageList({
         cancelAnimationFrame(pendingFrame);
       }
     };
-  }, [scrollToBottom]);
+  }, [reportFollowingBottom, scrollToBottom]);
 
   // Force scroll to bottom when scrollTrigger changes (user sent a message)
   useEffect(() => {
@@ -2083,6 +2303,7 @@ export const MessageList = memo(function MessageList({
       }
       shouldAutoScrollRef.current = false;
       setIsScrolledToBottom(false);
+      reportFollowingBottom(false);
       updateScrollPositionTimestamp({ atBottom: false });
       setNewOutputBelowVisible(
         initialScrollSnapshot.atBottom &&
@@ -2106,6 +2327,7 @@ export const MessageList = memo(function MessageList({
     progressiveRevealActive,
     scrollToBottom,
     updateScrollPositionTimestamp,
+    reportFollowingBottom,
   ]);
 
   // Initial scroll to bottom on first render
@@ -2172,6 +2394,7 @@ export const MessageList = memo(function MessageList({
         onNavigateStart={() => {
           shouldAutoScrollRef.current = false;
           setIsScrolledToBottom(false);
+          reportFollowingBottom(false);
           updateScrollPositionTimestamp({ atBottom: false });
         }}
         onSearchMatchSelect={selectSearchMatch}
@@ -2199,6 +2422,8 @@ export const MessageList = memo(function MessageList({
           .join(" ")}
         ref={containerRef}
         aria-busy={progressiveRevealActive ? true : undefined}
+        onPointerOver={handleTranscriptPointerOver}
+        onPointerLeave={handleTranscriptPointerLeave}
       >
         {floatingSelectionQuoteButton}
         {progressiveRevealActive && (
@@ -2286,6 +2511,7 @@ export const MessageList = memo(function MessageList({
                 onCancelForkSummary={onCancelForkSummary}
                 onToggleForkSummaryAutoOpen={onToggleForkSummaryAutoOpen}
                 onFollowForkSummary={onFollowForkSummary}
+                bangCommandHandlers={bangCommandHandlers}
               />
             );
           }
@@ -2514,30 +2740,31 @@ export const MessageList = memo(function MessageList({
                         {projectQueue.lastError}
                       </span>
                     )}
-                    <div className="deferred-message-actions">
-                      <CopyTextButton
-                        text={projectQueue.content}
-                        label={t("projectQueueInlineCopy")}
-                        className="deferred-message-action deferred-message-action-copy"
-                        showTextLabel
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                      {tailRow.allowsCancel && onCancelProjectQueueMessage && (
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-cancel project-queue-inline-message-cancel"
-                          disabled={projectQueue.isMutating}
-                          onClick={() =>
-                            onCancelProjectQueueMessage(projectQueue.id)
-                          }
-                          aria-label={t("projectQueueInlineCancel")}
-                          title={t("projectQueueInlineCancel")}
-                        >
-                          <XIcon />
-                          <span>{t("projectQueueDelete")}</span>
-                        </button>
-                      )}
-                    </div>
+                    <QueuedMessageActions
+                      variant="project"
+                      text={projectQueue.content}
+                      canEdit={
+                        queuedEditAvailable && projectQueue.canEdit !== false
+                      }
+                      disabled={projectQueue.isMutating}
+                      onEdit={
+                        tailRow.allowsCancel && onEditProjectQueueMessage
+                          ? () => onEditProjectQueueMessage(projectQueue.id)
+                          : undefined
+                      }
+                      onSteer={
+                        tailRow.projectQueueStatusKind === "queued" &&
+                        onSteerProjectQueueMessage
+                          ? () => onSteerProjectQueueMessage(projectQueue.id)
+                          : undefined
+                      }
+                      steerLabel={t("projectQueueInlineSteer")}
+                      onCancel={
+                        tailRow.allowsCancel && onCancelProjectQueueMessage
+                          ? () => onCancelProjectQueueMessage(projectQueue.id)
+                          : undefined
+                      }
+                    />
                   </div>
                 </div>
                 <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
@@ -2630,93 +2857,85 @@ export const MessageList = memo(function MessageList({
                       <span>{deferred.attachmentCount}</span>
                     </span>
                   ) : null}
-                  <div className="deferred-message-actions">
-                    <CopyTextButton
+                  {tailRow.isRecovered ? (
+                    <div className="deferred-message-actions">
+                      <CopyTextButton
+                        text={deferred.content}
+                        label={t("sessionQueuedCopy")}
+                        className="deferred-message-action deferred-message-action-copy"
+                        showTextLabel
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                      {recoveredQueueId && onSteerRecoveredDeferred ? (
+                        <button
+                          type="button"
+                          className="deferred-message-action deferred-message-action-steer"
+                          onClick={() =>
+                            onSteerRecoveredDeferred(recoveredQueueId)
+                          }
+                          aria-label={steerQueuedLabel}
+                          title={steerQueuedLabel}
+                        >
+                          <PlayIcon />
+                          <span>{t("sessionSteerNow")}</span>
+                        </button>
+                      ) : null}
+                      {tailRow.allowsRecoveredResume &&
+                      recoveredQueueId &&
+                      onResumeRecoveredDeferred ? (
+                        <button
+                          type="button"
+                          className="deferred-message-action deferred-message-action-resume"
+                          onClick={() =>
+                            onResumeRecoveredDeferred(recoveredQueueId)
+                          }
+                          aria-label={t("sessionRecoveredQueuedResume")}
+                          title={t("sessionRecoveredQueuedResume")}
+                        >
+                          <PlayIcon />
+                          <span>{t("sessionRecoveredQueuedResumeShort")}</span>
+                        </button>
+                      ) : null}
+                      {tailRow.allowsRecoveredDelete &&
+                      recoveredQueueId &&
+                      onDeleteRecoveredDeferred ? (
+                        <button
+                          type="button"
+                          className="deferred-message-action deferred-message-action-cancel"
+                          onClick={() =>
+                            onDeleteRecoveredDeferred(recoveredQueueId)
+                          }
+                          aria-label={t("sessionRecoveredQueuedDelete")}
+                          title={t("sessionRecoveredQueuedDelete")}
+                        >
+                          <XIcon />
+                          <span>{t("sessionRecoveredQueuedDeleteShort")}</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <QueuedMessageActions
+                      variant="session"
                       text={deferred.content}
-                      label="Copy queued message"
-                      className="deferred-message-action deferred-message-action-copy"
-                      showTextLabel
-                      onClick={(event) => event.stopPropagation()}
+                      canEdit={queuedEditAvailable}
+                      onEdit={
+                        deferred.tempId && onEditDeferred
+                          ? () => onEditDeferred(deferred.tempId as string)
+                          : undefined
+                      }
+                      onSteer={
+                        tailRow.isPatient && deferred.tempId && onSteerDeferred
+                          ? () => onSteerDeferred(deferred.tempId as string)
+                          : undefined
+                      }
+                      steerLabel={steerQueuedLabel}
+                      onCancel={
+                        tailRow.allowsDeferredCancel && onCancelDeferred
+                          ? () => onCancelDeferred(deferred.tempId as string)
+                          : undefined
+                      }
                     />
-                    {tailRow.isPatient &&
-                    !tailRow.isRecovered &&
-                    deferred.tempId &&
-                    onSteerDeferred ? (
-                      <button
-                        type="button"
-                        className="deferred-message-action deferred-message-action-steer"
-                        onClick={() =>
-                          onSteerDeferred(deferred.tempId as string)
-                        }
-                        aria-label={steerQueuedLabel}
-                        title={steerQueuedLabel}
-                      >
-                        <PlayIcon />
-                        <span>{t("sessionSteerNow")}</span>
-                      </button>
-                    ) : null}
-                    {tailRow.isRecovered &&
-                    recoveredQueueId &&
-                    onSteerRecoveredDeferred ? (
-                      <button
-                        type="button"
-                        className="deferred-message-action deferred-message-action-steer"
-                        onClick={() =>
-                          onSteerRecoveredDeferred(recoveredQueueId)
-                        }
-                        aria-label={steerQueuedLabel}
-                        title={steerQueuedLabel}
-                      >
-                        <PlayIcon />
-                        <span>{t("sessionSteerNow")}</span>
-                      </button>
-                    ) : null}
-                    {tailRow.allowsRecoveredResume &&
-                    recoveredQueueId &&
-                    onResumeRecoveredDeferred ? (
-                      <button
-                        type="button"
-                        className="deferred-message-action deferred-message-action-resume"
-                        onClick={() =>
-                          onResumeRecoveredDeferred(recoveredQueueId)
-                        }
-                        aria-label={t("sessionRecoveredQueuedResume")}
-                        title={t("sessionRecoveredQueuedResume")}
-                      >
-                        <PlayIcon />
-                        <span>{t("sessionRecoveredQueuedResumeShort")}</span>
-                      </button>
-                    ) : null}
-                    {tailRow.allowsRecoveredDelete &&
-                    recoveredQueueId &&
-                    onDeleteRecoveredDeferred ? (
-                      <button
-                        type="button"
-                        className="deferred-message-action deferred-message-action-cancel"
-                        onClick={() =>
-                          onDeleteRecoveredDeferred(recoveredQueueId)
-                        }
-                        aria-label={t("sessionRecoveredQueuedDelete")}
-                        title={t("sessionRecoveredQueuedDelete")}
-                      >
-                        <XIcon />
-                        <span>{t("sessionRecoveredQueuedDeleteShort")}</span>
-                      </button>
-                    ) : tailRow.allowsDeferredCancel && onCancelDeferred ? (
-                      <button
-                        type="button"
-                        className="deferred-message-action deferred-message-action-cancel"
-                        onClick={() =>
-                          onCancelDeferred(deferred.tempId as string)
-                        }
-                        aria-label="Cancel queued message"
-                        title="Cancel queued message"
-                      >
-                        <XIcon />
-                        <span>Cancel</span>
-                      </button>
-                    ) : null}
-                  </div>
+                  )}
                 </div>
               </div>
               <MessageAge timestampMs={timestampMs} nowMs={nowMs} />

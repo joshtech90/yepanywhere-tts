@@ -469,6 +469,7 @@ export interface SessionToolbarPresenceClientDefaults {
   nudge?: ToolbarControlPresence;
   sessionStatus?: ToolbarControlPresence;
   projectQueue?: ToolbarControlPresence;
+  projectQueueNewSessionShortcut?: ToolbarControlPresence;
 }
 
 export type BusyComposerDefaultAction = "steer" | "queue";
@@ -483,6 +484,11 @@ export const DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED = true;
 export interface ClientDefaults {
   /** Defaults used by browser clients when local storage has no explicit value. */
   speech?: SpeechClientDefaults;
+  /**
+   * Enables local `!!` shell commands and their history UI. Off when absent:
+   * this YA-specific behavior must be explicitly opted into.
+   */
+  bangCommandsEnabled?: boolean;
   /**
    * Default primary action for busy sessions that can both steer the active turn
    * and queue a later message. Existing session-local overrides still win.

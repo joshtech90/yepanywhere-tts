@@ -49,6 +49,7 @@ import type {
   ProviderRuntimeStatusChangedEvent,
   SessionAbortedEvent,
   SessionCreatedEvent,
+  SessionIdRemappedEvent,
   SessionStatusEvent,
   SessionUpdatedEvent,
   WorkerActivityEvent,
@@ -67,6 +68,7 @@ import {
 } from "./WorkerQueue.js";
 import {
   DEFAULT_IDLE_PREEMPT_THRESHOLD_MS,
+  type ProcessAbortResult,
   type ProcessInfo,
   type ProcessEvent,
   type ProcessOptions,
@@ -77,6 +79,9 @@ import {
 
 /** Maximum number of terminated processes to retain */
 const MAX_TERMINATED_PROCESSES = 50;
+
+/** Maximum terminal provider incidents retained until the YA server restarts. */
+const MAX_TERMINAL_PROVIDER_STATUSES = 256;
 
 /** How long to retain terminated process info (10 minutes) */
 const TERMINATED_RETENTION_MS = 10 * 60 * 1000;
@@ -495,6 +500,10 @@ export interface SupervisorOptions {
 export class Supervisor {
   private processes: Map<string, Process> = new Map();
   private sessionToProcess: Map<string, string> = new Map(); // sessionId -> processId
+  private terminalProviderStatuses: Map<
+    string,
+    Extract<Exclude<ProviderRuntimeStatus, null>, { kind: "terminal" }>
+  > = new Map();
   private sessionActivationInFlight: Map<string, Promise<Process>> = new Map();
   private observedProcessIds: Set<string> = new Set();
   private everOwnedSessions: Set<string> = new Set(); // Sessions we've ever owned (for orphan detection)
@@ -958,6 +967,7 @@ export class Supervisor {
       getProviderActivity,
       getProviderRetention,
       setMaxThinkingTokens,
+      setEffort,
       interrupt,
       supportedModels,
       supportedCommands,
@@ -977,6 +987,9 @@ export class Supervisor {
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
         this.shouldRetainIdleProcess(sessionId),
+      initialProviderRuntimeStatus: resumeSessionId
+        ? this.terminalProviderStatuses.get(resumeSessionId)
+        : null,
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
       getProviderRetentionFn: getProviderRetention,
@@ -985,6 +998,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      setEffortFn: setEffort,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
@@ -1427,6 +1441,7 @@ export class Supervisor {
       getProviderActivity,
       getProviderRetention,
       setMaxThinkingTokens,
+      setEffort,
       interrupt,
       supportedModels,
       supportedCommands,
@@ -1445,6 +1460,9 @@ export class Supervisor {
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
         this.shouldRetainIdleProcess(sessionId),
+      initialProviderRuntimeStatus: resumeSessionId
+        ? this.terminalProviderStatuses.get(resumeSessionId)
+        : null,
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
       getProviderRetentionFn: getProviderRetention,
@@ -1453,6 +1471,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      setEffortFn: setEffort,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
@@ -1555,6 +1574,7 @@ export class Supervisor {
       getProviderActivity,
       getProviderRetention,
       setMaxThinkingTokens,
+      setEffort,
       interrupt,
       steer,
       supportedModels,
@@ -1576,6 +1596,9 @@ export class Supervisor {
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
         this.shouldRetainIdleProcess(sessionId),
+      initialProviderRuntimeStatus: resumeSessionId
+        ? this.terminalProviderStatuses.get(resumeSessionId)
+        : null,
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
       getProviderRetentionFn: getProviderRetention,
@@ -1585,6 +1608,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      setEffortFn: setEffort,
       interruptFn: interrupt,
       steerFn: steer,
       supportedModelsFn: supportedModels,
@@ -1684,6 +1708,7 @@ export class Supervisor {
       getProviderActivity,
       getProviderRetention,
       setMaxThinkingTokens,
+      setEffort,
       interrupt,
       steer,
       supportedModels,
@@ -1705,6 +1730,9 @@ export class Supervisor {
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
         this.shouldRetainIdleProcess(sessionId),
+      initialProviderRuntimeStatus: resumeSessionId
+        ? this.terminalProviderStatuses.get(resumeSessionId)
+        : null,
       probeLivenessFn: probeLiveness,
       getProviderActivityFn: getProviderActivity,
       getProviderRetentionFn: getProviderRetention,
@@ -1714,6 +1742,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      setEffortFn: setEffort,
       interruptFn: interrupt,
       steerFn: steer,
       supportedModelsFn: supportedModels,
@@ -2435,9 +2464,22 @@ export class Supervisor {
       !serviceTierChanged &&
       !thinkingChanged &&
       !effortChanged &&
-      process.supportsSetModel
+      process.supportsSetModel &&
+      (process.getProviderRuntimeStatus()?.kind !== "retrying" ||
+        process.supportsInterrupt)
     ) {
       const changed = await process.setModel(nextModel);
+      return changed ? process : null;
+    }
+
+    if (
+      !modelChanged &&
+      !serviceTierChanged &&
+      !thinkingChanged &&
+      effortChanged &&
+      process.supportsEffortChange
+    ) {
+      const changed = await process.setEffort(nextEffort);
       return changed ? process : null;
     }
 
@@ -2503,12 +2545,47 @@ export class Supervisor {
     return this.processes.get(processId);
   }
 
+  getProviderRuntimeStatusForSession(
+    sessionId: string,
+  ): ProviderRuntimeStatus {
+    return (
+      this.getProcessForSession(sessionId)?.getProviderRuntimeStatus() ??
+      this.terminalProviderStatuses.get(sessionId) ??
+      null
+    );
+  }
+
+  private retainTerminalProviderStatus(
+    sessionId: string,
+    status: Extract<
+      Exclude<ProviderRuntimeStatus, null>,
+      { kind: "terminal" }
+    >,
+  ): void {
+    this.terminalProviderStatuses.delete(sessionId);
+    this.terminalProviderStatuses.set(sessionId, status);
+    while (
+      this.terminalProviderStatuses.size > MAX_TERMINAL_PROVIDER_STATUSES
+    ) {
+      const oldestSessionId = this.terminalProviderStatuses.keys().next().value;
+      if (typeof oldestSessionId !== "string") break;
+      this.terminalProviderStatuses.delete(oldestSessionId);
+    }
+  }
+
+  private clearTerminalProviderStatus(
+    sessionId: string,
+    projectId: UrlProjectId,
+  ): void {
+    if (!this.terminalProviderStatuses.delete(sessionId)) {
+      return;
+    }
+    this.emitProviderRuntimeStatusChange(sessionId, projectId, null);
+  }
+
   /**
-   * Queue a message to an existing session, handling thinking mode changes.
-   * If the thinking mode differs from the process's current setting, this will:
-   * 1. Abort the existing process
-   * 2. Start a new process with the new thinking settings
-   * 3. Queue the message to the new process
+   * Queue a message to an existing session, applying live configuration when
+   * the provider supports it and otherwise restarting with the new settings.
    *
    * @returns The process (possibly new), or an error object
    */
@@ -2589,6 +2666,16 @@ export class Supervisor {
             },
             "Failed to change thinking mode dynamically on queue",
           );
+        }
+      } else if (
+        !serviceTierChanged &&
+        !thinkingChanged &&
+        effortChanged &&
+        process.supportsEffortChange
+      ) {
+        const changed = await process.setEffort(requestedEffort);
+        if (!changed) {
+          throw new Error("Provider did not apply the effort change");
         }
       } else {
         // Effort changed or no dynamic support: restart process
@@ -3145,8 +3232,14 @@ export class Supervisor {
   }
 
   async abortProcess(processId: string): Promise<boolean> {
+    return (await this.abortProcessWithVerification(processId)) !== null;
+  }
+
+  async abortProcessWithVerification(
+    processId: string,
+  ): Promise<ProcessAbortResult | null> {
     const process = this.processes.get(processId);
-    if (!process) return false;
+    if (!process) return null;
 
     const log = getLogger();
     log.info(
@@ -3164,9 +3257,21 @@ export class Supervisor {
     // can set up the grace period before any file changes arrive
     this.emitSessionAborted(process.sessionId, process.projectId);
 
-    await process.abort();
+    const result = await process.abort();
     this.unregisterProcess(process);
-    return true;
+    log.info(
+      {
+        event: "session_abort_verified",
+        sessionId: result.sessionId,
+        processId: result.processId,
+        pid: result.pid,
+        verification: result.verification,
+      },
+      result.pid === undefined
+        ? `Session abort verified: ${result.sessionId}`
+        : `Session abort verified: ${result.sessionId} (PID ${result.pid})`,
+    );
+    return result;
   }
 
   /**
@@ -3449,6 +3554,12 @@ export class Supervisor {
       } else if (event.type === "complete") {
         this.unregisterProcess(process);
       } else if (event.type === "message") {
+        if (event.message.type === "user") {
+          this.clearTerminalProviderStatus(
+            process.sessionId,
+            process.projectId,
+          );
+        }
         this.cacheMissBillingMonitor.observeMessage(process, event.message);
         if (
           isAwaySummaryMessage(event.message) &&
@@ -3495,8 +3606,29 @@ export class Supervisor {
         // Keep both temp and real session ID mappings to support lookups by either ID
         // Clients might still be using the temp ID when the real ID arrives
         // The old temp ID mapping is retained (no delete)
+        const oldIdWasPublished =
+          this.sessionToProcess.get(event.oldSessionId) === process.id;
         this.sessionToProcess.set(event.newSessionId, process.id);
         this.everOwnedSessions.add(event.newSessionId);
+        if (this.eventBus && oldIdWasPublished) {
+          const remapped: SessionIdRemappedEvent = {
+            type: "session-id-remapped",
+            oldSessionId: event.oldSessionId,
+            newSessionId: event.newSessionId,
+            projectId: process.projectId,
+            processId: process.id,
+            provider: process.provider,
+            timestamp: new Date().toISOString(),
+          };
+          this.eventBus.emit(remapped);
+        }
+        const retainedStatus = this.terminalProviderStatuses.get(
+          event.oldSessionId,
+        );
+        if (retainedStatus) {
+          this.terminalProviderStatuses.delete(event.oldSessionId);
+          this.retainTerminalProviderStatus(event.newSessionId, retainedStatus);
+        }
 
         // Persist executor for remote execution resume support
         // This saves which SSH host was used so resume can reconnect to the same remote
@@ -3603,6 +3735,9 @@ export class Supervisor {
           event.reason,
         );
       } else if (event.type === "provider-runtime-status-change") {
+        if (event.status?.kind === "terminal") {
+          this.retainTerminalProviderStatus(process.sessionId, event.status);
+        }
         this.emitProviderRuntimeStatusChange(
           process.sessionId,
           process.projectId,
@@ -3748,6 +3883,11 @@ export class Supervisor {
    * Prunes old entries and caps at MAX_TERMINATED_PROCESSES.
    */
   private addTerminatedProcess(info: ProcessInfo): void {
+    // A YA session has one canonical row. Restarting or reaping another
+    // provider process replaces its older stopped-process snapshot.
+    this.terminatedProcesses = this.terminatedProcesses.filter(
+      (existing) => existing.sessionId !== info.sessionId,
+    );
     this.terminatedProcesses.push(info);
 
     // Cap at max entries
@@ -3766,11 +3906,24 @@ export class Supervisor {
     const now = Date.now();
     const cutoff = now - TERMINATED_RETENTION_MS;
 
-    // Prune old entries
-    this.terminatedProcesses = this.terminatedProcesses.filter((p) => {
-      if (!p.terminatedAt) return false;
-      return new Date(p.terminatedAt).getTime() > cutoff;
-    });
+    const activeSessionIds = new Set(
+      [...this.processes.values()].map((process) => process.sessionId),
+    );
+    const seenSessionIds = new Set<string>();
+    const canonicalStopped: ProcessInfo[] = [];
+
+    // Walk newest-first so an already-populated history also heals to one
+    // stopped row per session. A currently active row always wins.
+    for (let index = this.terminatedProcesses.length - 1; index >= 0; index--) {
+      const process = this.terminatedProcesses[index];
+      if (!process?.terminatedAt) continue;
+      if (new Date(process.terminatedAt).getTime() <= cutoff) continue;
+      if (activeSessionIds.has(process.sessionId)) continue;
+      if (seenSessionIds.has(process.sessionId)) continue;
+      seenSessionIds.add(process.sessionId);
+      canonicalStopped.push(process);
+    }
+    this.terminatedProcesses = canonicalStopped.reverse();
 
     return [...this.terminatedProcesses];
   }

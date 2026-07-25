@@ -125,6 +125,11 @@ interface ProcessCardProps {
   killing?: boolean;
 }
 
+interface KillFeedback {
+  tone: "success" | "error";
+  message: string;
+}
+
 function ProcessCard({
   process,
   basePath = "",
@@ -133,6 +138,7 @@ function ProcessCard({
   killing = false,
 }: ProcessCardProps) {
   const { t } = useI18n();
+  const providerChildren = process.providerChildren ?? [];
   return (
     <Link
       to={`${basePath}/projects/${process.projectId}/sessions/${process.sessionId}`}
@@ -179,6 +185,11 @@ function ProcessCard({
         </div>
         <div className="agent-card-meta">
           <span className="agent-card-project">{process.projectName}</span>
+          {process.pid !== undefined && (
+            <span className="agent-card-pid">
+              {t("agentsPid" as never, { pid: process.pid })}
+            </span>
+          )}
           {!isTerminated && (
             <span className="agent-card-uptime">
               {formatUptime(process.startedAt)}
@@ -224,6 +235,45 @@ function ProcessCard({
           )}
         </div>
       )}
+
+      {providerChildren.length > 0 && (
+        <div
+          className="agent-provider-children"
+          role="list"
+          aria-label={t(
+            (providerChildren.length === 1
+              ? "providerChildrenCountOne"
+              : "providerChildrenCountMany") as never,
+            { count: providerChildren.length },
+          )}
+        >
+          {providerChildren.map((child) => {
+            const childTitle =
+              child.title ||
+              child.agentType ||
+              t("providerChildFallback" as never);
+            return (
+              <div
+                className="agent-provider-child"
+                key={child.id}
+                role="listitem"
+              >
+                <span className="agent-provider-child-branch" aria-hidden>
+                  ↳
+                </span>
+                <span className="agent-provider-child-title">
+                  {childTitle}
+                </span>
+                {child.agentType && child.agentType !== childTitle && (
+                  <span className="agent-provider-child-type">
+                    {child.agentType}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Link>
   );
 }
@@ -239,6 +289,7 @@ export function AgentsPage() {
   const [killingIds, setKillingIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [killFeedback, setKillFeedback] = useState<KillFeedback | null>(null);
 
   // Forcibly abort a live (hung or otherwise) process. This is the manual
   // escape hatch for orphans the automatic stale sweep can't confirm dead
@@ -251,11 +302,43 @@ export function AgentsPage() {
         return;
       }
       setKillingIds((prev) => new Set(prev).add(process.id));
+      setKillFeedback(null);
       try {
-        await api.abortProcess(process.id);
-      } catch {
-        // Ignore: the refetch below reflects the real post-abort state, and a
-        // failed abort (e.g. already gone) needs no separate error surface.
+        // Explicit Kill also persists a YA-owned auto-resume exemption. The
+        // provider transcript remains available for deliberate continuation.
+        const result = await api.abortProcess(process.id, {
+          blockResume: true,
+        });
+        const stopped =
+          result.pid === undefined
+            ? t("agentsKillVerified" as never)
+            : t("agentsKillVerifiedPid" as never, { pid: result.pid });
+        const exemption = result.resumeExemption;
+        if (exemption?.error || exemption?.autoResumeDisabled === false) {
+          setKillFeedback({
+            tone: "error",
+            message: `${stopped} ${t("agentsKillResumeBlockFailed" as never, {
+              message:
+                exemption.error ??
+                t("agentsKillResumeBlockUnknown" as never),
+            })}`,
+          });
+        } else {
+          const resumeBlocked = exemption?.autoResumeDisabled
+            ? ` ${t("agentsKillResumeBlocked" as never)}`
+            : "";
+          setKillFeedback({
+            tone: "success",
+            message: `${stopped}${resumeBlocked}`,
+          });
+        }
+      } catch (error) {
+        setKillFeedback({
+          tone: "error",
+          message: t("agentsKillFailed" as never, {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        });
       } finally {
         await refetch();
         setKillingIds((prev) => {
@@ -288,6 +371,15 @@ export function AgentsPage() {
           {error && (
             <p className="error">
               {t("agentsError" as never, { message: error.message })}
+            </p>
+          )}
+
+          {killFeedback && (
+            <p
+              className={`agents-kill-feedback agents-kill-feedback-${killFeedback.tone}`}
+              role={killFeedback.tone === "error" ? "alert" : "status"}
+            >
+              {killFeedback.message}
             </p>
           )}
 

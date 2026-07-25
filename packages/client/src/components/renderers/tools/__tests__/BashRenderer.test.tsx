@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataContext";
+import { UI_KEYS } from "../../../../lib/storageKeys";
 import { bashRenderer } from "../BashRenderer";
 import type { BashResult } from "../types";
 
@@ -34,8 +35,13 @@ const renderContext = {
 };
 
 describe("BashRenderer", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "themed");
+  });
+
   afterEach(() => {
     cleanup();
+    window.localStorage.removeItem(UI_KEYS.tooltipMode);
   });
 
   it("unwraps exec_command envelopes before rendering ANSI output", () => {
@@ -71,6 +77,32 @@ describe("BashRenderer", () => {
     expect(screen.getAllByRole("button", { name: "Copy output" }).length).toBe(
       2,
     );
+  });
+
+  it("shows a compact count of output lines omitted from a collapsed preview", () => {
+    const output = ["one", "two", "three", "four"].join("\n");
+
+    render(
+      <div>
+        {bashRenderer.renderCollapsedPreview?.(
+          { command: "printf lines" },
+          {
+            stdout: output,
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          } as BashResult,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    const badge = screen.getByText("+2");
+    const copyButton = screen.getByRole("button", { name: "Copy output" });
+    expect(copyButton.nextElementSibling).toBe(badge);
+    expect(badge.getAttribute("data-tooltip")).toBe("...\nthree\nfour");
+    expect(badge.getAttribute("title")).toBeNull();
   });
 
   it("renders ANSI-colored git diff markdown tables in expanded output", () => {

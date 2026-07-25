@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { setStableToolPreviewRenderingPreference } from "../../../hooks/useStableToolPreviewRendering";
 import { I18nProvider } from "../../../i18n";
@@ -31,13 +31,53 @@ function selectElementText(element: Element) {
   selection?.addRange(range);
 }
 
+function setElementBox(
+  element: HTMLElement,
+  {
+    clientHeight = 20,
+    clientWidth,
+    scrollHeight = clientHeight,
+    scrollWidth = clientWidth,
+    top = 0,
+  }: {
+    clientHeight?: number;
+    clientWidth: number;
+    scrollHeight?: number;
+    scrollWidth?: number;
+    top?: number;
+  },
+) {
+  Object.defineProperties(element, {
+    clientWidth: { configurable: true, value: clientWidth },
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollWidth: { configurable: true, value: scrollWidth },
+    scrollHeight: { configurable: true, value: scrollHeight },
+  });
+  vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: top,
+    left: 0,
+    top,
+    right: clientWidth,
+    bottom: top + clientHeight,
+    width: clientWidth,
+    height: clientHeight,
+    toJSON: () => ({}),
+  });
+}
+
 describe("ToolCallRow", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "themed");
+  });
+
   afterEach(() => {
     cleanup();
     window.getSelection()?.removeAllRanges();
     Reflect.deleteProperty(window, "IntersectionObserver");
     setStableToolPreviewRenderingPreference(true);
     window.localStorage.removeItem(UI_KEYS.stableToolPreviewRendering);
+    window.localStorage.removeItem(UI_KEYS.tooltipMode);
   });
 
   it("keeps pending Codex command rows collapsed without output preview cards", () => {
@@ -57,6 +97,330 @@ describe("ToolCallRow", () => {
     expect(screen.getByText("npm run test:e2e:pipeline-v2")).toBeDefined();
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
     expect(container.querySelector(".tool-use-expanded")).toBeNull();
+  });
+
+  it("shows the provider-reported runtime in the Ran label tooltip", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-elapsed"
+        toolName="Bash"
+        toolInput={{ command: "sleep 12" }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+        startTimestampMs={1_000}
+        resultTimestampMs={14_000}
+      />,
+    );
+
+    const label = container.querySelector<HTMLElement>(".tool-name");
+    expect(label).toBeTruthy();
+    fireEvent.pointerEnter(label as HTMLElement);
+    expect(label?.getAttribute("data-tooltip")).toBe("took 12.5s");
+    expect(label?.getAttribute("title")).toBeNull();
+  });
+
+  it("does not attach a command tooltip when the full command is visible", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-cmd-title"
+        toolName="Bash"
+        toolInput={{ command: "sleep 12" }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+        startTimestampMs={1_000}
+        resultTimestampMs={14_000}
+      />,
+    );
+
+    const command = container.querySelector<HTMLElement>(
+      ".tool-summary-command",
+    );
+    const commandText = container.querySelector<HTMLElement>(
+      ".tool-summary-command-text",
+    );
+    expect(command).toBeTruthy();
+    expect(commandText).toBeTruthy();
+    setElementBox(commandText as HTMLElement, { clientWidth: 120 });
+    expect(command?.getAttribute("data-tooltip")).toBeNull();
+    expect(command?.getAttribute("title")).toBeNull();
+    fireEvent.pointerEnter(command as HTMLElement);
+    expect(command?.getAttribute("data-tooltip")).toBeNull();
+    expect(command?.getAttribute("title")).toBeNull();
+  });
+
+  it("shows a full command tooltip when a no-more preview is scroll-clipped", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-cmd-scroll-clipped"
+        toolName="Bash"
+        toolInput={{ command: "sleep 12" }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+      />,
+    );
+
+    const command = container.querySelector<HTMLElement>(
+      ".tool-summary-command",
+    );
+    const commandText = container.querySelector<HTMLElement>(
+      ".tool-summary-command-text",
+    );
+    expect(command).toBeTruthy();
+    expect(commandText).toBeTruthy();
+    setElementBox(commandText as HTMLElement, {
+      clientWidth: 60,
+      scrollWidth: 120,
+    });
+    expect(container.querySelector(".tool-summary-command-more")).toBeNull();
+
+    fireEvent.pointerEnter(command as HTMLElement);
+
+    expect(command?.getAttribute("data-tooltip")).toBe("[12.5s] sleep 12");
+    expect(command?.getAttribute("title")).toBeNull();
+  });
+
+  it("prefixes a truncated command tooltip with the elapsed time", () => {
+    const longCommand = Array.from(
+      { length: 20 },
+      (_, index) => `printf 'command line ${index + 1}'`,
+    ).join("\n");
+    const { container } = render(
+      <ToolCallRow
+        id="tool-cmd-title"
+        toolName="Bash"
+        toolInput={{ command: longCommand }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+        startTimestampMs={1_000}
+        resultTimestampMs={14_000}
+      />,
+    );
+
+    const command = container.querySelector<HTMLElement>(
+      ".tool-summary-command",
+    );
+    expect(command?.getAttribute("data-tooltip")).toBe(longCommand);
+    expect(command?.getAttribute("title")).toBeNull();
+    fireEvent.pointerEnter(command as HTMLElement);
+    expect(command?.getAttribute("data-tooltip")).toBe(
+      `[12.5s] ${longCommand}`,
+    );
+  });
+
+  it("shows the last preview-count output lines in a truncated preview tooltip", () => {
+    const manyLines = Array.from(
+      { length: 57 },
+      (_, index) => `line ${index + 1}`,
+    ).join("\n");
+    const { container } = render(
+      <ToolCallRow
+        id="tool-preview-title"
+        toolName="Bash"
+        toolInput={{ command: "cat big.log" }}
+        toolResult={{
+          content: manyLines,
+          isError: false,
+          structured: {
+            stdout: manyLines,
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+        startTimestampMs={1_000}
+        resultTimestampMs={14_000}
+      />,
+    );
+
+    const preview = container.querySelector<HTMLElement>(
+      ".tool-row-collapsed-preview",
+    );
+    expect(preview).toBeTruthy();
+    fireEvent.pointerEnter(preview as HTMLElement);
+    const title = preview?.getAttribute("data-tooltip") ?? "";
+    expect(preview?.getAttribute("title")).toBeNull();
+    // "[Ns] ..." then the last N output lines.
+    expect(title.startsWith("[12.5s] ...\n")).toBe(true);
+    expect(title.endsWith("\nline 57")).toBe(true);
+    expect(title).not.toContain("line 1\n");
+  });
+
+  it("shows a full output tooltip when an unfaded preview is off-screen", () => {
+    const output = "one short line";
+    const { container } = render(
+      <ToolCallRow
+        id="tool-preview-viewport-clipped"
+        toolName="Bash"
+        toolInput={{ command: "printf output" }}
+        toolResult={{
+          content: output,
+          isError: false,
+          structured: {
+            stdout: output,
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 0.1,
+          },
+        }}
+        status="complete"
+      />,
+    );
+
+    expect(container.querySelector(".bash-preview-fade")).toBeNull();
+    expect(container.querySelector(".bash-preview-more")).toBeNull();
+    const preview = container.querySelector<HTMLElement>(
+      ".tool-row-collapsed-preview",
+    );
+    const renderedOutput = container.querySelector<HTMLElement>(
+      ".bash-preview-output pre",
+    );
+    expect(preview).toBeTruthy();
+    expect(renderedOutput).toBeTruthy();
+    setElementBox(renderedOutput as HTMLElement, {
+      clientWidth: 200,
+      top: window.innerHeight - 10,
+    });
+
+    fireEvent.pointerEnter(preview as HTMLElement);
+
+    expect(preview?.getAttribute("data-tooltip")).toBe(`[0.1s] ${output}`);
+    expect(preview?.getAttribute("title")).toBeNull();
+  });
+
+  it("falls back to the message-time delta tooltip when no runtime is reported", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-elapsed-delta"
+        toolName="Bash"
+        toolInput={{ command: "make" }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+          },
+        }}
+        status="complete"
+        startTimestampMs={1_000}
+        resultTimestampMs={9_000}
+      />,
+    );
+
+    const label = container.querySelector<HTMLElement>(".tool-name");
+    fireEvent.pointerEnter(label as HTMLElement);
+    expect(label?.getAttribute("data-tooltip")).toBe("took ~8s");
+    expect(label?.getAttribute("title")).toBeNull();
+  });
+
+  it("shows live elapsed time for a backgrounded running command", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-elapsed-bg"
+        toolName="Bash"
+        toolInput={{
+          command: "sleep 600",
+          run_in_background: true,
+          _backgroundTaskStatus: "running",
+        }}
+        toolResult={{
+          content: "Command running in background with ID: bxyz123",
+          isError: false,
+        }}
+        status="complete"
+        startTimestampMs={Date.now() - 90_000}
+      />,
+    );
+
+    const label = container.querySelector<HTMLElement>(".tool-name");
+    fireEvent.pointerEnter(label as HTMLElement);
+    expect(label?.getAttribute("data-tooltip")).toMatch(
+      /^running for 1m3[01]s$/,
+    );
+    expect(label?.getAttribute("title")).toBeNull();
+  });
+
+  it("uses only native titles for Ran hints in native mode", () => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    const longCommand = Array.from(
+      { length: 20 },
+      (_, index) => `printf 'command line ${index + 1}'`,
+    ).join("\n");
+    const { container } = render(
+      <ToolCallRow
+        id="tool-native-titles"
+        toolName="Bash"
+        toolInput={{ command: longCommand }}
+        toolResult={{
+          content: "ok",
+          isError: false,
+          structured: {
+            stdout: "ok",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            durationSeconds: 12.5,
+          },
+        }}
+        status="complete"
+      />,
+    );
+
+    const label = container.querySelector<HTMLElement>(".tool-name");
+    fireEvent.pointerEnter(label as HTMLElement);
+    expect(label?.getAttribute("title")).toBe("took 12.5s");
+    expect(label?.getAttribute("data-tooltip")).toBeNull();
+
+    const command = container.querySelector<HTMLElement>(
+      ".tool-summary-command",
+    );
+    expect(command?.getAttribute("title")).toBe(longCommand);
+    expect(command?.getAttribute("data-tooltip")).toBeNull();
   });
 
   it("shows pending pi Bash output previews when live updates attach one", () => {
@@ -317,8 +681,11 @@ describe("ToolCallRow", () => {
 
     expect(screen.getByText("Ran")).toBeDefined();
     expect(screen.getByText("false")).toBeDefined();
-    expect(screen.getByText("(no output)")).toBeDefined();
-    expect(screen.getByText("rc=7")).toBeDefined();
+    const noOutput = screen.getByText("(no output)");
+    const exitCode = screen.getByText("rc=7");
+    const copyButton = screen.getByRole("button", { name: "Copy command" });
+    expect(noOutput.nextElementSibling).toBe(exitCode);
+    expect(exitCode.nextElementSibling).toBe(copyButton);
     expect(container.querySelector(".tool-row-collapsed-preview")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
@@ -397,8 +764,8 @@ describe("ToolCallRow", () => {
     // The hidden-content badge sits on its own line under the Run/Ran
     // label, not inside a nested command button.
     const moreBadge = container.querySelector(".tool-summary-command-more");
-    expect(moreBadge?.textContent).toContain("+1 line");
-    expect(commandText?.textContent).not.toContain("+1 line");
+    expect(moreBadge?.textContent).toContain("+1");
+    expect(commandText?.textContent).not.toContain("+1");
 
     fireEvent.click(commandText as Element);
 
@@ -493,6 +860,69 @@ describe("ToolCallRow", () => {
     );
 
     expect(container.querySelector(".expand-chevron")).not.toBeNull();
+  });
+
+  it("auto-expands a shell row whose output fits the preview budget", () => {
+    // Default output-preview-lines budget is 2; two lines fit.
+    const { container } = render(
+      <ToolCallRow
+        id="tool-pty-short"
+        toolName="WriteStdin"
+        toolInput={{ session_id: 37863, chars: "" }}
+        toolResult={{
+          content:
+            "Script completed\nWall time 27.0 seconds\nOutput:\n[I]: step=2700\n[I]: step=2800\n",
+          isError: false,
+        }}
+        status="complete"
+      />,
+    );
+
+    expect(screen.getByText(/step=2700/)).toBeDefined();
+    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+  });
+
+  it("keeps a single mega-line shell output collapsed (wrapped-line budget)", () => {
+    // One logical line, but far wider than the preview budget once wrapped;
+    // a newline count alone would call this "1 line" and auto-expand it.
+    const megaLine = `{"chunk_id":"b064ba","output":"${"x".repeat(3000)}"}`;
+    const { container } = render(
+      <ToolCallRow
+        id="tool-pty-megaline"
+        toolName="WriteStdin"
+        toolInput={{ session_id: 37863, chars: "" }}
+        toolResult={{
+          content: `Script completed\nWall time 27.0 seconds\nOutput:\n${megaLine}`,
+          isError: false,
+        }}
+        status="complete"
+      />,
+    );
+
+    expect(screen.queryByText(/chunk_id/)).toBeNull();
+    expect(screen.getByText(/1 lines/)).toBeDefined();
+    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+  });
+
+  it("keeps a long shell output collapsed behind its summary", () => {
+    const longOutput = Array.from({ length: 30 }, (_, i) => `line ${i}`).join(
+      "\n",
+    );
+    render(
+      <ToolCallRow
+        id="tool-pty-long"
+        toolName="WriteStdin"
+        toolInput={{ session_id: 37863, chars: "" }}
+        toolResult={{
+          content: `Script completed\nWall time 27.0 seconds\nOutput:\n${longOutput}`,
+          isError: false,
+        }}
+        status="complete"
+      />,
+    );
+
+    expect(screen.queryByText(/line 12/)).toBeNull();
+    expect(screen.getByText(/30 lines/)).toBeDefined();
   });
 
   it("collapses generic expanded tool rows from the left strip", () => {
@@ -885,9 +1315,25 @@ describe("ToolCallRow", () => {
       status: "complete",
       rowWidthPx: 900,
     });
+    // The cap is the preview-lines setting (4 visual lines by default)
+    // times the line height, matching the rendered line-clamp.
     expect(huge).toBe(
       DEFERRED_PREVIEW_HEIGHT.outputRowChromePx +
-        DEFERRED_PREVIEW_HEIGHT.maxOutputPx +
+        4 * DEFERRED_PREVIEW_HEIGHT.outputLineHeightPx +
+        DEFERRED_PREVIEW_HEIGHT.previewBorderPx,
+    );
+
+    const tall = estimateDeferredPreviewHeightPx({
+      toolName: "Bash",
+      toolInput: { command: "cat big.log" },
+      result: { stdout: `${"line\n".repeat(100)}`, stderr: "" },
+      status: "complete",
+      rowWidthPx: 900,
+      previewLineCount: 8,
+    });
+    expect(tall).toBe(
+      DEFERRED_PREVIEW_HEIGHT.outputRowChromePx +
+        8 * DEFERRED_PREVIEW_HEIGHT.outputLineHeightPx +
         DEFERRED_PREVIEW_HEIGHT.previewBorderPx,
     );
   });

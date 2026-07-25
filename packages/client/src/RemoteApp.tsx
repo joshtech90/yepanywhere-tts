@@ -16,7 +16,7 @@
  * Both ConnectionGate and RelayConnectionGate render ConnectedAppContent when connected.
  */
 
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { BottomOverscrollReload } from "./components/BottomOverscrollReload";
 import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
@@ -26,6 +26,10 @@ import { HostOfflineModal } from "./components/HostOfflineModal";
 import { ReloadBanner } from "./components/ReloadBanner";
 import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNotices";
 import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
+import {
+  HostIdentityProvider,
+  useHostIdentity,
+} from "./contexts/HostIdentityContext";
 import { InboxProvider } from "./contexts/InboxContext";
 import {
   RemoteConnectionProvider,
@@ -40,7 +44,6 @@ import {
   getVisibleReloadBanners,
   useReloadNotifications,
 } from "./hooks/useReloadNotifications";
-import { useActivityBusState } from "./hooks/useActivityBusState";
 import { useRemoteActivityBusConnection } from "./hooks/useRemoteActivityBusConnection";
 import { useRemoteBasePath } from "./hooks/useRemoteBasePath";
 import { useVersion } from "./hooks/useVersion";
@@ -59,11 +62,14 @@ interface Props {
  * SecureConnection. Used by both ConnectionGate (direct mode) and
  * RelayConnectionGate (relay mode) once connected.
  */
-export function ConnectedAppContent({ children }: { children: ReactNode }) {
+function ConnectedAppContentInner({ children }: { children: ReactNode }) {
   const location = useLocation();
   useRemoteActivityBusConnection();
   const { currentRelayUsername } = useRemoteConnection();
   const { version: versionInfo } = useVersion();
+  const { icon: hostIdentityIcon } = useHostIdentity();
+
+  useNeedsAttentionBadge(hostIdentityIcon ?? undefined);
 
   const {
     isManualReloadMode,
@@ -124,6 +130,14 @@ export function ConnectedAppContent({ children }: { children: ReactNode }) {
   );
 }
 
+export function ConnectedAppContent({ children }: { children: ReactNode }) {
+  return (
+    <HostIdentityProvider>
+      <ConnectedAppContentInner>{children}</ConnectedAppContentInner>
+    </HostIdentityProvider>
+  );
+}
+
 /**
  * Layout route that redirects away from login pages if already connected.
  * Renders <Outlet /> (login pages) when not connected.
@@ -152,9 +166,11 @@ export function UnauthenticatedGate() {
 /**
  * Layout route for direct-mode app routes. Requires an active connection.
  *
- * - Reconnecting: stay on current page (don't redirect to /login)
+ * - Reconnecting after a successful connection: keep the current page mounted
  * - Auto-resuming: show loading spinner
- * - Not connected + auto-resume error: show HostOfflineModal
+ * - Post-connect network failure: show a dismissible HostOfflineModal over the
+ *   current page so already-loaded state remains usable
+ * - Initial auto-resume failure: show HostOfflineModal without mounting app routes
  * - Not connected: redirect to /login
  * - Connected: render ConnectedAppContent + child routes
  */
@@ -167,13 +183,70 @@ export function ConnectionGate() {
     clearAutoResumeError,
     retryAutoResume,
   } = useRemoteConnection();
-  const { connectionState } = useActivityBusState();
   const location = useLocation();
+  const hasConnectedRef = useRef(false);
+  const [dismissedError, setDismissedError] =
+    useState<typeof autoResumeError>(null);
+  const [loginRequested, setLoginRequested] = useState(false);
   const returnTo = `${location.pathname}${location.search}${location.hash}`;
   const relayCanonicalTarget = getRelayCanonicalRedirectTarget(
     location,
     currentRelayUsername,
   );
+
+  if (connection && !relayCanonicalTarget) {
+    hasConnectedRef.current = true;
+  }
+
+  const goToLogin = () => {
+    clearAutoResumeError();
+    setLoginRequested(true);
+  };
+
+  if (loginRequested) {
+    return (
+      <Navigate
+        to={`/login?returnTo=${encodeURIComponent(returnTo)}`}
+        replace
+      />
+    );
+  }
+
+  if (connection && relayCanonicalTarget) {
+    return <Navigate to={relayCanonicalTarget} replace />;
+  }
+
+  // Once a route has rendered successfully, preserve its component tree through
+  // reconnect and terminal network failures. This keeps in-memory document,
+  // transcript, and scroll state available while the transport is offline.
+  if (
+    hasConnectedRef.current &&
+    (connection || isAutoResuming || autoResumeError)
+  ) {
+    const visibleError =
+      autoResumeError && dismissedError !== autoResumeError
+        ? autoResumeError
+        : null;
+
+    return (
+      <>
+        <ConnectedAppContent>
+          <Outlet />
+        </ConnectedAppContent>
+        {visibleError && (
+          <HostOfflineModal
+            error={visibleError}
+            onDismiss={() => setDismissedError(visibleError)}
+            onRetry={() => {
+              setDismissedError(null);
+              retryAutoResume();
+            }}
+            onGoToLogin={goToLogin}
+          />
+        )}
+      </>
+    );
+  }
 
   // During auto-resume, don't redirect - show loading state
   // This preserves the current URL so we stay on the same page after successful resume
@@ -186,16 +259,6 @@ export function ConnectionGate() {
     );
   }
 
-  if (connection && relayCanonicalTarget) {
-    return <Navigate to={relayCanonicalTarget} replace />;
-  }
-
-  // During reconnection, stay on the current page — don't redirect to /login.
-  // SourceTransportStatus is the source of truth; React connection state may be stale.
-  if (connectionState === "reconnecting") {
-    return <Outlet />;
-  }
-
   // Not connected (and not auto-resuming)
   if (!connection) {
     // If auto-resume failed with a connection error, show the modal
@@ -203,8 +266,9 @@ export function ConnectionGate() {
       return (
         <HostOfflineModal
           error={autoResumeError}
+          onDismiss={clearAutoResumeError}
           onRetry={retryAutoResume}
-          onGoToLogin={clearAutoResumeError}
+          onGoToLogin={goToLogin}
         />
       );
     }
@@ -232,8 +296,6 @@ export function ConnectionGate() {
 function RemoteAppInner({ children }: Props) {
   const location = useLocation();
   const isSessionDetailRoute = /\/sessions\/[^/]+/.test(location.pathname);
-
-  useNeedsAttentionBadge();
 
   return (
     <>

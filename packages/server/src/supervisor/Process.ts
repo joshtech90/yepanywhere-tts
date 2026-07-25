@@ -79,6 +79,7 @@ import {
 import type {
   AgentActivity,
   InputRequest,
+  ProcessAbortResult,
   ProcessEvent,
   ProcessInfo,
   ProcessOptions,
@@ -123,24 +124,87 @@ export interface RecapRequestResult {
 }
 
 const CLAUDE_UNBOUNDED_MAX_RETRIES = 2_147_483_647;
+const PROCESS_ABORT_TIMEOUT_MS = 5_000;
+const PID_EXIT_POLL_INTERVAL_MS = 25;
+const MODEL_SWITCH_RETRY_INTERRUPT_PREAMBLE =
+  "The previous provider request was interrupted because the model changed while the provider was retrying. Continue under the newly selected model.";
+
+function isLocalPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return false;
+    }
+    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function waitForLocalPidExit(
+  pid: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isLocalPidRunning(pid)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return false;
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(PID_EXIT_POLL_INTERVAL_MS, remainingMs)),
+    );
+  }
+  return true;
+}
+
+async function waitUntilAbortDeadline<T>(
+  promise: Promise<T>,
+  deadline: number,
+  timeoutMessage: string,
+): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error(timeoutMessage);
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(timeoutMessage)),
+          remainingMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+/** Whether the user chose durable patient queue intent for this entry. */
+function hasPatientQueueIntent(entry: DeferredQueueEntry): boolean {
+  return entry.message.metadata?.deliveryIntent === "patient";
+}
 
 /**
- * Whether a queued entry should ride the verified-idle "patient" path instead
- * of the plain turn-end deferred path. Patient delivery only differs from
- * deferred on Claude — the only provider that reports background-work retention
- * (session crons, background/live tasks), which is what lets YA wait for
- * genuine completion. On other providers it would add nothing but a brief
- * sleep, so a "patient"-tagged entry is treated as an ordinary deferred one: it
- * promotes at turn end and never engages the patient machinery.
+ * Whether a queued entry should ride the verified-idle patient delivery path
+ * instead of the plain turn-end deferred path. Patient timing only differs
+ * from deferred on Claude — the only provider that reports background-work
+ * retention (session crons, background/live tasks), which is what lets YA wait
+ * for genuine completion. Other providers still preserve patient intent across
+ * restart, but promote it at the ordinary turn-end boundary.
  */
-function isPatientDeferredEntry(
+function usesPatientDeliveryPath(
   entry: DeferredQueueEntry,
   provider: ProviderName,
 ): boolean {
-  return (
-    entry.message.metadata?.deliveryIntent === "patient" &&
-    isClaudeSdkProvider(provider)
-  );
+  return hasPatientQueueIntent(entry) && isClaudeSdkProvider(provider);
 }
 
 /** Quiet milliseconds this patient entry waits for after verified idle. */
@@ -264,8 +328,16 @@ function isClaudeSdkApiRetryMessage(
   );
 }
 
-type ProviderRuntimeRetryStatus = Exclude<ProviderRuntimeStatus, null>;
-type ProviderRuntimeReason = ProviderRuntimeRetryStatus["reason"];
+type ProviderRuntimeStatusValue = Exclude<ProviderRuntimeStatus, null>;
+type ProviderRuntimeRetryStatus = Extract<
+  ProviderRuntimeStatusValue,
+  { kind: "retrying" }
+>;
+type ProviderRuntimeTerminalStatus = Extract<
+  ProviderRuntimeStatusValue,
+  { kind: "terminal" }
+>;
+type ProviderRuntimeReason = ProviderRuntimeStatusValue["reason"];
 
 function readFiniteNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -284,6 +356,29 @@ function readPositiveInteger(value: unknown): number | undefined {
     return undefined;
   }
   return Math.trunc(number);
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readCodexHttpStatus(codexErrorInfo: unknown): number | undefined {
+  if (!codexErrorInfo || typeof codexErrorInfo !== "object") {
+    return undefined;
+  }
+  for (const value of Object.values(
+    codexErrorInfo as Record<string, unknown>,
+  )) {
+    if (value && typeof value === "object") {
+      const status = readPositiveInteger(
+        (value as Record<string, unknown>).httpStatusCode,
+      );
+      if (status !== undefined) {
+        return status;
+      }
+    }
+  }
+  return undefined;
 }
 
 function normalizeProviderRuntimeReason(error: unknown): ProviderRuntimeReason {
@@ -346,6 +441,111 @@ function buildClaudeApiRetryStatus(
     ...(maxRetries !== undefined ? { maxRetries } : {}),
     eventCount: previous?.kind === "retrying" ? previous.eventCount + 1 : 1,
     source: "claude.system.api_retry",
+  };
+}
+
+function normalizeCodexTerminalReason(
+  codexErrorInfo: unknown,
+): ProviderRuntimeReason {
+  switch (codexErrorInfo) {
+    case "serverOverloaded":
+      return "overloaded";
+    case "usageLimitExceeded":
+    case "sessionBudgetExceeded":
+      return "rate_limit";
+    case "internalServerError":
+      return "server_error";
+    default:
+      break;
+  }
+
+  if (codexErrorInfo && typeof codexErrorInfo === "object") {
+    const keys = Object.keys(codexErrorInfo as Record<string, unknown>);
+    if (
+      keys.some((key) =>
+        [
+          "httpConnectionFailed",
+          "responseStreamConnectionFailed",
+          "responseStreamDisconnected",
+        ].includes(key),
+      )
+    ) {
+      return "network";
+    }
+  }
+
+  return "unknown";
+}
+
+function buildCodexRetryStatus(
+  provider: ProviderName,
+  previous: ProviderRuntimeStatus,
+  message: SDKMessage,
+  receivedAt: Date,
+): ProviderRuntimeRetryStatus | null {
+  if (
+    provider !== "codex" ||
+    message.type !== "error" ||
+    message.codexWillRetry !== true
+  ) {
+    return null;
+  }
+
+  const lastSeenAt = receivedAt.toISOString();
+  const httpStatus = readCodexHttpStatus(message.codexErrorInfo);
+  const providerMessage = readNonEmptyString(message.error);
+  const details = readNonEmptyString(message.codexAdditionalDetails);
+  const turnId = readNonEmptyString(message.codexTurnId);
+  const requestId = readNonEmptyString(message.codexRequestId);
+
+  return {
+    kind: "retrying",
+    provider,
+    reason: normalizeCodexTerminalReason(message.codexErrorInfo),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    startedAt: previous?.kind === "retrying" ? previous.startedAt : lastSeenAt,
+    lastSeenAt,
+    eventCount: previous?.kind === "retrying" ? previous.eventCount + 1 : 1,
+    source: "codex.error",
+    ...(providerMessage ? { message: providerMessage } : {}),
+    ...(details ? { details } : {}),
+    ...(turnId ? { turnId } : {}),
+    ...(requestId ? { requestId } : {}),
+  };
+}
+
+function buildCodexTerminalStatus(
+  provider: ProviderName,
+  message: SDKMessage,
+  receivedAt: Date,
+): ProviderRuntimeTerminalStatus | null {
+  if (
+    provider !== "codex" ||
+    message.type !== "error" ||
+    message.codexWillRetry !== false
+  ) {
+    return null;
+  }
+
+  const errorMessage = readNonEmptyString(message.error) ?? "Codex turn failed";
+  const turnId = readNonEmptyString(message.codexTurnId);
+  const requestId = readNonEmptyString(message.codexRequestId);
+  const details = readNonEmptyString(message.codexAdditionalDetails);
+  const isProcessExit = message.codexErrorScope === "app_server_process";
+
+  return {
+    kind: "terminal",
+    provider,
+    reason: isProcessExit
+      ? "server_error"
+      : normalizeCodexTerminalReason(message.codexErrorInfo),
+    message: errorMessage,
+    occurredAt: receivedAt.toISOString(),
+    source: isProcessExit ? "codex.app_server_process" : "codex.error",
+    ...(turnId ? { turnId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(details ? { details } : {}),
+    ...(isProcessExit ? { scope: "provider_process" as const } : {}),
   };
 }
 
@@ -490,11 +690,13 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   /** MessageQueue for real SDK, undefined for mock SDK */
   queue?: MessageQueue;
   /** Abort function from real SDK */
-  abortFn?: () => void;
+  abortFn?: () => void | Promise<void>;
   /** Check if underlying CLI process is still alive (for stale detection) */
   isProcessAlive?: () => boolean;
   /** Return true when an idle process should stay owned for an explicit feature. */
   shouldRetainIdleProcess?: (sessionId: string) => boolean;
+  /** Terminal provider incident retained by Supervisor across process reaping. */
+  initialProviderRuntimeStatus?: ProviderRuntimeStatus;
   /** Actively query provider/session status when passive evidence is stale. */
   probeLivenessFn?: () => Promise<ProviderLivenessProbeResult>;
   /** Passive raw provider/app-server event cadence, when available. */
@@ -507,6 +709,8 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   }) => Promise<PromptCacheRefreshResult>;
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
+  /** Function to change effort without restarting the provider process. */
+  setEffortFn?: (effort?: EffortLevel) => Promise<void>;
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
   interruptFn?: () => Promise<undefined | boolean>;
   /**
@@ -569,7 +773,7 @@ export class Process {
     | SessionQueuePersistenceService
     | undefined;
   private patientQueuePersistenceTail: Promise<void> = Promise.resolve();
-  private abortFn: (() => void) | null;
+  private abortFn: (() => void | Promise<void>) | null;
   private _state: ProcessState = { type: "in-turn" };
   private listeners: Set<Listener> = new Set();
   private liveDeltaSubscriberCount = 0;
@@ -589,6 +793,13 @@ export class Process {
   private previousBucket: SDKMessage[] = [];
   private bucketSwapTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly BUCKET_SWAP_INTERVAL_MS = 15_000;
+
+  /**
+   * User echoes accepted for in-turn steering remain replayable through the
+   * provider turn. A steer can wait behind a long-running tool for longer than
+   * the ordinary replay buckets, while its durable row does not exist yet.
+   */
+  private activeSteerEchoes: Map<string, SDKMessage> = new Map();
 
   /** Accumulated streaming text for catch-up when clients connect mid-stream */
   private _streamingText = "";
@@ -644,11 +855,21 @@ export class Process {
   private _thinking: ThinkingConfig | undefined;
   /** Effort level for response quality */
   private _effort: EffortLevel | undefined;
+  /** Latest effort selected while the current provider turn is still active. */
+  private pendingEffortUpdate: { effort: EffortLevel | undefined } | null =
+    null;
+  /** Serializes provider effort controls so slower writes cannot win late. */
+  private effortApplyTail: Promise<void> = Promise.resolve();
+  /** A failed turn-boundary effort write keeps the process non-idle. */
+  private effortBoundaryBlocked = false;
+  private effortBoundaryTransition: Promise<void> | null = null;
 
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   private setMaxThinkingTokensFn:
     | ((tokens: number | null) => Promise<void>)
     | null;
+  /** Function to change effort without restarting the provider process. */
+  private setEffortFn: ((effort?: EffortLevel) => Promise<void>) | null;
 
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
   private interruptFn: (() => Promise<undefined | boolean>) | null;
@@ -712,6 +933,7 @@ export class Process {
 
   /** OS PID of the spawned agent child process (supports deferred resolution) */
   private _pidResolver: number | (() => number | undefined) | undefined;
+  private _lastKnownPid: number | undefined;
 
   /** Resolved model name from the first assistant message (e.g., "claude-sonnet-4-5-20250929") */
   private _resolvedModel: string | undefined;
@@ -760,6 +982,7 @@ export class Process {
     this._thinking = options.thinking;
     this._effort = options.effort;
     this.setMaxThinkingTokensFn = options.setMaxThinkingTokensFn ?? null;
+    this.setEffortFn = options.setEffortFn ?? null;
     this.interruptFn = options.interruptFn ?? null;
     this.steerFn = options.steerFn ?? null;
     this.supportedModelsFn = options.supportedModelsFn ?? null;
@@ -775,6 +998,7 @@ export class Process {
     this.getProviderActivityFn = options.getProviderActivityFn ?? null;
     this.getProviderRetentionFn = options.getProviderRetentionFn ?? null;
     this.refreshPromptCacheFn = options.refreshPromptCacheFn ?? null;
+    this.providerRuntimeStatus = options.initialProviderRuntimeStatus ?? null;
     this._recapMode =
       options.recapMode ?? (options.recapsEnabled ? "side-session" : "off");
     this._recapAfterSeconds = normalizeRecapAfterSeconds(
@@ -919,10 +1143,14 @@ export class Process {
 
   /** OS PID of the spawned agent child process */
   get pid(): number | undefined {
-    if (typeof this._pidResolver === "function") {
-      return this._pidResolver();
+    const resolved =
+      typeof this._pidResolver === "function"
+        ? this._pidResolver()
+        : this._pidResolver;
+    if (resolved !== undefined) {
+      this._lastKnownPid = resolved;
     }
-    return this._pidResolver;
+    return resolved ?? this._lastKnownPid;
   }
 
   get queueDepth(): number {
@@ -938,14 +1166,12 @@ export class Process {
 
   hasPatientDeferredMessages(): boolean {
     return this.deferredQueue.some((entry) =>
-      isPatientDeferredEntry(entry, this.provider),
+      usesPatientDeliveryPath(entry, this.provider),
     );
   }
 
   hasVolatileDeferredMessages(): boolean {
-    return this.deferredQueue.some(
-      (entry) => !isPatientDeferredEntry(entry, this.provider),
-    );
+    return this.deferredQueue.some((entry) => !hasPatientQueueIntent(entry));
   }
 
   async waitForPatientQueuePersistenceIdle(): Promise<void> {
@@ -1232,7 +1458,36 @@ export class Process {
       return;
     }
 
-    if (isProviderRuntimeProgressMessage(message)) {
+    const codexRetryStatus = buildCodexRetryStatus(
+      this.provider,
+      this.providerRuntimeStatus,
+      message,
+      receivedAt,
+    );
+    if (codexRetryStatus) {
+      this.setProviderRuntimeStatus(codexRetryStatus);
+      return;
+    }
+
+    const terminalStatus = buildCodexTerminalStatus(
+      this.provider,
+      message,
+      receivedAt,
+    );
+    if (terminalStatus) {
+      this.setProviderRuntimeStatus(terminalStatus);
+      return;
+    }
+
+    if (message.type === "user") {
+      this.clearProviderRuntimeStatus();
+      return;
+    }
+
+    if (
+      isProviderRuntimeProgressMessage(message) &&
+      this.providerRuntimeStatus?.kind === "retrying"
+    ) {
       this.clearProviderRuntimeStatus();
     }
   }
@@ -1247,6 +1502,12 @@ export class Process {
 
   private clearProviderRuntimeStatus(): void {
     this.setProviderRuntimeStatus(null);
+  }
+
+  private clearRetryingProviderRuntimeStatus(): void {
+    if (this.providerRuntimeStatus?.kind === "retrying") {
+      this.clearProviderRuntimeStatus();
+    }
   }
 
   private toLivenessState(): LivenessProcessState {
@@ -1331,10 +1592,12 @@ export class Process {
   }
 
   /**
-   * Effort level for this process.
+   * Selected effort for subsequent responses. While a provider turn is active,
+   * this reflects the queued next-turn selection before the provider control
+   * request is applied at the turn boundary.
    */
   get effort(): EffortLevel | undefined {
-    return this._effort;
+    return this.pendingEffortUpdate?.effort ?? this._effort;
   }
 
   /**
@@ -1351,6 +1614,11 @@ export class Process {
    */
   get supportsThinkingModeChange(): boolean {
     return this.setMaxThinkingTokensFn !== null;
+  }
+
+  /** Whether this process can change effort without being restarted. */
+  get supportsEffortChange(): boolean {
+    return this.setEffortFn !== null;
   }
 
   /**
@@ -1456,6 +1724,113 @@ export class Process {
     // SDK uses null to disable, we use undefined for consistency with our types
     await this.setMaxThinkingTokensFn(tokens ?? null);
     return true;
+  }
+
+  /**
+   * Select a new effort without interrupting provider work. An idle process can
+   * apply it immediately; an active or waiting process holds the latest choice
+   * until the provider reports the turn boundary.
+   */
+  async setEffort(effort?: EffortLevel): Promise<boolean> {
+    if (!this.setEffortFn) {
+      return false;
+    }
+
+    this.pendingEffortUpdate = { effort };
+    if (
+      (this._state.type === "in-turn" ||
+        this._state.type === "waiting-input") &&
+      !this.effortBoundaryBlocked
+    ) {
+      getLogger().info(
+        {
+          event: "effort_change_queued",
+          sessionId: this._sessionId,
+          processId: this.id,
+          oldEffort: this._effort,
+          newEffort: effort,
+        },
+        `Queued effort change: ${this._effort ?? "default"} → ${effort ?? "default"}`,
+      );
+      return true;
+    }
+
+    if (this.effortBoundaryBlocked) {
+      await this.completeEffortBoundaryTransition();
+    } else {
+      await this.enqueuePendingEffortApplication();
+    }
+    return true;
+  }
+
+  private async applyEffort(effort?: EffortLevel): Promise<void> {
+    if (!this.setEffortFn) {
+      throw new Error("Provider does not support dynamic effort changes");
+    }
+
+    getLogger().info(
+      {
+        event: "effort_change",
+        sessionId: this._sessionId,
+        processId: this.id,
+        oldEffort: this._effort,
+        newEffort: effort,
+      },
+      `Changing effort: ${this._effort ?? "default"} → ${effort ?? "default"}`,
+    );
+    await this.setEffortFn(effort);
+    this._effort = effort;
+  }
+
+  private async applyPendingEffort(): Promise<void> {
+    while (this.pendingEffortUpdate) {
+      const pending = this.pendingEffortUpdate;
+      try {
+        await this.applyEffort(pending.effort);
+      } catch (error) {
+        if (this.pendingEffortUpdate !== pending) {
+          continue;
+        }
+        throw new Error("Failed to apply queued effort change", {
+          cause: error,
+        });
+      }
+      if (this.pendingEffortUpdate === pending) {
+        this.pendingEffortUpdate = null;
+      }
+    }
+  }
+
+  private enqueuePendingEffortApplication(): Promise<void> {
+    const application = this.effortApplyTail.then(() =>
+      this.applyPendingEffort(),
+    );
+    this.effortApplyTail = application.catch(() => {});
+    return application;
+  }
+
+  private completeEffortBoundaryTransition(): Promise<void> {
+    if (this.effortBoundaryTransition) {
+      return this.effortBoundaryTransition;
+    }
+    const transition = this.enqueuePendingEffortApplication().then(() => {
+      this.effortBoundaryBlocked = false;
+      this.finishTransitionToIdle();
+    });
+    this.effortBoundaryTransition = transition;
+    void transition.then(
+      () => {
+        if (this.effortBoundaryTransition === transition) {
+          this.effortBoundaryTransition = null;
+        }
+      },
+      () => {
+        if (this.effortBoundaryTransition === transition) {
+          this.effortBoundaryTransition = null;
+        }
+      },
+    );
+    return transition;
   }
 
   /**
@@ -1566,6 +1941,13 @@ export class Process {
       return false;
     }
 
+    const interruptsRetryingTurn =
+      this._state.type === "in-turn" &&
+      this.providerRuntimeStatus?.kind === "retrying";
+    if (interruptsRetryingTurn && !this.interruptFn) {
+      return false;
+    }
+
     const log = getLogger();
     log.info(
       {
@@ -1579,6 +1961,26 @@ export class Process {
     );
 
     await this.setModelFn(model);
+    if (
+      interruptsRetryingTurn &&
+      this._state.type === "in-turn" &&
+      this.providerRuntimeStatus?.kind === "retrying"
+    ) {
+      const interrupted = await this.interrupt({
+        preamble: MODEL_SWITCH_RETRY_INTERRUPT_PREAMBLE,
+      });
+      if (
+        !interrupted &&
+        this._state.type === "in-turn" &&
+        this.providerRuntimeStatus?.kind === "retrying"
+      ) {
+        throw new Error(
+          "Provider retry could not be interrupted after changing models",
+        );
+      }
+      this.clearRetryingProviderRuntimeStatus();
+    }
+
     // Update resolved model so subsequent API responses reflect the switch
     if (model) {
       this._resolvedModel = model;
@@ -1650,7 +2052,7 @@ export class Process {
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.iteratorDone = true;
-    this.clearProviderRuntimeStatus();
+    this.clearRetryingProviderRuntimeStatus();
 
     this.resolvePendingToolApprovals({
       message: `Process terminated: ${reason}`,
@@ -1746,11 +2148,27 @@ export class Process {
   }
 
   /**
-   * Get recent message history (15-30 seconds) for SSE replay.
-   * Returns messages from both buckets for late-joining clients.
+   * Get recent message history for SSE replay.
+   *
+   * Ordinary messages remain available for 15-30 seconds. In-turn steer
+   * echoes remain available through the provider turn so a reconnect cannot
+   * lose an accepted user message before its durable row exists.
    */
   getMessageHistory(): SDKMessage[] {
-    return [...this.previousBucket, ...this.currentBucket];
+    const buffered = [...this.previousBucket, ...this.currentBucket];
+    if (this.activeSteerEchoes.size === 0) {
+      return buffered;
+    }
+
+    const bufferedUuids = new Set(
+      buffered
+        .map((message) => message.uuid)
+        .filter((uuid): uuid is string => typeof uuid === "string"),
+    );
+    const expiredSteerEchoes = [...this.activeSteerEchoes.entries()]
+      .filter(([uuid]) => !bufferedUuids.has(uuid))
+      .map(([, message]) => message);
+    return [...expiredSteerEchoes, ...buffered];
   }
 
   /**
@@ -2393,6 +2811,9 @@ export class Process {
         this.steerFn &&
         options?.allowSteer !== false
       ) {
+        if (!hidden && shouldEmitMessage(sdkMessage)) {
+          this.activeSteerEchoes.set(uuid, sdkMessage);
+        }
         const steerMessage: UserMessage = {
           ...messageWithUuid,
           // Mirror MessageQueue's attachment expansion for steer payloads.
@@ -2482,10 +2903,7 @@ export class Process {
   }
 
   private persistPatientDeferredEntry(entry: DeferredQueueEntry): void {
-    if (
-      !this.sessionQueuePersistenceService ||
-      !isPatientDeferredEntry(entry, this.provider)
-    ) {
+    if (!this.sessionQueuePersistenceService || !hasPatientQueueIntent(entry)) {
       return;
     }
 
@@ -2505,10 +2923,7 @@ export class Process {
     status: PersistedSessionQueuedMessage["status"],
     updatedAt = entry.timestamp,
   ): PersistedSessionQueuedMessage | null {
-    if (
-      !this.sessionQueuePersistenceService ||
-      !isPatientDeferredEntry(entry, this.provider)
-    ) {
+    if (!this.sessionQueuePersistenceService || !hasPatientQueueIntent(entry)) {
       return null;
     }
 
@@ -2548,7 +2963,7 @@ export class Process {
       return;
     }
     const ids = entries
-      .filter((entry) => isPatientDeferredEntry(entry, this.provider))
+      .filter(hasPatientQueueIntent)
       .map((entry) => entry.persistedQueueId)
       .filter((id): id is string => Boolean(id));
     if (ids.length === 0) {
@@ -2570,9 +2985,7 @@ export class Process {
       return 0;
     }
 
-    const entries = this.deferredQueue.filter((entry) =>
-      isPatientDeferredEntry(entry, this.provider),
-    );
+    const entries = this.deferredQueue.filter(hasPatientQueueIntent);
     if (entries.length === 0) {
       return 0;
     }
@@ -2652,10 +3065,10 @@ export class Process {
     const canPromoteIfReady = !!(
       options?.promoteIfReady &&
       this.messageQueue &&
-      // Only a "real" patient entry (Claude) waits for the verified-idle path;
-      // elsewhere a patient-tagged message is an ordinary deferred one and
+      // Only Claude waits for the verified-idle patient delivery path;
+      // elsewhere durable patient intent uses ordinary deferred timing and
       // promotes immediately like any other deferred turn.
-      !isPatientDeferredEntry(
+      !usesPatientDeliveryPath(
         { message, timestamp: new Date().toISOString() },
         this.provider,
       ) &&
@@ -2775,6 +3188,25 @@ export class Process {
     this.previousBucket = this.previousBucket.filter(
       (message) => !this.sdkMessageMatchesTempId(message, tempId),
     );
+    for (const [uuid, message] of this.activeSteerEchoes) {
+      if (this.sdkMessageMatchesTempId(message, tempId)) {
+        this.activeSteerEchoes.delete(uuid);
+      }
+    }
+  }
+
+  private releaseActiveSteerEchoes(): void {
+    const bufferedUuids = new Set(
+      [...this.previousBucket, ...this.currentBucket]
+        .map((message) => message.uuid)
+        .filter((uuid): uuid is string => typeof uuid === "string"),
+    );
+    for (const [uuid, message] of this.activeSteerEchoes) {
+      if (!bufferedUuids.has(uuid)) {
+        this.currentBucket.push(message);
+      }
+    }
+    this.activeSteerEchoes.clear();
   }
 
   /**
@@ -3293,26 +3725,93 @@ export class Process {
   terminate(reason: string): void {
     // Kill the underlying CLI process first (if available), so it doesn't
     // continue running as an orphan after we unregister from the Supervisor.
-    if (this.abortFn) {
-      this.abortFn();
-    }
+    this.requestProviderAbortWithoutWaiting(reason);
     this.markTerminated(reason);
   }
 
-  async abort(): Promise<void> {
+  private async requestProviderAbort(): Promise<void> {
+    await this.abortFn?.();
+  }
+
+  private requestProviderAbortWithoutWaiting(reason: string): void {
+    void this.requestProviderAbort().catch((error) => {
+      getLogger().error(
+        {
+          event: "provider_abort_failed",
+          sessionId: this._sessionId,
+          processId: this.id,
+          projectId: this.projectId,
+          reason,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        `Provider abort failed: ${this._sessionId}`,
+      );
+    });
+  }
+
+  async abort(): Promise<ProcessAbortResult> {
     this.clearIdleTimer();
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
-    this.clearProviderRuntimeStatus();
+    this.clearRetryingProviderRuntimeStatus();
+    const pid = this.pid;
+    const deadline = Date.now() + PROCESS_ABORT_TIMEOUT_MS;
+    const providerAbortOutcome = this.requestProviderAbort().then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
 
-    // Call the SDK's abort function if available
-    if (this.abortFn) {
-      this.abortFn();
+    let verification: ProcessAbortResult["verification"] | undefined;
+    if (pid !== undefined && this.executor === undefined) {
+      const remainingMs = Math.max(0, deadline - Date.now());
+      if (!(await waitForLocalPidExit(pid, remainingMs))) {
+        throw new Error(`Provider PID ${pid} is still running after abort`);
+      }
+      // A provider may own descendants in the same process group after its
+      // leader exits. When it exposes stronger liveness, let its shutdown
+      // promise finish and require that group-level check to agree.
+      const providerAliveAfterPidExit = this._isProcessAlive?.();
+      if (
+        providerAliveAfterPidExit !== undefined &&
+        providerAliveAfterPidExit
+      ) {
+        const abortOutcome = await waitUntilAbortDeadline(
+          providerAbortOutcome,
+          deadline,
+          `Timed out waiting for provider process group ${pid} to stop`,
+        );
+        if (!abortOutcome.ok) throw abortOutcome.error;
+        if (this._isProcessAlive?.() !== false) {
+          throw new Error(
+            `Provider process group for PID ${pid} is still running after abort`,
+          );
+        }
+      }
+      verification = "pid";
+    } else {
+      const abortOutcome = await waitUntilAbortDeadline(
+        providerAbortOutcome,
+        deadline,
+        "Timed out waiting for provider shutdown",
+      );
+      if (!abortOutcome.ok) throw abortOutcome.error;
     }
 
-    // Wait for CLI process to fully exit (with timeout to avoid hanging)
-    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000));
-    await Promise.race([this._exitPromise, timeout]);
+    if (verification === undefined && this._isProcessAlive) {
+      if (this.isProcessAlive !== false) {
+        throw new Error(
+          "Provider still reports its process as running after abort",
+        );
+      }
+      verification = "provider";
+    } else if (verification === undefined) {
+      await waitUntilAbortDeadline(
+        this._exitPromise,
+        deadline,
+        "Timed out waiting for provider iterator to stop",
+      );
+      verification = "iterator";
+    }
 
     // Signal completion to subscribers (skip if already terminated —
     // markTerminated() already emitted "complete")
@@ -3320,6 +3819,14 @@ export class Process {
       this.emit({ type: "complete" });
     }
     this.listeners.clear();
+
+    return {
+      processId: this.id,
+      sessionId: this._sessionId,
+      ...(pid !== undefined ? { pid } : {}),
+      verifiedStopped: true,
+      verification,
+    };
   }
 
   private async processMessages(): Promise<void> {
@@ -3331,7 +3838,7 @@ export class Process {
           this.iteratorDone = true;
           // Don't transition to idle if we're waiting for input
           if (this._state.type !== "waiting-input") {
-            this.transitionToIdle();
+            this.transitionToIdle({ applyPendingEffort: false });
           }
           break;
         }
@@ -3435,7 +3942,9 @@ export class Process {
         }
 
         if (isClaudeSdkApiErrorMessage(this.provider, message)) {
-          this.abortFn?.();
+          this.requestProviderAbortWithoutWaiting(
+            "Claude SDK API error; restart required",
+          );
           this.markTerminated(
             "Claude SDK API error; restart required",
             new Error(describeClaudeSdkApiError(message)),
@@ -3446,7 +3955,11 @@ export class Process {
         // Handle special message types
         const claudeSessionState = getClaudeSessionStateChange(message);
         if (claudeSessionState) {
-          this.handleClaudeSessionStateChanged(claudeSessionState);
+          const effortUpdate =
+            this.handleClaudeSessionStateChanged(claudeSessionState);
+          if (effortUpdate) {
+            await effortUpdate;
+          }
         } else if (
           message.type === "system" &&
           message.subtype === "input_request"
@@ -3482,7 +3995,10 @@ export class Process {
               }
             }
           }
-          this.transitionToIdle();
+          const effortUpdate = this.transitionToIdle();
+          if (effortUpdate) {
+            await effortUpdate;
+          }
         }
         // Note: deferred messages are intentionally NOT promoted at completed
         // tool-result boundaries. A queued (`deferred`) item delivers at the
@@ -3513,7 +4029,7 @@ export class Process {
         `Process error: ${this._sessionId} - ${err.message}`,
       );
 
-      this.clearProviderRuntimeStatus();
+      this.clearRetryingProviderRuntimeStatus();
       this.emit({ type: "error", error: err });
 
       // Detect process termination errors - set flag synchronously BEFORE markTerminated
@@ -3525,8 +4041,11 @@ export class Process {
       }
 
       // Don't transition to idle if we're waiting for input
-      if (this._state.type !== "waiting-input") {
-        this.transitionToIdle();
+      if (this._state.type !== "waiting-input" && !this.effortBoundaryBlocked) {
+        const effortUpdate = this.transitionToIdle();
+        if (effortUpdate) {
+          await effortUpdate;
+        }
       }
     } finally {
       // Resolve exit promise on both normal completion and non-terminating errors
@@ -3575,11 +4094,13 @@ export class Process {
     this.setState({ type: "waiting-input", request });
   }
 
-  private handleClaudeSessionStateChanged(state: ClaudeSessionState): void {
+  private handleClaudeSessionStateChanged(
+    state: ClaudeSessionState,
+  ): Promise<void> | void {
     switch (state) {
       case "idle":
         if (this._state.type !== "waiting-input") {
-          this.transitionToIdle();
+          return this.transitionToIdle();
         }
         break;
 
@@ -3608,10 +4129,51 @@ export class Process {
     }
   }
 
-  private transitionToIdle(): void {
+  private transitionToIdle(options?: {
+    applyPendingEffort?: boolean;
+  }): Promise<void> | void {
     this.clearIdleTimer();
-    this.clearProviderRuntimeStatus();
+    this.clearRetryingProviderRuntimeStatus();
 
+    // A provider turn boundary ends the special steering-retention window.
+    // Move any aged-out echoes back into the ordinary replay window to cover
+    // the short gap before the provider's durable transcript becomes visible.
+    this.releaseActiveSteerEchoes();
+
+    if (options?.applyPendingEffort !== false && this.pendingEffortUpdate) {
+      this.effortBoundaryBlocked = true;
+      return this.completeEffortBoundaryTransition().catch((error) => {
+        const requestedEffort = this.pendingEffortUpdate?.effort;
+        const configurationError = new Error(
+          "Failed to apply effort; queued work remains blocked until retry",
+          { cause: error },
+        );
+        getLogger().error(
+          {
+            event: "effort_change_boundary_failed",
+            sessionId: this._sessionId,
+            processId: this.id,
+            projectId: this.projectId,
+            requestedEffort,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          },
+          "Failed to apply effort before queued work",
+        );
+        this.emit({
+          type: "configuration-error",
+          setting: "effort",
+          requestedValue: requestedEffort,
+          error: configurationError,
+        });
+      });
+    }
+
+    this.effortBoundaryBlocked = false;
+    this.finishTransitionToIdle();
+  }
+
+  private finishTransitionToIdle(): void {
     // Promote deferred messages as the same stitched user turn the provider
     // receives, so the live echo and later transcript catch-up agree.
     if (this.promoteEligibleDeferredAfterTurn()) {
@@ -3737,7 +4299,7 @@ export class Process {
     }
 
     const eligible = this.deferredQueue.filter(
-      (entry) => !isPatientDeferredEntry(entry, this.provider),
+      (entry) => !usesPatientDeliveryPath(entry, this.provider),
     );
     if (eligible.length === 0) {
       return false;
@@ -3766,6 +4328,7 @@ export class Process {
     this.deferredQueue = this.deferredQueue.filter(
       (entry) => !promotedEntries.has(entry),
     );
+    this.deletePersistedPatientDeferredEntries(group, "promoted");
     this.emitDeferredQueueChange(
       "promoted",
       group.length === 1 ? group[0]!.message.tempId : undefined,
@@ -3799,7 +4362,7 @@ export class Process {
     }
 
     const patientEntries = this.deferredQueue.filter((entry) =>
-      isPatientDeferredEntry(entry, this.provider),
+      usesPatientDeliveryPath(entry, this.provider),
     );
     if (patientEntries.length === 0) {
       return { promoted: false, nextPatienceMsRemaining: null };
@@ -4058,13 +4621,11 @@ export class Process {
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.iteratorDone = true;
-    this.clearProviderRuntimeStatus();
+    this.clearRetryingProviderRuntimeStatus();
 
     this.emit({ type: "idle-reap" });
 
-    if (this.abortFn) {
-      this.abortFn();
-    }
+    this.requestProviderAbortWithoutWaiting("idle reap");
 
     this.emit({ type: "complete" });
     this.listeners.clear();

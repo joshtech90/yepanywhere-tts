@@ -11,6 +11,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "Bash",
   exec_command: "Bash",
   write_stdin: "WriteStdin",
+  wait: "WriteStdin", // detached code-mode cell poll; same shell presentation
   update_plan: "UpdatePlan",
   apply_patch: "Edit",
   web_search_call: "WebSearch",
@@ -151,8 +152,21 @@ class ToolRendererRegistry {
     return null;
   }
 
-  getDisplayName(toolName: string, status?: ToolCallItem["status"]): string {
+  getDisplayName(
+    toolName: string,
+    status?: ToolCallItem["status"],
+    input?: unknown,
+  ): string {
     const renderer = this.get(toolName);
+    if (input !== undefined && renderer.displayNameForCall) {
+      const dynamicName = renderer.displayNameForCall(
+        input,
+        status ?? "complete",
+      );
+      if (dynamicName) {
+        return dynamicName;
+      }
+    }
     if (status === "pending" && renderer.pendingDisplayName) {
       return renderer.pendingDisplayName;
     }
@@ -203,6 +217,7 @@ import { todoWriteRenderer } from "./TodoWriteRenderer";
 import { updatePlanRenderer } from "./UpdatePlanRenderer";
 import { viewImageRenderer } from "./ViewImageRenderer";
 import { webFetchRenderer } from "./WebFetchRenderer";
+import { webRenderer } from "./WebRenderer";
 import { webSearchRenderer } from "./WebSearchRenderer";
 import { writeRenderer } from "./WriteRenderer";
 import { writeStdinRenderer } from "./WriteStdinRenderer";
@@ -222,6 +237,7 @@ toolRegistry.register(taskUpdateRenderer);
 toolRegistry.register(taskRenderer);
 toolRegistry.register(webSearchRenderer);
 toolRegistry.register(webFetchRenderer);
+toolRegistry.register(webRenderer);
 toolRegistry.register(askUserQuestionRenderer);
 toolRegistry.register(exitPlanModeRenderer);
 toolRegistry.register(updatePlanRenderer);

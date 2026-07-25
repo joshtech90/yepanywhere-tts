@@ -2,6 +2,7 @@ import {
   getMessageTimestampMs,
   hasEquivalentJsonlMessage,
   reconcileClaudeQueueOperationEchoes,
+  reconcileCodexSteerEchoes,
   reconcileLinearMessages,
 } from "../linearMessageDedup";
 import { isUnconfirmedSelfSend } from "../deliveryState";
@@ -22,6 +23,7 @@ import type {
   SessionDetailAction,
   SessionDetailState,
 } from "./types";
+import { trimSessionDetailLoadedWindow } from "./trimLoadedWindow";
 
 export function createInitialSessionDetailState(): SessionDetailState {
   return {
@@ -32,6 +34,7 @@ export function createInitialSessionDetailState(): SessionDetailState {
     toolUseToAgentEntries: [],
     maxPersistedTimestampMs: Number.NEGATIVE_INFINITY,
     deferredMessages: [],
+    activeWindowTrimRevision: 0,
   };
 }
 
@@ -178,9 +181,13 @@ function maybeReconcileApprox(
   const approx = usesApproxMessageDedup(provider)
     ? reconcileLinearMessages(providerReconciled, approxDedupOptions(provider))
     : providerReconciled;
+  const steerReconciled =
+    provider === "codex" || provider === "codex-oss"
+      ? reconcileCodexSteerEchoes(approx)
+      : approx;
   return usesQueueOperationEchoDedup(provider)
-    ? reconcileClaudeQueueOperationEchoes(approx)
-    : approx;
+    ? reconcileClaudeQueueOperationEchoes(steerReconciled)
+    : steerReconciled;
 }
 
 function maxOptionalNumber(
@@ -720,6 +727,9 @@ export function reduceSessionDetailState(
         ),
       };
     }
+
+    case "trimLoadedWindow":
+      return trimSessionDetailLoadedWindow(state, action);
 
     case "prependOlderMessages": {
       const taggedMessages = tagJsonlMessages(action.messages);

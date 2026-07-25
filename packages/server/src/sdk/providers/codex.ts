@@ -7,7 +7,6 @@
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { promisify } from "node:util";
 import {
   CODEX_TOOL_CORRELATION_FIELD,
   createCodexToolCorrelation,
@@ -30,7 +29,7 @@ import {
   parseCodexToolArguments,
 } from "../../codex/normalization.js";
 import { getLogger } from "../../logging/logger.js";
-import { findCodexCliPath } from "../cli-detection.js";
+import { findCodexCliPath, getCodexCliVersion } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import type {
@@ -120,7 +119,6 @@ import type {
 } from "./types.js";
 
 const log = getLogger().child({ component: "codex-provider" });
-const execFileAsync = promisify(execFile);
 const CODEX_DESKTOP_BROWSER_SKILL_NAME =
   "browser:control-in-app-browser";
 
@@ -178,6 +176,8 @@ const MODEL_LIST_TIMEOUT_MS = 8000;
 const APP_SERVER_INIT_REQUEST_ID = 1;
 const APP_SERVER_MODEL_LIST_REQUEST_ID = 2;
 const APP_SERVER_SHUTDOWN_GRACE_MS = 1500;
+const APP_SERVER_FORCE_KILL_WAIT_MS = 1000;
+const APP_SERVER_EXIT_POLL_MS = 25;
 const CODEX_FAILURE_TRACE_LIMIT = 12;
 const CODEX_FAILURE_PREVIEW_CHARS = 240;
 const CODEX_THINKING_OFF_MIN_REASONING_EFFORT_PREFIXES = [
@@ -260,58 +260,91 @@ interface CodexTurnRuntimeState {
   backgroundToolCallIds: Set<string>;
 }
 
+function isProcessTargetRunning(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return false;
+    }
+    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function waitForProcessTargetExit(
+  target: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessTargetRunning(target)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return false;
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(APP_SERVER_EXIT_POLL_MS, remainingMs)),
+    );
+  }
+  return true;
+}
+
 async function terminateChildProcess(
   child: ChildProcess | null | undefined,
   graceMs = APP_SERVER_SHUTDOWN_GRACE_MS,
 ): Promise<void> {
-  if (!child?.pid || child.killed || child.exitCode !== null) {
+  if (!child?.pid) {
+    return;
+  }
+  const pid = child.pid;
+  const killTarget = process.platform === "win32" ? pid : -pid;
+  if (!isProcessTargetRunning(killTarget)) {
     return;
   }
 
-  const exited = new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-  });
-
   if (process.platform === "win32") {
     const taskkill = new Promise<void>((resolve) => {
-      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () =>
-        resolve(),
-      );
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => resolve());
     });
     await Promise.race([
       taskkill,
       new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
     ]);
-    await Promise.race([
-      exited,
-      new Promise<void>((resolve) => setTimeout(resolve, 100)),
-    ]);
+    if (!(await waitForProcessTargetExit(pid, APP_SERVER_FORCE_KILL_WAIT_MS))) {
+      throw new Error(`Failed to terminate Codex app-server PID ${pid}`);
+    }
     return;
   }
-
-  const killTarget = child.pid > 0 ? -child.pid : child.pid;
 
   try {
     process.kill(killTarget, "SIGTERM");
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return;
+    }
+    throw error;
+  }
+
+  if (await waitForProcessTargetExit(killTarget, graceMs)) {
     return;
   }
 
-  const timer = setTimeout(() => {
-    if (child.exitCode !== null || child.killed) {
+  try {
+    process.kill(killTarget, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
       return;
     }
-    try {
-      process.kill(killTarget, "SIGKILL");
-    } catch {
-      // Ignore escalation failures during shutdown.
-    }
-  }, graceMs);
+    throw error;
+  }
 
-  try {
-    await exited;
-  } finally {
-    clearTimeout(timer);
+  if (
+    !(await waitForProcessTargetExit(killTarget, APP_SERVER_FORCE_KILL_WAIT_MS))
+  ) {
+    throw new Error(`Failed to terminate Codex app-server PID ${pid}`);
   }
 }
 
@@ -517,7 +550,9 @@ class CodexAppServerClient {
 
   isAlive(): boolean {
     const child = this.process;
-    return Boolean(child?.pid && child.exitCode === null && !child.killed);
+    if (!child?.pid) return false;
+    const target = process.platform === "win32" ? child.pid : -child.pid;
+    return isProcessTargetRunning(target);
   }
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<
@@ -541,6 +576,10 @@ class CodexAppServerClient {
       notification: JsonRpcNotification,
     ) => boolean,
   ) {}
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
 
   setServerRequestHandler(handler: AppServerRequestHandler): void {
     this.onServerRequest = handler;
@@ -788,6 +827,7 @@ class CodexAppServerClient {
       params: {
         error: { message: error.message },
         willRetry: false,
+        codexProcessExit: true,
       },
     });
     this.notifications.close(error);
@@ -966,7 +1006,12 @@ export class CodexProvider implements AgentProvider {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutHandle);
-        void terminateChildProcess(child);
+        void terminateChildProcess(child).catch((error) => {
+          log.warn(
+            { error, pid: child.pid },
+            "Failed to terminate Codex model-list app-server",
+          );
+        });
         handler();
       };
 
@@ -1095,11 +1140,8 @@ export class CodexProvider implements AgentProvider {
   private async getInstalledCodexCliVersion(): Promise<string | null> {
     try {
       const codexCommand = await this.resolveCodexCommand();
-      const { stdout } = await execFileAsync(codexCommand, ["--version"], {
-        encoding: "utf-8",
-        timeout: 3000,
-      });
-      return normalizeSemver(stdout);
+      const version = await getCodexCliVersion(codexCommand);
+      return normalizeSemver(version);
     } catch {
       return null;
     }
@@ -1198,9 +1240,9 @@ export class CodexProvider implements AgentProvider {
     return {
       iterator,
       queue,
-      abort: () => {
+      abort: async () => {
         abortController.abort();
-        activeClient?.close();
+        await activeClient?.close();
       },
       isProcessAlive: () => activeClient?.isAlive() ?? false,
       getProviderActivity: () =>
@@ -1734,11 +1776,14 @@ export class CodexProvider implements AgentProvider {
         ) {
           yield {
             type: "error",
+            uuid: `codex-error-${turnResult.turn.id}`,
             session_id: sessionId,
             error: turnResult.turn.error.message,
             codexErrorInfo: turnResult.turn.error.codexErrorInfo ?? null,
             codexAdditionalDetails:
               turnResult.turn.error.additionalDetails ?? null,
+            codexWillRetry: false,
+            codexTurnId: turnResult.turn.id,
             codexFailureTrace: this.snapshotCodexFailureTrace(failureTrace),
             codexFailureSummary: this.formatCodexFailureTrace(failureTrace),
             codexRequestId: this.extractOpenAIRequestId(
@@ -1756,13 +1801,21 @@ export class CodexProvider implements AgentProvider {
       }
     } catch (error) {
       const codexFailureTrace = this.snapshotCodexFailureTrace(failureTrace);
-      log.error(
-        { error, codexFailureTrace },
-        "Error in codex app-server session",
-      );
       if (!signal.aborted) {
+        log.error(
+          { error, codexFailureTrace },
+          "Error in codex app-server session",
+        );
+        const isProcessFailure = appServer.isClosed;
         yield {
           type: "error",
+          ...(isProcessFailure
+            ? {
+                uuid: `codex-error-${sessionId || "unknown"}-process-exit`,
+                codexWillRetry: false,
+                codexErrorScope: "app_server_process",
+              }
+            : {}),
           session_id: sessionId,
           error: error instanceof Error ? error.message : String(error),
           codexFailureTrace,
@@ -1819,7 +1872,16 @@ export class CodexProvider implements AgentProvider {
 
     if (notification.method === "error") {
       const params = asCodexErrorNotification(notification.params);
-      return params?.turnId === turnId && !params.willRetry;
+      if (params) {
+        return params.turnId === turnId && !params.willRetry;
+      }
+      const rawParams =
+        notification.params && typeof notification.params === "object"
+          ? (notification.params as Record<string, unknown>)
+          : null;
+      return (
+        rawParams?.codexProcessExit === true && rawParams.willRetry === false
+      );
     }
 
     return false;
@@ -2710,6 +2772,15 @@ export class CodexProvider implements AgentProvider {
       case "error": {
         const params = asCodexErrorNotification(notification.params);
         const fallbackError = this.extractErrorRecord(notification.params);
+        const rawParams =
+          notification.params && typeof notification.params === "object"
+            ? (notification.params as Record<string, unknown>)
+            : null;
+        const willRetry =
+          params?.willRetry ??
+          (typeof rawParams?.willRetry === "boolean"
+            ? rawParams.willRetry
+            : false);
         const errorMessage =
           params?.error.message ??
           this.getOptionalString(fallbackError?.message) ??
@@ -2717,7 +2788,7 @@ export class CodexProvider implements AgentProvider {
         return base({
           sourceEvent: notification.method,
           turnId: params?.turnId,
-          phase: params?.willRetry ? "retrying" : "terminal",
+          phase: willRetry ? "retrying" : "terminal",
           errorMessage,
           codexErrorInfo:
             params?.error.codexErrorInfo ??
@@ -3379,21 +3450,43 @@ export class CodexProvider implements AgentProvider {
 
       case "error": {
         const params = asCodexErrorNotification(notification.params);
-        const errorMessage = params?.error.message;
+        const rawParams =
+          notification.params && typeof notification.params === "object"
+            ? (notification.params as Record<string, unknown>)
+            : null;
+        const fallbackError = this.extractErrorRecord(notification.params);
+        const errorMessage =
+          params?.error.message ??
+          this.getOptionalString(fallbackError?.message);
+        const willRetry =
+          params?.willRetry ??
+          (typeof rawParams?.willRetry === "boolean"
+            ? rawParams.willRetry
+            : false);
+        const isProcessExit = rawParams?.codexProcessExit === true;
         const message =
           (typeof errorMessage === "string" && errorMessage) ||
-          (typeof (notification.params as { message?: unknown })?.message ===
-          "string"
-            ? (notification.params as { message: string }).message
+          (typeof rawParams?.message === "string"
+            ? rawParams.message
             : "Codex turn failed");
 
         const errorEvent = {
           type: "error",
+          uuid: params?.turnId
+            ? `codex-error-${params.turnId}`
+            : `codex-error-${sessionId}-${Date.now()}`,
           session_id: sessionId,
           error: message,
-          codexErrorInfo: params?.error.codexErrorInfo ?? null,
-          codexAdditionalDetails: params?.error.additionalDetails ?? null,
-          codexWillRetry: params?.willRetry ?? false,
+          codexErrorInfo:
+            params?.error.codexErrorInfo ??
+            fallbackError?.codexErrorInfo ??
+            null,
+          codexAdditionalDetails:
+            params?.error.additionalDetails ??
+            this.getOptionalString(fallbackError?.additionalDetails) ??
+            null,
+          codexWillRetry: willRetry,
+          codexErrorScope: isProcessExit ? "app_server_process" : "turn",
           codexThreadId: params?.threadId,
           codexTurnId: params?.turnId,
           codexRequestId: this.extractOpenAIRequestId(

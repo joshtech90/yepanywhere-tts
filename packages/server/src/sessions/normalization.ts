@@ -8,6 +8,7 @@ import type {
   CodexReasoningPayload,
   CodexResponseItemEntry,
   CodexSessionEntry,
+  CodexUserTurnMessageProvenance,
   CodexWebSearchCallPayload,
   GeminiAssistantMessage,
   GeminiSessionMessage,
@@ -43,6 +44,13 @@ import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
 import { normalizeOpenCodeTool } from "../sdk/providers/opencode-tools.js";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
+import {
+  type CodexUserResponseKind,
+  type CodexUserTurnProvenance,
+  buildCodexUserTurnProvenance,
+  isCodexUserMessageEventEntry,
+  isCodexUserResponseEntry,
+} from "./codex-user-turn-provenance.js";
 import type { LoadedSession } from "./types.js";
 
 interface CodexToolUseConversion {
@@ -242,14 +250,14 @@ function convertCodexEntries(
 
   const messages: Message[] = [];
   let messageIndex = 0;
-  const hasResponseItemUser = hasCodexResponseItemUserMessages(entries);
+  const userTurnProvenance = buildCodexUserTurnProvenance(entries);
   const toolCallContexts = new Map<string, CodexToolCallContext>();
   const closedToolResultIds = new Set<string>();
   const openToolUses = new Map<string, Message>();
   const compactedTimestampMs = collectCodexCompactedTimestampMs(entries);
 
   for (const entry of entries) {
-    if (isCodexToolLifecycleBoundary(entry)) {
+    if (isCodexToolLifecycleBoundary(entry, userTurnProvenance)) {
       markOpenCodexToolUsesOrphaned(openToolUses);
     }
 
@@ -259,6 +267,9 @@ function convertCodexEntries(
         messageIndex++,
         toolCallContexts,
         closedToolResultIds,
+        isCodexUserResponseEntry(entry)
+          ? userTurnProvenance.responseKinds.get(entry)
+          : undefined,
       );
       if (msg) {
         if (isCodexCorrelationDebugEnabled()) {
@@ -302,7 +313,8 @@ function convertCodexEntries(
         compactedTimestampMs,
       );
       const shouldIncludeUserMessage =
-        entry.payload.type === "user_message" && !hasResponseItemUser;
+        isCodexUserMessageEventEntry(entry) &&
+        !userTurnProvenance.pairedUserEvents.has(entry);
       const shouldIncludeTurnAborted = entry.payload.type === "turn_aborted";
       const shouldIncludeContextCompacted =
         entry.payload.type === "context_compacted" &&
@@ -386,9 +398,13 @@ function attachCodexCodeModePatchResult(
   }
 }
 
-function isCodexToolLifecycleBoundary(entry: CodexSessionEntry): boolean {
-  if (entry.type === "response_item") {
-    return entry.payload.type === "message" && entry.payload.role === "user";
+function isCodexToolLifecycleBoundary(
+  entry: CodexSessionEntry,
+  provenance: CodexUserTurnProvenance,
+): boolean {
+  if (isCodexUserResponseEntry(entry)) {
+    const kind = provenance.responseKinds.get(entry);
+    return kind === "user-authored" || kind === "legacy-unknown";
   }
 
   if (entry.type !== "event_msg") {
@@ -396,7 +412,8 @@ function isCodexToolLifecycleBoundary(entry: CodexSessionEntry): boolean {
   }
 
   return (
-    entry.payload.type === "user_message" ||
+    (isCodexUserMessageEventEntry(entry) &&
+      !provenance.pairedUserEvents.has(entry)) ||
     entry.payload.type === "task_started" ||
     entry.payload.type === "task_complete" ||
     entry.payload.type === "turn_aborted" ||
@@ -550,17 +567,6 @@ function getCodexEventPayloadItemId(
   return typeof item.id === "string" ? item.id : undefined;
 }
 
-function hasCodexResponseItemUserMessages(
-  entries: CodexSessionEntry[],
-): boolean {
-  return entries.some(
-    (entry) =>
-      entry.type === "response_item" &&
-      entry.payload.type === "message" &&
-      entry.payload.role === "user",
-  );
-}
-
 // Derive the durable message uuid for a Codex response item. Calls and outputs
 // key on the globally-unique call_id. Native live tool items share that id;
 // nested code-mode commandExecution items do not, so their scoped client
@@ -591,6 +597,7 @@ function convertCodexResponseItem(
   index: number,
   toolCallContexts: Map<string, CodexToolCallContext>,
   closedToolResultIds: Set<string>,
+  userResponseKind?: CodexUserResponseKind,
 ): Message | null {
   const payload = entry.payload;
   const positionalUuid = `codex-${index}-${entry.timestamp}`;
@@ -601,13 +608,22 @@ function convertCodexResponseItem(
       if (payload.role === "developer") {
         return null;
       }
-      if (isCodexStartupInstructionMessage(payload)) {
+      if (
+        userResponseKind === "hidden-provider-context" ||
+        userResponseKind === "visible-provider-context"
+      ) {
         return null;
       }
-      if (isCodexSyntheticTurnAbortedMessage(payload)) {
-        return null;
-      }
-      return convertCodexMessagePayload(payload, uuid, entry.timestamp);
+      return convertCodexMessagePayload(
+        payload,
+        uuid,
+        entry.timestamp,
+        userResponseKind === "user-authored"
+          ? "paired"
+          : userResponseKind === "legacy-unknown"
+            ? "legacy-response"
+            : undefined,
+      );
 
     case "reasoning":
       return convertCodexReasoningPayload(payload, uuid, entry.timestamp);
@@ -696,37 +712,14 @@ function convertCodexResponseItem(
   }
 }
 
-function isCodexStartupInstructionMessage(
-  payload: CodexMessagePayload,
-): boolean {
-  if (payload.role !== "user") {
-    return false;
-  }
-
-  const text = payload.content
-    .map((block) =>
-      "text" in block && typeof block.text === "string" ? block.text : "",
-    )
-    .join("");
-
-  return isCodexStartupInstructionText(text);
-}
-
-const CODEX_STARTUP_INSTRUCTIONS_RE =
-  /^(?:<recommended_plugins>[\s\S]*?<\/recommended_plugins>\s*)?# AGENTS\.md instructions for /u;
-
-export function isCodexStartupInstructionText(text: string): boolean {
-  const trimmed = text.trimStart();
-  return (
-    CODEX_STARTUP_INSTRUCTIONS_RE.test(trimmed) &&
-    trimmed.includes("<INSTRUCTIONS>")
-  );
-}
-
 function convertCodexMessagePayload(
   payload: CodexMessagePayload,
   uuid: string,
   timestamp: string,
+  userTurnProvenance?: Exclude<
+    CodexUserTurnMessageProvenance,
+    "event-only"
+  >,
 ): Message {
   const content: ContentBlock[] = [];
 
@@ -755,6 +748,9 @@ function convertCodexMessagePayload(
         role: payload.role,
         content: [],
       },
+      ...(userTurnProvenance && {
+        codexUserTurnProvenance: userTurnProvenance,
+      }),
       timestamp,
     };
   }
@@ -766,23 +762,11 @@ function convertCodexMessagePayload(
       role: payload.role,
       content,
     },
+    ...(userTurnProvenance && {
+      codexUserTurnProvenance: userTurnProvenance,
+    }),
     timestamp,
   };
-}
-
-function isCodexSyntheticTurnAbortedMessage(
-  payload: CodexMessagePayload,
-): boolean {
-  if (payload.role !== "user") {
-    return false;
-  }
-  const fullText = payload.content
-    .map((block) =>
-      "text" in block && typeof block.text === "string" ? block.text : "",
-    )
-    .join("")
-    .trim();
-  return /^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(fullText);
 }
 
 function convertCodexReasoningPayload(
@@ -1190,6 +1174,7 @@ function convertCodexEventMsg(
       return {
         uuid,
         type: "user",
+        codexUserTurnProvenance: "event-only",
         message: {
           role: "user",
           content: payload.message,

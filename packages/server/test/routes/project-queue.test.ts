@@ -288,7 +288,11 @@ describe("Project Queue Routes", () => {
 
     const promoteResponse = await routes.request(`/${projectId}/promote-now`, {
       method: "POST",
-      body: JSON.stringify({ itemId: item.id, force: true }),
+      body: JSON.stringify({
+        itemId: item.id,
+        force: true,
+        deliveryIntent: "steer",
+      }),
       headers: { "Content-Type": "application/json" },
     });
     const promoteBody = await promoteResponse.json();
@@ -301,6 +305,7 @@ describe("Project Queue Routes", () => {
     expect(projectQueueScheduler.promoteNow).toHaveBeenCalledWith(projectId, {
       itemId: item.id,
       force: true,
+      deliveryIntent: "steer",
     });
   });
 
@@ -330,7 +335,7 @@ describe("Project Queue Routes", () => {
       targetTitle: "Target session title",
       targetFullTitle: "Full Target session title",
     });
-    expect(sessionIndexService.getCachedSessionSummary).toHaveBeenCalledWith(
+    expect(sessionIndexService.getSessionSummaryWithCache).toHaveBeenCalledWith(
       project.sessionDir,
       project.id,
       "session-1",
@@ -357,7 +362,7 @@ describe("Project Queue Routes", () => {
     });
   });
 
-  it("uses head summaries for direct existing-session target titles", async () => {
+  it("uses typed list projections for direct existing-session target titles", async () => {
     await service.createItem({
       projectId,
       projectPath: project.path,
@@ -384,9 +389,7 @@ describe("Project Queue Routes", () => {
       targetTitle: "Target session title",
       targetFullTitle: "Full Target session title",
     });
-    expect(getSessionSummary).toHaveBeenCalledWith("session-1", project.id, {
-      readMode: "head",
-    });
+    expect(getSessionSummary).toHaveBeenCalledWith("session-1", project.id);
   });
 
   it("prefers custom titles for existing-session targets", async () => {

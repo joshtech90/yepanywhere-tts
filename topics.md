@@ -13,6 +13,8 @@
 - cost-efficiency - Preferring subscription/local over metered APIs; billing footgun masking.
 - ya-env-vars - Catalog of YA env vars and the canonical YEP_/YEP_MODULE_
   naming conventions.
+- subprocess-environment - Runtime child-environment, shell-startup, and
+  hermetic subprocess-test boundaries.
 - source-name-prefixes - Distinguish TypeScript module symbols from YEP_
   process environment variables and runtime globals.
 - env-vars-config - Settings UI for process-start env visibility and future
@@ -60,6 +62,7 @@
 - floating-new-session-composer - Non-session-page `+` quick composer, new-session prefill, and click-time non-browser speech prewarm.
 - permission-mode - Provider-independent approval preference with model-capability-gated Auto fallback.
 - codex-sessions - Codex rollout storage, compression representation, and YA's durable read assumptions.
+- codex-user-turn-provenance - Use Codex's persisted user-turn lifecycle to distinguish real prompts from user-role contextual response items.
 - codex-metadata-scanner - Codex rollout head-metadata discovery, current cache layers, and scanner performance gaps.
 - project-queue - Server-owned project-level queued messages, idle promotion, and hidden-by-default UI surfaces.
 - inbox - Session-attention tiers for pending input, active work, recent activity, and unread notification state.
@@ -141,3 +144,30 @@
   content visibility, and first-traversal scroll stability.
 - codex-code-mode-render-convergence - Shared rollout-recoverable semantic
   actions for GPT-5.5 and GPT-5.6 command rendering and explored grouping.
+- windows-codex-cli-detection - Windows Codex auto-discovery across PATH
+  shims, desktop binaries, and fallback installs.
+- portable-transcript-compiler - Stable server ingest, bounded transcript
+  envelopes, and a shared semantic projection compiler for web and native
+  renderers.
+- provider-child-sessions - Provider-launched delegated work discovered from
+  provider persistence and nested beneath its canonical YA parent session.
+- host-awake - Server-owned, process-lifetime idle-sleep inhibition with an
+  optional macOS closed-lid-on-external-power strategy.
+- host-identity - Optional server-owned emoji marker for connected headers and
+  browser-tab titles, hidden against older servers.
+- tooltip-interactions - Shared native/themed tooltip presentation, pointer-rest
+  delay, warm adjacent scanning, and future rendered hidden-tail previews.
+- session-summary-fidelity - Bounded session list projections, complete-index
+  isolation, and partial-observation nondowngrade rules.
+- agents-activity-preview - Optional bounded multi-session activity previews
+  for active and recently idle process cards on Agents.
+- interactives - Zero-setup container for agent-built project web apps:
+  opinionated template, committed project files, registry, icon links,
+  YA-server-only reach (relay, or auto Cloudflare tunnel when enabled),
+  and a meta-UI comment-to-agent channel.
+- rich-interviews - Banked: multi-round structured-input interview flows;
+  YA renders declared formats inline; revisit atop interactives machinery.
+- server-plugin-arch - Banked no: settings-gated loadable server plugins;
+  monolith convenience wins absent a contributing community.
+- project-settings-overrides - Banked seed: project-scoped settings
+  overriding global; easy mechanically, painful to visualize; no current use.

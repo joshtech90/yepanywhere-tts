@@ -58,7 +58,15 @@ vi.mock("../../api/client", () => ({
 }));
 
 vi.mock("../../lib/activityBus", () => ({
-  activityBus: { on: busMock.on },
+  activityBus: {
+    on: busMock.on,
+    onSource: (
+      _sourceKey: string,
+      event: string,
+      handler: (payload: unknown) => void,
+    ) => busMock.on(event, handler),
+    retainSourceStream: vi.fn(() => () => {}),
+  },
 }));
 
 vi.mock("../../lib/connection", () => ({
@@ -557,12 +565,16 @@ describe("useProjectQueues", () => {
 
     await waitFor(() => expect(result.current.items).toHaveLength(1));
     await act(async () => {
-      await result.current.promoteNow("project-1", "1", { force: true });
+      await result.current.promoteNow("project-1", "1", {
+        force: true,
+        deliveryIntent: "steer",
+      });
     });
 
     expect(apiMock.promoteProjectQueueNow).toHaveBeenCalledWith("project-1", {
       itemId: "1",
       force: true,
+      deliveryIntent: "steer",
     });
     expect(result.current.items).toEqual([]);
     expect(result.current.projectStatusesByProject[PROJECT_ID]).toMatchObject({

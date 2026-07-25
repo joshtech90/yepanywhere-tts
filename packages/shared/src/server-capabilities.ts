@@ -24,6 +24,8 @@ export interface ServerCapabilityDefinition {
     | "gitStatus"
     | "localAccess"
     | "projectQueue"
+    | "remoteAccess"
+    | "settings"
     | "speech";
   description: string;
   introducedIn: string;
@@ -162,6 +164,99 @@ export const SERVER_CAPABILITIES = {
         "Older servers lack the configurable approval audit-log setting and should not receive writes for it.",
     },
   },
+  browserSettingsBackup: {
+    name: "browser-settings-backup",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.6.3",
+    description:
+      "Server stores one explicit backup of portable browser settings for save/load controls.",
+    clientFallback: "Hide browser settings save/load controls.",
+    serverContract: {
+      routes: [
+        "GET /api/settings/browser-backup",
+        "PUT /api/settings/browser-backup",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients must not offer server-backed browser settings controls to older servers without the storage route.",
+    },
+  },
+  bangCommands: {
+    name: "bang-commands",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.6.3",
+    description:
+      "Server supports explicitly enabled local shell commands and persisted bang-command history.",
+    clientFallback: "Hide bang-command entry points and composer routing.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /api/projects/:projectId/sessions/:sessionId/bang-commands",
+        "POST /api/projects/:projectId/sessions/:sessionId/bang-commands/:objectId/kill",
+        "GET /api/projects/:projectId/sessions/:sessionId/bang-commands/:objectId/output",
+        "DELETE /api/projects/:projectId/sessions/:sessionId/bang-commands/:objectId",
+        "GET /api/projects/:projectId/bang-completions",
+        "GET /api/bang-commands",
+      ],
+      responseFields: ["settings.clientDefaults.bangCommandsEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Local command execution is an explicit server security boundary and older servers may not expose the routes or setting.",
+    },
+  },
+  hostIdentity: {
+    name: "host-identity",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.6.3",
+    description:
+      "Server persists an optional visual marker identifying the current YA host.",
+    clientFallback: "Hide host identity settings and render no host marker.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      responseFields: ["settings.hostIdentity"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients may remain compatible with older servers that cannot persist host identity.",
+    },
+  },
+  hostAwakeControl: {
+    name: "host-awake-control",
+    kind: "transitional",
+    area: "remoteAccess",
+    introducedIn: "0.6.3",
+    description:
+      "Server supports process-lifetime host-awake settings and status discovery.",
+    clientFallback: "Hide host-awake settings.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "GET /api/settings/host-awake/status",
+      ],
+      responseFields: [
+        "settings.hostAwakeMode",
+        "settings.hostAwakeBatteryFloorPercent",
+      ],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-21",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the host-awake settings/status API.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on host-awake-control.",
+    },
+  },
   projectQueue: {
     name: "projectQueue",
     kind: "permanent",
@@ -189,6 +284,27 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Project Queue availability remains a server feature boundary for older servers and hosted remote clients.",
+    },
+  },
+  projectQueueNewSessionShortcutSetting: {
+    name: "project-queue-new-session-shortcut-setting",
+    kind: "permanent",
+    area: "projectQueue",
+    introducedIn: "0.6.3",
+    description:
+      "Server accepts and persists the active-composer new-session Project Queue shortcut presence setting.",
+    clientFallback:
+      "Hide the active-composer new-session shortcut and its Toolbar setting.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      responseFields: [
+        "settings.clientDefaults.sessionToolbarPresence.projectQueueNewSessionShortcut",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients must not save the new toolbar presence key to older servers that reject it.",
     },
   },
   voiceInput: {
@@ -304,6 +420,8 @@ export type ServerCapabilityName =
   (typeof SERVER_CAPABILITIES)[ServerCapabilityKey]["name"];
 
 export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;
+export const PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY =
+  SERVER_CAPABILITIES.projectQueueNewSessionShortcutSetting.name;
 
 export const GIT_STATUS_CAPABILITY = SERVER_CAPABILITIES.gitStatus.name;
 export const GIT_STATUS_ENHANCED_CAPABILITY =
@@ -319,6 +437,16 @@ export const GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY =
 
 export const APPROVAL_AUDIT_LOG_CAPABILITY =
   SERVER_CAPABILITIES.approvalAuditLog.name;
+
+export const BROWSER_SETTINGS_BACKUP_CAPABILITY =
+  SERVER_CAPABILITIES.browserSettingsBackup.name;
+
+export const BANG_COMMANDS_CAPABILITY = SERVER_CAPABILITIES.bangCommands.name;
+
+export const HOST_IDENTITY_CAPABILITY = SERVER_CAPABILITIES.hostIdentity.name;
+
+export const HOST_AWAKE_CONTROL_CAPABILITY =
+  SERVER_CAPABILITIES.hostAwakeControl.name;
 
 export const VOICE_INPUT_CAPABILITY = SERVER_CAPABILITIES.voiceInput.name;
 

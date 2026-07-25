@@ -5,6 +5,7 @@ import type {
   SessionRouteScrollSnapshot,
   SessionRouteSnapshot,
 } from "../sessionRouteSnapshots";
+import type { ActiveWindowStructuralKind } from "./activeWindowTrimPolicy";
 
 export interface AgentContent {
   messages: Message[];
@@ -29,6 +30,8 @@ export interface SessionDetailState {
   lastMessageId?: string;
   maxPersistedTimestampMs: number;
   deferredMessages: DeferredQueueMessage[];
+  /** Ephemeral mount/store signal incremented only by an accepted auto-trim. */
+  activeWindowTrimRevision: number;
 }
 
 export type SessionDetailAction =
@@ -105,6 +108,12 @@ export type SessionDetailAction =
       messages: Message[];
       session: SessionMetadata;
       pagination: PaginationInfo;
+    }
+  | {
+      type: "trimLoadedWindow";
+      startMessageId: string;
+      reason: ActiveWindowStructuralKind;
+      nowMs: number;
     }
   | {
       type: "prependOlderMessages";

@@ -29,7 +29,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { preprocessMessages } from "../../../../client/src/lib/preprocessMessages.ts";
+import { compileTranscriptProjection } from "../../../../client/src/lib/transcriptProjection/compiler.ts";
 import { getCodexCommonPaths } from "../../../src/sdk/cli-detection.js";
 import { logSDKMessage } from "../../../src/sdk/messageLogger.js";
 import {
@@ -111,6 +111,7 @@ function isBashAvailable(): boolean {
 }
 
 const bashIt = process.platform !== "win32" && isBashAvailable() ? it : it.skip;
+const unixIt = process.platform !== "win32" ? it : it.skip;
 
 describe("CodexProvider", () => {
   let provider: CodexProvider;
@@ -170,7 +171,7 @@ describe("CodexProvider", () => {
       }
     });
 
-    it("should prefer OpenAI Codex desktop bins over stale sandbox fallback on Windows", () => {
+    it("should order OpenAI Codex desktop bins before stale sandbox fallback on Windows", () => {
       if (process.platform !== "win32") return;
 
       const tempDir = mkdtempSync(join(tmpdir(), "codex-desktop-bin-"));
@@ -294,19 +295,86 @@ describe("CodexProvider", () => {
         if (msg.type === "result" || msg.type === "error") break;
       }
 
-      // Should get an error message about CLI not found
-      expect(
-        messages.some(
-          (m: unknown) =>
-            (m as { type?: string; error?: string }).type === "error" ||
-            (m as { type?: string }).type === "result",
-        ),
-      ).toBe(true);
+      const error = messages.find(
+        (message): message is Record<string, unknown> =>
+          Boolean(
+            message &&
+              typeof message === "object" &&
+              (message as { type?: unknown }).type === "error",
+          ),
+      );
+      expect(error).toMatchObject({
+        type: "error",
+        codexWillRetry: false,
+        codexErrorScope: "app_server_process",
+      });
+      expect(error?.error).toContain("/nonexistent/codex");
     });
   });
 });
 
 describe("CodexProvider app-server lifecycle", () => {
+  unixIt(
+    "escalates shutdown when the Codex app-server ignores SIGTERM",
+    async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-kill-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-ignore-term",
+        `${buildFakeCodexAppServer(logPath)}\nprocess.on("SIGTERM", () => {});`,
+      );
+
+      let session:
+        | Awaited<ReturnType<CodexProvider["startSession"]>>
+        | undefined;
+      let consume: Promise<void> | undefined;
+      let pid: number | undefined;
+
+      try {
+        const testProvider = new CodexProvider({ codexPath });
+        session = await testProvider.startSession({
+          cwd: tempDir,
+          initialMessage: { text: "wait to be killed" },
+          effort: "low",
+        });
+        consume = (async () => {
+          for await (const _message of session?.iterator ?? []) {
+            // drain until the verified abort below closes the iterator
+          }
+        })();
+
+        await waitForFakeCodexRequest(logPath, "turn/start");
+        pid = typeof session.pid === "function" ? session.pid() : session.pid;
+        expect(pid).toBeTypeOf("number");
+        expect(session.isProcessAlive?.()).toBe(true);
+
+        await expect(session.abort()).resolves.toBeUndefined();
+        await consume.catch(() => undefined);
+        expect(session.isProcessAlive?.()).toBe(false);
+        expect(() => process.kill(pid as number, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+      } finally {
+        try {
+          await session?.abort();
+        } catch {
+          // The assertions above report a failed verified shutdown.
+        }
+        await consume?.catch(() => undefined);
+        if (pid !== undefined) {
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch {
+            // The expected path already verified that the process group exited.
+          }
+        }
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+
   bashIt(
     "publishes the Codex thread id to later app-server tool shells",
     async () => {
@@ -1836,6 +1904,10 @@ function agentctlSessionIdFromBash() {
   return execFileSync("bash", ["-c", agentctlProbeCommand], {
     encoding: "utf-8",
     env: process.env,
+    // Keep the fake app-server's probe aligned with an ordinary
+    // non-interactive tool shell. A socket-backed stdin can make Bash skip
+    // BASH_ENV in favor of its remote-shell startup path.
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -3030,8 +3102,8 @@ describe("CodexProvider Event Normalization", () => {
       messages.some((message) => message.subtype === "turn_complete"),
     ).toBe(false);
     expect(
-      preprocessMessages(
-        messages as Parameters<typeof preprocessMessages>[0],
+      compileTranscriptProjection(
+        messages as Parameters<typeof compileTranscriptProjection>[0],
       )[0],
     ).toMatchObject(codexInterruptedTurnFixtures.expectedRenderMessage);
   });
@@ -3130,10 +3202,10 @@ describe("CodexProvider Event Normalization", () => {
       codexTurnId: "turn-1",
     });
 
-    const renderItems = preprocessMessages([
+    const renderItems = compileTranscriptProjection([
       ...toolMessages,
       ...turnMessages,
-    ] as Parameters<typeof preprocessMessages>[0]);
+    ] as Parameters<typeof compileTranscriptProjection>[0]);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "cmd-1",
@@ -3241,12 +3313,12 @@ describe("CodexProvider Event Normalization", () => {
       orphanedToolUseIds: ["cmd-1"],
     });
 
-    const renderItems = preprocessMessages([
+    const renderItems = compileTranscriptProjection([
       ...toolUse,
       ...toolStarted,
       ...backgroundHandle,
       ...turnMessages,
-    ] as Parameters<typeof preprocessMessages>[0]);
+    ] as Parameters<typeof compileTranscriptProjection>[0]);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "cmd-1",
@@ -3328,11 +3400,11 @@ describe("CodexProvider Event Normalization", () => {
       turnMessages.some((message) => message.subtype === "codex_tool_orphans"),
     ).toBe(false);
 
-    const renderItems = preprocessMessages([
+    const renderItems = compileTranscriptProjection([
       ...toolStarted,
       ...toolCompleted,
       ...turnMessages,
-    ] as Parameters<typeof preprocessMessages>[0]);
+    ] as Parameters<typeof compileTranscriptProjection>[0]);
     expect(renderItems[0]).toMatchObject({
       type: "tool_call",
       id: "cmd-1",
@@ -3492,10 +3564,116 @@ describe("CodexProvider Event Normalization", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       type: "error",
+      uuid: "codex-error-turn-1",
       session_id: "session-1",
       error:
         "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.",
+      codexWillRetry: false,
+      codexTurnId: "turn-1",
+      codexErrorScope: "turn",
     });
+  });
+
+  it("preserves automatic retry details from codex error notifications", () => {
+    const provider = createTestProvider() as unknown as {
+      convertNotificationToSDKMessages: (
+        notification: { method: string; params?: unknown },
+        sessionId: string,
+        usageByTurnId: Map<string, unknown>,
+        liveEventState: ReturnType<typeof createLiveEventState>,
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const messages = provider.convertNotificationToSDKMessages(
+      {
+        method: "error",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          willRetry: true,
+          error: {
+            message: "Reconnecting... 2/5",
+            additionalDetails: "stream disconnected before completion",
+            codexErrorInfo: {
+              responseStreamDisconnected: { httpStatusCode: 502 },
+            },
+          },
+        },
+      },
+      "session-1",
+      new Map(),
+      createLiveEventState(),
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "error",
+      uuid: "codex-error-turn-1",
+      error: "Reconnecting... 2/5",
+      codexAdditionalDetails: "stream disconnected before completion",
+      codexWillRetry: true,
+      codexErrorScope: "turn",
+    });
+  });
+
+  it("preserves synthetic app-server process exit errors without turn ids", () => {
+    const provider = createTestProvider() as unknown as {
+      convertNotificationToSDKMessages: (
+        notification: { method: string; params?: unknown },
+        sessionId: string,
+        usageByTurnId: Map<string, unknown>,
+        liveEventState: ReturnType<typeof createLiveEventState>,
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const messages = provider.convertNotificationToSDKMessages(
+      {
+        method: "error",
+        params: {
+          error: {
+            message: "Codex app-server exited (code=1, signal=null)",
+          },
+          willRetry: false,
+          codexProcessExit: true,
+        },
+      },
+      "session-1",
+      new Map(),
+      createLiveEventState(),
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "error",
+      error: "Codex app-server exited (code=1, signal=null)",
+      codexWillRetry: false,
+      codexErrorScope: "app_server_process",
+    });
+  });
+
+  it("treats a synthetic app-server exit as terminal without a turn id", () => {
+    const provider = createTestProvider() as unknown as {
+      isTurnTerminalNotification: (
+        notification: { method: string; params?: unknown },
+        turnId: string,
+      ) => boolean;
+    };
+
+    expect(
+      provider.isTurnTerminalNotification(
+        {
+          method: "error",
+          params: {
+            error: {
+              message: "Codex app-server exited (code=1, signal=null)",
+            },
+            willRetry: false,
+            codexProcessExit: true,
+          },
+        },
+        "turn-1",
+      ),
+    ).toBe(true);
   });
 
   it("grants requested permission profiles automatically in bypass mode", async () => {

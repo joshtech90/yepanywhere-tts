@@ -1,0 +1,251 @@
+# `!!` Bang Commands (composer-run local shell commands)
+
+> `!!command args` in the session composer runs a local shell command in the
+> project directory, entirely outside provider context; the run persists
+> inline as a transcript display object with markdown/JSON/ANSI/TOON-aware
+> rendered output, echo-to-session and recall (Ctrl+↑ history) actions,
+> shell-style tab completion (PATH + project commands, path arguments,
+> allowlisted acli tools), and a top-level cross-session history view.
+
+Topic: bang-commands
+
+Status: implemented v1, explicit opt-in (2026-07-24). Server:
+`BangCommandService`, `bangCompletions`, `createBangCommandsRoutes`
+(`packages/server/src`). Client: `lib/bangCommands`,
+`BangCommandDisplayObject`, `MessageInput` `bangSupport`,
+`BangCommandsPage` (`packages/client/src`). Shared TOON reader:
+`packages/shared/src/toon.ts`. Tests: `packages/server/test/bang/`,
+`lib/__tests__/bangCommands.test.ts`, `ui/__tests__/toonFixedFont.test.tsx`.
+
+See also:
+[transcript-display-objects](transcript-display-objects.md) (the persistence
+and placement mechanism these blocks reuse),
+[provider-agnostic-btw-asides](provider-agnostic-btw-asides.md) (precedent for
+composer input that is YA-routed rather than sent to the session agent, and
+for the visible-routing-before-submission invariant),
+[synthetic-turn-injection](synthetic-turn-injection.md) (the contrast: that is
+about putting content *into* model context; bang blocks never touch context),
+[message-control-steer-queue-btw-later-interrupt](message-control-steer-queue-btw-later-interrupt.md)
+(the delivery-intent contract `!!` deliberately sits outside),
+[emulated-slash-commands](emulated-slash-commands.md) (the other composer
+prefix-routing layer; `!!` is routed before that layer ever sees it),
+[rich-text-rendering](rich-text-rendering.md) (the sanitized markdown and
+fenced-output render paths the block output flows through),
+[subprocess-environment](subprocess-environment.md) (environment hygiene for
+YA-spawned processes),
+[public-share-content-censorship](public-share-content-censorship.md) and
+[security](security.md) (exec surface gating and share exposure),
+[architecture-mandates](architecture-mandates.md) (bounded storage/render
+obligations the history view inherits).
+
+## Motivation
+
+YA is a mobile-first supervisor: the operator often has no terminal at hand.
+Today a quick `git status`, `pnpm test`, `agentctl active`, or ad-hoc report
+script requires either interrupting/steering the agent ("please run X for
+me" — a token-costly round-trip that also perturbs the session) or leaving
+the phone for a shell. Bang commands give the supervisor a direct hand on the
+project directory:
+
+- **Zero session interference.** A bang command never becomes a turn, never
+  enters provider context, is never replayed on resume, and is invisible to
+  the agent unless the user explicitly echoes it in. It therefore runs
+  immediately regardless of session state — busy, waiting, compacting — with
+  no steer/queue/defer semantics.
+- **A persistent inline record.** The command and output appear at the
+  transcript position where they were run, documenting what the human
+  checked and when, interleaved with the agent work it was checking.
+- **Agent-tool synergy.** The same acli-style tools built for agents
+  (`~/agents` `topics/agent-cli.md`; `agentctl` is the flagship) are exactly
+  the compact, non-interactive commands a phone-bound supervisor wants.
+
+## Contracts
+
+- **Default-off feature gate.** Bang commands are available only when the
+  server advertises the permanent `bang-commands` capability and
+  `clientDefaults.bangCommandsEnabled` is explicitly `true`. Absence means
+  off. The server returns 404 from every bang route while disabled; clients
+  hide the sidebar entry and do not give composers `bangSupport`. The opt-in
+  lives in Message Delivery settings because it changes composer submission
+  routing.
+- **`!!` is YA-routed, never provider ingress.** Routing happens in the
+  composer (`MessageInput` resolves the draft before its trim/send step,
+  because the leading-space escape depends on pre-trim text) and only on
+  composers given `bangSupport` — today the session-page footer composer.
+  Composers without a wired bang path do not advertise the prefix and treat
+  the text as ordinary drafts.
+- **Visible routing before submission.** While the draft starts with `!!`,
+  the composer shows a routing chip ("local command — not sent to agent"),
+  mirroring the `/btw` invariant that routing state is shown, not inferred.
+  The escaped form shows its own chip.
+- **Leading-space escape.** A draft starting with a space followed by `!!`
+  is not routed: the single leading space is stripped and the remainder
+  (beginning `!!`) goes to the provider as ordinary prompt text. There is
+  deliberately no further escape — a turn whose literal text must begin
+  with space-then-`!!` cannot be sent, an accepted non-case. A bare `!!`
+  with no command is a silent no-op (the chip already explains the mode).
+- **Execution.** Server-side `bash -c` (pipes, globs, redirects work — the
+  acli composition story assumes pipeable verbs), `cwd` = the session's
+  project directory, child in its own process group so kill reaches the
+  whole pipeline. Command resolution: PATH first, then the project
+  directory as an implicit final PATH entry (a project-root executable
+  `foo` runs as `./foo`; no subdirectory search).
+- **Trust boundary.** No new one: YA already executes arbitrary code as the
+  server user via agent sessions. Bang exec is gated by the same
+  authentication as sending a turn (owner clients over direct or E2E relay
+  transport), the explicit default-off feature setting, and a
+  project/session ownership check on every session-scoped route. A URL cannot
+  pair a session from one project with another project's working directory.
+  Bang APIs and display objects are absent from public share surfaces; until
+  display-object censorship exists, the share sanitizer omits the complete
+  `transcriptDisplayObjects` collection.
+- **Environment hygiene.** Inherit the server's baseline subprocess
+  environment, but scrub agent-session identity markers
+  (`AGENTCTL_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDECODE`) **and
+  `BASH_ENV`** — an agent launcher's `BASH_ENV` bridge script would
+  otherwise be re-sourced by the child bash and re-inject the identity vars
+  just scrubbed (caught by test; a bang-run `agentctl` must never adopt an
+  agent session's identity).
+- **Result block.** Shows the command line, exit code, duration, and output;
+  stderr stays distinguishable (collapsed `details`, hidden when empty).
+  Non-zero exit gets error styling. A running block shows a streaming
+  preview with a cancel control; streamed updates are coalesced server-side
+  (metadata-changed events at most every 750 ms) before reaching React —
+  bursty command output is exactly the high-rate path the client
+  performance rules cover.
+- **Persistence.** Transcript display object kind `bang-command`, anchored
+  by `placementAfterMessageId` at the transcript tail when run (empty
+  anchor renders before the first item, for empty sessions). User-authored,
+  so deletion is allowed once finished (409 while running). Output does not
+  bloat `session-metadata.json`: the object stores the command line, exit
+  metadata, and bounded preview tails (4 KiB stdout / 2 KiB stderr); full
+  output lands in `{dataDir}/bang-commands/<sessionId>/<objectId>.stdout` /
+  `.stderr` (8 MiB cap per stream, truncation flagged), fetched on demand
+  (2 MiB response cap per stream, 4 MiB combined). Full output is loaded only
+  after an explicit user action; the 500-entry history view retains at most one
+  expanded full-output response at a time. Per-session bang objects are pruned
+  oldest-first past 100, but a running object is never pruned. Truncated
+  display states that it was cut — the acli truncation principle applied to
+  our own UI.
+- **Concurrency and lifecycle.** At most four commands run concurrently per
+  session. The app owns one service instance. Graceful restart/shutdown
+  terminates every running process group, waits for each completion, and
+  records a visible shutdown reason. A 10-minute wall-clock cap records a
+  timed-out kill reason; cancel is always available. Write-stream and metadata
+  failures settle the run as an error rather than crashing the server or
+  leaving its completion pending. On an abrupt server death, startup recovery
+  marks persisted `running` objects `killed` ("Interrupted by server
+  restart"); an uncatchable process death can still leave an OS child until it
+  exits or an external supervisor reaps it.
+
+## Output rendering: classify, then the standard render paths
+
+`classifyBangOutput` (server) classifies stdout once, then forks to the
+render path the repo already has — no bang-private renderer:
+
+- **markdown** (the default): rendered as-is through the assistant-text
+  markdown pipeline (`renderMarkdownToHtml`).
+- **json** — a whole-document JSON parse or first-lines JSONL parse (the
+  acli spec mandates compact JSONL for non-TTY callers, so spec-compliant
+  tools land here): fenced as ```json for shiki highlighting.
+- **ansi** — CSI escapes detected: fenced as ```ansi; the augment layer's
+  existing ANSI renderer produces colored HTML. acli tools that respect a
+  TTY-ish TERM and emit color render correctly.
+- **toon** — the acli opt-in flat-table format, strictly parsed
+  (`packages/shared/src/toon.ts`): fenced as ```toon; the augment layer
+  converts to a markdown table, so it renders as a real table. The same
+  shared parser also powers a TOON block in the client fixed-font chain
+  (`renderFixedFontRichContent`), so agent Bash tool output containing a
+  strict TOON table renders as a table under the sigma toggle too. Quoted
+  cells must close, doubled quotes are the only quote escape, and no bytes may
+  trail a closing quote before the delimiter.
+- **raw** — anything else (including TOON-looking-but-malformed): plain
+  fence.
+
+Heuristic misfires are covered by the per-block Raw/Rendered toggle. The
+augment-generator TOON branch fires for ```toon fences and untagged fences
+whose content strictly parses, benefiting all fenced command output, not
+just bang blocks.
+
+## Tab completion
+
+Tab always completes inside a bang draft, shell-style: accept the
+highlighted candidate if the menu is open; otherwise fetch immediately,
+apply a single match (or extend to the longest common prefix), and open the
+menu on ambiguity. Typing also auto-suggests (150 ms debounce) once the
+token is non-empty. Touch keyboards have no Tab key, so while the draft is
+a bang draft the mobile-keyboard compact action row gains a temporary
+"Tab ⇥" button that triggers the same completion action.
+
+Completion responses are draft-versioned: a response for an older full bang
+line is discarded even when the trailing token is unchanged. A failed run
+keeps the submitted draft intact so the user can correct or retry it.
+
+- **Command position** — the first token, and the first token after `|`,
+  `;`, or `&`: candidates are executable names from the server's PATH plus
+  project-root executables (`GET
+  /api/projects/:id/bang-completions?kind=command`), served from a 30 s
+  cached scan.
+- **Argument tokens** (not starting with `-`): per-tool acli completion
+  first, then project-relative path completion (directories suffixed `/`,
+  `..` escapes refused).
+- **acli per-tool completion**: the server invokes
+  `tool --acli-complete <argv-prefix...>` (protocol defined in `~/agents`
+  `topics/agent-cli.md` § Completion protocol) for the last pipeline
+  segment's command — but **only for allowlisted tools**
+  (`YA_BANG_ACLI_COMPLETERS` env, comma-separated basenames, plus the
+  built-in `harness-check`). Tab must never execute an arbitrary program: a
+  lax non-compliant tool could ignore the unknown flag and run its default
+  action. Zero acli candidates fall back to path completion.
+
+## Block actions
+
+- **Echo to session.** Fetches the output and sends a single ordinary user
+  turn (provenance-labeled, command and output dynamically fenced beyond any
+  backtick run in the content, 16 KiB clip per stream) through the normal
+  send path. Always an explicit user action —
+  mirroring the `/btw` rule that result injection is never automatic. The
+  display object remains.
+- **Recall to composer.** Drafts `!!<command>` into the composer for
+  revision — history records stay immutable and the composer remains the
+  single editing surface. Keyboard path: Ctrl+ArrowUp cycles back through
+  this session's prior bang commands (newest first, deduplicated),
+  Ctrl+ArrowDown forward; any divergent edit resets the cycle. The same
+  shortcut is expected to be useful beyond bang commands; general composer
+  message-history recall is a natural later extension.
+- **Re-run.** Runs the unchanged command as a new block at the current
+  tail; the old block stays as the record of what was true then.
+- **Cancel** (while running) and **Delete** (when finished; removes the
+  object and its stored output).
+
+## Top-level history view
+
+`/bang-commands` (sidebar: "!! Commands") lists all bang runs across
+sessions, newest first (capped 500), with time, project directory, an
+open-session link, and the same block component fetching rendered output on
+demand. It starts from bounded previews and keeps at most one entry's full
+output expanded and retained. Reads only the bounded metadata already in
+`session-metadata.json` plus that single on-demand output fetch.
+
+## Fork views may omit bang blocks
+
+Anchors are message ids, and providers that remap ids on fork (Claude) drop
+the blocks from the forked view. Accepted: the agent context never
+contained them, so a fork loses nothing the model saw; the source session
+remains the record.
+
+## Open questions
+
+- **PTY allocation.** Running under a PTY would flip acli tools to their
+  pretty-JSON human branch and make TTY-only tools behave; ANSI is already
+  rendered. Default no-PTY; revisit if fenced JSONL proves annoying in
+  practice.
+- **Bare `!!` recall.** Submitting `!!` alone could re-run the previous bang
+  command (the shell pun). Currently a silent no-op; decide later.
+- **Single-`!` reservation.** Claude Code's own TUI uses `!` for bash mode.
+  YA does not intercept `!`; keep it unclaimed so a future provider-native
+  passthrough is not shadowed.
+- **Surface scope.** v1 is the session-page footer composer only (disabled
+  while it routes to a focused `/btw` aside). The floating new-session
+  composer (has a project, no session) could gain it later; the history
+  view may cover the sessionless case better.

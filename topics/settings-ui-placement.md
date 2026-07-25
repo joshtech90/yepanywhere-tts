@@ -41,6 +41,22 @@ Client state that must not collide across hosted/remote sources → (2).
 Session/server config that seeds new sessions or must survive on the server →
 (3).
 
+### Explicit browser-settings backup
+
+The Settings navigation exposes one server-stored Save/Load slot for portable
+browser preferences. This is a transfer mechanism layered over (1), not a
+fourth persistence scope: settings remain browser-local until the user presses
+Save, and Load replaces the allowlisted preference set before reloading the
+client. Server-persisted settings in (3) already survive and are not duplicated
+into the backup.
+
+The client owns an explicit allowlist. Browser identity, relay/auth and speech
+credentials, source-scoped state, drafts, cache contents and runtime
+measurements, hardware device ids, recent-project history, and legacy migration
+keys never enter the server copy. Hosted clients show the controls only when
+the connected server advertises `browser-settings-backup`; older servers retain
+the ordinary local settings behavior.
+
 ## Categories (what each is *for*)
 
 The category registry is `CATEGORY_COMPONENTS` in
@@ -54,9 +70,12 @@ inventory: `appearance`, `toolbar`, `model`, `message-delivery`,
 Placement precedents (the load-bearing ones — choose by *what the user is
 conceptually adjusting*, not where the code lives):
 
-- **Appearance** — things you can **see at rest, without mouseover first**:
-  visual rendering (fonts, spacing, and visibility toggles like show-thinking's
-  display). `AppearanceSettings.tsx` / `useOutputAppearance`.
+- **Appearance** — visual presentation (fonts, spacing, visibility toggles like
+  show-thinking's display, and the style/timing of transient presentation such
+  as tooltips). Most Appearance effects are visible at rest; a presentation
+  preference does not move to Toolbar merely because hover reveals it.
+  `AppearanceSettings.tsx` / `useOutputAppearance`; see
+  [tooltip-interactions](tooltip-interactions.md).
 - **Toolbar** — which **commands / affordances** are shown in the toolbar.
   `ToolbarSettings.tsx`.
 - **Model + new-session defaults / options** — things **set on session start**:

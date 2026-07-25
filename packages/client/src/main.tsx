@@ -7,15 +7,18 @@ const Wrapper = STRICT_MODE ? StrictMode : Fragment;
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { TooltipLayer } from "./components/ui/TooltipLayer";
 import { initializeFontSize } from "./hooks/useFontSize";
 import { initializeContentMaxWidth } from "./hooks/useContentMaxWidth";
 import { initializeOutputAppearance } from "./hooks/useOutputAppearance";
 import { initializeTabSize } from "./hooks/useTabSize";
 import { initializeTheme } from "./hooks/useTheme";
+import { initializeTooltipAppearance } from "./hooks/useTooltipAppearance";
 import { registerServiceWorkerAtStartup } from "./lib/registerServiceWorker";
 import { NavigationLayout, SessionDomLingerRouteMarker } from "./layouts";
 import { ActivityPage } from "./pages/ActivityPage";
 import { AgentsPage } from "./pages/AgentsPage";
+import { BangCommandsPage } from "./pages/BangCommandsPage";
 import { EmulatorPage } from "./pages/EmulatorPage";
 import { FilePage } from "./pages/FilePage";
 import { GitStatusPage } from "./pages/GitStatusPage";
@@ -138,6 +141,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   initializeOutputAppearance();
   initializeTabSize();
   initializeContentMaxWidth();
+  initializeTooltipAppearance();
 
   // Register SW at startup so PWA install is available without visiting settings
   registerServiceWorkerAtStartup();
@@ -160,6 +164,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   createRoot(rootElement).render(
     <Wrapper>
       <ErrorBoundary>
+        <TooltipLayer />
         <BrowserRouter basename={basename}>
           <App>
             <Routes>
@@ -198,6 +203,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                   element={<Navigate to="/sessions" replace />}
                 />
                 <Route path="/git-status" element={<GitStatusPage />} />
+                <Route path="/bang-commands" element={<BangCommandsPage />} />
                 <Route path="/devices" element={<EmulatorPage />} />
                 <Route path="/devices/:deviceId" element={<EmulatorPage />} />
                 <Route path="/new-session" element={<NewSessionPage />} />

@@ -11,6 +11,7 @@ import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { useOptionalSessionMetadata } from "../../../contexts/SessionMetadataContext";
 import { useExpandedDiff } from "../../../hooks/useExpandedDiff";
+import { useVisibilityAwareTextTooltip } from "../../../hooks/useTooltipAppearance";
 import {
   classifyToolError,
   getErrorClassSuffix,
@@ -26,7 +27,14 @@ import {
   FixedFontMathToggle,
   type FixedFontRenderMode,
 } from "../../ui/FixedFontMathToggle";
+import { HiddenContentBadge } from "../../ui/HiddenContentBadge";
 import { Modal } from "../../ui/Modal";
+import {
+  captureDiffSelection,
+  type DiffSelectionSnapshot,
+  restoreDiffSelection,
+} from "./editSelectionTransfer";
+import { getOutputTailTooltip } from "./outputPreview";
 import type { EditInput, EditResult, PatchHunk, ToolRenderer } from "./types";
 
 const MAX_VISIBLE_LINES = 12;
@@ -265,12 +273,13 @@ function diffTextToNewSide(diffText: string): string {
 function truncateByLines(
   text: string,
   maxLines: number,
-): { text: string; truncated: boolean } {
+): { hiddenLineCount: number; text: string; truncated: boolean } {
   const lines = text.split("\n");
   if (lines.length <= maxLines) {
-    return { text, truncated: false };
+    return { hiddenLineCount: 0, text, truncated: false };
   }
   return {
+    hiddenLineCount: lines.length - maxLines,
     text: lines.slice(0, maxLines).join("\n"),
     truncated: true,
   };
@@ -360,7 +369,9 @@ function DiffMathView({
   diffAware = true,
   baseFilePath,
   renderMode,
+  initialMode,
   copyText,
+  hiddenLineCount = 0,
 }: {
   sourceText: string;
   sourceView: ReactNode;
@@ -368,35 +379,151 @@ function DiffMathView({
   diffAware?: boolean;
   baseFilePath?: string;
   renderMode?: FixedFontRenderMode;
+  initialMode?: DiffSelectionSnapshot["renderMode"];
   copyText?: string;
+  hiddenLineCount?: number;
 }) {
   const effectiveCopyText =
     copyText ?? (diffAware ? diffTextToNewSide(sourceText) : sourceText);
   const effectiveRenderMode =
     renderMode ?? getEditRenderMode(baseFilePath ? [baseFilePath] : []);
+  const tailTooltip = truncated
+    ? getOutputTailTooltip(sourceText, MAX_VISIBLE_LINES)
+    : null;
+  const tooltipAttributes = useVisibilityAwareTextTooltip<HTMLDivElement>(
+    sourceText,
+    tailTooltip,
+  );
   return (
     <FixedFontMathToggle
       sourceText={sourceText}
       diffAware={diffAware}
       baseFilePath={baseFilePath}
       renderMode={effectiveRenderMode}
+      initialMode={initialMode}
       sourceView={
-        <div className={`diff-view-container ${truncated ? "truncated" : ""}`}>
+        <div
+          className={`diff-view-container ${truncated ? "truncated" : ""}`}
+          {...tooltipAttributes}
+        >
           <div className="diff-view">{sourceView}</div>
           {effectiveCopyText && <DiffCopyButton text={effectiveCopyText} />}
           {truncated && <div className="diff-fade-overlay" />}
+          {hiddenLineCount > 0 && (
+            <HiddenContentBadge
+              className="edit-preview-more"
+              count={hiddenLineCount}
+              tooltip={tailTooltip ?? sourceText}
+            />
+          )}
         </div>
       }
       renderRenderedView={(html) => (
-        <div className={`diff-view-container ${truncated ? "truncated" : ""}`}>
+        <div
+          className={`diff-view-container ${truncated ? "truncated" : ""}`}
+          {...tooltipAttributes}
+        >
           <div className="diff-view">
             {renderFixedFontMathPanel(html, "diff-content")}
           </div>
           {effectiveCopyText && <DiffCopyButton text={effectiveCopyText} />}
           {truncated && <div className="diff-fade-overlay" />}
+          {hiddenLineCount > 0 && (
+            <HiddenContentBadge
+              className="edit-preview-more"
+              count={hiddenLineCount}
+              tooltip={tailTooltip ?? sourceText}
+            />
+          )}
         </div>
       )}
     />
+  );
+}
+
+function useRestoreDiffSelection(
+  containerRef: { current: HTMLDivElement | null },
+  snapshot?: DiffSelectionSnapshot | null,
+) {
+  useEffect(() => {
+    if (!snapshot) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (containerRef.current) {
+        restoreDiffSelection(containerRef.current, snapshot);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [containerRef, snapshot]);
+}
+
+/**
+ * Tap target wrapping a diff preview: tapping the diff itself opens the
+ * full-diff modal (replacing the old dedicated "Show full diff" button).
+ * Inner buttons and links (copy, math toggle, file links) keep their own
+ * behavior.
+ */
+function DiffTapTarget({
+  label,
+  onOpen,
+  children,
+}: {
+  label: string;
+  onOpen: (selection?: DiffSelectionSnapshot) => void;
+  children: ReactNode;
+}) {
+  const hasSelectionWithin = (element: HTMLElement): boolean => {
+    const selection = element.ownerDocument.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return false;
+    }
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (
+        range.startContainer === element ||
+        element.contains(range.startContainer) ||
+        range.endContainer === element ||
+        element.contains(range.endContainer)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return (
+    // A native <button> cannot wrap the diff's inner buttons/links, so this
+    // mirrors the bash-collapsed-preview role="button" container pattern.
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      className="diff-tap-target"
+      onClick={(event) => {
+        if (hasSelectionWithin(event.currentTarget)) {
+          event.stopPropagation();
+          const selection = captureDiffSelection(event.currentTarget);
+          if (selection) onOpen(selection);
+          return;
+        }
+        const target = event.target as Element | null;
+        if (target?.closest?.("button,a")) {
+          return;
+        }
+        event.stopPropagation();
+        onOpen();
+      }}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) {
+          return;
+        }
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -522,10 +649,17 @@ function RawPatchPreview({
   );
   const preview = useMemo(() => {
     if (!truncateLines) {
-      return { text: rawPatch, truncated: false };
+      return { hiddenLineCount: 0, text: rawPatch, truncated: false };
     }
     return truncateByLines(rawPatch, truncateLines);
   }, [rawPatch, truncateLines]);
+  const tailTooltip = truncateLines
+    ? getOutputTailTooltip(rawPatch, truncateLines)
+    : null;
+  const tooltipAttributes = useVisibilityAwareTextTooltip<HTMLDivElement>(
+    rawPatch,
+    tailTooltip,
+  );
 
   return (
     <FixedFontMathToggle
@@ -536,6 +670,7 @@ function RawPatchPreview({
       sourceView={
         <div
           className={`diff-view-container ${preview.truncated ? "truncated" : ""}`}
+          {...tooltipAttributes}
         >
           <div className="diff-view">
             <pre className="code-block">
@@ -543,16 +678,31 @@ function RawPatchPreview({
             </pre>
           </div>
           {preview.truncated && <div className="diff-fade-overlay" />}
+          {preview.hiddenLineCount > 0 && (
+            <HiddenContentBadge
+              className="edit-preview-more"
+              count={preview.hiddenLineCount}
+              tooltip={tailTooltip ?? rawPatch}
+            />
+          )}
         </div>
       }
       renderRenderedView={(html) => (
         <div
           className={`diff-view-container ${preview.truncated ? "truncated" : ""}`}
+          {...tooltipAttributes}
         >
           <div className="diff-view">
             {renderFixedFontMathPanel(html, "code-block")}
           </div>
           {preview.truncated && <div className="diff-fade-overlay" />}
+          {preview.hiddenLineCount > 0 && (
+            <HiddenContentBadge
+              className="edit-preview-more"
+              count={preview.hiddenLineCount}
+              tooltip={tailTooltip ?? rawPatch}
+            />
+          )}
         </div>
       )}
     />
@@ -562,10 +712,14 @@ function RawPatchPreview({
 function RawPatchModalContent({
   rawPatch,
   baseFilePath,
+  selection,
 }: {
   rawPatch: string;
   baseFilePath?: string;
+  selection?: DiffSelectionSnapshot | null;
 }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  useRestoreDiffSelection(contentRef, selection);
   const targetFilePaths = extractFilePathsFromRawPatch(rawPatch);
   const targetFilePath = baseFilePath ?? targetFilePaths[0];
   const renderMode = getEditRenderMode(
@@ -576,9 +730,10 @@ function RawPatchModalContent({
         : [],
   );
   return (
-    <div className="diff-modal-content">
+    <div className="diff-modal-content" ref={contentRef}>
       <FixedFontMathToggle
         sourceText={rawPatch}
+        initialMode={selection?.renderMode}
         diffAware
         baseFilePath={targetFilePath}
         renderMode={renderMode}
@@ -635,6 +790,7 @@ function EditToolUse({ input }: { input: EditInputWithAugment }) {
         baseFilePath={filePath}
         renderMode={renderMode}
         truncated={isTruncated}
+        hiddenLineCount={Math.max(0, diffLines.length - MAX_VISIBLE_LINES)}
         sourceView={
           input._diffHtml ? (
             <HighlightedDiff
@@ -661,6 +817,7 @@ function DiffModalContent({
   oldString,
   newString,
   originalFile,
+  selection,
 }: {
   diffHtml?: string;
   structuredPatch: PatchHunk[];
@@ -669,11 +826,13 @@ function DiffModalContent({
   newString: string;
   /** Complete file content from SDK Edit result (never truncated). Null for file creation. */
   originalFile?: string | null;
+  selection?: DiffSelectionSnapshot | null;
 }) {
   const sessionMetadata = useOptionalSessionMetadata();
   const projectPath = sessionMetadata?.projectPath ?? null;
   const [showFullContext, setShowFullContext] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  useRestoreDiffSelection(contentRef, selection);
 
   // Only fetch expanded diff when originalFile is available (not for file creation)
   // The SDK's originalFile is never truncated - it's the complete file content.
@@ -754,6 +913,7 @@ function DiffModalContent({
       <DiffMathView
         sourceText={displayPatch.flatMap((h) => h.lines).join("\n")}
         baseFilePath={displayPath}
+        initialMode={selection?.renderMode}
         sourceView={
           displayHtml ? (
             <HighlightedDiff diffHtml={displayHtml} />
@@ -812,6 +972,8 @@ function EditCollapsedPreview({
   isError: boolean;
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalSelection, setModalSelection] =
+    useState<DiffSelectionSnapshot | null>(null);
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
   const [validationErrors, setValidationErrors] = useState<ZodError | null>(
@@ -833,18 +995,13 @@ function EditCollapsedPreview({
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("Edit");
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (!isError) {
-        setIsModalOpen(true);
-      }
-    },
-    [isError],
-  );
-
   const handleClose = useCallback(() => {
     setIsModalOpen(false);
+    setModalSelection(null);
+  }, []);
+  const handleOpen = useCallback((selection?: DiffSelectionSnapshot) => {
+    setModalSelection(selection ?? null);
+    setIsModalOpen(true);
   }, []);
 
   // Use result data if available, fall back to input
@@ -918,36 +1075,30 @@ function EditCollapsedPreview({
             </span>
           ) : null}
           {hasProposedDiff && (
-            <DiffMathView
-              sourceText={proposedDiffLines.join("\n")}
-              baseFilePath={filePath}
-              renderMode={renderMode}
-              truncated={proposedDiffTruncated}
-              sourceView={
-                input._diffHtml ? (
-                  <HighlightedDiff
-                    diffHtml={input._diffHtml}
-                    truncateLines={
-                      proposedDiffTruncated ? MAX_VISIBLE_LINES : undefined
-                    }
-                  />
-                ) : (
-                  <DiffLines lines={proposedDiffLines} />
-                )
-              }
-            />
-          )}
-          {hasProposedDiff && proposedDiffTruncated && (
-            <button
-              type="button"
-              className="diff-expand-button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsModalOpen(true);
-              }}
-            >
-              Show full diff
-            </button>
+            <DiffTapTarget label="Show full diff" onOpen={handleOpen}>
+              <DiffMathView
+                sourceText={proposedDiffLines.join("\n")}
+                baseFilePath={filePath}
+                renderMode={renderMode}
+                truncated={proposedDiffTruncated}
+                hiddenLineCount={Math.max(
+                  0,
+                  proposedDiffLines.length - MAX_VISIBLE_LINES,
+                )}
+                sourceView={
+                  input._diffHtml ? (
+                    <HighlightedDiff
+                      diffHtml={input._diffHtml}
+                      truncateLines={
+                        proposedDiffTruncated ? MAX_VISIBLE_LINES : undefined
+                      }
+                    />
+                  ) : (
+                    <DiffLines lines={proposedDiffLines} />
+                  )
+                }
+              />
+            </DiffTapTarget>
           )}
         </div>
         {isModalOpen && hasProposedDiff && (
@@ -967,6 +1118,7 @@ function EditCollapsedPreview({
               filePath={filePath}
               oldString={oldString}
               newString={newString}
+              selection={modalSelection}
             />
           </Modal>
         )}
@@ -985,30 +1137,19 @@ function EditCollapsedPreview({
     }
 
     if (rawPatch) {
-      const rawPatchPreview = truncateByLines(rawPatch, MAX_VISIBLE_LINES);
       return (
         <>
           <div className="edit-collapsed-preview">
             {showValidationWarning && validationErrors && (
               <SchemaWarning toolName="Edit" errors={validationErrors} />
             )}
-            <RawPatchPreview
-              rawPatch={rawPatch}
-              truncateLines={MAX_VISIBLE_LINES}
-              baseFilePath={filePath}
-            />
-            {rawPatchPreview.truncated && (
-              <button
-                type="button"
-                className="diff-expand-button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsModalOpen(true);
-                }}
-              >
-                Show full patch
-              </button>
-            )}
+            <DiffTapTarget label="Show full patch" onOpen={handleOpen}>
+              <RawPatchPreview
+                rawPatch={rawPatch}
+                truncateLines={MAX_VISIBLE_LINES}
+                baseFilePath={filePath}
+              />
+            </DiffTapTarget>
           </div>
           {isModalOpen && (
             <Modal
@@ -1020,6 +1161,7 @@ function EditCollapsedPreview({
               <RawPatchModalContent
                 rawPatch={rawPatch}
                 baseFilePath={filePath}
+                selection={modalSelection}
               />
             </Modal>
           )}
@@ -1046,31 +1188,25 @@ function EditCollapsedPreview({
         {showValidationWarning && validationErrors && (
           <SchemaWarning toolName="Edit" errors={validationErrors} />
         )}
-        <DiffMathView
-          sourceText={diffLines.join("\n")}
-          baseFilePath={filePath}
-          renderMode={renderMode}
-          truncated={isTruncated}
-          sourceView={
-            diffHtml ? (
-              <HighlightedDiff
-                diffHtml={diffHtml}
-                truncateLines={isTruncated ? MAX_VISIBLE_LINES : undefined}
-              />
-            ) : (
-              <DiffLines lines={diffLines} />
-            )
-          }
-        />
-        {isTruncated && (
-          <button
-            type="button"
-            className="diff-expand-button"
-            onClick={handleClick}
-          >
-            Show full diff
-          </button>
-        )}
+        <DiffTapTarget label="Show full diff" onOpen={handleOpen}>
+          <DiffMathView
+            sourceText={diffLines.join("\n")}
+            baseFilePath={filePath}
+            renderMode={renderMode}
+            truncated={isTruncated}
+            hiddenLineCount={Math.max(0, diffLines.length - MAX_VISIBLE_LINES)}
+            sourceView={
+              diffHtml ? (
+                <HighlightedDiff
+                  diffHtml={diffHtml}
+                  truncateLines={isTruncated ? MAX_VISIBLE_LINES : undefined}
+                />
+              ) : (
+                <DiffLines lines={diffLines} />
+              )
+            }
+          />
+        </DiffTapTarget>
       </div>
       {isModalOpen && (
         <Modal
@@ -1090,6 +1226,7 @@ function EditCollapsedPreview({
             oldString={oldString}
             newString={newString}
             originalFile={originalFile}
+            selection={modalSelection}
           />
         </Modal>
       )}
@@ -1267,11 +1404,21 @@ function EditToolResult({
   isError: boolean;
 }) {
   const [showModal, setShowModal] = useState(false);
+  const [modalSelection, setModalSelection] =
+    useState<DiffSelectionSnapshot | null>(null);
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
   const [validationErrors, setValidationErrors] = useState<ZodError | null>(
     null,
   );
+  const handleOpen = useCallback((selection?: DiffSelectionSnapshot) => {
+    setModalSelection(selection ?? null);
+    setShowModal(true);
+  }, []);
+  const handleClose = useCallback(() => {
+    setShowModal(false);
+    setModalSelection(null);
+  }, []);
 
   useEffect(() => {
     if (enabled && result) {
@@ -1292,7 +1439,7 @@ function EditToolResult({
   const totalLines = useMemo(() => {
     if (!result?.structuredPatch) return 0;
     return result.structuredPatch.reduce(
-      (sum, hunk) => sum + hunk.lines.length + 1, // +1 for hunk header
+      (sum, hunk) => sum + hunk.lines.length,
       0,
     );
   }, [result?.structuredPatch]);
@@ -1385,12 +1532,16 @@ function EditToolResult({
             </div>
           ) : null}
           {hasProposedDiff && (
-            <>
+            <DiffTapTarget label="Show full diff" onOpen={handleOpen}>
               <DiffMathView
                 sourceText={proposedDiffLines.join("\n")}
                 baseFilePath={filePath}
                 renderMode={renderMode}
                 truncated={proposedDiffTruncated}
+                hiddenLineCount={Math.max(
+                  0,
+                  proposedDiffLines.length - MAX_VISIBLE_LINES,
+                )}
                 sourceView={
                   inputWithAugment?._diffHtml ? (
                     <HighlightedDiff
@@ -1404,19 +1555,7 @@ function EditToolResult({
                   )
                 }
               />
-              {proposedDiffTruncated && (
-                <button
-                  type="button"
-                  className="diff-expand-button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowModal(true);
-                  }}
-                >
-                  Show full diff
-                </button>
-              )}
-            </>
+            </DiffTapTarget>
           )}
         </div>
         {showModal && hasProposedDiff && inputWithAugment && (
@@ -1428,7 +1567,7 @@ function EditToolResult({
                 lineRange={fileLineRange}
               />
             }
-            onClose={() => setShowModal(false)}
+            onClose={handleClose}
           >
             <DiffModalContent
               diffHtml={inputWithAugment._diffHtml}
@@ -1436,6 +1575,7 @@ function EditToolResult({
               filePath={filePath}
               oldString={inputWithAugment.old_string}
               newString={inputWithAugment.new_string}
+              selection={modalSelection}
             />
           </Modal>
         )}
@@ -1495,29 +1635,20 @@ function EditToolResult({
         {result.userModified && (
           <span className="badge badge-info">User modified</span>
         )}
-        <DiffMathView
-          sourceText={result.structuredPatch
-            .flatMap((hunk) => hunk.lines)
-            .join("\n")}
-          baseFilePath={result.filePath}
-          renderMode={getEditRenderMode(extractEditFilePaths(input, result))}
-          truncated={isTruncated}
-          sourceView={result.structuredPatch.map((hunk, i) => (
-            <DiffHunk key={`hunk-${hunk.oldStart}-${i}`} hunk={hunk} />
-          ))}
-        />
-        {isTruncated && (
-          <button
-            type="button"
-            className="diff-expand-button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowModal(true);
-            }}
-          >
-            Click to expand
-          </button>
-        )}
+        <DiffTapTarget label="Show full diff" onOpen={handleOpen}>
+          <DiffMathView
+            sourceText={result.structuredPatch
+              .flatMap((hunk) => hunk.lines)
+              .join("\n")}
+            baseFilePath={result.filePath}
+            renderMode={getEditRenderMode(extractEditFilePaths(input, result))}
+            truncated={isTruncated}
+            hiddenLineCount={Math.max(0, totalLines - MAX_VISIBLE_LINES)}
+            sourceView={result.structuredPatch.map((hunk, i) => (
+              <DiffHunk key={`hunk-${hunk.oldStart}-${i}`} hunk={hunk} />
+            ))}
+          />
+        </DiffTapTarget>
       </div>
       {showModal && (
         <Modal
@@ -1528,7 +1659,7 @@ function EditToolResult({
               lineRange={getPatchFileLineRange(result.structuredPatch)}
             />
           }
-          onClose={() => setShowModal(false)}
+          onClose={handleClose}
         >
           <DiffModalContent
             structuredPatch={result.structuredPatch}
@@ -1536,6 +1667,7 @@ function EditToolResult({
             oldString={result.oldString ?? input?.old_string ?? ""}
             newString={result.newString ?? input?.new_string ?? ""}
             originalFile={result.originalFile}
+            selection={modalSelection}
           />
         </Modal>
       )}

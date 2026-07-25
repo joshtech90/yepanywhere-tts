@@ -35,6 +35,13 @@ This differs from Claude. Claude's local session path already encodes the
 project directory, so project discovery can start from directory names. Codex
 stores by date, so project discovery requires metadata.
 
+One deliberate exception to "YA never rewrites provider-owned rollouts": when
+the user explicitly Kills a Codex session, YA renames its rollout with a
+`.killed-<timestamp>` suffix so no resume path (YA or Codex app-server) can
+find it. The rename is reversible and the content untouched; see
+`topics/heartbeat.md` § Unowned Resume Exemptions and
+`packages/server/src/sessions/resume-exemption.ts`.
+
 ## Read Surfaces
 
 There are two main YA surfaces over the same rollout tree:
@@ -108,7 +115,7 @@ current shape has important scale and representation gaps:
   centers on the configured active sessions directory.
 - Compression is a representation detail, but YA must not pay whole-transcript
   decompression cost just to rediscover head metadata. Because YA still
-  declares Node `>=20`, `.jsonl.zst` rollouts are supported only when the
+  declares Node `>=20.12`, `.jsonl.zst` rollouts are supported only when the
   active Node runtime exposes native `node:zlib` zstd APIs; older runtimes skip
   compressed rollouts cleanly.
 - The session id visible in YA must remain explicit. Provider-native resume

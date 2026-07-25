@@ -1,8 +1,11 @@
 import type {
+  BangCommandTranscriptDisplayObject,
   EffortLevel,
+  PermissionMode,
   PromptSuggestionMode,
   ProviderName,
   ProjectQueueItemSummary,
+  ProjectQueueStagedAttachments,
   PublicSessionShareSessionStatusResponse,
   ThinkingMode,
   TranscriptDisplayObject,
@@ -19,10 +22,14 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
+import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
+import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
+import { bangCommandsAreEnabled } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
+import { HostIdentityMarker } from "../components/HostIdentityMarker";
 import { getForkSummaryAutoOpen } from "../hooks/useForkSummaryAutoOpen";
 import { PendingToolWarning } from "../components/PendingToolWarning";
 import {
@@ -119,7 +126,7 @@ import {
   thinkingOptionFromProcess,
   thinkingOptionFromSelection,
 } from "../lib/liveThinkingConfig";
-import { preprocessMessages } from "../lib/preprocessMessages";
+import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
 import {
@@ -135,9 +142,11 @@ import {
   createComposerDraftAttachmentState,
   getComposerTransferReplacement,
   materializeComposerAttachmentsForSubmission,
+  splitComposerAttachmentsForSubmission,
   type PreparedComposerSubmission,
   uploadComposerAttachmentFile,
 } from "../lib/sessionComposerSubmission";
+import { isLegacyCodexSetupText } from "../lib/codexLegacySetup";
 import { resolveSessionProviderCapabilities } from "../lib/providerCapabilities";
 import {
   serverSupportsProjectQueue,
@@ -147,9 +156,7 @@ import {
   createSessionDraftStorageKey,
   saveSessionDraft,
 } from "../lib/sessionDraftStorage";
-import {
-  turnContentText,
-} from "../lib/sessionMessageText";
+import { turnContentText } from "../lib/sessionMessageText";
 import {
   getEstimatedServerOffsetMs,
   getServerClockTimestamp,
@@ -216,14 +223,6 @@ function messageKey(message: Message | undefined): string | undefined {
 
 function isForkAnchorMessage(message: Message | undefined): boolean {
   return message?.type === "user" || message?.type === "assistant";
-}
-
-function isSessionSetupTurnText(text: string): boolean {
-  const trimmed = text.trimStart();
-  return (
-    trimmed.startsWith("# AGENTS.md instructions") ||
-    trimmed.startsWith("<environment_context>")
-  );
 }
 
 function isMissingDeferredQueueEntryError(error: unknown): boolean {
@@ -370,6 +369,7 @@ function SessionPageContent({
   isDomLingerParked: boolean;
 }) {
   const { t } = useI18n();
+  const { showToast } = useToastContext();
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
   const basePath = useRemoteBasePath();
@@ -449,8 +449,13 @@ function SessionPageContent({
     () => ({
       ...clientTailParams,
       detailedLoadingProgress: sessionLoadingProgressEnabled,
+      onConfigurationError: (failure: { setting: "effort" }) => {
+        if (failure.setting === "effort") {
+          showToast(t("effortChangeApplyFailed"), "error");
+        }
+      },
     }),
-    [clientTailParams, sessionLoadingProgressEnabled],
+    [clientTailParams, sessionLoadingProgressEnabled, showToast, t],
   );
 
   const updateClientTailParams = useCallback(
@@ -535,10 +540,12 @@ function SessionPageContent({
     slashCommands,
     setSessionModel,
     pagination,
+    activeWindowTrimRevision,
     loadingOlder,
     loadOlderMessages,
     initialScrollSnapshot,
     updateRouteScrollSnapshot,
+    updateActiveWindowFollowingBottom,
     reconnectStream,
     promptSuggestion,
     dismissPromptSuggestion,
@@ -576,6 +583,10 @@ function SessionPageContent({
   const { generatedTitleLength } = useGeneratedTitleLength();
   const { generatedTitleEnabled } = useGeneratedTitleEnabled();
   const { settings: serverSettings } = useServerSettings();
+  const bangCommandsEnabled = bangCommandsAreEnabled(
+    versionInfo,
+    serverSettings?.clientDefaults,
+  );
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareGlobalStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -616,6 +627,7 @@ function SessionPageContent({
             attachments: item.message.attachments,
             lastError: item.lastError,
             isMutating: projectQueues.mutatingItemId === item.id,
+            canEdit: !item.message.stagedAttachments,
           },
         ];
       }),
@@ -660,7 +672,6 @@ function SessionPageContent({
   const effectiveModel = session?.model ?? initialModel;
   const [liveModelConfig, setLiveModelConfig] =
     useState<LiveModelConfig | null>(null);
-  const { showToast } = useToastContext();
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const draftControlsRef = useRef<DraftControls | null>(null);
@@ -1301,7 +1312,7 @@ function SessionPageContent({
       const firstUser = messages.find((message) => {
         if (message.type !== "user") return false;
         const text = turnContentText(message.message?.content);
-        return !isSessionSetupTurnText(text);
+        return !isLegacyCodexSetupText(text, [message]);
       });
       const firstUserId = messageKey(firstUser);
       if (!firstUserId) {
@@ -1412,7 +1423,7 @@ function SessionPageContent({
     [messages],
   );
   const activityRenderItems = useMemo(
-    () => preprocessMessages(messages),
+    () => getCachedWebTranscriptProjection(messages),
     [messages],
   );
   const sessionActivityUi = useMemo(
@@ -2206,6 +2217,119 @@ function SessionPageContent({
   const handleSendRef = useRef(handleSend);
   handleSendRef.current = handleSend;
 
+  // !! bang commands: local shell runs in the project dir, never provider
+  // ingress; persisted as transcript display objects (topics/bang-commands.md).
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const runBangCommand = useCallback(
+    async (command: string) => {
+      const currentMessages = messagesRef.current;
+      const lastMessage = currentMessages[currentMessages.length - 1];
+      const placementAfterMessageId = lastMessage
+        ? ((lastMessage.uuid ?? lastMessage.id) as string | undefined) || ""
+        : "";
+      try {
+        const result = await api.runBangCommand(
+          projectId,
+          sessionId,
+          command,
+          placementAfterMessageId,
+        );
+        updateTranscriptDisplayObjectsForSession(
+          sessionId,
+          () => result.transcriptDisplayObjects,
+        );
+        setScrollTrigger((prev) => prev + 1);
+      } catch (error) {
+        showToast(t("bangRunFailed"), "error");
+        throw error;
+      }
+    },
+    [
+      projectId,
+      sessionId,
+      updateTranscriptDisplayObjectsForSession,
+      showToast,
+      t,
+    ],
+  );
+
+  const echoBangCommand = useCallback(
+    async (object: BangCommandTranscriptDisplayObject) => {
+      try {
+        const output = await api.fetchBangCommandOutput(
+          projectId,
+          sessionId,
+          object.id,
+        );
+        await handleSendRef.current(buildBangEchoText(object, output));
+      } catch {
+        showToast(t("bangEchoFailed"), "error");
+      }
+    },
+    [projectId, sessionId, showToast, t],
+  );
+
+  const bangCommandHandlers = useMemo<BangCommandHandlers>(
+    () => ({
+      onKill: (objectId) => {
+        void api
+          .killBangCommand(projectId, sessionId, objectId)
+          .catch(() => {});
+      },
+      onDelete: (objectId) => {
+        void api
+          .deleteBangCommand(projectId, sessionId, objectId)
+          .then((result) => {
+            updateTranscriptDisplayObjectsForSession(
+              sessionId,
+              () => result.transcriptDisplayObjects,
+            );
+          })
+          .catch(() => {});
+      },
+      onRerun: (command) => {
+        void runBangCommand(command).catch(() => {});
+      },
+      onRecall: (command) => {
+        draftControlsRef.current?.setDraft(`!!${command}`);
+      },
+      onEcho: (object) => {
+        void echoBangCommand(object);
+      },
+      fetchOutput: (objectId) =>
+        api.fetchBangCommandOutput(projectId, sessionId, objectId),
+    }),
+    [
+      projectId,
+      sessionId,
+      runBangCommand,
+      echoBangCommand,
+      updateTranscriptDisplayObjectsForSession,
+    ],
+  );
+
+  const bangHistory = useMemo(
+    () => collectBangHistory(session?.transcriptDisplayObjects),
+    [session?.transcriptDisplayObjects],
+  );
+
+  const composerBangSupport = useMemo(
+    () => ({
+      onRun: (command: string) => runBangCommand(command),
+      fetchCompletions: (
+        token: string,
+        kind: "command" | "path",
+        line: string,
+      ) =>
+        api
+          .fetchBangCompletions(projectId, token, kind, line)
+          .then((result) => result.completions),
+      history: bangHistory,
+    }),
+    [projectId, runBangCommand, bangHistory],
+  );
+
   const handleQueue = async (
     text: string,
     metadata?: MessageSubmissionMetadata,
@@ -2389,8 +2513,9 @@ function SessionPageContent({
     }
   };
 
-  const handleProjectQueue = async (
+  const queueComposerForProject = async (
     text: string,
+    targetType: "existing-session" | "new-session",
     metadata?: MessageSubmissionMetadata,
   ) => {
     const prepared = prepareComposerSubmission(text);
@@ -2405,40 +2530,62 @@ function SessionPageContent({
 
     let currentAttachments = [...attachmentsRef.current];
     let uploadedAttachments: UploadedFile[] = [];
+    let stagedAttachments: ProjectQueueStagedAttachments | undefined;
 
     try {
       currentAttachments = await collectComposerAttachmentsForSubmission();
-      uploadedAttachments =
-        await materializeComposerAttachments(currentAttachments);
+      if (targetType === "new-session") {
+        const splitAttachments =
+          splitComposerAttachmentsForSubmission(currentAttachments);
+        uploadedAttachments = splitAttachments.uploadedFiles;
+        stagedAttachments = splitAttachments.draftState ?? undefined;
+      } else {
+        uploadedAttachments =
+          await materializeComposerAttachments(currentAttachments);
+      }
       logSessionUiTrace("composer-project-queue-start", {
         sessionId,
         projectId,
+        targetType,
         permissionMode,
         thinking,
         slashCommand: slashCommand ?? null,
         textLength: outgoingText.length,
-        attachmentCount: uploadedAttachments.length,
+        attachmentCount: currentAttachments.length,
         clientTimestamp,
         serverOffsetMs: getEstimatedServerOffsetMs(),
       });
       const requestSentAtMs = Date.now();
       const response = await api.createProjectQueueItem(projectId, {
-        target: {
-          type: "existing-session",
-          sessionId,
-          mode: permissionMode,
-          model: session?.model ?? getModelSetting(),
-          thinking,
-          showThinking,
-          provider: effectiveProvider,
-          executor: session?.executor,
-        },
+        target:
+          targetType === "new-session"
+            ? {
+                type: "new-session",
+                mode: permissionMode,
+                model: session?.model ?? getModelSetting(),
+                thinking,
+                showThinking,
+                provider: effectiveProvider,
+                executor: session?.executor,
+                title: outgoingText,
+              }
+            : {
+                type: "existing-session",
+                sessionId,
+                mode: permissionMode,
+                model: session?.model ?? getModelSetting(),
+                thinking,
+                showThinking,
+                provider: effectiveProvider,
+                executor: session?.executor,
+              },
         message: {
           text: outgoingText,
           mode: permissionMode,
           ...(uploadedAttachments.length > 0
             ? { attachments: uploadedAttachments }
             : {}),
+          ...(stagedAttachments ? { stagedAttachments } : {}),
           metadata: {
             ...metadata,
             deliveryIntent: "deferred",
@@ -2454,18 +2601,27 @@ function SessionPageContent({
       logSessionUiTrace("composer-project-queue-result", {
         sessionId,
         projectId,
+        targetType,
         uploadWaitMs: requestSentAtMs - actionAtMs,
       });
       draftControlsRef.current?.clearDraft();
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
-      showToast(t("projectQueueSessionQueuedToast"), "success");
+      showToast(
+        t(
+          targetType === "new-session"
+            ? "projectQueueNewSessionQueuedToast"
+            : "projectQueueSessionQueuedToast",
+        ),
+        "success",
+      );
     } catch (err) {
-      console.error("Failed to queue project message:", err);
+      console.error("Failed to queue Project Queue message:", err);
       logSessionUiTrace("composer-project-queue-error", {
         sessionId,
         projectId,
+        targetType,
         message: err instanceof Error ? err.message : String(err),
       });
       draftControlsRef.current?.restoreFromStorage();
@@ -2474,6 +2630,16 @@ function SessionPageContent({
       showToast(t("projectQueueSubmitFailed", { message: errorMsg }), "error");
     }
   };
+
+  const handleProjectQueue = (
+    text: string,
+    metadata?: MessageSubmissionMetadata,
+  ) => queueComposerForProject(text, "existing-session", metadata);
+
+  const handleProjectQueueNewSession = (
+    text: string,
+    metadata?: MessageSubmissionMetadata,
+  ) => queueComposerForProject(text, "new-session", metadata);
 
   const handleCancelProjectQueueItem = useCallback(
     async (itemId: string) => {
@@ -2489,6 +2655,98 @@ function SessionPageContent({
       }
     },
     [projectId, projectQueues.deleteItem, showToast, t],
+  );
+
+  const restoreQueuedMessageToComposer = useCallback(
+    (
+      content: string,
+      queuedAttachments: readonly ComposerAttachment[] = [],
+      mode?: PermissionMode,
+    ) => {
+      const controls = draftControlsRef.current;
+      if (!controls) {
+        return;
+      }
+      const currentDraft = controls.getDraft();
+      controls.setDraft(
+        currentDraft.trim()
+          ? appendComposerTransferDraft(currentDraft, content)
+          : content,
+      );
+      if (queuedAttachments.length > 0) {
+        setComposerAttachments((current) => [...current, ...queuedAttachments]);
+      }
+      if (mode) {
+        setPermissionMode(mode);
+      }
+      setCorrectionDraft(null);
+      requestAnimationFrame(() => controls.focus?.());
+    },
+    [setComposerAttachments, setPermissionMode],
+  );
+
+  const handleEditProjectQueueItem = useCallback(
+    async (itemId: string) => {
+      const controls = draftControlsRef.current;
+      const item = projectQueueItemsForProject.find(
+        (candidate) => candidate.id === itemId,
+      );
+      if (
+        !controls ||
+        controls.getDraft().trim() ||
+        attachmentsRef.current.length > 0 ||
+        pendingUploadsRef.current.size > 0 ||
+        !item ||
+        item.message.stagedAttachments
+      ) {
+        return;
+      }
+
+      try {
+        await projectQueues.deleteItem(projectId, itemId);
+        restoreQueuedMessageToComposer(
+          item.message.text,
+          item.message.attachments,
+          item.message.mode ?? item.target.mode,
+        );
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("projectQueueInlineEditFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [
+      projectId,
+      projectQueueItemsForProject,
+      projectQueues.deleteItem,
+      restoreQueuedMessageToComposer,
+      showToast,
+      t,
+    ],
+  );
+
+  const handleSteerProjectQueueItem = useCallback(
+    async (itemId: string) => {
+      try {
+        const result = await projectQueues.promoteNow(projectId, itemId, {
+          force: true,
+          deliveryIntent: "steer",
+        });
+        if (!result.promoted) {
+          throw new Error(result.error ?? result.reason);
+        }
+        showToast(t("projectQueueInlineSteered"), "success");
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("projectQueueInlineSteerFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [projectId, projectQueues.promoteNow, showToast, t],
   );
 
   const handleCancelDeferred = useCallback(
@@ -2518,6 +2776,43 @@ function SessionPageContent({
       }
     },
     [deferredMessages, sessionId, showToast, t],
+  );
+
+  const handleEditDeferred = useCallback(
+    async (tempId: string) => {
+      const controls = draftControlsRef.current;
+      const message = deferredMessages.find(
+        (candidate) => candidate.tempId === tempId,
+      );
+      if (
+        !controls ||
+        controls.getDraft().trim() ||
+        attachmentsRef.current.length > 0 ||
+        pendingUploadsRef.current.size > 0 ||
+        !message
+      ) {
+        return;
+      }
+
+      try {
+        await api.cancelDeferredMessage(sessionId, tempId);
+        lastComposerSubmissionRef.current =
+          getRecallSubmissionAfterQueuedCancel(
+            lastComposerSubmissionRef.current,
+            lastSentComposerSubmissionRef.current,
+            deferredMessages,
+            tempId,
+          );
+        restoreQueuedMessageToComposer(message.content, message.attachments);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        showToast(
+          t("sessionDeferredEditFailed", { message: errorMsg }),
+          "error",
+        );
+      }
+    },
+    [deferredMessages, restoreQueuedMessageToComposer, sessionId, showToast, t],
   );
 
   const handleCancelUnconfirmedUserMessage = useCallback(
@@ -3967,6 +4262,7 @@ function SessionPageContent({
                 <SidebarIcon />
               </button>
             )}
+            <HostIdentityMarker />
             {/* Project breadcrumb */}
             {project?.name && (
               <div className="project-breadcrumb-wrapper">
@@ -4404,7 +4700,12 @@ function SessionPageContent({
                 label={
                   providerRuntimeStatus
                     ? t("toolbarProviderRuntimeAria", {
-                        summary: t("processInfoRuntimeRetrying"),
+                        summary:
+                          providerRuntimeStatus.kind === "terminal"
+                            ? providerRuntimeStatus.scope === "provider_process"
+                              ? t("processInfoRuntimeProcessTerminal")
+                              : t("processInfoRuntimeTerminal")
+                            : t("processInfoRuntimeRetrying"),
                       })
                     : undefined
                 }
@@ -4655,8 +4956,14 @@ function SessionPageContent({
                   getComposerDraft={getComposerDraftForAnchors}
                   composerDraft={composerDraftForAnchors}
                   composerDraftChange={composerDraftChangeForAnchors}
+                  canEditQueuedMessages={
+                    composerDraftForAnchors.trim().length === 0 &&
+                    attachments.length === 0 &&
+                    uploadProgress.length === 0
+                  }
                   quoteClearSignal={quoteClearSignal}
                   onCancelDeferred={handleCancelDeferred}
+                  onEditDeferred={handleEditDeferred}
                   onCancelUnconfirmedUserMessage={
                     handleCancelUnconfirmedUserMessage
                   }
@@ -4665,6 +4972,8 @@ function SessionPageContent({
                   onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
                   onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
                   onCancelProjectQueueMessage={handleCancelProjectQueueItem}
+                  onEditProjectQueueMessage={handleEditProjectQueueItem}
+                  onSteerProjectQueueMessage={handleSteerProjectQueueItem}
                   onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
                   onTrimBeforeUserMessage={trimClientFromUserMessage}
                   onForkBeforeUserMessage={
@@ -4677,6 +4986,7 @@ function SessionPageContent({
                   markdownAugments={markdownAugments}
                   activeToolApproval={activeToolApproval}
                   hasOlderMessages={pagination?.hasOlderMessages}
+                  activeWindowTrimRevision={activeWindowTrimRevision}
                   loadingOlder={loadingOlder}
                   onLoadOlderMessages={loadOlderMessages}
                   clientTailActive={clientTailActive}
@@ -4687,6 +4997,7 @@ function SessionPageContent({
                   progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
                   initialScrollSnapshot={initialScrollSnapshot}
                   onScrollSnapshotChange={updateRouteScrollSnapshot}
+                  onFollowingBottomChange={updateActiveWindowFollowingBottom}
                   scrollBehaviorMode={sessionScrollBehaviorMode}
                   offscreenTranscriptRenderingEnabled={
                     sessionOffscreenTranscriptRenderingEnabled
@@ -4695,6 +5006,7 @@ function SessionPageContent({
                   onCancelForkSummary={handleCancelForkSummary}
                   onToggleForkSummaryAutoOpen={handleToggleForkSummaryAutoOpen}
                   onFollowForkSummary={followForkSummary}
+                  bangCommandHandlers={bangCommandHandlers}
                   onTranscriptPositionTimestampChange={
                     setTranscriptPositionTimestampMs
                   }
@@ -4842,6 +5154,11 @@ function SessionPageContent({
                     ? handleProjectQueue
                     : undefined
                 }
+                onProjectQueueNewSession={
+                  !mainComposerForAside && supportsProjectQueue
+                    ? handleProjectQueueNewSession
+                    : undefined
+                }
                 primaryActionKind={
                   mainComposerForAside ? "send" : primaryComposerAction
                 }
@@ -4877,6 +5194,11 @@ function SessionPageContent({
                 }
                 onDraftControlsReady={handleDraftControlsReady}
                 onDraftTextChange={handleComposerDraftTextChange}
+                bangSupport={
+                  mainComposerForAside || !bangCommandsEnabled
+                    ? undefined
+                    : composerBangSupport
+                }
                 correctionActive={
                   !mainComposerForAside && correctionDraft !== null
                 }

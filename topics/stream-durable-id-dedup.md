@@ -235,13 +235,18 @@ The round-trip exists — sending `clientUserMessageId` on `turn/start`
 (`codex.ts:createTurnStartParams`) and `turn/steer` makes Codex persist it
 as the event_msg `user_message.client_id` (`references/codex`
 `core/src/session/mod.rs:3717` sets `client_id: client_user_message_id`),
-and the live echo already uses the same `message.uuid`. The blocker is the
-durable double-source: when response-item user messages exist (the norm),
-`hasCodexResponseItemUserMessages` renders the user turn from the
-**response item** (positional uuid, no `client_id`) and skips the event_msg
-that carries `client_id`. Aligning requires either correlating the two or
-flipping that gate — entangled, and low marginal value over the 2s
-backstop (the residue is only two identical steers <2s apart). Not done.
+and the live echo already uses the same `message.uuid`. The durable
+double-source is now correlated for authorship by
+`codex-user-turn-provenance.ts`: the adjacent event witnesses the turn and the
+response item remains the rich rendering payload. Normalized messages expose
+that result as `codexUserTurnProvenance`, but still use the response item's
+positional uuid because YA's checked-in event schema does not yet retain the
+paired `client_id`. Adopting that id and re-measuring the approximate backstop
+are deferred indefinitely: the existing backstop covers the known symptom,
+while an id migration would cross schema, pagination, and reconciliation
+boundaries. Reopen only for a reproducible duplicate that survives current
+dedup and after auditing the end-to-end provider id contract. See the closed
+disposition in `topics/codex-user-turn-provenance.md`.
 
 The first user turn has one additional startup wrinkle: YA may render the
 optimistic opening turn before the Codex thread has finished startup and before
@@ -250,6 +255,20 @@ the durable first user row appears. A real report on 2026-06-30
 `02:01:07.884Z` and the durable visible user row at `02:01:12.931Z`, outside
 the general 2s window. The fix is a first-plain-user-turn-only 30s window in
 `linearMessageDedup`, not a looser general Codex backstop.
+
+An in-turn steer has the inverse timing problem: its optimistic echo can exist
+for longer than the ordinary 15–30-second server replay window before Codex
+consumes and persists it. A reconnect in that interval must still replay the
+accepted echo. `Process` therefore retains steer echoes separately until the
+provider turn boundary, while continuing to use the bounded rolling buckets for
+ordinary messages and for the short post-boundary persistence gap. This
+retention is bounded by the number of steers in the active turn; it does not
+turn the general replay buffer into an unbounded transcript. When Codex finally
+persists a long-lived steer, its positional durable id still differs from the
+echo's YA uuid and the timestamps can be far outside the general 2s backstop.
+`reconcileCodexSteerEchoes` therefore pairs only unconfirmed self-sent
+`deliveryIntent: "steer"` echoes with exact-text durable user turns,
+one-to-one, and adopts the durable row's identity and position.
 
 ### Re-reported first-turn duplicate with attachments
 

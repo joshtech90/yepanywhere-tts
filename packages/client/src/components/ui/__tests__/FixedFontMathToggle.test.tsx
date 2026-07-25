@@ -1,13 +1,17 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { UI_KEYS } from "../../../lib/storageKeys";
 import {
   FixedFontMathToggle,
   mayHaveFixedFontRichContent,
+  renderFixedFontMath,
+  renderFixedFontRichContent,
 } from "../FixedFontMathToggle";
 
 describe("FixedFontMathToggle", () => {
   afterEach(() => {
     cleanup();
+    window.localStorage.removeItem(UI_KEYS.tooltipMode);
   });
 
   it("uses a precomputed render result for toggle state and display", () => {
@@ -31,6 +35,71 @@ describe("FixedFontMathToggle", () => {
     expect(screen.getByText("precomputed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Show source" })).toBeTruthy();
   });
+
+  it("uses exclusive concise tooltip attributes for rendered file links", () => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    render(
+      <FixedFontMathToggle
+        sourceText="[notes](docs/notes.md)"
+        precomputedRendered={{
+          html: '<a href="/notes" data-fixed-font-file-path="docs/notes.md" data-tooltip="docs/notes.md">notes</a>',
+          changed: true,
+        }}
+        sourceView={<pre>[notes](docs/notes.md)</pre>}
+        renderRenderedView={(html) => (
+          <div
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: test-controlled precomputed HTML
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        )}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "notes" });
+    expect(link.getAttribute("title")).toBe("docs/notes.md");
+    expect(link.getAttribute("data-tooltip")).toBeNull();
+  });
+});
+
+describe("fixed-font LaTeX delimiters", () => {
+  const bracketedMath = [
+    "Let \\(R=\\max S_{\\text{read}}\\).",
+    "",
+    "\\[",
+    "(R+1)+(L-1-W)",
+    "\\]",
+  ].join("\n");
+
+  it("renders bracketed inline and display math in math-only mode", () => {
+    const rendered = renderFixedFontMath(bracketedMath);
+
+    expect(rendered.changed).toBe(true);
+    expect(rendered.html).toContain('class="katex"');
+    expect(rendered.html).toContain('class="katex-display"');
+    expect(rendered.html).not.toContain("\\(R=");
+    expect(rendered.html).not.toContain("\\[");
+  });
+
+  it("renders multiline bracketed display math in rich mode", () => {
+    const rendered = renderFixedFontRichContent(bracketedMath);
+
+    expect(rendered.changed).toBe(true);
+    expect(rendered.html).toContain('class="katex-display"');
+    expect(rendered.html).not.toContain("\\[");
+    expect(rendered.html).not.toContain("\\]");
+  });
+
+  it("does not treat escaped or unclosed bracket delimiters as math", () => {
+    expect(renderFixedFontMath(String.raw`literal \\(x\\)`)).toMatchObject({
+      changed: false,
+    });
+    expect(renderFixedFontMath(String.raw`unclosed \(x`)).toMatchObject({
+      changed: false,
+    });
+    expect(renderFixedFontMath("\\[\n\n\\]")).toMatchObject({
+      changed: false,
+    });
+  });
 });
 
 describe("mayHaveFixedFontRichContent", () => {
@@ -43,6 +112,20 @@ describe("mayHaveFixedFontRichContent", () => {
   it("accepts common markdown and math candidates conservatively", () => {
     expect(mayHaveFixedFontRichContent("## Heading")).toBe(true);
     expect(mayHaveFixedFontRichContent("value is $x^2$")).toBe(true);
+    expect(mayHaveFixedFontRichContent("value is \\(x^2\\)")).toBe(true);
+    expect(mayHaveFixedFontRichContent("\\[\nx^2\n\\]")).toBe(true);
     expect(mayHaveFixedFontRichContent("| a | b |\n| - | - |")).toBe(true);
+  });
+});
+
+describe("fixed-font file-link hints", () => {
+  it("omits redundant click instructions", () => {
+    const rendered = renderFixedFontRichContent("[notes](docs/notes.md)", {
+      projectId: "project-1",
+    });
+
+    expect(rendered.html).toContain('data-tooltip="/docs/notes.md"');
+    expect(rendered.html).not.toContain("Click to view");
+    expect(rendered.html).not.toContain("middle-click");
   });
 });

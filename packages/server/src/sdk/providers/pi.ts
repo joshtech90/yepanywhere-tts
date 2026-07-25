@@ -10,10 +10,11 @@
  * One `pi --mode rpc` child runs per YA session. Commands go to stdin as
  * LF-JSONL; stdout interleaves command responses, agent events, and extension
  * UI requests (see pi-rpc-client.ts). Each YA user turn sends `prompt` and
- * streams agent events until `agent_end`, normalizing them to YA SDKMessages.
+ * streams agent events until `agent_settled`, normalizing them to YA
+ * SDKMessages.
  */
 
-import { type ChildProcess, exec, spawn } from "node:child_process";
+import { type ChildProcess, exec, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +48,8 @@ import type {
 } from "./types.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const PI_AGENT_SETTLED_MIN_VERSION = [0, 80, 4] as const;
 
 /** pi image content block, as accepted by the RPC `prompt`/`steer` commands. */
 interface PiImageContent {
@@ -90,6 +93,8 @@ interface PiStreamState {
   thinking: string;
   lastUsage: SdkUsage | null;
   lastCostUsd: number | null;
+  /** Version-selected event that ends one YA provider turn. */
+  terminalEvent: "agent_end" | "agent_settled";
   /** Canonical tool inputs by pi toolCallId, updated by live partial/final events. */
   toolStates: Map<string, PiToolState>;
 }
@@ -111,6 +116,20 @@ export interface PiProviderConfig {
   piPath?: string;
   /** Override for testing (defaults to ~/.pi/agent/sessions). */
   sessionsDir?: string;
+}
+
+export function piVersionUsesAgentSettled(
+  rawVersion: string,
+): boolean | null {
+  const match = rawVersion.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  const version = match.slice(1, 4).map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < PI_AGENT_SETTLED_MIN_VERSION.length; i++) {
+    const actual = version[i] ?? 0;
+    const minimum = PI_AGENT_SETTLED_MIN_VERSION[i] ?? 0;
+    if (actual !== minimum) return actual > minimum;
+  }
+  return true;
 }
 
 /** YA EffortLevel → pi ThinkingLevel (pi has no "max"; map it to "xhigh"). */
@@ -178,6 +197,10 @@ export class PiProvider implements AgentProvider {
   private readonly configuredPath?: string;
   private readonly sessionsDir?: string;
   private cachedModels: { at: number; models: ModelInfo[] } | null = null;
+  private readonly cachedTerminalEvents = new Map<
+    string,
+    "agent_end" | "agent_settled"
+  >();
 
   constructor(config: PiProviderConfig = {}) {
     this.configuredPath = config.piPath;
@@ -268,6 +291,12 @@ export class PiProvider implements AgentProvider {
     if (!piPath) {
       return this.errorSession("pi CLI not found");
     }
+    const terminalEvent = await this.getPiTerminalEvent(piPath);
+    if (!terminalEvent) {
+      return this.errorSession(
+        "Unable to determine pi RPC lifecycle support from `pi --version`",
+      );
+    }
 
     const args = ["--mode", "rpc"];
     if (options.model && options.model !== "default") {
@@ -341,6 +370,7 @@ export class PiProvider implements AgentProvider {
       abortController.signal,
       options,
       runtime,
+      terminalEvent,
     );
 
     return {
@@ -480,7 +510,7 @@ export class PiProvider implements AgentProvider {
   /**
    * Session loop. Process + RPC client are already up and the session id is
    * known. Yields an init message first, then per queued user turn sends a
-   * `prompt` and streams agent events until `agent_end`.
+   * `prompt` and streams agent events until `agent_settled`.
    */
   private async *runSession(
     client: PiRpcClient,
@@ -490,6 +520,7 @@ export class PiProvider implements AgentProvider {
     signal: AbortSignal,
     options: StartSessionOptions,
     runtime: PiRuntimeState,
+    terminalEvent: PiStreamState["terminalEvent"],
   ): AsyncIterableIterator<SDKMessage> {
     const log = getLogger();
 
@@ -505,6 +536,7 @@ export class PiProvider implements AgentProvider {
       thinking: "",
       lastUsage: null,
       lastCostUsd: null,
+      terminalEvent,
       toolStates: new Map(),
     };
 
@@ -555,7 +587,8 @@ export class PiProvider implements AgentProvider {
           message: { role: "user", content: text },
         } as SDKMessage;
 
-        // `agent_end` for this run flips this true; the drain loop stops then.
+        // `agent_settled` flips this true after retries, compaction, and queued
+        // continuations finish; the drain loop stops only at that boundary.
         let turnComplete = false;
         stream.currentAssistantId = null;
         stream.text = "";
@@ -606,8 +639,10 @@ export class PiProvider implements AgentProvider {
    * Map one pi AgentSessionEvent to zero or more YA SDKMessages.
    *
    * Streaming text/thinking are emitted as delta slices under a stable per-
-   * message uuid (YA appends same-uuid assistant content). `agent_end` becomes a
-   * `result` carrying the last turn's usage — the drain loop's turn boundary.
+   * message uuid (YA appends same-uuid assistant content). `agent_settled`
+   * becomes a `result` carrying the last turn's usage — the drain loop's turn
+   * boundary. `agent_end` only ends one low-level run and may precede automatic
+   * retry, compaction, or queued continuation.
    */
   private mapEvent(
     event: { type: string; [key: string]: unknown },
@@ -759,7 +794,9 @@ export class PiProvider implements AgentProvider {
         return messages;
       }
 
-      case "agent_end": {
+      case "agent_end":
+      case "agent_settled": {
+        if (event.type !== stream.terminalEvent) return [];
         const result: SDKMessage = {
           type: "result",
           session_id: sessionId,
@@ -879,6 +916,26 @@ export class PiProvider implements AgentProvider {
       // Not in PATH.
     }
     return null;
+  }
+
+  private async getPiTerminalEvent(
+    piPath: string,
+  ): Promise<"agent_end" | "agent_settled" | null> {
+    const cached = this.cachedTerminalEvents.get(piPath);
+    if (cached) return cached;
+    try {
+      const { stdout } = await execFileAsync(piPath, ["--version"], {
+        encoding: "utf-8",
+      });
+      const usesAgentSettled = piVersionUsesAgentSettled(stdout);
+      if (usesAgentSettled === null) return null;
+      const terminalEvent = usesAgentSettled ? "agent_settled" : "agent_end";
+      this.cachedTerminalEvents.set(piPath, terminalEvent);
+      return terminalEvent;
+    } catch (error) {
+      getLogger().debug({ error, piPath }, "pi: version probe failed");
+      return null;
+    }
   }
 }
 

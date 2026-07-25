@@ -29,6 +29,7 @@ const sessionMessagesMock = vi.hoisted(() => ({
 const fetchNewMessages = vi.fn(async () => {});
 const fetchSessionMetadata = vi.fn(async () => {});
 const registerToolUseAgent = vi.fn();
+const handleStreamSubagentMessage = vi.fn();
 const mergeLoadedAgentContent = vi.fn();
 const updateAgentContextUsage = vi.fn();
 const clearAgentStreamingPlaceholders = vi.fn();
@@ -154,7 +155,7 @@ vi.mock("../useSessionMessages", () => ({
     updateSession,
     handleStreamingUpdate: vi.fn(),
     handleStreamMessageEvent: vi.fn(),
-    handleStreamSubagentMessage: vi.fn(),
+    handleStreamSubagentMessage,
     registerToolUseAgent,
     mergeLoadedAgentContent,
     updateAgentContextUsage,
@@ -252,6 +253,37 @@ describe("useSession completion reconciliation", () => {
     expect(result.current.processState).toBe("idle");
     expect(result.current.status).toEqual({ owner: "none" });
     expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces deferred effort configuration failures", () => {
+    const onConfigurationError = vi.fn();
+    renderHook(() =>
+      useSession(
+        PROJECT_ID,
+        "sess-1",
+        {
+          owner: "self",
+          processId: "proc-1",
+        },
+        undefined,
+        { onConfigurationError },
+      ),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "configuration-error",
+        setting: "effort",
+        requestedValue: "high",
+        message: "queued work remains blocked",
+      });
+    });
+
+    expect(onConfigurationError).toHaveBeenCalledWith({
+      setting: "effort",
+      requestedValue: "high",
+      message: "queued work remains blocked",
+    });
   });
 
   it("clears compacting state when the live stream completes", () => {
@@ -450,6 +482,35 @@ describe("useSession completion reconciliation", () => {
     expect(clearAgentStreamingPlaceholders).toHaveBeenCalledWith(
       "toolu-subagent-1",
     );
+  });
+
+  it("routes current Claude child messages by provider agent ID", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "assistant",
+        id: "assistant-current-child",
+        isSubagent: true,
+        agentId: "provider-child-1",
+        content: "done",
+      });
+    });
+
+    expect(clearAgentStreamingPlaceholders).toHaveBeenCalledWith(
+      "provider-child-1",
+    );
+    expect(handleStreamSubagentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "assistant-current-child" }),
+      "provider-child-1",
+    );
+    expect(registerToolUseAgent).not.toHaveBeenCalled();
   });
 
   it("routes main placeholder cleanup through the action wrapper", () => {

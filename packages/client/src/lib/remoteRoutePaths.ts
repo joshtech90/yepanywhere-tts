@@ -29,7 +29,20 @@ function formatRouteTarget(location: RemoteRouteLocationParts): string {
 function parseSafeRouteTarget(
   target: string | null | undefined,
 ): RemoteRouteLocationParts | null {
-  if (!target?.startsWith("/") || target.startsWith("//")) return null;
+  if (
+    !target?.startsWith("/") ||
+    target.startsWith("//") ||
+    target.includes("\\")
+  ) {
+    return null;
+  }
+
+  try {
+    const base = new URL("https://yep.invalid/");
+    if (new URL(target, base).origin !== base.origin) return null;
+  } catch {
+    return null;
+  }
 
   const hashIndex = target.indexOf("#");
   const beforeHash = hashIndex === -1 ? target : target.slice(0, hashIndex);
@@ -77,8 +90,19 @@ export function getSafeRemoteReturnTarget(
     return null;
   }
 
-  return (
-    getRelayCanonicalRedirectTarget(target, relayUsername) ??
-    formatRouteTarget(target)
+  const relayCanonicalTarget = getRelayCanonicalRedirectTarget(
+    target,
+    relayUsername,
   );
+  if (relayCanonicalTarget) return relayCanonicalTarget;
+
+  if (relayUsername) {
+    const relayPrefix = `/${encodeURIComponent(relayUsername)}`;
+    const isActiveRelayTarget =
+      target.pathname === relayPrefix ||
+      target.pathname.startsWith(`${relayPrefix}/`);
+    if (!isActiveRelayTarget) return null;
+  }
+
+  return formatRouteTarget(target);
 }

@@ -1,4 +1,5 @@
 import {
+  type ClipboardEventHandler,
   type CSSProperties,
   forwardRef,
   type KeyboardEventHandler,
@@ -7,12 +8,18 @@ import {
   useMemo,
   useState,
 } from "react";
+import { copySemanticHtmlSelectionToClipboard } from "../lib/semanticHtmlClipboard";
 
 const FILE_VIEWER_DENSITY_STORAGE_KEY = "yep-anywhere-file-viewer-density-zoom";
 const FILE_VIEWER_DENSITY_MIN = -4;
 const FILE_VIEWER_DENSITY_MAX = 6;
 const FILE_VIEWER_FONT_STEP_PX = 0.5;
 const FILE_VIEWER_VSPACE_STEP_PX = 1;
+const handleMarkdownPreviewCopy: ClipboardEventHandler<HTMLDivElement> = (
+  event,
+) => {
+  copySemanticHtmlSelectionToClipboard(event.nativeEvent, event.currentTarget);
+};
 
 export interface MarkdownPreviewDensityOffsets {
   fontSizeOffsetPx?: number;
@@ -152,6 +159,7 @@ export const MarkdownPreview = forwardRef<HTMLDivElement, MarkdownPreviewProps>(
         role="region"
         aria-label={ariaLabel ?? "Markdown preview"}
         onClick={onClick}
+        onCopy={handleMarkdownPreviewCopy}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
         ref={ref}

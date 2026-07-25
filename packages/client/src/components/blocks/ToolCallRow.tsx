@@ -16,14 +16,29 @@ import {
   useOutputToolPreviewLineCount,
 } from "../../hooks/useOutputAppearance";
 import { useStableToolPreviewRendering } from "../../hooks/useStableToolPreviewRendering";
+import {
+  getTextTooltipAttributes,
+  setElementTextTooltip,
+  useTooltipMode,
+} from "../../hooks/useTooltipAppearance";
 import { useQuoteableTextSource } from "../../hooks/useQuoteableTextSource";
 import { getDisplayBashCommandFromInput } from "../../lib/bashCommand";
 import { PREDICTIVE_SCROLL_ROOT_MARGIN } from "../../lib/predictiveScroll";
-import { parseShellToolOutput } from "../../lib/shellToolOutput";
+import {
+  formatCommandDuration,
+  getCommandResultMeta,
+  parseShellToolOutput,
+} from "../../lib/shellToolOutput";
+import {
+  getVisibilityAwareTooltipText,
+  isElementFullyScrollVisible,
+} from "../../lib/tooltipVisibility";
 import type { ToolCallItem, ToolResultData } from "../../types/renderItems";
 import { toolRegistry } from "../renderers/tools";
+import { getOutputTailTooltip } from "../renderers/tools/outputPreview";
 import type { RenderContext } from "../renderers/types";
 import { getToolSummary } from "../tools/summaries";
+import { HiddenContentBadge } from "../ui/HiddenContentBadge";
 
 interface Props {
   id: string;
@@ -32,6 +47,10 @@ interface Props {
   toolResult?: ToolResultData;
   status: ToolCallItem["status"];
   sessionProvider?: string;
+  /** Tool-call start (first source-message time) — a command's start. */
+  startTimestampMs?: number | null;
+  /** Result arrival time; null while pending or when no result message. */
+  resultTimestampMs?: number | null;
 }
 
 export const DEFERRED_PREVIEW_HEIGHT = {
@@ -67,7 +86,7 @@ type DeferredPreviewStyle = CSSProperties & {
 
 interface CommandPreview {
   text: string;
-  hiddenLabel: string | null;
+  hiddenCount: number | null;
 }
 
 interface NoOutputBashResult {
@@ -78,6 +97,90 @@ const COMMAND_PREVIEW_MAX_CHARS_PER_LINE = 220;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+interface CommandElapsed {
+  seconds: number;
+  kind: "running" | "reported" | "approximate";
+}
+
+interface CommandElapsedParams {
+  toolInput: unknown;
+  structuredResult: unknown;
+  status: ToolCallItem["status"];
+  startTimestampMs?: number | null;
+  resultTimestampMs?: number | null;
+  nowMs: number;
+}
+
+/**
+ * The command's elapsed time: provider-reported runtime when present, the
+ * request→result message-time delta as an approximate fallback, or the
+ * still-growing elapsed for pending / backgrounded-running commands.
+ * Contract: topics/provider-output-contract.md § Command execution metadata.
+ */
+function computeCommandElapsed(
+  params: CommandElapsedParams,
+): CommandElapsed | null {
+  const {
+    toolInput,
+    structuredResult,
+    status,
+    startTimestampMs,
+    resultTimestampMs,
+    nowMs,
+  } = params;
+  const backgroundStatus =
+    toolInput && typeof toolInput === "object"
+      ? (toolInput as Record<string, unknown>)._backgroundTaskStatus
+      : undefined;
+
+  if (status === "pending" || backgroundStatus === "running") {
+    return typeof startTimestampMs === "number"
+      ? { seconds: (nowMs - startTimestampMs) / 1000, kind: "running" }
+      : null;
+  }
+
+  const meta = getCommandResultMeta(structuredResult);
+  if (meta.durationSeconds !== undefined) {
+    return { seconds: meta.durationSeconds, kind: "reported" };
+  }
+  // A backgrounded command's result message is just the launch ack, so its
+  // delta is not the command's runtime.
+  if (backgroundStatus !== undefined) {
+    return null;
+  }
+  if (
+    typeof startTimestampMs === "number" &&
+    typeof resultTimestampMs === "number" &&
+    resultTimestampMs >= startTimestampMs
+  ) {
+    return {
+      seconds: (resultTimestampMs - startTimestampMs) / 1000,
+      kind: "approximate",
+    };
+  }
+  return null;
+}
+
+/** Tooltip for the Ran/Running label. Computed on hover so a running
+ * command's elapsed time is fresh without re-rendering the row. */
+function computeCommandElapsedTitle(
+  params: CommandElapsedParams,
+): string | null {
+  const elapsed = computeCommandElapsed(params);
+  if (!elapsed) {
+    return null;
+  }
+  const duration = formatCommandDuration(elapsed.seconds);
+  switch (elapsed.kind) {
+    case "running":
+      return `running for ${duration}`;
+    case "reported":
+      return `took ${duration}`;
+    case "approximate":
+      return `took ~${duration}`;
+  }
 }
 
 function normalizeTypographyMetrics(
@@ -130,21 +233,14 @@ function estimateWrappedLineCount(text: string, charsPerLine: number): number {
   return count;
 }
 
-function formatHiddenCommandLabel({
+function getHiddenCommandCount({
   hiddenChars,
   hiddenLines,
 }: {
   hiddenChars: number;
   hiddenLines: number;
-}): string | null {
-  const parts: string[] = [];
-  if (hiddenLines > 0) {
-    parts.push(`+${hiddenLines} ${hiddenLines === 1 ? "line" : "lines"}`);
-  }
-  if (hiddenChars > 0) {
-    parts.push(`+${hiddenChars}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : null;
+}): number | null {
+  return hiddenLines || hiddenChars || null;
 }
 
 function getCommandPreview(
@@ -168,7 +264,7 @@ function getCommandPreview(
 
   return {
     text,
-    hiddenLabel: formatHiddenCommandLabel({ hiddenChars, hiddenLines }),
+    hiddenCount: getHiddenCommandCount({ hiddenChars, hiddenLines }),
   };
 }
 
@@ -179,6 +275,9 @@ export function estimateDeferredPreviewHeightPx(params: {
   status: ToolCallItem["status"];
   rowWidthPx?: number | null;
   typography?: Partial<DeferredPreviewTypographyMetrics>;
+  /** Output-preview-lines appearance setting; the rendered preview clamps
+   * to this many visual lines, so the estimate must share the cap. */
+  previewLineCount?: number;
 }): number | null {
   if (
     !canDeferRichToolRow(params.status) ||
@@ -197,11 +296,13 @@ export function estimateDeferredPreviewHeightPx(params: {
     params.rowWidthPx,
     typography,
   );
+  const previewLines = clamp(Math.round(params.previewLineCount ?? 4), 1, 8);
+  const maxOutputPx = previewLines * typography.outputLineHeightPx;
   const outputPx = output
     ? Math.max(
         DEFERRED_PREVIEW_HEIGHT.minOutputRowPx,
         Math.min(
-          DEFERRED_PREVIEW_HEIGHT.maxOutputPx,
+          maxOutputPx,
           estimateWrappedLineCount(output, charsPerLine) *
             typography.outputLineHeightPx,
         ) + typography.outputRowChromePx,
@@ -213,7 +314,12 @@ export function estimateDeferredPreviewHeightPx(params: {
   return clamp(
     outputPx + DEFERRED_PREVIEW_HEIGHT.previewBorderPx,
     DEFERRED_PREVIEW_HEIGHT.minPx,
-    DEFERRED_PREVIEW_HEIGHT.maxPx,
+    Math.max(
+      DEFERRED_PREVIEW_HEIGHT.maxPx,
+      maxOutputPx +
+        typography.outputRowChromePx +
+        DEFERRED_PREVIEW_HEIGHT.previewBorderPx,
+    ),
   );
 }
 
@@ -418,12 +524,15 @@ export const ToolCallRow = memo(function ToolCallRow({
   toolResult,
   status,
   sessionProvider,
+  startTimestampMs,
+  resultTimestampMs,
 }: Props) {
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [bashCommandExpanded, setBashCommandExpanded] = useState(false);
   const sessionMetadata = useOptionalSessionMetadata();
   const outputToolPreviewLineCount = useOutputToolPreviewLineCount();
   const deferredPreviewTypography = useDeferredPreviewTypographyMetrics();
+  const tooltipMode = useTooltipMode();
   const toggleSummaryExpanded = useCallback(() => {
     setSummaryExpanded((current) => !current);
   }, []);
@@ -480,6 +589,34 @@ export const ToolCallRow = memo(function ToolCallRow({
   const isReadTool = rendererToolName === "Read";
   const isBashTool = rendererToolName === "Bash";
   const isGrepTool = rendererToolName === "Grep";
+  const handleToolNamePointerEnter = useCallback(
+    (event: React.PointerEvent<HTMLSpanElement>) => {
+      if (!isBashTool) {
+        return;
+      }
+      setElementTextTooltip(
+        event.currentTarget,
+        computeCommandElapsedTitle({
+          toolInput,
+          structuredResult,
+          status,
+          startTimestampMs,
+          resultTimestampMs,
+          nowMs: Date.now(),
+        }),
+        tooltipMode,
+      );
+    },
+    [
+      isBashTool,
+      toolInput,
+      structuredResult,
+      status,
+      startTimestampMs,
+      resultTimestampMs,
+      tooltipMode,
+    ],
+  );
   const canRenderInteractiveSummary =
     status === "complete" || (status === "pending" && isEditTool);
   const mayHaveInteractiveSummary =
@@ -493,6 +630,7 @@ export const ToolCallRow = memo(function ToolCallRow({
         status,
         rowWidthPx,
         typography: deferredPreviewTypography,
+        previewLineCount: outputToolPreviewLineCount,
       }),
     [
       toolName,
@@ -501,6 +639,7 @@ export const ToolCallRow = memo(function ToolCallRow({
       status,
       rowWidthPx,
       deferredPreviewTypography,
+      outputToolPreviewLineCount,
     ],
   );
 
@@ -571,10 +710,54 @@ export const ToolCallRow = memo(function ToolCallRow({
   const isNonExpandable =
     hasInteractiveSummary || hasCollapsedPreview || hasDeferredInteractiveShell;
 
+  // A shell poll whose whole output fits the output-preview-lines budget
+  // reads inline without a click; the row stays collapsible. The budget
+  // counts wrapped visual lines, not newlines: a single mega-line (a JSON
+  // blob, a progress-bar dump) would otherwise pass a newline count and
+  // flood the timeline.
+  const isShellSessionTool = rendererToolName === "WriteStdin";
+  const shellOutputFitsPreview = useMemo(() => {
+    if (!isShellSessionTool || status !== "complete" || toolResult?.isError) {
+      return false;
+    }
+    const output = parseShellToolOutput(
+      typeof toolResult?.content === "string" ? toolResult.content : "",
+    ).output.trim();
+    if (output.length === 0) {
+      return false;
+    }
+    const charsPerLine = estimatePreviewCharsPerLine(
+      rowWidthPx,
+      deferredPreviewTypography,
+    );
+    return (
+      estimateWrappedLineCount(output, charsPerLine) <=
+      outputToolPreviewLineCount
+    );
+  }, [
+    isShellSessionTool,
+    status,
+    toolResult,
+    outputToolPreviewLineCount,
+    rowWidthPx,
+    deferredPreviewTypography,
+  ]);
+
   // Edit and TodoWrite tools are expanded by default
   const [expanded, setExpanded] = useState(
-    !isNonExpandable && (toolName === "Edit" || toolName === "TodoWrite"),
+    !isNonExpandable &&
+      (toolName === "Edit" ||
+        toolName === "TodoWrite" ||
+        shellOutputFitsPreview),
   );
+  // A live poll completes after mount; expand it then, unless the user
+  // has toggled the row themselves.
+  const userToggledExpandRef = useRef(false);
+  useEffect(() => {
+    if (shellOutputFitsPreview && !userToggledExpandRef.current) {
+      setExpanded(true);
+    }
+  }, [shellOutputFitsPreview]);
 
   // Dot-expanded: inline full result for preview-first rows (starts collapsed).
   const [dotExpanded, setDotExpanded] = useState(false);
@@ -645,6 +828,10 @@ export const ToolCallRow = memo(function ToolCallRow({
     () => getCommandPreview(headerCommand, outputToolPreviewLineCount),
     [headerCommand, outputToolPreviewLineCount],
   );
+  const commandHasHiddenPreviewContent =
+    !bashCommandExpanded &&
+    bashCommandPreview.hiddenCount !== null &&
+    bashCommandPreview.hiddenCount > 0;
   const bashCommandQuoteRef = useQuoteableTextSource<HTMLSpanElement>(
     showBashCommandTarget
       ? !noOutputBashResult && bashCommandExpanded
@@ -658,9 +845,108 @@ export const ToolCallRow = memo(function ToolCallRow({
     setBashCommandExpanded(false);
   }, [headerCommand]);
 
+  // The command tooltip leads with the elapsed (so-far) time — "[12.5s] cmd"
+  // — refreshed on hover so a running command's elapsed stays current.
+  const handleCommandTitlePointerEnter = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const commandText =
+        event.currentTarget.querySelector<HTMLElement>(
+          ".tool-summary-command-text",
+        ) ?? event.currentTarget;
+      const shouldShowTooltip =
+        commandHasHiddenPreviewContent ||
+        !isElementFullyScrollVisible(commandText);
+      if (!headerCommand || !shouldShowTooltip) {
+        setElementTextTooltip(event.currentTarget, null, tooltipMode);
+        return;
+      }
+      const elapsed = computeCommandElapsed({
+        toolInput,
+        structuredResult,
+        status,
+        startTimestampMs,
+        resultTimestampMs,
+        nowMs: Date.now(),
+      });
+      setElementTextTooltip(
+        event.currentTarget,
+        elapsed
+          ? `[${formatCommandDuration(elapsed.seconds)}] ${headerCommand}`
+          : headerCommand,
+        tooltipMode,
+      );
+    },
+    [
+      headerCommand,
+      toolInput,
+      structuredResult,
+      status,
+      startTimestampMs,
+      resultTimestampMs,
+      commandHasHiddenPreviewContent,
+      tooltipMode,
+    ],
+  );
+
+  // The visible preview is the first N output lines; hovering it shows the
+  // tail in the tooltip — "[Ns] ..." followed by the last N lines.
+  const handleOutputPreviewPointerEnter = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!isBashTool) {
+        return;
+      }
+      const output =
+        getBashResultOutputForRichPreview(structuredResult).trimEnd();
+      const elapsed = computeCommandElapsed({
+        toolInput,
+        structuredResult,
+        status,
+        startTimestampMs,
+        resultTimestampMs,
+        nowMs: Date.now(),
+      });
+      const elapsedPrefix = elapsed
+        ? `[${formatCommandDuration(elapsed.seconds)}] `
+        : "";
+      const tooltip = getOutputTailTooltip(
+        output,
+        outputToolPreviewLineCount,
+        elapsedPrefix,
+      );
+      const outputSurface =
+        event.currentTarget.querySelector<HTMLElement>(".bash-preview-output");
+      const visibilityTarget =
+        outputSurface?.querySelector<HTMLElement>(
+          "pre, .fixed-font-rendered__content",
+        ) ??
+        outputSurface ??
+        event.currentTarget;
+      setElementTextTooltip(
+        event.currentTarget,
+        getVisibilityAwareTooltipText(
+          visibilityTarget,
+          `${elapsedPrefix}${output}`,
+          tooltip,
+        ),
+        tooltipMode,
+      );
+    },
+    [
+      isBashTool,
+      structuredResult,
+      outputToolPreviewLineCount,
+      toolInput,
+      status,
+      startTimestampMs,
+      resultTimestampMs,
+      tooltipMode,
+    ],
+  );
+
   const handleToggle = () => {
     hydrateNow();
     if (!isNonExpandable) {
+      userToggledExpandRef.current = true;
       setExpanded((v) => {
         if (!v) {
           shouldFocusExpandedTopRef.current = true;
@@ -835,8 +1121,11 @@ export const ToolCallRow = memo(function ToolCallRow({
           </span>
         )}
 
-        <span className="tool-name">
-          {toolRegistry.getDisplayName(toolName, status)}
+        <span
+          className="tool-name"
+          onPointerEnter={handleToolNamePointerEnter}
+        >
+          {toolRegistry.getDisplayName(toolName, status, toolInput)}
         </span>
 
         {hasInteractiveSummary && canRenderInteractiveSummary ? (
@@ -848,7 +1137,11 @@ export const ToolCallRow = memo(function ToolCallRow({
         ) : showBashCommandTarget && noOutputBashResult ? (
           <span
             className="tool-summary tool-summary-command"
-            title={headerCommand}
+            {...getTextTooltipAttributes(
+              commandHasHiddenPreviewContent ? headerCommand : null,
+              tooltipMode,
+            )}
+            onPointerEnter={handleCommandTitlePointerEnter}
           >
             <span
               ref={bashCommandQuoteRef}
@@ -867,7 +1160,11 @@ export const ToolCallRow = memo(function ToolCallRow({
             ]
               .filter(Boolean)
               .join(" ")}
-            title={headerCommand}
+            {...getTextTooltipAttributes(
+              commandHasHiddenPreviewContent ? headerCommand : null,
+              tooltipMode,
+            )}
+            onPointerEnter={handleCommandTitlePointerEnter}
             aria-label={
               bashCommandExpanded ? "Collapse command" : "Show full command"
             }
@@ -928,16 +1225,21 @@ export const ToolCallRow = memo(function ToolCallRow({
         )}
         {showBashCommandTarget &&
           !bashCommandExpanded &&
-          bashCommandPreview.hiddenLabel && (
-            <span className="tool-summary-command-more">
-              {bashCommandPreview.hiddenLabel}
-            </span>
+          bashCommandPreview.hiddenCount && (
+            <HiddenContentBadge
+              className="tool-summary-command-more"
+              count={bashCommandPreview.hiddenCount}
+              tooltip={headerCommand}
+            />
           )}
       </div>
 
       {/* Collapsed preview - shown when tool supports it (non-expandable) */}
       {hasCollapsedPreview && previewExpanded && (
-        <div className="tool-row-collapsed-preview">
+        <div
+          className="tool-row-collapsed-preview"
+          onPointerEnter={handleOutputPreviewPointerEnter}
+        >
           {hasPreviewToggle && (
             <ToolRowCollapseStrip
               onCollapse={() => setPreviewExpanded(false)}

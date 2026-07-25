@@ -7,6 +7,9 @@
 
 Topic: pi-provider
 
+Related topics: [provider refresh](provider-refresh.md),
+[provider state machine](provider-state-machine.md).
+
 ## What pi is (confirmed against the local checkout, 2026-06-21)
 
 A TypeScript monorepo coding agent. The fork at `~/pi` (`origin
@@ -51,7 +54,37 @@ branchSummary, compactionSummary).
 `turn_start/end`, `message_start/update/end` (with `assistantMessageEvent`
 deltas: `text_delta`, etc.), `tool_execution_start/update/end`, plus
 `queue_update` (full steering + follow-up queues), `compaction_start/end`,
-`auto_retry_start/end`. This is already close to a normalized envelope.
+`auto_retry_start/end`, and (from 0.80.4) `agent_settled`. This is already
+close to a normalized envelope.
+
+### Settled-turn boundary — refreshed for pi 0.81.1
+
+The installed and npm-latest `@earendil-works/pi-coding-agent` version is
+`0.81.1`. The official `v0.79.9..v0.81.1` source diff changes the RPC lifecycle
+contract: `agent_end` ends one low-level agent run and now reports
+`willRetry`, while `agent_settled` fires only after no automatic retry,
+compaction, or queued continuation remains. Upstream's RPC client now uses
+`agent_settled` for both `waitForIdle()` and event collection.
+
+For Pi 0.80.4 and newer, YA therefore treats only `agent_settled` as the
+provider-turn boundary. `agent_end` must not emit a YA `result`, even when its
+observed `willRetry` is false: later session-level listeners and queues still
+own the decision to continue. The final `result` carries usage and cost
+captured from the last `turn_end`. This keeps the YA session busy through the
+complete provider run instead of exposing a false idle interval between
+automatic phases.
+
+Pi 0.79.9 through 0.80.3 do not emit `agent_settled`, so YA probes
+`pi --version` before starting RPC and retains `agent_end` as the terminal
+event only for those versions. An unrecognized version fails startup clearly;
+guessing either event could hang an older session or prematurely settle a
+newer one.
+
+Evidence: official `earendil-works/pi` tag `v0.81.1`
+(`20be4b18d4c57487f8993d2762bace129f0cf7c6`), especially
+`packages/coding-agent/src/core/agent-session.ts` and
+`packages/coding-agent/src/modes/rpc/rpc-client.ts`. The event first appears
+in `v0.80.4` (`e9fa5a68`).
 
 ## Why YA cares
 
@@ -109,8 +142,9 @@ vs `upstream/main` before relying on a change.
 **Status: LANDED (live path) 2026-06-21.** `PiProvider`
 (`packages/server/src/sdk/providers/pi.ts`) + `PiRpcClient`
 (`pi-rpc-client.ts`) spawn `pi --mode rpc` per session, learn the session id
-via `get_state`, and stream each `prompt` turn's agent events until `agent_end`,
-normalizing `message_*` / `tool_execution_*` / usage into YA SDKMessages.
+via `get_state`, and stream each `prompt` turn's agent events until
+`agent_settled`, normalizing `message_*` / `tool_execution_*` / usage into YA
+SDKMessages.
 Registered in `providers/index.ts`; `pi` added to `ProviderName` /
 `ALL_PROVIDERS` (additive). Verified by the `pi-rpc-client` framing/correlation
 test and a transport smoke against the real binary (39 `provider/id` models).
@@ -120,6 +154,10 @@ true steering wiring (`supportsSteering=false` for now), and the
 `tool_execution_start` permission bridge (tools run autonomously). Tool name **and argument-field** normalization
 is **done** (`pi-tools.ts` `normalizePiTool`; see
 [`provider-read-edit-disciplines.md`](provider-read-edit-disciplines.md)).
+
+The original implementation used `agent_end` as the boundary. The 0.81.1
+lifecycle refresh above supersedes that behavior for Pi 0.80.4 and newer;
+older compatible binaries retain their original boundary explicitly.
 
 Add a `pi` provider that spawns `pi --mode rpc --provider <p> --model <m>
 --session-dir <dir>` per session and speaks the JSONL protocol. RPC maps onto
@@ -325,7 +363,7 @@ these pieces:
    metadata no longer says `PiSessionReader` is unwired, and
    `provider-read-edit-disciplines.md` records live/durable pi normalization.
 5. **Added regression fixtures.** `pi-tools.test.ts`, `pi-reader.test.ts`,
-   `preprocessMessages.test.ts`, and `ToolCallRow.test.tsx` cover canonical
+   `transcriptProjection.test.ts`, and `ToolCallRow.test.tsx` cover canonical
    names/fields/results, durable reload parity, duplicate live tool snapshots,
    and pending Bash preview rendering.
 

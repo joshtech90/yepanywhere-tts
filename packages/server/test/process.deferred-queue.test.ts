@@ -1,9 +1,4 @@
-import {
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CONCAT_SEPARATOR,
   MessageQueue,
@@ -13,12 +8,76 @@ import {
   waitFor,
   withSessionQueuePersistence,
 } from "./process.test-support.js";
-import type {
-  ProcessEvent,
-  UrlProjectId,
-} from "./process.test-support.js";
+import type { ProcessEvent, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
+  describe("effort boundary", () => {
+    it("retains a failed effort selection and blocks deferred delivery", async () => {
+      const controller = createControllableIterator();
+      const providerQueue = new MessageQueue();
+      const push = vi.spyOn(providerQueue, "push");
+      const setEffort = vi
+        .fn<(_effort?: "high" | "max") => Promise<void>>()
+        .mockRejectedValueOnce(new Error("provider rejected effort"))
+        .mockResolvedValue(undefined);
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "effort-failure-session",
+        provider: "claude",
+        queue: providerQueue,
+        setEffortFn: setEffort,
+        idleTimeoutMs: 10_000,
+      });
+      const configurationErrors: ProcessEvent[] = [];
+      const unsubscribe = process.subscribe((event) => {
+        if (event.type === "configuration-error") {
+          configurationErrors.push(event);
+        }
+      });
+      controller.push({
+        type: "system",
+        subtype: "init",
+        session_id: "effort-failure-session",
+      });
+      await waitFor(() => expect(process.state.type).toBe("in-turn"));
+
+      await process.setEffort("high");
+      process.deferMessage({
+        text: "after effort",
+        metadata: { deliveryIntent: "deferred" },
+      });
+      controller.push({
+        type: "result",
+        session_id: "effort-failure-session",
+      });
+      await waitFor(() => expect(setEffort).toHaveBeenCalledWith("high"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(process.effort).toBe("high");
+      expect(push).not.toHaveBeenCalled();
+      expect(configurationErrors).toEqual([
+        expect.objectContaining({
+          type: "configuration-error",
+          setting: "effort",
+          requestedValue: "high",
+        }),
+      ]);
+
+      await process.setEffort("max");
+      expect(process.effort).toBe("max");
+      expect(push).toHaveBeenCalledTimes(1);
+      controller.push({
+        type: "result",
+        session_id: "effort-failure-session",
+      });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+      unsubscribe();
+      process.terminate("test complete");
+      controller.finish();
+    });
+  });
+
   describe("deferred queue", () => {
     it("includes attachment count in deferred queue summaries", async () => {
       const iterator = createMockIterator([
@@ -161,6 +220,54 @@ describe("Process", () => {
         await process.waitForPatientQueuePersistenceIdle();
 
         expect(service.list()).toEqual([]);
+      });
+    });
+
+    it("persists Codex patient entries until turn-end promotion", async () => {
+      await withSessionQueuePersistence(async ({ service, projectId }) => {
+        const controller = createControllableIterator();
+        const queue = new MessageQueue();
+        const process = new Process(controller.iterator, {
+          projectPath: "/tmp/process-session-queue",
+          projectId,
+          sessionId: "sess-1",
+          provider: "codex",
+          idleTimeoutMs: 100,
+          queue,
+          sessionQueuePersistenceService: service,
+        });
+
+        process.deferMessage(
+          {
+            text: "patient follow-up",
+            tempId: "temp-patient-codex",
+            metadata: { deliveryIntent: "patient" },
+          },
+          { promoteIfReady: true },
+        );
+        await process.waitForPatientQueuePersistenceIdle();
+
+        expect(service.list()).toMatchObject([
+          {
+            sessionId: "sess-1",
+            provider: "codex",
+            kind: "patient",
+            status: "queued",
+            message: {
+              text: "patient follow-up",
+              tempId: "temp-patient-codex",
+              metadata: { deliveryIntent: "patient" },
+            },
+          },
+        ]);
+
+        controller.push({ type: "result", session_id: "sess-1" });
+        await waitFor(() => expect(queue.depth).toBe(1));
+        await process.waitForPatientQueuePersistenceIdle();
+        expect(service.list()).toEqual([]);
+
+        controller.finish();
+        await process.abort();
       });
     });
 

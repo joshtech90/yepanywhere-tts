@@ -172,6 +172,53 @@ with slack**. Two latch/oscillation traps live here:
 
 - Primary message actions, Stop, queue/patient controls, and microphone should
   stay reachable before lower-priority controls are shown inline.
+- A mobile multiline textarea cannot require the software keyboard to expose
+  separate Return and Send keys; `enterKeyHint` can only request the key's
+  presentation, and some Android keyboards still insert a newline for a
+  send-looking key. The composer therefore requests an ordinary Return key and
+  keeps newline behavior on coarse pointers.
+- A contracted visual viewport does not by itself replace the normal bottom
+  toolbar. While a focused coarse-pointer composer is empty, the ordinary
+  toolbar remains visible so attachments and the rest of the configured
+  controls stay directly discoverable. Once the draft has submittable text or
+  attachments and the viewport is below 80% of its pre-keyboard height, the
+  normal toolbar yields to a 48px-high compact action row.
+- The compact row keeps a stable More affordance so attachments, Stop, and the
+  user's other enabled toolbar controls remain discoverable without first
+  knowing to dismiss the keyboard. Project Queue is the exception: when the
+  user has exposed it, separate potential 48px slots for its current-session
+  (`⇥`) and new-session (`⇥+`) actions remain inline beside More. Available
+  actions fill those slots so the purple-family buttons are both directly
+  reachable and a glanceable signal that project-wide queue semantics
+  currently differ from normal send. The new-session button keeps its darker
+  violet treatment and prominent `+` badge in this compact row. Opening More
+  must preserve textarea focus; choosing a control may dismiss the keyboard
+  when the invoked platform UI naturally requires it (for example, the system
+  file picker).
+- Clearing or submitting the draft immediately restores the ordinary toolbar.
+  This avoids the post-send jump from one enabled Send button to two disabled
+  Queue/Steer buttons when clearing the draft and starting the provider turn
+  happen together.
+- With submittable content, the configured primary action remains right
+  aligned. Send, Queue, fork, and Steer actions use the large remaining-width
+  target after stable queue slots are reserved. Steer shows its short label and
+  arrow whenever that target has enough content space; when constrained, only
+  the visible label folds away while the full accessible name and a minimum
+  48px arrow target remain. Steering-capable sessions reserve another 48px slot
+  for the alternate Queue/Steer action, and Project Queue reserves one 48px slot
+  for each of its current-session and new-session targets when that toolbar
+  feature is enabled and supported. An unavailable action leaves its slot
+  visually empty rather than letting the primary action grow into it; when live
+  session or project state makes the action available, its square button fills
+  the existing slot without moving or shrinking the primary hit target.
+  Non-steering sessions do not reserve a redundant alternate slot: their
+  primary control can change from Send to Queue in place. Fork-summary's
+  explicit two-submit mode may continue sharing the remaining width because
+  its membership is entered deliberately rather than appearing from live
+  state. These controls follow the same
+  Send/Queue/Steer/fork handlers and enabled state as the ordinary toolbar.
+  Restoring the viewport or leaving the textarea restores the normal measured
+  toolbar; keyboard-open mode is not another overflow tier.
 - Formula/render controls and heartbeat/pulse controls are lower priority than
   microphone for narrow inline space. They can move behind overflow earlier.
 - Shortcut/help (`?`) is lower priority than context percentage, because context

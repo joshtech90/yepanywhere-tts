@@ -68,7 +68,34 @@ export interface SessionIndexState {
   sessions: Record<string, CachedSessionSummary>;
 }
 
+// This version gates every provider's persisted summary index. Bump it only
+// for an incompatible on-disk shape, not for provider-specific interpretation
+// changes that can correct gradually as sessions are modified.
 const CURRENT_VERSION = 3;
+// Version 4 was an unshipped semantic cachebuster with the same on-disk
+// shape. Accept it so development installs that briefly wrote v4 do not pay
+// another full rebuild when rolling back to version 3.
+const PRE_RELEASE_COMPATIBLE_VERSION = 4;
+const CLAUDE_LOCAL_COMMAND_CAVEAT_TITLE_PREFIX = "<local-command-caveat>";
+
+type PersistedSessionIndexState = Omit<SessionIndexState, "version"> & {
+  version: number;
+};
+
+function needsClaudeTitleRefresh(summary: CachedSessionSummary): boolean {
+  if (
+    summary.provider !== DEFAULT_PROVIDER &&
+    summary.provider !== "claude-ollama"
+  ) {
+    return false;
+  }
+  const fullTitle = summary.fullTitle ?? summary.title;
+  return (
+    fullTitle?.trimStart().startsWith(
+      CLAUDE_LOCAL_COMMAND_CAVEAT_TITLE_PREFIX,
+    ) ?? false
+  );
+}
 
 interface SessionIndexLargestCacheMiss {
   sessionId: string;
@@ -366,17 +393,32 @@ export class SessionIndexService implements ISessionIndexService {
 
     try {
       const content = await fs.readFile(indexPath, "utf-8");
-      const parsed = JSON.parse(content) as SessionIndexState;
+      const parsed = JSON.parse(content) as PersistedSessionIndexState;
 
       // Validate version and projectId
       if (
-        parsed.version === CURRENT_VERSION &&
+        (parsed.version === CURRENT_VERSION ||
+          parsed.version === PRE_RELEASE_COMPATIBLE_VERSION) &&
         parsed.projectId === projectId
       ) {
-        this.indexCache.set(cacheKey, parsed);
+        const compatible: SessionIndexState = {
+          ...parsed,
+          version: CURRENT_VERSION,
+        };
+        // Repair only the provider summaries known to violate the current
+        // title contract instead of rebuilding every provider's shared index.
+        for (const [sessionId, summary] of Object.entries(
+          compatible.sessions,
+        )) {
+          if (needsClaudeTitleRefresh(summary)) {
+            delete compatible.sessions[sessionId];
+            this.markSessionDirtyByScopeKey(scopeKey, sessionId);
+          }
+        }
+        this.indexCache.set(cacheKey, compatible);
         this.persistedIndexScopes.add(cacheKey);
         this.evictIfNeeded();
-        return parsed;
+        return compatible;
       }
 
       // Version mismatch or different project - start fresh

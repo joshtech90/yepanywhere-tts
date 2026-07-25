@@ -5,8 +5,61 @@
  * but all readers implement this interface to provide a common API.
  */
 
-import type { UnifiedSession, UrlProjectId } from "@yep-anywhere/shared";
+import type {
+  ProviderChildSessionSummary,
+  UnifiedSession,
+  UrlProjectId,
+} from "@yep-anywhere/shared";
 import type { Message, SessionSummary } from "../supervisor/types.js";
+
+/**
+ * Bounded session facts for collection routes that only need identity, title,
+ * and recency. Transcript-tail fields intentionally do not belong here.
+ */
+export interface SessionListSummary {
+  id: SessionSummary["id"];
+  projectId: SessionSummary["projectId"];
+  title: SessionSummary["title"];
+  fullTitle: SessionSummary["fullTitle"];
+  updatedAt: SessionSummary["updatedAt"];
+  provider: SessionSummary["provider"];
+  customTitle?: SessionSummary["customTitle"];
+  isArchived?: SessionSummary["isArchived"];
+  isStarred?: SessionSummary["isStarred"];
+}
+
+export function toSessionListSummary(
+  summary: Pick<
+    SessionSummary,
+    | "id"
+    | "projectId"
+    | "title"
+    | "fullTitle"
+    | "updatedAt"
+    | "provider"
+    | "customTitle"
+    | "isArchived"
+    | "isStarred"
+  >,
+): SessionListSummary {
+  return {
+    id: summary.id,
+    projectId: summary.projectId,
+    title: summary.title,
+    fullTitle: summary.fullTitle,
+    updatedAt: summary.updatedAt,
+    provider: summary.provider,
+    ...(summary.customTitle !== undefined
+      ? { customTitle: summary.customTitle }
+      : {}),
+    ...(summary.isArchived !== undefined
+      ? { isArchived: summary.isArchived }
+      : {}),
+    ...(summary.isStarred !== undefined
+      ? { isStarred: summary.isStarred }
+      : {}),
+  };
+}
 
 /**
  * Options for reading a session.
@@ -71,6 +124,17 @@ export interface ISessionReader {
   ): Promise<SessionSummary | null>;
 
   /**
+   * Read only the bounded facts needed by lightweight collection routes.
+   *
+   * Providers should implement this only when they can bound the work
+   * independently of transcript-tail size.
+   */
+  getSessionListSummary?(
+    sessionId: string,
+    projectId: UrlProjectId,
+  ): Promise<SessionListSummary | null>;
+
+  /**
    * Get full session with messages.
    * @param sessionId - The session ID
    * @param projectId - The project ID
@@ -106,7 +170,9 @@ export interface ISessionReader {
    * Used for Claude's Task tool to link tool_use to subagent sessions.
    * Non-Claude providers should return an empty array.
    */
-  getAgentMappings(): Promise<{ toolUseId: string; agentId: string }[]>;
+  getAgentMappings(
+    parentSessionId?: string,
+  ): Promise<{ toolUseId: string; agentId: string }[]>;
 
   /**
    * Get an agent (subagent) session by ID.
@@ -115,7 +181,16 @@ export interface ISessionReader {
    */
   getAgentSession(
     agentId: string,
+    parentSessionId?: string,
   ): Promise<{ messages: Message[]; status: string } | null>;
+
+  /**
+   * List provider-native child work attached to one canonical YA session.
+   * Readers without provider child sessions omit this method.
+   */
+  listProviderChildSessions?(
+    parentSessionId: string,
+  ): Promise<ProviderChildSessionSummary[]>;
 
   /**
    * Get the file path for a session by ID.

@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Message } from "../../types";
-import {
-  preprocessMessages,
-  stripAwaySummaryHintSuffix,
-} from "../preprocessMessages";
+import { compileTranscriptProjection } from "../transcriptProjection/compiler";
+import { stripAwaySummaryHintSuffix } from "../transcriptProjection/messageProjection";
 
-describe("preprocessMessages", () => {
+describe("compileTranscriptProjection", () => {
   it("pairs tool_use with tool_result", () => {
     const messages: Message[] = [
       {
@@ -35,7 +33,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -89,7 +87,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -133,7 +131,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -173,7 +171,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const toolCalls = items.filter((item) => item.type === "tool_call");
 
     expect(toolCalls).toHaveLength(1);
@@ -222,7 +220,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const call = items.find((item) => item.type === "tool_call");
 
     expect(call).toMatchObject({
@@ -283,7 +281,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const toolCalls = items.filter((item) => item.type === "tool_call");
 
     expect(toolCalls).toHaveLength(1);
@@ -326,7 +324,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     const item0 = items[0];
@@ -381,7 +379,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const writeStdinCall = items.find(
       (item) => item.type === "tool_call" && item.id === "stdin-1",
     );
@@ -393,6 +391,450 @@ describe("preprocessMessages", () => {
         linked_command: "pnpm test",
       });
     }
+  });
+
+  it("links wait calls to the command whose script detached into a cell", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-bash-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "bash-1",
+            name: "Bash",
+            input: { command: "./run-job.sh" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-bash-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "bash-1",
+            content:
+              "Script running with cell ID 39\nWall time 10.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+      {
+        id: "msg-wait-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "wait-1",
+            name: "WriteStdin",
+            input: { cell_id: "39", yield_time_ms: 10000 },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:02Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    const waitCall = items.find(
+      (item) => item.type === "tool_call" && item.id === "wait-1",
+    );
+
+    expect(waitCall?.type).toBe("tool_call");
+    if (waitCall?.type === "tool_call") {
+      expect(waitCall.toolInput).toMatchObject({
+        cell_id: "39",
+        linked_command: "./run-job.sh",
+        linked_tool_name: "Bash",
+      });
+    }
+  });
+
+  it("carries command linkage through a poll that detaches into a new cell", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-bash-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "bash-1",
+            name: "Bash",
+            input: { command: "make bench" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-bash-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "bash-1",
+            content: "Process running with session ID 41132",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+      {
+        id: "msg-poll-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "poll-1",
+            name: "WriteStdin",
+            input: { session_id: 41132, chars: "" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:02Z",
+      },
+      {
+        id: "msg-poll-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "poll-1",
+            content:
+              "Script running with cell ID 52\nWall time 10.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:03Z",
+      },
+      {
+        id: "msg-wait-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "wait-1",
+            name: "WriteStdin",
+            input: { cell_id: "52" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:04Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+
+    // The wait on the detached cell folds into the originating poll row,
+    // which keeps the linkage the wait inherited.
+    expect(
+      items.find((item) => item.type === "tool_call" && item.id === "wait-1"),
+    ).toBeUndefined();
+    const pollCall = items.find(
+      (item) => item.type === "tool_call" && item.id === "poll-1",
+    );
+    expect(pollCall?.type).toBe("tool_call");
+    if (pollCall?.type === "tool_call") {
+      expect(pollCall.toolInput).toMatchObject({
+        session_id: 41132,
+        linked_command: "make bench",
+      });
+    }
+  });
+
+  it("bridges a session id revealed in a wait's output to later polls", () => {
+    // Mirrors the observed launch chain: a command's script detaches into a
+    // cell; the wait on that cell prints SESSION_ID=N for the shell session
+    // the script started; later polls of that session (and cells they
+    // detach into) inherit the launch command.
+    const messages: Message[] = [
+      {
+        id: "msg-bash-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "bash-1",
+            name: "Bash",
+            input: { command: "./agentctl start train-job --watch" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-bash-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "bash-1",
+            content:
+              "Script running with cell ID 39\nWall time 10.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+      {
+        id: "msg-wait-39-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "wait-39",
+            name: "WriteStdin",
+            input: { cell_id: "39" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:02Z",
+      },
+      {
+        id: "msg-wait-39-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "wait-39",
+            content:
+              "Script completed\nWall time 17.1 seconds\nOutput:\nstarted train-job pid=123\nSESSION_ID=21394\n[I]: step=100 loss=0.1",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:03Z",
+      },
+      {
+        id: "msg-poll-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "poll-1",
+            name: "WriteStdin",
+            input: { session_id: 21394, chars: "" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:04Z",
+      },
+      {
+        id: "msg-poll-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "poll-1",
+            content:
+              "Script running with cell ID 53\nWall time 30.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:05Z",
+      },
+      {
+        id: "msg-wait-53-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "wait-53",
+            name: "WriteStdin",
+            input: { cell_id: "53" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:06Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    const byId = (id: string) =>
+      items.find((item) => item.type === "tool_call" && item.id === id);
+
+    const poll = byId("poll-1");
+    expect(poll?.type).toBe("tool_call");
+    if (poll?.type === "tool_call") {
+      expect(poll.toolInput).toMatchObject({
+        linked_command: "./agentctl start train-job --watch",
+      });
+    }
+
+    // The wait on the poll's detached cell folds into the poll row.
+    expect(byId("wait-53")).toBeUndefined();
+  });
+
+  it("folds a detached poll and the wait that collects it into one row", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-poll-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "poll-1",
+            name: "WriteStdin",
+            input: { session_id: 21394, chars: "", linked_command: "watch x" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-poll-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "poll-1",
+            content:
+              "Script running with cell ID 92\nWall time 10.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+      {
+        id: "msg-wait-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "wait-92",
+            name: "WriteStdin",
+            input: { cell_id: "92" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:02Z",
+      },
+      {
+        id: "msg-wait-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "wait-92",
+            content:
+              "Script completed\nWall time 27.0 seconds\nOutput:\n[I]: step=2700\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:03Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    const tools = items.filter((item) => item.type === "tool_call");
+    expect(tools).toHaveLength(1);
+    const merged = tools[0];
+    if (merged?.type === "tool_call") {
+      expect(merged.id).toBe("poll-1");
+      expect(merged.status).toBe("complete");
+      expect(merged.toolInput).toMatchObject({
+        session_id: 21394,
+        linked_command: "watch x",
+      });
+      expect(merged.toolResult?.content).toContain("[I]: step=2700");
+    }
+  });
+
+  it("keeps an unresolved detached poll as its own still-running row", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-poll-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "poll-1",
+            name: "WriteStdin",
+            input: { session_id: 21394, chars: "", linked_command: "watch x" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-poll-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "poll-1",
+            content:
+              "Script running with cell ID 92\nWall time 10.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    const poll = items.find(
+      (item) => item.type === "tool_call" && item.id === "poll-1",
+    );
+    expect(poll?.type).toBe("tool_call");
+    if (poll?.type === "tool_call") {
+      expect(poll.status).toBe("complete");
+      expect(poll.toolResult?.content).toContain(
+        "Script running with cell ID 92",
+      );
+    }
+  });
+
+  it("hides completed context-free shell polls that produced nothing", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-poll-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "poll-empty",
+            name: "WriteStdin",
+            input: { session_id: 999, chars: "" },
+          },
+          {
+            type: "tool_use",
+            id: "poll-output",
+            name: "WriteStdin",
+            input: { session_id: 998, chars: "" },
+          },
+          {
+            type: "tool_use",
+            id: "poll-exit",
+            name: "WriteStdin",
+            input: { session_id: 997, chars: "" },
+          },
+          {
+            type: "tool_use",
+            id: "poll-pending",
+            name: "WriteStdin",
+            input: { session_id: 996, chars: "" },
+          },
+        ],
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "msg-poll-results",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "poll-empty",
+            content: "Wall time 30.0 seconds\nOutput:\n",
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "poll-output",
+            content: "Wall time 5.0 seconds\nOutput:\nnew log line",
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "poll-exit",
+            content: "Exit code: 0\nWall time 5.0 seconds\nOutput:\n",
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    const ids = items
+      .filter((item) => item.type === "tool_call")
+      .map((item) => (item.type === "tool_call" ? item.id : ""));
+
+    // Info-free: no chars, no linkage, no output, no exit code.
+    expect(ids).not.toContain("poll-empty");
+    // Output, an exit code, or a still-pending poll all stay visible.
+    expect(ids).toContain("poll-output");
+    expect(ids).toContain("poll-exit");
+    expect(ids).toContain("poll-pending");
   });
 
   it("links write_stdin calls to prior exec_command using session id", () => {
@@ -439,7 +881,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const writeStdinCall = items.find(
       (item) => item.type === "tool_call" && item.id === "stdin-1",
     );
@@ -512,7 +954,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     const writeStdinCall = items.find(
       (item) => item.type === "tool_call" && item.id === "stdin-1",
     );
@@ -540,7 +982,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]?.type).toBe("thinking");
@@ -553,7 +995,7 @@ describe("preprocessMessages", () => {
       { type: "text" as const, text: "My response." },
     ];
 
-    const streamingItems = preprocessMessages([
+    const streamingItems = compileTranscriptProjection([
       {
         id: "msg-1",
         role: "assistant",
@@ -562,7 +1004,7 @@ describe("preprocessMessages", () => {
         _isStreaming: true,
       } as Message,
     ]);
-    const completeItems = preprocessMessages([
+    const completeItems = compileTranscriptProjection([
       {
         id: "msg-1",
         role: "assistant",
@@ -594,7 +1036,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]?.type).toBe("text");
@@ -610,7 +1052,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -635,7 +1077,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -657,7 +1099,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -679,7 +1121,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(0);
   });
@@ -728,7 +1170,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
@@ -805,7 +1247,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -841,7 +1283,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -869,7 +1311,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -884,7 +1326,8 @@ describe("preprocessMessages", () => {
       {
         id: "msg-setup-1",
         role: "user",
-        content: "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nfoo",
+        content:
+          "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nfoo\n</INSTRUCTIONS>",
         timestamp: "2024-01-01T00:00:00Z",
       },
       {
@@ -902,14 +1345,14 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       type: "session_setup",
       title: "Session setup",
       prompts: [
-        "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nfoo",
+        "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nfoo\n</INSTRUCTIONS>",
         "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
       ],
     });
@@ -946,7 +1389,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
@@ -976,7 +1419,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
@@ -1025,7 +1468,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
@@ -1036,6 +1479,24 @@ describe("preprocessMessages", () => {
       type: "user_prompt",
       content: [{ type: "text", text: "actual wake message" }],
     });
+  });
+
+  it("preserves a context-shaped prompt with server user-turn provenance", () => {
+    const literalPrompt =
+      "<environment_context>\nI typed this myself\n</environment_context>";
+    const messages: Message[] = [
+      {
+        id: "msg-user-1",
+        type: "user",
+        codexUserTurnProvenance: "paired",
+        message: { role: "user", content: literalPrompt },
+        timestamp: "2024-01-01T00:00:00.000Z",
+      },
+    ];
+
+    expect(compileTranscriptProjection(messages)).toMatchObject([
+      { type: "user_prompt", content: literalPrompt },
+    ]);
   });
 
   it("collapses repeated setup prompts inserted after resume", () => {
@@ -1049,7 +1510,8 @@ describe("preprocessMessages", () => {
       {
         id: "msg-setup-1",
         role: "user",
-        content: "# AGENTS.md instructions for /repo",
+        content:
+          "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>\nRules\n</INSTRUCTIONS>",
         timestamp: "2024-01-01T00:00:01Z",
       },
       {
@@ -1067,7 +1529,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(3);
     expect(items[0]).toMatchObject({
@@ -1078,7 +1540,7 @@ describe("preprocessMessages", () => {
       type: "session_setup",
       title: "Session setup",
       prompts: [
-        "# AGENTS.md instructions for /repo",
+        "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>\nRules\n</INSTRUCTIONS>",
         "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
       ],
     });
@@ -1099,7 +1561,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -1120,7 +1582,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages, {
+    const items = compileTranscriptProjection(messages, {
       markdown: {
         "msg-1": { html: "<p>Hello <strong>world</strong></p>" },
       },
@@ -1165,7 +1627,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -1189,7 +1651,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -1228,7 +1690,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
 
     expect(items).toHaveLength(1);
     const item = items[0];
@@ -1251,7 +1713,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       type: "system",
@@ -1271,7 +1733,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       type: "system",
@@ -1297,7 +1759,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       type: "system",
@@ -1340,7 +1802,7 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     expect(items).toHaveLength(3);
     expect(items[0]).toMatchObject({
       type: "system",
@@ -1359,7 +1821,7 @@ describe("preprocessMessages", () => {
     });
   });
 
-  it("renders provider error messages", () => {
+  it("keeps errors terminal-looking when an older server omits retry metadata", () => {
     const messages: Message[] = [
       {
         id: "msg-err-1",
@@ -1369,12 +1831,32 @@ describe("preprocessMessages", () => {
       },
     ];
 
-    const items = preprocessMessages(messages);
+    const items = compileTranscriptProjection(messages);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       type: "system",
       subtype: "error",
       content: "Your refresh token was already used. Please sign in again.",
+    });
+  });
+
+  it("renders retrying Codex errors as warnings", () => {
+    const messages: Message[] = [
+      {
+        id: "codex-error-turn-1",
+        type: "error",
+        error: "Reconnecting... 2/5",
+        codexWillRetry: true,
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "system",
+      subtype: "warning",
+      content: "Reconnecting... 2/5",
     });
   });
 
@@ -1397,7 +1879,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1444,7 +1926,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(2);
       const tool1 = items.find(
@@ -1476,7 +1958,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1516,7 +1998,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1557,7 +2039,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1597,7 +2079,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1651,7 +2133,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(warn).not.toHaveBeenCalled();
       expect(items).toHaveLength(1);
@@ -1684,7 +2166,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages, {
+      const items = compileTranscriptProjection(messages, {
         activeToolApproval: true,
       });
 
@@ -1714,7 +2196,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages, {
+      const items = compileTranscriptProjection(messages, {
         activeToolApproval: false,
       });
 
@@ -1757,7 +2239,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages, {
+      const items = compileTranscriptProjection(messages, {
         activeToolApproval: true,
       });
 
@@ -1809,7 +2291,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages, {
+      const items = compileTranscriptProjection(messages, {
         activeToolApproval: true,
       });
       const oldTool = items.find(
@@ -1845,7 +2327,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages, {
+      const items = compileTranscriptProjection(messages, {
         activeToolApproval: true,
       });
 
@@ -1855,6 +2337,245 @@ describe("preprocessMessages", () => {
         id: "tool-1",
         status: "pending", // Already pending, stays pending
       });
+    });
+  });
+
+  describe("background command annotation", () => {
+    function backgroundLaunchMessages(): Message[] {
+      return [
+        {
+          id: "msg-bg-use",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-bg-1",
+              name: "Bash",
+              input: { command: "sleep 600", run_in_background: true },
+            },
+          ],
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+        {
+          id: "msg-bg-result",
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-bg-1",
+              content:
+                "Command running in background with ID: bxyz123. Output is being written to: /tmp/tasks/bxyz123.output",
+            },
+          ],
+          timestamp: "2024-01-01T00:00:01Z",
+        },
+      ];
+    }
+
+    function findBashCall(items: ReturnType<typeof compileTranscriptProjection>) {
+      return items.find(
+        (item) => item.type === "tool_call" && item.id === "bash-bg-1",
+      );
+    }
+
+    it("marks a backgrounded run as running while no completion evidence exists", () => {
+      const items = compileTranscriptProjection(backgroundLaunchMessages());
+      const call = findBashCall(items);
+      expect(call?.type).toBe("tool_call");
+      if (call?.type === "tool_call") {
+        expect(call.toolInput).toMatchObject({
+          _backgroundTaskStatus: "running",
+        });
+      }
+    });
+
+    it("marks a backgrounded run completed when its task notification arrives", () => {
+      const messages: Message[] = [
+        ...backgroundLaunchMessages(),
+        {
+          uuid: "33333333-3333-3333-3333-333333333333",
+          type: "user",
+          origin: { kind: "task-notification" },
+          message: {
+            role: "user",
+            content: [
+              "<task-notification>",
+              "<task-id>bxyz123</task-id>",
+              "<status>completed</status>",
+              "<summary>Background command completed (exit code 0)</summary>",
+              "</task-notification>",
+            ].join("\n"),
+          },
+          timestamp: "2024-01-01T00:10:00Z",
+        },
+      ];
+
+      const call = findBashCall(compileTranscriptProjection(messages));
+      expect(call?.type).toBe("tool_call");
+      if (call?.type === "tool_call") {
+        expect(call.toolInput).toMatchObject({
+          _backgroundTaskStatus: "completed",
+        });
+      }
+    });
+
+    it("leaves a Codex session-ID background run on the existing pending presentation", () => {
+      // "Process running with session ID N" results intentionally keep the
+      // call pending (spinner + present-tense header) until the same call's
+      // final output arrives, so the annotation pass must not touch them.
+      const messages: Message[] = [
+        {
+          id: "msg-bg-use",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-bg-1",
+              name: "Bash",
+              input: { command: "make bench" },
+            },
+          ],
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+        {
+          id: "msg-bg-result",
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-bg-1",
+              content: "Process running with session ID 41132",
+            },
+          ],
+          timestamp: "2024-01-01T00:00:01Z",
+        },
+      ];
+
+      const call = findBashCall(compileTranscriptProjection(messages));
+      expect(call?.type).toBe("tool_call");
+      if (call?.type === "tool_call") {
+        expect(call.status).toBe("pending");
+        expect(
+          (call.toolInput as Record<string, unknown>)._backgroundTaskStatus,
+        ).toBeUndefined();
+      }
+    });
+
+    it("keeps a detached code-mode script running until its cell wait exits", () => {
+      const detachMessages: Message[] = [
+        {
+          id: "msg-bg-use",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-bg-1",
+              name: "Bash",
+              input: { command: "./run-job.sh" },
+            },
+          ],
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+        {
+          id: "msg-bg-result",
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-bg-1",
+              content:
+                "Script running with cell ID 52\nWall time 10.0 seconds\nOutput:\n",
+            },
+          ],
+          timestamp: "2024-01-01T00:00:01Z",
+        },
+      ];
+
+      const runningCall = findBashCall(compileTranscriptProjection(detachMessages));
+      expect(runningCall?.type).toBe("tool_call");
+      if (runningCall?.type === "tool_call") {
+        expect(runningCall.toolInput).toMatchObject({
+          _backgroundTaskStatus: "running",
+        });
+      }
+
+      const completedCall = findBashCall(
+        compileTranscriptProjection([
+          ...detachMessages,
+          {
+            id: "msg-wait-use",
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "wait-1",
+                name: "WriteStdin",
+                input: { cell_id: "52" },
+              },
+            ],
+            timestamp: "2024-01-01T00:00:02Z",
+          },
+          {
+            id: "msg-wait-result",
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "wait-1",
+                content:
+                  "Chunk ID: ff710e\nProcess exited with code 0\nOutput:\nready\n",
+              },
+            ],
+            timestamp: "2024-01-01T00:00:03Z",
+          },
+        ]),
+      );
+      expect(completedCall?.type).toBe("tool_call");
+      if (completedCall?.type === "tool_call") {
+        expect(completedCall.toolInput).toMatchObject({
+          _backgroundTaskStatus: "completed",
+        });
+      }
+    });
+
+    it("does not annotate an ordinary foreground command", () => {
+      const messages: Message[] = [
+        {
+          id: "msg-fg-use",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-fg-1",
+              name: "Bash",
+              input: { command: "ls" },
+            },
+          ],
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+        {
+          id: "msg-fg-result",
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-fg-1",
+              content: "README.md\n",
+            },
+          ],
+          timestamp: "2024-01-01T00:00:01Z",
+        },
+      ];
+
+      const call = compileTranscriptProjection(messages).find(
+        (item) => item.type === "tool_call" && item.id === "bash-fg-1",
+      );
+      expect(call?.type).toBe("tool_call");
+      if (call?.type === "tool_call") {
+        expect(
+          (call.toolInput as Record<string, unknown>)._backgroundTaskStatus,
+        ).toBeUndefined();
+      }
     });
   });
 
@@ -1880,7 +2601,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1915,7 +2636,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
@@ -1941,7 +2662,7 @@ describe("preprocessMessages", () => {
         },
       ];
 
-      const items = preprocessMessages(messages);
+      const items = compileTranscriptProjection(messages);
 
       expect(items).toHaveLength(1);
       expect(items[0]?.type).toBe("user_prompt");

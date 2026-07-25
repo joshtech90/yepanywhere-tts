@@ -81,6 +81,40 @@ file links should therefore inherit the same source/preview controls,
 large-file windowing, hline span markers, scrollbars, copy affordance, media
 hydration, and public-share capability scoping.
 
+Native rich-text copy from rendered Markdown—both full previews and
+Σ-rendered fixed-font/diff views—must not carry YA's display presentation into
+the destination. The `copy` handler serializes the selected rendered fragment
+as semantic HTML, stripping CSS classes, inline styles, stylesheet elements,
+and legacy color attributes. Fixed-font views keep the existing source-aware
+`text/plain` fallback. Neither path relies on Chromium's default computed-style
+clipboard payload, which can transfer only part of a foreground/background
+pair into editors such as Jira. Table headers and inline/block code still
+declare paired themed colors for correct rendering inside YA; those
+declarations never enter the explicit clipboard HTML.
+
+KaTeX display output contains both an accessible MathML branch and its styled
+visual HTML branch. Semantic clipboard HTML keeps only the MathML branch before
+removing presentation attributes, so pasted math remains portable without an
+unstyled duplicate visual tree.
+
+### Edit preview expansion and truncation
+
+Edit diff previews expose the following interaction contract:
+
+- An ordinary click on the diff, or Enter/Space on its keyboard tap target,
+  opens the complete diff modal. Buttons and links inside the preview retain
+  their own actions and do not open that modal.
+- Completing a non-collapsed text selection inside the fixed-font diff also
+  opens the complete modal in the same source or rendered representation as the
+  preview. The same text remains selected by a live browser range owned by the
+  modal, so the user's next copy command copies from the expanded view without
+  requiring another selection gesture.
+- If the preview range cannot be captured wholly inside the fixed-font content,
+  the modal stays closed and the original preview selection remains intact.
+- A truncated preview shows both its existing fade and a `+N` badge whose count
+  is the number of hidden diff lines. The fade is a visual cue, not the only
+  disclosure that content is omitted.
+
 ## Toggleable transforms (sigma Σ button)
 
 `FixedFontMathToggle` wraps a source view and, if `rendered.changed = true`, shows
@@ -92,7 +126,8 @@ toggled via Ctrl/Cmd+Shift+M.
 
 - Markdown tables (`| col | col |` syntax) → `<table>` with aligned cells
 - Markdown headings, blockquotes, lists, horizontal rules → styled inline elements
-- Inline math `$…$` and display math `$$…$$` → KaTeX HTML
+- Inline math `$…$` or `\(…\)` and display math `$$…$$` or `\[…\]` → KaTeX
+  HTML. Display delimiters may span lines in ordinary fixed-font panels.
 - Backtick inline code → `<code>` spans
 - Bold `**…**` / `__…__` → `<strong>`
 - Markdown file links `[label](./path)` → clickable links that open a file-viewer
@@ -100,9 +135,10 @@ toggled via Ctrl/Cmd+Shift+M.
   mode strips `+`/`-` gutter before rendering inline content and colours lines
 
 **Detection heuristic (`mayHaveFixedFontRichContent`):** returns true if the
-source text contains `$`, `` ` ``, `[`, `**`, or `__`, or if any line matches a
-markdown structural pattern. This is deliberately broad to avoid missed renders on
-output that mixes prose and code; see "code file exclusion" below.
+source text contains `$`, `\(`, `\[`, `` ` ``, `[`, `**`, or `__`, or if any
+line matches a markdown structural pattern. This is deliberately broad to avoid
+missed renders on output that mixes prose and code; see "code file exclusion"
+below.
 
 **Global render mode:** `RenderModeProvider` holds `globalMode` (default
 `"rendered"`) and a set of per-panel override IDs. A panel starts in the global
@@ -184,13 +220,15 @@ variable, a PHP sigil, a JavaScript template literal, or a regex. Similarly,
 in a YAML front-matter separator triggers horizontal-rule detection inside
 surrounding code.
 
-The KaTeX inline-math filter (`tryMatchInlineMath`) is deliberately tight: it
-requires at least one of `\ ^ { } +` or a digit inside the `$…$` span, and
-rejects patterns that look like shell variable spans (`$VAR >>$OTHER`). In
-practice this filters out the vast majority of false positives in prose and
-command output. Edge cases remain — e.g. `echo $A=+$B` in a Bash snippet,
-where `$A=+$B` satisfies the `+` heuristic — so the filter is good but not
-exact.
+The KaTeX inline-math filter (`tryMatchInlineMath`) is deliberately tight for
+ambiguous `$…$`: it requires at least one of `\ ^ { } +` or a digit and rejects
+patterns that look like shell variable spans (`$VAR >>$OTHER`). Explicit
+bracketed `\(…\)` needs no content heuristic, but still requires an unescaped,
+same-line closing `\)`. Display `\[…\]` likewise requires an unescaped closing
+delimiter. In practice the dollar filter removes the vast majority of false
+positives in prose and command output. Edge cases remain — e.g.
+`echo $A=+$B` in a Bash snippet, where `$A=+$B` satisfies the `+` heuristic —
+so the filter is good but not exact.
 
 For rich-rendering inside source code to make sense, the renderer would need to:
 

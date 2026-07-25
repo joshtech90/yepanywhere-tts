@@ -57,6 +57,7 @@ Rationale:
 | `Ctrl+Enter` with visible Project Queue action and enabled Project Queue shortcut | Project Queue | `deferred` metadata on a Project Queue item | Project Queue is a higher-level backlog. When the user has exposed that action and enabled its shortcut, `Ctrl+Enter` chooses the project-level queue instead of per-session queue/steer. |
 | Patient queue setting enabled for a new queued item | Queue action | `patient` | Per-item patient intent waits for the quiet/verified-idle patience threshold before delivery. This is a super-delay queue option, independent of provider steering support. |
 | Queued chip on steering-capable active turn | `Steer now` | `steer` | User explicitly overrides queued/patient waiting and injects the queued item into the active turn. |
+| Current-session Project Queue row | `Steer now` | Project Queue force promotion with `steer` metadata | User explicitly bypasses quiet/idle blockers and injects the selected project item into its active target session. |
 | `/btw` explicit route | Aside control | separate aside session | Not a queue path and not `steer`. |
 
 ### Queue text rule
@@ -136,6 +137,17 @@ copy, edit, cancel, steering-capable `Steer now`, and a context jump. The first
 anchor is the queued row's accepted timestamp, not the earlier first-typed-char
 timestamp.
 
+- Live regular, patient, and current-session Project Queue rows share the same
+  Copy/Edit/Steer-now/Cancel action component, with inapplicable actions
+  omitted. Recovered-after-restart rows remain distinct because Resume and
+  Delete have different persistence semantics.
+- Edit appears only when the main composer is whitespace-only and has no
+  attachments or uploads. It cancels/removes the queued item first, then
+  restores its text and recoverable attachments into the composer. If the user
+  types during that asynchronous take, append the restored text rather than
+  overwriting the new draft.
+- This take-to-composer edit intentionally does not recreate the former
+  server-side in-place deferred edit/barrier subsystem.
 - Queued rows of all delivery intents should include a hyperlink-style jump
   affordance. It jumps to the scroll/view position where the message was
   significantly begun (earliest non-deleted character timestamp) when that
@@ -209,6 +221,14 @@ turn renders as "sent" — fainter, with a margin "sent" tag — until its
 durable transcript copy merges in, then confirms. Mechanism and the
 Claude queue-operation pairing behind it:
 [stream-durable-id-dedup.md](stream-durable-id-dedup.md) §Claude.
+
+A server-accepted in-turn steer must survive reconnect while the provider is
+still working on that turn. Its optimistic user echo remains in replay through
+the provider turn boundary, even when a long-running tool outlives the ordinary
+15–30-second replay window; the durable transcript remains authoritative once
+the provider writes the turn. Reload must therefore show the accepted steer,
+then reconcile it with the durable row rather than letting a live assistant
+response appear without the user turn it answers.
 
 A delivered steering turn renders at its delivery point, not its send
 point. In particular, when pending steers are delivered by an interrupt

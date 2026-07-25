@@ -131,6 +131,65 @@ they rely only on the fields below.
   `isSubagent`, `orphanedToolUseIds` — documented in
   `AppMessageExtensions`.
 
+## Command execution metadata (exit code, runtime)
+
+Command-like tool results (Bash and shell-session polls such as Codex
+`write_stdin`/`wait`) normalize per-command execution metadata into the
+structured tool result when the provider reports it, instead of leaving it
+embedded in output text or raw provider records:
+
+- `exitCode?: number` — the command's exit status.
+- `durationSeconds?: number` — provider-reported wall time for the command.
+
+Provider sources normalized today: Codex unified-exec chunk records
+(`{chunk_id, wall_time_seconds, exit_code, output, session_id}` printed as
+tool output — the chunk's `output` becomes the result text, raw chunk fields
+pass through structured per the pass-through rule, and a `stdout` alias
+rides alongside so renderers need no chunk knowledge), and Codex shell text
+envelopes (`Wall time[:] N seconds`, `Process exited with code N`,
+`Exit code: N`). Claude SDK Bash results already carry `exitCode`.
+
+Display rules (client, `getCommandResultMeta`/`formatCommandDuration` in
+`packages/client/src/lib/shellToolOutput.ts`):
+
+- **Exit code 0 is never shown** — success is the default; a visible exit
+  code always means failure (`rc=N`, matching the tool-row suffix chip
+  vocabulary).
+- **Runtime is a detail-view fact**: shown in the command detail surfaces —
+  the Bash output modal, the expanded result body — not in collapsed row
+  summaries, except alongside a nonzero exit code (`rc=1 in 12.5s`).
+- Renderers read metadata through `getCommandResultMeta`, which accepts
+  both the normalized fields and raw provider spellings
+  (`exit_code`, `wall_time_seconds`), so a provider whose normalization
+  lags still displays correctly once its fields pass through structured.
+
+## Web browsing results (Codex `web.run`)
+
+Codex's namespaced browsing tool (`web.run`; `web__run` when flattened into
+a code-mode `exec` script) normalizes to canonical tool name `Web` with the
+structured result `CodexWebRunResult`
+(`packages/shared/src/codex-web-run.ts`). The provider prints one text blob
+— a script envelope (`Script completed` / `Wall time N seconds` /
+`Output:`) followed by page blocks separated by an exact 80-dash rule. Each
+block is a `Title (URL)` line plus a marker line carrying a follow-up
+reference (`turn0search4`), `[wordlim: N]`, and `Key: value;` metadata
+(Published, Crawled, Content type, Source, Redirected to URL, Total lines);
+the body is either windowed page lines (`L0: …`, several may share one
+physical line) or a prose search snippet.
+
+The parser (`packages/server/src/codex/webRun.ts`) treats the U+E200–E202
+private-use citation wrappers as format-significant markup:
+`cite<id>†<label>[†<domain>]` reduces to its visible
+label, bare page references drop. It fails closed — output without the
+envelope or a page block keeps its raw-text presentation — and the
+normalized `content` string drops the envelope, so "Script completed" never
+reaches rendered text. The client `Web` renderer
+(`packages/client/src/components/renderers/tools/WebRenderer.tsx`) renders
+page content in the prose output font (it is web prose, not terminal
+output) and mirrors the shell-output preview affordances via the shared
+primitives in `renderers/tools/outputPreview.tsx` (first-N-lines clamp,
+tail tooltip, hidden-line badge, hover copy button, click-for-modal).
+
 ## Inline base64 is interchange-only
 
 JSON is the interchange representation, and base64 is how binary survives

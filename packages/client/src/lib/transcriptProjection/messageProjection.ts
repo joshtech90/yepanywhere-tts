@@ -1,61 +1,45 @@
-import type { MarkdownAugment } from "@yep-anywhere/shared";
-import type { ContentBlock, Message } from "../types";
+import type { ContentBlock, Message } from "../../types";
 import type {
   RenderItem,
-  SessionSetupItem,
   SystemItem,
   ToolCallItem,
   ToolResultData,
-  UserPromptItem,
-} from "../types/renderItems";
+} from "../../types/renderItems";
 import {
   formatCommandTurn,
   isCompactionLocalCommandOutput,
   isLocalCommandCaveatOnly,
   parseCommandTurn,
   parseLocalCommandStdout,
-} from "./commandTurn";
-import { getMessageId } from "./mergeMessages";
+} from "../commandTurn";
+import { getMessageId } from "../mergeMessages";
 import {
   isTaskNotificationMessage,
   parseTaskNotification,
-} from "./parseTaskNotification";
+} from "../parseTaskNotification";
+import { parseAgentResultFromText } from "./agentResults";
+import { contentBlocksText } from "./slashCommandBodies";
+import type { TranscriptProjectionAugments } from "./types";
 
 const AWAY_SUMMARY_HINT_SUFFIX_RE = /\s*\(disable recaps in \/config\)\s*$/u;
+
+export interface MessageProjectionDiagnostics {
+  onAssistantMessage?: (details: {
+    _isStreaming: boolean | undefined;
+    id: string | undefined;
+    msgId: string;
+    uuid: string | undefined;
+  }) => void;
+}
 
 export function stripAwaySummaryHintSuffix(content: string): string {
   return content.replace(AWAY_SUMMARY_HINT_SUFFIX_RE, "");
 }
 
-/**
- * When true, indicates the session has active tool work or approval.
- * Orphaned tools in the current trailing user turn are treated as pending.
- *
- * This handles the case where multiple tools are queued for approval while
- * still allowing older orphaned tools from prior turns to render interrupted.
- */
-export type ActiveToolApproval = boolean;
-
-/**
- * Augments to embed into RenderItems during preprocessing.
- * These are pre-computed on the server for completed messages.
- */
-export interface PreprocessAugments {
-  /** Pre-rendered markdown HTML keyed by message ID */
-  markdown?: Record<string, MarkdownAugment>;
-  /** Active tool approval request - if present, matching tool_use won't be marked aborted */
-  activeToolApproval?: ActiveToolApproval;
-}
-
-/**
- * Preprocess messages into render items, pairing tool_use with tool_result.
- *
- * This is a pure function - given the same messages, returns the same items.
- * Safe to call on every render (use useMemo).
- */
-export function preprocessMessages(
+export function projectTranscriptMessages(
   messages: Message[],
-  augments?: PreprocessAugments,
+  augments?: TranscriptProjectionAugments,
+  diagnostics?: MessageProjectionDiagnostics,
 ): RenderItem[] {
   const items: RenderItem[] = [];
   const toolCallIndices = new Map<string, number>(); // tool_use_id → index in items
@@ -76,15 +60,11 @@ export function preprocessMessages(
       orphanedToolIds,
       configAckState,
       augments,
+      diagnostics,
     );
   }
 
-  const compactCoalescedItems = coalesceCompactBoundaryItems(items);
-  const slashCommandCoalescedItems = coalesceSlashCommandSkillBodies(
-    compactCoalescedItems,
-  );
-  const enrichedItems = enrichWriteStdinWithCommand(slashCommandCoalescedItems);
-  return collapseSessionSetupRuns(enrichedItems);
+  return items;
 }
 
 function collectOrphanedToolIds(
@@ -124,30 +104,7 @@ function findLastUserPromptMessageIndex(messages: Message[]): number {
   return 0;
 }
 
-const SESSION_SETUP_PREFIXES = [
-  "# AGENTS.md instructions",
-  "<environment_context>",
-];
-
-const STARTUP_INSTRUCTIONS_SETUP_RE =
-  /^(?:<recommended_plugins>[\s\S]*?<\/recommended_plugins>\s*)?# AGENTS\.md instructions/u;
-
-const RESUME_ENVIRONMENT_CONTEXT_MAX_GAP_MS = 5_000;
-
 const INTERNAL_REASONING_PLACEHOLDER = "Reasoning [internal]";
-
-function getPromptText(content: string | ContentBlock[]): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  return content
-    .filter(
-      (block): block is ContentBlock & { type: "text"; text: string } =>
-        block.type === "text" && typeof block.text === "string",
-    )
-    .map((block) => block.text)
-    .join("\n");
-}
 
 function getPreprocessMessageContent(
   msg: Message,
@@ -220,182 +177,6 @@ function compactSummaryDetails(
   return content === undefined ? [] : [content];
 }
 
-function contentBlocksText(content: string | ContentBlock[]): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  return content
-    .map((block) =>
-      block.type === "text" && typeof block.text === "string" ? block.text : "",
-    )
-    .filter(Boolean)
-    .join("\n");
-}
-
-function isCompactBoundaryItem(
-  item: RenderItem,
-): item is SystemItem & { subtype: "compact_boundary" } {
-  return item.type === "system" && item.subtype === "compact_boundary";
-}
-
-function hasSystemCompactBoundarySource(item: SystemItem): boolean {
-  return item.sourceMessages.some(
-    (source) =>
-      source.type === "system" &&
-      (source as { subtype?: string }).subtype === "compact_boundary",
-  );
-}
-
-function mergeCompactBoundaryRun(
-  run: Array<SystemItem & { subtype: "compact_boundary" }>,
-): SystemItem {
-  const first = run[0];
-  if (!first) {
-    throw new Error("Cannot merge an empty compact boundary run");
-  }
-  const preferred = run.find(hasSystemCompactBoundarySource) ?? first;
-  const sourceMessages = run.flatMap((item) => item.sourceMessages);
-  const details = run.flatMap((item) => item.details ?? []);
-  return {
-    type: "system",
-    id: preferred.id,
-    subtype: "compact_boundary",
-    content: preferred.content,
-    status: preferred.status,
-    configChanged: preferred.configChanged,
-    isSubagent: preferred.isSubagent,
-    sourceMessages,
-    details: details.length > 0 ? details : undefined,
-  };
-}
-
-function coalesceCompactBoundaryItems(items: RenderItem[]): RenderItem[] {
-  const coalesced: RenderItem[] = [];
-  let index = 0;
-
-  while (index < items.length) {
-    const item = items[index];
-    if (!item || !isCompactBoundaryItem(item)) {
-      if (item) {
-        coalesced.push(item);
-      }
-      index += 1;
-      continue;
-    }
-
-    const run: Array<SystemItem & { subtype: "compact_boundary" }> = [item];
-    let runIndex = index + 1;
-    while (runIndex < items.length) {
-      const runItem = items[runIndex];
-      if (!runItem || !isCompactBoundaryItem(runItem)) {
-        break;
-      }
-      run.push(runItem);
-      runIndex += 1;
-    }
-    coalesced.push(mergeCompactBoundaryRun(run));
-    index = runIndex;
-  }
-
-  return coalesced;
-}
-
-function isLocalCommandItem(
-  item: RenderItem,
-): item is SystemItem & { subtype: "local_command" } {
-  return item.type === "system" && item.subtype === "local_command";
-}
-
-function isSlashCommandSkillBodyItem(item: RenderItem): item is UserPromptItem {
-  if (item.type !== "user_prompt") {
-    return false;
-  }
-  if (!item.sourceMessages.some((message) => message.isMeta === true)) {
-    return false;
-  }
-  return contentBlocksText(item.content)
-    .trimStart()
-    .startsWith("Base directory for this skill:");
-}
-
-function messagePromptId(message: Message): string | null {
-  const promptId = (message as { promptId?: unknown }).promptId;
-  return typeof promptId === "string" && promptId ? promptId : null;
-}
-
-function isLinkedSlashCommandSkillBody(
-  commandItem: SystemItem,
-  skillItem: UserPromptItem,
-): boolean {
-  const commandIds = new Set(
-    commandItem.sourceMessages.map(getMessageId).filter(Boolean),
-  );
-  const skillParentUuids = skillItem.sourceMessages
-    .map((message) =>
-      typeof message.parentUuid === "string" ? message.parentUuid : null,
-    )
-    .filter((parentUuid): parentUuid is string => parentUuid !== null);
-  if (skillParentUuids.length > 0 && commandIds.size > 0) {
-    return skillParentUuids.some((parentUuid) => commandIds.has(parentUuid));
-  }
-
-  const commandPromptIds = new Set(
-    commandItem.sourceMessages
-      .map(messagePromptId)
-      .filter((promptId): promptId is string => promptId !== null),
-  );
-  const skillPromptIds = skillItem.sourceMessages
-    .map(messagePromptId)
-    .filter((promptId): promptId is string => promptId !== null);
-  if (skillPromptIds.length > 0 && commandPromptIds.size > 0) {
-    return skillPromptIds.some((promptId) => commandPromptIds.has(promptId));
-  }
-
-  return true;
-}
-
-function mergeSlashCommandSkillBody(
-  commandItem: SystemItem & { subtype: "local_command" },
-  skillItem: UserPromptItem,
-): SystemItem {
-  return {
-    ...commandItem,
-    sourceMessages: [
-      ...commandItem.sourceMessages,
-      ...skillItem.sourceMessages,
-    ],
-    details: [...(commandItem.details ?? []), skillItem.content],
-  };
-}
-
-function coalesceSlashCommandSkillBodies(items: RenderItem[]): RenderItem[] {
-  const coalesced: RenderItem[] = [];
-  let index = 0;
-
-  while (index < items.length) {
-    const item = items[index];
-    const nextItem = items[index + 1];
-    if (
-      item &&
-      nextItem &&
-      isLocalCommandItem(item) &&
-      isSlashCommandSkillBodyItem(nextItem) &&
-      isLinkedSlashCommandSkillBody(item, nextItem)
-    ) {
-      coalesced.push(mergeSlashCommandSkillBody(item, nextItem));
-      index += 2;
-      continue;
-    }
-
-    if (item) {
-      coalesced.push(item);
-    }
-    index += 1;
-  }
-
-  return coalesced;
-}
-
 function isSlashCommandSkillBodyMessage(msg: Message): boolean {
   const content = getPreprocessMessageContent(msg);
   return (
@@ -449,118 +230,6 @@ function isDisplayableThinking(
   return !!trimmed && trimmed !== INTERNAL_REASONING_PLACEHOLDER;
 }
 
-function isSessionSetupPrompt(item: UserPromptItem): boolean {
-  const text = getPromptText(item.content).trimStart();
-  return (
-    STARTUP_INSTRUCTIONS_SETUP_RE.test(text) ||
-    SESSION_SETUP_PREFIXES.some((prefix) => text.startsWith(prefix))
-  );
-}
-
-function isEnvironmentContextSetupPrompt(item: UserPromptItem): boolean {
-  return getPromptText(item.content)
-    .trimStart()
-    .startsWith("<environment_context>");
-}
-
-function itemTimestampMs(item: RenderItem): number | null {
-  const timestamp = item.sourceMessages
-    .map((message) =>
-      typeof message.timestamp === "string"
-        ? Date.parse(message.timestamp)
-        : NaN,
-    )
-    .find(Number.isFinite);
-  return timestamp === undefined ? null : timestamp;
-}
-
-function isImmediateResumeEnvironmentContext(
-  setupItem: UserPromptItem,
-  nextItem: RenderItem | undefined,
-): boolean {
-  if (
-    !isEnvironmentContextSetupPrompt(setupItem) ||
-    nextItem?.type !== "user_prompt" ||
-    isSessionSetupPrompt(nextItem)
-  ) {
-    return false;
-  }
-
-  const setupMs = itemTimestampMs(setupItem);
-  const nextMs = itemTimestampMs(nextItem);
-  if (setupMs === null || nextMs === null) {
-    return false;
-  }
-
-  const gapMs = nextMs - setupMs;
-  return gapMs >= 0 && gapMs <= RESUME_ENVIRONMENT_CONTEXT_MAX_GAP_MS;
-}
-
-function collapseSessionSetupRuns(items: RenderItem[]): RenderItem[] {
-  const result: RenderItem[] = [];
-  let index = 0;
-
-  while (index < items.length) {
-    const item = items[index];
-    if (item?.type !== "user_prompt" || !isSessionSetupPrompt(item)) {
-      result.push(item as RenderItem);
-      index += 1;
-      continue;
-    }
-
-    const setupItems: UserPromptItem[] = [];
-    let runIndex = index;
-    while (runIndex < items.length) {
-      const runItem = items[runIndex];
-      if (runItem?.type !== "user_prompt" || !isSessionSetupPrompt(runItem)) {
-        break;
-      }
-      setupItems.push(runItem);
-      runIndex += 1;
-    }
-
-    const singleSetupItem = setupItems.length === 1 ? setupItems[0] : undefined;
-    const shouldSuppressSingleSetupItem =
-      singleSetupItem !== undefined &&
-      isImmediateResumeEnvironmentContext(singleSetupItem, items[runIndex]);
-
-    if (shouldSuppressSingleSetupItem) {
-      index = runIndex;
-      continue;
-    }
-
-    // Preserve likely user-authored single setup-like messages mid-session.
-    // Collapse any run at session start and any multi-item run (typical resume preamble).
-    if (setupItems.length > 1 || index === 0) {
-      const firstSetupItem = setupItems[0];
-      if (!firstSetupItem) {
-        index = runIndex;
-        continue;
-      }
-
-      const collapsedItem: SessionSetupItem = {
-        type: "session_setup",
-        id: `session-setup-${firstSetupItem.id}`,
-        title: "Session setup",
-        prompts: setupItems.map((setupItem) => setupItem.content),
-        sourceMessages: setupItems.flatMap(
-          (setupItem) => setupItem.sourceMessages,
-        ),
-      };
-      result.push(collapsedItem);
-    } else {
-      const singleSetupItem = setupItems[0];
-      if (singleSetupItem) {
-        result.push(singleSetupItem);
-      }
-    }
-
-    index = runIndex;
-  }
-
-  return result;
-}
-
 function processMessage(
   msg: Message,
   items: RenderItem[],
@@ -568,7 +237,8 @@ function processMessage(
   pendingToolCalls: Map<string, number>,
   orphanedToolIds: Set<string>,
   configAckState: { lastSignature: string | null },
-  augments?: PreprocessAugments,
+  augments?: TranscriptProjectionAugments,
+  diagnostics?: MessageProjectionDiagnostics,
 ): void {
   const msgId = getMessageId(msg);
 
@@ -581,7 +251,7 @@ function processMessage(
     const systemItem: SystemItem = {
       type: "system",
       id: msgId || `error-${msg.timestamp ?? Date.now()}`,
-      subtype: "error",
+      subtype: msg.codexWillRetry === true ? "warning" : "error",
       content: errorText,
       sourceMessages: [msg],
     };
@@ -663,12 +333,8 @@ function processMessage(
   }
 
   // Debug logging for streaming transition issues
-  if (
-    typeof window !== "undefined" &&
-    window.__STREAMING_DEBUG__ &&
-    msg.type === "assistant"
-  ) {
-    console.log("[preprocessMessages] Processing assistant message:", {
+  if (msg.type === "assistant") {
+    diagnostics?.onAssistantMessage?.({
       msgId,
       uuid: msg.uuid,
       id: msg.id,
@@ -947,100 +613,6 @@ function updateToolCallSnapshot(
   };
 }
 
-/**
- * Parse Agent tool result from text content blocks (SDK 0.2.76+).
- *
- * New SDK embeds agentId and usage stats in text rather than a structured
- * tool_use_result. Example text block:
- *   "agentId: abc123 (for resuming...)\n<usage>total_tokens: 1234\ntool_uses: 5\nduration_ms: 6789</usage>"
- *
- * Returns a TaskResult-shaped object for the renderer, or undefined if not parseable.
- */
-export function parseAgentResultFromText(
-  block: ContentBlock,
-): Record<string, unknown> | undefined {
-  // Content may be a string or array of content blocks
-  const texts: string[] = [];
-  if (typeof block.content === "string") {
-    texts.push(block.content);
-  } else if (Array.isArray(block.content)) {
-    for (const cb of block.content as Array<{ type?: string; text?: string }>) {
-      if (cb.type === "text" && cb.text) texts.push(cb.text);
-    }
-  }
-
-  const fullText = texts.join("\n");
-  if (!fullText) return undefined;
-
-  const displayContent = extractAgentDisplayContent(block);
-
-  // Extract agentId
-  const agentIdMatch = fullText.match(/^agentId:\s*(\S+)/m);
-  if (!agentIdMatch) return undefined;
-
-  const result: Record<string, unknown> = {
-    agentId: agentIdMatch[1],
-    status: "completed",
-  };
-  if (displayContent && displayContent.length > 0) {
-    result.content = displayContent;
-  }
-
-  // Extract usage stats from <usage> block
-  const usageMatch = fullText.match(/<usage>([\s\S]*?)<\/usage>/);
-  if (usageMatch?.[1]) {
-    const usage = usageMatch[1];
-    const tokens = usage.match(/total_tokens:\s*(\d+)/);
-    const tools = usage.match(/tool_uses:\s*(\d+)/);
-    const duration = usage.match(/duration_ms:\s*(\d+)/);
-    if (tokens?.[1]) result.totalTokens = Number(tokens[1]);
-    if (tools?.[1]) result.totalToolUseCount = Number(tools[1]);
-    if (duration?.[1]) result.totalDurationMs = Number(duration[1]);
-  }
-
-  return result;
-}
-
-function stripAgentMetadata(text: string): string {
-  return text
-    .replace(/^agentId:\s*\S+.*$/gm, "")
-    .replace(/<usage>[\s\S]*?<\/usage>/g, "")
-    .trim();
-}
-
-function extractAgentDisplayContent(
-  block: ContentBlock,
-): ContentBlock[] | undefined {
-  if (typeof block.content === "string") {
-    const text = stripAgentMetadata(block.content);
-    return text ? [{ type: "text", text }] : undefined;
-  }
-
-  if (!Array.isArray(block.content)) {
-    return undefined;
-  }
-
-  const displayBlocks: ContentBlock[] = [];
-  for (const contentBlock of block.content) {
-    if (!contentBlock || typeof contentBlock !== "object") {
-      continue;
-    }
-
-    if (contentBlock.type === "text" && typeof contentBlock.text === "string") {
-      const text = stripAgentMetadata(contentBlock.text);
-      if (!text) {
-        continue;
-      }
-      displayBlocks.push({ ...contentBlock, text });
-      continue;
-    }
-
-    displayBlocks.push(contentBlock as ContentBlock);
-  }
-
-  return displayBlocks.length > 0 ? displayBlocks : undefined;
-}
-
 function attachToolResult(
   block: ContentBlock,
   resultMessage: Message,
@@ -1158,193 +730,4 @@ function isInterruptedToolResult(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function extractCommandFromInput(input: unknown): string | undefined {
-  if (!isRecord(input)) {
-    return undefined;
-  }
-  if (typeof input.command === "string" && input.command.trim().length > 0) {
-    return input.command;
-  }
-  if (typeof input.cmd === "string" && input.cmd.trim().length > 0) {
-    return input.cmd;
-  }
-  return undefined;
-}
-
-function coerceSessionId(value: unknown): string | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Math.trunc(value));
-  }
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  return undefined;
-}
-
-function extractSessionIdFromWriteStdinInput(
-  input: unknown,
-): string | undefined {
-  if (!isRecord(input)) {
-    return undefined;
-  }
-  return coerceSessionId(input.session_id ?? input.sessionId);
-}
-
-function extractSessionIdFromToolResult(
-  item: ToolCallItem,
-): string | undefined {
-  const structured = item.toolResult?.structured;
-  if (isRecord(structured)) {
-    const fromStructured = coerceSessionId(
-      structured.session_id ?? structured.sessionId,
-    );
-    if (fromStructured) {
-      return fromStructured;
-    }
-  }
-
-  const raw = item.toolResult?.content ?? "";
-  const text = typeof raw === "string" ? raw : "";
-  const match = text.match(
-    /(?:^|\n)\s*(?:Process\s+running\s+with\s+session\s+ID|session(?:\s+id)?)\s*:?\s*(\d+)\b/i,
-  );
-  if (!match?.[1]) {
-    return undefined;
-  }
-  return match[1];
-}
-
-function withLinkedCommand(input: unknown, command: string): unknown {
-  if (!isRecord(input)) {
-    return input;
-  }
-  if (typeof input.linked_command === "string" && input.linked_command.trim()) {
-    return input;
-  }
-  return { ...input, linked_command: command };
-}
-
-function withLinkedFilePath(input: unknown, filePath: string): unknown {
-  if (!isRecord(input)) {
-    return input;
-  }
-  if (
-    typeof input.linked_file_path === "string" &&
-    input.linked_file_path.trim()
-  ) {
-    return input;
-  }
-  return { ...input, linked_file_path: filePath };
-}
-
-function withLinkedToolName(input: unknown, toolName: string): unknown {
-  if (!isRecord(input)) {
-    return input;
-  }
-  if (
-    typeof input.linked_tool_name === "string" &&
-    input.linked_tool_name.trim()
-  ) {
-    return input;
-  }
-  return { ...input, linked_tool_name: toolName };
-}
-
-function isCommandSessionToolName(toolName: string): boolean {
-  const normalized = toolName.toLowerCase();
-  return (
-    normalized === "bash" ||
-    normalized === "exec_command" ||
-    normalized === "shell_command"
-  );
-}
-
-function isFileSessionToolName(toolName: string): boolean {
-  const normalized = toolName.toLowerCase();
-  return (
-    normalized === "read" || normalized === "write" || normalized === "edit"
-  );
-}
-
-function extractFilePathFromToolInput(input: unknown): string | undefined {
-  if (!isRecord(input) || typeof input.file_path !== "string") {
-    return undefined;
-  }
-  const filePath = input.file_path.trim();
-  return filePath.length > 0 ? filePath : undefined;
-}
-
-function enrichWriteStdinWithCommand(items: RenderItem[]): RenderItem[] {
-  const sessionToMetadata = new Map<
-    string,
-    { command?: string; filePath?: string; toolName?: string }
-  >();
-
-  return items.map((item) => {
-    if (item.type !== "tool_call") {
-      return item;
-    }
-
-    if (
-      isCommandSessionToolName(item.toolName) ||
-      isFileSessionToolName(item.toolName)
-    ) {
-      const sessionId = extractSessionIdFromToolResult(item);
-      if (!sessionId) {
-        return item;
-      }
-
-      const existing = sessionToMetadata.get(sessionId) ?? {};
-      const command = isCommandSessionToolName(item.toolName)
-        ? extractCommandFromInput(item.toolInput)
-        : undefined;
-      const filePath = isFileSessionToolName(item.toolName)
-        ? extractFilePathFromToolInput(item.toolInput)
-        : undefined;
-
-      sessionToMetadata.set(sessionId, {
-        command: command ?? existing.command,
-        filePath: filePath ?? existing.filePath,
-        toolName: item.toolName ?? existing.toolName,
-      });
-      return item;
-    }
-
-    const toolName = item.toolName.toLowerCase();
-    if (toolName !== "writestdin" && toolName !== "write_stdin") {
-      return item;
-    }
-
-    const sessionId = extractSessionIdFromWriteStdinInput(item.toolInput);
-    if (!sessionId) {
-      return item;
-    }
-
-    const metadata = sessionToMetadata.get(sessionId);
-    if (!metadata) {
-      return item;
-    }
-
-    let toolInput = item.toolInput;
-    if (metadata.command) {
-      toolInput = withLinkedCommand(toolInput, metadata.command);
-    }
-    if (metadata.filePath) {
-      toolInput = withLinkedFilePath(toolInput, metadata.filePath);
-    }
-    if (metadata.toolName) {
-      toolInput = withLinkedToolName(toolInput, metadata.toolName);
-    }
-
-    if (toolInput === item.toolInput) {
-      return item;
-    }
-
-    return {
-      ...item,
-      toolInput,
-    };
-  });
 }

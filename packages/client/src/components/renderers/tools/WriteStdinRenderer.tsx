@@ -1,5 +1,10 @@
 import { type ReactNode, useState } from "react";
-import { parseShellToolOutput } from "../../../lib/shellToolOutput";
+import {
+  extractDetachedCellId,
+  formatCommandDuration,
+  getCommandResultMeta,
+  parseShellToolOutput,
+} from "../../../lib/shellToolOutput";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
@@ -27,6 +32,32 @@ function getSessionId(input: unknown): string {
     return value.trim();
   }
   return "unknown";
+}
+
+function getCellId(input: unknown): string | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+  const value = input.cell_id ?? input.cellId;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return undefined;
+}
+
+function getTargetLine(input: unknown): string {
+  const sessionId = getSessionId(input);
+  if (sessionId !== "unknown") {
+    return `command session ${sessionId}`;
+  }
+  const cellId = getCellId(input);
+  if (cellId) {
+    return `script cell ${cellId}`;
+  }
+  return "command session unknown";
 }
 
 function getChars(input: unknown): string | undefined {
@@ -134,8 +165,15 @@ function getResultText(result: unknown): string {
     return result;
   }
 
-  if (isRecord(result) && typeof result.content === "string") {
-    return result.content;
+  if (isRecord(result)) {
+    // Normalized command results carry the text under content/stdout;
+    // unified-exec chunk records carry it under output.
+    for (const field of ["content", "stdout", "output"]) {
+      const value = result[field];
+      if (typeof value === "string") {
+        return value;
+      }
+    }
   }
 
   if (result === null || result === undefined) {
@@ -147,6 +185,47 @@ function getResultText(result: unknown): string {
   }
 
   return JSON.stringify(result, null, 2);
+}
+
+/** Compact runtime ("30s", "2m14s") from structured metadata or the shell
+ * envelope's "Wall time N seconds" line. */
+function getCompactDuration(result: unknown, text: string): string | undefined {
+  const meta = getCommandResultMeta(result);
+  if (meta.durationSeconds !== undefined) {
+    return formatCommandDuration(meta.durationSeconds) || undefined;
+  }
+  const wallTime = parseShellToolOutput(text).wallTime;
+  if (!wallTime) {
+    return undefined;
+  }
+  const seconds = Number.parseFloat(wallTime);
+  return Number.isFinite(seconds)
+    ? formatCommandDuration(seconds) || undefined
+    : wallTime;
+}
+
+/**
+ * Command metadata line for the expanded result body — runtime always when
+ * known, exit code only when nonzero (contract:
+ * topics/provider-output-contract.md § Command execution metadata).
+ */
+function getResultMetaLine(result: unknown, text: string): string | null {
+  const meta = getCommandResultMeta(result);
+  const parsed = parseShellToolOutput(text);
+  const exitCode = meta.exitCode ?? parsed.exitCode;
+  const duration =
+    meta.durationSeconds !== undefined
+      ? formatCommandDuration(meta.durationSeconds)
+      : parsed.wallTime;
+
+  const parts: string[] = [];
+  if (duration) {
+    parts.push(duration);
+  }
+  if (exitCode !== undefined && exitCode !== 0) {
+    parts.push(`rc=${exitCode}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 function countContentLines(content: string): number {
@@ -232,7 +311,6 @@ export const writeStdinRenderer: ToolRenderer<
 
   renderToolUse(input, _context) {
     const summaryContext = { projectPath: _context.projectPath };
-    const sessionId = getSessionId(input);
     const chars = getChars(input);
     const command = getLinkedCommand(input);
     const filePath = getLinkedFilePath(input);
@@ -251,7 +329,7 @@ export const writeStdinRenderer: ToolRenderer<
     return (
       <div className="bash-tool-use">
         <pre className="code-block">
-          <code>{`${originLine}${fileLine}${commandLine}command session ${sessionId}\n${action}`}</code>
+          <code>{`${originLine}${fileLine}${commandLine}${getTargetLine(input)}\n${action}`}</code>
         </pre>
       </div>
     );
@@ -262,14 +340,40 @@ export const writeStdinRenderer: ToolRenderer<
     const parsed = parseShellToolOutput(text);
     const linkedToolName = getLinkedToolName(input);
     const linkedFilePath = getLinkedFilePath(input);
+    const metaLine = getResultMetaLine(result, text);
+    const metaRow = metaLine ? (
+      <div className="command-result-meta">{metaLine}</div>
+    ) : null;
 
     if (!parsed.output.trim()) {
-      if (parsed.exitCode !== undefined) {
+      const exitCode = getCommandResultMeta(result).exitCode ?? parsed.exitCode;
+      if (exitCode !== undefined && exitCode !== 0) {
         return (
-          <div className="bash-empty">{`Command exited with code ${parsed.exitCode}`}</div>
+          <>
+            <div className="bash-empty">{`Command exited with code ${exitCode}`}</div>
+            {metaRow}
+          </>
         );
       }
-      return <div className="bash-empty">No output</div>;
+      // A detached poll is not "no output": the script is still running and
+      // its output arrives with a later wait on the named cell.
+      const detachedCellId = extractDetachedCellId(text);
+      if (detachedCellId) {
+        return (
+          <>
+            <div className="bash-empty">
+              {`Still running — output continues as script cell ${detachedCellId}`}
+            </div>
+            {metaRow}
+          </>
+        );
+      }
+      return (
+        <>
+          <div className="bash-empty">No output</div>
+          {metaRow}
+        </>
+      );
     }
 
     if (linkedToolName === "Read" && linkedFilePath) {
@@ -294,6 +398,7 @@ export const writeStdinRenderer: ToolRenderer<
             )
           }
         />
+        {metaRow}
       </div>
     );
   },
@@ -322,20 +427,31 @@ export const writeStdinRenderer: ToolRenderer<
 
     const text = getResultText(result);
     const parsed = parseShellToolOutput(text);
-    if (parsed.exitCode !== undefined && parsed.wallTime) {
-      return `exit ${parsed.exitCode} in ${parsed.wallTime}`;
+    const meta = getCommandResultMeta(result);
+    const exitCode = meta.exitCode ?? parsed.exitCode;
+    const duration =
+      meta.durationSeconds !== undefined
+        ? formatCommandDuration(meta.durationSeconds)
+        : parsed.wallTime;
+
+    // Exit code 0 is the default and stays silent per the command-metadata
+    // contract.
+    if (exitCode !== undefined && exitCode !== 0) {
+      return duration ? `rc=${exitCode} in ${duration}` : `rc=${exitCode}`;
     }
 
-    if (parsed.exitCode !== undefined) {
-      return `exit ${parsed.exitCode}`;
-    }
+    const compactDuration = getCompactDuration(result, text);
+    const withDuration = (summary: string) =>
+      compactDuration ? `${summary} · ${compactDuration}` : summary;
 
     if (!parsed.output.trim()) {
-      return "No output";
+      return withDuration(
+        extractDetachedCellId(text) ? "still running" : "No output",
+      );
     }
 
     const lineCount = parsed.output.split("\n").filter(Boolean).length;
-    return `${lineCount} lines`;
+    return withDuration(`${lineCount} lines`);
   },
 
   renderInteractiveSummary(input, result, isError, _context) {

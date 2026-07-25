@@ -27,6 +27,7 @@ import {
   type ComposerToolbarOverflowLayoutSignatureInput,
 } from "../../hooks/useMessageInputToolbarLayout";
 import { SESSION_ISEARCH_GUIDE_EVENT } from "../../lib/sessionIsearchGuide";
+import { UI_KEYS } from "../../lib/storageKeys";
 import {
   YA_GROK_BATCH_SPEECH_METHOD,
   XAI_DIRECT_STREAMING_SPEECH_METHOD,
@@ -207,6 +208,7 @@ vi.mock("../../hooks/useSessionToolbarPresence", async () => {
         nudge: true,
         sessionStatus: true,
         projectQueue: true,
+        projectQueueNewSessionShortcut: true,
       },
       priority: actual.DEFAULT_SESSION_TOOLBAR_PRIORITY,
       setControlPresence: vi.fn(),
@@ -286,11 +288,16 @@ vi.mock("../../i18n", () => ({
           effortLevelHighDescription: "Deep reasoning",
           effortLevelMaxDescription: "Maximum effort",
           toolbarQueuePrimaryActionLabel: "Queue from primary action",
+          toolbarQueueShortLabel: "Queue",
           toolbarProjectQueueLabel: "Queue for Project Queue",
           toolbarProjectQueueTooltip:
             "Send after all sessions in this project are idle",
           toolbarProjectQueueTooltipWithShortcut:
             "Send after all sessions in this project are idle\nCtrl+Enter",
+          toolbarProjectQueueNewSessionLabel:
+            "Queue as new session for Project Queue",
+          toolbarProjectQueueNewSessionTooltip:
+            "Start a new session after all sessions in this project are idle",
           toolbarLivenessVerifiedProgress: "Verified progress",
           toolbarLivenessVerifiedIdle: "Verified idle",
           toolbarRelativeAgeNow: "now",
@@ -326,6 +333,7 @@ vi.mock("../../i18n", () => ({
           toolbarShortcutFullSessionReverseSearch:
             "Full-session reverse search",
           toolbarShortcutSteerCurrentTurn: "Steer current turn",
+          toolbarSteerShortLabel: "Steer",
           toolbarShortcutQueueCurrentTurn: "Queue message",
           toolbarShortcutProjectQueue: "Queue for Project Queue",
           toolbarShortcutForkAfterSummary:
@@ -440,6 +448,65 @@ function installDesktopMatchMedia() {
   };
 }
 
+function installMobileKeyboardViewport(initialHeight = 800) {
+  const previousMatchMedia = Object.getOwnPropertyDescriptor(
+    window,
+    "matchMedia",
+  );
+  const previousVisualViewport = Object.getOwnPropertyDescriptor(
+    window,
+    "visualViewport",
+  );
+  const restoreInnerHeight = installWindowNumberProperty(
+    "innerHeight",
+    initialHeight,
+  );
+  let height = initialHeight;
+  const visualViewport = new EventTarget();
+  Object.defineProperty(visualViewport, "height", {
+    configurable: true,
+    get: () => height,
+  });
+
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: visualViewport,
+  });
+
+  return {
+    setHeight(nextHeight: number) {
+      height = nextHeight;
+      visualViewport.dispatchEvent(new Event("resize"));
+    },
+    restore() {
+      restoreInnerHeight();
+      if (previousMatchMedia) {
+        Object.defineProperty(window, "matchMedia", previousMatchMedia);
+      } else {
+        Reflect.deleteProperty(window, "matchMedia");
+      }
+      if (previousVisualViewport) {
+        Object.defineProperty(window, "visualViewport", previousVisualViewport);
+      } else {
+        Reflect.deleteProperty(window, "visualViewport");
+      }
+    },
+  };
+}
+
 function installWindowNumberProperty(key: "innerHeight", value: number) {
   const previous = Object.getOwnPropertyDescriptor(window, key);
 
@@ -516,6 +583,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   nudge: false,
   sessionStatus: false,
   projectQueue: false,
+  projectQueueNewSessionShortcut: false,
 };
 
 const toolbarT = ((key: string, params?: Record<string, string>) => {
@@ -537,6 +605,10 @@ const toolbarT = ((key: string, params?: Record<string, string>) => {
       "Send after all sessions in this project are idle",
     toolbarProjectQueueTooltipWithShortcut:
       "Send after all sessions in this project are idle\nCtrl+Enter",
+    toolbarProjectQueueNewSessionLabel:
+      "Queue as new session for Project Queue",
+    toolbarProjectQueueNewSessionTooltip:
+      "Start a new session after all sessions in this project are idle",
     toolbarSteerNowLabel: "Steer now",
     toolbarSteerNowShortLabel: "Now",
     toolbarSteerNowTooltip: "Steer current turn now",
@@ -626,6 +698,7 @@ describe("MessageInput", () => {
     voiceButtonState.isListening = false;
     voicePropsState.current = null;
     window.localStorage.clear();
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "themed");
   });
 
   afterEach(() => {
@@ -660,6 +733,339 @@ describe("MessageInput", () => {
       expect(textarea.style.overflowY).toBe("auto");
     } finally {
       restoreInnerHeight();
+    }
+  });
+
+  it("keeps the normal toolbar while empty and uses compact actions for content", () => {
+    const viewport = installMobileKeyboardViewport();
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      { onSend },
+    );
+
+    try {
+      expect(textarea.getAttribute("enterkeyhint")).toBe("enter");
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+
+      fireEvent.focus(textarea);
+      act(() => viewport.setHeight(480));
+
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      expect(
+        document.querySelector(".message-input-keyboard-compact"),
+      ).toBeNull();
+      expect(
+        document.querySelector(".message-input-keyboard-primary"),
+      ).toBeNull();
+
+      fireEvent.change(textarea, { target: { value: "mobile send" } });
+      const keyboardAction = document.querySelector(
+        ".message-input-keyboard-primary",
+      ) as HTMLButtonElement | null;
+      expect(keyboardAction).toBeTruthy();
+      expect(keyboardAction?.textContent).toContain("toolbarSend");
+      expect(
+        document.querySelector(".message-input-keyboard-more"),
+      ).toBeTruthy();
+      expect(document.querySelector(".message-input-toolbar")).toBeNull();
+
+      fireEvent.pointerDown(keyboardAction as HTMLButtonElement);
+      fireEvent.click(keyboardAction as HTMLButtonElement);
+
+      expectSubmission(onSend, "mobile send", "direct");
+      expect(
+        document.querySelector(".message-input-keyboard-primary"),
+      ).toBeNull();
+      expect(document.querySelector(".message-input-keyboard-more")).toBeNull();
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+
+      act(() => viewport.setHeight(800));
+      expect(
+        document.querySelector(".message-input-keyboard-primary"),
+      ).toBeNull();
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+    } finally {
+      viewport.restore();
+    }
+  });
+
+  it("shows the alternate beside the primary mobile keyboard action", () => {
+    const viewport = installMobileKeyboardViewport();
+    versionState.version = {
+      ...versionState.version,
+      clientDefaults: {
+        busyComposerDefaultAction: "steer",
+        patientQueueDefault: true,
+      },
+    };
+    const onSend = vi.fn();
+    const onQueue = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onSend,
+        onQueue,
+        supportsSteering: true,
+      },
+    );
+
+    try {
+      act(() => textarea.focus());
+      act(() => viewport.setHeight(480));
+      fireEvent.change(textarea, { target: { value: "wait until done" } });
+
+      const actions = document.querySelectorAll(
+        ".message-input-keyboard-action",
+      );
+      expect(actions).toHaveLength(2);
+      expect(actions[0]?.classList.contains("queue-mode")).toBe(true);
+      expect(actions[0]?.getAttribute("aria-label")).toBe("toolbarQueueLabel");
+      expect(actions[0]?.textContent).toBe("→");
+      expect(actions[1]?.classList.contains("steer-mode")).toBe(true);
+      expect(actions[1]?.getAttribute("aria-label")).toBe("Steer current turn");
+      expect(
+        actions[1]?.querySelector(".message-input-keyboard-primary-label")
+          ?.textContent,
+      ).toBe("Steer");
+      expect(actions[1]?.textContent).toBe("Steer↗");
+
+      fireEvent.click(actions[0] as HTMLButtonElement);
+      expectSubmission(onQueue, "wait until done", "patient");
+
+      fireEvent.change(textarea, { target: { value: "steer now" } });
+      fireEvent.click(
+        document.querySelector(
+          ".message-input-keyboard-primary",
+        ) as HTMLButtonElement,
+      );
+      expectSubmission(onSend, "steer now", "steer");
+    } finally {
+      viewport.restore();
+    }
+  });
+
+  it("keeps the keyboard-open row free of disabled actions after send starts a turn", () => {
+    const viewport = installMobileKeyboardViewport();
+    const onSend = vi.fn();
+    const onQueue = vi.fn();
+
+    function BusyAfterSendHarness() {
+      const [busy, setBusy] = useState(false);
+      return (
+        <MessageInput
+          onSend={(text, metadata) => {
+            onSend(text, metadata);
+            setBusy(true);
+          }}
+          onQueue={busy ? onQueue : undefined}
+          supportsSteering={busy}
+          primaryActionKind={busy ? "steer" : "send"}
+          draftKey="keyboard-transition-draft"
+          placeholder="Message"
+          supportsPermissionMode={false}
+          supportsThinkingToggle={false}
+        />
+      );
+    }
+
+    render(<BusyAfterSendHarness />);
+    const textarea = screen.getByPlaceholderText("Message");
+
+    try {
+      act(() => textarea.focus());
+      act(() => viewport.setHeight(480));
+      fireEvent.change(textarea, { target: { value: "start the turn" } });
+      fireEvent.click(
+        document.querySelector(
+          ".message-input-keyboard-primary",
+        ) as HTMLButtonElement,
+      );
+
+      expectSubmission(onSend, "start the turn", "direct");
+      expect(
+        document.querySelectorAll(".message-input-keyboard-action"),
+      ).toHaveLength(0);
+      expect(document.querySelector(".message-input-keyboard-more")).toBeNull();
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+    } finally {
+      viewport.restore();
+    }
+  });
+
+  it("keeps keyboard focus while More exposes utilities and Project Queue stays inline", () => {
+    const viewport = installMobileKeyboardViewport();
+    const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
+    const onAttach = vi.fn();
+    const inputClick = vi
+      .spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(() => {});
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onProjectQueue,
+        onProjectQueueNewSession,
+        onAttach,
+        projectId: "project-1",
+        sessionId: "session-1",
+      },
+    );
+
+    try {
+      act(() => textarea.focus());
+      act(() => viewport.setHeight(480));
+
+      expect(document.querySelector(".message-input-toolbar")).toBeTruthy();
+      fireEvent.change(textarea, { target: { value: "project later" } });
+
+      const more = screen.getByRole("button", {
+        name: "More toolbar controls",
+      });
+      fireEvent.pointerDown(more);
+      fireEvent.click(more);
+
+      expect(more.getAttribute("aria-expanded")).toBe("true");
+      expect(document.activeElement).toBe(textarea);
+      const morePanel = document.querySelector(
+        ".message-input-keyboard-more-panel",
+      );
+      expect(
+        morePanel?.querySelector('[aria-label="Queue for Project Queue"]'),
+      ).toBeNull();
+      expect(
+        morePanel?.querySelector(
+          '[aria-label="Queue as new session for Project Queue"]',
+        ),
+      ).toBeNull();
+
+      const attach = screen.getByTitle("toolbarAttachFiles");
+      fireEvent.pointerDown(attach);
+      fireEvent.click(attach);
+      expect(inputClick).toHaveBeenCalledTimes(1);
+
+      fireEvent.pointerDown(more);
+      fireEvent.click(more);
+      expect(more.getAttribute("aria-expanded")).toBe("false");
+
+      expect(
+        document.querySelector(
+          ".message-input-keyboard-project-queue-slot .project-queue-mode",
+        ),
+      ).toBeTruthy();
+      expect(
+        document.querySelector(
+          ".message-input-keyboard-project-queue-new-session-slot .project-queue-new-session-button",
+        ),
+      ).toBeTruthy();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Queue for Project Queue" }),
+      );
+      expectSubmission(onProjectQueue, "project later", "deferred");
+    } finally {
+      viewport.restore();
+    }
+  });
+
+  it("reserves queue slots before live actions appear", () => {
+    const viewport = installMobileKeyboardViewport();
+    const onQueue = vi.fn();
+    const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
+
+    function LiveActionsHarness() {
+      const [actionsAvailable, setActionsAvailable] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setActionsAvailable(true)}>
+            Make queue actions available
+          </button>
+          <MessageInput
+            onSend={vi.fn()}
+            onQueue={actionsAvailable ? onQueue : undefined}
+            onProjectQueue={actionsAvailable ? onProjectQueue : undefined}
+            onProjectQueueNewSession={onProjectQueueNewSession}
+            supportsSteering
+            draftKey="stable-mobile-actions"
+            placeholder="Stable actions"
+            supportsPermissionMode={false}
+            supportsThinkingToggle={false}
+          />
+        </>
+      );
+    }
+
+    render(<LiveActionsHarness />);
+    const textarea = screen.getByPlaceholderText("Stable actions");
+
+    try {
+      act(() => textarea.focus());
+      act(() => viewport.setHeight(480));
+      fireEvent.change(textarea, { target: { value: "queue this later" } });
+
+      const projectQueueSlot = document.querySelector(
+        ".message-input-keyboard-project-queue-slot",
+      );
+      const sessionAlternateSlot = document.querySelector(
+        ".message-input-keyboard-session-alternate-slot",
+      );
+      const projectQueueNewSessionSlot = document.querySelector(
+        ".message-input-keyboard-project-queue-new-session-slot",
+      );
+      const primary = document.querySelector(".message-input-keyboard-primary");
+
+      expect(projectQueueSlot).toBeTruthy();
+      expect(projectQueueNewSessionSlot).toBeTruthy();
+      expect(sessionAlternateSlot).toBeTruthy();
+      expect(projectQueueSlot?.children).toHaveLength(0);
+      expect(
+        projectQueueNewSessionSlot?.querySelector(
+          ".project-queue-new-session-button",
+        ),
+      ).toBeTruthy();
+      expect(sessionAlternateSlot?.children).toHaveLength(0);
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Make queue actions available",
+        }),
+      );
+
+      expect(document.querySelector(".message-input-keyboard-primary")).toBe(
+        primary,
+      );
+      expect(
+        projectQueueSlot?.querySelector(".project-queue-mode"),
+      ).toBeTruthy();
+      expect(sessionAlternateSlot?.querySelector(".queue-mode")).toBeTruthy();
+    } finally {
+      viewport.restore();
+    }
+  });
+
+  it("does not reserve Project Queue slots against an unsupported server", () => {
+    const viewport = installMobileKeyboardViewport();
+    versionState.version = {
+      ...versionState.version,
+      capabilities: [],
+    };
+    const textarea = renderMessageInput();
+
+    try {
+      act(() => textarea.focus());
+      act(() => viewport.setHeight(480));
+      fireEvent.change(textarea, { target: { value: "send normally" } });
+
+      expect(
+        document.querySelector(".message-input-keyboard-project-queue-slot"),
+      ).toBeNull();
+      expect(
+        document.querySelector(
+          ".message-input-keyboard-project-queue-new-session-slot",
+        ),
+      ).toBeNull();
+    } finally {
+      viewport.restore();
     }
   });
 
@@ -932,7 +1338,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "replace this text" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange(8, 12);
 
     act(() => {
@@ -1164,7 +1570,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "replace this text" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange(8, 12);
 
     act(() => {
@@ -1183,7 +1589,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "replace this text" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange(8, 12);
 
     act(() => {
@@ -1205,7 +1611,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "replace this text" } });
-    textarea.focus();
+    act(() => textarea.focus());
 
     act(() => {
       voicePropsState.current?.onListeningStart?.();
@@ -1233,7 +1639,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "replace this text" } });
-    textarea.focus();
+    act(() => textarea.focus());
 
     act(() => {
       voicePropsState.current?.onListeningStart?.();
@@ -1259,7 +1665,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "hello world" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange(5, 5);
 
     act(() => {
@@ -1280,7 +1686,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "alpha beta gamma" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange(
       "alpha beta gamma".length,
       "alpha beta gamma".length,
@@ -1312,7 +1718,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "Ok, look again." } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange("Ok, ".length, "Ok, look".length);
 
     act(() => {
@@ -1389,7 +1795,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "prefix suffix" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange("prefix".length, "prefix".length);
 
     act(() => {
@@ -1414,7 +1820,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "prefix suffix" } });
-    textarea.focus();
+    act(() => textarea.focus());
     textarea.setSelectionRange("prefix".length, "prefix".length);
 
     act(() => {
@@ -2794,12 +3200,14 @@ describe("MessageInput", () => {
     };
     const onQueue = vi.fn();
     const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
     const textarea = renderMessageInput(
       vi.fn(() => true),
       {
         supportsSteering: true,
         onQueue,
         onProjectQueue,
+        onProjectQueueNewSession,
       },
     );
 
@@ -2807,7 +3215,27 @@ describe("MessageInput", () => {
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
 
     expectSubmission(onProjectQueue, "project quiet later", "deferred");
+    expect(onProjectQueueNewSession).not.toHaveBeenCalled();
     expect(onQueue).not.toHaveBeenCalled();
+  });
+
+  it("does not bind Ctrl+Enter to the Project Queue new-session action", () => {
+    const onQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        supportsSteering: true,
+        onQueue,
+        onProjectQueueNewSession,
+      },
+    );
+
+    fireEvent.change(textarea, { target: { value: "stay in this session" } });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+
+    expectSubmission(onQueue, "stay in this session", "deferred");
+    expect(onProjectQueueNewSession).not.toHaveBeenCalled();
   });
 
   it("falls back to patient queue when the Project Queue shortcut is disabled", () => {
@@ -2915,18 +3343,72 @@ describe("MessageInput", () => {
     expectSubmission(onProjectQueue, "project-wide later", "deferred");
   });
 
+  it("routes the explicit Project Queue new-session action", () => {
+    const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onProjectQueue,
+      onProjectQueueNewSession,
+    });
+
+    fireEvent.change(textarea, { target: { value: "start separately later" } });
+    const button = screen.getByRole("button", {
+      name: "Queue as new session for Project Queue",
+    });
+
+    expect(button.getAttribute("title")).toBe(
+      "Start a new session after all sessions in this project are idle",
+    );
+    fireEvent.click(button);
+
+    expectSubmission(
+      onProjectQueueNewSession,
+      "start separately later",
+      "deferred",
+    );
+    expect(onProjectQueue).not.toHaveBeenCalled();
+  });
+
+  it("shows only the Project Queue new-session action when current-session queueing is unavailable", () => {
+    const onProjectQueueNewSession = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onProjectQueueNewSession,
+    });
+
+    fireEvent.change(textarea, { target: { value: "new work" } });
+
+    expect(
+      screen.queryByRole("button", { name: "Queue for Project Queue" }),
+    ).toBe(null);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Queue as new session for Project Queue",
+      }),
+    );
+    expectSubmission(onProjectQueueNewSession, "new work", "deferred");
+  });
+
   it("hides the project queue action without server capability", () => {
     versionState.version = {
       ...versionState.version,
       capabilities: [VOICE_INPUT_CAPABILITY],
     };
     const onProjectQueue = vi.fn();
-    const textarea = renderMessageInput(vi.fn(), { onProjectQueue });
+    const onProjectQueueNewSession = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onProjectQueue,
+      onProjectQueueNewSession,
+    });
 
     fireEvent.change(textarea, { target: { value: "project-wide later" } });
 
     expect(
       screen.queryByRole("button", { name: "Queue for Project Queue" }),
+    ).toBe(null);
+    expect(
+      screen.queryByRole("button", {
+        name: "Queue as new session for Project Queue",
+      }),
     ).toBe(null);
   });
 
@@ -2974,6 +3456,7 @@ describe("MessageInput", () => {
 
   it("renders the project queue toolbar action when visible", () => {
     const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
     render(
       <MessageInputToolbarView
         t={toolbarT}
@@ -3003,8 +3486,10 @@ describe("MessageInput", () => {
           },
           projectQueue: {
             onProjectQueue,
+            onProjectQueueNewSession,
             canSend: true,
             tooltip: "Project Queue",
+            newSessionTooltip: "New-session Project Queue",
           },
         }}
       />,
@@ -3015,6 +3500,69 @@ describe("MessageInput", () => {
     );
 
     expect(onProjectQueue).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("button", {
+        name: "Queue as new session for Project Queue",
+      }),
+    ).toBe(null);
+    expect(onProjectQueueNewSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the new-session Project Queue shortcut only when opted in", () => {
+    const onProjectQueue = vi.fn();
+    const onProjectQueueNewSession = vi.fn();
+    render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={{
+          ...toolbarVisibility,
+          projectQueue: false,
+          projectQueueNewSessionShortcut: true,
+        }}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "send",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "send",
+            primaryActionLabel: "Send",
+            tooltip: "Send",
+            icon: "↑",
+          },
+          projectQueue: {
+            onProjectQueue,
+            onProjectQueueNewSession,
+            canSend: true,
+            tooltip: "Project Queue",
+            newSessionTooltip: "New-session Project Queue",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Queue for Project Queue" }),
+    ).toBe(null);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Queue as new session for Project Queue",
+      }),
+    );
+    expect(onProjectQueue).not.toHaveBeenCalled();
+    expect(onProjectQueueNewSession).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the render mode toolbar action hidden by visibility", () => {
@@ -3155,6 +3703,44 @@ describe("MessageInput", () => {
     expect(container.querySelector(".send-button-with-help")).toBe(button);
   });
 
+  it("uses only the browser title on the primary send action in native mode", () => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    render(
+      <MessageInputToolbarView
+        t={toolbarT}
+        visibility={toolbarVisibility}
+        attachmentControl={{ attachmentCount: 0 }}
+        shortcutsControl={{
+          open: false,
+          isearchScope: null,
+          setOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+          settingsOpen: false,
+          setSettingsOpen:
+            vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+          hasDualActions: false,
+          enterActionKind: "steer",
+          canSwapEnterAction: false,
+          queueShortcutLabel: "Queue while agent runs",
+        }}
+        actionsControl={{
+          send: {
+            onSend: vi.fn(),
+            canSend: true,
+            primaryActionKind: "steer",
+            primaryActionLabel: "Steer current turn",
+            tooltip: "Steer current turn\nEnter",
+            icon: "↗",
+          },
+        }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Steer current turn" });
+    expect(button.getAttribute("title")).toBe("Steer current turn\nEnter");
+    expect(button.getAttribute("data-tooltip")).toBeNull();
+  });
+
   it("opens a bottom-row overflow strip for lower-priority controls", () => {
     const onRenderToggle = vi.fn();
     const onNudgeClick = vi.fn();
@@ -3260,7 +3846,9 @@ describe("MessageInput", () => {
     );
     fireEvent.click(screen.getAllByLabelText("Start /btw aside").at(-1)!);
     fireEvent.click(screen.getAllByLabelText("Steer now").at(-1)!);
-    fireEvent.click(screen.getAllByLabelText("Queue for Project Queue").at(-1)!);
+    fireEvent.click(
+      screen.getAllByLabelText("Queue for Project Queue").at(-1)!,
+    );
 
     expect(onRenderToggle).toHaveBeenCalledTimes(1);
     expect(onNudgeClick).toHaveBeenCalledTimes(1);
@@ -3289,6 +3877,7 @@ describe("MessageInput", () => {
       btw: "pin",
       steerNow: "pin",
       projectQueue: "pin",
+      projectQueueNewSessionShortcut: "off",
       microphone: "live",
       waveform: true,
       send: "send",
@@ -3390,7 +3979,8 @@ describe("MessageInput", () => {
         ) {
           return rect(1);
         }
-        if (this.classList.contains("composer-bottom-overflow")) return rect(24);
+        if (this.classList.contains("composer-bottom-overflow"))
+          return rect(24);
         if (this.classList.contains("attach-button")) return rect(80);
         if (this.classList.contains("send-button-with-help")) return rect(40);
         if (
@@ -3475,5 +4065,141 @@ describe("MessageInput", () => {
         value: originalResizeObserver,
       });
     }
+  });
+});
+
+describe("MessageInput bang commands", () => {
+  let restoreMatchMedia: () => void;
+
+  beforeEach(() => {
+    restoreMatchMedia = installDesktopMatchMedia();
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    restoreMatchMedia();
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  function bangSupport(
+    overrides: Partial<{
+      onRun: ReturnType<typeof vi.fn>;
+      fetchCompletions: ReturnType<typeof vi.fn>;
+      history: string[];
+    }> = {},
+  ) {
+    return {
+      onRun: overrides.onRun ?? vi.fn(),
+      fetchCompletions:
+        overrides.fetchCompletions ?? vi.fn(async () => [] as string[]),
+      history: overrides.history ?? [],
+    };
+  }
+
+  it("routes !! drafts to onRun instead of onSend", async () => {
+    const onSend = vi.fn();
+    const support = bangSupport();
+    const textarea = renderMessageInput(undefined, {
+      onSend,
+      bangSupport: support,
+    });
+    fireEvent.change(textarea, { target: { value: "!!git status" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(support.onRun).toHaveBeenCalledWith("git status");
+    expect(onSend).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect((textarea as HTMLTextAreaElement).value).toBe(""),
+    );
+  });
+
+  it("keeps a bang draft when the server rejects the run", async () => {
+    const onSend = vi.fn();
+    const support = bangSupport({
+      onRun: vi.fn(async () => {
+        throw new Error("route unavailable");
+      }),
+    });
+    const textarea = renderMessageInput(undefined, {
+      onSend,
+      bangSupport: support,
+    });
+    fireEvent.change(textarea, { target: { value: "!!git status" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(support.onRun).toHaveBeenCalled());
+    expect(onSend).not.toHaveBeenCalled();
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
+  });
+
+  it("strips one leading space as the literal-!! escape and sends", () => {
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(undefined, {
+      onSend,
+      bangSupport: bangSupport(),
+    });
+    fireEvent.change(textarea, { target: { value: " !!not a command" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalled();
+    expect(onSend.mock.calls[0]?.[0]).toBe("!!not a command");
+  });
+
+  it("fetches typing-triggered completions with token, kind, and line", async () => {
+    const fetchCompletions = vi.fn(async () => ["gitalike", "gizmo"]);
+    const support = bangSupport({ fetchCompletions });
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: support,
+    });
+    fireEvent.change(textarea, { target: { value: "!!gi" } });
+    await waitFor(() =>
+      expect(fetchCompletions).toHaveBeenCalledWith("gi", "command", "gi"),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "gizmo" })).toBeTruthy(),
+    );
+  });
+
+  it("applies a single Tab completion immediately", async () => {
+    const fetchCompletions = vi.fn(async () => ["gitalike"]);
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!gita" } });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    await waitFor(() =>
+      expect((textarea as HTMLTextAreaElement).value).toBe("!!gitalike "),
+    );
+  });
+
+  it("discards a Tab completion after the draft changes", async () => {
+    let resolveCompletions: (completions: string[]) => void = () => {};
+    const fetchCompletions = vi.fn(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveCompletions = resolve;
+        }),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!gi" } });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    fireEvent.change(textarea, { target: { value: "!!git status" } });
+    resolveCompletions(["gitalike"]);
+
+    await waitFor(() => expect(fetchCompletions).toHaveBeenCalled());
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
+  });
+
+  it("recalls bang history with Ctrl+ArrowUp", () => {
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ history: ["git status", "ls"] }),
+    });
+    fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
+    fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!ls");
+    fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
   });
 });

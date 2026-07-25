@@ -33,6 +33,10 @@ import {
   type MessageInputToolbarLayoutRefs,
   useMeasuredComposerOverflow,
 } from "../hooks/useMessageInputToolbarLayout";
+import {
+  getTextTooltipAttributes,
+  useTooltipMode,
+} from "../hooks/useTooltipAppearance";
 import { useProviders } from "../hooks/useProviders";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import {
@@ -260,6 +264,8 @@ export interface MessageInputToolbarProps {
   onQueue?: () => void;
   /** Queue through the project-level idle gate. Hidden unless opted in. */
   onProjectQueue?: () => void;
+  /** Queue the draft as a new session after the project becomes idle. */
+  onProjectQueueNewSession?: () => void;
   /** Steer the current turn. Used as the alternate action when Enter queues. */
   onSteer?: () => void;
   primaryActionKind?: "send" | "steer" | "queue";
@@ -277,6 +283,8 @@ export interface MessageInputToolbarProps {
   canForkAfterSummary?: boolean;
   canSend?: boolean;
   disabled?: boolean;
+  /** Keep toolbar utilities/settings but omit the ordinary primary/alternate actions. */
+  hidePrimaryDeliveryActions?: boolean;
 
   // Pending approval indicator
   pendingApproval?: {
@@ -595,9 +603,11 @@ interface ToolbarSendControl {
 }
 
 interface ToolbarProjectQueueControl {
-  onProjectQueue: () => void;
+  onProjectQueue?: () => void;
+  onProjectQueueNewSession?: () => void;
   canSend?: boolean;
-  tooltip: string;
+  tooltip?: string;
+  newSessionTooltip?: string;
 }
 
 interface ToolbarStopControl {
@@ -638,6 +648,7 @@ export interface MessageInputToolbarViewProps {
   pendingApproval?: MessageInputToolbarProps["pendingApproval"];
   shortcutsControl: ToolbarShortcutsControl;
   actionsControl: ToolbarActionsControl;
+  hidePrimaryDeliveryActions?: boolean;
 }
 
 function ToolbarMicrophoneIcon() {
@@ -840,7 +851,9 @@ export function MessageInputToolbarView({
   pendingApproval,
   shortcutsControl,
   actionsControl,
+  hidePrimaryDeliveryActions = false,
 }: MessageInputToolbarViewProps) {
+  const tooltipMode = useTooltipMode();
   const controlPriority = priority ?? DEFAULT_SESSION_TOOLBAR_PRIORITY;
   // Inline copy always carries `-inline`; append the priority-derived tier (or
   // nothing when pinned). Menu copy carries just the tier. Both mirror each
@@ -898,11 +911,22 @@ export function MessageInputToolbarView({
   // the composer; wide+enabled keeps the inline row's positioning context.
   const applyStatusFloats =
     isCompactStatusMode || (statusFloats && showToolbarStatus);
-  const showSendButton = !!actionsControl.send?.onSend;
-  const showStopButton = !!actionsControl.stop;
-  const showProjectQueueButton = !!(
-    visibility.projectQueue && actionsControl.projectQueue?.onProjectQueue
+  const showSendButton = !!(
+    !hidePrimaryDeliveryActions && actionsControl.send?.onSend
   );
+  const showStopButton = !!actionsControl.stop;
+  const showCurrentSessionProjectQueueButton = !!(
+    visibility.projectQueue &&
+    actionsControl.projectQueue?.onProjectQueue &&
+    actionsControl.send
+  );
+  const showNewSessionProjectQueueButton = !!(
+    visibility.projectQueueNewSessionShortcut &&
+    actionsControl.projectQueue?.onProjectQueueNewSession &&
+    actionsControl.send
+  );
+  const showProjectQueueButton =
+    showCurrentSessionProjectQueueButton || showNewSessionProjectQueueButton;
   const selectedSpeechMethod = speechControl?.selectedMethod;
   const queueControl = actionsControl.send?.queue;
   const canToggleSteerNow = !!(
@@ -1078,7 +1102,7 @@ export function MessageInputToolbarView({
       </label>
     );
   };
-  const renderProjectQueueButton = (className: string, menu = false) => {
+  const renderProjectQueueButtons = (menu = false) => {
     if (
       !showProjectQueueButton ||
       !actionsControl.projectQueue ||
@@ -1086,20 +1110,59 @@ export function MessageInputToolbarView({
     ) {
       return null;
     }
+    const projectQueue = actionsControl.projectQueue;
+    const disabled = actionsControl.disabled || !projectQueue.canSend;
+    const classNameFor = (
+      key: "projectQueue" | "projectQueueNewSessionShortcut",
+      ...extra: string[]
+    ) =>
+      (menu ? menuTierClass : inlineTierClass)(
+        key,
+        "send-button",
+        "project-queue-button",
+        ...extra,
+      );
     return (
-      <button
-        type="button"
-        onClick={actionsControl.projectQueue.onProjectQueue}
-        disabled={
-          actionsControl.disabled || !actionsControl.projectQueue.canSend
-        }
-        className={className}
-        aria-label={t("toolbarProjectQueueLabel")}
-        title={actionsControl.projectQueue.tooltip}
-        role={menu ? "menuitem" : undefined}
-      >
-        <span className="send-icon">⇥</span>
-      </button>
+      <>
+        {showCurrentSessionProjectQueueButton &&
+          (!menu || isPriorityCollapsible("projectQueue")) && (
+            <button
+              type="button"
+              onClick={projectQueue.onProjectQueue}
+              disabled={disabled}
+              className={classNameFor("projectQueue")}
+              aria-label={t("toolbarProjectQueueLabel")}
+              title={projectQueue.tooltip}
+              role={menu ? "menuitem" : undefined}
+            >
+              <span className="send-icon">⇥</span>
+            </button>
+          )}
+        {showNewSessionProjectQueueButton &&
+          (!menu ||
+            isPriorityCollapsible("projectQueueNewSessionShortcut")) && (
+            <button
+              type="button"
+              onClick={projectQueue.onProjectQueueNewSession}
+              disabled={disabled}
+              className={classNameFor(
+                "projectQueueNewSessionShortcut",
+                "project-queue-new-session-button",
+              )}
+              aria-label={t("toolbarProjectQueueNewSessionLabel")}
+              title={projectQueue.newSessionTooltip}
+              role={menu ? "menuitem" : undefined}
+            >
+              <span className="send-icon">⇥</span>
+              <span
+                className="project-queue-new-session-mark"
+                aria-hidden="true"
+              >
+                +
+              </span>
+            </button>
+          )}
+      </>
     );
   };
   const hasBottomOverflowControls = !!(
@@ -1127,9 +1190,12 @@ export function MessageInputToolbarView({
       isPriorityCollapsible("contextUsage")) ||
     (visibility.btw && actionsControl.btw && isPriorityCollapsible("btw")) ||
     (canToggleSteerNow && isPriorityCollapsible("steerNow")) ||
-    (showProjectQueueButton &&
+    (showCurrentSessionProjectQueueButton &&
       actionsControl.send &&
-      isPriorityCollapsible("projectQueue"))
+      isPriorityCollapsible("projectQueue")) ||
+    (showNewSessionProjectQueueButton &&
+      actionsControl.send &&
+      isPriorityCollapsible("projectQueueNewSessionShortcut"))
   );
   const bottomOverflowLayoutKey = getComposerToolbarOverflowLayoutSignature({
     modeSelector:
@@ -1162,8 +1228,12 @@ export function MessageInputToolbarView({
     btw: visibility.btw && actionsControl.btw ? controlPriority.btw : "off",
     steerNow: canToggleSteerNow ? controlPriority.steerNow : "off",
     projectQueue:
-      showProjectQueueButton && actionsControl.send
+      showCurrentSessionProjectQueueButton && actionsControl.send
         ? controlPriority.projectQueue
+        : "off",
+    projectQueueNewSessionShortcut:
+      showNewSessionProjectQueueButton && actionsControl.send
+        ? controlPriority.projectQueueNewSessionShortcut
         : "off",
     microphone:
       visibility.microphone && selectedSpeechMethod && speechControl?.voiceButton
@@ -1172,14 +1242,14 @@ export function MessageInputToolbarView({
     waveform: speechWaveformActive,
     send: showSendButton ? actionsControl.send?.primaryActionKind : "off",
     queue:
-      queueControl?.hasDualActions
+      !hidePrimaryDeliveryActions && queueControl?.hasDualActions
         ? [
             actionsControl.send?.primaryActionKind,
             !!queueControl.onQueue,
             !!queueControl.onSteer,
           ].join(":")
         : "off",
-    alternate: !!actionsControl.send?.alternate,
+    alternate: !hidePrimaryDeliveryActions && !!actionsControl.send?.alternate,
     stop: showStopButton,
     pending: pendingApproval?.type ?? "off",
   });
@@ -1628,15 +1698,7 @@ export function MessageInputToolbarView({
                   renderSteerNowToggle(
                     menuTierClass("steerNow", "steer-now-toggle"),
                   )}
-                {isPriorityCollapsible("projectQueue") &&
-                  renderProjectQueueButton(
-                    menuTierClass(
-                      "projectQueue",
-                      "send-button",
-                      "project-queue-button",
-                    ),
-                    true,
-                  )}
+                {renderProjectQueueButtons(true)}
               </div>
             </div>
           )}
@@ -1709,7 +1771,8 @@ export function MessageInputToolbarView({
                     ? "is-isearch-guide"
                     : ""
                 }`}
-                role="tooltip"
+                role="dialog"
+                aria-label={t("toolbarKeyboardShortcutsAria")}
               >
                 {shortcutsControl.isearchScope !== null ? (
                   <>
@@ -1971,7 +2034,8 @@ export function MessageInputToolbarView({
             {renderSteerNowToggle(
               inlineTierClass("steerNow", "steer-now-toggle"),
             )}
-            {queueControl?.hasDualActions &&
+            {!hidePrimaryDeliveryActions &&
+              queueControl?.hasDualActions &&
               actionsControl.send.primaryActionKind !== "queue" &&
               queueControl.onQueue && (
                 <button
@@ -1987,7 +2051,8 @@ export function MessageInputToolbarView({
                   <span className="send-icon queue-icon">→</span>
                 </button>
               )}
-            {queueControl?.hasDualActions &&
+            {!hidePrimaryDeliveryActions &&
+              queueControl?.hasDualActions &&
               actionsControl.send.primaryActionKind === "queue" &&
               queueControl.onSteer && (
                 <button
@@ -2003,7 +2068,7 @@ export function MessageInputToolbarView({
                   <span className="send-icon">↗</span>
                 </button>
               )}
-            {actionsControl.send.alternate && (
+            {!hidePrimaryDeliveryActions && actionsControl.send.alternate && (
               <button
                 type="button"
                 onClick={actionsControl.send.alternate.onClick}
@@ -2019,13 +2084,7 @@ export function MessageInputToolbarView({
                 </span>
               </button>
             )}
-            {renderProjectQueueButton(
-              inlineTierClass(
-                "projectQueue",
-                "send-button",
-                "project-queue-button",
-              ),
-            )}
+            {renderProjectQueueButtons()}
             {showSendButton && (
               <button
                 type="button"
@@ -2039,7 +2098,10 @@ export function MessageInputToolbarView({
                     : ""
                 }`}
                 aria-label={actionsControl.send.primaryActionLabel}
-                data-tooltip={actionsControl.send.tooltip}
+                {...getTextTooltipAttributes(
+                  actionsControl.send.tooltip,
+                  tooltipMode,
+                )}
               >
                 <span className="send-icon">{actionsControl.send.icon}</span>
               </button>
@@ -2099,6 +2161,7 @@ export function MessageInputToolbar({
   onSend,
   onQueue,
   onProjectQueue,
+  onProjectQueueNewSession,
   onSteer,
   primaryActionKind,
   sendOverride,
@@ -2106,6 +2169,7 @@ export function MessageInputToolbar({
   canForkAfterSummary,
   canSend,
   disabled,
+  hidePrimaryDeliveryActions = false,
   pendingApproval,
 }: MessageInputToolbarProps) {
   const { t } = useI18n();
@@ -2826,16 +2890,23 @@ export function MessageInputToolbar({
             }
           : null,
         projectQueue:
-          supportsProjectQueue && onProjectQueue
+          supportsProjectQueue && (onProjectQueue || onProjectQueueNewSession)
             ? {
                 onProjectQueue,
+                onProjectQueueNewSession,
                 canSend,
-                tooltip: showProjectQueueShortcut
-                  ? t("toolbarProjectQueueTooltipWithShortcut")
-                  : t("toolbarProjectQueueTooltip"),
+                tooltip: onProjectQueue
+                  ? showProjectQueueShortcut
+                    ? t("toolbarProjectQueueTooltipWithShortcut")
+                    : t("toolbarProjectQueueTooltip")
+                  : undefined,
+                newSessionTooltip: onProjectQueueNewSession
+                  ? t("toolbarProjectQueueNewSessionTooltip")
+                  : undefined,
               }
             : null,
       }}
+      hidePrimaryDeliveryActions={hidePrimaryDeliveryActions}
     />
   );
 }

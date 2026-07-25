@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { AgentActivity } from "../hooks/useFileActivity";
+import {
+  beginTooltipVisibility,
+  endTooltipVisibility,
+  isTooltipWarm,
+} from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
 import { activityBus } from "../lib/activityBus";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -15,6 +20,7 @@ import type {
   ContextUsage,
   PendingInputType,
   ProviderName,
+  ProviderChildSessionSummary,
   SessionStatus,
 } from "../types";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
@@ -58,6 +64,8 @@ interface SessionListItemProps {
   executor?: string;
   /** Parent session when this item is a YA-owned /btw aside. */
   parentSessionId?: string;
+  /** Provider-native child work attached to this canonical YA session. */
+  providerChildren?: ProviderChildSessionSummary[];
 
   // Feature toggles
   mode: "card" | "compact";
@@ -156,6 +164,7 @@ export function SessionListItem({
   model,
   executor,
   parentSessionId,
+  providerChildren = [],
   // Feature toggles
   mode,
   showProjectName = false,
@@ -228,6 +237,7 @@ export function SessionListItem({
     cursorX: number;
   } | null>(null);
   const previewShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewVisibilityToken = useRef<symbol | null>(null);
   const previewCursorX = useRef(0);
   // Idle (non-running) sessions get no live session-updated events, so their
   // recent-activity preview can be stale. After the delayed hover opens, we
@@ -489,10 +499,18 @@ export function SessionListItem({
     }
   }, []);
 
+  const releasePreviewVisibility = useCallback(() => {
+    const token = previewVisibilityToken.current;
+    if (!token) return;
+    previewVisibilityToken.current = null;
+    endTooltipVisibility(token);
+  }, []);
+
   const clearPreview = useCallback(() => {
     clearPreviewTimers();
+    releasePreviewVisibility();
     setPreviewPos(null);
-  }, [clearPreviewTimers]);
+  }, [clearPreviewTimers, releasePreviewVisibility]);
 
   const schedulePreviewShow = useCallback(() => {
     if (!showHoverCard || menuOpenRef.current) return;
@@ -505,31 +523,35 @@ export function SessionListItem({
       const hoverCardId = hoverCardIdRef.current;
       if (!rect || !hoverCardId) return;
       announceActiveSessionHoverCard(hoverCardId);
+      previewVisibilityToken.current ??= beginTooltipVisibility(clearPreview);
       setPreviewPos({
         rowTop: rect.top,
         rowBottom: rect.bottom,
         cursorX: previewCursorX.current,
       });
       previewShowTimer.current = null;
-    }, hoverCardShowDelayMs);
+    }, isTooltipWarm() ? 0 : hoverCardShowDelayMs);
   }, [
     showHoverCard,
+    clearPreview,
     clearPreviewTimers,
     refreshIdlePreview,
     hoverCardShowDelayMs,
   ]);
 
   const handlePreviewEnter = useCallback(
-    (e: React.MouseEvent) => {
-      if (!showHoverCard) return;
+    (e: React.PointerEvent) => {
+      if (!showHoverCard || e.pointerType === "touch") return;
       previewCursorX.current = e.clientX;
       schedulePreviewShow();
     },
     [showHoverCard, schedulePreviewShow],
   );
 
-  const handlePreviewMove = useCallback((e: React.MouseEvent) => {
-    previewCursorX.current = e.clientX;
+  const handlePreviewMove = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType !== "touch") {
+      previewCursorX.current = e.clientX;
+    }
   }, []);
 
   // Only one session hovercard may be visible or pending across list surfaces.
@@ -546,8 +568,9 @@ export function SessionListItem({
   useEffect(() => {
     return () => {
       clearPreviewTimers();
+      releasePreviewVisibility();
     };
-  }, [clearPreviewTimers]);
+  }, [clearPreviewTimers, releasePreviewVisibility]);
 
   // A fixed card would drift if the sidebar scrolls under it; clear only when
   // the row's own scroll ancestors move. Transcript autoscroll elsewhere should
@@ -592,7 +615,7 @@ export function SessionListItem({
   }, []);
 
   const handlePreviewLeave = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.PointerEvent) => {
       if (isOwnHoverCardTarget(e.relatedTarget)) return;
       handlePreviewCancel();
     },
@@ -728,9 +751,9 @@ export function SessionListItem({
     <li
       ref={liRef}
       className={liClasses}
-      onMouseEnter={showHoverCard ? handlePreviewEnter : undefined}
-      onMouseMove={showHoverCard ? handlePreviewMove : undefined}
-      onMouseLeave={showHoverCard ? handlePreviewLeave : undefined}
+      onPointerEnter={showHoverCard ? handlePreviewEnter : undefined}
+      onPointerMove={showHoverCard ? handlePreviewMove : undefined}
+      onPointerLeave={showHoverCard ? handlePreviewLeave : undefined}
       onWheel={showHoverCard ? handlePreviewCancel : undefined}
     >
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
@@ -857,6 +880,40 @@ export function SessionListItem({
                   />
                 )}
               </span>
+              {providerChildren.length > 0 && (
+                <span
+                  className="session-list-item__provider-children"
+                  role="list"
+                  aria-label={t(
+                    providerChildren.length === 1
+                      ? "providerChildrenCountOne"
+                      : "providerChildrenCountMany",
+                    {
+                      count: providerChildren.length,
+                    },
+                  )}
+                >
+                  {providerChildren.map((child) => (
+                    <span
+                      className="session-list-item__provider-child"
+                      key={child.id}
+                      role="listitem"
+                    >
+                      <span aria-hidden>↳</span>
+                      <span className="session-list-item__provider-child-title">
+                        {child.title ||
+                          child.agentType ||
+                          t("providerChildFallback")}
+                      </span>
+                      {child.agentType && child.agentType !== child.title && (
+                        <span className="session-list-item__provider-child-type">
+                          {child.agentType}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </span>
+              )}
             </>
           ) : (
             // Compact mode: single line with badges
@@ -891,6 +948,30 @@ export function SessionListItem({
                     title={t("projectQueueSidebarBadge")}
                   >
                     Q
+                  </span>
+                )}
+                {providerChildren.length > 0 && (
+                  <span
+                    className="session-provider-children-badge"
+                    role="img"
+                    title={providerChildren
+                      .map(
+                        (child) =>
+                          child.title ||
+                          child.agentType ||
+                          t("providerChildFallback"),
+                      )
+                      .join("\n")}
+                    aria-label={t(
+                      providerChildren.length === 1
+                        ? "providerChildrenCountOne"
+                        : "providerChildrenCountMany",
+                      {
+                        count: providerChildren.length,
+                      },
+                    )}
+                  >
+                    ↳{providerChildren.length}
                   </span>
                 )}
               </span>

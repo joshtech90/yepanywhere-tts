@@ -20,6 +20,9 @@ export interface BashResult {
   isImage: boolean;
   backgroundTaskId?: string;
   exitCode?: number;
+  /** Provider-reported command runtime (spec:
+   * topics/provider-output-contract.md § Command execution metadata). */
+  durationSeconds?: number;
 }
 
 /**
@@ -283,7 +286,21 @@ export interface WriteStdinInput {
   linked_tool_name?: string;
 }
 
-export type WriteStdinResult = string | { content?: string };
+/** Shell-session poll result: plain text, a normalized command result, or a
+ * Codex unified-exec chunk record with raw fields passed through (spec:
+ * topics/provider-output-contract.md § Command execution metadata). */
+export type WriteStdinResult =
+  | string
+  | {
+      content?: string;
+      stdout?: string;
+      output?: string;
+      exitCode?: number;
+      exit_code?: number;
+      durationSeconds?: number;
+      wall_time_seconds?: number;
+      [key: string]: unknown;
+    };
 
 /**
  * BashOutput tool types
@@ -358,6 +375,16 @@ export interface ToolRenderer<TInput = unknown, TResult = unknown> {
    * "Asked"). Falls back to `displayName` when unset.
    */
   pendingDisplayName?: string;
+  /**
+   * Dynamic display-name override, consulted before displayName /
+   * pendingDisplayName. Lets a renderer reflect call state only the input
+   * carries — e.g. a backgrounded Bash run keeps reading "Running" after
+   * the tool call itself completed. Return undefined to fall through.
+   */
+  displayNameForCall?(
+    input: TInput,
+    status: "pending" | "complete" | "error" | "aborted" | "incomplete",
+  ): string | undefined;
   /** Render the tool_use block (what Claude wants to do) */
   renderToolUse(input: TInput, context: RenderContext): ReactNode;
   /** Render the tool_result block (what happened) */

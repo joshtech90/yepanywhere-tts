@@ -5,9 +5,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataContext";
 import { I18nProvider } from "../../../../i18n";
+import { UI_KEYS } from "../../../../lib/storageKeys";
 import { editRenderer } from "../EditRenderer";
 
 vi.mock("../../../../contexts/SchemaValidationContext", () => ({
@@ -31,9 +32,15 @@ if (!editRenderer.renderCollapsedPreview) {
 const renderCollapsedPreview = editRenderer.renderCollapsedPreview;
 
 describe("EditRenderer collapsed preview fallback", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "themed");
+  });
+
   afterEach(() => {
+    document.getSelection()?.removeAllRanges();
     cleanup();
     vi.unstubAllGlobals();
+    window.localStorage.removeItem(UI_KEYS.tooltipMode);
   });
 
   it("renders raw patch text for completed rows when structured patch is missing", () => {
@@ -111,6 +118,142 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(screen.queryByText("Computing diff...")).toBeNull();
     expect(screen.getByText("-const x = 1;")).toBeDefined();
     expect(screen.getByText("+const x = 2;")).toBeDefined();
+  });
+
+  it("reveals the omitted Edit tail from the fade and +N badge", () => {
+    const lines = Array.from(
+      { length: 16 },
+      (_, index) => `+line ${index + 1}`,
+    );
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: lines.length,
+        lines,
+      },
+    ];
+
+    const { container } = render(
+      <div>
+        {renderCollapsedPreview(
+          { _structuredPatch: structuredPatch } as never,
+          {
+            filePath: "notes.txt",
+            structuredPatch,
+          } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    const badge = container.querySelector<HTMLElement>(".edit-preview-more");
+    const fadedPreview = container.querySelector<HTMLElement>(
+      ".diff-view-container",
+    );
+    expect(badge?.textContent).toBe("+4");
+    expect(badge?.getAttribute("data-tooltip")).toBe(
+      "...\n+line 5\n+line 6\n+line 7\n+line 8\n+line 9\n+line 10\n+line 11\n+line 12\n+line 13\n+line 14\n+line 15\n+line 16",
+    );
+    expect(fadedPreview?.getAttribute("data-tooltip")).toBe(
+      badge?.getAttribute("data-tooltip"),
+    );
+    expect(badge?.getAttribute("title")).toBeNull();
+    expect(fadedPreview?.getAttribute("title")).toBeNull();
+  });
+
+  it("uses only native attributes for an Edit tail in native mode", () => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    const lines = Array.from(
+      { length: 13 },
+      (_, index) => `+line ${index + 1}`,
+    );
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: lines.length,
+        lines,
+      },
+    ];
+
+    const { container } = render(
+      <div>
+        {renderCollapsedPreview(
+          { _structuredPatch: structuredPatch } as never,
+          {
+            filePath: "notes.txt",
+            structuredPatch,
+          } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    const badge = container.querySelector<HTMLElement>(".edit-preview-more");
+    expect(badge?.getAttribute("title")).toMatch(/^\.\.\.\n\+line 2/);
+    expect(badge?.getAttribute("data-tooltip")).toBeNull();
+  });
+
+  it("shows a full unfaded Edit preview when it is off-screen", () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 1,
+        lines: ["+line 1"],
+      },
+    ];
+    const { container } = render(
+      <div>
+        {renderCollapsedPreview(
+          { _structuredPatch: structuredPatch } as never,
+          {
+            filePath: "notes.txt",
+            structuredPatch,
+          } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    expect(container.querySelector(".edit-preview-more")).toBeNull();
+    const preview = container.querySelector<HTMLElement>(
+      ".diff-view-container",
+    );
+    expect(preview).toBeTruthy();
+    expect(preview?.classList).not.toContain("truncated");
+    Object.defineProperties(preview, {
+      clientWidth: { configurable: true, value: 300 },
+      clientHeight: { configurable: true, value: 20 },
+      scrollWidth: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 20 },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: window.innerHeight - 10,
+          left: 0,
+          top: window.innerHeight - 10,
+          right: 300,
+          bottom: window.innerHeight + 10,
+          width: 300,
+          height: 20,
+          toJSON: () => ({}),
+        }),
+      },
+    });
+
+    fireEvent.pointerEnter(preview as HTMLElement);
+
+    expect(preview?.getAttribute("data-tooltip")).toContain("+line 1");
+    expect(preview?.getAttribute("title")).toBeNull();
   });
 
   it("renders completed markdown table edits through the render toggle", () => {
@@ -685,6 +828,7 @@ describe("EditRenderer collapsed preview fallback", () => {
       </SessionMetadataProvider>,
     );
 
+    expect(screen.getByText("+1")).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "Show full diff" }));
 
     const modal = document.body.querySelector(".modal");
@@ -709,5 +853,143 @@ describe("EditRenderer collapsed preview fallback", () => {
 
     fireEvent.click(modalToggle as Element);
     expect(container.textContent).toContain("Recent MT Adapter Progress");
+  });
+
+  it("counts only hidden rendered diff lines in the +N badge", () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 13,
+        lines: Array.from({ length: 13 }, (_, index) => `+line ${index + 1}`),
+      },
+    ];
+
+    render(
+      <div>
+        {editRenderer.renderToolResult(
+          { filePath: "notes.md", structuredPatch } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    expect(screen.getByText("+1")).toBeDefined();
+    expect(screen.queryByText("+2")).toBeNull();
+  });
+
+  it("transfers a diff selection into the full modal", async () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ["-old text", "+selected replacement text"],
+      },
+    ];
+
+    render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          <div>
+            {renderCollapsedPreview(
+              { _structuredPatch: structuredPatch } as never,
+              { filePath: "notes.md", structuredPatch } as never,
+              false,
+              renderContext,
+            )}
+          </div>
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    const selectedText = screen.getByText("+selected replacement text");
+    const textNode = selectedText.firstChild;
+    if (!textNode) {
+      throw new Error("Expected selectable diff text");
+    }
+    const range = document.createRange();
+    range.setStart(textNode, 1);
+    range.setEnd(textNode, "selected replacement".length + 1);
+    document.getSelection()?.addRange(range);
+
+    fireEvent.click(selectedText);
+
+    await waitFor(() => {
+      const modal = document.body.querySelector(".modal");
+      const selection = document.getSelection();
+      expect(modal).not.toBeNull();
+      expect(selection?.toString()).toBe("selected replacement");
+      expect(
+        selection?.anchorNode ? modal?.contains(selection.anchorNode) : false,
+      ).toBe(true);
+    });
+  });
+
+  it("opens the full modal in the preview mode before transferring a selection", async () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ["-old text", "+# Selected heading"],
+      },
+    ];
+
+    render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          <div>
+            {renderCollapsedPreview(
+              { _structuredPatch: structuredPatch } as never,
+              { filePath: "notes.md", structuredPatch } as never,
+              false,
+              renderContext,
+            )}
+          </div>
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show source" }));
+    const selectedText = screen.getByText("+# Selected heading");
+    const textNode = selectedText.firstChild;
+    if (!textNode) {
+      throw new Error("Expected selectable source diff text");
+    }
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 2);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+
+    fireEvent.click(selectedText);
+
+    await waitFor(() => {
+      const modal = document.body.querySelector(".modal");
+      const selection = document.getSelection();
+      expect(modal).not.toBeNull();
+      expect(
+        modal?.querySelector(
+          '.fixed-font-render-toggle__button[aria-label="Show rendered view"]',
+        ),
+      ).not.toBeNull();
+      expect(selection?.toString()).toBe("+#");
+      expect(
+        selection?.anchorNode ? modal?.contains(selection.anchorNode) : false,
+      ).toBe(true);
+    });
   });
 });

@@ -3,6 +3,7 @@ import { MessageQueue } from "../src/sdk/messageQueue.js";
 import { MockClaudeSDK, createMockScenario } from "../src/sdk/mock.js";
 import type { AgentProvider } from "../src/sdk/providers/types.js";
 import type { RealClaudeSDKInterface } from "../src/sdk/types.js";
+import { createControllableIterator, waitFor } from "./process.test-support.js";
 import {
   type ResumeCompactionError,
   Supervisor,
@@ -163,6 +164,191 @@ describe("Supervisor", () => {
       });
 
       await supervisorWithProvider.abortProcess(process2.id);
+    });
+
+    it("applies an effort change without interrupting an active turn", async () => {
+      let aborted = false;
+      let completeTurn = () => {};
+      const turnCompleted = new Promise<void>((resolve) => {
+        completeTurn = resolve;
+      });
+      const setEffort = vi.fn(async () => {});
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "effort-session",
+            };
+            await turnCompleted;
+            yield {
+              type: "result" as const,
+              session_id: options.resumeSessionId ?? "effort-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              completeTurn();
+            },
+            setEffort,
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+      });
+
+      const process = await supervisorWithProvider.resumeSession(
+        "effort-session",
+        "/tmp/test",
+        { text: "first" },
+        undefined,
+        {
+          thinking: { type: "adaptive", display: "summarized" },
+          effort: "low",
+        },
+      );
+      await vi.waitFor(() => {
+        expect(process.state.type).toBe("in-turn");
+      });
+
+      const updated = await supervisorWithProvider.reconfigureProcess(
+        process.id,
+        {
+          thinking: { type: "adaptive", display: "summarized" },
+          effort: "medium",
+        },
+      );
+
+      try {
+        expect(updated).toBe(process);
+        expect(startSession).toHaveBeenCalledTimes(1);
+        expect(aborted).toBe(false);
+        expect(process.effort).toBe("medium");
+        expect(setEffort).not.toHaveBeenCalled();
+
+        completeTurn();
+        await vi.waitFor(() => {
+          expect(process.state.type).toBe("idle");
+        });
+        expect(setEffort).toHaveBeenCalledWith("medium");
+      } finally {
+        await supervisorWithProvider.abortProcess(updated?.id ?? process.id);
+      }
+    });
+
+    it("serializes idle effort changes so the latest selection wins", async () => {
+      let aborted = false;
+      let releaseMedium = () => {};
+      const mediumGate = new Promise<void>((resolve) => {
+        releaseMedium = resolve;
+      });
+      const setEffort = vi.fn(async (effort?: string) => {
+        if (effort === "medium") {
+          await mediumGate;
+        }
+      });
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "effort-race-session",
+            };
+            yield {
+              type: "result" as const,
+              session_id: options.resumeSessionId ?? "effort-race-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            abort: () => {
+              aborted = true;
+              releaseMedium();
+            },
+            setEffort,
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+      });
+      const process = await supervisorWithProvider.resumeSession(
+        "effort-race-session",
+        "/tmp/test",
+        { text: "first" },
+        undefined,
+        { thinking: { type: "adaptive" }, effort: "low" },
+      );
+      await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+
+      const mediumUpdate = supervisorWithProvider.reconfigureProcess(
+        process.id,
+        { thinking: { type: "adaptive" }, effort: "medium" },
+      );
+      await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("medium"));
+      const highUpdate = supervisorWithProvider.reconfigureProcess(process.id, {
+        thinking: { type: "adaptive" },
+        effort: "high",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      releaseMedium();
+
+      try {
+        await Promise.all([mediumUpdate, highUpdate]);
+        expect(process.effort).toBe("high");
+      } finally {
+        await supervisorWithProvider.abortProcess(process.id);
+      }
     });
 
     it("creates new process for different session", async () => {
@@ -724,6 +910,30 @@ describe("Supervisor", () => {
       expect(
         supervisorWithRealSdk.getRecentlyTerminatedProcesses(),
       ).toHaveLength(1);
+    });
+
+    it("keeps one canonical row when the same session is restarted", async () => {
+      mockSdk.addScenario(createMockScenario("sess-restarted", "First run"));
+      const first = await supervisor.resumeSession(
+        "sess-restarted",
+        "/tmp/test",
+        { text: "first" },
+      );
+      await supervisor.abortProcess(first.id);
+      expect(supervisor.getRecentlyTerminatedProcesses()).toHaveLength(1);
+
+      mockSdk.addScenario(createMockScenario("sess-restarted", "Second run"));
+      const second = await supervisor.resumeSession(
+        "sess-restarted",
+        "/tmp/test",
+        { text: "second" },
+      );
+      expect(supervisor.getRecentlyTerminatedProcesses()).toEqual([]);
+
+      await supervisor.abortProcess(second.id);
+      expect(supervisor.getRecentlyTerminatedProcesses()).toMatchObject([
+        { id: second.id, sessionId: "sess-restarted" },
+      ]);
     });
   });
 
@@ -2552,6 +2762,77 @@ describe("Supervisor", () => {
       expect(created).toBeDefined();
       expect(created?.session.title).toBe("Optimistic title from request");
       expect(created?.session.messageCount).toBe(1);
+      expect(events.some((event) => event.type === "session-id-remapped")).toBe(
+        false,
+      );
+    });
+
+    it("emits a public remap when init follows the provisional ID timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const controller = createControllableIterator();
+        const eventBus = new EventBus();
+        const events: BusEvent[] = [];
+        eventBus.subscribe((event) => events.push(event));
+
+        const realSdk: RealClaudeSDKInterface = {
+          startSession: async () => ({
+            iterator: controller.iterator,
+            queue: new MessageQueue(),
+            abort: () => controller.finish(),
+          }),
+        };
+        const supervisorWithBus = new Supervisor({
+          realSdk,
+          idleTimeoutMs: 100,
+          eventBus,
+        });
+
+        const starting = supervisorWithBus.startSession("/tmp/test", {
+          text: "Start after a slow init",
+        });
+        await vi.advanceTimersByTimeAsync(5000);
+        const process = await starting;
+        const provisionalSessionId = process.sessionId;
+
+        expect(provisionalSessionId).not.toBe("canonical-session");
+        expect(
+          events.find(
+            (event) =>
+              event.type === "session-created" &&
+              event.session.id === provisionalSessionId,
+          ),
+        ).toBeDefined();
+
+        controller.push({
+          type: "system",
+          subtype: "init",
+          session_id: "canonical-session",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(
+          events.find((event) => event.type === "session-id-remapped"),
+        ).toMatchObject({
+          type: "session-id-remapped",
+          oldSessionId: provisionalSessionId,
+          newSessionId: "canonical-session",
+          projectId: encodeProjectId("/tmp/test"),
+          processId: process.id,
+          provider: "claude",
+        });
+        expect(
+          supervisorWithBus.getProcessForSession(provisionalSessionId),
+        ).toBe(process);
+        expect(
+          supervisorWithBus.getProcessForSession("canonical-session"),
+        ).toBe(process);
+
+        controller.finish();
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("emits timed session-updated reconciliation from onSessionSummary", async () => {
@@ -3058,6 +3339,145 @@ describe("Supervisor", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("terminal provider status retention", () => {
+    it("keeps terminal status after the provider process is reaped", async () => {
+      const controller = createControllableIterator();
+      const provider: AgentProvider = {
+        name: "codex",
+        displayName: "Codex",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession: async () => ({
+          iterator: controller.iterator,
+          queue: new MessageQueue(),
+          abort: () => controller.finish(),
+          isProcessAlive: () => true,
+        }),
+      };
+      const runtimeSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 20,
+      });
+
+      const process = await runtimeSupervisor.reactivateSession(
+        "/tmp/test",
+        "terminal-session",
+        undefined,
+        { providerName: "codex" },
+      );
+
+      controller.push({
+        type: "error",
+        uuid: "codex-error-turn-1",
+        session_id: "terminal-session",
+        error: "Selected model is at capacity.",
+        codexErrorInfo: "serverOverloaded",
+        codexWillRetry: false,
+        codexTurnId: "turn-1",
+      });
+      controller.push({ type: "result", session_id: "terminal-session" });
+
+      await waitFor(() => {
+        expect(
+          runtimeSupervisor.getProviderRuntimeStatusForSession(
+            "terminal-session",
+          )?.kind,
+        ).toBe("terminal");
+      });
+      await waitFor(() => {
+        expect(
+          runtimeSupervisor.getProcessForSession("terminal-session"),
+        ).toBeUndefined();
+      });
+
+      expect(
+        runtimeSupervisor.getProviderRuntimeStatusForSession(
+          "terminal-session",
+        ),
+      ).toMatchObject({
+        kind: "terminal",
+        reason: "overloaded",
+        turnId: "turn-1",
+      });
+      expect(process.getInfo().providerRuntimeStatus?.kind).toBe("terminal");
+    });
+
+    it("clears retained terminal status when the next user turn begins", async () => {
+      const controller = createControllableIterator();
+      const provider: AgentProvider = {
+        name: "codex",
+        displayName: "Codex",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession: async () => ({
+          iterator: controller.iterator,
+          queue: new MessageQueue(),
+          abort: () => controller.finish(),
+          isProcessAlive: () => true,
+        }),
+      };
+      const runtimeSupervisor = new Supervisor({ provider });
+
+      await runtimeSupervisor.reactivateSession(
+        "/tmp/test",
+        "terminal-session",
+        undefined,
+        { providerName: "codex" },
+      );
+
+      controller.push({
+        type: "error",
+        uuid: "codex-error-turn-1",
+        session_id: "terminal-session",
+        error: "Selected model is at capacity.",
+        codexErrorInfo: "serverOverloaded",
+        codexWillRetry: false,
+        codexTurnId: "turn-1",
+      });
+      await waitFor(() => {
+        expect(
+          runtimeSupervisor.getProviderRuntimeStatusForSession(
+            "terminal-session",
+          )?.kind,
+        ).toBe("terminal");
+      });
+
+      controller.push({
+        type: "user",
+        uuid: "user-turn-2",
+        session_id: "terminal-session",
+        message: { role: "user", content: "Try again" },
+      });
+      await waitFor(() => {
+        expect(
+          runtimeSupervisor.getProviderRuntimeStatusForSession(
+            "terminal-session",
+          ),
+        ).toBe(null);
+      });
+
+      controller.finish();
     });
   });
 });

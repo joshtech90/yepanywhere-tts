@@ -12,8 +12,11 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { DEFAULT_HOVERCARD_SHOW_DELAY_MS } from "../../hooks/useHoverCardAppearance";
+import { clearTooltipWarmth } from "../../hooks/useTooltipAppearance";
 import { I18nProvider } from "../../i18n";
 import { activityBus } from "../../lib/activityBus";
+import { UI_KEYS } from "../../lib/storageKeys";
+import "../../../test/pointerEventShim";
 import { SessionListItem } from "../SessionListItem";
 
 const mockWindowOpen = vi.fn();
@@ -31,12 +34,16 @@ function LocationProbe() {
 
 describe("SessionListItem links", () => {
   beforeEach(() => {
+    clearTooltipWarmth();
+    localStorage.clear();
     mockWindowOpen.mockReset();
     vi.stubGlobal("open", mockWindowOpen);
   });
 
   afterEach(() => {
     cleanup();
+    clearTooltipWarmth();
+    localStorage.clear();
     vi.useRealTimers();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -343,7 +350,7 @@ describe("SessionListItem links", () => {
       .closest("li");
     expect(item).toBeTruthy();
 
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
     act(() => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
@@ -378,7 +385,7 @@ describe("SessionListItem links", () => {
       .closest("li");
     expect(item).toBeTruthy();
 
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
     act(() => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS - 1);
     });
@@ -388,6 +395,74 @@ describe("SessionListItem links", () => {
       vi.advanceTimersByTime(1);
     });
     expect(screen.getByText("Delayed hover prompt")).toBeTruthy();
+  });
+
+  it("ignores touch compatibility mouse events for session hover previews", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Touch navigation"
+              initialPrompt="Touch navigation prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Touch navigation/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.pointerEnter(item!, { pointerType: "touch", clientX: 20 });
+    fireEvent.mouseEnter(item!, { clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
+    });
+
+    expect(screen.queryByText("Touch navigation prompt")).toBeNull();
+  });
+
+  it("preserves the stored hover-card delay in native tooltip mode", () => {
+    vi.useFakeTimers();
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    localStorage.setItem(UI_KEYS.sessionHoverCardShowDelayMs, "300");
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Native delay"
+              initialPrompt="Native delay prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Native delay/ })
+      .closest("li");
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
+    act(() => vi.advanceTimersByTime(299));
+    expect(screen.queryByText("Native delay prompt")).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText("Native delay prompt")).toBeTruthy();
   });
 
   it("keeps a session hover preview open while the pointer is over the card", () => {
@@ -417,7 +492,7 @@ describe("SessionListItem links", () => {
       .closest("li");
     expect(item).toBeTruthy();
 
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
     act(() => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
@@ -426,14 +501,17 @@ describe("SessionListItem links", () => {
     expect(hoverCard).toBeTruthy();
     expect(screen.getByText("Selectable recap text")).toBeTruthy();
 
-    fireEvent.mouseLeave(item!, { relatedTarget: hoverCard });
+    fireEvent.pointerLeave(item!, {
+      pointerType: "mouse",
+      relatedTarget: hoverCard,
+    });
     expect(screen.getByText("Selectable recap text")).toBeTruthy();
 
     fireEvent.mouseLeave(hoverCard!);
     expect(screen.queryByText("Selectable recap text")).toBeNull();
   });
 
-  it("keeps only one session hover preview visible", () => {
+  it("switches immediately between session previews after the first opens", () => {
     vi.useFakeTimers();
 
     render(
@@ -472,15 +550,25 @@ describe("SessionListItem links", () => {
     expect(firstItem).toBeTruthy();
     expect(secondItem).toBeTruthy();
 
-    fireEvent.mouseEnter(firstItem!, { clientX: 20 });
+    fireEvent.pointerEnter(firstItem!, {
+      pointerType: "mouse",
+      clientX: 20,
+    });
     act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
     expect(screen.getByText("First session prompt")).toBeTruthy();
 
-    fireEvent.mouseEnter(secondItem!, { clientX: 20 });
+    fireEvent.pointerLeave(firstItem!, {
+      pointerType: "mouse",
+      relatedTarget: secondItem,
+    });
+    fireEvent.pointerEnter(secondItem!, {
+      pointerType: "mouse",
+      clientX: 20,
+    });
     act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(0);
     });
     expect(screen.queryByText("First session prompt")).toBeNull();
     expect(screen.getByText("Second session prompt")).toBeTruthy();
@@ -515,7 +603,7 @@ describe("SessionListItem links", () => {
       .closest("li");
     expect(item).toBeTruthy();
 
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
     act(() => {
       vi.advanceTimersByTime(200);
     });
@@ -577,7 +665,7 @@ describe("SessionListItem links", () => {
     act(() => {
       fireEvent.click(screen.getByLabelText("Session options"));
     });
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
     act(() => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS + 50);
     });
@@ -651,11 +739,41 @@ describe("SessionListItem links", () => {
     );
 
     const item = screen.getByRole("link", { name: /Idle row/ }).closest("li");
-    fireEvent.mouseEnter(item!, { clientX: 20 });
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
 
     // Fires immediately on hover, not gated behind the show delay.
     expect(refreshSpy).toHaveBeenCalledWith("project-1", "session-1");
 
     refreshSpy.mockRestore();
+  });
+
+  it("shows provider child work inside its parent session row", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-parent"
+              projectId="project-1"
+              title="Parent session"
+              provider="claude"
+              mode="card"
+              providerChildren={[
+                {
+                  id: "child-native-1",
+                  parentSessionId: "session-parent",
+                  title: "Audit the child-session API",
+                  agentType: "general-purpose",
+                  updatedAt: "2026-07-19T12:00:00.000Z",
+                },
+              ]}
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("Audit the child-session API")).toBeTruthy();
+    expect(screen.getByText("general-purpose")).toBeTruthy();
   });
 });

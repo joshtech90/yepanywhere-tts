@@ -53,3 +53,16 @@ Only `fullHistory=1` authorizes those selectors to reach across older compact
 boundaries. This closes a regression where the client's implicit
 `tailTurns=20` safety cap disabled the two-compaction REST default and could
 return a full Codex transcript with fewer than twenty user turns.
+
+2026-07-20 process-abort `resumeExemption` response — replace the
+`rolloutsRenamed` / `failures` fields with `autoResumeDisabled` / `error` and
+stop renaming provider rollout files; the short-lived former contract made an
+explicit Kill hide history and prevent deliberate continuation, so preserving
+that response shape would preserve the wrong mechanism. YA's co-deployed
+client now distinguishes verified shutdown from exemption persistence failure.
+
+2026-07-23 Pi RPC turn completion — use `agent_settled` for Pi 0.80.4 and
+newer, but retain `agent_end` for version-probed 0.79.9 through 0.80.3
+binaries because they never emit the newer event and would otherwise hang.
+Fail startup when `pi --version` is unrecognized rather than guessing a
+boundary that could either hang or finalize before retry/compaction completes.

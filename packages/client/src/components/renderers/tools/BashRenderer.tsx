@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -14,7 +15,10 @@ import {
   getDisplayBashCommandFromInput,
   isCodexProvider,
 } from "../../../lib/bashCommand";
-import { parseShellToolOutput } from "../../../lib/shellToolOutput";
+import {
+  formatCommandDuration,
+  parseShellToolOutput,
+} from "../../../lib/shellToolOutput";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
 import { AnsiText } from "../../ui/AnsiText";
@@ -23,12 +27,19 @@ import {
   type RenderedMathResult,
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
+import { HiddenContentBadge } from "../../ui/HiddenContentBadge";
 import { Modal } from "../../ui/Modal";
+import {
+  getHiddenOutputLineCount,
+  getOutputTailTooltip,
+  getPreviewLimits,
+  OutputCopyButton,
+  truncateOutput,
+} from "./outputPreview";
 import type { BashInput, BashResult, ToolRenderer } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
 const MAX_LINES_TOOL_USE = 12;
-const PREVIEW_MAX_CHARS_PER_LINE = 110;
 const RICH_PREVIEW_LINES = 20;
 const RICH_PREVIEW_MAX_CHARS = 4000;
 const NO_FIXED_FONT_RICH_CONTENT: RenderedMathResult = {
@@ -93,17 +104,6 @@ function sanitizeOutputForPreview(output: string, provider?: string): string {
   return filtered.join("\n");
 }
 
-function getPreviewLimits(lineCount: number): {
-  maxLines: number;
-  maxChars: number;
-} {
-  const normalizedLineCount = Math.max(1, Math.round(lineCount));
-  return {
-    maxLines: normalizedLineCount,
-    maxChars: normalizedLineCount * PREVIEW_MAX_CHARS_PER_LINE,
-  };
-}
-
 function renderFixedFontMathPanel(html: string, className = "code-block") {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
@@ -113,73 +113,6 @@ function renderFixedFontMathPanel(html: string, className = "code-block") {
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      aria-hidden="true"
-    >
-      <rect x="5" y="5" width="8" height="8" rx="1.5" />
-      <path d="M3 10.5H2.5A1.5 1.5 0 0 1 1 9V2.5A1.5 1.5 0 0 1 2.5 1H9a1.5 1.5 0 0 1 1.5 1.5V3" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3 8.5 6.5 12 13 4" />
-    </svg>
-  );
-}
-
-function BashCopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(
-    async (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(text);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 3000);
-      } catch (error) {
-        console.error("Failed to copy bash section:", error);
-      }
-    },
-    [text],
-  );
-
-  return (
-    <button
-      type="button"
-      className={`bash-section-copy ${copied ? "copied" : ""}`}
-      onClick={handleCopy}
-      disabled={!text}
-      aria-label={copied ? "Copied" : label}
-      title={copied ? "Copied" : label}
-    >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
   );
 }
 
@@ -195,7 +128,7 @@ function BashSectionHeader({
   return (
     <div className="bash-section-header">
       <div className="bash-modal-label">{label}</div>
-      <BashCopyButton text={copyText} label={copyLabel} />
+      <OutputCopyButton text={copyText} label={copyLabel} />
     </div>
   );
 }
@@ -298,6 +231,32 @@ function BashModalContent({
           </span>
         </div>
       )}
+      <BashResultMetaBadges result={result} />
+    </div>
+  );
+}
+
+/**
+ * Runtime and exit-code badges for command detail views. Exit code 0 stays
+ * silent; runtime shows whenever the provider reported one (contract:
+ * topics/provider-output-contract.md § Command execution metadata).
+ */
+function BashResultMetaBadges({ result }: { result: BashResult | undefined }) {
+  const showExit = result?.exitCode !== undefined && result.exitCode !== 0;
+  const showDuration = result?.durationSeconds !== undefined;
+  if (!showExit && !showDuration) {
+    return null;
+  }
+  return (
+    <div className="bash-result-meta-badges">
+      {showExit && (
+        <span className="badge badge-error">rc={result?.exitCode}</span>
+      )}
+      {showDuration && result?.durationSeconds !== undefined && (
+        <span className="badge badge-info">
+          {formatCommandDuration(result.durationSeconds)}
+        </span>
+      )}
     </div>
   );
 }
@@ -320,7 +279,7 @@ function BashToolUse({ input }: { input: BashInput }) {
     <div className="bash-tool-use">
       <div className="bash-inline-section-header">
         <span className="bash-inline-section-label">Command</span>
-        <BashCopyButton text={command} label="Copy command" />
+        <OutputCopyButton text={command} label="Copy command" />
       </div>
       <pre ref={commandRef} className="code-block">
         <code>{displayCommand}</code>
@@ -411,7 +370,7 @@ function BashToolResult({
         <div className="bash-expanded-section bash-expanded-command-section">
           <div className="bash-inline-section-header">
             <span className="bash-inline-section-label">Command</span>
-            <BashCopyButton text={command} label="Copy command" />
+            <OutputCopyButton text={command} label="Copy command" />
           </div>
           <pre ref={commandRef} className="code-block">
             <code>{command}</code>
@@ -426,11 +385,12 @@ function BashToolResult({
           Background: {result.backgroundTaskId}
         </span>
       )}
+      <BashResultMetaBadges result={result} />
       {stdout && (
         <div className="bash-stdout bash-expanded-section">
           <div className="bash-inline-section-header">
             <span className="bash-inline-section-label">Output</span>
-            <BashCopyButton text={stdout} label="Copy output" />
+            <OutputCopyButton text={stdout} label="Copy output" />
           </div>
           <FixedFontMathToggle
             sourceText={stdoutRenderText}
@@ -465,7 +425,7 @@ function BashToolResult({
             <span className="bash-inline-section-label">
               {isError ? "Error" : "Stderr"}
             </span>
-            <BashCopyButton
+            <OutputCopyButton
               text={stderr}
               label={isError ? "Copy error output" : "Copy stderr"}
             />
@@ -494,32 +454,6 @@ function BashToolResult({
 /**
  * Truncate text to a maximum number of lines and characters
  */
-function truncateOutput(
-  text: string,
-  limits: { maxLines: number; maxChars: number },
-): { text: string; truncated: boolean } {
-  const lines = text.split("\n");
-  let result = "";
-  let charCount = 0;
-  let lineCount = 0;
-
-  for (const line of lines) {
-    if (lineCount >= limits.maxLines || charCount >= limits.maxChars) {
-      return { text: result.trimEnd(), truncated: true };
-    }
-    const remaining = limits.maxChars - charCount;
-    if (line.length > remaining) {
-      result += `${line.slice(0, remaining)}...`;
-      return { text: result.trimEnd(), truncated: true };
-    }
-    result += `${line}\n`;
-    charCount += line.length + 1;
-    lineCount++;
-  }
-
-  return { text: result.trimEnd(), truncated: false };
-}
-
 /**
  * Collapsed preview showing command output; the command itself lives in the
  * shared "Ran ..." row header.
@@ -589,6 +523,14 @@ function BashCollapsedPreview({
       ? { maxLines: RICH_PREVIEW_LINES, maxChars: RICH_PREVIEW_MAX_CHARS }
       : getPreviewLimits(outputToolPreviewLineCount),
   );
+  const hiddenOutputLineCount = getHiddenOutputLineCount(
+    output,
+    outputToolPreviewLineCount,
+  );
+  const outputTailTooltip = getOutputTailTooltip(
+    output,
+    outputToolPreviewLineCount,
+  );
   const previewRichContent = useMemo(() => {
     if (previewText === output) {
       return fullRichPreview;
@@ -646,6 +588,13 @@ function BashCollapsedPreview({
           <div className="bash-preview-row bash-preview-output-row">
             <div
               className={`bash-preview-output ${truncated ? "bash-preview-truncated" : ""} ${isError || result?.stderr ? "bash-preview-error" : ""}`}
+              style={
+                {
+                  "--bash-preview-line-count": String(
+                    outputToolPreviewLineCount,
+                  ),
+                } as CSSProperties
+              }
             >
               <FixedFontMathToggle
                 sourceText={previewText}
@@ -667,10 +616,17 @@ function BashCollapsedPreview({
               />
               {truncated && <div className="bash-preview-fade" />}
             </div>
-            <BashCopyButton
+            <OutputCopyButton
               text={output}
               label={result?.stderr ? "Copy stderr" : "Copy output"}
             />
+            {hiddenOutputLineCount > 0 && (
+              <HiddenContentBadge
+                className="bash-preview-more"
+                count={hiddenOutputLineCount}
+                tooltip={outputTailTooltip ?? output}
+              />
+            )}
           </div>
         )}
         {!hasOutput && result && !result.interrupted && (
@@ -700,6 +656,18 @@ export const bashRenderer: ToolRenderer<BashInput, BashResult> = {
   tool: "Bash",
   displayName: "Ran",
   pendingDisplayName: "Run",
+
+  // A backgrounded command's tool call completes while the process keeps
+  // running, so the header verb stays present-tense until completion
+  // evidence arrives (see transcriptProjection/shellFolding).
+  displayNameForCall(input, status) {
+    if (status !== "complete") {
+      return undefined;
+    }
+    const backgroundStatus = (input as unknown as Record<string, unknown> | null)
+      ?._backgroundTaskStatus;
+    return backgroundStatus === "running" ? "Running" : undefined;
+  },
 
   renderToolUse(input, _context) {
     return <BashToolUse input={input as BashInput} />;

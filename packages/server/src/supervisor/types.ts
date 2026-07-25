@@ -8,6 +8,7 @@ import type {
   PermissionRules,
   PromptSuggestionMode,
   ProviderRuntimeStatus,
+  ProviderChildSessionSummary,
   ProviderName,
   RecapMode,
   ThinkingConfig,
@@ -258,8 +259,19 @@ export interface ProcessInfo {
   recapAfterSeconds?: number;
   /** Current prompt-suggestion behavior for this live process. */
   promptSuggestionMode?: PromptSuggestionMode;
+  /** Provider-native child work attached to this canonical YA session. */
+  providerChildren?: ProviderChildSessionSummary[];
   /** Session-level helper side model for simulated helper features. */
   helperSideModel?: string;
+}
+
+export interface ProcessAbortResult {
+  processId: string;
+  sessionId: string;
+  /** PID captured before provider shutdown clears its child handle. */
+  pid?: number;
+  verifiedStopped: true;
+  verification: "pid" | "provider" | "iterator";
 }
 
 // Process events for subscribers
@@ -278,6 +290,12 @@ export type ProcessEvent =
       model: string;
       contextWindow: number;
       provider: ProviderName;
+    }
+  | {
+      type: "configuration-error";
+      setting: "effort";
+      requestedValue?: EffortLevel;
+      error: Error;
     }
   | { type: "error"; error: Error }
   | { type: "idle-reap" }

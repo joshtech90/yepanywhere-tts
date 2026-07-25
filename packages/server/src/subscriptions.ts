@@ -208,6 +208,14 @@ export function createSessionSubscription(
           emit("error", { message: event.error.message });
           break;
 
+        case "configuration-error":
+          emit("configuration-error", {
+            setting: event.setting,
+            requestedValue: event.requestedValue,
+            message: event.error.message,
+          });
+          break;
+
         case "session-id-changed":
           emit("session-id-changed", {
             oldSessionId: event.oldSessionId,
@@ -230,6 +238,7 @@ export function createSessionSubscription(
           emit("complete", {
             sessionId: process.sessionId,
             timestamp: new Date().toISOString(),
+            providerRuntimeStatus: process.getProviderRuntimeStatus(),
           });
           completed = true;
           clearInterval(heartbeatInterval);

@@ -62,7 +62,9 @@ import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 import { RealClaudeSDK } from "./sdk/real.js";
 import {
   BrowserProfileService,
+  BrowserSettingsBackupService,
   ConnectedBrowsersService,
+  HostAwakeService,
   InstallService,
   ModelInfoService,
   NetworkBindingService,
@@ -134,6 +136,7 @@ let disposeAppForShutdown:
   | Awaited<ReturnType<typeof createApp>>["disposeSessionReaders"]
   | null = null;
 let deviceBridgeForShutdown: DeviceBridgeService | null = null;
+let hostAwakeForShutdown: HostAwakeService | null = null;
 let attachmentStagingCleanupTimer: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
 
@@ -153,6 +156,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (attachmentStagingCleanupTimer) {
     clearInterval(attachmentStagingCleanupTimer);
     attachmentStagingCleanupTimer = null;
+  }
+
+  if (hostAwakeForShutdown) {
+    try {
+      await hostAwakeForShutdown.shutdown();
+      console.log("[Shutdown] Host-awake assertion released");
+    } catch (error) {
+      console.error("[Shutdown] Error releasing host-awake assertion:", error);
+    }
   }
 
   if (supervisorForShutdown) {
@@ -433,6 +445,11 @@ const serverSettingsService = new ServerSettingsService({
 const ttsService = new TtsService({
   dataDir: config.dataDir,
 });
+const hostAwakeService = new HostAwakeService();
+hostAwakeForShutdown = hostAwakeService;
+const browserSettingsBackupService = new BrowserSettingsBackupService({
+  dataDir: config.dataDir,
+});
 const workstreamService = new WorkstreamService({
   dataDir: config.dataDir,
   eventBus,
@@ -543,6 +560,15 @@ async function startServer() {
   markStartup("serverSettingsService initialized");
   await ttsService.initialize();
   markStartup("ttsService initialized");
+  await hostAwakeService.initialize({
+    mode: serverSettingsService.getSetting("hostAwakeMode"),
+    batteryFloorPercent: serverSettingsService.getSetting(
+      "hostAwakeBatteryFloorPercent",
+    ),
+  });
+  markStartup("hostAwakeService initialized");
+  await browserSettingsBackupService.initialize();
+  markStartup("browserSettingsBackupService initialized");
   await workstreamService.initialize();
   markStartup("workstreamService initialized");
   await sharingService.initialize();
@@ -738,8 +764,10 @@ async function startServer() {
     networkBindingCallbackHolder,
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
+    browserSettingsBackupService,
     serverSettingsService,
     ttsService,
+    hostAwakeService,
     workstreamService,
     sharingService,
     publicShareService,
@@ -870,6 +898,7 @@ async function startServer() {
     const relayConfig = remoteAccessService.getRelayConfig();
     if (relayConfig?.url && relayConfig?.username) {
       const compatibility = await getServerCompatibilityInfo({
+        browserSettingsBackupAvailable: true,
         getDeviceBridgeState: () => {
           if (!deviceBridgeService) return "unavailable";
           return deviceBridgeService.hasBinary() ? "available" : "downloadable";

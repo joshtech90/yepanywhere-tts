@@ -14,6 +14,8 @@ See also:
   anchor motivated the shared-file rules here.
 - [`sidebar-session-ordering.md`](sidebar-session-ordering.md) — the main
   consumer of `/api/sessions` freshness.
+- [`session-summary-fidelity.md`](session-summary-fidelity.md) — the boundary
+  between complete indexed summaries and bounded list projections.
 
 ## Validation paths
 
@@ -76,11 +78,22 @@ only the first-ever list of a scope (fresh data dir) still blocks.
   chain (DB row → file tree → CLI) previously returned the same `null` for
   "row unchanged" and "not in DB", so an unchanged DB session fell through to
   a per-session `opencode export` spawn on every validation.
+- **Provider-specific semantic repair** may reject an unchanged persisted row
+  only when the row itself proves it violates the current summary contract.
+  Claude titles beginning with a local-command caveat are re-read once and
+  replaced by the first non-meta user title; unrelated provider rows keep their
+  existing cache entries instead of paying a global index rebuild.
 - **Legacy CLI sessions** (pre-1.16 projects with no DB row) are probed from
   one shared `opencode session list` spawn (module-level cache,
   `OPENCODE_CLI_LIST_CACHE_TTL_MS`), whose output is global — verified not
   cwd-scoped — so N legacy projects no longer pay N spawns per burst, and
   per-session `export` spawns are out of the validation path entirely.
+
+The mtime and byte count on an indexed row mean the complete summary covers
+that exact file version. A bounded list/head read must never advance those
+markers. Lightweight collection routes may project a stat-validated complete
+row or use a separately typed list reader on mismatch while leaving the row and
+its dirty signal intact for the next complete consumer.
 
 Violating any of these re-derives every affected summary once per full
 validation. Measured on the primary dev machine (2026-07-03, ~40 OpenCode

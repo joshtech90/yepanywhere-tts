@@ -11,6 +11,7 @@ import {
   toToolDisplayActions,
   unwrapCodexShellLauncherCommand,
 } from "./displayActions.js";
+import { parseCodexWebRunOutput } from "./webRun.js";
 
 export type { CodexReadShellInfo } from "./displayActions.js";
 
@@ -18,10 +19,15 @@ export const CODEX_TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "Bash",
   exec_command: "Bash",
   write_stdin: "WriteStdin",
+  // A detached code-mode script cell is polled with `wait`; it shares the
+  // shell-session presentation ("waiting for output") with stdin polls.
+  wait: "WriteStdin",
   update_plan: "UpdatePlan",
   apply_patch: "Edit",
   web_search_call: "WebSearch",
   search_query: "WebSearch",
+  // Code-mode flattening of the namespaced `web.run` browsing tool.
+  web__run: "Web",
 };
 
 export interface CodexWriteShellInfo {
@@ -256,7 +262,16 @@ export function normalizeCodexToolOutputWithContext(
         : writeResult;
     }
   } else if (context?.toolName === "Bash") {
-    const bashContent = extractCodexShellOutputContent(content);
+    let bashContent = extractCodexShellOutputContent(content);
+    let bashExitCode = exitCode;
+    const chunk = parseCodexUnifiedExecChunkOutput(bashContent);
+    if (chunk) {
+      bashContent = chunk.output;
+      if (chunk.exitCode !== undefined) {
+        bashExitCode = chunk.exitCode;
+        isError = chunk.exitCode !== 0;
+      }
+    }
     structured = createBashToolResult(
       interrupted ? "" : bashContent,
       isError,
@@ -265,8 +280,38 @@ export function normalizeCodexToolOutputWithContext(
       // Carry a recoverable exit code so reloaded (function_call_output-only)
       // Bash results match the live-stream structured result. Equivalence is a
       // contract — see topics/stream-persisted-render-parity.md.
-      exitCode,
+      bashExitCode,
+      // Command runtime, from the chunk record or the shell envelope (spec:
+      // topics/provider-output-contract.md § Command execution metadata).
+      chunk?.durationSeconds ?? extractWallTimeSecondsFromText(content),
     );
+  } else if (context?.toolName === "WriteStdin") {
+    const chunk = parseCodexUnifiedExecChunkOutput(content);
+    if (chunk) {
+      content = chunk.output;
+      // Raw chunk fields pass through; normalized command metadata and a
+      // stdout alias ride alongside so renderers need no chunk knowledge.
+      structured = {
+        ...chunk.record,
+        stdout: chunk.output,
+        ...(chunk.exitCode !== undefined ? { exitCode: chunk.exitCode } : {}),
+        ...(chunk.durationSeconds !== undefined
+          ? { durationSeconds: chunk.durationSeconds }
+          : {}),
+      };
+      if (chunk.exitCode !== undefined) {
+        isError = chunk.exitCode !== 0;
+      }
+    }
+  } else if (context?.toolName === "Web") {
+    const webRun = parseCodexWebRunOutput(content);
+    if (webRun) {
+      structured = webRun.result;
+      content = webRun.contentText;
+      // The envelope's "Script completed" confirms the browse ran; page text
+      // that merely contains "Error:" must not mark the call failed.
+      isError = false;
+    }
   } else if (context?.toolName === "Edit" && context.patchApplyResult) {
     const patchOutput = context.patchApplyResult.success
       ? context.patchApplyResult.stdout
@@ -744,6 +789,68 @@ function formatByteSize(bytes: number): string {
   return `${Math.round((bytes / (1024 * 1024)) * 10) / 10}\u202fmb`;
 }
 
+interface CodexUnifiedExecChunk {
+  durationSeconds?: number;
+  exitCode?: number;
+  output: string;
+  record: Record<string, unknown>;
+}
+
+const UNIFIED_EXEC_CHUNK_MARKERS = [
+  "chunk_id",
+  "session_id",
+  "wall_time_seconds",
+  "original_token_count",
+] as const;
+
+/**
+ * Recognize a unified-exec result record printed as a tool output — the
+ * shape `tools.exec_command`/`wait` return for detached shell sessions:
+ * `{"chunk_id":…,"wall_time_seconds":…,"exit_code":…,"output":"…"}`.
+ * The embedded `output` is the command's real text; showing the raw JSON
+ * hides it. Anything not exactly one such object fails closed.
+ */
+function parseCodexUnifiedExecChunkOutput(
+  content: string,
+): CodexUnifiedExecChunk | undefined {
+  const body = extractCodexShellOutputContent(content).trim();
+  if (!body.startsWith("{") || !body.endsWith("}")) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || typeof parsed.output !== "string") return undefined;
+  if (!UNIFIED_EXEC_CHUNK_MARKERS.some((marker) => marker in parsed)) {
+    return undefined;
+  }
+  const exitCode = parsed.exit_code;
+  const durationSeconds = parsed.wall_time_seconds;
+  return {
+    ...(typeof exitCode === "number" && Number.isFinite(exitCode)
+      ? { exitCode }
+      : {}),
+    ...(typeof durationSeconds === "number" && Number.isFinite(durationSeconds)
+      ? { durationSeconds }
+      : {}),
+    output: parsed.output,
+    record: parsed,
+  };
+}
+
+/** Command runtime from the shell envelope: "Wall time[:] 30.0 seconds". */
+function extractWallTimeSecondsFromText(content: string): number | undefined {
+  const match = content.match(
+    /(?:^|\n)\s*Wall time:?\s+([\d.]+)\s*seconds?\b/i,
+  );
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function extractCodexShellOutputContent(content: string): string {
   const normalized = content.replace(/\r\n/g, "\n");
   const inlineMarker = "Output:\n";
@@ -767,6 +874,7 @@ function createBashToolResult(
   backgroundTaskId?: string,
   interrupted = false,
   exitCode?: number,
+  durationSeconds?: number,
 ): {
   stdout: string;
   stderr: string;
@@ -774,6 +882,7 @@ function createBashToolResult(
   isImage: false;
   backgroundTaskId?: string;
   exitCode?: number;
+  durationSeconds?: number;
 } {
   return {
     stdout: interrupted || isError ? "" : output,
@@ -782,6 +891,7 @@ function createBashToolResult(
     isImage: false,
     ...(backgroundTaskId ? { backgroundTaskId } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
   };
 }
 

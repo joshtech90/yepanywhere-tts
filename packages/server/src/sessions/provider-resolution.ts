@@ -16,9 +16,15 @@ import { OPENCODE_STORAGE_DIR } from "./opencode-reader.js";
 import { PiSessionReader } from "./pi-reader.js";
 import { ClaudeSessionReader } from "./reader.js";
 import type { SummaryParserWorkerMode } from "./summary-parser-worker-protocol.js";
-import type { GetSessionSummaryOptions, ISessionReader } from "./types.js";
+import {
+  type GetSessionSummaryOptions,
+  type ISessionReader,
+  type SessionListSummary,
+  toSessionListSummary,
+} from "./types.js";
 
 type ProviderGroup = "claude" | "codex" | "gemini" | "opencode" | "grok" | "pi";
+const SESSION_LIST_READ_BATCH_SIZE = 8;
 
 export interface ProviderProjectCatalog {
   codexPaths: Set<string>;
@@ -52,6 +58,11 @@ export interface SessionSource {
 export interface ResolvedSessionSummary {
   source: SessionSource;
   summary: SessionSummary;
+}
+
+export interface ResolvedSessionListSummary {
+  source: SessionSource;
+  summary: SessionListSummary;
 }
 
 function normalizeProviderGroup(
@@ -318,6 +329,19 @@ function filterActiveSessions(
   );
 }
 
+function filterActiveSessionListSummaries(
+  sessions: SessionListSummary[],
+  options?: SessionIndexListOptions,
+): SessionListSummary[] {
+  const activeAfterMs = options?.activeAfterMs;
+  if (activeAfterMs === undefined) {
+    return sessions;
+  }
+  return sessions.filter(
+    (session) => Date.parse(session.updatedAt) >= activeAfterMs,
+  );
+}
+
 async function listSessionsForSource(
   project: Project,
   source: SessionSource,
@@ -360,6 +384,68 @@ async function listSessionsForSource(
   return sessions;
 }
 
+async function listSessionListSummariesForSource(
+  project: Project,
+  source: SessionSource,
+  deps: ProviderResolutionDeps,
+  options?: SessionIndexListOptions,
+): Promise<SessionListSummary[]> {
+  const listReader = source.reader.getSessionListSummary;
+  if (!listReader || !source.reader.listSessionFiles) {
+    return (await listSessionsForSource(project, source, deps, options)).map(
+      toSessionListSummary,
+    );
+  }
+
+  const sessionFiles = await source.reader.listSessionFiles(
+    source.sessionDir,
+    options,
+  );
+  const summaries: SessionListSummary[] = [];
+
+  for (
+    let offset = 0;
+    offset < sessionFiles.length;
+    offset += SESSION_LIST_READ_BATCH_SIZE
+  ) {
+    const batch = await Promise.all(
+      sessionFiles
+        .slice(offset, offset + SESSION_LIST_READ_BATCH_SIZE)
+        .map(async (entry) => {
+          const cached =
+            deps.sessionIndexService && !entry.sharedFilePath
+              ? await deps.sessionIndexService.getCachedSessionSummary(
+                  source.sessionDir,
+                  project.id,
+                  entry.sessionId,
+                  source.reader,
+                )
+              : null;
+          if (cached) {
+            return toSessionListSummary(cached);
+          }
+          return listReader.call(
+            source.reader,
+            entry.sessionId,
+            project.id,
+          );
+        }),
+    );
+    for (const summary of batch) {
+      if (summary) {
+        summaries.push(summary);
+      }
+    }
+  }
+
+  const activeSummaries = filterActiveSessionListSummaries(summaries, options);
+  activeSummaries.sort(
+    (a, b) =>
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  );
+  return activeSummaries;
+}
+
 export async function listSessionsAcrossProviders(
   project: Project,
   deps: ProviderResolutionDeps,
@@ -384,6 +470,85 @@ export async function listSessionsAcrossProviders(
   }
 
   return sessions;
+}
+
+export async function listSessionListSummariesAcrossProviders(
+  project: Project,
+  deps: ProviderResolutionDeps,
+  catalog?: ProviderProjectCatalog,
+  options?: SessionIndexListOptions,
+): Promise<SessionListSummary[]> {
+  const sessions: SessionListSummary[] = [];
+  const seenSessionIds = new Set<string>();
+
+  for (const source of getSessionSources(project, deps, undefined, catalog)) {
+    const sourceSessions = await listSessionListSummariesForSource(
+      project,
+      source,
+      deps,
+      options,
+    );
+    for (const session of sourceSessions) {
+      if (seenSessionIds.has(session.id)) continue;
+      seenSessionIds.add(session.id);
+      sessions.push(session);
+    }
+  }
+
+  return sessions;
+}
+
+export async function findSessionListSummaryAcrossProviders(
+  project: Project,
+  sessionId: string,
+  projectId: UrlProjectId,
+  deps: ProviderResolutionDeps,
+  preferredProvider?: ProviderName | string,
+): Promise<ResolvedSessionListSummary | null> {
+  for (const source of getSessionSources(project, deps, preferredProvider)) {
+    if (source.reader.getSessionListSummary) {
+      const cachedSummary = deps.sessionIndexService
+        ? await deps.sessionIndexService.getCachedSessionSummary(
+            source.sessionDir,
+            projectId,
+            sessionId,
+            source.reader,
+          )
+        : null;
+      if (cachedSummary) {
+        return {
+          source,
+          summary: toSessionListSummary(cachedSummary),
+        };
+      }
+
+      const summary = await source.reader.getSessionListSummary(
+        sessionId,
+        projectId,
+      );
+      if (summary) {
+        return { source, summary };
+      }
+      continue;
+    }
+
+    const completeSummary = deps.sessionIndexService
+      ? await deps.sessionIndexService.getSessionSummaryWithCache(
+          source.sessionDir,
+          projectId,
+          sessionId,
+          source.reader,
+        )
+      : await source.reader.getSessionSummary(sessionId, projectId);
+    if (completeSummary) {
+      return {
+        source,
+        summary: toSessionListSummary(completeSummary),
+      };
+    }
+  }
+
+  return null;
 }
 
 export async function findSessionSummaryAcrossProviders(

@@ -69,6 +69,12 @@ import {
   type PendingTextareaSelectionRestore,
 } from "../lib/speechDraftTransaction";
 import {
+  applyBangCompletion,
+  getBangCompletionQuery,
+  longestCommonPrefix,
+  resolveComposerBangDraft,
+} from "../lib/bangCommands";
+import {
   getLeadingSlashQuery,
   getSlashCommandMenuParts,
   normalizeSlashCommandForMatch,
@@ -85,7 +91,10 @@ import type {
   ProviderRuntimeStatus,
 } from "../types";
 import { AttachmentChip } from "./AttachmentChip";
-import { MessageInputToolbar } from "./MessageInputToolbar";
+import {
+  MessageInputToolbar,
+  type MessageInputToolbarProps,
+} from "./MessageInputToolbar";
 import {
   VoiceInputButton,
   type SpeechPendingKind,
@@ -132,6 +141,15 @@ interface PendingDraftInputEdit {
   inputType?: string;
 }
 
+const MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO = 0.8;
+
+function getComposerViewportHeight(): number {
+  const visualViewportHeight = window.visualViewport?.height;
+  return typeof visualViewportHeight === "number"
+    ? Math.min(window.innerHeight, visualViewportHeight)
+    : window.innerHeight;
+}
+
 /** Format file size in human-readable form */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}\u202fb`;
@@ -147,6 +165,11 @@ interface Props {
   onQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
   /** Queue through the project-level idle gate. Hidden unless opted in. */
   onProjectQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
+  /** Queue this draft as the opening turn of a new session in the project. */
+  onProjectQueueNewSession?: (
+    text: string,
+    metadata?: MessageSubmissionMetadata,
+  ) => void;
   disabled?: boolean;
   placeholder?: string;
   mode?: PermissionMode;
@@ -261,12 +284,27 @@ interface Props {
   };
   /** Composer shortcut for fork-after-summary using current draft as instructions. */
   onForkSummaryShortcut?: (instructions: string) => boolean | undefined;
+  /**
+   * `!!` bang-command support: routes bang drafts to a local run instead of
+   * the provider, serves tab completions, and exposes Ctrl+↑ history.
+   * Absent on composers without a wired bang path.
+   */
+  bangSupport?: {
+    onRun: (command: string) => Promise<void>;
+    fetchCompletions: (
+      token: string,
+      kind: "command" | "path",
+      line: string,
+    ) => Promise<string[]>;
+    history: readonly string[];
+  };
 }
 
 export function MessageInput({
   onSend,
   onQueue,
   onProjectQueue,
+  onProjectQueueNewSession,
   disabled,
   placeholder,
   mode = "default",
@@ -318,6 +356,7 @@ export function MessageInput({
   onDismissPromptSuggestion,
   forkSummaryMode,
   onForkSummaryShortcut,
+  bangSupport,
 }: Props) {
   const { t } = useI18n();
   const { visibility: toolbarVisibility } = useSessionToolbarPresence();
@@ -347,6 +386,7 @@ export function MessageInput({
   const composerEditedDuringSpeechRef = useRef(false);
   const pendingTextareaSelectionRef =
     useRef<PendingTextareaSelectionRestore | null>(null);
+  const keyboardViewportBaselineRef = useRef<number | null>(null);
   // User-controlled collapse state (independent of external collapse from approval panel)
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -358,6 +398,16 @@ export function MessageInput({
     null,
   );
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [bangCandidates, setBangCandidates] = useState<string[]>([]);
+  const [selectedBangIndex, setSelectedBangIndex] = useState(0);
+  const [dismissedBangQueryKey, setDismissedBangQueryKey] = useState<
+    string | null
+  >(null);
+  const bangHistoryIndexRef = useRef(-1);
+  const bangRecalledTextRef = useRef<string | null>(null);
+  const [textareaFocused, setTextareaFocused] = useState(false);
+  const [mobileKeyboardOpen, setMobileKeyboardOpen] = useState(false);
+  const [mobileKeyboardMoreOpen, setMobileKeyboardMoreOpen] = useState(false);
 
   // Panel is collapsed if user collapsed it OR if externally collapsed (approval panel showing)
   const collapsed = userCollapsed || externalCollapsed;
@@ -380,6 +430,26 @@ export function MessageInput({
     !hasExactSlashCommand &&
     dismissedSlashQuery !== slashQuery &&
     matchingSlashCommands.length > 0;
+  const bangQuery =
+    bangSupport && !collapsed ? getBangCompletionQuery(text) : null;
+  const bangQueryKey = bangQuery
+    ? `${bangQuery.kind} ${bangQuery.token}\0${text.slice(2)}`
+    : null;
+  const showBangChip = !!bangSupport && !collapsed && text.startsWith("!!");
+  const showBangEscapedChip =
+    !!bangSupport && !collapsed && text.startsWith(" !!");
+  const showBangSuggestions =
+    !collapsed &&
+    !disabled &&
+    bangQuery !== null &&
+    bangQuery.token.length > 0 &&
+    dismissedBangQueryKey !== bangQueryKey &&
+    bangCandidates.length > 0 &&
+    !(
+      bangCandidates.length === 1 &&
+      (bangCandidates[0] === bangQuery.token ||
+        bangCandidates[0] === `${bangQuery.token}/`)
+    );
   const canSubmit = forkSummaryMode
     ? !forkSummaryMode.submitting &&
       attachments.length === 0 &&
@@ -457,6 +527,53 @@ export function MessageInput({
         ]
       : speechRangeTags;
   const speechMirrorSegments = getSpeechMirrorSegments(text, speechPendingTags);
+  const bangFetchRef = useRef(bangSupport?.fetchCompletions);
+  bangFetchRef.current = bangSupport?.fetchCompletions;
+  useEffect(() => {
+    const fetchCompletions = bangFetchRef.current;
+    if (!bangQueryKey || !fetchCompletions) {
+      setBangCandidates([]);
+      return;
+    }
+    const separatorIndex = bangQueryKey.indexOf(" ");
+    const lineSeparatorIndex = bangQueryKey.indexOf("\0");
+    const kind = bangQueryKey.slice(0, separatorIndex) as "command" | "path";
+    const token = bangQueryKey.slice(separatorIndex + 1, lineSeparatorIndex);
+    const line = bangQueryKey.slice(lineSeparatorIndex + 1);
+    if (!token) {
+      setBangCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetchCompletions(token, kind, line).then(
+        (completions) => {
+          if (!cancelled) {
+            setBangCandidates(completions);
+            setSelectedBangIndex(0);
+          }
+        },
+        () => {
+          if (!cancelled) {
+            setBangCandidates([]);
+          }
+        },
+      );
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [bangQueryKey]);
+
+  // Any edit that diverges from the last Ctrl+↑ recall resets history cycling.
+  useEffect(() => {
+    if (bangRecalledTextRef.current !== text) {
+      bangHistoryIndexRef.current = -1;
+      bangRecalledTextRef.current = null;
+    }
+  }, [text]);
+
   const slashSelectionResetKey = `${slashQuery}\0${matchingSlashCommands.length}`;
 
   useEffect(() => {
@@ -496,9 +613,10 @@ export function MessageInput({
   const projectQueueCtrlEnterEnabled =
     version?.clientDefaults?.projectQueueCtrlEnterEnabled ??
     DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED;
+  const projectQueueSupported = serverSupportsProjectQueue(version);
   const projectQueueShortcutAvailable =
     projectQueueCtrlEnterEnabled &&
-    serverSupportsProjectQueue(version) &&
+    projectQueueSupported &&
     toolbarVisibility.projectQueue &&
     !!onProjectQueue &&
     !forkSummaryMode;
@@ -519,6 +637,26 @@ export function MessageInput({
       : effectivePrimaryActionKind === "queue"
         ? t("toolbarQueueLabel")
         : t("toolbarSend");
+  const mobileKeyboardActionLabel = forkSummaryMode
+    ? forkSummaryMode.submitLabel
+    : effectivePrimaryActionKind === "steer"
+      ? t("toolbarShortcutSteerCurrentTurn")
+      : effectivePrimaryActionKind === "queue"
+        ? t("toolbarQueueLabel")
+        : t("toolbarSend");
+  const mobileKeyboardActionDisplayLabel =
+    hasActiveDualActions && !forkSummaryMode
+      ? effectivePrimaryActionKind === "queue"
+        ? t("toolbarQueueShortLabel")
+        : t("toolbarSteerShortLabel")
+      : mobileKeyboardActionLabel;
+  const mobileKeyboardActionIcon = forkSummaryMode
+    ? forkSummaryMode.icon
+    : effectivePrimaryActionKind === "steer"
+      ? "↗"
+      : effectivePrimaryActionKind === "queue"
+        ? "→"
+        : "↑";
 
   const canAttach = !!(projectId && sessionId && onAttach);
 
@@ -809,8 +947,55 @@ export function MessageInput({
     };
   }, [collapsed, revealCollapsedTextareaCursor, text]);
 
+  useEffect(() => {
+    if (
+      !textareaFocused ||
+      typeof window.matchMedia !== "function" ||
+      !hasCoarsePointer()
+    ) {
+      keyboardViewportBaselineRef.current = null;
+      setMobileKeyboardOpen(false);
+      setMobileKeyboardMoreOpen(false);
+      return;
+    }
+
+    if (keyboardViewportBaselineRef.current === null) {
+      keyboardViewportBaselineRef.current = getComposerViewportHeight();
+    }
+
+    const updateKeyboardState = () => {
+      const viewportHeight = getComposerViewportHeight();
+      const previousBaseline = keyboardViewportBaselineRef.current;
+      const baseline =
+        previousBaseline === null
+          ? viewportHeight
+          : Math.max(previousBaseline, viewportHeight);
+      keyboardViewportBaselineRef.current = baseline;
+      const nextKeyboardOpen =
+        viewportHeight < baseline * MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO;
+      setMobileKeyboardOpen(nextKeyboardOpen);
+      if (!nextKeyboardOpen) {
+        setMobileKeyboardMoreOpen(false);
+      }
+    };
+
+    updateKeyboardState();
+    window.addEventListener("resize", updateKeyboardState);
+    window.visualViewport?.addEventListener("resize", updateKeyboardState);
+    return () => {
+      window.removeEventListener("resize", updateKeyboardState);
+      window.visualViewport?.removeEventListener("resize", updateKeyboardState);
+    };
+  }, [textareaFocused]);
+
+  useEffect(() => {
+    if (!canSubmit) {
+      setMobileKeyboardMoreOpen(false);
+    }
+  }, [canSubmit]);
+
   const handleSubmit = useCallback(
-    (
+    async (
       messageOverride?: unknown,
       actionOverride?: "send" | "steer" | "queue",
     ) => {
@@ -843,6 +1028,28 @@ export function MessageInput({
         return;
       }
 
+      if (bangSupport) {
+        const bangDraft = resolveComposerBangDraft(finalText);
+        if (bangDraft.kind === "empty") {
+          return;
+        }
+        if (bangDraft.kind === "bang" && !disabled) {
+          try {
+            await bangSupport.onRun(bangDraft.command);
+            controls.clearInput();
+            resetCompositionMetadata();
+            setInterimTranscript("");
+          } catch {
+            // The owner surfaces the run failure; retain the draft for retry.
+          }
+          textareaRef.current?.focus();
+          return;
+        }
+        if (bangDraft.kind === "escaped") {
+          finalText = bangDraft.text;
+        }
+      }
+
       const hasContent = finalText.trim() || attachments.length > 0;
       if (hasContent && !disabled) {
         const message = finalText.trim();
@@ -873,6 +1080,7 @@ export function MessageInput({
       buildSubmissionMetadata,
       resetCompositionMetadata,
       forkSummaryMode,
+      bangSupport,
     ],
   );
 
@@ -946,34 +1154,48 @@ export function MessageInput({
     resetCompositionMetadata,
   ]);
 
+  const submitToProjectQueue = useCallback(
+    (
+      submit:
+        | ((text: string, metadata?: MessageSubmissionMetadata) => void)
+        | undefined,
+    ) => {
+      if (!submit) return;
+
+      // Stop voice recording and get any pending interim text
+      const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
+
+      let finalText = controls.getDraft().trimEnd();
+      if (pendingVoice) {
+        finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
+      }
+
+      const hasContent = finalText.trim() || attachments.length > 0;
+      if (hasContent && !disabled) {
+        const metadata = buildSubmissionMetadata("deferred");
+        controls.clearInput();
+        resetCompositionMetadata();
+        setInterimTranscript("");
+        submit(finalText.trim(), metadata);
+        textareaRef.current?.focus();
+      }
+    },
+    [
+      attachments.length,
+      buildSubmissionMetadata,
+      controls,
+      disabled,
+      resetCompositionMetadata,
+    ],
+  );
+
   const handleProjectQueue = useCallback(() => {
-    if (!onProjectQueue) return;
+    submitToProjectQueue(onProjectQueue);
+  }, [onProjectQueue, submitToProjectQueue]);
 
-    // Stop voice recording and get any pending interim text
-    const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
-
-    let finalText = controls.getDraft().trimEnd();
-    if (pendingVoice) {
-      finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
-    }
-
-    const hasContent = finalText.trim() || attachments.length > 0;
-    if (hasContent && !disabled) {
-      const metadata = buildSubmissionMetadata("deferred");
-      controls.clearInput();
-      resetCompositionMetadata();
-      setInterimTranscript("");
-      onProjectQueue(finalText.trim(), metadata);
-      textareaRef.current?.focus();
-    }
-  }, [
-    attachments.length,
-    buildSubmissionMetadata,
-    controls,
-    disabled,
-    onProjectQueue,
-    resetCompositionMetadata,
-  ]);
+  const handleProjectQueueNewSession = useCallback(() => {
+    submitToProjectQueue(onProjectQueueNewSession);
+  }, [onProjectQueueNewSession, submitToProjectQueue]);
 
   const handleBtwClick = useCallback(() => {
     if (disabled || !onBtwShortcut) return;
@@ -996,6 +1218,46 @@ export function MessageInput({
     : effectivePrimaryActionKind === "queue"
       ? handleQueue
       : handleSubmit;
+  const forkSummaryAlternateLabel =
+    forkSummaryMode?.noSummarySubmitLabel ?? t("forkSummaryNoSummarySubmit");
+  const mobileKeyboardAlternateAction = forkSummaryMode?.onSubmitWithoutSummary
+    ? {
+        kind: "send" as const,
+        label: forkSummaryAlternateLabel,
+        displayLabel: forkSummaryAlternateLabel,
+        icon: forkSummaryMode.noSummaryIcon ?? "↱",
+        onClick: handleForkWithoutSummary,
+      }
+    : hasActiveDualActions
+      ? effectivePrimaryActionKind === "queue"
+        ? {
+            kind: "steer" as const,
+            label: t("toolbarShortcutSteerCurrentTurn"),
+            displayLabel: t("toolbarSteerShortLabel"),
+            icon: "↗",
+            onClick: handleSteer,
+          }
+        : {
+            kind: "queue" as const,
+            label: t("toolbarQueueLabel"),
+            displayLabel: t("toolbarQueueShortLabel"),
+            icon: "→",
+            onClick: handleQueue,
+          }
+      : null;
+  // Keep the keyboard-open primary action's hit area stable while live session
+  // and project state changes. These potential-action slots stay in the row
+  // even before their buttons become useful, so Queue or Project Queue can
+  // appear without taking space out from under Send/Steer.
+  const reserveMobileProjectQueueSlot =
+    !forkSummaryMode && projectQueueSupported && toolbarVisibility.projectQueue;
+  const reserveMobileProjectQueueNewSessionSlot =
+    !forkSummaryMode &&
+    projectQueueSupported &&
+    toolbarVisibility.projectQueueNewSessionShortcut &&
+    !!onProjectQueueNewSession;
+  const reserveMobileSessionAlternateSlot =
+    !forkSummaryMode && supportsSteering;
   const collapsedActionKind =
     collapsedComposerButton === "alternate" && hasActiveDualActions
       ? effectivePrimaryActionKind === "queue"
@@ -1098,7 +1360,136 @@ export function MessageInput({
     [text, setText, onCustomCommand, noteComposerEdit, noteDraftTextChange],
   );
 
+  // Shared Tab-complete action for bang drafts: accept the highlighted
+  // candidate, else fetch immediately and extend to the longest common
+  // prefix (menu opens on ambiguity). Reused by the Tab key and by the
+  // mobile-keyboard button, since touch keyboards have no Tab key.
+  const performBangTabComplete = (): boolean => {
+    if (!bangQuery || !bangSupport) {
+      return false;
+    }
+    const applyCandidate = (candidate: string) => {
+      const nextText = applyBangCompletion(text, bangQuery, candidate);
+      noteComposerEdit(nextText);
+      setText(nextText);
+    };
+    if (showBangSuggestions) {
+      const candidate = bangCandidates[selectedBangIndex];
+      if (candidate) {
+        applyCandidate(candidate);
+      }
+      return true;
+    }
+    bangSupport
+      .fetchCompletions(bangQuery.token, bangQuery.kind, text.slice(2))
+      .then((completions) => {
+        if (controls.getDraft() !== text) {
+          return;
+        }
+        const single = completions.length === 1 ? completions[0] : undefined;
+        if (single) {
+          applyCandidate(single);
+          return;
+        }
+        const prefix = longestCommonPrefix(completions);
+        if (prefix.length > bangQuery.token.length) {
+          const nextText = text.slice(0, bangQuery.replaceStart) + prefix;
+          noteComposerEdit(nextText);
+          setText(nextText);
+        }
+        setBangCandidates(completions);
+        setSelectedBangIndex(0);
+        setDismissedBangQueryKey(null);
+      })
+      .catch(() => {});
+    return true;
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Ctrl+↑/↓: shell-style recall of prior bang commands.
+    if (
+      e.key === "ArrowUp" &&
+      e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      bangSupport &&
+      bangSupport.history.length > 0 &&
+      (text === "" || text.startsWith("!!"))
+    ) {
+      e.preventDefault();
+      const nextIndex = Math.min(
+        bangHistoryIndexRef.current + 1,
+        bangSupport.history.length - 1,
+      );
+      bangHistoryIndexRef.current = nextIndex;
+      const nextText = `!!${bangSupport.history[nextIndex]}`;
+      bangRecalledTextRef.current = nextText;
+      noteComposerEdit(nextText);
+      setText(nextText);
+      return;
+    }
+    if (
+      e.key === "ArrowDown" &&
+      e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      bangSupport &&
+      bangHistoryIndexRef.current >= 0 &&
+      text.startsWith("!!")
+    ) {
+      e.preventDefault();
+      const nextIndex = bangHistoryIndexRef.current - 1;
+      bangHistoryIndexRef.current = nextIndex;
+      const nextText =
+        nextIndex < 0 ? "" : `!!${bangSupport.history[nextIndex]}`;
+      bangRecalledTextRef.current = nextText;
+      noteComposerEdit(nextText);
+      setText(nextText);
+      return;
+    }
+
+    // Tab always completes inside a bang draft, shell-style.
+    if (e.key === "Tab" && !e.shiftKey && performBangTabComplete()) {
+      e.preventDefault();
+      return;
+    }
+
+    if (showBangSuggestions && bangQuery) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissedBangQueryKey(bangQueryKey);
+        return;
+      }
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey) {
+        e.preventDefault();
+        setSelectedBangIndex((current) => {
+          const delta = e.key === "ArrowDown" ? 1 : -1;
+          return (
+            (current + delta + bangCandidates.length) % bangCandidates.length
+          );
+        });
+        return;
+      }
+      if (
+        e.key === "Enter" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const candidate = bangCandidates[selectedBangIndex];
+        if (candidate) {
+          const nextText = applyBangCompletion(text, bangQuery, candidate);
+          noteComposerEdit(nextText);
+          setText(nextText);
+        }
+        return;
+      }
+    }
+
     if (showSlashSuggestions) {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -1664,6 +2055,94 @@ export function MessageInput({
     [handleListeningStart, handleListeningStop],
   );
 
+  const toolbarProps: MessageInputToolbarProps = {
+    mode,
+    onModeChange,
+    modeChangesApplyNextTurn,
+    supportsPermissionMode,
+    supportsThinkingToggle,
+    canAttach,
+    attachmentCount: attachments.length,
+    onAttachClick: () => fileInputRef.current?.click(),
+    voiceButtonRef,
+    onVoiceTranscript: handleVoiceTranscript,
+    onInterimTranscript: handleInterimTranscript,
+    onListeningStart: handleListeningStart,
+    onListeningStop: handleListeningStop,
+    onPendingSpeechChange: handlePendingSpeechChange,
+    onTranscriptionSettled: handleTranscriptionSettled,
+    voiceDisabled: disabled,
+    getTranscriptionContext,
+    slashCommands,
+    onSelectSlashCommand: handleSlashCommand,
+    onBtwClick: onBtwShortcut ? handleBtwClick : undefined,
+    btwActive,
+    btwHasAsides,
+    btwToolbarMode,
+    thinkingProvider,
+    thinkingModel,
+    liveThinkingSelection,
+    contextRequestedModel,
+    heartbeatEnabled,
+    onToggleHeartbeat,
+    onConfigureHeartbeat,
+    contextUsage,
+    lastActivityAt,
+    positionTimestampMs,
+    sessionLiveness,
+    providerRuntimeStatus,
+    showSteerNowMode: supportsSteerNow && hasActiveDualActions,
+    steerNowEnabled,
+    onToggleSteerNow: () => setSteerNowOverride(!steerNowEnabled),
+    enterActionKind:
+      effectivePrimaryActionKind === "steer" ||
+      effectivePrimaryActionKind === "queue"
+        ? effectivePrimaryActionKind
+        : undefined,
+    canSwapEnterAction: hasActiveDualActions,
+    onSwapEnterAction: toggleEnterActionKind,
+    isRunning,
+    isThinking,
+    onStop,
+    onSend: forkSummaryMode
+      ? handleSubmit
+      : effectivePrimaryActionKind === "queue"
+        ? handleQueue
+        : handleSubmit,
+    onQueue: onQueue ? handleQueue : undefined,
+    onProjectQueue:
+      onProjectQueue && !forkSummaryMode ? handleProjectQueue : undefined,
+    onProjectQueueNewSession:
+      onProjectQueueNewSession && !forkSummaryMode
+        ? handleProjectQueueNewSession
+        : undefined,
+    onSteer: hasActiveDualActions ? handleSteer : undefined,
+    primaryActionKind: effectivePrimaryActionKind,
+    sendOverride: forkSummaryMode
+      ? {
+          label: forkSummaryMode.submitLabel,
+          tooltip: forkSummaryMode.tooltip,
+          icon: forkSummaryMode.icon,
+        }
+      : undefined,
+    sendAlternate: forkSummaryMode?.onSubmitWithoutSummary
+      ? {
+          label:
+            forkSummaryMode.noSummarySubmitLabel ??
+            t("forkSummaryNoSummarySubmit"),
+          tooltip:
+            forkSummaryMode.noSummaryTooltip ??
+            t("forkSummaryNoSummaryTooltip"),
+          icon: forkSummaryMode.noSummaryIcon ?? "↱",
+          onClick: handleForkWithoutSummary,
+        }
+      : undefined,
+    canForkAfterSummary: !!onForkSummaryShortcut,
+    canSend: canSubmit,
+    disabled,
+  };
+  const showMobileKeyboardCompact = mobileKeyboardOpen && canSubmit;
+
   return (
     <div
       className="message-input-wrapper"
@@ -1833,8 +2312,16 @@ export function MessageInput({
                   setDismissedSlashQuery(null);
                 }
               }}
-              onBlur={controls.flushDraft}
-              onFocus={revealCollapsedTextareaCursor}
+              onBlur={() => {
+                controls.flushDraft();
+                setTextareaFocused(false);
+              }}
+              onFocus={() => {
+                keyboardViewportBaselineRef.current =
+                  getComposerViewportHeight();
+                setTextareaFocused(true);
+                revealCollapsedTextareaCursor();
+              }}
               onKeyDown={handleKeyDown}
               onSelect={handleTextareaSelectionTarget}
               onPointerUp={handleTextareaSelectionTarget}
@@ -1845,7 +2332,7 @@ export function MessageInput({
                 clearSpeechSelectionTarget();
                 handlePaste(event);
               }}
-              enterKeyHint="send"
+              enterKeyHint="enter"
               placeholder={
                 externalCollapsed
                   ? t("messageInputContinueAbove")
@@ -1868,6 +2355,52 @@ export function MessageInput({
             </div>
           )}
         </div>
+
+        {(showBangChip || showBangEscapedChip) && (
+          <div
+            className={`bang-composer-chip${
+              showBangEscapedChip ? " bang-composer-chip-escaped" : ""
+            }`}
+            role="status"
+          >
+            {showBangEscapedChip
+              ? t("bangComposerEscapedChip")
+              : t("bangComposerChip")}
+          </div>
+        )}
+
+        {showBangSuggestions && (
+          <div
+            className="slash-command-menu composer-slash-command-menu bang-completion-menu"
+            role="menu"
+          >
+            {bangCandidates.map((candidate, index) => (
+              <button
+                key={candidate}
+                type="button"
+                className={`slash-command-item${
+                  index === selectedBangIndex ? " active" : ""
+                }`}
+                onMouseEnter={() => setSelectedBangIndex(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  if (!bangQuery) return;
+                  const nextText = applyBangCompletion(
+                    text,
+                    bangQuery,
+                    candidate,
+                  );
+                  noteComposerEdit(nextText);
+                  setText(nextText);
+                  textareaRef.current?.focus();
+                }}
+                role="menuitem"
+              >
+                <span>{candidate}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {showSlashSuggestions && (
           <div
@@ -2073,99 +2606,156 @@ export function MessageInput({
           </div>
         )}
 
-        {!collapsed && (
-          <MessageInputToolbar
-            mode={mode}
-            onModeChange={onModeChange}
-            modeChangesApplyNextTurn={modeChangesApplyNextTurn}
-            supportsPermissionMode={supportsPermissionMode}
-            supportsThinkingToggle={supportsThinkingToggle}
-            canAttach={canAttach}
-            attachmentCount={attachments.length}
-            onAttachClick={() => fileInputRef.current?.click()}
-            voiceButtonRef={voiceButtonRef}
-            onVoiceTranscript={handleVoiceTranscript}
-            onInterimTranscript={handleInterimTranscript}
-            onListeningStart={handleListeningStart}
-            onListeningStop={handleListeningStop}
-            onPendingSpeechChange={handlePendingSpeechChange}
-            onTranscriptionSettled={handleTranscriptionSettled}
-            voiceDisabled={disabled}
-            getTranscriptionContext={getTranscriptionContext}
-            slashCommands={slashCommands}
-            onSelectSlashCommand={handleSlashCommand}
-            onBtwClick={onBtwShortcut ? handleBtwClick : undefined}
-            btwActive={btwActive}
-            btwHasAsides={btwHasAsides}
-            btwToolbarMode={btwToolbarMode}
-            thinkingProvider={thinkingProvider}
-            thinkingModel={thinkingModel}
-            liveThinkingSelection={liveThinkingSelection}
-            contextRequestedModel={contextRequestedModel}
-            heartbeatEnabled={heartbeatEnabled}
-            onToggleHeartbeat={onToggleHeartbeat}
-            onConfigureHeartbeat={onConfigureHeartbeat}
-            contextUsage={contextUsage}
-            lastActivityAt={lastActivityAt}
-            positionTimestampMs={positionTimestampMs}
-            sessionLiveness={sessionLiveness}
-            providerRuntimeStatus={providerRuntimeStatus}
-            showSteerNowMode={supportsSteerNow && hasActiveDualActions}
-            steerNowEnabled={steerNowEnabled}
-            onToggleSteerNow={() => setSteerNowOverride(!steerNowEnabled)}
-            enterActionKind={
-              effectivePrimaryActionKind === "steer" ||
-              effectivePrimaryActionKind === "queue"
-                ? effectivePrimaryActionKind
-                : undefined
-            }
-            canSwapEnterAction={hasActiveDualActions}
-            onSwapEnterAction={toggleEnterActionKind}
-            isRunning={isRunning}
-            isThinking={isThinking}
-            onStop={onStop}
-            onSend={
-              forkSummaryMode
-                ? handleSubmit
-                : effectivePrimaryActionKind === "queue"
-                  ? handleQueue
-                  : handleSubmit
-            }
-            onQueue={onQueue ? handleQueue : undefined}
-            onProjectQueue={
-              onProjectQueue && !forkSummaryMode
-                ? handleProjectQueue
-                : undefined
-            }
-            onSteer={hasActiveDualActions ? handleSteer : undefined}
-            primaryActionKind={effectivePrimaryActionKind}
-            sendOverride={
-              forkSummaryMode
-                ? {
-                    label: forkSummaryMode.submitLabel,
-                    tooltip: forkSummaryMode.tooltip,
-                    icon: forkSummaryMode.icon,
-                  }
-                : undefined
-            }
-            sendAlternate={
-              forkSummaryMode?.onSubmitWithoutSummary
-                ? {
-                    label:
-                      forkSummaryMode.noSummarySubmitLabel ??
-                      t("forkSummaryNoSummarySubmit"),
-                    tooltip:
-                      forkSummaryMode.noSummaryTooltip ??
-                      t("forkSummaryNoSummaryTooltip"),
-                    icon: forkSummaryMode.noSummaryIcon ?? "↱",
-                    onClick: handleForkWithoutSummary,
-                  }
-                : undefined
-            }
-            canForkAfterSummary={!!onForkSummaryShortcut}
-            canSend={canSubmit}
-            disabled={disabled}
-          />
+        {!collapsed && showMobileKeyboardCompact && (
+          <div className="message-input-keyboard-compact">
+            {mobileKeyboardMoreOpen && (
+              <div
+                id="message-input-keyboard-more-controls"
+                className="message-input-keyboard-more-panel"
+                role="toolbar"
+                aria-label={t("toolbarOverflowMenu")}
+                onPointerDown={(event) => event.preventDefault()}
+              >
+                <MessageInputToolbar
+                  {...toolbarProps}
+                  onProjectQueue={undefined}
+                  onProjectQueueNewSession={undefined}
+                  hidePrimaryDeliveryActions
+                />
+              </div>
+            )}
+            <div
+              className={`message-input-keyboard-actions${forkSummaryMode?.onSubmitWithoutSummary ? " has-alternate" : ""}`}
+            >
+              <button
+                type="button"
+                className={`message-input-keyboard-more${mobileKeyboardMoreOpen ? " is-open" : ""}`}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => setMobileKeyboardMoreOpen((open) => !open)}
+                aria-label={t("toolbarOverflowMenu")}
+                aria-expanded={mobileKeyboardMoreOpen}
+                aria-controls="message-input-keyboard-more-controls"
+                title={t("toolbarOverflowMenu")}
+              >
+                <span aria-hidden="true">...</span>
+              </button>
+              {reserveMobileProjectQueueSlot && (
+                <div className="message-input-keyboard-secondary-slot message-input-keyboard-project-queue-slot">
+                  {onProjectQueue && (
+                    <button
+                      type="button"
+                      className="message-input-keyboard-action message-input-keyboard-secondary project-queue-mode"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={handleProjectQueue}
+                      disabled={disabled}
+                      aria-label={t("toolbarProjectQueueLabel")}
+                      title={
+                        projectQueueShortcutAvailable
+                          ? t("toolbarProjectQueueTooltipWithShortcut")
+                          : t("toolbarProjectQueueTooltip")
+                      }
+                    >
+                      <span aria-hidden="true">⇥</span>
+                    </button>
+                  )}
+                </div>
+              )}
+              {reserveMobileProjectQueueNewSessionSlot && (
+                <div className="message-input-keyboard-secondary-slot message-input-keyboard-project-queue-new-session-slot">
+                  <button
+                    type="button"
+                    className="message-input-keyboard-action message-input-keyboard-secondary project-queue-mode project-queue-new-session-button"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={handleProjectQueueNewSession}
+                    disabled={disabled}
+                    aria-label={t("toolbarProjectQueueNewSessionLabel")}
+                    title={t("toolbarProjectQueueNewSessionTooltip")}
+                  >
+                    <span aria-hidden="true">⇥</span>
+                    <span
+                      className="project-queue-new-session-mark"
+                      aria-hidden="true"
+                    >
+                      +
+                    </span>
+                  </button>
+                </div>
+              )}
+              {reserveMobileSessionAlternateSlot && (
+                <div className="message-input-keyboard-secondary-slot message-input-keyboard-session-alternate-slot">
+                  {mobileKeyboardAlternateAction && (
+                    <button
+                      type="button"
+                      className={`message-input-keyboard-action message-input-keyboard-secondary ${mobileKeyboardAlternateAction.kind}-mode`}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={mobileKeyboardAlternateAction.onClick}
+                      disabled={disabled}
+                      aria-label={mobileKeyboardAlternateAction.label}
+                      title={mobileKeyboardAlternateAction.label}
+                    >
+                      <span aria-hidden="true">
+                        {mobileKeyboardAlternateAction.icon}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+              {forkSummaryMode?.onSubmitWithoutSummary &&
+                mobileKeyboardAlternateAction && (
+                  <button
+                    type="button"
+                    className={`message-input-keyboard-action message-input-keyboard-alternate ${mobileKeyboardAlternateAction.kind}-mode`}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={mobileKeyboardAlternateAction.onClick}
+                    disabled={disabled}
+                    aria-label={mobileKeyboardAlternateAction.label}
+                  >
+                    <span>{mobileKeyboardAlternateAction.displayLabel}</span>
+                    <span aria-hidden="true">
+                      {mobileKeyboardAlternateAction.icon}
+                    </span>
+                  </button>
+                )}
+              {bangQuery !== null && (
+                <button
+                  type="button"
+                  className="message-input-keyboard-action message-input-keyboard-secondary bang-tab-mode"
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => performBangTabComplete()}
+                  disabled={disabled}
+                  aria-label={t("bangTabCompleteLabel")}
+                  title={t("bangTabCompleteLabel")}
+                >
+                  <span>Tab</span>
+                  <span aria-hidden="true">⇥</span>
+                </button>
+              )}
+              <button
+                type="button"
+                className={`message-input-keyboard-action message-input-keyboard-primary ${effectivePrimaryActionKind}-mode`}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={submitPrimaryAction}
+                disabled={disabled}
+                aria-label={mobileKeyboardActionLabel}
+              >
+                {mobileKeyboardActionDisplayLabel && (
+                  <span className="message-input-keyboard-primary-label">
+                    {mobileKeyboardActionDisplayLabel}
+                  </span>
+                )}
+                <span
+                  className="message-input-keyboard-primary-icon"
+                  aria-hidden="true"
+                >
+                  {mobileKeyboardActionIcon}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!collapsed && !showMobileKeyboardCompact && (
+          <MessageInputToolbar {...toolbarProps} />
         )}
       </div>
     </div>
