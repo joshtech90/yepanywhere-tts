@@ -7,10 +7,16 @@ import type {
   ProjectQueueItemSummary,
   ProjectQueueStagedAttachments,
   PublicSessionShareSessionStatusResponse,
+  SlashCommand,
   ThinkingMode,
   TranscriptDisplayObject,
   UploadedFile,
   UserQuestionAnswers,
+} from "@yep-anywhere/shared";
+import {
+  getCanonicalInvocationToken,
+  isClaudeProviderName,
+  thinkingOptionToConfig,
 } from "@yep-anywhere/shared";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -24,7 +30,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
-import { bangCommandsAreEnabled } from "../lib/bangCommandAvailability";
+import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
@@ -119,8 +125,13 @@ import {
   type LastComposerSubmission,
   type SentComposerSubmission,
 } from "../lib/composerRecall";
+import {
+  createComposerDraftSignal,
+  createComposerEditAvailabilityStore,
+} from "../lib/composerDraftSignal";
 import { buildCorrectionText } from "../lib/correctionText";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
+import { isEffortLevel } from "../lib/effortLevels";
 import {
   liveThinkingSelectionFromProcess,
   thinkingOptionFromProcess,
@@ -129,6 +140,7 @@ import {
 import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
+import { parseThinkingConfig } from "../lib/sourceControlNavigationState";
 import {
   type ComposerAttachment,
   isComposerStagedAttachment,
@@ -152,10 +164,11 @@ import {
   serverSupportsProjectQueue,
   shouldShowProjectQueueAffordance,
 } from "../lib/projectQueueVisibility";
+import { createSessionDraftStorageKey } from "../lib/sessionDraftStorage";
 import {
-  createSessionDraftStorageKey,
-  saveSessionDraft,
-} from "../lib/sessionDraftStorage";
+  type ComposerTurnRecallCache,
+  createComposerTurnRecallCache,
+} from "../lib/composerTurnRecall";
 import { turnContentText } from "../lib/sessionMessageText";
 import {
   getEstimatedServerOffsetMs,
@@ -169,6 +182,8 @@ import {
   parseSessionNavigationState,
 } from "../lib/sessionNavigationState";
 import { getPublicShareInitialPrompt } from "../lib/sessionPublicSharePrompt";
+import { supportsUnifiedSessionFork } from "../lib/sessionForkAvailability";
+import { isBtwAsideSession } from "../lib/btwAsideSessions";
 import {
   composeGeneratedRetitle,
   createSessionRetitleSubmittedTurnText,
@@ -177,6 +192,8 @@ import {
 } from "../lib/sessionTitleHelpers";
 import {
   CLIENT_SLASH_COMMANDS,
+  createClientSlashCommand,
+  normalizeSlashCommandForMatch,
   resolveComposerSlashTurn,
 } from "../lib/slashCommands";
 import { messageContentToPlainText } from "../lib/sessionMessageText";
@@ -221,10 +238,6 @@ function messageKey(message: Message | undefined): string | undefined {
   return message?.uuid ?? message?.id;
 }
 
-function isForkAnchorMessage(message: Message | undefined): boolean {
-  return message?.type === "user" || message?.type === "assistant";
-}
-
 function isMissingDeferredQueueEntryError(error: unknown): boolean {
   if ((error as { status?: number } | null)?.status === 404) {
     return true;
@@ -243,7 +256,7 @@ function requiresHandoffAfterClaudeResumeError(
   if ((error as { status?: number } | null)?.status !== 409) {
     return false;
   }
-  if (provider !== "claude" && provider !== "claude-ollama") {
+  if (!isClaudeProviderName(provider)) {
     return false;
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -288,6 +301,8 @@ export interface SessionPageRouteLocation {
   pathname: string;
   search: string;
   state: unknown;
+  /** Router history entry id; distinguishes repeat navigations to one path. */
+  key?: string;
 }
 
 export interface SessionPageProps {
@@ -583,10 +598,9 @@ function SessionPageContent({
   const { generatedTitleLength } = useGeneratedTitleLength();
   const { generatedTitleEnabled } = useGeneratedTitleEnabled();
   const { settings: serverSettings } = useServerSettings();
-  const bangCommandsEnabled = bangCommandsAreEnabled(
-    versionInfo,
-    serverSettings?.clientDefaults,
-  );
+  // Composer `!!` routing is always-on where the server supports it
+  // (vanilla-defaults.md § Known Exceptions); no setting gates execution.
+  const bangCommandsSupported = serverSupportsBangCommands(versionInfo);
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareGlobalStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -670,14 +684,16 @@ function SessionPageContent({
   // Effective provider/model for immediate display before session data loads
   const effectiveProvider = session?.provider ?? initialProvider;
   const effectiveModel = session?.model ?? initialModel;
+  const codexPermissionModeChangePending =
+    effectiveProvider === "codex" &&
+    status.owner === "self" &&
+    status.appliedPermissionMode !== undefined &&
+    permissionMode !== status.appliedPermissionMode;
   const [liveModelConfig, setLiveModelConfig] =
     useState<LiveModelConfig | null>(null);
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const draftControlsRef = useRef<DraftControls | null>(null);
-  const [composerDraftForAnchors, setComposerDraftForAnchors] = useState("");
-  const [composerDraftChangeForAnchors, setComposerDraftChangeForAnchors] =
-    useState<DraftTextChangeMetadata>({ mayAffectQuoteAnchors: true });
   const [quoteClearSignal, setQuoteClearSignal] = useState(0);
   const pendingMotherComposerTransferRef = useRef<string | null>(null);
   const lastComposerSubmissionRef = useRef<LastComposerSubmission | null>(null);
@@ -724,7 +740,13 @@ function SessionPageContent({
     liveModel: liveModelConfig?.model,
     sessionModel: session?.model,
     sessionExecutor: session?.executor,
-    parentSessionId: session?.parentSessionId,
+    parentSessionId: isBtwAsideSession({
+      parentSessionKind: session?.parentSessionKind,
+      title: session?.customTitle ?? session?.title,
+      fullTitle: session?.fullTitle,
+    })
+      ? session?.parentSessionId
+      : undefined,
     showToast,
     onNavigateToParentAside: navigate,
   });
@@ -746,7 +768,25 @@ function SessionPageContent({
   const draftAttachmentBatchIdRef = useRef<string | null>(null);
   const draftAttachmentHydrationRef = useRef(0);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  const composerDraftSignal = useMemo(() => {
+    void sessionId;
+    return createComposerDraftSignal();
+  }, [sessionId]);
+  const composerEditAvailabilityStore = useMemo(() => {
+    void sessionId;
+    return createComposerEditAvailabilityStore();
+  }, [sessionId]);
   const [attachmentQuality] = useAttachmentUploadQuality();
+  useEffect(() => {
+    composerEditAvailabilityStore.setExternalBlockers(
+      attachments.length > 0,
+      uploadProgress.length > 0,
+    );
+  }, [
+    attachments.length,
+    composerEditAvailabilityStore,
+    uploadProgress.length,
+  ]);
   // Track in-flight upload promises so handleSend can wait for them
   const pendingUploadsRef = useRef<
     Map<string, Promise<ComposerAttachment | null>>
@@ -881,7 +921,10 @@ function SessionPageContent({
   );
 
   const supportsManualCompact =
-    status.owner === "self" && slashCommands.includes("compact");
+    status.owner === "self" &&
+    slashCommands.some(
+      (command) => normalizeSlashCommandForMatch(command.name) === "compact",
+    );
 
   // Inject custom client-side commands alongside SDK-discovered ones.
   // Keep /model last so it stays nearest the slash button in the upward menu.
@@ -890,27 +933,40 @@ function SessionPageContent({
       return [];
     }
 
-    const orderedCommands: string[] =
+    const orderedCommands: SlashCommand[] =
       status.owner === "self"
         ? CLIENT_SLASH_COMMANDS.filter(
             (command) =>
               command !== "model" &&
               (command !== "btw" || supportsBtwAsides) &&
               (command !== "done" || !!focusedBtwAsideId),
-          )
+          ).map(createClientSlashCommand)
         : [];
     if (supportsManualCompact) {
-      orderedCommands.push("compact");
+      const compact = slashCommands.find(
+        (command) => normalizeSlashCommandForMatch(command.name) === "compact",
+      );
+      if (compact) orderedCommands.push(compact);
     }
 
     for (const command of slashCommands) {
-      if (command !== "model" && !orderedCommands.includes(command)) {
+      const normalized = normalizeSlashCommandForMatch(command.name);
+      const providerModelSkill =
+        normalized === "model" && command.invocation?.kind === "skill";
+      if (
+        (normalized !== "model" || providerModelSkill) &&
+        !orderedCommands.some(
+          (candidate) =>
+            normalizeSlashCommandForMatch(candidate.name) === normalized &&
+            candidate.invocation?.kind === command.invocation?.kind,
+        )
+      ) {
         orderedCommands.push(command);
       }
     }
 
     if (status.owner === "self") {
-      orderedCommands.push("model");
+      orderedCommands.push(createClientSlashCommand("model"));
     }
 
     return orderedCommands;
@@ -965,44 +1021,16 @@ function SessionPageContent({
     return getThinkingSetting();
   }, [currentProviderInfo, liveModelConfig, status.owner]);
 
-  // "Fork before…": real prefix fork up to the message before this user
-  // turn; the fork opens cold with an empty composer (rewind-and-continue).
-  // Only offered when the provider has a fork primitive (never emulated).
-  const supportsForkFromTurn =
-    currentProviderInfo?.supportsForkSession === true;
-  const resolveForkAfterAnchor = useCallback(
-    (messageId: string): { anchorId?: string; pending?: boolean } => {
-      const index = messages.findIndex((m) => messageKey(m) === messageId);
-      if (index < 0) return {};
-
-      let nextUserIndex = -1;
-      for (let i = index + 1; i < messages.length; i += 1) {
-        if (messages[i]?.type === "user") {
-          nextUserIndex = i;
-          break;
-        }
-      }
-
-      if (
-        nextUserIndex < 0 &&
-        (processState === "in-turn" || processState === "waiting-input")
-      ) {
-        return { pending: true };
-      }
-
-      const searchEnd =
-        nextUserIndex >= 0 ? nextUserIndex - 1 : messages.length - 1;
-      for (let i = searchEnd; i >= index; i -= 1) {
-        const candidate = messages[i];
-        const candidateId = messageKey(candidate);
-        if (candidateId && isForkAnchorMessage(candidate)) {
-          return { anchorId: candidateId };
-        }
-      }
-      return {};
-    },
-    [messages, processState],
+  // Unified Clone/Fork requires both the provider primitive and the server's
+  // real-user-turn intent resolver. Older servers get no unsupported request.
+  const supportsForkFromTurn = supportsUnifiedSessionFork(
+    versionInfo,
+    currentProviderInfo?.supportsForkSession,
   );
+  const forkAfterDisabled =
+    status.owner === "external" ||
+    processState === "in-turn" ||
+    processState === "waiting-input";
   const submitForkAfterSummary = useCallback(
     async (sourceMessageId: string, instructions: string) => {
       const requestSessionId = actualSessionId;
@@ -1064,13 +1092,8 @@ function SessionPageContent({
         showToast(t("forkSummaryAttachmentsUnsupported"), "error");
         return;
       }
-      const resolved = resolveForkAfterAnchor(sourceMessageId);
-      if (resolved.pending) {
+      if (forkAfterDisabled) {
         showToast(t("forkAfterTurnPending"), "error");
-        return;
-      }
-      if (!resolved.anchorId) {
-        showToast(t("forkAfterTurnNoAnchor"), "error");
         return;
       }
 
@@ -1078,7 +1101,8 @@ function SessionPageContent({
       setForkSummaryDraft(null);
       try {
         const result = await api.forkSession(projectId, actualSessionId, {
-          upToMessageId: resolved.anchorId,
+          forkKind: "after-user-turn",
+          sourceMessageId,
         });
         if (nextTurnText.trim()) {
           await api.queueMessage(
@@ -1105,12 +1129,75 @@ function SessionPageContent({
       navigate,
       permissionMode,
       projectId,
-      resolveForkAfterAnchor,
+      forkAfterDisabled,
       showToast,
       t,
       uploadProgress.length,
     ],
   );
+  const createDirectTurnFork = useCallback(
+    async (
+      sourceMessageId: string,
+      forkKind: "before-user-turn" | "after-user-turn",
+    ) => {
+      if (forkKind === "after-user-turn" && forkAfterDisabled) {
+        showToast(t("forkAfterTurnPending"), "error");
+        return;
+      }
+      try {
+        const result = await api.forkSession(projectId, actualSessionId, {
+          forkKind,
+          sourceMessageId,
+        });
+        showToast(t("forkFromTurnStarted"), "success");
+        navigate(
+          `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
+        );
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : t("sessionRestartFailed"),
+          "error",
+        );
+      }
+    },
+    [
+      actualSessionId,
+      basePath,
+      forkAfterDisabled,
+      navigate,
+      projectId,
+      showToast,
+      t,
+    ],
+  );
+  const cloneSession = useCallback(async () => {
+    if (forkAfterDisabled) {
+      showToast(t("sessionMenuCloneDisabled"), "error");
+      return;
+    }
+    try {
+      const result = await api.forkSession(projectId, actualSessionId, {
+        forkKind: "clone-latest-complete",
+      });
+      showToast(t("sessionCloneCreated"), "success");
+      navigate(
+        `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : t("sessionCloneFailed"),
+        "error",
+      );
+    }
+  }, [
+    actualSessionId,
+    basePath,
+    forkAfterDisabled,
+    navigate,
+    projectId,
+    showToast,
+    t,
+  ]);
   const cancelForkSummaryJob = useCallback(
     async (objectId: string) => {
       const requestSessionId = actualSessionId;
@@ -1214,10 +1301,6 @@ function SessionPageContent({
     },
     [setForkSummaryAutoOpen],
   );
-  const getComposerDraftForAnchors = useCallback(
-    () => draftControlsRef.current?.getDraft() ?? "",
-    [],
-  );
   useEffect(() => {
     for (const object of session?.transcriptDisplayObjects ?? []) {
       if (
@@ -1271,21 +1354,9 @@ function SessionPageContent({
         showToast(t("forkSummaryAttachmentsUnsupported"), "error");
         return false;
       }
-      const resolved = resolveForkAfterAnchor(messageId);
-      if (resolved.pending) {
+      if (forkAfterDisabled) {
         showToast(t("forkAfterTurnPending"), "error");
         return false;
-      }
-      if (!resolved.anchorId) {
-        showToast(t("forkAfterTurnNoAnchor"), "error");
-        return false;
-      }
-      const instructions = (
-        draftControlsRef.current?.getDraft() ?? composerDraftForAnchors
-      ).trim();
-      if (instructions) {
-        void submitForkAfterSummary(messageId, instructions);
-        return true;
       }
       setForkSummaryDraft({
         sourceMessageId: messageId,
@@ -1295,10 +1366,8 @@ function SessionPageContent({
     },
     [
       attachments.length,
-      composerDraftForAnchors,
-      resolveForkAfterAnchor,
+      forkAfterDisabled,
       showToast,
-      submitForkAfterSummary,
       t,
       uploadProgress.length,
     ],
@@ -1319,13 +1388,8 @@ function SessionPageContent({
         showToast(t("forkAfterTurnNoAnchor"), "error");
         return false;
       }
-      const resolved = resolveForkAfterAnchor(firstUserId);
-      if (resolved.pending) {
+      if (forkAfterDisabled) {
         showToast(t("forkAfterTurnPending"), "error");
-        return false;
-      }
-      if (!resolved.anchorId) {
-        showToast(t("forkAfterTurnNoAnchor"), "error");
         return false;
       }
       if (instructions.trim()) {
@@ -1340,8 +1404,8 @@ function SessionPageContent({
     },
     [
       attachments.length,
+      forkAfterDisabled,
       messages,
-      resolveForkAfterAnchor,
       showToast,
       submitForkAfterSummary,
       t,
@@ -1349,67 +1413,12 @@ function SessionPageContent({
     ],
   );
   const forkBeforeUserMessage = useCallback(
-    async (messageId: string) => {
-      const index = messages.findIndex((m) => (m.uuid ?? m.id) === messageId);
-      let anchorId: string | undefined;
-      for (let i = index - 1; i >= 0; i--) {
-        const candidate = messages[i];
-        const candidateId = candidate?.uuid ?? candidate?.id;
-        if (
-          candidateId &&
-          (candidate?.type === "user" || candidate?.type === "assistant")
-        ) {
-          anchorId = candidateId;
-          break;
-        }
-      }
-      if (index < 0 || !anchorId) {
-        showToast(t("forkFromTurnNoAnchor"), "error");
-        return;
-      }
-      // The fork excludes the selected turn (we fork *before* it), so seed the
-      // new session's composer with that turn's text — "branch and retry this
-      // turn" — instead of dropping it. The composer reads this draft key
-      // directly (useDraftPersistence). See topics/fork-from-turn.md.
-      const prefill = turnContentText(messages[index]?.message?.content);
-      try {
-        const result = await api.forkSession(projectId, actualSessionId, {
-          upToMessageId: anchorId,
-        });
-        if (prefill.trim()) {
-          try {
-            saveSessionDraft(
-              {
-                sourceKey: clientSummarySourceKey,
-                sessionId: result.sessionId,
-              },
-              prefill,
-            );
-          } catch {
-            // localStorage unavailable/full — fork still proceeds, just no seed.
-          }
-        }
-        showToast(t("forkFromTurnStarted"), "success");
-        navigate(
-          `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
-        );
-      } catch (err) {
-        showToast(
-          err instanceof Error ? err.message : t("sessionRestartFailed"),
-          "error",
-        );
-      }
-    },
-    [
-      messages,
-      projectId,
-      actualSessionId,
-      navigate,
-      basePath,
-      showToast,
-      t,
-      clientSummarySourceKey,
-    ],
+    (messageId: string) => createDirectTurnFork(messageId, "before-user-turn"),
+    [createDirectTurnFork],
+  );
+  const forkAfterUserMessage = useCallback(
+    (messageId: string) => createDirectTurnFork(messageId, "after-user-turn"),
+    [createDirectTurnFork],
   );
   const copyUserMessage = useCallback(
     (messageId: string) => {
@@ -2053,6 +2062,7 @@ function SessionPageContent({
           owner: "self",
           processId: result.processId,
           permissionMode: result.permissionMode,
+          appliedPermissionMode: result.appliedPermissionMode,
           modeVersion: result.modeVersion,
           recapAfterSeconds: result.recapAfterSeconds,
         });
@@ -2170,6 +2180,7 @@ function SessionPageContent({
             owner: "self",
             processId: result.processId,
             permissionMode: result.permissionMode,
+            appliedPermissionMode: result.appliedPermissionMode,
             modeVersion: result.modeVersion,
             recapAfterSeconds: result.recapAfterSeconds,
           });
@@ -2321,14 +2332,114 @@ function SessionPageContent({
         token: string,
         kind: "command" | "path",
         line: string,
-      ) =>
-        api
-          .fetchBangCompletions(projectId, token, kind, line)
-          .then((result) => result.completions),
+      ) => api.fetchBangCompletions(projectId, token, kind, line),
       history: bangHistory,
     }),
     [projectId, runBangCommand, bangHistory],
   );
+
+  // Incremental across renders: streaming ticks that only churn the assistant
+  // tail cost a pointer-compare walk and return the same entries array.
+  const composerTurnRecallCacheRef = useRef<ComposerTurnRecallCache | null>(
+    null,
+  );
+  if (composerTurnRecallCacheRef.current === null) {
+    composerTurnRecallCacheRef.current = createComposerTurnRecallCache();
+  }
+  const composerTurnRecallCache = composerTurnRecallCacheRef.current;
+  const composerTurnRecallEntries = useMemo(
+    () => composerTurnRecallCache.derive(messages),
+    [composerTurnRecallCache, messages],
+  );
+  // Go-to-turn: the recall drawer row asks to scroll the transcript to a prior
+  // user turn by its render id. Mirror the isearch jump path (which reaches
+  // MessageList.scrollToRenderId) by handing MessageList a bumped request; it
+  // resolves the id via findRenderRow. Token makes repeat jumps to the same id
+  // distinct so the effect re-fires. See topics/composer-recall-drawer.md.
+  const [scrollToTurnRequest, setScrollToTurnRequest] = useState<{
+    id: string;
+    token: number;
+  } | null>(null);
+  const handleGoToRecallTurn = useCallback((id: string) => {
+    if (!id) {
+      return;
+    }
+    setScrollToTurnRequest((previous) => ({
+      id,
+      token: (previous?.token ?? 0) + 1,
+    }));
+  }, []);
+  const composerTurnRecall = useMemo(
+    () => ({
+      entries: composerTurnRecallEntries,
+      onGoToTurn: handleGoToRecallTurn,
+    }),
+    [composerTurnRecallEntries, handleGoToRecallTurn],
+  );
+
+  // Bang-history per-entry actions arrive as navigation state (edit →
+  // composerPrefill, new → focusComposer, jump → scrollToRenderId; see
+  // topics/bang-commands.md § Top-level history view). Read off navState like
+  // initialStatus/initialTitle, but these drive side effects: consumption is
+  // keyed on location.key — one navigation consumes once, while a fresh
+  // navigation to a still-mounted page (route retention) consumes again — and
+  // we clear the consumed fields from history state so Back/refresh does not
+  // replay them. Gated on !loading so the jump target row and the footer
+  // composer are mounted before we act (draftControlsRef is populated during
+  // commit, before this passive effect).
+  const navComposerPrefill = navState?.composerPrefill;
+  const navFocusComposer = navState?.focusComposer;
+  const navScrollToRenderId = navState?.scrollToRenderId;
+  const navActionsConsumedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const navigationKey = location.key ?? "keyless";
+    if (navActionsConsumedKeyRef.current === navigationKey || loading) {
+      return;
+    }
+    if (!navComposerPrefill && !navFocusComposer && !navScrollToRenderId) {
+      return;
+    }
+    navActionsConsumedKeyRef.current = navigationKey;
+
+    if (navComposerPrefill) {
+      draftControlsRef.current?.setDraft(navComposerPrefill);
+      draftControlsRef.current?.focus?.();
+    } else if (navFocusComposer) {
+      draftControlsRef.current?.focus?.();
+    }
+
+    if (navScrollToRenderId) {
+      setScrollToTurnRequest((previous) => ({
+        id: navScrollToRenderId,
+        token: (previous?.token ?? 0) + 1,
+      }));
+    }
+
+    // Drop the consumed action fields; preserve the seed fields (status/title/
+    // model/provider) so an optimistic first render is unaffected.
+    navigate(`${location.pathname}${location.search}`, {
+      replace: true,
+      state: createSessionNavigationState({
+        ...(initialStatus ? { initialStatus } : {}),
+        ...(initialTitle ? { initialTitle } : {}),
+        ...(initialModel ? { initialModel } : {}),
+        ...(initialProvider ? { initialProvider } : {}),
+      }),
+    });
+  }, [
+    loading,
+    navComposerPrefill,
+    navFocusComposer,
+    navScrollToRenderId,
+    navigate,
+    location.key,
+    location.pathname,
+    location.search,
+    initialStatus,
+    initialTitle,
+    initialModel,
+    initialProvider,
+  ]);
 
   const handleQueue = async (
     text: string,
@@ -2472,6 +2583,7 @@ function SessionPageContent({
             owner: "self",
             processId: result.processId,
             permissionMode: result.permissionMode,
+            appliedPermissionMode: result.appliedPermissionMode,
             modeVersion: result.modeVersion,
             recapAfterSeconds: result.recapAfterSeconds,
           });
@@ -2640,6 +2752,15 @@ function SessionPageContent({
     text: string,
     metadata?: MessageSubmissionMetadata,
   ) => queueComposerForProject(text, "new-session", metadata);
+
+  const handleResumeProjectQueueDispatch = useCallback(async () => {
+    try {
+      await projectQueues.resumeDispatch();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      showToast(t("projectQueueResumeFailed", { message: errorMsg }), "error");
+    }
+  }, [projectQueues.resumeDispatch, showToast, t]);
 
   const handleCancelProjectQueueItem = useCallback(
     async (itemId: string) => {
@@ -2889,6 +3010,7 @@ function SessionPageContent({
           owner: "self",
           processId: result.processId,
           permissionMode: result.permissionMode,
+          appliedPermissionMode: result.appliedPermissionMode,
           modeVersion: result.modeVersion,
           recapAfterSeconds: result.recapAfterSeconds,
         });
@@ -2917,6 +3039,7 @@ function SessionPageContent({
           owner: "self",
           processId: result.processId,
           permissionMode: result.permissionMode,
+          appliedPermissionMode: result.appliedPermissionMode,
           modeVersion: result.modeVersion,
           recapAfterSeconds: result.recapAfterSeconds,
         });
@@ -3148,10 +3271,10 @@ function SessionPageContent({
 
   const handleComposerDraftTextChange = useCallback(
     (draft: string, metadata: DraftTextChangeMetadata) => {
-      setComposerDraftForAnchors(draft);
-      setComposerDraftChangeForAnchors(metadata);
+      composerDraftSignal.publishDraftChange(draft, metadata);
+      composerEditAvailabilityStore.setDraftText(draft);
     },
-    [],
+    [composerDraftSignal, composerEditAvailabilityStore],
   );
 
   const insertQuotedSelection = useCallback(
@@ -3180,8 +3303,6 @@ function SessionPageContent({
       if (undoableDraft === null || !controls.replaceDraftRangeUndoably) {
         controls.setDraft(nextDraft);
       }
-      setComposerDraftForAnchors(finalDraft);
-      setComposerDraftChangeForAnchors({ mayAffectQuoteAnchors: true });
       requestAnimationFrame(() => {
         controls.focus?.();
         controls.setSelectionRange?.(finalDraft.length, finalDraft.length);
@@ -3357,16 +3478,24 @@ function SessionPageContent({
   );
 
   const handleToolbarSlashCommand = useCallback(
-    (command: string) => {
-      const bare = command.startsWith("/") ? command.slice(1) : command;
-      if (handleCustomCommand(bare)) {
+    (command: SlashCommand) => {
+      const bare = normalizeSlashCommandForMatch(command.name);
+      if (
+        command.invocation?.kind === "emulated" &&
+        handleCustomCommand(bare)
+      ) {
         return;
       }
       const controls = draftControlsRef.current;
       if (!controls) {
         return;
       }
-      controls.setDraft(appendSlashCommandDraft(controls.getDraft(), bare));
+      controls.setDraft(
+        appendSlashCommandDraft(
+          controls.getDraft(),
+          getCanonicalInvocationToken(command),
+        ),
+      );
     },
     [handleCustomCommand],
   );
@@ -4236,6 +4365,18 @@ function SessionPageContent({
     </svg>
   );
 
+  const liveSourceReviewThinking = parseThinkingConfig(
+    liveModelConfig?.thinking,
+  );
+  const sourceReviewModelSettings = liveSourceReviewThinking
+    ? {
+        thinking: liveSourceReviewThinking,
+        effort: isEffortLevel(liveModelConfig?.effort)
+          ? liveModelConfig.effort
+          : undefined,
+      }
+    : thinkingOptionToConfig(getThinkingSetting());
+
   return (
     <MainContent isWideScreen={isWideScreen}>
       <header className="session-header">
@@ -4596,6 +4737,8 @@ function SessionPageContent({
                       ? handleGenerateAndApplyTitle
                       : undefined
                   }
+                  onClone={supportsForkFromTurn ? cloneSession : undefined}
+                  cloneDisabled={forkAfterDisabled}
                   onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
                   onConfigureRecaps={
                     status.owner === "self"
@@ -4838,6 +4981,7 @@ function SessionPageContent({
               owner: "self",
               processId: result.processId,
               permissionMode: result.permissionMode,
+              appliedPermissionMode: result.appliedPermissionMode,
               modeVersion: result.modeVersion,
               recapAfterSeconds: result.recapAfterSeconds,
             });
@@ -4857,8 +5001,9 @@ function SessionPageContent({
           currentModel={liveBadgeModel}
           mode={permissionMode}
           thinking={getThinkingSetting()}
-          promptSuggestionMode={liveModelConfig?.promptSuggestionMode}
           executor={session?.executor}
+          project={projects.find((candidate) => candidate.id === projectId)}
+          providerRuntimeStatus={providerRuntimeStatus}
           onRestarted={(result, options) => {
             setShowHandoffModal(false);
             showToast(t("sessionHandoffStarted"), "success");
@@ -4878,6 +5023,7 @@ function SessionPageContent({
                   owner: "self",
                   processId: result.processId,
                   permissionMode: result.permissionMode,
+                  appliedPermissionMode: result.appliedPermissionMode,
                   modeVersion: result.modeVersion,
                   recapAfterSeconds: result.recapAfterSeconds,
                 },
@@ -4928,6 +5074,11 @@ function SessionPageContent({
               projectId={projectId}
               projectPath={project?.path ?? null}
               sessionId={sessionId}
+              sessionTitle={displayTitle}
+              provider={effectiveProvider}
+              model={liveModelConfig?.requestedModel ?? liveBadgeModel}
+              thinking={sourceReviewModelSettings.thinking}
+              effort={sourceReviewModelSettings.effort}
             >
               <AgentContentProvider
                 agentContent={agentContent}
@@ -4943,9 +5094,16 @@ function SessionPageContent({
                   isProcessing={sessionActivityUi.showProcessingIndicator}
                   isCompacting={isCompacting}
                   scrollTrigger={scrollTrigger}
+                  scrollToTurnRequest={scrollToTurnRequest}
                   pendingMessages={pendingMessages}
                   deferredMessages={deferredMessages}
                   projectQueueMessages={inlineProjectQueueMessages}
+                  projectQueueDispatchPaused={
+                    projectQueues.dispatchState.status === "paused"
+                  }
+                  projectQueueDispatchMutating={
+                    projectQueues.mutatingDispatchState
+                  }
                   btwAsides={historyBtwAsides}
                   onFocusBtwAside={setFocusedBtwAsideId}
                   onDoneBtwAside={handleDoneBtwAside}
@@ -4953,14 +5111,8 @@ function SessionPageContent({
                   onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
                   onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
                   onQuoteSelection={insertQuotedSelection}
-                  getComposerDraft={getComposerDraftForAnchors}
-                  composerDraft={composerDraftForAnchors}
-                  composerDraftChange={composerDraftChangeForAnchors}
-                  canEditQueuedMessages={
-                    composerDraftForAnchors.trim().length === 0 &&
-                    attachments.length === 0 &&
-                    uploadProgress.length === 0
-                  }
+                  composerDraftSignal={composerDraftSignal}
+                  composerEditAvailabilityStore={composerEditAvailabilityStore}
                   quoteClearSignal={quoteClearSignal}
                   onCancelDeferred={handleCancelDeferred}
                   onEditDeferred={handleEditDeferred}
@@ -4974,14 +5126,21 @@ function SessionPageContent({
                   onCancelProjectQueueMessage={handleCancelProjectQueueItem}
                   onEditProjectQueueMessage={handleEditProjectQueueItem}
                   onSteerProjectQueueMessage={handleSteerProjectQueueItem}
+                  onResumeProjectQueueDispatch={
+                    handleResumeProjectQueueDispatch
+                  }
                   onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
                   onTrimBeforeUserMessage={trimClientFromUserMessage}
                   onForkBeforeUserMessage={
                     supportsForkFromTurn ? forkBeforeUserMessage : undefined
                   }
                   onForkAfterUserMessage={
+                    supportsForkFromTurn ? forkAfterUserMessage : undefined
+                  }
+                  onForkAfterSummaryUserMessage={
                     supportsForkFromTurn ? beginForkAfterSummary : undefined
                   }
+                  forkAfterUserMessageDisabled={forkAfterDisabled}
                   onCopyUserMessage={copyUserMessage}
                   markdownAugments={markdownAugments}
                   activeToolApproval={activeToolApproval}
@@ -4995,6 +5154,7 @@ function SessionPageContent({
                     sessionLoadingProgressDetailsVisible
                   }
                   progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                  conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
                   initialScrollSnapshot={initialScrollSnapshot}
                   onScrollSnapshotChange={updateRouteScrollSnapshot}
                   onFollowingBottomChange={updateActiveWindowFollowingBottom}
@@ -5088,6 +5248,10 @@ function SessionPageContent({
                   <MessageInputToolbar
                     mode={permissionMode}
                     onModeChange={setPermissionMode}
+                    modeChangesApplyNextTurn={
+                      effectiveProvider === "codex" && shouldDeferMessages
+                    }
+                    modeChangePending={codexPermissionModeChangePending}
                     supportsPermissionMode={supportsPermissionMode}
                     supportsThinkingToggle={supportsThinkingToggle}
                     slashCommands={allSlashCommands}
@@ -5175,6 +5339,10 @@ function SessionPageContent({
                 }
                 mode={permissionMode}
                 onModeChange={setPermissionMode}
+                modeChangesApplyNextTurn={
+                  effectiveProvider === "codex" && shouldDeferMessages
+                }
+                modeChangePending={codexPermissionModeChangePending}
                 supportsPermissionMode={supportsPermissionMode}
                 supportsThinkingToggle={supportsThinkingToggle}
                 supportsSteering={generallySupportsSteering}
@@ -5195,10 +5363,11 @@ function SessionPageContent({
                 onDraftControlsReady={handleDraftControlsReady}
                 onDraftTextChange={handleComposerDraftTextChange}
                 bangSupport={
-                  mainComposerForAside || !bangCommandsEnabled
+                  mainComposerForAside || !bangCommandsSupported
                     ? undefined
                     : composerBangSupport
                 }
+                turnRecall={composerTurnRecall}
                 correctionActive={
                   !mainComposerForAside && correctionDraft !== null
                 }

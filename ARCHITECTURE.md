@@ -35,6 +35,10 @@ linked docs when the details change.
   one-source-at-a-time UI.
 - **Relay** (optional) is a dumb pipe carrying NaCl-encrypted frames between
   client and server when neither has a routable address to the other.
+- **Push broker** (optional, native-app path) is a separate Hono/SQLite service
+  under `packages/push-broker/`. It stores revocable device-delivery
+  capabilities and submits bounded generic notifications through an injected
+  provider. It is not part of provider session routing or the encrypted relay.
 
 Single-user / small-team scale is assumed throughout — see the cleanups
 section below for what would have to change at higher fan-out.
@@ -51,6 +55,14 @@ section below for what would have to change at higher fan-out.
   — vision for explicit per-source client runtimes so local/direct/relay YA
   servers can own their API transport, activity stream, summary stores, and
   session-detail services without hidden current-source globals.
+- [`topics/federated-super-sessions.md`](topics/federated-super-sessions.md)
+  — proposal for one canonical, single-writer YA session that can transfer a
+  provider-specific portable bundle and active ownership between trusted YA
+  peers while the client follows the same session identity.
+- [`topics/cross-host-delegation.md`](topics/cross-host-delegation.md) — broad
+  product direction for browser-known hosts, directed server-to-server grants,
+  and separate native worker sessions as a useful step before session
+  migration.
 - [`topics/session-id-remap.md`](topics/session-id-remap.md) — problem
   statement for startup-time temporary session IDs that later canonicalize,
   including the activity event and client summary-store merge shape needed to
@@ -58,6 +70,9 @@ section below for what would have to change at higher fan-out.
 - [`topics/source-transport.md`](topics/source-transport.md) — proposal for a
   source-bound transport facade that makes localhost, plain multiplex
   WebSocket, and secure/relay modes explicit without hiding channel status.
+- [`topics/relay-client-mux.md`](topics/relay-client-mux.md) — compatibility-
+  gated optional transport carrying several independently authenticated YA host
+  circuits over one browser-to-relay WebSocket while preserving `/ws`.
 - [`topics/session-detail-data-layer.md`](topics/session-detail-data-layer.md)
   — lower-level vision for a canonical client session-detail data layer
   between provider stream/REST inputs and transcript DOM rendering; see the
@@ -84,11 +99,19 @@ section below for what would have to change at higher fan-out.
 - [`docs/project/ws-auth-state-model.md`](docs/project/ws-auth-state-model.md)
   — admission policy (`local_unrestricted` / `local_cookie_trusted` /
   `srp_required`) and the SRP transport state machine.
+- [`topics/active-content-security.md`](topics/active-content-security.md) —
+  confirmed browser-assisted privilege path from same-origin agent-authored
+  HTML, the source-first active-file contract, and the isolated-origin
+  requirement for executable project applications.
 - [`docs/project/2026-01-05-server-side-rendering.md`](docs/project/2026-01-05-server-side-rendering.md)
   — server-rendered markdown / diff / file-highlight augments that the client
   consumes through the streaming path.
 - [`docs/project/relay-design.md`](docs/project/relay-design.md) — the
   end-to-end-encrypted relay; the "dumb pipe" contract.
+- [`topics/android-fcm-push.md`](topics/android-fcm-push.md) — approved
+  direction and current credential-free service contract for native Android
+  notification subscriptions, the hosted FCM push broker, privacy modes, and
+  deliberately deferred registration-lifecycle details.
 
 ## Bespoke vs. standard — and what to learn from it
 

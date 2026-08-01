@@ -11,7 +11,10 @@ See also:
 [vanilla-defaults](vanilla-defaults.md) (novel user-visible behavior ships
 configurable + default-off — governs whether an option is even default-on),
 [fork-from-turn](fork-from-turn.md) (the worked example below: fork-after-summary
-auto-open).
+auto-open),
+[settings-search](settings-search.md) (how options are found: the shared
+`SettingsItem`/`SettingsSection` row layer every pane's rows should use so
+they stay searchable).
 
 ## Persistence mechanisms (pick one deliberately)
 
@@ -83,6 +86,13 @@ conceptually adjusting*, not where the code lives):
   new session. `ModelSettings.tsx` hosts `newSessionDefaults`; `showThinking`
   (browser-local, with a live toolbar toggle) lives in this cluster via
   `useModelSettings`.
+- **Providers** — provider-specific availability, authentication, and catalog
+  policy. Opting exact previous/custom Claude ids into the server's available
+  model catalog belongs in `ProvidersSettings.tsx`, even though the resulting
+  entries later appear in model choosers. It is server-persisted and
+  capability-gated because a hosted client edits the connected server's
+  provider catalog; see
+  [older-claude-models](older-claude-models.md).
 
 Introduce a **new category** only when a sizable cluster of options doesn't fit
 an existing one; a single niche toggle joins the nearest existing category.

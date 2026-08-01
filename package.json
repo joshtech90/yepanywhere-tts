@@ -16,6 +16,14 @@
     "i18n:missing": "node scripts/report-i18n-missing.mjs",
     "i18n:prune": "node scripts/prune-i18n-placeholders.mjs --write",
     "i18n:scan": "node scripts/find-raw-i18n-copy.mjs",
+    "agent:monitor": "node scripts/monitor-agent-process.mjs",
+    "css:check": "node scripts/check-css-architecture.mjs",
+    "css:health": "tsx scripts/css-health.ts",
+    "css:inventory": "tsx scripts/css-inventory.ts",
+    "css:modules:check": "tsx scripts/find-unused-css.ts --modules-check",
+    "css:touched": "tsx scripts/report-touched-css.ts",
+    "css:unused": "tsx scripts/find-unused-css.ts",
+    "capabilities:audit": "tsx scripts/audit-server-capabilities.ts",
     "console:scan": "node scripts/find-console-chatter.mjs",
     "console:volume": "node scripts/report-client-log-volume.mjs",
     "dev": "node scripts/dev.js",
@@ -39,15 +47,16 @@
     "test:e2e:sdk:real": "pnpm --filter server test:e2e:real",
     "test:e2e:sdk:local": "pnpm --filter server test:e2e:local",
     "test:e2e:sdk:local:quality": "pnpm --filter server test:e2e:local:quality",
-    "lint": "node scripts/biome.cjs lint .",
+    "lint": "node scripts/check-css-architecture.mjs && pnpm css:modules:check && node scripts/biome.cjs lint .",
     "format": "node scripts/biome.cjs format --write .",
     "prepare": "husky",
     "site:dev": "node scripts/run-site-npm.mjs dev",
     "site:build": "node scripts/run-site-npm.mjs build"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.16",
+    "@biomejs/biome": "2.5.6",
     "husky": "^9.1.7",
+    "postcss": "^8.5.23",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
@@ -55,19 +64,29 @@
   "engines": {
     "node": ">=20.12"
   },
+  "pnpm": {
+    "overrides": {
+      "bn.js": "5.2.3",
+      "fast-uri": "3.1.4",
+      "postcss": "^8.5.23"
+    }
+  },
   "yepAnywhere": {
     "codexCli": {
       "expectedVersion": "0.145.0",
       "compatibleThroughVersion": "0.145.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.218",
-      "claudeAgentSdkVersion": "0.3.218"
+      "compatibleThroughVersion": "2.1.220",
+      "claudeAgentSdkVersion": "0.3.220"
+    },
+    "piCli": {
+      "compatibleThroughVersion": "0.82.1"
     }
   },
   "dependencies": {
     "tssrp6a": "^3.0.0",
     "tweetnacl": "^1.0.3"
   },
-  "version": "0.6.2"
+  "version": "0.7.0"
 }

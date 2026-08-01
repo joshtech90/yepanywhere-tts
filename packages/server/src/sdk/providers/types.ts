@@ -3,9 +3,11 @@ import type {
   ModelInfo,
   PermissionMode,
   PromptCacheKeepaliveProviderInfo,
+  ProviderSubscriptionUsage,
   SlashCommand,
 } from "@yep-anywhere/shared";
 import type { MessageQueue } from "../messageQueue.js";
+import type { SessionSandboxRuntime } from "../../session-sandbox.js";
 import type {
   CanUseTool,
   ProviderActivitySnapshot,
@@ -25,6 +27,7 @@ import type {
  */
 export type ProviderName =
   | "claude"
+  | "claude-gateway"
   | "claude-ollama"
   | "codex"
   | "codex-oss"
@@ -33,6 +36,23 @@ export type ProviderName =
   | "grok"
   | "opencode"
   | "pi";
+
+/**
+ * Provider-native address of a completed transcript prefix. These identities
+ * stay on the server; browser-facing message and session ids remain YA ids.
+ */
+export type ProviderForkBoundary =
+  | {
+      kind: "message";
+      provider: "claude" | "claude-gateway" | "claude-ollama";
+      messageId: string;
+    }
+  | {
+      kind: "turn";
+      provider: "codex" | "codex-oss";
+      turnId: string;
+    }
+  | { kind: "entry"; provider: "pi"; entryId: string };
 
 /**
  * Authentication status for a provider.
@@ -84,6 +104,17 @@ export interface StartSessionOptions {
   thinking?: import("@yep-anywhere/shared").ThinkingConfig;
   /** Effort level for response quality (undefined = SDK default) */
   effort?: import("@yep-anywhere/shared").EffortLevel;
+  /**
+   * Explicit automatic-compaction threshold in total active-context tokens.
+   * Omitted means the provider's own default; only providers advertising
+   * supportsNativeCompactThreshold consume this.
+   */
+  compactAtContextTokenLimit?: number;
+  /**
+   * Launch-time percentage override for the provider's own auto-compaction
+   * window. Omitted means the provider's environment/default is unchanged.
+   */
+  launchCompactPercentOverride?: number;
   /** Tool approval callback */
   onToolApproval?: CanUseTool;
   /** SSH host for remote execution (undefined = local) */
@@ -94,6 +125,8 @@ export interface StartSessionOptions {
   globalInstructions?: string;
   /** Native prompt-suggestion protocol opt-in for providers that support it. */
   promptSuggestions?: boolean;
+  /** Called after a provider applies this mode at a policy boundary. */
+  onPermissionModeApplied?: (mode: PermissionMode) => void;
   /**
    * Whether live provider deltas currently have an active consumer.
    * Providers that can skip expensive transient delta work should treat
@@ -102,6 +135,8 @@ export interface StartSessionOptions {
   shouldEmitLiveDeltas?: () => boolean;
   /** Called when provider-owned retention evidence changes. */
   onProviderRetentionChange?: () => void;
+  /** Prepared YA host sandbox applied to every provider child for this session. */
+  sessionSandbox?: SessionSandboxRuntime;
 }
 
 /**
@@ -231,6 +266,16 @@ export interface AgentProvider {
    */
   readonly supportsNativePromptSuggestions?: boolean;
   /**
+   * Whether this provider accepts a token threshold for automatic compaction.
+   * Optional; absent means YA must orchestrate configured thresholds itself.
+   */
+  readonly supportsNativeCompactThreshold?: boolean;
+  /**
+   * Whether this provider accepts a launch-time percentage override for its
+   * own automatic-compaction window.
+   */
+  readonly supportsLaunchCompactPercentOverride?: boolean;
+  /**
    * Prompt-cache keepalive capability. Absence means YA must not show or
    * schedule keepalive for this provider.
    */
@@ -266,6 +311,27 @@ export interface AgentProvider {
    * For cloud providers (Claude, Gemini), this returns a static list.
    */
   getAvailableModels(): Promise<ModelInfo[]>;
+
+  /**
+   * Read account/subscription quota windows without creating a provider turn.
+   * Absence means the provider has no supported read path; null means the
+   * current account/auth mode has no subscription usage to report.
+   */
+  getSubscriptionUsage?(
+    models: readonly ModelInfo[],
+  ): Promise<ProviderSubscriptionUsage | null>;
+
+  /**
+   * Server-maintained choices users may opt into separately from the primary
+   * provider catalog. Absence means the provider has no such settings surface.
+   */
+  getAdditionalModelOptions?(): ModelInfo[];
+
+  /**
+   * Synchronous key for settings-dependent model projection. Provider-route
+   * caches are reused only while this key remains unchanged.
+   */
+  getModelCatalogCacheKey?(): string;
 
   /**
    * Map a provider-reported model id (e.g. "claude-opus-4-8") back to a YA model
@@ -305,8 +371,12 @@ export interface AgentProvider {
     cwd: string;
     /** Slice transcript up to this message UUID (inclusive); omit for full copy. */
     upToMessageId?: string;
+    /** Typed provider boundary used by server-resolved fork intents. */
+    boundary?: ProviderForkBoundary;
     /** Title for the forked session. */
     title?: string;
+    /** Project-private provider state and process confinement inherited by the fork. */
+    sessionSandbox?: SessionSandboxRuntime;
   }) => Promise<{ sessionId: string }>;
 }
 
@@ -326,6 +396,8 @@ export type SummaryGenerationRequest =
       cwd: string;
       /** Cancels the helper query when the request is abandoned. */
       signal?: AbortSignal;
+      /** Shared project-private provider state inherited from the source. */
+      sessionSandbox?: SessionSandboxRuntime;
     }
   | {
       purpose: "fork-after-summary";
@@ -342,6 +414,8 @@ export type SummaryGenerationRequest =
       instructions?: string;
       /** Cancels the helper query when the server-owned job is cancelled. */
       signal?: AbortSignal;
+      /** Shared project-private provider state inherited from the source. */
+      sessionSandbox?: SessionSandboxRuntime;
     }
   | {
       purpose: "session-retitle";
@@ -356,6 +430,8 @@ export type SummaryGenerationRequest =
       lengthTarget?: number;
       /** Cancels the helper query when the request is abandoned. */
       signal?: AbortSignal;
+      /** Shared project-private provider state inherited from the source. */
+      sessionSandbox?: SessionSandboxRuntime;
     };
 
 export interface SummaryGenerationResult {

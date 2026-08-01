@@ -1,11 +1,17 @@
-import type { ProviderInfo, ProviderName } from "@yep-anywhere/shared";
+import type {
+  ProviderInfo,
+  ProviderName,
+  ProviderSubscriptionUsage,
+} from "@yep-anywhere/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { detectDesktopProviderApplication } from "../desktop/providerDetection.js";
 import { getAllProviders } from "../sdk/providers/index.js";
 import type { AgentProvider } from "../sdk/providers/types.js";
 import type { ModelInfoService } from "../services/ModelInfoService.js";
 
 const PROVIDER_INFO_CACHE_TTL_MS = 5 * 60_000;
+const PROVIDER_USAGE_CACHE_TTL_MS = 60_000;
 
 interface ProviderRouteDeps {
   modelInfoService?: ModelInfoService;
@@ -15,12 +21,20 @@ interface ProviderRouteDeps {
   providers?: AgentProvider[];
   /** Provider info cache TTL in ms. */
   cacheTtlMs?: number;
+  /** Provider subscription usage cache TTL in ms. */
+  usageCacheTtlMs?: number;
+  /** Whether this route belongs to the bundled desktop runtime. */
+  desktopRuntime?: boolean;
+  /** Injectable coarse application detector for desktop route tests. */
+  applicationDetector?: (provider: ProviderName) => boolean;
 }
 
 interface ProviderInfoCacheEntry {
   expiresAt: number;
+  catalogCacheKey?: string;
   value?: ProviderInfo;
   inFlight?: Promise<ProviderInfo>;
+  inFlightCatalogCacheKey?: string;
 }
 
 function getProviderImageSizing(
@@ -28,6 +42,7 @@ function getProviderImageSizing(
 ): ProviderInfo["imageSizing"] {
   switch (providerName) {
     case "claude":
+    case "claude-gateway":
     case "claude-ollama":
       return {
         defaultLongEdgePx: 1568,
@@ -55,7 +70,29 @@ function getProviderImageSizing(
 export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
   const routes = new Hono();
   const cache = new Map<ProviderName, ProviderInfoCacheEntry>();
+  const usageCache = new Map<
+    ProviderName,
+    {
+      expiresAt: number;
+      value: ProviderSubscriptionUsage | null;
+    }
+  >();
+  const usageRequests = new Map<
+    ProviderName,
+    Promise<ProviderSubscriptionUsage | null>
+  >();
   const cacheTtlMs = deps.cacheTtlMs ?? PROVIDER_INFO_CACHE_TTL_MS;
+  const usageCacheTtlMs = deps.usageCacheTtlMs ?? PROVIDER_USAGE_CACHE_TTL_MS;
+  const getExposedProviders = (): AgentProvider[] => {
+    const providers = deps.providers ?? getAllProviders();
+    if (!deps.enabledProviders || deps.enabledProviders.length === 0) {
+      return providers;
+    }
+    const enabled = new Set(deps.enabledProviders);
+    return providers.filter((provider) => enabled.has(provider.name));
+  };
+  const getExposedProvider = (name: string): AgentProvider | undefined =>
+    getExposedProviders().find((provider) => provider.name === name);
 
   const getProviderInfo = async (
     provider: AgentProvider,
@@ -64,10 +101,19 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
     const providerName = provider.name as ProviderName;
     const now = Date.now();
     const cached = cache.get(providerName);
-    if (!forceRefresh && cached?.value && cached.expiresAt > now) {
+    const catalogCacheKey = provider.getModelCatalogCacheKey?.();
+    if (
+      !forceRefresh &&
+      cached?.value &&
+      cached.expiresAt > now &&
+      cached.catalogCacheKey === catalogCacheKey
+    ) {
       return cached.value;
     }
-    if (cached?.inFlight) {
+    if (
+      cached?.inFlight &&
+      cached.inFlightCatalogCacheKey === catalogCacheKey
+    ) {
       return cached.inFlight;
     }
 
@@ -81,12 +127,21 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
         name: provider.name,
         displayName: provider.displayName,
         installed: authStatus.installed,
+        ...(deps.desktopRuntime &&
+        (providerName === "claude" || providerName === "codex")
+          ? {
+              applicationDetected: (
+                deps.applicationDetector ?? detectDesktopProviderApplication
+              )(providerName),
+            }
+          : {}),
         authenticated: authStatus.authenticated,
         enabled: authStatus.enabled,
         expiresAt: authStatus.expiresAt?.toISOString(),
         user: authStatus.user,
         loginCommand: authStatus.loginCommand,
         models,
+        additionalModelOptions: provider.getAdditionalModelOptions?.(),
         imageSizing: getProviderImageSizing(provider.name),
         supportsPermissionMode: provider.supportsPermissionMode,
         supportsThinkingToggle: provider.supportsThinkingToggle,
@@ -97,6 +152,10 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
         supportsNativeRecaps: provider.supportsNativeRecaps,
         supportsNativePromptSuggestions:
           provider.supportsNativePromptSuggestions,
+        supportsNativeCompactThreshold:
+          provider.supportsNativeCompactThreshold,
+        supportsLaunchCompactPercentOverride:
+          provider.supportsLaunchCompactPercentOverride,
         promptCacheKeepalive: provider.promptCacheKeepalive,
         supportsForkSession: typeof provider.forkSession === "function",
       } satisfies ProviderInfo;
@@ -104,8 +163,10 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
 
     cache.set(providerName, {
       expiresAt: cached?.expiresAt ?? 0,
+      catalogCacheKey: cached?.catalogCacheKey,
       value: forceRefresh ? undefined : cached?.value,
       inFlight,
+      inFlightCatalogCacheKey: catalogCacheKey,
     });
 
     try {
@@ -113,6 +174,7 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
       cache.set(providerName, {
         value,
         expiresAt: Date.now() + cacheTtlMs,
+        catalogCacheKey,
       });
       return value;
     } catch (error) {
@@ -126,27 +188,80 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
     c.req.query("refresh") === "1" ||
     c.req.header("cache-control")?.toLowerCase().includes("no-cache") === true;
 
+  const getSubscriptionUsage = async (
+    provider: AgentProvider,
+    forceRefresh: boolean,
+  ): Promise<ProviderSubscriptionUsage | null> => {
+    const readSubscriptionUsage = provider.getSubscriptionUsage;
+    if (!readSubscriptionUsage) return null;
+    const providerName = provider.name as ProviderName;
+    const cached = usageCache.get(providerName);
+    if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+    const pending = usageRequests.get(providerName);
+    if (!forceRefresh && pending) return pending;
+
+    const request = (async () => {
+      const providerInfo = await getProviderInfo(provider, false);
+      if (!providerInfo.authenticated) return null;
+      try {
+        return await readSubscriptionUsage.call(
+          provider,
+          providerInfo.models ?? [],
+        );
+      } catch {
+        return null;
+      }
+    })();
+    usageRequests.set(providerName, request);
+    try {
+      const value = await request;
+      if (usageRequests.get(providerName) === request) {
+        usageCache.set(providerName, {
+          value,
+          expiresAt: Date.now() + usageCacheTtlMs,
+        });
+      }
+      return value;
+    } finally {
+      if (usageRequests.get(providerName) === request) {
+        usageRequests.delete(providerName);
+      }
+    }
+  };
+
   // GET /api/providers - Get all available providers with auth status and models
   routes.get("/", async (c) => {
     const forceRefresh = isRefreshRequest(c);
-    let providers = deps.providers ?? getAllProviders();
-    if (deps.enabledProviders && deps.enabledProviders.length > 0) {
-      const enabled = new Set(deps.enabledProviders);
-      providers = providers.filter((p) => enabled.has(p.name));
-    }
     const providerInfos: ProviderInfo[] = await Promise.all(
-      providers.map((provider) => getProviderInfo(provider, forceRefresh)),
+      getExposedProviders().map((provider) =>
+        getProviderInfo(provider, forceRefresh),
+      ),
     );
 
     return c.json({ providers: providerInfos });
+  });
+
+  // GET /api/providers/:name/subscription-usage - normalized account limits
+  routes.get("/:name/subscription-usage", async (c) => {
+    const forceRefresh = isRefreshRequest(c);
+    const name = c.req.param("name");
+    const provider = getExposedProvider(name);
+
+    if (!provider) {
+      return c.json({ error: "Provider not found" }, 404);
+    }
+
+    const usage = await getSubscriptionUsage(provider, forceRefresh);
+    return c.json({ usage });
   });
 
   // GET /api/providers/:name - Get specific provider status with models
   routes.get("/:name", async (c) => {
     const forceRefresh = isRefreshRequest(c);
     const name = c.req.param("name");
-    const providers = deps.providers ?? getAllProviders();
-    const provider = providers.find((p) => p.name === name);
+    const provider = getExposedProvider(name);
 
     if (!provider) {
       return c.json({ error: "Provider not found" }, 404);

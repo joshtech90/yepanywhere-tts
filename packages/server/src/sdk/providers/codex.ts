@@ -9,8 +9,14 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import {
   CODEX_TOOL_CORRELATION_FIELD,
+  canonicalInvocationName,
+  canonicalizeSkillInvocations,
   createCodexToolCorrelation,
+  hasInvocationCandidate,
   type ModelInfo,
+  type PermissionMode,
+  type ProviderSubscriptionUsage,
+  type SlashCommand,
 } from "@yep-anywhere/shared";
 import {
   isCodexCorrelationDebugEnabled,
@@ -29,6 +35,7 @@ import {
   parseCodexToolArguments,
 } from "../../codex/normalization.js";
 import { getLogger } from "../../logging/logger.js";
+import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
 import { findCodexCliPath, getCodexCliVersion } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
@@ -47,6 +54,9 @@ import type {
   PermissionsRequestApprovalResponse,
   RawResponseItemCompletedNotification,
   SandboxMode as CodexSandboxMode,
+  SkillMetadata,
+  SkillsListParams,
+  SkillsListResponse,
   ThreadForkParams,
   ThreadForkResponse,
   ThreadReadParams,
@@ -72,7 +82,9 @@ import type {
   TurnStartResponse,
   TurnSteerParams,
   TurnSteerResponse,
+  UserInput,
 } from "./codex-protocol/index.js";
+import type { SandboxPolicy as CodexSandboxPolicy } from "./codex-protocol/generated/v2/SandboxPolicy.js";
 import { createAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
 import {
   type AppServerModel,
@@ -80,6 +92,7 @@ import {
   normalizeCodexModelList,
   normalizeSemver,
 } from "./codex-model-catalog.js";
+import { normalizeCodexSubscriptionUsage } from "./provider-subscription-usage.js";
 import {
   asCodexAgentMessageDeltaNotification,
   asCodexCommandExecutionOutputDeltaNotification,
@@ -113,14 +126,15 @@ import type {
   AgentProvider,
   AgentSession,
   AuthStatus,
+  ProviderForkBoundary,
   StartSessionOptions,
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "./types.js";
+import type { SessionSandboxRuntime } from "../../session-sandbox.js";
 
 const log = getLogger().child({ component: "codex-provider" });
-const CODEX_DESKTOP_BROWSER_SKILL_NAME =
-  "browser:control-in-app-browser";
+const CODEX_DESKTOP_BROWSER_SKILL_NAME = "browser:control-in-app-browser";
 
 function logSdkCorrelationDebug(
   sessionId: string,
@@ -173,6 +187,7 @@ function stringifyTraceValue(value: unknown): string {
 
 const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const MODEL_LIST_TIMEOUT_MS = 8000;
+const ACCOUNT_RATE_LIMITS_TIMEOUT_MS = 8000;
 const APP_SERVER_INIT_REQUEST_ID = 1;
 const APP_SERVER_MODEL_LIST_REQUEST_ID = 2;
 const APP_SERVER_SHUTDOWN_GRACE_MS = 1500;
@@ -183,6 +198,26 @@ const CODEX_FAILURE_PREVIEW_CHARS = 240;
 const CODEX_THINKING_OFF_MIN_REASONING_EFFORT_PREFIXES = [
   "gpt-5.3-codex-spark",
 ] as const;
+
+async function withCodexTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 /**
  * Local debug knobs for Codex app-server policy behavior.
@@ -256,8 +291,15 @@ interface TokenUsageSnapshot {
 interface CodexTurnRuntimeState {
   threadId: string;
   activeTurnId: string | null;
+  activePermissionMode: PermissionMode;
+  workspaceWriteSandboxPolicy: CodexSandboxPolicy | null;
   activeToolCallIds: Set<string>;
   backgroundToolCallIds: Set<string>;
+}
+
+interface CodexSessionSkillInventory {
+  skills: SkillMetadata[];
+  stale: boolean;
 }
 
 function isProcessTargetRunning(target: number): boolean {
@@ -575,6 +617,7 @@ class CodexAppServerClient {
     private readonly shouldSuppressNotification?: (
       notification: JsonRpcNotification,
     ) => boolean,
+    private readonly sessionSandbox?: SessionSandboxRuntime,
   ) {}
 
   get isClosed(): boolean {
@@ -597,13 +640,29 @@ class CodexAppServerClient {
       throw new Error("Codex app-server already connected");
     }
 
-    const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
-      cwd: this.cwd,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-      env: this.env,
-      shell: process.platform === "win32",
-    });
+    const commandArgs = ["app-server", "--listen", "stdio://"];
+    const sandboxed = this.sessionSandbox?.wrapSpawn(
+      this.command,
+      commandArgs,
+      this.env,
+    );
+    const child = (() => {
+      try {
+        return spawn(
+          sandboxed?.command ?? this.command,
+          sandboxed?.args ?? commandArgs,
+          {
+            cwd: sandboxed?.cwd ?? this.cwd,
+            detached: process.platform !== "win32",
+            stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
+            env: sandboxed?.env ?? this.env,
+            shell: sandboxed ? false : process.platform === "win32",
+          },
+        );
+      } finally {
+        sandboxed?.release();
+      }
+    })();
 
     this.process = child;
 
@@ -863,6 +922,7 @@ export class CodexProvider implements AgentProvider {
   readonly supportsSteering = true;
   readonly supportsRecaps = true;
   readonly supportsNativePromptSuggestions = false;
+  readonly supportsNativeCompactThreshold = true;
 
   private readonly config: CodexProviderConfig;
   private modelCache: { models: ModelInfo[]; expiresAt: number } | null = null;
@@ -969,6 +1029,19 @@ export class CodexProvider implements AgentProvider {
     };
 
     return models;
+  }
+
+  async getSubscriptionUsage(
+    models: readonly ModelInfo[],
+  ): Promise<ProviderSubscriptionUsage | null> {
+    if (!(await this.isCodexCliInstalled())) return null;
+    try {
+      const rawUsage = await this.requestAppServerRateLimits();
+      return normalizeCodexSubscriptionUsage(rawUsage, models);
+    } catch (error) {
+      log.debug({ error }, "Codex account rate limits are unavailable");
+      return null;
+    }
   }
 
   private async getModelsFromAppServer(): Promise<ModelInfo[]> {
@@ -1132,6 +1205,33 @@ export class CodexProvider implements AgentProvider {
     });
   }
 
+  private async requestAppServerRateLimits(): Promise<unknown> {
+    const appServer = new CodexAppServerClient(
+      await this.resolveCodexCommand(),
+      homedir(),
+      this.getCodexEnv(),
+    );
+    try {
+      return await withCodexTimeout(
+        (async () => {
+          await appServer.connect();
+          await appServer.request<{ userAgent: string }>(
+            "initialize",
+            this.createInitializeParams(false),
+          );
+          appServer.notify("initialized");
+          return await appServer.request<unknown>("account/rateLimits/read");
+        })(),
+        ACCOUNT_RATE_LIMITS_TIMEOUT_MS,
+        "Codex account rate-limit probe",
+      );
+    } finally {
+      await appServer.close().catch((error) => {
+        log.debug({ error }, "Failed to close Codex rate-limit app-server");
+      });
+    }
+  }
+
   private async getFallbackCodexModels(): Promise<ModelInfo[]> {
     const version = await this.getInstalledCodexCliVersion();
     return getFallbackCodexModelsForCliVersion(version);
@@ -1208,6 +1308,37 @@ export class CodexProvider implements AgentProvider {
     });
   }
 
+  private normalizePermissionMode(
+    permissionMode?: StartSessionOptions["permissionMode"],
+  ): PermissionMode {
+    return permissionMode && permissionMode !== "auto"
+      ? permissionMode
+      : "default";
+  }
+
+  private mapThreadSandboxToTurnSandbox(
+    sandbox: CodexSandboxMode,
+    workspaceWriteSandboxPolicy: CodexSandboxPolicy | null = null,
+  ): CodexSandboxPolicy {
+    switch (sandbox) {
+      case "danger-full-access":
+        return { type: "dangerFullAccess" };
+      case "read-only":
+        return { type: "readOnly", networkAccess: false };
+      case "workspace-write":
+        if (workspaceWriteSandboxPolicy?.type === "workspaceWrite") {
+          return workspaceWriteSandboxPolicy;
+        }
+        return {
+          type: "workspaceWrite",
+          writableRoots: [],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        };
+    }
+  }
+
   /**
    * Start a new Codex session.
    */
@@ -1217,6 +1348,10 @@ export class CodexProvider implements AgentProvider {
     const runtimeState: CodexTurnRuntimeState = {
       threadId: options.resumeSessionId ?? "",
       activeTurnId: null,
+      activePermissionMode: this.normalizePermissionMode(
+        options.permissionMode,
+      ),
+      workspaceWriteSandboxPolicy: null,
       activeToolCallIds: new Set(),
       backgroundToolCallIds: new Set(),
     };
@@ -1227,6 +1362,10 @@ export class CodexProvider implements AgentProvider {
     }
 
     let activeClient: CodexAppServerClient | null = null;
+    const skillInventory: CodexSessionSkillInventory = {
+      skills: [],
+      stale: true,
+    };
     const iterator = this.runSession(
       options,
       queue,
@@ -1235,6 +1374,7 @@ export class CodexProvider implements AgentProvider {
       (client) => {
         activeClient = client;
       },
+      skillInventory,
     );
 
     return {
@@ -1255,20 +1395,47 @@ export class CodexProvider implements AgentProvider {
       },
       probeLiveness: async () =>
         this.probeCodexLiveness(activeClient, runtimeState),
-      supportedCommands: async () => [...CODEX_BUILTIN_COMMANDS],
+      supportedCommands: async () => {
+        if (activeClient) {
+          await this.refreshCodexSkills(
+            activeClient,
+            options.cwd,
+            skillInventory,
+            skillInventory.stale,
+          );
+        }
+        return this.createCodexSlashCommands(
+          skillInventory.skills,
+          skillInventory.stale ? "stale" : "current",
+        );
+      },
       steer: async (message) => {
         if (!activeClient) return false;
         if (!runtimeState.threadId || !runtimeState.activeTurnId) return false;
 
-        const userPrompt = this.extractTextFromMessage(message);
+        let userPrompt = this.extractTextFromMessage(message);
         if (!userPrompt) return true;
 
         try {
+          if (hasInvocationCandidate(userPrompt)) {
+            await this.refreshCodexSkills(
+              activeClient,
+              options.cwd,
+              skillInventory,
+              true,
+            );
+          }
+          const prepared = this.createCodexUserInputs(
+            userPrompt,
+            skillInventory.skills,
+            skillInventory.stale ? "stale" : "current",
+          );
+          userPrompt = prepared.text;
           const steerResult = await activeClient.request<TurnSteerResponse>(
             "turn/steer",
             {
               threadId: runtimeState.threadId,
-              input: [{ type: "text", text: userPrompt, text_elements: [] }],
+              input: prepared.input,
               expectedTurnId: runtimeState.activeTurnId,
             } satisfies TurnSteerParams,
           );
@@ -1345,13 +1512,20 @@ export class CodexProvider implements AgentProvider {
     sessionId: string;
     cwd: string;
     upToMessageId?: string;
+    boundary?: ProviderForkBoundary;
     title?: string;
+    sessionSandbox?: SessionSandboxRuntime;
   }): Promise<{ sessionId: string }> {
+    if (options.boundary && options.boundary.kind !== "turn") {
+      throw new Error("Codex fork requires a turn boundary");
+    }
     const codexCommand = await this.resolveCodexCommand();
     const appServer = new CodexAppServerClient(
       codexCommand,
       options.cwd,
       this.getCodexEnv(),
+      undefined,
+      options.sessionSandbox,
     );
     appServer.setServerRequestHandler((request) =>
       this.handleForkServerRequest(request),
@@ -1362,13 +1536,15 @@ export class CodexProvider implements AgentProvider {
       const experimentalApiEnabled = await this.initializeAppServer(appServer);
       appServer.notify("initialized");
 
-      const rollbackCount = options.upToMessageId
-        ? await this.resolveCodexForkRollbackCount(
-            appServer,
-            options.sessionId,
-            options.upToMessageId,
-          )
-        : 0;
+      const rollbackCount = options.boundary
+        ? 0
+        : options.upToMessageId
+          ? await this.resolveCodexForkRollbackCount(
+              appServer,
+              options.sessionId,
+              options.upToMessageId,
+            )
+          : 0;
       const policy = this.mapPermissionModeToThreadPolicy(undefined);
       const fork = await appServer.request<ThreadForkResponse>(
         "thread/fork",
@@ -1390,6 +1566,8 @@ export class CodexProvider implements AgentProvider {
         {
           sourceSessionId: options.sessionId,
           forkSessionId,
+          boundaryTurnId:
+            options.boundary?.kind === "turn" ? options.boundary.turnId : null,
           upToMessageId: options.upToMessageId ?? null,
           rollbackCount,
         },
@@ -1530,6 +1708,7 @@ export class CodexProvider implements AgentProvider {
     signal: AbortSignal,
     runtimeState: CodexTurnRuntimeState,
     setActiveClient: (client: CodexAppServerClient) => void,
+    skillInventory: CodexSessionSkillInventory,
   ): AsyncIterableIterator<SDKMessage> {
     const codexCommand = await this.resolveCodexCommand();
     const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
@@ -1550,6 +1729,7 @@ export class CodexProvider implements AgentProvider {
       codexEnv,
       (notification) =>
         this.shouldSuppressLiveDeltaNotification(notification, options),
+      options.sessionSandbox,
     );
     setActiveClient(appServer);
 
@@ -1565,7 +1745,12 @@ export class CodexProvider implements AgentProvider {
     };
 
     appServer.setServerRequestHandler(async (request) => {
-      return await this.handleServerRequestApproval(request, options, signal);
+      return await this.handleServerRequestApproval(
+        request,
+        options,
+        signal,
+        runtimeState.activePermissionMode,
+      );
     });
 
     try {
@@ -1576,10 +1761,18 @@ export class CodexProvider implements AgentProvider {
         options.clientName,
       );
       appServer.notify("initialized");
+      await this.refreshCodexSkills(
+        appServer,
+        options.cwd,
+        skillInventory,
+        false,
+      );
 
-      const policy = this.mapPermissionModeToThreadPolicy(
+      const initialPermissionMode = this.normalizePermissionMode(
         options.permissionMode,
       );
+      const policy =
+        this.mapPermissionModeToThreadPolicy(initialPermissionMode);
 
       const threadResumeParams = this.createThreadResumeParams(
         options,
@@ -1594,15 +1787,19 @@ export class CodexProvider implements AgentProvider {
         threadStartParams,
         threadResumeParams,
       );
+      options.onPermissionModeApplied?.(initialPermissionMode);
 
       sessionId = threadResult.thread.id;
       agentctlSessionEnvBridge.publishSessionId(sessionId);
       runtimeState.threadId = sessionId;
+      if (threadResult.sandbox?.type === "workspaceWrite") {
+        runtimeState.workspaceWriteSandboxPolicy = threadResult.sandbox;
+      }
       failureTrace.sessionId = sessionId;
       log.info(
         {
           sessionId,
-          permissionMode: options.permissionMode ?? "default",
+          permissionMode: initialPermissionMode,
           approvalPolicy: policy.approvalPolicy,
           sandbox: policy.sandbox,
           policyOverrides: {
@@ -1620,6 +1817,10 @@ export class CodexProvider implements AgentProvider {
         subtype: "init",
         session_id: sessionId,
         cwd: options.cwd,
+        slash_command_inventory: this.createCodexSlashCommands(
+          skillInventory.skills,
+          skillInventory.stale ? "stale" : "current",
+        ),
       } as SDKMessage);
 
       const requestedReasoningEffort = this.mapEffortToReasoningEffort(
@@ -1659,6 +1860,21 @@ export class CodexProvider implements AgentProvider {
           isFirstMessage = false;
         }
 
+        if (hasInvocationCandidate(userPrompt)) {
+          await this.refreshCodexSkills(
+            appServer,
+            options.cwd,
+            skillInventory,
+            true,
+          );
+        }
+        const preparedInput = this.createCodexUserInputs(
+          userPrompt,
+          skillInventory.skills,
+          skillInventory.stale ? "stale" : "current",
+        );
+        userPrompt = preparedInput.text;
+
         // Emit user message with UUID from queue to enable deduplication.
         const userMessage = withCodexTimestamp({
           type: "user",
@@ -1680,21 +1896,24 @@ export class CodexProvider implements AgentProvider {
         };
         yield userMessage;
 
-        const messagePermissionMode =
-          this.getPermissionModeFromMessage(message);
-        const turnPolicy = messagePermissionMode
-          ? this.mapPermissionModeToThreadPolicy(messagePermissionMode)
-          : null;
+        const turnPermissionMode = this.normalizePermissionMode(
+          this.getPermissionModeFromMessage(message) ?? options.permissionMode,
+        );
+        const turnPolicy =
+          this.mapPermissionModeToThreadPolicy(turnPermissionMode);
+        runtimeState.activePermissionMode = turnPermissionMode;
         const turnStartParams = this.createTurnStartParams(
           sessionId,
-          userPrompt,
+          preparedInput.input,
           options,
           turnPolicy,
+          runtimeState.workspaceWriteSandboxPolicy,
         );
         const turnResult = await appServer.request<TurnStartResponse>(
           "turn/start",
           turnStartParams,
         );
+        options.onPermissionModeApplied?.(turnPermissionMode);
 
         const activeTurnId = turnResult.turn.id;
         runtimeState.activeTurnId = activeTurnId;
@@ -1706,6 +1925,9 @@ export class CodexProvider implements AgentProvider {
             sessionId,
             turnId: activeTurnId,
             turnStatus: turnResult.turn.status,
+            permissionMode: turnPermissionMode,
+            approvalPolicy: turnPolicy.approvalPolicy,
+            sandboxPolicy: turnStartParams.sandboxPolicy,
           },
           "Started Codex app-server turn",
         );
@@ -1718,6 +1940,25 @@ export class CodexProvider implements AgentProvider {
             continue;
           }
           logRawNotification(notification);
+          if (notification.method === "skills/changed") {
+            skillInventory.stale = true;
+            await this.refreshCodexSkills(
+              appServer,
+              options.cwd,
+              skillInventory,
+              true,
+            );
+            yield withCodexTimestamp({
+              type: "system",
+              subtype: "commands_changed",
+              session_id: sessionId,
+              slash_command_inventory: this.createCodexSlashCommands(
+                skillInventory.skills,
+                skillInventory.stale ? "stale" : "current",
+              ),
+            } as SDKMessage);
+            continue;
+          }
           const currentActiveTurnId = runtimeState.activeTurnId ?? activeTurnId;
           failureTrace.activeTurnId = currentActiveTurnId;
 
@@ -2039,12 +2280,16 @@ export class CodexProvider implements AgentProvider {
     options: {
       sessionId: string;
       cwd: string;
+      boundary?: ProviderForkBoundary;
     },
     policy: CodexThreadPolicy,
     experimentalApiEnabled = false,
   ): CodexThreadForkParamsForRequest {
     const params: CodexThreadForkParamsForRequest = {
       threadId: options.sessionId,
+      ...(options.boundary?.kind === "turn"
+        ? { lastTurnId: options.boundary.turnId }
+        : {}),
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
       config: this.buildThreadConfigOverrides({}),
@@ -2154,7 +2399,10 @@ export class CodexProvider implements AgentProvider {
   }
 
   private buildThreadConfigOverrides(
-    options: Pick<StartSessionOptions, "effort" | "thinking" | "model">,
+    options: Pick<
+      StartSessionOptions,
+      "compactAtContextTokenLimit" | "effort" | "thinking" | "model"
+    >,
   ): NonNullable<ThreadStartParams["config"]> {
     // The OpenAI browser plugin controls a desktop-owned browser backend that
     // YA's Codex app-server host does not provide. Suppress the unavailable
@@ -2178,35 +2426,160 @@ export class CodexProvider implements AgentProvider {
     if (reasoningEffort) {
       config.model_reasoning_effort = reasoningEffort;
     }
+    if (
+      options.compactAtContextTokenLimit !== undefined &&
+      Number.isFinite(options.compactAtContextTokenLimit) &&
+      options.compactAtContextTokenLimit > 0
+    ) {
+      config.model_auto_compact_token_limit = Math.round(
+        options.compactAtContextTokenLimit,
+      );
+      // The YA setting is explicitly a percentage of the full active context.
+      // Pin the scope so a user's Codex config cannot reinterpret it as growth
+      // after the carried compaction prefix.
+      config.model_auto_compact_token_limit_scope = "total";
+    }
     return config;
+  }
+
+  private createCodexSlashCommands(
+    skills: readonly SkillMetadata[],
+    inventoryState: "current" | "stale" = "current",
+  ): SlashCommand[] {
+    const commands: SlashCommand[] = [...CODEX_BUILTIN_COMMANDS];
+    // Dedup on the exact spelling: Codex recognizes case-distinct skill names
+    // as distinct, so `Foo` and `foo` must both surface rather than collapse.
+    const seenSkills = new Set<string>();
+    for (const skill of skills) {
+      const name = skill.name.trim();
+      if (
+        !skill.enabled ||
+        name === CODEX_DESKTOP_BROWSER_SKILL_NAME ||
+        !name ||
+        seenSkills.has(name)
+      ) {
+        continue;
+      }
+      seenSkills.add(name);
+      commands.push({
+        name,
+        description:
+          skill.interface?.shortDescription ??
+          skill.shortDescription ??
+          skill.description,
+        invocation: { kind: "skill", prefix: "$", inventoryState },
+      });
+    }
+    return commands;
+  }
+
+  private async refreshCodexSkills(
+    appServer: CodexAppServerClient,
+    cwd: string,
+    inventory: CodexSessionSkillInventory,
+    forceReload: boolean,
+  ): Promise<void> {
+    try {
+      const result = await appServer.request<SkillsListResponse>(
+        "skills/list",
+        {
+          cwds: [cwd],
+          forceReload,
+        } satisfies SkillsListParams,
+      );
+      inventory.skills = result.data.flatMap((entry) => entry.skills);
+      inventory.stale = false;
+    } catch (error) {
+      inventory.stale = true;
+      log.debug(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          cwd,
+        },
+        "Codex skill inventory is unavailable",
+      );
+    }
+  }
+
+  private createCodexUserInputs(
+    text: string,
+    skills: readonly SkillMetadata[],
+    inventoryState: "current" | "stale",
+  ): { text: string; input: UserInput[] } {
+    const canonical = canonicalizeSkillInvocations(
+      text,
+      this.createCodexSlashCommands(skills, inventoryState),
+    );
+    // Keyed by `canonicalInvocationName`, which preserves case unlike its
+    // `normalize` sibling, so case-distinct skills keep their own paths.
+    const skillByName = new Map<string, SkillMetadata>();
+    for (const skill of skills) {
+      if (!skill.enabled || skill.name === CODEX_DESKTOP_BROWSER_SKILL_NAME) {
+        continue;
+      }
+      const name = canonicalInvocationName(skill.name);
+      if (name && !skillByName.has(name)) {
+        skillByName.set(name, skill);
+      }
+    }
+    const structuredSkills: UserInput[] = [];
+    const seenPaths = new Set<string>();
+    for (const match of canonical.matches) {
+      const skill = skillByName.get(canonicalInvocationName(match.command.name));
+      if (!skill || seenPaths.has(skill.path)) continue;
+      seenPaths.add(skill.path);
+      structuredSkills.push({
+        type: "skill",
+        name: skill.name,
+        path: skill.path,
+      });
+    }
+    return {
+      text: canonical.text,
+      input: [
+        { type: "text", text: canonical.text, text_elements: [] },
+        ...structuredSkills,
+      ],
+    };
   }
 
   private createTurnStartParams(
     threadId: string,
-    userPrompt: string,
+    input: UserInput[],
     options: StartSessionOptions,
     turnPolicy: CodexThreadPolicy | null = null,
+    workspaceWriteSandboxPolicy: CodexSandboxPolicy | null = null,
   ): TurnStartParams {
     return {
       threadId,
       model: options.model ?? null,
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
-      input: [{ type: "text", text: userPrompt, text_elements: [] }],
+      input,
       effort: this.mapEffortToReasoningEffort(
         options.effort,
         options.thinking,
         options.model,
       ),
       summary: "auto",
-      ...this.buildTurnPermissionParams(turnPolicy),
+      ...this.buildTurnPermissionParams(
+        turnPolicy,
+        workspaceWriteSandboxPolicy,
+      ),
     };
   }
 
   private buildTurnPermissionParams(
     policy: CodexThreadPolicy | null,
-  ): Partial<Pick<TurnStartParams, "approvalPolicy">> {
+    workspaceWriteSandboxPolicy: CodexSandboxPolicy | null = null,
+  ): Partial<Pick<TurnStartParams, "approvalPolicy" | "sandboxPolicy">> {
     if (!policy) return {};
-    return { approvalPolicy: policy.approvalPolicy };
+    return {
+      approvalPolicy: policy.approvalPolicy,
+      sandboxPolicy: this.mapThreadSandboxToTurnSandbox(
+        policy.sandbox,
+        workspaceWriteSandboxPolicy,
+      ),
+    };
   }
 
   /**
@@ -2353,6 +2726,8 @@ export class CodexProvider implements AgentProvider {
       codexCommand,
       request.cwd,
       this.getCodexEnv(),
+      undefined,
+      request.sessionSandbox,
     );
     const abortController = new AbortController();
     let timedOut = false;
@@ -2987,12 +3362,13 @@ export class CodexProvider implements AgentProvider {
     request: JsonRpcServerRequest,
     options: StartSessionOptions,
     signal: AbortSignal,
+    permissionMode = this.normalizePermissionMode(options.permissionMode),
   ): Promise<unknown> {
     log.info(
       {
         method: request.method,
         requestId: request.id,
-        permissionMode: options.permissionMode ?? "default",
+        permissionMode,
       },
       "Codex app-server sent server request",
     );
@@ -3048,6 +3424,7 @@ export class CodexProvider implements AgentProvider {
             signal,
             "accept",
             "decline",
+            permissionMode,
           );
         log.info(
           {
@@ -3105,6 +3482,7 @@ export class CodexProvider implements AgentProvider {
             signal,
             "accept",
             "decline",
+            permissionMode,
           );
         log.info(
           {
@@ -3141,6 +3519,7 @@ export class CodexProvider implements AgentProvider {
           signal,
           "approved",
           "denied",
+          permissionMode,
         );
         log.info(
           {
@@ -3174,6 +3553,7 @@ export class CodexProvider implements AgentProvider {
           signal,
           "approved",
           "denied",
+          permissionMode,
         );
         log.info(
           {
@@ -3207,28 +3587,80 @@ export class CodexProvider implements AgentProvider {
           options,
           permissionParams,
           signal,
+          permissionMode,
         );
       }
 
       case "item/tool/requestUserInput": {
         const requestInput = this.asToolRequestUserInputParams(request.params);
-        const questions = requestInput?.questions ?? [];
-
-        // MVP: return empty answers so request can complete without blocking.
-        const answers: ToolRequestUserInputResponse["answers"] = {};
-        for (const question of questions) {
-          answers[question.id] = { answers: [] };
+        if (!requestInput) {
+          log.warn(
+            {
+              method: request.method,
+              requestId: request.id,
+            },
+            "Codex tool user-input params invalid; returning no answers",
+          );
+          return { answers: {} } satisfies ToolRequestUserInputResponse;
         }
-        log.warn(
+
+        const toolInput = {
+          questions: requestInput.questions.map((question) => ({
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            options: question.options ?? [],
+            multiSelect: false,
+            isOther: question.isOther,
+            isSecret: question.isSecret,
+          })),
+          autoResolutionMs: requestInput.autoResolutionMs,
+          threadId: requestInput.threadId,
+          turnId: requestInput.turnId,
+          itemId: requestInput.itemId,
+        };
+        const result = await this.resolveToolApprovalResult(
+          options,
+          "AskUserQuestion",
+          toolInput,
+          signal,
+          permissionMode,
+        );
+        const updatedInput =
+          result.behavior === "allow" &&
+          result.updatedInput &&
+          typeof result.updatedInput === "object"
+            ? (result.updatedInput as {
+                answers?: Record<string, string | string[]>;
+              })
+            : null;
+        const submittedAnswers = updatedInput?.answers ?? {};
+        const answers: ToolRequestUserInputResponse["answers"] = {};
+        for (const question of requestInput.questions) {
+          const submitted =
+            submittedAnswers[question.id] ??
+            submittedAnswers[question.question];
+          answers[question.id] = {
+            answers: Array.isArray(submitted)
+              ? submitted.filter(
+                  (answer): answer is string => typeof answer === "string",
+                )
+              : typeof submitted === "string"
+                ? [submitted]
+                : [],
+          };
+        }
+        log.info(
           {
             method: request.method,
             requestId: request.id,
-            questionCount: questions.length,
-            threadId: requestInput?.threadId ?? null,
-            turnId: requestInput?.turnId ?? null,
-            itemId: requestInput?.itemId ?? null,
+            questionCount: requestInput.questions.length,
+            threadId: requestInput.threadId,
+            turnId: requestInput.turnId,
+            itemId: requestInput.itemId,
+            behavior: result.behavior,
           },
-          "Codex requested tool user input; returning empty answers in MVP",
+          "Resolved Codex tool user-input request",
         );
         const response: ToolRequestUserInputResponse = { answers };
         return response;
@@ -3251,24 +3683,45 @@ export class CodexProvider implements AgentProvider {
     signal: AbortSignal,
     allowDecision: TDecision,
     denyDecision: TDecision,
+    permissionMode: PermissionMode,
   ): Promise<TDecision> {
+    const result = await this.resolveToolApprovalResult(
+      options,
+      toolName,
+      toolInput,
+      signal,
+      permissionMode,
+    );
+    return result.behavior === "allow" ? allowDecision : denyDecision;
+  }
+
+  private async resolveToolApprovalResult(
+    options: StartSessionOptions,
+    toolName: string,
+    toolInput: unknown,
+    signal: AbortSignal,
+    permissionMode: PermissionMode,
+  ): Promise<ToolApprovalResult> {
     if (!options.onToolApproval) {
       log.warn(
         { toolName },
         "No onToolApproval handler available; denying Codex approval request",
       );
-      return denyDecision;
+      return { behavior: "deny" };
     }
 
     let result: ToolApprovalResult;
     try {
-      result = await options.onToolApproval(toolName, toolInput, { signal });
+      result = await options.onToolApproval(toolName, toolInput, {
+        signal,
+        permissionMode,
+      });
     } catch (error) {
       log.warn(
         { toolName, error },
         "onToolApproval threw; denying Codex approval request",
       );
-      return denyDecision;
+      return { behavior: "deny" };
     }
 
     log.info(
@@ -3276,16 +3729,17 @@ export class CodexProvider implements AgentProvider {
       "Resolved tool approval callback result",
     );
 
-    return result.behavior === "allow" ? allowDecision : denyDecision;
+    return result;
   }
 
   private async resolvePermissionRequestApproval(
     options: StartSessionOptions,
     params: PermissionsRequestApprovalParams,
     signal: AbortSignal,
+    permissionMode: PermissionMode,
   ): Promise<PermissionsRequestApprovalResponse> {
-    if (options.permissionMode === "bypassPermissions") {
-      return this.createGrantedPermissionResponse(params, "session");
+    if (permissionMode === "bypassPermissions") {
+      return this.createGrantedPermissionResponse(params, "turn");
     }
 
     const toolInput = {
@@ -3303,9 +3757,10 @@ export class CodexProvider implements AgentProvider {
       signal,
       "accept",
       "decline",
+      permissionMode,
     );
     return decision === "accept"
-      ? this.createGrantedPermissionResponse(params, "session")
+      ? this.createGrantedPermissionResponse(params, "turn")
       : this.createDeclinedPermissionResponse();
   }
 
@@ -4287,6 +4742,7 @@ export class CodexProvider implements AgentProvider {
           } as SDKMessage,
           observedAt,
         );
+        attachToolResultMediaCandidates(message, normalized.mediaCandidates);
         logSdkCorrelationDebug(sessionId, message, {
           eventKind: "tool_result",
           turnId: params.turnId,
@@ -4411,6 +4867,7 @@ export class CodexProvider implements AgentProvider {
           } as SDKMessage,
           observedAt,
         );
+        attachToolResultMediaCandidates(message, normalized.mediaCandidates);
         logSdkCorrelationDebug(sessionId, message, {
           eventKind: "tool_result",
           turnId: params.turnId,
@@ -5023,6 +5480,9 @@ export class CodexProvider implements AgentProvider {
             } as SDKMessage,
             observedAt,
           );
+          attachToolResultMediaCandidates(toolResultMessage, [
+            { originalPath: item.path },
+          ]);
           logSdkCorrelationDebug(sessionId, toolResultMessage, {
             eventKind: "tool_result",
             turnId,

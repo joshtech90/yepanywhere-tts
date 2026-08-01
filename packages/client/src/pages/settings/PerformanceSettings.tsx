@@ -1,6 +1,11 @@
+import {
+  HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useMemo, useState } from "react";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import { useSessionLoadingProgress } from "../../hooks/useSessionLoadingProgress";
+import { useServerSettings } from "../../hooks/useServerSettings";
 import {
   getLastSessionTranscriptBytes,
   getSessionTranscriptMemoryStats,
@@ -11,8 +16,11 @@ import {
 } from "../../hooks/useSessionPerformanceSettings";
 import { useStableToolPreviewRendering } from "../../hooks/useStableToolPreviewRendering";
 import { useStreamingEnabled } from "../../hooks/useStreamingEnabled";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
+import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 function nearestStopIndex(stops: readonly number[], value: number): number {
@@ -53,6 +61,21 @@ export function PerformanceSettings() {
   } = useSessionPerformanceSettings();
   const { stableToolPreviewRendering, setStableToolPreviewRendering } =
     useStableToolPreviewRendering();
+  const { version } = useVersion();
+  const {
+    settings: serverSettings,
+    isLoading: serverSettingsLoading,
+    error: serverSettingsError,
+    updateSetting: updateServerSetting,
+  } = useServerSettings();
+  const hostProcessObservabilitySupported = serverHasCapability(
+    version,
+    HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
+  );
+  const hostProcessObservabilityEnabled =
+    serverSettings?.hostProcessObservabilityEnabled ?? true;
+  const [savingHostProcessObservability, setSavingHostProcessObservability] =
+    useState(false);
 
   const [budgetDraftIndex, setBudgetDraftIndex] = useState<number | null>(null);
   const [ttlDraftIndex, setTtlDraftIndex] = useState<number | null>(null);
@@ -130,6 +153,19 @@ export function PerformanceSettings() {
     },
     [setSessionTranscriptCacheTtlHours],
   );
+  const setHostProcessObservability = useCallback(
+    async (enabled: boolean) => {
+      setSavingHostProcessObservability(true);
+      try {
+        await updateServerSetting("hostProcessObservabilityEnabled", enabled);
+      } catch {
+        // useServerSettings retains the actionable error for this pane.
+      } finally {
+        setSavingHostProcessObservability(false);
+      }
+    },
+    [updateServerSetting],
+  );
 
   const undoState = useMemo(
     () => ({
@@ -141,6 +177,7 @@ export function PerformanceSettings() {
       sessionTranscriptCacheBudgetMb,
       sessionTranscriptCacheTtlHours,
       stableToolPreviewRendering,
+      hostProcessObservabilityEnabled,
     }),
     [
       streamingEnabled,
@@ -151,6 +188,7 @@ export function PerformanceSettings() {
       sessionTranscriptCacheBudgetMb,
       sessionTranscriptCacheTtlHours,
       stableToolPreviewRendering,
+      hostProcessObservabilityEnabled,
     ],
   );
   const restoreUndoState = useCallback(
@@ -171,6 +209,15 @@ export function PerformanceSettings() {
         snapshot.sessionTranscriptCacheTtlHours,
       );
       setStableToolPreviewRendering(snapshot.stableToolPreviewRendering);
+      if (
+        hostProcessObservabilitySupported &&
+        snapshot.hostProcessObservabilityEnabled !==
+          hostProcessObservabilityEnabled
+      ) {
+        void setHostProcessObservability(
+          snapshot.hostProcessObservabilityEnabled,
+        );
+      }
     },
     [
       setStreamingEnabled,
@@ -181,21 +228,20 @@ export function PerformanceSettings() {
       setSessionTranscriptCacheBudgetMb,
       setSessionTranscriptCacheTtlHours,
       setStableToolPreviewRendering,
+      hostProcessObservabilityEnabled,
+      hostProcessObservabilitySupported,
+      setHostProcessObservability,
     ],
   );
   useSettingsUndoBaseline(undoState, restoreUndoState);
 
   return (
-    <section className="settings-section">
-      <p className="settings-section-description">
-        {t("performanceSectionDescription")}
-      </p>
+    <SettingsSection description={t("performanceSectionDescription")}>
       <div className="settings-group">
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("appearanceStreamingTitle")}</strong>
-            <p>{t("appearanceStreamingDescription")}</p>
-          </div>
+        <SettingsItem
+          label={t("appearanceStreamingTitle")}
+          description={t("appearanceStreamingDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -205,12 +251,11 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("appearanceSessionLoadingProgressTitle")}</strong>
-            <p>{t("appearanceSessionLoadingProgressDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSessionLoadingProgressTitle")}
+          description={t("appearanceSessionLoadingProgressDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -222,12 +267,11 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("performanceKeepRecentSessionMountedTitle")}</strong>
-            <p>{t("performanceKeepRecentSessionMountedDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("performanceKeepRecentSessionMountedTitle")}
+          description={t("performanceKeepRecentSessionMountedDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -239,12 +283,11 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("performanceActiveWindowTrimTitle")}</strong>
-            <p>{t("performanceActiveWindowTrimDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("performanceActiveWindowTrimTitle")}
+          description={t("performanceActiveWindowTrimDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -256,12 +299,11 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("performanceOffscreenTranscriptRenderingTitle")}</strong>
-            <p>{t("performanceOffscreenTranscriptRenderingDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("performanceOffscreenTranscriptRenderingTitle")}
+          description={t("performanceOffscreenTranscriptRenderingDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -275,14 +317,21 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
-        <div className="settings-item settings-item--wide-control">
-          <div className="settings-item-info">
-            <strong>{t("performanceTranscriptCacheTitle")}</strong>
-            <p>{t("performanceTranscriptCacheDescription")}</p>
-            {budgetEquivalent ? <p>{budgetEquivalent}</p> : null}
-            {cacheMemoryUsage ? <p>{cacheMemoryUsage}</p> : null}
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("performanceTranscriptCacheTitle")}
+          description={t("performanceTranscriptCacheDescription")}
+          valueText={budgetLabel}
+          className="settings-item--wide-control"
+          info={
+            <>
+              <strong>{t("performanceTranscriptCacheTitle")}</strong>
+              <p>{t("performanceTranscriptCacheDescription")}</p>
+              {budgetEquivalent ? <p>{budgetEquivalent}</p> : null}
+              {cacheMemoryUsage ? <p>{cacheMemoryUsage}</p> : null}
+            </>
+          }
+        >
           <div className="settings-item-actions">
             <CommittedRangeInput
               min={0}
@@ -295,12 +344,13 @@ export function PerformanceSettings() {
             />
             <span className="settings-input-unit">{budgetLabel}</span>
           </div>
-        </div>
-        <div className="settings-item settings-item--wide-control">
-          <div className="settings-item-info">
-            <strong>{t("performanceTranscriptCacheTtlTitle")}</strong>
-            <p>{t("performanceTranscriptCacheTtlDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("performanceTranscriptCacheTtlTitle")}
+          description={t("performanceTranscriptCacheTtlDescription")}
+          valueText={ttlLabel}
+          className="settings-item--wide-control"
+        >
           <div className="settings-item-actions">
             <CommittedRangeInput
               min={0}
@@ -314,12 +364,11 @@ export function PerformanceSettings() {
             />
             <span className="settings-input-unit">{ttlLabel}</span>
           </div>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("appearanceStableToolPreviewTitle")}</strong>
-            <p>{t("appearanceStableToolPreviewDescription")}</p>
-          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceStableToolPreviewTitle")}
+          description={t("appearanceStableToolPreviewDescription")}
+        >
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -331,8 +380,35 @@ export function PerformanceSettings() {
             />
             <span className="toggle-slider" />
           </label>
-        </div>
+        </SettingsItem>
+        {hostProcessObservabilitySupported && (
+          <SettingsItem
+            label={t("performanceHostProcessObservabilityTitle")}
+            description={t("performanceHostProcessObservabilityDescription")}
+            keywords={["Agents", "CPU", "memory", "external processes"]}
+            after={
+              serverSettingsError ? (
+                <p className="settings-error">{serverSettingsError}</p>
+              ) : null
+            }
+          >
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={hostProcessObservabilityEnabled}
+                disabled={
+                  serverSettingsLoading || savingHostProcessObservability
+                }
+                onChange={(event) =>
+                  void setHostProcessObservability(event.target.checked)
+                }
+                aria-label={t("performanceHostProcessObservabilityTitle")}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </SettingsItem>
+        )}
       </div>
-    </section>
+    </SettingsSection>
   );
 }

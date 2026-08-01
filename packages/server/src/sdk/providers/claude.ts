@@ -1,4 +1,9 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import {
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+  execFile,
+  spawn,
+} from "node:child_process";
 import {
   accessSync,
   constants,
@@ -7,6 +12,7 @@ import {
   readFileSync,
   statSync,
 } from "node:fs";
+import { open as openFile, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -15,6 +21,9 @@ import {
   type SDKMessage as AgentSDKMessage,
   type Query,
   type CanUseTool as SDKCanUseTool,
+  type SessionStore,
+  type SessionStoreEntry,
+  type Settings,
   type SpawnedProcess,
   forkSession as sdkForkSession,
   query,
@@ -22,9 +31,11 @@ import {
 import {
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   HELPER_SIDE_MODEL_CHEAPEST,
+  type ClaudeAdditionalModelSelection,
   type EffortLevel,
   type ModelInfo,
   type PromptCacheKeepaliveProviderInfo,
+  type ProviderSubscriptionUsage,
   type SlashCommand,
   getModelContextWindow,
 } from "@yep-anywhere/shared";
@@ -32,6 +43,11 @@ import { getLogger } from "../../logging/logger.js";
 import { detectClaudeCli } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
+import {
+  getClaudeAdditionalModelOptions,
+  getClaudeModelCatalogCacheKey,
+  projectClaudeAdditionalModels,
+} from "./claude-additional-models.js";
 import { ClaudeProviderRetentionTracker } from "./claude-retention.js";
 import {
   checkRemotePath,
@@ -48,18 +64,24 @@ import type {
 } from "../types.js";
 import { createAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
 import { filterEnvForChildProcess } from "./env-filter.js";
+import { normalizeClaudeSubscriptionUsage } from "./provider-subscription-usage.js";
 import type {
   AgentProvider,
   AgentSession,
   AuthStatus,
   PromptCacheRefreshResult,
   ProviderName,
+  ProviderForkBoundary,
   StartSessionOptions,
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "./types.js";
+import type { SessionSandboxRuntime } from "../../session-sandbox.js";
 
 type ClaudeSdkModelInfo = Awaited<ReturnType<Query["supportedModels"]>>[number];
+type ClaudeSdkSlashCommand = Awaited<
+  ReturnType<Query["supportedCommands"]>
+>[number];
 
 /**
  * Use a spawn wrapper to capture the child process reference for liveness checks.
@@ -73,6 +95,8 @@ const CLAUDE_LIVENESS_PROBE_SOURCE = "claude:control/mcp_status";
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_TIMEOUT_MS = 60_000;
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD = 0.02;
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
+const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE =
+  "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 const CLAUDE_EFFORT_LEVELS: EffortLevel[] = [
   "low",
   "medium",
@@ -81,6 +105,117 @@ const CLAUDE_EFFORT_LEVELS: EffortLevel[] = [
   "max",
 ];
 const execFileAsync = promisify(execFile);
+const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+
+export function getClaudeAutoCompactOverrideEnv(
+  percent: number | undefined,
+): Record<string, string> | undefined {
+  if (percent === undefined) return undefined;
+  if (!Number.isInteger(percent) || percent < 1 || percent > 100) {
+    throw new Error(
+      "Claude auto-compaction percentage must be an integer from 1 to 100",
+    );
+  }
+  return { [CLAUDE_AUTOCOMPACT_PCT_OVERRIDE]: String(percent) };
+}
+
+function createSandboxedClaudeSpawn(
+  sessionSandbox: SessionSandboxRuntime,
+): (
+  options: import("@anthropic-ai/claude-agent-sdk").SpawnOptions,
+) => SpawnedProcess {
+  return (options) => {
+    const sandboxed = sessionSandbox.wrapSpawn(
+      options.command,
+      options.args,
+      options.env as NodeJS.ProcessEnv,
+    );
+    const child = (() => {
+      try {
+        return spawn(sandboxed.command, sandboxed.args, {
+          cwd: sandboxed.cwd,
+          env: sandboxed.env,
+          stdio: sandboxed.stdio,
+          shell: false,
+        }) as ChildProcessWithoutNullStreams;
+      } finally {
+        sandboxed.release();
+      }
+    })();
+    const abort = () => child.kill("SIGTERM");
+    options.signal.addEventListener("abort", abort, { once: true });
+    child.once("exit", () => {
+      options.signal.removeEventListener("abort", abort);
+    });
+    return child;
+  };
+}
+
+function assertClaudeForkSessionId(sessionId: string): void {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error("Invalid Claude fork session id");
+  }
+}
+
+function createClaudeForkStore(directory: FileHandle): SessionStore {
+  const directoryPath = `/proc/self/fd/${directory.fd}`;
+  return {
+    async load(key): Promise<SessionStoreEntry[] | null> {
+      if (key.subpath) {
+        throw new Error("Claude fork source subpaths are not supported");
+      }
+      assertClaudeForkSessionId(key.sessionId);
+      let file: FileHandle;
+      try {
+        file = await openFile(
+          join(directoryPath, `${key.sessionId}.jsonl`),
+          constants.O_RDONLY | constants.O_NOFOLLOW,
+        );
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          return null;
+        }
+        throw error;
+      }
+      try {
+        const content = await file.readFile("utf8");
+        return content
+          .split("\n")
+          .filter((line) => line.trim().length > 0)
+          .map((line) => JSON.parse(line) as SessionStoreEntry);
+      } finally {
+        await file.close();
+      }
+    },
+    async append(key, entries): Promise<void> {
+      if (key.subpath) {
+        throw new Error("Claude fork target subpaths are not supported");
+      }
+      assertClaudeForkSessionId(key.sessionId);
+      const file = await openFile(
+        join(directoryPath, `${key.sessionId}.jsonl`),
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        await file.writeFile(
+          `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+          "utf8",
+        );
+      } finally {
+        await file.close();
+      }
+    },
+  };
+}
 const requireFromHere = createRequire(import.meta.url);
 const requireFromClaudeSdk = createRequire(
   requireFromHere.resolve("@anthropic-ai/claude-agent-sdk"),
@@ -397,38 +532,35 @@ async function* withCleanup<T>(
 }
 
 /**
- * Opus and Sonnet both run with the 1M-token context window: their 1M is
- * standard-priced (no per-token premium), so bare `opus`/`sonnet` are
- * normalized to the extended-context alias at every launch/setModel chokepoint
- * and surfaced with the 1M window in the exposed model list.
- *
  * Sonnet's 1M was previously credit-gated (launching `sonnet[1m]` errored with
  * "Usage credits required for 1M context"), so it once kept a separate 200K
  * entry. Sonnet 5 lifted that gate: a live probe on this account runs
  * `--model sonnet` as `claude-sonnet-5[1m]` at a 1,000,000 window on the
  * standard tier with no error. The "Sonnet 5" label is pinned in the
  * description (the name stays the generic "Sonnet") rather than taken from the
- * SDK, because `supportedModels()` still reports the `sonnet` alias as
- * "Sonnet 4.6" even though it routes to Sonnet 5 at runtime; that pin will
- * drift once the SDK catalog catches up, and we accept it. See
- * topics/claude-1m-context.md.
+ * SDK, because older `supportedModels()` responses reported the `sonnet` alias
+ * as "Sonnet 4.6" even when it routed to Sonnet 5 at runtime.
+ *
+ * Opus deliberately stays bare. SDK 0.3.220 resolves both `opus` and
+ * `opus[1m]` to Opus 5 with the same 1M context window, so rewriting the
+ * stable alias adds no capability and couples launch behavior to a historical
+ * spelling. See topics/claude-1m-context.md.
  */
-const ALWAYS_EXTENDED_CONTEXT_ALIASES: Record<string, string> = {
-  opus: "opus[1m]",
+const CLAUDE_LAUNCH_MODEL_ALIASES: Record<string, string> = {
   sonnet: "sonnet[1m]",
 };
 
 const ALWAYS_EXTENDED_DESCRIPTIONS: Record<string, string> = {
-  opus: "Opus 4.8 with the full 1M-token context window",
+  opus: "Opus 5 with the full 1M-token context window",
   sonnet:
     "Sonnet 5 with the full 1M-token context window · newer tokenizer bills ~30% more tokens",
 };
 
-/** Normalize the opus alias to its always-on 1M variant at launch. */
-export function withExtendedClaudeContext(
+/** Normalize only aliases whose launch spelling still changes behavior. */
+export function normalizeClaudeLaunchModel(
   model: string | undefined,
 ): string | undefined {
-  return (model && ALWAYS_EXTENDED_CONTEXT_ALIASES[model]) || model;
+  return (model && CLAUDE_LAUNCH_MODEL_ALIASES[model]) || model;
 }
 
 /** Static fallback list of Claude models (used if probe fails) */
@@ -436,15 +568,13 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
   {
     id: "default",
     name: "Default",
-    description:
-      "Claude Code chooses the recommended model for your account (probably Sonnet)",
+    description: "Claude Code chooses the recommended model for your account",
     contextWindow: getModelContextWindow("default", "claude"),
   },
   {
     id: "best",
     name: "Best",
-    description:
-      "Highest-capability Claude Code alias (probably Opus 4.8, full 1M context)",
+    description: "Highest-capability Claude Code alias (full 1M context)",
     contextWindow: getModelContextWindow("opus[1m]", "claude"),
   },
   {
@@ -471,6 +601,12 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
     name: "Opus",
     description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
     contextWindow: getModelContextWindow("opus[1m]", "claude"),
+    supportsAdaptiveThinking: true,
+    supportsAutoMode: true,
+    supportsEffort: true,
+    supportsFastMode: true,
+    supportedEffortLevels: CLAUDE_EFFORT_LEVELS,
+    defaultEffortLevel: "high",
   },
   {
     id: "haiku",
@@ -482,7 +618,7 @@ const CLAUDE_MODELS_FALLBACK: ModelInfo[] = [
     id: "opusplan",
     name: "Opus Plan",
     description: "Uses Opus for planning, then Sonnet for execution",
-    contextWindow: getModelContextWindow("opus", "claude"),
+    contextWindow: getModelContextWindow("opus[1m]", "claude"),
   },
 ];
 
@@ -493,6 +629,7 @@ const CLAUDE_GOAL_LOOP_ALIAS_COMMAND: SlashCommand = {
   emulation: {
     providerText: "/loop wish {{argument}}",
   },
+  invocation: { kind: "emulated", prefix: "/" },
 };
 
 function isClaudeEffortLevel(value: unknown): value is EffortLevel {
@@ -522,6 +659,20 @@ export function withClaudeGoalAlias(commands: SlashCommand[]): SlashCommand[] {
   return [...commands, CLAUDE_GOAL_LOOP_ALIAS_COMMAND];
 }
 
+function mapClaudeSlashCommand(command: ClaudeSdkSlashCommand): SlashCommand {
+  return {
+    name: command.name,
+    description: command.description,
+    argumentHint: command.argumentHint || undefined,
+    invocation: {
+      kind: "skill",
+      prefix: "/",
+      inventoryState: "current",
+      ...(command.aliases?.length ? { aliases: command.aliases } : {}),
+    },
+  };
+}
+
 function enrichClaudeModel(model: ModelInfo): ModelInfo {
   return {
     ...model,
@@ -537,6 +688,9 @@ function mapClaudeSdkModel(model: ClaudeSdkModelInfo): ModelInfo {
     id: model.value,
     name: model.displayName,
     description: model.description,
+    contextWindow: model.resolvedModel
+      ? getModelContextWindow(model.resolvedModel, "claude")
+      : undefined,
     supportsEffort: model.supportsEffort,
     supportedEffortLevels: mapClaudeSupportedEffortLevels(
       model.supportedEffortLevels,
@@ -556,6 +710,17 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
 
   for (const model of models) {
     if (model.id === "default") {
+      const fallback = byId.get("default");
+      byId.set(
+        "default",
+        enrichClaudeModel({
+          ...fallback,
+          ...model,
+          id: "default",
+          name: fallback?.name ?? model.name,
+          description: fallback?.description ?? model.description,
+        }),
+      );
       continue;
     }
     byId.set(model.id, enrichClaudeModel(model));
@@ -570,25 +735,31 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
     .map((id) => byId.get(id))
     .filter((model): model is ModelInfo => model !== undefined);
 
-  // Opus and Sonnet always use the 1M window (withExtendedClaudeContext), so
-  // drop the redundant "opus[1m]"/"sonnet[1m]" entries and surface the 1M
-  // window + label on the base alias — including when the SDK probe supplies a
-  // 200K window. Sonnet also forces its description (not its name) because the
-  // SDK catalog still reports the alias as "Sonnet 4.6" while it routes to
-  // Sonnet 5.
+  // Drop the redundant "opus[1m]"/"sonnet[1m]" rows and surface their live
+  // capability metadata on the stable family aliases. This catalog projection
+  // is independent of launch spelling: bare `opus` already launches Opus 5
+  // with the same 1M window.
   return merged
     .filter((model) => model.id !== "opus[1m]" && model.id !== "sonnet[1m]")
     .map((model) => {
       if (model.id === "opus") {
+        const extended = byId.get("opus[1m]");
         return {
           ...model,
+          ...extended,
+          id: model.id,
+          name: model.name,
           contextWindow: getModelContextWindow("opus[1m]", "claude"),
           description: ALWAYS_EXTENDED_DESCRIPTIONS.opus,
         };
       }
       if (model.id === "sonnet") {
+        const extended = byId.get("sonnet[1m]");
         return {
           ...model,
+          ...extended,
+          id: model.id,
+          name: model.name,
           contextWindow: getModelContextWindow("sonnet[1m]", "claude"),
           description: ALWAYS_EXTENDED_DESCRIPTIONS.sonnet,
         };
@@ -596,12 +767,6 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
       return model;
     });
 }
-
-/** Cached models from SDK probe */
-let cachedModels: ModelInfo[] | null = null;
-
-/** Promise for in-flight probe (to avoid duplicate probes) */
-let probePromise: Promise<ModelInfo[]> | null = null;
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -680,7 +845,7 @@ export class ClaudeProvider implements AgentProvider {
   readonly name: ProviderName = "claude";
   readonly displayName: string = "Claude";
   readonly supportsPermissionMode = true;
-  readonly supportsThinkingToggle = true;
+  readonly supportsThinkingToggle: boolean = true;
   readonly supportsSlashCommands = true;
   readonly supportsSteering = true;
   readonly supportsSteerNow = true;
@@ -693,12 +858,44 @@ export class ClaudeProvider implements AgentProvider {
   // is a no-op (and would make fork/tailed wait a pointless native grace
   // window). Do not re-enable on the basis of seeing CLI recaps in the JSONL.
   readonly supportsNativeRecaps = false;
-  readonly supportsNativePromptSuggestions = true;
+  readonly supportsNativePromptSuggestions: boolean = true;
+  readonly supportsLaunchCompactPercentOverride: boolean = true;
   readonly promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo = {
     supportsNoContextPollutionNudge: true,
     defaultMode: "auto" as const,
     defaultInactivityMinutes: DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   };
+  private cachedModels: ModelInfo[] | null = null;
+  private probePromise: Promise<ModelInfo[]> | null = null;
+  private getAdditionalModelSelections: () =>
+    | readonly ClaudeAdditionalModelSelection[]
+    | undefined = () => [];
+
+  setAdditionalModelsGetter(
+    getter: () => readonly ClaudeAdditionalModelSelection[] | undefined,
+  ): void {
+    this.getAdditionalModelSelections = getter;
+  }
+
+  getAdditionalModelOptions(): ModelInfo[] {
+    return getClaudeAdditionalModelOptions();
+  }
+
+  getModelCatalogCacheKey(): string {
+    return getClaudeModelCatalogCacheKey(this.getAdditionalModelSelections());
+  }
+
+  protected invalidateModelCache(): void {
+    this.cachedModels = null;
+    this.probePromise = null;
+  }
+
+  private projectAdditionalModels(models: readonly ModelInfo[]): ModelInfo[] {
+    return projectClaudeAdditionalModels(
+      models,
+      this.getAdditionalModelSelections(),
+    );
+  }
 
   /**
    * Check if Claude SDK is available.
@@ -872,32 +1069,57 @@ export class ClaudeProvider implements AgentProvider {
    */
   async getAvailableModels(): Promise<ModelInfo[]> {
     // Return cached models if available
-    if (cachedModels) {
-      return cachedModels;
+    if (this.cachedModels) {
+      return this.projectAdditionalModels(this.cachedModels);
     }
 
     // Check if user is authenticated before trying to probe
     const authStatus = await this.getAuthStatus();
     if (!authStatus.authenticated) {
-      return CLAUDE_MODELS_FALLBACK;
+      return this.projectAdditionalModels(CLAUDE_MODELS_FALLBACK);
     }
 
     // If probe is already in progress, wait for it
-    if (probePromise) {
-      return probePromise;
+    if (this.probePromise) {
+      return this.projectAdditionalModels(await this.probePromise);
     }
 
     // Start a new probe
-    probePromise = this.probeModels();
+    this.probePromise = this.probeModels();
     try {
-      const models = await probePromise;
-      cachedModels = mergeClaudeModels(models);
-      return cachedModels;
+      const models = await this.probePromise;
+      this.cachedModels = mergeClaudeModels(models);
+      return this.projectAdditionalModels(this.cachedModels);
     } catch (error) {
       console.warn("[Claude] Failed to probe models, using fallback:", error);
-      return CLAUDE_MODELS_FALLBACK;
+      return this.projectAdditionalModels(CLAUDE_MODELS_FALLBACK);
     } finally {
-      probePromise = null;
+      this.probePromise = null;
+    }
+  }
+
+  async getSubscriptionUsage(
+    models: readonly ModelInfo[],
+  ): Promise<ProviderSubscriptionUsage | null> {
+    // Gateway and Ollama subclasses use Claude's SDK transport without a
+    // claude.ai subscription account behind it.
+    if (this.name !== "claude") return null;
+    const authStatus = await this.getAuthStatus();
+    if (!authStatus.authenticated) return null;
+
+    try {
+      const rawUsage = await this.runControlProbe(
+        "Claude subscription usage probe",
+        (sdkQuery) =>
+          sdkQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+      );
+      return normalizeClaudeSubscriptionUsage(rawUsage, models);
+    } catch (error) {
+      getLogger().debug(
+        { error },
+        "Claude subscription usage probe is unavailable",
+      );
+      return null;
     }
   }
 
@@ -905,8 +1127,31 @@ export class ClaudeProvider implements AgentProvider {
    * Get filtered environment variables for child processes.
    * Subclasses can override to inject custom env vars (e.g., ANTHROPIC_BASE_URL).
    */
-  protected getEnv(): Record<string, string | undefined> {
+  protected getEnv(_model?: string): Record<string, string | undefined> {
     return filterEnvForChildProcess();
+  }
+
+  /**
+   * Supplementary flag-layer settings for this Claude launch. These merge over
+   * user/project/local settings without replacing the lower layers.
+   */
+  protected getSettings(_model?: string): Settings | undefined {
+    return undefined;
+  }
+
+  /**
+   * Normalize a live SDK model catalog and update this provider instance only.
+   * Gateway subclasses may replace the SDK's built-in-plus-gateway catalog
+   * with an authoritative gateway-only catalog.
+   */
+  protected async normalizeSupportedModels(
+    models: ClaudeSdkModelInfo[],
+  ): Promise<ModelInfo[]> {
+    const mappedModels = mergeClaudeModels(
+      models.map((model) => mapClaudeSdkModel(model)),
+    );
+    this.cachedModels = mappedModels;
+    return this.projectAdditionalModels(mappedModels);
   }
 
   /**
@@ -929,16 +1174,13 @@ export class ClaudeProvider implements AgentProvider {
       : { type: "preset" as const, preset: "claude_code" as const };
   }
 
-  /**
-   * Probe for available models by starting a minimal session.
-   * The session doesn't send any messages - it just calls supportedModels()
-   * on the SDK query and then aborts.
-   */
-  private async probeModels(): Promise<ModelInfo[]> {
+  private async runControlProbe<T>(
+    label: string,
+    request: (sdkQuery: Query) => Promise<T>,
+  ): Promise<T> {
     const abortController = new AbortController();
 
-    // Generator that waits indefinitely — keeps the SDK process alive
-    // while we query supportedModels() from the initialization handshake.
+    // Keep the SDK process alive while the read-only control request completes.
     // Resolves (rather than rejects) on abort to avoid unhandled rejections.
     async function* waitForever(): AsyncGenerator<never> {
       await new Promise<void>((resolve) => {
@@ -957,6 +1199,7 @@ export class ClaudeProvider implements AgentProvider {
           persistSession: false,
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
           env: this.getEnv(),
+          settings: this.getSettings(),
         },
       });
 
@@ -973,19 +1216,23 @@ export class ClaudeProvider implements AgentProvider {
         }
       })();
 
-      // supportedModels() resolves once the initialize handshake completes.
-      // Race against a timeout in case the process hangs.
-      const models = await Promise.race([
-        sdkQuery.supportedModels(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Model probe timed out")), 15000),
-        ),
-      ]);
-
-      return mergeClaudeModels(models.map((model) => mapClaudeSdkModel(model)));
+      return await withTimeout(request(sdkQuery), 15_000, label);
     } finally {
       abortController.abort();
     }
+  }
+
+  /**
+   * Probe for available models by starting a minimal session.
+   * The session doesn't send any messages - it just calls supportedModels()
+   * on the SDK query and then aborts.
+   */
+  private async probeModels(): Promise<ModelInfo[]> {
+    const models = await this.runControlProbe(
+      "Claude model probe",
+      (sdkQuery) => sdkQuery.supportedModels(),
+    );
+    return mergeClaudeModels(models.map((model) => mapClaudeSdkModel(model)));
   }
 
   /**
@@ -1093,7 +1340,8 @@ export class ClaudeProvider implements AgentProvider {
           permissionMode: "default",
           persistSession: false,
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
-          env: this.getEnv(),
+          env: this.getEnv(helperModel),
+          settings: this.getSettings(helperModel),
           model: helperModel,
           maxTurns: 1,
           systemPrompt:
@@ -1172,8 +1420,12 @@ export class ClaudeProvider implements AgentProvider {
           permissionMode: "default",
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
           env: this.getEnv(),
+          settings: this.getSettings(),
           resume: request.generatorSessionId,
           maxTurns: 1,
+          spawnClaudeCodeProcess: request.sessionSandbox
+            ? createSandboxedClaudeSpawn(request.sessionSandbox)
+            : undefined,
           systemPrompt:
             request.purpose === "session-retitle"
               ? "You are a title helper. Reply with the session title only, no preamble."
@@ -1274,6 +1526,7 @@ export class ClaudeProvider implements AgentProvider {
     remoteEnv?: Record<string, string>;
     pathToClaudeCodeExecutable?: string;
     env: Record<string, string | undefined>;
+    sessionSandbox?: SessionSandboxRuntime;
   }): Promise<PromptCacheRefreshResult> {
     const abortController = new AbortController();
     const timeout = setTimeout(
@@ -1304,7 +1557,9 @@ export class ClaudeProvider implements AgentProvider {
           host: options.executor,
           remoteEnv: options.remoteEnv,
         })
-      : undefined;
+      : options.sessionSandbox
+        ? createSandboxedClaudeSpawn(options.sessionSandbox)
+        : undefined;
 
     try {
       const sdkQuery = query({
@@ -1325,11 +1580,12 @@ export class ClaudeProvider implements AgentProvider {
           persistSession: false,
           maxTurns: 1,
           maxBudgetUsd: CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD,
-          model: withExtendedClaudeContext(options.model),
+          model: normalizeClaudeLaunchModel(options.model),
           thinking: options.thinking,
           effort: options.effort,
           pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
           env: options.env,
+          settings: this.getSettings(options.model),
           spawnClaudeCodeProcess,
         },
       });
@@ -1363,13 +1619,36 @@ export class ClaudeProvider implements AgentProvider {
     sessionId: string;
     cwd: string;
     upToMessageId?: string;
+    boundary?: ProviderForkBoundary;
     title?: string;
+    sessionSandbox?: SessionSandboxRuntime;
   }): Promise<{ sessionId: string }> {
-    return sdkForkSession(options.sessionId, {
-      dir: options.cwd,
-      upToMessageId: options.upToMessageId,
-      title: options.title,
-    });
+    if (options.boundary && options.boundary.kind !== "message") {
+      throw new Error("Claude fork requires a message boundary");
+    }
+    const upToMessageId =
+      options.boundary?.kind === "message"
+        ? options.boundary.messageId
+        : options.upToMessageId;
+    if (!options.sessionSandbox) {
+      return sdkForkSession(options.sessionId, {
+        dir: options.cwd,
+        upToMessageId,
+        title: options.title,
+      });
+    }
+    const transcriptDirectory =
+      await options.sessionSandbox.openTranscriptDirectory();
+    try {
+      return await sdkForkSession(options.sessionId, {
+        dir: options.cwd,
+        upToMessageId,
+        title: options.title,
+        sessionStore: createClaudeForkStore(transcriptDirectory),
+      });
+    } finally {
+      await transcriptDirectory.close();
+    }
   }
 
   /**
@@ -1382,16 +1661,29 @@ export class ClaudeProvider implements AgentProvider {
     const agentctlSessionEnvBridge = options.executor
       ? null
       : createAgentctlSessionEnvBridge(options.resumeSessionId);
+    const autoCompactOverrideEnv = getClaudeAutoCompactOverrideEnv(
+      options.launchCompactPercentOverride,
+    );
+    const baseClaudeEnv = {
+      ...this.getEnv(options.model),
+      ...autoCompactOverrideEnv,
+    };
     const claudeEnv = agentctlSessionEnvBridge
-      ? agentctlSessionEnvBridge.extendEnv(this.getEnv())
-      : this.getEnv();
+      ? agentctlSessionEnvBridge.extendEnv(baseClaudeEnv)
+      : baseClaudeEnv;
+    const configuredRemoteEnv = options.executor
+      ? {
+          ...options.remoteEnv,
+          ...autoCompactOverrideEnv,
+        }
+      : options.remoteEnv;
     const remoteEnv =
       options.executor && options.resumeSessionId
         ? {
-            ...options.remoteEnv,
+            ...configuredRemoteEnv,
             AGENTCTL_SESSION_ID: options.resumeSessionId,
           }
-        : options.remoteEnv;
+        : configuredRemoteEnv;
 
     // Effective cwd for the session (may be translated for remote executors)
     let effectiveCwd = options.cwd;
@@ -1500,26 +1792,42 @@ export class ClaudeProvider implements AgentProvider {
         host: options.executor,
         remoteEnv,
       });
-    } else if (USE_SPAWN_WRAPPER) {
+    } else if (USE_SPAWN_WRAPPER || options.sessionSandbox) {
       // Local spawn wrapper: delegates to child_process.spawn but captures the
       // SpawnedProcess reference so we can check liveness (exitCode) later.
       spawnClaudeCodeProcess = (spawnOpts) => {
         const stderrTail: string[] = [];
-        const proc = spawn(spawnOpts.command, spawnOpts.args, {
-          cwd: spawnOpts.cwd,
-          env: spawnOpts.env as NodeJS.ProcessEnv,
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: process.platform === "win32",
-        });
+        const sandboxed = options.sessionSandbox?.wrapSpawn(
+          spawnOpts.command,
+          spawnOpts.args,
+          spawnOpts.env as NodeJS.ProcessEnv,
+        );
+        const proc = (() => {
+          try {
+            return spawn(
+              sandboxed?.command ?? spawnOpts.command,
+              sandboxed?.args ?? spawnOpts.args,
+              {
+                cwd: sandboxed?.cwd ?? spawnOpts.cwd,
+                env: sandboxed?.env ?? (spawnOpts.env as NodeJS.ProcessEnv),
+                stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
+                shell: sandboxed ? false : process.platform === "win32",
+              },
+            ) as ChildProcessWithoutNullStreams;
+          } finally {
+            sandboxed?.release();
+          }
+        })();
 
         log.info(
           {
             event: "claude_child_spawn_start",
             command: spawnOpts.command,
-            args: spawnOpts.args,
+            args: sandboxed ? undefined : spawnOpts.args,
             cwd: spawnOpts.cwd,
             shell: process.platform === "win32",
             resolvedExecutable: pathToClaudeCodeExecutable,
+            sandboxed: Boolean(sandboxed),
           },
           "Starting Claude child process",
         );
@@ -1643,12 +1951,13 @@ export class ClaudeProvider implements AgentProvider {
           includePartialMessages: true,
           promptSuggestions: options.promptSuggestions === true,
           // Model, thinking, and effort options
-          model: withExtendedClaudeContext(options.model),
+          model: normalizeClaudeLaunchModel(options.model),
           thinking: options.thinking,
           effort: options.effort,
           pathToClaudeCodeExecutable,
           // Filter env to exclude npm_*, yep-anywhere specific, and other irrelevant vars
           env: claudeEnv,
+          settings: this.getSettings(options.model),
           hooks: {
             Stop: [
               {
@@ -1730,7 +2039,7 @@ export class ClaudeProvider implements AgentProvider {
         this.refreshPromptCache({
           sessionId,
           cwd: effectiveCwd,
-          model: withExtendedClaudeContext(options.model),
+          model: normalizeClaudeLaunchModel(options.model),
           thinking: options.thinking,
           effort: options.effort,
           globalInstructions: options.globalInstructions,
@@ -1738,6 +2047,7 @@ export class ClaudeProvider implements AgentProvider {
           remoteEnv,
           pathToClaudeCodeExecutable,
           env: claudeEnv,
+          sessionSandbox: options.sessionSandbox,
         }),
       publishAgentctlSessionId: (sessionId: string) => {
         agentctlSessionEnvBridge?.publishSessionId(sessionId);
@@ -1752,27 +2062,14 @@ export class ClaudeProvider implements AgentProvider {
       },
       supportedModels: async (): Promise<ModelInfo[]> => {
         const models = await sdkQuery.supportedModels();
-        // Map SDK ModelInfo (value, displayName, description) to our ModelInfo (id, name, description)
-        const mappedModels = mergeClaudeModels(
-          models.map((model) => mapClaudeSdkModel(model)),
-        );
-        // Update cache for future getAvailableModels() calls
-        cachedModels = mappedModels;
-        return mappedModels;
+        return this.normalizeSupportedModels(models);
       },
       supportedCommands: async (): Promise<SlashCommand[]> => {
         const commands = await sdkQuery.supportedCommands();
-        // Map SDK SlashCommand to our SlashCommand (same fields, just normalize)
-        return withClaudeGoalAlias(
-          commands.map((c) => ({
-            name: c.name,
-            description: c.description,
-            argumentHint: c.argumentHint || undefined,
-          })),
-        );
+        return withClaudeGoalAlias(commands.map(mapClaudeSlashCommand));
       },
       setModel: (model?: string) =>
-        sdkQuery.setModel(withExtendedClaudeContext(model)),
+        sdkQuery.setModel(normalizeClaudeLaunchModel(model)),
     };
   }
 
@@ -1863,6 +2160,49 @@ export class ClaudeProvider implements AgentProvider {
   private convertMessage(message: AgentSDKMessage): SDKMessage {
     // Pass through all fields, only normalize content blocks
     const sdkMessage = message as unknown as SDKMessage;
+    if (
+      sdkMessage.type === "system" &&
+      sdkMessage.subtype === "commands_changed" &&
+      Array.isArray(sdkMessage.commands)
+    ) {
+      return {
+        ...sdkMessage,
+        slash_command_inventory: withClaudeGoalAlias(
+          (sdkMessage.commands as ClaudeSdkSlashCommand[]).map(
+            mapClaudeSlashCommand,
+          ),
+        ),
+      };
+    }
+    if (
+      sdkMessage.type === "system" &&
+      sdkMessage.subtype === "init" &&
+      Array.isArray(sdkMessage.slash_commands)
+    ) {
+      const skillNames = new Set(
+        Array.isArray(sdkMessage.skills)
+          ? (sdkMessage.skills as string[]).map((name) => name.toLowerCase())
+          : [],
+      );
+      return {
+        ...sdkMessage,
+        slash_command_inventory: (sdkMessage.slash_commands as string[]).map(
+          (name): SlashCommand => ({
+            name,
+            description: "",
+            ...(skillNames.has(name.toLowerCase())
+              ? {
+                  invocation: {
+                    kind: "skill",
+                    prefix: "/",
+                    inventoryState: "current",
+                  },
+                }
+              : {}),
+          }),
+        ),
+      };
+    }
 
     // For messages with content, normalize the content blocks
     if (sdkMessage.message?.content) {

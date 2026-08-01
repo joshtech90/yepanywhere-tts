@@ -13,12 +13,14 @@ import {
   type ProviderName,
   type PromptSuggestionMode,
   type RecapMode,
+  type SessionSandboxLevel,
   type TranscriptDisplayObject,
   type UrlProjectId,
   type WorkstreamId,
   normalizeRecapAfterSeconds,
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
+import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 
 export interface SessionMetadata {
   /** Custom title that overrides auto-generated title */
@@ -27,8 +29,12 @@ export interface SessionMetadata {
   isArchived?: boolean;
   /** Whether the session is starred/favorited */
   isStarred?: boolean;
-  /** Parent session when this session is a YA-owned fork/aside. */
+  /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
+  /** Explicit meaning of parentSessionId; absent on legacy records. */
+  parentSessionKind?: "btw-aside";
+  /** Source session whose provider transcript was cloned or forked. */
+  forkedFromSessionId?: string;
   /** Saved viewer-only objects placed in the transcript. */
   transcriptDisplayObjects?: TranscriptDisplayObject[];
   /** Durable YA-owned recap rows merged into the transcript view only. */
@@ -62,6 +68,12 @@ export interface SessionMetadata {
   promptSuggestionMode?: PromptSuggestionMode;
   /** Browser-away duration before YA asks the live process for a recap. */
   recapAfterSeconds?: number;
+  /** Settled YA host filesystem confinement for every launch of this session. */
+  sandboxLevel?: SessionSandboxLevel;
+  /** Opaque key for the canonical project's private provider runtime state. */
+  sandboxStateKey?: string;
+  /** Effective host project path used to locate private provider transcripts. */
+  sandboxProjectPath?: string;
   /**
    * Per-session recap strategy (off | native | side-session | fork). Durable
    * so a process-dead session still knows whether/how to recap — required to
@@ -84,7 +96,7 @@ export interface SessionMetadataState {
   version: number;
 }
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 const MAX_RECAP_MESSAGES_PER_SESSION = 200;
 const MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION = 100;
 
@@ -97,8 +109,8 @@ export class SessionMetadataService {
   private state: SessionMetadataState;
   private dataDir: string;
   private filePath: string;
-  private savePromise: Promise<void> | null = null;
-  private pendingSave = false;
+  private sessionIdAliases = new Map<string, string>();
+  private save = createCoalescingSaver(() => this.doSave()).save;
 
   constructor(options: SessionMetadataServiceOptions = {}) {
     this.dataDir =
@@ -133,8 +145,19 @@ export class SessionMetadataService {
         version: CURRENT_VERSION,
       };
 
+      const migrateLegacyLineage = (parsed.version ?? 0) < 3;
       let changed = parsed.version !== CURRENT_VERSION;
       for (const metadata of Object.values(this.state.sessions)) {
+        if (migrateLegacyLineage && metadata.parentSessionId) {
+          if (/^\/btw(?:\s+|$)/i.test(metadata.customTitle?.trimStart() ?? "")) {
+            metadata.parentSessionKind = "btw-aside";
+          } else {
+            metadata.forkedFromSessionId ??= metadata.parentSessionId;
+            metadata.parentSessionId = undefined;
+            metadata.parentSessionKind = undefined;
+          }
+          changed = true;
+        }
         if (!metadata.transcriptDisplayObjects) {
           continue;
         }
@@ -184,7 +207,7 @@ export class SessionMetadataService {
    * Get metadata for a session.
    */
   getMetadata(sessionId: string): SessionMetadata | undefined {
-    return this.state.sessions[sessionId];
+    return this.state.sessions[this.resolveSessionId(sessionId)];
   }
 
   /**
@@ -196,12 +219,16 @@ export class SessionMetadataService {
 
   getTranscriptDisplayObjects(sessionId: string): TranscriptDisplayObject[] {
     return [
-      ...(this.state.sessions[sessionId]?.transcriptDisplayObjects ?? []),
+      ...(this.state.sessions[this.resolveSessionId(sessionId)]
+        ?.transcriptDisplayObjects ?? []),
     ];
   }
 
   getRecapMessages(sessionId: string): DurableRecapMessage[] {
-    return [...(this.state.sessions[sessionId]?.recapMessages ?? [])];
+    return [
+      ...(this.state.sessions[this.resolveSessionId(sessionId)]?.recapMessages ??
+        []),
+    ];
   }
 
   getCacheMissBillingEvents(limit = 200): CacheMissBillingRecord[] {
@@ -456,11 +483,35 @@ export class SessionMetadataService {
   }
 
   /**
+   * Set the durable YA host sandbox selection and private provider-state root.
+   */
+  async setSessionSandbox(
+    sessionId: string,
+    sandbox: {
+      level: SessionSandboxLevel;
+      stateKey?: string;
+      projectPath: string;
+      projectId: UrlProjectId;
+      provider?: ProviderName;
+    },
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      ...(sandbox.provider ? { provider: sandbox.provider } : {}),
+      sandboxLevel: sandbox.level,
+      sandboxStateKey: sandbox.stateKey,
+      sandboxProjectPath: sandbox.projectPath,
+      workingProjectId: sandbox.projectId,
+    }));
+    await this.save();
+  }
+
+  /**
    * Get the provider for a session.
    * Returns undefined if the provider was never explicitly saved.
    */
   getProvider(sessionId: string): string | undefined {
-    return this.state.sessions[sessionId]?.provider;
+    return this.getMetadata(sessionId)?.provider;
   }
 
   /**
@@ -468,7 +519,7 @@ export class SessionMetadataService {
    * Returns undefined for sessions YA didn't start (no requested id was stored).
    */
   getRequestedModel(sessionId: string): string | undefined {
-    return this.state.sessions[sessionId]?.requestedModel;
+    return this.getMetadata(sessionId)?.requestedModel;
   }
 
   /**
@@ -476,7 +527,7 @@ export class SessionMetadataService {
    * Returns undefined if the session ran locally or executor is unknown.
    */
   getExecutor(sessionId: string): string | undefined {
-    return this.state.sessions[sessionId]?.executor;
+    return this.getMetadata(sessionId)?.executor;
   }
 
   /**
@@ -484,7 +535,7 @@ export class SessionMetadataService {
    * Returns undefined if it was never explicitly saved (use provider default).
    */
   getPromptSuggestionMode(sessionId: string): PromptSuggestionMode | undefined {
-    return this.state.sessions[sessionId]?.promptSuggestionMode;
+    return this.getMetadata(sessionId)?.promptSuggestionMode;
   }
 
   /**
@@ -492,7 +543,7 @@ export class SessionMetadataService {
    * Returns undefined if it was never explicitly saved (use default).
    */
   getRecapAfterSeconds(sessionId: string): number | undefined {
-    return this.state.sessions[sessionId]?.recapAfterSeconds;
+    return this.getMetadata(sessionId)?.recapAfterSeconds;
   }
 
   /**
@@ -501,7 +552,37 @@ export class SessionMetadataService {
    * (process-dead) session should be revived for a forked recap.
    */
   getRecapMode(sessionId: string): RecapMode | undefined {
-    return this.state.sessions[sessionId]?.recapMode;
+    return this.getMetadata(sessionId)?.recapMode;
+  }
+
+  /**
+   * Move metadata from a provisional process ID to the provider's canonical
+   * session ID. The in-memory alias also redirects writes that began before
+   * the provider announced the canonical ID but finish after this remap.
+   */
+  async remapSessionId(
+    provisionalSessionId: string,
+    canonicalSessionId: string,
+  ): Promise<void> {
+    if (provisionalSessionId === canonicalSessionId) return;
+
+    const sourceId = this.resolveSessionId(provisionalSessionId);
+    const targetId = this.resolveSessionId(canonicalSessionId);
+    this.sessionIdAliases.set(provisionalSessionId, targetId);
+    if (sourceId !== targetId) {
+      this.sessionIdAliases.set(sourceId, targetId);
+    }
+
+    const source = this.state.sessions[sourceId];
+    if (!source || sourceId === targetId) return;
+
+    this.state.sessions[targetId] = {
+      ...source,
+      ...(this.state.sessions[targetId] ?? {}),
+    };
+    const { [sourceId]: _, ...remaining } = this.state.sessions;
+    this.state.sessions = remaining;
+    await this.save();
   }
 
   /**
@@ -531,6 +612,8 @@ export class SessionMetadataService {
       archived?: boolean;
       starred?: boolean;
       parentSessionId?: string | null;
+      parentSessionKind?: "btw-aside" | null;
+      forkedFromSessionId?: string | null;
       heartbeatTurnsEnabled?: boolean;
       autoResumeDisabled?: boolean;
       heartbeatTurnsAfterMinutes?: number | null;
@@ -562,6 +645,19 @@ export class SessionMetadataService {
 
       if (updates.parentSessionId !== undefined) {
         result.parentSessionId = updates.parentSessionId?.trim() || undefined;
+        result.parentSessionKind = result.parentSessionId
+          ? (updates.parentSessionKind ?? "btw-aside")
+          : undefined;
+      } else if (updates.parentSessionKind !== undefined) {
+        result.parentSessionKind =
+          result.parentSessionId && updates.parentSessionKind === "btw-aside"
+            ? "btw-aside"
+            : undefined;
+      }
+
+      if (updates.forkedFromSessionId !== undefined) {
+        result.forkedFromSessionId =
+          updates.forkedFromSessionId?.trim() || undefined;
       }
 
       if (updates.heartbeatTurnsEnabled !== undefined) {
@@ -622,7 +718,8 @@ export class SessionMetadataService {
     sessionId: string,
     updater: (current: SessionMetadata) => SessionMetadata,
   ): void {
-    const existing = this.state.sessions[sessionId] ?? {};
+    const resolvedSessionId = this.resolveSessionId(sessionId);
+    const existing = this.state.sessions[resolvedSessionId] ?? {};
     const updated = updater(existing);
 
     // Remove undefined values and check if entry should be deleted
@@ -632,6 +729,12 @@ export class SessionMetadataService {
     if (updated.isStarred) cleaned.isStarred = updated.isStarred;
     if (updated.parentSessionId)
       cleaned.parentSessionId = updated.parentSessionId;
+    if (updated.parentSessionId && updated.parentSessionKind) {
+      cleaned.parentSessionKind = updated.parentSessionKind;
+    }
+    if (updated.forkedFromSessionId) {
+      cleaned.forkedFromSessionId = updated.forkedFromSessionId;
+    }
     if (updated.transcriptDisplayObjects?.length) {
       cleaned.transcriptDisplayObjects = updated.transcriptDisplayObjects;
     }
@@ -669,6 +772,15 @@ export class SessionMetadataService {
     if (updated.recapMode) {
       cleaned.recapMode = updated.recapMode;
     }
+    if (updated.sandboxLevel) {
+      cleaned.sandboxLevel = updated.sandboxLevel;
+    }
+    if (updated.sandboxStateKey) {
+      cleaned.sandboxStateKey = updated.sandboxStateKey;
+    }
+    if (updated.sandboxProjectPath) {
+      cleaned.sandboxProjectPath = updated.sandboxProjectPath;
+    }
     if (updated.workingProjectId) {
       cleaned.workingProjectId = updated.workingProjectId;
     }
@@ -681,10 +793,10 @@ export class SessionMetadataService {
 
     if (Object.keys(cleaned).length === 0) {
       // Remove the entry entirely if empty
-      const { [sessionId]: _, ...rest } = this.state.sessions;
+      const { [resolvedSessionId]: _, ...rest } = this.state.sessions;
       this.state.sessions = rest;
     } else {
-      this.state.sessions[sessionId] = cleaned;
+      this.state.sessions[resolvedSessionId] = cleaned;
     }
   }
 
@@ -693,32 +805,24 @@ export class SessionMetadataService {
    * Useful when a session is deleted.
    */
   async clearSession(sessionId: string): Promise<void> {
-    if (this.state.sessions[sessionId]) {
-      const { [sessionId]: _, ...rest } = this.state.sessions;
+    const resolvedSessionId = this.resolveSessionId(sessionId);
+    if (this.state.sessions[resolvedSessionId]) {
+      const { [resolvedSessionId]: _, ...rest } = this.state.sessions;
       this.state.sessions = rest;
       await this.save();
     }
   }
 
-  /**
-   * Save state to disk with debouncing to prevent excessive writes.
-   */
-  private async save(): Promise<void> {
-    // If a save is in progress, mark that we need another save
-    if (this.savePromise) {
-      this.pendingSave = true;
-      return;
+  private resolveSessionId(sessionId: string): string {
+    let resolved = sessionId;
+    const visited = new Set<string>();
+    while (!visited.has(resolved)) {
+      visited.add(resolved);
+      const next = this.sessionIdAliases.get(resolved);
+      if (!next) break;
+      resolved = next;
     }
-
-    this.savePromise = this.doSave();
-    await this.savePromise;
-    this.savePromise = null;
-
-    // If another save was requested while we were saving, do it now
-    if (this.pendingSave) {
-      this.pendingSave = false;
-      await this.save();
-    }
+    return resolved;
   }
 
   private async doSave(): Promise<void> {

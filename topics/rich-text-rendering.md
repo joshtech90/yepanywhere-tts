@@ -19,6 +19,29 @@ and the rationale for each choice.
 | **Edit diff** | `EditCollapsedPreview` → `DiffMathView` | unified-diff string |
 | **Diff nested in Bash output** | `BashCollapsedPreview` → `FixedFontMathToggle` | detected via `looksLikeUnifiedDiff` |
 
+## Codex goal tool rows
+
+Codex exposes three model-facing goal tools in persisted thread transcripts:
+`create_goal`, `get_goal`, and `update_goal`. They share a dedicated renderer
+rather than the generic JSON fallback. A known goal response shows the complete,
+pre-wrapped objective, its lifecycle status, token use and budget when present,
+remaining tokens, elapsed goal time, and a budget progress indicator. Long
+objectives must wrap at phone width without horizontal scrolling.
+
+The renderer accepts the current camel-case response fields and snake-case
+equivalents retained by older or partially normalized transcripts. Provider
+bookkeeping that does not help supervise the goal — thread ids, timestamps, and
+the model-only completion-report instruction — stays out of the visual summary.
+An empty `get_goal` response says that no goal is set, pending calls state the
+operation in progress, and failures show the provider error rather than a
+serialized response object.
+
+The separate Codex app-server `thread/goal/set`, `thread/goal/get`, and
+`thread/goal/clear` methods, plus updated/cleared notifications, are control
+protocol operations rather than additional model tool rows. This renderer does
+not make the YA client depend on those routes or add persistent goal chrome
+outside the transcript.
+
 ## Thinking block formatting
 
 Thinking blocks are user-visible model reasoning summaries, not normal assistant
@@ -62,6 +85,24 @@ These run unconditionally and are not user-configurable:
   previews hydrate those local image references through embedded bounded media
   blobs when present, falling back to the share-scoped relay route rather than
   navigating to authenticated local file APIs.
+  A rendered local-file URL with `line=N` uses the same source-aligned Markdown
+  block boundaries as the shared `FileViewer`, then places the containing block
+  about 10% below the viewport top. On arrival, that block has a temporary
+  highlight and a short dash extending into the left margin. The first
+  subsequent scroll dismisses the highlight with a one-way fade; the dash
+  remains as the durable target marker. An out-of-range line leaves the normal
+  unmarked document rather than jumping to an unrelated block.
+  Its ordinary **Raw** action opens the genuine `text/plain` resource in a
+  same-origin tab and uses the still-live rendered document to place that tab's
+  requested source line about 10% below the viewport top. The raw response is
+  not reconstructed as HTML, so browser Save As and native copy/paste retain
+  the exact source text. Modified-link gestures keep normal browser behavior.
+  The rendered document is a transitional YA-owned sanitized shell, not a
+  general active-file viewer or precedent for returning project HTML inline.
+  It must carry the per-response protection in
+  [`active-content-security.md`](active-content-security.md) while it remains,
+  and should converge on the shared SPA viewer when that preserves the needed
+  line/copy behavior.
 - **Assistant inline-code project file links** — when authenticated session
   Markdown renders with project context, inline-code filename references such
   as `` `topics/security.md` `` link to the project file viewer only if the
@@ -69,6 +110,33 @@ These run unconditionally and are not user-configurable:
   existing `codespan` token is the detection boundary; YA does not reparse raw
   assistant Markdown for this.
 - **Line numbers** — shown in the plain-text fallback path (no Shiki highlight).
+
+## Math delimiter parity
+
+Every surface that opts into KaTeX accepts the same explicit LaTeX delimiters:
+`\(…\)` for inline math and `\[…\]` for display math, alongside `$…$` and
+`$$…$$`. This includes completed and streamed assistant Markdown, rendered
+Markdown documents and tool results, fixed-font output panels, and Markdown or
+non-Markdown edit diffs in their rendered mode. An explicit closing delimiter
+must be unescaped; inline bracket math must stay on one line.
+
+Those surfaces share YA's KaTeX font and output-math size setting. An overwide
+display formula scrolls horizontally inside its own rendered surface rather
+than widening or clipping the surrounding transcript.
+
+Streaming assistant text may remain source-like while its current Markdown
+block is incomplete. Once the paragraph or display block completes, its
+server-supplied augment must contain KaTeX rather than exposing bracket
+delimiters for the client's fallback renderer to rediscover.
+
+In a diff, a multiline display formula renders only when its opening delimiter,
+body, and closing delimiter all belong to one lane: added, removed, context, or
+unprefixed. The rendered formula retains that lane's gutter and colour. A block
+that crosses lanes remains literal so an addition and removal can never be
+combined into a formula that exists on neither side.
+
+Thinking summaries and fenced or inline code remain literal under their
+separate source-preservation contracts; they are not KaTeX-enabled surfaces.
 
 ## File Content Viewer Contract
 
@@ -249,6 +317,12 @@ formulas as literal text, matching the experience in their editor.
 
 ## Known gaps / future work
 
+- Declined pending real-session evidence: bracketed display math could recover
+  a missing `\]` by treating a bare `]` or blank line as an implied close, or by
+  applying another restoration heuristic. Do not explore or add permissive
+  recovery unless measured provider-session delimiter failures exceed 0.1%;
+  either proposed sentinel can occur in intentional TeX, so speculative
+  recovery risks silently truncating valid formulas.
 - Local resource links need a shared context-aware routing layer so rendered
   `/api/local-file`, `/api/local-image`, and project-file links do not bypass
   the secure relay path in hosted remote mode. See

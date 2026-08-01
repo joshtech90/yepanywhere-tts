@@ -7,9 +7,11 @@ import type {
   SlashCommand,
   SessionLivenessProbeStatus,
   ToolDisplayAction,
+  ToolResultMedia,
   UploadedFile,
   UserMessageMetadata,
 } from "@yep-anywhere/shared";
+import type { SessionSandboxRuntime } from "../session-sandbox.js";
 
 export interface ContentBlock {
   type: "text" | "tool_use" | "tool_result" | "image" | "thinking";
@@ -63,6 +65,7 @@ export interface SDKMessage {
   tool_name?: string;
   tool_input?: unknown;
   toolUseResult?: unknown;
+  toolResultMedia?: ToolResultMedia[];
   // Input requests (tool approval, questions, etc.)
   input_request?: {
     id: string;
@@ -143,7 +146,14 @@ export interface ToolApprovalResult {
 export type CanUseTool = (
   toolName: string,
   input: unknown,
-  options: { signal: AbortSignal },
+  options: {
+    signal: AbortSignal;
+    /**
+     * Provider-frozen mode for the turn that issued this request.
+     * Falls back to the Process's current mode when omitted.
+     */
+    permissionMode?: PermissionMode;
+  },
 ) => Promise<ToolApprovalResult>;
 
 export interface ProviderLivenessProbeResult {
@@ -183,6 +193,11 @@ export interface StartSessionOptions {
   thinking?: import("@yep-anywhere/shared").ThinkingConfig;
   /** Effort level for response quality (undefined = SDK default) */
   effort?: import("@yep-anywhere/shared").EffortLevel;
+  /**
+   * Launch-time percentage override for Claude Code's own auto-compaction
+   * window. Omitted leaves its environment/default unchanged.
+   */
+  launchCompactPercentOverride?: number;
   onToolApproval?: CanUseTool;
   /** SSH host for remote execution (undefined = local) */
   executor?: string;
@@ -194,6 +209,8 @@ export interface StartSessionOptions {
   promptSuggestions?: boolean;
   /** Called when provider-owned retention evidence changes. */
   onProviderRetentionChange?: () => void;
+  /** Prepared YA host sandbox applied to every provider child for this session. */
+  sessionSandbox?: SessionSandboxRuntime;
 }
 
 export interface StartSessionResult {

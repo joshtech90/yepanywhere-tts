@@ -1,20 +1,27 @@
 import type { CSSProperties } from "react";
 import type { Toast as ToastType } from "../hooks/useToast";
+import styles from "./Toast.module.css";
 
 interface Props {
   toasts: ToastType[];
   onDismiss: (id: string) => void;
 }
 
+const TOAST_TYPE_CLASS = {
+  error: styles.error!,
+  success: styles.success!,
+  info: styles.info!,
+} satisfies Record<ToastType["type"], string>;
+
 export function ToastContainer({ toasts, onDismiss }: Props) {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="toast-container">
+    <div className={styles.container}>
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`toast toast-${toast.type}`}
+          className={`${styles.toast} ${TOAST_TYPE_CLASS[toast.type]}`}
           style={
             {
               "--toast-fade-duration": toast.action ? "7s" : "4.5s",
@@ -24,11 +31,11 @@ export function ToastContainer({ toasts, onDismiss }: Props) {
           onKeyDown={(e) => e.key === "Enter" && onDismiss(toast.id)}
           role="alert"
         >
-          <span className="toast-message">{toast.message}</span>
+          <span className={styles.message}>{toast.message}</span>
           {toast.action && (
             <button
               type="button"
-              className="toast-action"
+              className={styles.action}
               onClick={(e) => {
                 e.stopPropagation();
                 toast.action?.onClick();

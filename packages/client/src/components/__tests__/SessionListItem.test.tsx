@@ -128,6 +128,49 @@ describe("SessionListItem links", () => {
     expect(screen.getByText("check the side path")).toBeTruthy();
   });
 
+  it("does not label an ordinary parent-linked Clone as /btw", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="clone-1"
+              projectId="project-1"
+              title="Clone: Main session"
+              parentSessionId="source-1"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByText("/btw")).toBeNull();
+    expect(screen.getByText("Clone: Main session")).toBeTruthy();
+  });
+
+  it("keeps an explicitly typed /btw aside recognizable after rename", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="aside-1"
+              projectId="project-1"
+              title="Renamed side investigation"
+              parentSessionId="parent-1"
+              parentSessionKind="btw-aside"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("/btw")).toBeTruthy();
+    expect(screen.getByText("Renamed side investigation")).toBeTruthy();
+  });
+
   it("opens the parent /btw view when the aside badge is clicked", () => {
     const onNavigate = vi.fn();
 
@@ -282,7 +325,7 @@ describe("SessionListItem links", () => {
   });
 
   it("shows a card-mode thinking dot when requested for active rows", () => {
-    const { container } = render(
+    render(
       <I18nProvider>
         <MemoryRouter>
           <ul>
@@ -299,11 +342,14 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    expect(container.querySelector(".thinking-indicator-dot")).toBeTruthy();
+    const title = screen.getByRole("link", { name: "Active row" }).querySelector(
+      "strong",
+    );
+    expect(title?.firstElementChild?.firstElementChild).not.toBeNull();
   });
 
   it("leaves card-mode activity hidden unless requested", () => {
-    const { container } = render(
+    render(
       <I18nProvider>
         <MemoryRouter>
           <ul>
@@ -319,7 +365,10 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    expect(container.querySelector(".thinking-indicator-dot")).toBeNull();
+    const title = screen.getByRole("link", { name: "Active row" }).querySelector(
+      "strong",
+    );
+    expect(title?.firstElementChild).toBeNull();
   });
 
   it("uses custom titles for session hover previews", () => {
@@ -355,8 +404,11 @@ describe("SessionListItem links", () => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
 
-    const hoverTurn = document.querySelector(".session-hovercard__turn");
-    expect(hoverTurn?.textContent).toBe("Custom title");
+    // The prompt block is the hover card's first child; assert on the rendered
+    // text rather than a class name the owning module now scopes.
+    const hoverCard = screen.getByRole("tooltip");
+    expect(hoverCard.firstElementChild?.textContent).toBe("Custom title");
+    expect(hoverCard.textContent).not.toContain("Original first turn");
   });
 
   it("delays session hover previews", () => {
@@ -497,7 +549,7 @@ describe("SessionListItem links", () => {
       vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
 
-    const hoverCard = document.querySelector(".session-hovercard");
+    const hoverCard = screen.getByRole("tooltip");
     expect(hoverCard).toBeTruthy();
     expect(screen.getByText("Selectable recap text")).toBeTruthy();
 
@@ -507,7 +559,7 @@ describe("SessionListItem links", () => {
     });
     expect(screen.getByText("Selectable recap text")).toBeTruthy();
 
-    fireEvent.mouseLeave(hoverCard!);
+    fireEvent.mouseLeave(hoverCard);
     expect(screen.queryByText("Selectable recap text")).toBeNull();
   });
 

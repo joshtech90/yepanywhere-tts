@@ -8,6 +8,8 @@
 - Public share content censorship
 - Approval and local access security hardening
 - Security trust boundaries
+- Active content security (confirmed same-origin HTML execution, source-first
+  file viewing, and isolated origins for agent-built applications)
 - Trusted client packaging for signed/local app installs
 - Hard development rules for upstream-facing defaults
 - Kzahel-disabled feature decisions
@@ -46,6 +48,8 @@
 - pi provider (Zechner's pi-mono as agnostic backend: integration plan + periodic progress tracking)
 - Provider read/edit disciplines (native edit formats vs YA's one canonical Read/Edit/Write presentation)
 - Collapse/expand mode (brainstorm: default-collapse more actions; expand subagent progress as pure outline UI)
+- Conversation view (opt-in condensed transcript preserving agent text,
+  images, and failures with one expandable elapsed/activity summary per turn)
 - Session hover card recent activity (add last regular agent turn excerpt to the row tooltip; fire it on all-sessions + search too)
 - Tooltip interactions (native fallback, themed pointer-rest delay, warm adjacent scanning, and future rendered hidden tails)
 - Turn-notch actions / fork-from-turn (fork already exists; proposal: expose fork/copy/trim from scrollbar notches + seed compose with the forked turn)
@@ -54,6 +58,10 @@
 - Session summary fidelity (bounded list projections, complete-index isolation,
   and partial-observation nondowngrade rules)
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)
+- Cross-host delegation (directed grants let one YA server create and supervise
+  a separate native worker session on another YA host)
+- Federated super sessions (one canonical single-writer provider session
+  migrates between trusted YA peers for native cross-platform work)
 - Session media handles (problem statement for lazy transcript image/blob
   payloads behind authenticated server media IDs)
 - Session exit navigation latency (large transcript should not delay first
@@ -67,13 +75,15 @@
   facts, and shared semantic projection for web/Android/iOS native renderers)
 - Agents multi-session activity preview (default-off condensed live activity
   for active processes and last-output previews for recently idle ones)
+- Agents process observability (default-off host metrics plus read-only
+  discovery of externally launched local provider processes)
 - Bang commands (`!!` composer messages run local shell commands as
   persistent inline display objects, never entering provider context; tab
   completion, rendered output, cross-session history)
 - Interactives (proposal: zero-setup container for agent-built project web
   apps — opinionated template, committed files, registry, icon links,
-  YA-server-only reach via relay or auto Cloudflare tunnel, meta-UI comment
-  channel)
+  YA-server-only reach via relay with optional globally configured Tailscale
+  and Cloudflare paths, meta-UI comment channel)
 - Rich interviews (banked: multi-round structured-input flows rendered inline
   from declared formats; revisit atop interactives machinery)
 - Server plugin arch (banked no: settings-gated loadable server code;

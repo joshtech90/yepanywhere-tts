@@ -7,6 +7,45 @@ Topic: backward-compat
 
 ## Decisions
 
+2026-07-31 Source Control action commit counts — add optional
+`commitsAdvanced` fields to the existing Pull and Push responses without a new
+capability. Released capable servers `v0.6.0`, `v0.6.1`, `v0.6.2`, and
+`v0.7.0` omit the field; newer clients preserve the generic success feedback
+for those responses and make the same already-capability-gated request. Newer
+servers supply exact fast-forward Pull counts and the immediately observed
+pre-push ahead count; older clients ignore the additive field.
+
+2026-07-28 blame `authorColorSeed` — add the hue preference as an optional
+line field under the existing `git-source-review` capability rather than
+expanding that capability or adding a request. Older servers omit it; the
+client hashes the author name and runs the same visible-set spacing, so file
+content, blame links, and review remain available without protocol probing.
+
+2026-07-27 Claude Gateway `supported_endpoints` omission — treat an explicit
+endpoint list as authoritative and omit models with no supported text
+endpoint, but retain metadata-less rows for generic gateways and older
+`copilot-api` catalogs that predate the extension. The gateway owns its legacy
+route and any visible model-specific error; YA never falls through to regular
+Claude. Current focused `copilot-api` catalogs preserve endpoint metadata, so
+known Responses-only and Messages-capable models do not use this exception.
+
+2026-07-27 `claude-ollama` provider/settings/session identity — retain the
+legacy provider during a deprecation grace period and do not auto-migrate
+persisted sessions or settings to `claude-gateway`. Hide it from provider
+menus only when neither explicit Ollama configuration nor persisted
+`claude-ollama` session metadata exists; direct provider lookup remains
+available so old sessions can still resume. Existing users receive a
+dismissible removal notice directing them to `claude-gateway`.
+
+2026-07-25 previous/custom Claude model settings — persist selections on the
+server and advertise one exact transitional capability. A new client hides the
+control when an older compatible server lacks that capability, avoiding a
+write the old settings parser would silently ignore. A new server's optional
+provider metadata is additive for older clients. If a maintained registry item
+is later removed, keep an existing saved exact id and label as unlisted/custom
+instead of deleting or remapping it. This does not raise
+`remoteCompatibilityLevel`.
+
 2026-06-23 `session-metadata.json` — add optional transcript display objects in
 schema version 2 while retaining all version-1 session metadata; the additive
 migration preserves existing configured state, and interrupted generating
@@ -66,3 +105,12 @@ newer, but retain `agent_end` for version-probed 0.79.9 through 0.80.3
 binaries because they never emit the newer event and would otherwise hang.
 Fail startup when `pi --version` is unrecognized rather than guessing a
 boundary that could either hang or finalize before retry/compaction completes.
+
+2026-07-25 `clientDefaults.bangCommandsEnabled` — keep the persisted key and
+routes but narrow its meaning from "all bang commands" to "the discoverable
+!! Commands history surface" (sidebar entry + `GET /api/bang-commands`);
+execution, completions, and session-scoped bang routes became always-on under
+the vanilla-defaults established-convention carve-out. Key kept because it is
+a persisted server setting named in the `bang-commands` capability contract;
+older co-deployed clients that still gate the composer on it merely under-use
+the server.

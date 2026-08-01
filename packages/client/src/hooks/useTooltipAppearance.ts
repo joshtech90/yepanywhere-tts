@@ -3,6 +3,10 @@ import {
   useCallback,
   useSyncExternalStore,
 } from "react";
+import {
+  createLocalStorageValue,
+  invalidateLocalStorageValues,
+} from "../lib/localStorageValue";
 import { UI_KEYS } from "../lib/storageKeys";
 import { getVisibilityAwareTooltipText } from "../lib/tooltipVisibility";
 
@@ -31,6 +35,9 @@ export const TOOLTIP_CLOSE_DELAY_MULTIPLIER = 2;
 /** Ignore residual hand/sensor motion near a tooltip hover boundary. */
 export const TOOLTIP_POINTER_JITTER_PX = 4;
 
+/** Keep pointer re-hit events quiet across at least one typing cadence. */
+export const COMPOSER_TYPING_TOOLTIP_SUPPRESSION_MS = 100;
+
 /**
  * Once a tooltip has opened, a short time-only adjacency window makes scanning
  * neighboring targets immediate. Targets merely crossed before opening do not
@@ -38,11 +45,11 @@ export const TOOLTIP_POINTER_JITTER_PX = 4;
  */
 export const TOOLTIP_WARM_GRACE_MULTIPLIER = 6;
 
-const listeners = new Set<() => void>();
 const visibleTooltipTokens = new Set<symbol>();
 const visibleTooltipDismissers = new Map<symbol, () => void>();
+const tooltipSuppressionListeners = new Set<() => void>();
 let warmUntilMs = 0;
-let storageListener: ((event: StorageEvent) => void) | null = null;
+let tooltipSuppressedUntilMs = 0;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -57,23 +64,32 @@ function normalizeTooltipDelay(value: number): number {
   );
 }
 
-function readStoredNumber(key: string): number | null {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw === null ? null : Number(raw);
-  } catch {
-    return null;
-  }
-}
+const tooltipModeStore = createLocalStorageValue<TooltipMode>(
+  UI_KEYS.tooltipMode,
+  "native",
+  (raw) => (raw === "themed" ? "themed" : "native"),
+);
+
+const tooltipDelayStore = createLocalStorageValue(
+  UI_KEYS.tooltipDelayMs,
+  DEFAULT_TOOLTIP_DELAY_MS,
+  (raw) => normalizeTooltipDelay(Number(raw)),
+  String,
+  {
+    relatedKeys: [UI_KEYS.sessionHoverCardShowDelayMs],
+    readFallback: (storage) => {
+      const raw = storage.getItem(UI_KEYS.sessionHoverCardShowDelayMs);
+      return raw === null
+        ? undefined
+        : normalizeTooltipDelay(
+            Number(raw) / SESSION_HOVERCARD_DELAY_MULTIPLIER,
+          );
+    },
+  },
+);
 
 export function getTooltipMode(): TooltipMode {
-  try {
-    return localStorage.getItem(UI_KEYS.tooltipMode) === "themed"
-      ? "themed"
-      : "native";
-  } catch {
-    return "native";
-  }
+  return tooltipModeStore.read();
 }
 
 /**
@@ -112,17 +128,7 @@ export function setElementTextTooltip(
  * value, preserving the existing card timing for browsers that customized it.
  */
 export function getTooltipDelayMs(): number {
-  const stored = readStoredNumber(UI_KEYS.tooltipDelayMs);
-  if (stored !== null) return normalizeTooltipDelay(stored);
-
-  const legacyHoverCardDelay = readStoredNumber(
-    UI_KEYS.sessionHoverCardShowDelayMs,
-  );
-  return legacyHoverCardDelay === null
-    ? DEFAULT_TOOLTIP_DELAY_MS
-    : normalizeTooltipDelay(
-        legacyHoverCardDelay / SESSION_HOVERCARD_DELAY_MULTIPLIER,
-      );
+  return tooltipDelayStore.read();
 }
 
 function applyTooltipDelayCssVariable(delayMs: number): void {
@@ -134,32 +140,16 @@ function applyTooltipDelayCssVariable(delayMs: number): void {
   document.documentElement.dataset.tooltipMode = getTooltipMode();
 }
 
-function emitChange(): void {
-  applyTooltipDelayCssVariable(getTooltipDelayMs());
-  for (const listener of listeners) listener();
-}
-
 function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  if (!storageListener && typeof window !== "undefined") {
-    storageListener = (event) => {
-      if (
-        event.key === null ||
-        event.key === UI_KEYS.tooltipMode ||
-        event.key === UI_KEYS.tooltipDelayMs ||
-        event.key === UI_KEYS.sessionHoverCardShowDelayMs
-      ) {
-        emitChange();
-      }
-    };
-    window.addEventListener("storage", storageListener);
-  }
+  const handleChange = () => {
+    applyTooltipDelayCssVariable(getTooltipDelayMs());
+    listener();
+  };
+  const unsubscribeMode = tooltipModeStore.subscribe(handleChange);
+  const unsubscribeDelay = tooltipDelayStore.subscribe(handleChange);
   return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0 && storageListener) {
-      window.removeEventListener("storage", storageListener);
-      storageListener = null;
-    }
+    unsubscribeMode();
+    unsubscribeDelay();
   };
 }
 
@@ -188,40 +178,36 @@ export function useTooltipAppearance() {
   const tooltipDelayMs = useTooltipDelayMs();
 
   const setTooltipMode = useCallback((value: TooltipMode) => {
-    try {
-      localStorage.setItem(UI_KEYS.tooltipMode, value);
-    } catch {
-      // See setTooltipDelayMs.
-    }
+    tooltipModeStore.set(value);
     warmUntilMs = 0;
-    emitChange();
+    applyTooltipDelayCssVariable(getTooltipDelayMs());
   }, []);
 
   const setTooltipDelayMs = useCallback((value: number) => {
+    const normalized = normalizeTooltipDelay(value);
     try {
-      localStorage.setItem(
-        UI_KEYS.tooltipDelayMs,
-        String(normalizeTooltipDelay(value)),
-      );
-      localStorage.setItem(UI_KEYS.tooltipMode, "themed");
       localStorage.removeItem(UI_KEYS.sessionHoverCardShowDelayMs);
+      invalidateLocalStorageValues(UI_KEYS.sessionHoverCardShowDelayMs);
     } catch {
       // This browser-local presentation preference may remain at its default
       // when persistence is unavailable.
     }
+    tooltipDelayStore.set(normalized);
+    tooltipModeStore.set("themed");
     warmUntilMs = 0;
-    emitChange();
+    applyTooltipDelayCssVariable(normalized);
   }, []);
 
   const resetTooltipDelayMs = useCallback(() => {
     try {
-      localStorage.removeItem(UI_KEYS.tooltipDelayMs);
       localStorage.removeItem(UI_KEYS.sessionHoverCardShowDelayMs);
+      invalidateLocalStorageValues(UI_KEYS.sessionHoverCardShowDelayMs);
     } catch {
       // See setTooltipDelayMs.
     }
+    tooltipDelayStore.reset();
     warmUntilMs = 0;
-    emitChange();
+    applyTooltipDelayCssVariable(getTooltipDelayMs());
   }, []);
 
   return {
@@ -286,6 +272,35 @@ export function isTooltipWarm(nowMs = Date.now()): boolean {
   return visibleTooltipTokens.size > 0 || nowMs <= warmUntilMs;
 }
 
+export function areTooltipsSuppressed(nowMs = Date.now()): boolean {
+  return nowMs < tooltipSuppressedUntilMs;
+}
+
+export function subscribeTooltipSuppression(
+  listener: () => void,
+): () => void {
+  tooltipSuppressionListeners.add(listener);
+  return () => tooltipSuppressionListeners.delete(listener);
+}
+
+export function suppressTooltipsFor(
+  durationMs: number,
+  nowMs = Date.now(),
+): void {
+  tooltipSuppressedUntilMs = Math.max(
+    tooltipSuppressedUntilMs,
+    nowMs + Math.max(0, durationMs),
+  );
+  const dismissers = new Set([
+    ...tooltipSuppressionListeners,
+    ...visibleTooltipDismissers.values(),
+  ]);
+  visibleTooltipDismissers.clear();
+  visibleTooltipTokens.clear();
+  for (const dismiss of dismissers) dismiss();
+  warmUntilMs = 0;
+}
+
 export function getEffectiveTooltipDelayMs(
   multiplier = 1,
   nowMs = Date.now(),
@@ -335,4 +350,5 @@ export function clearTooltipWarmth(): void {
   visibleTooltipDismissers.clear();
   visibleTooltipTokens.clear();
   warmUntilMs = 0;
+  tooltipSuppressedUntilMs = 0;
 }

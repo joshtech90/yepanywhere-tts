@@ -4,6 +4,7 @@ import type {
   ProviderName,
   SessionLivenessSnapshot,
   ShowThinking,
+  SlashCommand,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
@@ -22,12 +23,14 @@ import {
   useState,
 } from "react";
 import { useOptionalRenderModeContext } from "../contexts/RenderModeContext";
+import { ConversationViewIcon } from "./ConversationViewIcon";
 import {
   type EffortLevel,
   type ThinkingMode,
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
+import { useConversationView } from "../hooks/useConversationView";
 import {
   getComposerToolbarOverflowLayoutSignature,
   type MessageInputToolbarLayoutRefs,
@@ -179,6 +182,7 @@ export interface MessageInputToolbarProps {
   mode?: PermissionMode;
   onModeChange?: (mode: PermissionMode) => void;
   modeChangesApplyNextTurn?: boolean;
+  modeChangePending?: boolean;
 
   // Provider capability flags (default to true for backwards compatibility)
   supportsPermissionMode?: boolean;
@@ -204,8 +208,8 @@ export interface MessageInputToolbarProps {
   getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
 
   // Slash commands
-  slashCommands?: string[];
-  onSelectSlashCommand?: (command: string) => void;
+  slashCommands?: SlashCommand[];
+  onSelectSlashCommand?: (command: SlashCommand) => void;
   onBtwClick?: () => void;
   btwActive?: boolean;
   btwHasAsides?: boolean;
@@ -452,6 +456,7 @@ interface ToolbarModeControl {
   onModeChange: (mode: PermissionMode) => void;
   modes?: readonly PermissionMode[];
   changesApplyNextTurn?: boolean;
+  modeChangePending?: boolean;
 }
 
 interface ToolbarAttachmentControl {
@@ -461,8 +466,8 @@ interface ToolbarAttachmentControl {
 }
 
 interface ToolbarSlashControl {
-  commands: string[];
-  onSelectCommand: (command: string) => void;
+  commands: SlashCommand[];
+  onSelectCommand: (command: SlashCommand) => void;
   disabled?: boolean;
 }
 
@@ -484,6 +489,12 @@ interface ToolbarThinkingControl {
 
 interface ToolbarRenderModeControl {
   state: ToolbarRenderModeState;
+  title: string;
+  onToggle: () => void;
+}
+
+interface ToolbarConversationViewControl {
+  enabled: boolean;
   title: string;
   onToggle: () => void;
 }
@@ -621,6 +632,8 @@ interface ToolbarActionsControl {
   contextUsage?: ContextUsage;
   /** Session model id, for the long-press compact-threshold quick-edit. */
   contextModel?: string;
+  /** Provider account whose subscription windows apply to the context model. */
+  contextProvider?: ProviderName;
   /** Model context window, for the quick-edit token preview. */
   contextWindow?: number;
   btw?: ToolbarBtwControl | null;
@@ -641,6 +654,7 @@ export interface MessageInputToolbarViewProps {
   slashControl?: ToolbarSlashControl | null;
   thinkingControl?: ToolbarThinkingControl | null;
   renderModeControl?: ToolbarRenderModeControl | null;
+  conversationViewControl?: ToolbarConversationViewControl | null;
   nudgeControl?: ToolbarNudgeControl | null;
   speechControl?: ToolbarSpeechControl | null;
   speechWaveformActive?: boolean;
@@ -844,6 +858,7 @@ export function MessageInputToolbarView({
   slashControl,
   thinkingControl,
   renderModeControl,
+  conversationViewControl,
   nudgeControl,
   speechControl,
   speechWaveformActive = false,
@@ -1060,6 +1075,7 @@ export function MessageInputToolbarView({
         <ContextThresholdQuickEdit
           usage={actionsControl.contextUsage}
           model={actionsControl.contextModel}
+          provider={actionsControl.contextProvider}
           contextWindow={actionsControl.contextWindow}
           size={16}
         />
@@ -1179,6 +1195,9 @@ export function MessageInputToolbarView({
     (visibility.renderMode &&
       renderModeControl &&
       isPriorityCollapsible("renderMode")) ||
+    (visibility.conversationView &&
+      conversationViewControl &&
+      isPriorityCollapsible("conversationView")) ||
     (visibility.nudge && nudgeControl && isPriorityCollapsible("nudge")) ||
     (visibility.sessionStatus &&
       showToolbarStatus &&
@@ -1213,6 +1232,10 @@ export function MessageInputToolbarView({
       visibility.renderMode && renderModeControl
         ? controlPriority.renderMode
         : "off",
+    conversationView:
+      visibility.conversationView && conversationViewControl
+        ? controlPriority.conversationView
+        : "off",
     nudge: visibility.nudge && nudgeControl ? controlPriority.nudge : "off",
     sessionStatus:
       visibility.sessionStatus && showToolbarStatus && statusControl
@@ -1236,7 +1259,9 @@ export function MessageInputToolbarView({
         ? controlPriority.projectQueueNewSessionShortcut
         : "off",
     microphone:
-      visibility.microphone && selectedSpeechMethod && speechControl?.voiceButton
+      visibility.microphone &&
+      selectedSpeechMethod &&
+      speechControl?.voiceButton
         ? speechControl.voiceButton.kind
         : "off",
     waveform: speechWaveformActive,
@@ -1295,6 +1320,7 @@ export function MessageInputToolbarView({
               onModeChange={modeControl.onModeChange}
               modes={modeControl.modes}
               changesApplyNextTurn={modeControl.changesApplyNextTurn}
+              modeChangePending={modeControl.modeChangePending}
             />
           </span>
         )}
@@ -1364,6 +1390,22 @@ export function MessageInputToolbarView({
             }
           >
             <RenderModeGlyph />
+          </button>
+        )}
+        {visibility.conversationView && conversationViewControl && (
+          <button
+            type="button"
+            className={inlineTierClass(
+              "conversationView",
+              "conversation-view-toolbar-button",
+              conversationViewControl.enabled ? "active" : "",
+            )}
+            onClick={conversationViewControl.onToggle}
+            title={conversationViewControl.title}
+            aria-label={conversationViewControl.title}
+            aria-pressed={conversationViewControl.enabled}
+          >
+            <ConversationViewIcon />
           </button>
         )}
         {visibility.nudge && nudgeControl && (
@@ -1516,47 +1558,48 @@ export function MessageInputToolbarView({
                 {visibility.modeSelector &&
                   modeControl &&
                   isPriorityCollapsible("modeSelector") && (
-                  <span className={menuTierClass("modeSelector")}>
-                    <ModeSelector
-                      mode={modeControl.mode}
-                      onModeChange={modeControl.onModeChange}
-                      modes={modeControl.modes}
-                      changesApplyNextTurn={modeControl.changesApplyNextTurn}
-                    />
-                  </span>
-                )}
+                    <span className={menuTierClass("modeSelector")}>
+                      <ModeSelector
+                        mode={modeControl.mode}
+                        onModeChange={modeControl.onModeChange}
+                        modes={modeControl.modes}
+                        changesApplyNextTurn={modeControl.changesApplyNextTurn}
+                        modeChangePending={modeControl.modeChangePending}
+                      />
+                    </span>
+                  )}
                 {visibility.attachments &&
                   isPriorityCollapsible("attachments") && (
-                  <button
-                    type="button"
-                    className={menuTierClass("attachments", "attach-button")}
-                    onClick={attachmentControl.onAttachClick}
-                    disabled={!attachmentControl.canAttach}
-                    title={
-                      attachmentControl.canAttach
-                        ? t("toolbarAttachFiles")
-                        : t("toolbarAttachDisabled")
-                    }
-                    role="menuitem"
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      aria-hidden="true"
+                    <button
+                      type="button"
+                      className={menuTierClass("attachments", "attach-button")}
+                      onClick={attachmentControl.onAttachClick}
+                      disabled={!attachmentControl.canAttach}
+                      title={
+                        attachmentControl.canAttach
+                          ? t("toolbarAttachFiles")
+                          : t("toolbarAttachDisabled")
+                      }
+                      role="menuitem"
                     >
-                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                    </svg>
-                    {attachmentControl.attachmentCount > 0 && (
-                      <span className="attach-count">
-                        {attachmentControl.attachmentCount}
-                      </span>
-                    )}
-                  </button>
-                )}
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        aria-hidden="true"
+                      >
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      </svg>
+                      {attachmentControl.attachmentCount > 0 && (
+                        <span className="attach-count">
+                          {attachmentControl.attachmentCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
                 {visibility.sessionStatus &&
                   isPriorityCollapsible("sessionStatus") &&
                   renderStatusAges(
@@ -1571,113 +1614,132 @@ export function MessageInputToolbarView({
                 {visibility.slashMenu &&
                   slashControl &&
                   isPriorityCollapsible("slashMenu") && (
-                  <span className={menuTierClass("slashMenu")}>
-                    <SlashCommandButton
-                      commands={slashControl.commands}
-                      onSelectCommand={slashControl.onSelectCommand}
-                      disabled={slashControl.disabled}
-                    />
-                  </span>
-                )}
+                    <span className={menuTierClass("slashMenu")}>
+                      <SlashCommandButton
+                        commands={slashControl.commands}
+                        onSelectCommand={slashControl.onSelectCommand}
+                        disabled={slashControl.disabled}
+                      />
+                    </span>
+                  )}
                 {visibility.thinkingToggle &&
                   thinkingControl &&
                   isPriorityCollapsible("thinkingToggle") && (
-                  <span className={menuTierClass("thinkingToggle")}>
-                    <ThinkingToolbarControl control={thinkingControl} t={t} />
-                  </span>
-                )}
+                    <span className={menuTierClass("thinkingToggle")}>
+                      <ThinkingToolbarControl control={thinkingControl} t={t} />
+                    </span>
+                  )}
                 {visibility.renderMode &&
                   renderModeControl &&
                   isPriorityCollapsible("renderMode") && (
-                  <button
-                    type="button"
-                    className={menuTierClass(
-                      "renderMode",
-                      "render-mode-toolbar-button",
-                      renderModeControl.state === "rendered"
-                        ? "is-rendered"
-                        : renderModeControl.state === "mixed"
-                          ? "is-mixed"
-                          : "",
-                    )}
-                    onClick={renderModeControl.onToggle}
-                    title={renderModeControl.title}
-                    aria-label={renderModeControl.title}
-                    role="menuitemcheckbox"
-                    aria-checked={
-                      renderModeControl.state === "mixed"
-                        ? "mixed"
-                        : renderModeControl.state === "rendered"
-                    }
-                  >
-                    <RenderModeGlyph />
-                  </button>
-                )}
+                    <button
+                      type="button"
+                      className={menuTierClass(
+                        "renderMode",
+                        "render-mode-toolbar-button",
+                        renderModeControl.state === "rendered"
+                          ? "is-rendered"
+                          : renderModeControl.state === "mixed"
+                            ? "is-mixed"
+                            : "",
+                      )}
+                      onClick={renderModeControl.onToggle}
+                      title={renderModeControl.title}
+                      aria-label={renderModeControl.title}
+                      role="menuitemcheckbox"
+                      aria-checked={
+                        renderModeControl.state === "mixed"
+                          ? "mixed"
+                          : renderModeControl.state === "rendered"
+                      }
+                    >
+                      <RenderModeGlyph />
+                    </button>
+                  )}
+                {visibility.conversationView &&
+                  conversationViewControl &&
+                  isPriorityCollapsible("conversationView") && (
+                    <button
+                      type="button"
+                      className={menuTierClass(
+                        "conversationView",
+                        "conversation-view-toolbar-button",
+                        conversationViewControl.enabled ? "active" : "",
+                      )}
+                      onClick={conversationViewControl.onToggle}
+                      title={conversationViewControl.title}
+                      aria-label={conversationViewControl.title}
+                      role="menuitemcheckbox"
+                      aria-checked={conversationViewControl.enabled}
+                    >
+                      <ConversationViewIcon />
+                    </button>
+                  )}
                 {visibility.nudge &&
                   nudgeControl &&
                   isPriorityCollapsible("nudge") && (
-                  <button
-                    type="button"
-                    className={menuTierClass(
-                      "nudge",
-                      "heartbeat-toolbar-button",
-                      nudgeControl.enabled ? "active" : "",
-                    )}
-                    onClick={nudgeControl.onClick}
-                    onContextMenu={nudgeControl.onContextMenu}
-                    onTouchStart={nudgeControl.onTouchStart}
-                    onTouchEnd={nudgeControl.onTouchEnd}
-                    onTouchCancel={nudgeControl.onClearTouch}
-                    onTouchMove={nudgeControl.onClearTouch}
-                    title={nudgeControl.title}
-                    aria-label={nudgeControl.title}
-                    role="menuitemcheckbox"
-                    aria-checked={nudgeControl.enabled}
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="miter"
-                      aria-hidden="true"
+                    <button
+                      type="button"
+                      className={menuTierClass(
+                        "nudge",
+                        "heartbeat-toolbar-button",
+                        nudgeControl.enabled ? "active" : "",
+                      )}
+                      onClick={nudgeControl.onClick}
+                      onContextMenu={nudgeControl.onContextMenu}
+                      onTouchStart={nudgeControl.onTouchStart}
+                      onTouchEnd={nudgeControl.onTouchEnd}
+                      onTouchCancel={nudgeControl.onClearTouch}
+                      onTouchMove={nudgeControl.onClearTouch}
+                      title={nudgeControl.title}
+                      aria-label={nudgeControl.title}
+                      role="menuitemcheckbox"
+                      aria-checked={nudgeControl.enabled}
                     >
-                      <path className="heartbeat-baseline" d="M0.75 15H7" />
-                      <path
-                        className="heartbeat-excursion"
-                        d="M7 15l2-5 2 9 4-16 3 12"
-                      />
-                      <path className="heartbeat-baseline" d="M18 15h5.25" />
-                    </svg>
-                  </button>
-                )}
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="miter"
+                        aria-hidden="true"
+                      >
+                        <path className="heartbeat-baseline" d="M0.75 15H7" />
+                        <path
+                          className="heartbeat-excursion"
+                          d="M7 15l2-5 2 9 4-16 3 12"
+                        />
+                        <path className="heartbeat-baseline" d="M18 15h5.25" />
+                      </svg>
+                    </button>
+                  )}
                 {visibility.shortcutsHelp &&
                   isPriorityCollapsible("shortcutsHelp") && (
-                  <button
-                    type="button"
-                    className={menuTierClass(
-                      "shortcutsHelp",
-                      "session-shortcuts-help-button",
-                    )}
-                    aria-label={t("toolbarKeyboardShortcutsAria")}
-                    aria-expanded={shortcutsPopoverOpen}
-                    onClick={() => shortcutsControl.setOpen((open) => !open)}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      openShortcutSettings();
-                    }}
-                    onTouchStart={startShortcutsLongPress}
-                    onTouchEnd={clearShortcutsLongPress}
-                    onTouchCancel={clearShortcutsLongPress}
-                    onTouchMove={clearShortcutsLongPress}
-                    role="menuitem"
-                  >
-                    ?
-                  </button>
-                )}
+                    <button
+                      type="button"
+                      className={menuTierClass(
+                        "shortcutsHelp",
+                        "session-shortcuts-help-button",
+                      )}
+                      aria-label={t("toolbarKeyboardShortcutsAria")}
+                      aria-expanded={shortcutsPopoverOpen}
+                      onClick={() => shortcutsControl.setOpen((open) => !open)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openShortcutSettings();
+                      }}
+                      onTouchStart={startShortcutsLongPress}
+                      onTouchEnd={clearShortcutsLongPress}
+                      onTouchCancel={clearShortcutsLongPress}
+                      onTouchMove={clearShortcutsLongPress}
+                      role="menuitem"
+                    >
+                      ?
+                    </button>
+                  )}
                 {isPriorityCollapsible("contextUsage") &&
                   renderContextUsage(
                     menuTierClass("contextUsage", "context-toolbar-control"),
@@ -2117,6 +2179,7 @@ export function MessageInputToolbar({
   mode = "default",
   onModeChange,
   modeChangesApplyNextTurn,
+  modeChangePending,
   supportsPermissionMode = true,
   supportsThinkingToggle = true,
   canAttach,
@@ -2192,6 +2255,8 @@ export function MessageInputToolbar({
   const { providers } = useProviders();
   const { visibility: toolbarVisibility, priority: toolbarPriority } =
     useSessionToolbarPresence();
+  const { conversationViewEnabled, setConversationViewEnabled } =
+    useConversationView();
   const renderMode = useOptionalRenderModeContext();
   const nowMs = useRelativeNow();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -2359,6 +2424,9 @@ export function MessageInputToolbar({
       : renderMode?.state === "source"
         ? t("toolbarRenderModeSource")
         : t("toolbarRenderModeMixed");
+  const conversationViewTitle = conversationViewEnabled
+    ? t("toolbarConversationViewDisable")
+    : t("toolbarConversationViewEnable");
   const hasPotentialDualActions = !!(onSend && onQueue && onSteer);
   const effectivePrimaryActionKind =
     primaryActionKind ?? (hasPotentialDualActions ? "steer" : "send");
@@ -2725,6 +2793,7 @@ export function MessageInputToolbar({
               onModeChange,
               modes: permissionModeOptions,
               changesApplyNextTurn: modeChangesApplyNextTurn,
+              modeChangePending,
             }
           : null
       }
@@ -2768,6 +2837,11 @@ export function MessageInputToolbar({
             }
           : null
       }
+      conversationViewControl={{
+        enabled: conversationViewEnabled,
+        title: conversationViewTitle,
+        onToggle: () => setConversationViewEnabled(!conversationViewEnabled),
+      }}
       nudgeControl={
         onToggleHeartbeat
           ? {
@@ -2853,6 +2927,7 @@ export function MessageInputToolbar({
         voiceDisabled,
         contextUsage,
         contextModel: contextRequestedModel ?? thinkingModel,
+        contextProvider: thinkingProviderInfo?.name,
         contextWindow: thinkingModelInfo?.contextWindow,
         btw: onBtwClick
           ? {

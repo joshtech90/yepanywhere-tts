@@ -7,16 +7,21 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  areTooltipsSuppressed,
   beginTooltipVisibility,
+  COMPOSER_TYPING_TOOLTIP_SUPPRESSION_MS,
   endTooltipVisibility,
   exceedsTooltipPointerJitter,
   getEffectiveTooltipDelayMs,
   getTooltipDelayMs,
+  subscribeTooltipSuppression,
+  suppressTooltipsFor,
   TOOLTIP_CLOSE_DELAY_MULTIPLIER,
   useTooltipMode,
 } from "../../hooks/useTooltipAppearance";
 import { writeClipboardText } from "../../lib/clipboard";
 import { isElementFullyScrollVisible } from "../../lib/tooltipVisibility";
+import styles from "./TooltipLayer.module.css";
 
 const TOOLTIP_ID = "ya-global-tooltip";
 const VIEWPORT_MARGIN_PX = 8;
@@ -82,14 +87,26 @@ function normalizeVisibleText(value: string): string {
 }
 
 function repeatsFullyVisibleContent(target: Element, text: string): boolean {
+  const normalizedText = normalizeVisibleText(text);
   if (
-    normalizeVisibleText(target.textContent ?? "") !==
-    normalizeVisibleText(text)
+    normalizeVisibleText(target.textContent ?? "") !== normalizedText
   ) {
     return false;
   }
   if (!(target instanceof HTMLElement)) return false;
-  return isElementFullyScrollVisible(target);
+  if (!isElementFullyScrollVisible(target)) return false;
+
+  // A row can fit while the one descendant carrying that same text is
+  // ellipsized. Suppress only when every exact-text presentation is visible.
+  for (const descendant of target.querySelectorAll<HTMLElement>("*")) {
+    if (
+      normalizeVisibleText(descendant.textContent ?? "") === normalizedText &&
+      !isElementFullyScrollVisible(descendant)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function appendDescriptionId(target: Element): SavedDescription {
@@ -319,6 +336,10 @@ export function TooltipLayer() {
 
   const activate = useCallback(
     (target: Element, anchorX: number, anchorY: number) => {
+      if (areTooltipsSuppressed()) {
+        hide();
+        return;
+      }
       clearHideTimer();
       const changesTarget = target !== activeTargetRef.current;
       const switchesVisibleTooltip = changesTarget && visibleRef.current;
@@ -358,6 +379,27 @@ export function TooltipLayer() {
       show,
     ],
   );
+
+  useEffect(() => subscribeTooltipSuppression(hide), [hide]);
+
+  useEffect(() => {
+    const onComposerInput = (event: Event) => {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.matches("[data-composer-input]")
+      ) {
+        return;
+      }
+      suppressTooltipsFor(COMPOSER_TYPING_TOOLTIP_SUPPRESSION_MS);
+    };
+
+    document.addEventListener("beforeinput", onComposerInput, true);
+    document.addEventListener("input", onComposerInput, true);
+    return () => {
+      document.removeEventListener("beforeinput", onComposerInput, true);
+      document.removeEventListener("input", onComposerInput, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (tooltipMode !== "themed") {
@@ -689,7 +731,7 @@ export function TooltipLayer() {
     <div
       ref={tooltipRef}
       id={TOOLTIP_ID}
-      className={`ya-tooltip${enlarged ? " ya-tooltip--enlarged" : ""}`}
+      className={`${styles.root}${enlarged ? ` ${styles.enlarged}` : ""}`}
       role="tooltip"
       style={{ left: position.left, top: position.top }}
     >

@@ -1,10 +1,8 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { extname, resolve } from "node:path";
-import { promisify } from "node:util";
+import { resolve } from "node:path";
 import {
   type GitDiffPreviewSkipped,
-  type GitDiffResult,
   type GitFileChange,
   type GitIntegrationOptionReason,
   type GitIntegrationOptionsResult,
@@ -17,11 +15,20 @@ import {
   isUrlProjectId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
-import { computeEditAugment } from "../augments/edit-augments.js";
-import { renderMarkdownToHtml } from "../augments/markdown-augments.js";
 import type { ProjectScanner } from "../projects/scanner.js";
-
-const execFileAsync = promisify(execFile);
+import {
+  GIT_DIFF_PREVIEW_MAX_DIFF_CHARS,
+  GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
+  skippedBinaryGitDiffResult,
+  skippedGitDiffResult,
+} from "../git/diffPreviewGuards.js";
+import { gitDiffReportsBinary } from "../git/binaryDiff.js";
+import { buildGitDiffResultFromBytes } from "../git/diffResult.js";
+import {
+  GIT_DECODE_PATHS_ARGS,
+  runGit,
+  runGitBytes,
+} from "../git/gitExec.js";
 
 export interface GitStatusDeps {
   scanner: ProjectScanner;
@@ -42,9 +49,6 @@ const NOT_A_GIT_REPO: GitStatusInfo = {
 const remoteCheckedAtByProjectPath = new Map<string, string>();
 const gitOperationsByProjectPath = new Set<string>();
 const UNTRACKED_FOLDER_FILE_LIMIT = 500;
-const GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES = 256 * 1024;
-const GIT_DIFF_PREVIEW_MAX_LINE_CHARS = 20_000;
-const GIT_DECODE_PATHS_ARGS = ["-c", "core.quotePath=false"];
 
 export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
   const routes = new Hono();
@@ -273,10 +277,15 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
 
     gitOperationsByProjectPath.add(project.path);
     try {
+      const previousHead = await getHeadCommit(project.path);
       await runGit(project.path, ["pull", "--ff-only"], {
         timeout: 60_000,
         disableTerminalPrompt: true,
       });
+      const commitsAdvanced = await countHeadAdvance(
+        project.path,
+        previousHead,
+      );
       const nextCheckedRemoteAt = new Date().toISOString();
       remoteCheckedAtByProjectPath.set(project.path, nextCheckedRemoteAt);
 
@@ -284,6 +293,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         status: "pulled",
         checkedRemoteAt: nextCheckedRemoteAt,
         gitStatus: await getGitStatusWithRemoteCheckTime(project.path),
+        commitsAdvanced,
       };
       return c.json(result);
     } catch (err) {
@@ -356,15 +366,20 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         timeout: 60_000,
         disableTerminalPrompt: true,
       });
+      const pushStatus: GitPushResult["status"] = status.upstream
+        ? isPushAlreadyUpToDateOutput(pushResult)
+          ? "up-to-date"
+          : "pushed"
+        : "published";
 
       const result: GitPushResult = {
-        status: status.upstream
-          ? isPushAlreadyUpToDateOutput(pushResult)
-            ? "up-to-date"
-            : "pushed"
-          : "published",
+        status: pushStatus,
         checkedRemoteAt: await getCheckedRemoteAt(project.path),
         gitStatus: await getGitStatusWithRemoteCheckTime(project.path),
+        commitsAdvanced:
+          pushStatus === "pushed" && status.ahead > 0
+            ? status.ahead
+            : undefined,
       };
       return c.json(result);
     } catch (err) {
@@ -392,7 +407,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
   /**
    * POST /:projectId/git/diff
    * Get syntax-highlighted diff for a specific file.
-   * Body: { path, staged, status, fullContext? }
+   * Body: { path, staged, status, againstHead?, origPath?, fullContext? }
    */
   routes.post("/:projectId/git/diff", async (c) => {
     const projectId = c.req.param("projectId");
@@ -410,7 +425,10 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       path: string;
       staged: boolean;
       status: string;
+      againstHead?: boolean;
+      origPath?: string;
       fullContext?: boolean;
+      ignoreWhitespace?: boolean;
     };
     try {
       body = await c.req.json();
@@ -418,12 +436,26 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
-    const { path, staged, status, fullContext } = body;
+    const {
+      path,
+      staged,
+      status,
+      againstHead,
+      origPath,
+      fullContext,
+      ignoreWhitespace,
+    } = body;
     if (!path || typeof staged !== "boolean" || !status) {
       return c.json(
         { error: "Missing required fields: path, staged, status" },
         400,
       );
+    }
+    if (
+      ignoreWhitespace !== undefined &&
+      typeof ignoreWhitespace !== "boolean"
+    ) {
+      return c.json({ error: "Invalid ignoreWhitespace" }, 400);
     }
     if (status === "?" && path.endsWith("/")) {
       return c.json(
@@ -441,41 +473,35 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         return c.json(skippedGitDiffResult(untrackedSizeSkip));
       }
 
+      if (
+        status !== "?" &&
+        (await gitDiffReportsBinary(
+          project.path,
+          workingTreeDiffArgs(staged, againstHead),
+          path,
+        ))
+      ) {
+        return c.json(skippedBinaryGitDiffResult());
+      }
+
       const { oldContent, newContent } = await getFileVersions(
         project.path,
         path,
         staged,
         status,
+        againstHead,
+        origPath,
       );
 
-      const previewSkip = getDiffPreviewSkip(oldContent, newContent);
-      if (previewSkip) {
-        return c.json(skippedGitDiffResult(previewSkip));
-      }
-
-      const contextLines = fullContext ? 999999 : 3;
-      const augment = await computeEditAugment(
-        "git-diff",
-        { file_path: path, old_string: oldContent, new_string: newContent },
-        contextLines,
+      return c.json(
+        await buildGitDiffResultFromBytes({
+          path,
+          oldContent,
+          newContent,
+          fullContext,
+          ignoreWhitespace,
+        }),
       );
-
-      const result: GitDiffResult = {
-        diffHtml: augment.diffHtml,
-        structuredPatch: augment.structuredPatch,
-      };
-
-      // Render markdown preview for .md files
-      const ext = extname(path).toLowerCase();
-      if ((ext === ".md" || ext === ".markdown") && newContent) {
-        try {
-          result.markdownHtml = await renderMarkdownToHtml(newContent);
-        } catch {
-          // Ignore markdown rendering errors
-        }
-      }
-
-      return c.json(result);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to compute diff";
@@ -486,154 +512,127 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
   return routes;
 }
 
+function workingTreeDiffArgs(
+  staged: boolean,
+  againstHead: boolean | undefined,
+): string[] {
+  if (againstHead) {
+    return ["diff", "HEAD"];
+  }
+  return staged ? ["diff", "--cached"] : ["diff"];
+}
+
+/**
+ * An untracked file is entirely additions, so the file *is* the diff and its
+ * size can be checked against the rendered budget without reading it.
+ */
 async function getUntrackedDiffPreviewSizeSkip(
   cwd: string,
   path: string,
 ): Promise<GitDiffPreviewSkipped | null> {
   const stats = await stat(resolve(cwd, path));
-  if (!stats.isFile() || stats.size <= GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES) {
+  if (!stats.isFile() || stats.size <= GIT_DIFF_PREVIEW_MAX_DIFF_CHARS) {
     return null;
   }
 
   return {
     reason: "content-too-large",
     totalBytes: stats.size,
-    maxTotalBytes: GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES,
+    maxTotalBytes: GIT_DIFF_PREVIEW_MAX_DIFF_CHARS,
     maxLineCharsLimit: GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
   };
-}
-
-function getDiffPreviewSkip(
-  oldContent: string,
-  newContent: string,
-): GitDiffPreviewSkipped | null {
-  const oldBytes = Buffer.byteLength(oldContent, "utf8");
-  const newBytes = Buffer.byteLength(newContent, "utf8");
-  const totalBytes = oldBytes + newBytes;
-  const maxLineChars = Math.max(
-    longestLineChars(oldContent),
-    longestLineChars(newContent),
-  );
-
-  if (totalBytes > GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES) {
-    return {
-      reason: "content-too-large",
-      totalBytes,
-      maxLineChars,
-      maxTotalBytes: GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES,
-      maxLineCharsLimit: GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
-    };
-  }
-
-  if (maxLineChars > GIT_DIFF_PREVIEW_MAX_LINE_CHARS) {
-    return {
-      reason: "line-too-long",
-      totalBytes,
-      maxLineChars,
-      maxTotalBytes: GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES,
-      maxLineCharsLimit: GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
-    };
-  }
-
-  return null;
-}
-
-function skippedGitDiffResult(
-  previewSkipped: GitDiffPreviewSkipped,
-): GitDiffResult {
-  return {
-    diffHtml: "",
-    structuredPatch: [],
-    previewSkipped,
-  };
-}
-
-function longestLineChars(content: string): number {
-  let longest = 0;
-  let current = 0;
-
-  for (let index = 0; index < content.length; index++) {
-    if (content.charCodeAt(index) === 10) {
-      longest = Math.max(longest, current);
-      current = 0;
-    } else {
-      current++;
-    }
-  }
-
-  return Math.max(longest, current);
 }
 
 /**
  * Get old and new file content for computing a diff.
  * Handles all git status codes (M, A, D, ?, R, etc.).
  */
+/** `git show HEAD:path` can exceed runGit's 1 MB default for large files. */
+const AGAINST_HEAD_SHOW_MAX_BUFFER = 16 * 1024 * 1024;
+
 async function getFileVersions(
   cwd: string,
   path: string,
   staged: boolean,
   status: string,
-): Promise<{ oldContent: string; newContent: string }> {
+  againstHead = false,
+  origPath?: string,
+): Promise<{ oldContent: Uint8Array; newContent: Uint8Array }> {
+  if (againstHead) {
+    const oldPath =
+      (status === "R" || status === "C") && origPath ? origPath : path;
+    const [oldContent, newContent] = await Promise.all([
+      status === "?" || status === "A"
+        ? Promise.resolve(Buffer.alloc(0))
+        : runGitBytes(cwd, ["show", `HEAD:${oldPath}`], {
+            maxBuffer: AGAINST_HEAD_SHOW_MAX_BUFFER,
+          }).then(
+            (result) => result.stdout,
+            (error) => {
+              // Only "absent at HEAD" (file added since) may read as empty.
+              // A too-big HEAD version must fail loudly — an empty fallback
+              // would render the file as fully added instead of hitting the
+              // preview-size skip.
+              if (
+                (error as NodeJS.ErrnoException).code ===
+                "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+              ) {
+                throw error;
+              }
+              return Buffer.alloc(0);
+            },
+          ),
+      readFile(resolve(cwd, path)).catch(() => Buffer.alloc(0)),
+    ]);
+    return { oldContent, newContent };
+  }
+
   // Untracked: entire file is new
   if (status === "?") {
-    const content = await readFile(resolve(cwd, path), "utf-8");
-    return { oldContent: "", newContent: content };
+    const content = await readFile(resolve(cwd, path));
+    return { oldContent: Buffer.alloc(0), newContent: content };
   }
 
   // Added (staged): new file in index
   if (status === "A") {
     if (staged) {
-      const { stdout } = await runGit(cwd, ["show", `:${path}`]);
-      return { oldContent: "", newContent: stdout };
+      const { stdout } = await runGitBytes(cwd, ["show", `:${path}`]);
+      return { oldContent: Buffer.alloc(0), newContent: stdout };
     }
     // Unstaged add shouldn't normally happen, but handle it
-    const content = await readFile(resolve(cwd, path), "utf-8");
-    return { oldContent: "", newContent: content };
+    const content = await readFile(resolve(cwd, path));
+    return { oldContent: Buffer.alloc(0), newContent: content };
   }
 
   // Deleted
   if (status === "D") {
     const ref = staged ? `HEAD:${path}` : `:${path}`;
-    const { stdout } = await runGit(cwd, ["show", ref]);
-    return { oldContent: stdout, newContent: "" };
+    const { stdout } = await runGitBytes(cwd, ["show", ref]);
+    return { oldContent: stdout, newContent: Buffer.alloc(0) };
   }
 
   // Modified or other statuses
   if (staged) {
     // Staged: compare HEAD to index
     const [oldResult, newResult] = await Promise.all([
-      runGit(cwd, ["show", `HEAD:${path}`]).catch(() => ({
-        stdout: "",
-        stderr: "",
+      runGitBytes(cwd, ["show", `HEAD:${path}`]).catch(() => ({
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
       })),
-      runGit(cwd, ["show", `:${path}`]),
+      runGitBytes(cwd, ["show", `:${path}`]),
     ]);
     return { oldContent: oldResult.stdout, newContent: newResult.stdout };
   }
 
   // Unstaged: compare index to working tree
   const [oldResult, newContent] = await Promise.all([
-    runGit(cwd, ["show", `:${path}`]).catch(() => ({
-      stdout: "",
-      stderr: "",
+    runGitBytes(cwd, ["show", `:${path}`]).catch(() => ({
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
     })),
-    readFile(resolve(cwd, path), "utf-8").catch(() => ""),
+    readFile(resolve(cwd, path)).catch(() => Buffer.alloc(0)),
   ]);
   return { oldContent: oldResult.stdout, newContent };
-}
-
-async function runGit(
-  cwd: string,
-  args: string[],
-  options?: { timeout?: number; disableTerminalPrompt?: boolean },
-): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("git", ["-C", cwd, ...args], {
-    maxBuffer: 1024 * 1024,
-    timeout: options?.timeout ?? 10_000,
-    ...(options?.disableTerminalPrompt
-      ? { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
-      : {}),
-  });
 }
 
 async function getCheckedRemoteAt(projectPath: string): Promise<string | null> {
@@ -802,6 +801,38 @@ async function hasGitRemote(
     return true;
   } catch {
     return false;
+  }
+}
+
+async function getHeadCommit(projectPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await runGit(projectPath, [
+      "rev-parse",
+      "--verify",
+      "HEAD^{commit}",
+    ]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function countHeadAdvance(
+  projectPath: string,
+  previousHead: string | null,
+): Promise<number | undefined> {
+  if (!previousHead) return undefined;
+
+  try {
+    const { stdout } = await runGit(projectPath, [
+      "rev-list",
+      "--count",
+      `${previousHead}..HEAD`,
+    ]);
+    const count = Number.parseInt(stdout.trim(), 10);
+    return Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+  } catch {
+    return undefined;
   }
 }
 

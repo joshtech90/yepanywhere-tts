@@ -15,18 +15,23 @@ See also:
   the tint↔draft link to be reconciled against a plain string, not real nodes.
 - [`session-ui-customization.md`](session-ui-customization.md) — whether the
   per-paragraph quote circle is always-on or a hideable/optional control.
+- [`source-review-to-session.md`](source-review-to-session.md) — generalizes this
+  quote-comment into a click-a-diff-line source-control review that accumulates
+  comments across commits/revisions and submits them all as one new session.
 
 Topic: selection-comment-ui
 
 Status: **Phase 1 shipped 2026-06-23; the two early contract gaps fixed
 2026-06-23; the dedicated assistant quote lane fixed 2026-06-25; initial
-Phase 2 scope widening shipped 2026-07-01.**
+Phase 2 scope widening shipped 2026-07-01; portaled modal/file scope shipped
+2026-07-27.**
 Assistant text blocks can be quoted via selection typing, a floating selection
 `>` button, or per-paragraph `>` circles; the resulting `>` block is inserted
 into the composer and the selected source span is tinted until the quote is
 removed or sent. Thinking summaries, user turns, Ran/Bash command and output
-text, Grep preview/content text, and recap rows now use the same selection
-pipeline. Right-mouse line-select and per-section quote lanes for
+text, Grep preview/content text, recap rows, expanded Edit/Read file content,
+general file viewers, and session hovercard prompt/reply text now use the same
+selection pipeline. Right-mouse line-select and per-section quote lanes for
 non-assistant-prose surfaces remain design/follow-up work.
 
 ## Resolved gaps (Phase 1)
@@ -128,6 +133,13 @@ The quote block itself:
   renderer. For tool rows, the Bash/Ran command text and rendered command/output
   bodies are eligible; locally generated row labels and controls are not unless
   a renderer deliberately registers them as content.
+- A registered selection may live in the transcript or in a portaled modal or
+  session hovercard opened from that session. Reusable modals establish a
+  quote-selection root, while their file/text renderers register the actual
+  source. The floating `>` renders inside the owning surface and sends the
+  quote to the session composer behind it; on touch it stays visibly pinned
+  inside that surface. Modal headers, buttons, labels, and other unregistered
+  chrome remain ineligible.
 - If the composer already holds text, two blank-line-separated newlines come
   first — this is exactly the existing `appendComposerTransferDraft` rule, not
   a new one.
@@ -193,17 +205,21 @@ list + tint paint + reconciliation, and the right-mouse line-select helper.
 
 ## Where state lives
 
-`SessionPage` already owns `draftControlsRef` and hands callbacks to both
-`MessageList` and `MessageInput`; it is the shared parent and the right home
-for the anchor list. Concretely a `useCommentAnchors` hook (or a small
-session-scoped context) holding `{ id, messageId, blockIndex, sourceRange,
-quotedText }[]`, with:
+`MessageInput` owns the complete composer string. `SessionPage` owns only a
+stable session-scoped draft signal and passes that unchanged object to
+`MessageList`; publishing a character does not set parent React state or change
+a transcript prop.
 
-- `MessageList` / the block renderer reading anchors to paint tint at the
-  render boundary.
-- A draft-watch reconciler dropping anchors whose `>` lines are gone.
-- The submit path clearing all anchors next to the existing
-  `draftControls.clearDraft()` calls — that is the send seam.
+The selection-quote controller owns comment anchors in refs because anchors
+drive the imperative CSS Custom Highlight registry rather than rendered
+transcript markup. It subscribes to the draft signal only while at least one
+anchor is live. Ordinary edits marked unable to affect quote-prefixed lines
+return before signature parsing. A relevant edit computes signatures once,
+drops missing anchors, and updates the highlight registry without rendering
+historical rows.
+
+The submit path still clears all anchors next to the existing
+`draftControls.clearDraft()` calls — that is the send seam.
 
 Persisting anchors alongside the draft (shared lifecycle, shared localStorage
 namespace) would let a reload that restores the draft also restore the tint.
@@ -323,6 +339,23 @@ already covers whole-paragraph quoting on those platforms.
   eligible source snippet a selection intersects, so a drag crossing
   user/assistant/tool/system regions produces separate blank-line-separated
   quote blocks while skipping unregistered UI chrome.
+
+  Portaled scope widening shipped 2026-07-27. Expanded Edit and Read file
+  content, full file viewers, and session hovercard prompt/reply text register
+  their source with the same extractor. Reusable modal roots let the active
+  session's copy, selection-typing, and floating-`>` controller follow that
+  registered text across the portal without creating a second quote path.
+
+  **Exact rendered-Markdown alignment remains follow-up work.** File viewers
+  and expanded Read/Edit Markdown currently register the original source, so
+  the shared extractor best-effort matches a visible selection back to that
+  source and preserves simple whole-block markers such as `#` and list
+  bullets. Ambiguous repeated text, renderer normalization, and selections
+  crossing structurally transformed blocks can still be inexact. A general
+  aligned Markdown renderer should carry token/source offset spans into the
+  rendered DOM, then make that one mapping serve quote reply, semantic copy,
+  comment tints, and line/range targets. Until then, falling back to the
+  selected visible text is the v1 contract; never invent Markdown structure.
 
   **Thinking summaries — quote while streaming *or* finished.** We want to
   select and comment on a thinking-summary item even mid-stream, not only once

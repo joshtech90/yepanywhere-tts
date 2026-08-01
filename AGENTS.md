@@ -45,6 +45,34 @@ runtime-safety benefit. Run the project lint wrapper for diagnostics, but do not
 turn a one-line import or export addition into a broad reorder solely to satisfy
 organize-imports advice.
 
+## Client CSS Architecture
+
+Before adding or changing client styles, read `topics/css-architecture.md`.
+Component-owned styles use co-located `*.module.css` files. The existing global
+client stylesheets are frozen at ratcheting line-count ceilings: feature work
+must extract enough legacy CSS to offset any unavoidable addition and must
+never raise a ceiling as routine development.
+
+Run `pnpm css:check` for client style changes. When an extraction lowers a
+legacy file's line count, run `pnpm css:check --record` in the same change.
+New non-module client stylesheets require an explicit documented exception in
+the CSS architecture baseline; generated markdown/provider markup may keep its
+narrow global vocabulary, but surrounding React-owned UI still belongs in a
+module.
+
+When changing a React component that still emits legacy global classes, or
+when editing a legacy stylesheet, run `pnpm css:touched` before finishing. It
+uses the current diff to distinguish bounded opportunities from coupled,
+scattered, dynamic, or unresolved ownership. Drill into a reported owner with
+`pnpm css:inventory -- --owner <component>`. Opportunistically extract a
+clearly owned slice when it stays within the task's product surface and can use
+the task's existing verification setup. Do not expand the task through
+generated markup, open-ended dynamic classes, broad composition, or unprovable
+visual states;
+state the concrete deferral reason in the final handoff instead. Fresh
+inventory, not a standing migration queue, decides whether a later extraction
+is worthwhile.
+
 ## Vanilla Defaults
 
 `topics/vanilla-defaults.md` is the overarching UX theory governing every new
@@ -53,10 +81,30 @@ provider UIs users already know (Claude Code TUI, claude.ai, Codex): a
 first-time user must not have to learn, or even notice, a new concept. Any
 YA-novel user-visible behavior — including anything that modifies the user's
 submitted text before it reaches the provider — ships configurable and
-default-off. A believed-but-unproven benefit earns an option, never a default.
+default-off. Narrow carve-out: an established cross-harness convention that
+stays invisible until the user deliberately invokes it (e.g. a `!!`
+shell-escape prefix, echoing Claude Code's `!` bash mode) is not YA-novel and
+may ship always-on; any discoverable surface it adds (a sidebar entry) still
+ships default-off. See `topics/vanilla-defaults.md` § Known Exceptions.
+A believed-but-unproven benefit earns an option, never a default.
 Novel features remain welcome; do not assume first-party harnesses already
 cover all useful behavior. Read the topic before adding or enabling any
 user-visible feature that is not configurable default-off.
+
+## UI Tweak Visual Verification
+
+By default, any UI tweak or layout/control-placement request ends with rendered
+browser captures of the final result at 1920×1080 and a phone width (375×812),
+inspected by the agent against the request before claiming completion;
+in-progress captures are optional.
+
+An explicit user handoff overrides this default. If the user says they will
+visually verify the result or asks to skip screenshots or visual validation, do
+not capture screenshots or launch a browser solely for visual QA. Continue
+relevant nonvisual checks, and state in the final response that visual
+verification was left to the user rather than claiming it was performed. Do
+not cite this repository default as a reason to disregard that handoff.
+Protocol, commands, scope, and archive paths: `topics/ui-testing.md`.
 
 ## Observable Behavior Contracts
 
@@ -66,6 +114,58 @@ behavior it adds or changes is covered by a contract in the owning
 testable outcomes and constraints, including deliberate failure or fallback
 behavior, rather than implementation narration. Tests and commit messages are
 evidence and history, not substitutes for the product contract.
+
+## Naming Steps In Tactical Plans
+
+Name every step in a `docs/tactical/*.md` plan for the product surface or the
+work it covers — "source-control chrome", "delete the dead git-status rules",
+"teach the unused-CSS report about modules". Number them in recommended order
+if a handle is useful, matching the house form `### 4 — map source-control CSS
+ownership`.
+
+Do not invent a private code scheme. Lettered lanes with numbered slices
+(`A1`, `C1.5`, `F0`) force every reader — including the maintainer who asked
+for the plan — to hold a lookup table in their head before they can discuss the
+work, and the letters convey nothing on their own. Group related steps under a
+plain heading instead. If a step's name is hard to write, that usually means
+its boundary is not yet decided.
+
+Reusing a scheme that already exists in a document you are editing is fine;
+extending it into a new document is not. When you rename, leave one compact
+mapping table so older commit messages stay traceable.
+
+## Client/Server Backwards Compatibility
+
+Before making the client depend on a server route, response field, event, or
+changed semantic that is absent from a supported stable release, read
+`topics/server-capabilities.md` and `topics/remote-hosted-compatibility.md`.
+Identify whether the feature is core or optional and inspect every stable
+server release in the applicable minimum horizon:
+
+- optional features: the latest two stable releases and every stable release
+  from the preceding 14 days;
+- core functionality: the latest two stable releases and every stable release
+  from the preceding 60 days.
+
+Then present a compatibility plan before editing the client/server contract:
+name the releases, new routes/fields/events, proposed capability or protocol
+gate, exact behavior when it is absent, and whether any existing capability
+meaning or older capable fallback changes. Pause for maintainer approval. An
+originating request that already states and approves those decisions satisfies
+the pause; do not ask twice.
+
+Never expand an already-advertised capability to cover a contract older servers
+do not provide. A new client must not call a new endpoint until its gate is
+known present. Passing a support horizon permits human review only; it never
+automatically removes a fallback or raises a compatibility floor. Security
+exceptions follow `topics/hard-development-rules.md`.
+
+Suggested approval prompt:
+
+> Compatibility review for `<feature>`: releases `<corpus>` lack
+> `<routes/fields/events>`. I propose `<capability/protocol>`; without it the
+> client `<fallback>` and makes no unsupported requests. Existing capability
+> meanings and older capable behavior remain unchanged. Approve?
 
 ## Hard Development Rules
 
@@ -151,19 +251,6 @@ chatty, run `pnpm console:scan` with the pre-commit checks and read
 [`topics/console-chatter.md`](topics/console-chatter.md) — it carries
 the budget policy, the remediation preference order, the measurement
 tools, and the ratcheting baseline.
-
-## Commit Lock Protocol
-
-Before staging or committing, acquire `.git/yepanywhere-commit.lock`. The
-required flow is:
-
-1. Check for and acquire `.git/yepanywhere-commit.lock`.
-2. If it already exists, sleep 10 seconds and retry.
-3. Hold the lock through:
-   - staging
-   - staged diff review
-   - `git commit`
-4. Remove the lock after the commit completes.
 
 The working tree may contain concurrent human or agent edits. Avoid reverting
 or tidying unrelated changes unless the task directly requires them.

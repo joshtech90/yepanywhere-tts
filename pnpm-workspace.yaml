@@ -5,3 +5,7 @@ overrides:
   # Keep bn.js patched (web-push -> asn1.js -> bn.js chain) until web-push
   # ships an upstream fix. See CLAUDE.md "Dependency Security Maintenance".
   bn.js: 5.2.3
+  # Pinned exactly: ajv declares ^3.0.1 and fast-uri 4.x is published, so a
+  # caret range would escape the parent's declared range.
+  fast-uri: 3.1.4
+  postcss: ^8.5.23

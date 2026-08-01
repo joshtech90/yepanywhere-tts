@@ -4,6 +4,8 @@ import { AgentContentProvider } from "../../contexts/AgentContentContext";
 import { RenderModeProvider } from "../../contexts/RenderModeContext";
 import { SessionMetadataProvider } from "../../contexts/SessionMetadataContext";
 import { StreamingMarkdownProvider } from "../../contexts/StreamingMarkdownContext";
+import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
+import { UI_KEYS } from "../../lib/storageKeys";
 import type { Message } from "../../types";
 import { MessageList } from "../MessageList";
 
@@ -35,6 +37,11 @@ vi.mock("../../i18n", () => ({
         sessionFollowLatestOutput: "Follow latest session output",
         sessionNewOutputBelow: "New output below",
         sessionNewOutputBelowTitle: "Jump to latest session output",
+        sessionConversationLatestTurns: "Latest {count} user turns shown",
+        sessionConversationLoadEarlierTurns: "Load {count} earlier user turns",
+        sessionRecentTranscriptLoaded: "Recent transcript loaded",
+        sessionLoadOlderMessages: "Load older messages",
+        sessionLoadingOlderMessages: "Loading...",
         sessionSearchHelpNavigate:
           "{shortcutKeys} prev · ↑↓ matches · click jumps",
         sessionSearchHelpClose: "Enter jump+close · Esc cancel · Aa case",
@@ -49,11 +56,17 @@ vi.mock("../../i18n", () => ({
         projectQueueInlineEdit: "Edit Project Queue item",
         projectQueueInlineSteer: "Steer Project Queue item now",
         projectQueueInlineCancel: "Cancel Project Queue item",
+        projectQueueResume: "Resume",
         projectQueueEdit: "Edit",
         projectQueueCancel: "Cancel",
         userPromptCopyAction: "Copy message text",
         userPromptEditAction: "Edit latest message",
         userPromptCancelUnconfirmedAction: "Cancel sent steering message",
+        forkTurnMenuLabel: "Fork from this turn",
+        forkTurnBefore: "Before this turn",
+        forkTurnAfter: "After this turn",
+        forkTurnAfterSummary: "After with summary…",
+        forkTurnAfterDisabled: "Available after this response completes",
         explorationTitlePending: "Exploring",
         explorationTitleComplete: "Explored",
         explorationItemCountOne: "{count} item",
@@ -64,6 +77,36 @@ vi.mock("../../i18n", () => ({
         explorationHideCommandDetails: "Hide command details",
         explorationLine: "line {line}",
         explorationLineRange: "lines {start}-{end}",
+        conversationActivitySingular: "activity",
+        conversationActivityPlural: "activities",
+        conversationActivityActive: "Working {duration} · {count} {activity}",
+        conversationActivityActiveWithoutTime: "Working · {count} {activity}",
+        conversationActivityComplete: "{duration} · {count} {activity} hidden",
+        conversationActivityCompleteWithoutTime: "{count} {activity} hidden",
+        conversationActivityExpandTitle:
+          "Show hidden activity in its original positions",
+        conversationActivityCollapseTitle:
+          "Collapse this turn's routine activity",
+        conversationThinkingPreviewCurrent: "Current thinking",
+        conversationThinkingPreviewLatest: "Latest thinking",
+        conversationThinkingPreviewPrevious: "Previous thinking",
+        conversationThinkingPreviewCollapse: "Collapse thinking preview",
+        conversationThinkingPreviewExpand: "Expand thinking preview",
+        conversationThinkingPreviewDismiss: "Dismiss {label}",
+        conversationRecentActivities: "Most recent activities",
+        turnImageGalleryCount: "{current} of {count}",
+        turnImageGalleryCollapse: "Collapse gallery",
+        turnImageGalleryExpand: "Expand gallery",
+        turnImageGalleryExpandAt: "Expand gallery at {label}",
+        turnImageGalleryLabel: "Turn image gallery",
+        turnImageGalleryLoading: "Loading image…",
+        turnImageGalleryOpen: "Open {label}",
+        turnImageGalleryShow: "Gallery",
+        turnImageGalleryUnavailable: "Image unavailable",
+        imageViewerGalleryNavigation: "Gallery image navigation",
+        imageViewerGalleryPosition: "{current} of {count}",
+        imageViewerPrevious: "Previous image",
+        imageViewerNext: "Next image",
       };
       const value = translations[key] ?? key;
       return value.replace(/\{(\w+)\}/g, (_, param: string) =>
@@ -249,6 +292,10 @@ export function installMessageListTestEnvironment() {
       value: ResizeObserverMock,
     });
     window.localStorage.clear();
+    // Most MessageList suites exercise the full transcript. Product-default
+    // Conversation View behavior has dedicated rendering tests.
+    window.localStorage.setItem(UI_KEYS.conversationView, "false");
+    invalidateLocalStorageValues();
   });
 
   afterEach(() => {

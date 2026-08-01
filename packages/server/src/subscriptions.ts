@@ -204,6 +204,12 @@ export function createSessionSubscription(
           });
           break;
 
+        case "mode-applied":
+          emit("mode-applied", {
+            appliedPermissionMode: event.mode,
+          });
+          break;
+
         case "error":
           emit("error", { message: event.error.message });
           break;
@@ -257,6 +263,7 @@ export function createSessionSubscription(
     sessionId: process.sessionId,
     state: currentState.type,
     permissionMode: process.permissionMode,
+    appliedPermissionMode: process.appliedPermissionMode,
     modeVersion: process.modeVersion,
     recapAfterSeconds: process.recapAfterSeconds,
     recapMode: process.recapMode,

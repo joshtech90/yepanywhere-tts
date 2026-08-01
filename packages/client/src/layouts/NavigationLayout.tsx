@@ -8,12 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Outlet,
-  useLocation,
-  useOutletContext,
-} from "react-router-dom";
-import { Sidebar } from "../components/Sidebar";
+import { Outlet, useLocation, useOutletContext } from "react-router-dom";
+import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
@@ -23,6 +19,7 @@ import {
   useSidebarWidth,
 } from "../hooks/useSidebarWidth";
 import { useRetainSidebarSessionFeeds } from "../hooks/useSidebarSessionFeeds";
+import { useI18n } from "../i18n";
 
 export interface NavigationLayoutContext {
   /** Open the mobile sidebar */
@@ -136,6 +133,7 @@ export function SessionDomLingerRouteMarker() {
 export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
   useRetainSidebarSessionFeeds();
   const { sessionDomLingerEnabled } = useSessionPerformanceSettings();
+  const { t } = useI18n();
 
   const location = useLocation();
   const currentSessionMatch = useMemo(
@@ -150,8 +148,13 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const forceExpandedSidebar =
     new URLSearchParams(location.search).get("sidebar") === "expanded";
-  const { isExpanded, toggleExpanded } =
-    useSidebarPreference(forceExpandedSidebar);
+  const {
+    isExpanded,
+    isMinimized,
+    toggleExpanded,
+    minimizeToFloatingToggle,
+    restoreCollapsedSidebar,
+  } = useSidebarPreference(forceExpandedSidebar);
   const {
     width: sidebarWidth,
     setWidth: setSidebarWidth,
@@ -281,8 +284,9 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
     location.state,
     sourceKey,
   ]);
-  const [lingerRoute, setLingerRoute] =
-    useState<SessionDomLingerRoute | null>(() => currentSessionRoute);
+  const [lingerRoute, setLingerRoute] = useState<SessionDomLingerRoute | null>(
+    () => currentSessionRoute,
+  );
   const sessionLayerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -331,7 +335,9 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
       renderedSessionRoute &&
       currentSessionRoute.key === renderedSessionRoute.key,
   );
-  const sessionLayerParked = Boolean(renderedSessionRoute && !sessionLayerVisible);
+  const sessionLayerParked = Boolean(
+    renderedSessionRoute && !sessionLayerVisible,
+  );
 
   useEffect(() => {
     const element = sessionLayerRef.current as
@@ -350,27 +356,41 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
       } ${isResizing ? "resizing" : ""}`}
       style={containerStyle}
     >
-      {/* Desktop sidebar - always visible on wide screens */}
-      {isWideScreen && !isContentFrameRoute && (
-        <aside
-          className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
-          style={desktopSidebarStyle}
-        >
-          <Sidebar
-            isOpen={true}
-            onClose={NOOP}
-            onNavigate={NOOP}
-            currentSessionId={currentSessionMatch?.sessionId}
-            isDesktop={true}
-            isCollapsed={effectivelyCollapsed}
-            onToggleExpanded={handleToggleExpanded}
-            sidebarWidth={sidebarWidth}
-            onResizeStart={handleResizeStart}
-            onResize={setSidebarWidth}
-            onResizeEnd={handleResizeEnd}
-          />
-        </aside>
-      )}
+      {/* Desktop sidebar - always visible on wide screens; the minimized mode
+          renders the floating restore toggle in its place */}
+      {isWideScreen &&
+        !isContentFrameRoute &&
+        (isMinimized ? (
+          <button
+            type="button"
+            className="sidebar-toggle sidebar-floating-restore"
+            onClick={restoreCollapsedSidebar}
+            title={t("actionRestoreSidebar")}
+            aria-label={t("actionRestoreSidebar")}
+          >
+            <SidebarToggleIcon />
+          </button>
+        ) : (
+          <aside
+            className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
+            style={desktopSidebarStyle}
+          >
+            <Sidebar
+              isOpen={true}
+              onClose={NOOP}
+              onNavigate={NOOP}
+              currentSessionId={currentSessionMatch?.sessionId}
+              isDesktop={true}
+              isCollapsed={effectivelyCollapsed}
+              onToggleExpanded={handleToggleExpanded}
+              onMinimize={minimizeToFloatingToggle}
+              sidebarWidth={sidebarWidth}
+              onResizeStart={handleResizeStart}
+              onResize={setSidebarWidth}
+              onResizeEnd={handleResizeEnd}
+            />
+          </aside>
+        ))}
 
       {/* Mobile sidebar - modal overlay (also used for constrained desktop overlay) */}
       {!isContentFrameRoute && (!isWideScreen || sidebarOpen) && (

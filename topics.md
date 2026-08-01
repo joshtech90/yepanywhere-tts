@@ -29,15 +29,22 @@
 - client-session-collection-store - Normalized client session facts and list projection consistency.
 - relative-filenames - Shortest-unambiguous file path display and link targets.
 - rich-text-rendering - Rendered file/message/diff previews and local-link handling.
+- media-rendering-and-routing - Relay-safe media discovery, compact turn
+  galleries, and full-image viewer interaction.
 - security - YA trust-boundary contracts for local, authenticated, relay, and public surfaces.
 - trusted-client-packaging - Signed/local client packaging and relay-only transport trust roots.
+- android-credential-sharing - Digital Asset Links association between the
+  packaged Android app and yepanywhere.com login credentials.
 - message-control-steer-queue-btw-later-interrupt - Steer/queue control state, ownership normalization, and metadata contract cleanup.
 - composer-bottom-bar-overflow - Narrow composer bottom-row overflow popup and control priority.
 - ui-architecture - Shared rendering boundaries and anti-DOM-rewrite discipline.
 - opencode-backend - OpenCode provider capability and transcript-rendering parity.
 - provider-refresh - Provider upstream/source refresh triggers, probes, and due-refresh evidence.
+- pi-provider - Pi installed-binary contract coverage and upstream compatibility refreshes.
 - provider-model-glyphs - Compact provider/model identity for narrow status surfaces.
-- graehl-ci-pre-kzahel-gate - Use graehl-push CI as a coverage/signal gate before pushing to kzahel.
+- provider-subscription-usage - Capability-gated provider quota windows and
+  model-applicable usage surfaces.
+- graehl-ci-pre-kzahel-gate - Retired to a checkout-local note (maintainer-personal remote policy); topic string stays reserved for the existing commit series.
 - claude - Claude provider control, restart/resume safety, interviews, and YA-owned process bridges.
 - edit-turn - Inline editing proposal for queued/sent user turns with a visible Esc/cancel escape hatch.
 - resume-compaction - Compact-before-resume choice for old or context-heavy provider sessions.
@@ -151,6 +158,10 @@
   renderers.
 - provider-child-sessions - Provider-launched delegated work discovered from
   provider persistence and nested beneath its canonical YA parent session.
+- cross-host-delegation - Directed YA-host grants and the product surface for
+  creating and supervising separate native worker sessions on another host.
+- older-claude-models - Default-off server registry and grandfathered custom
+  selections for previous provider model versions.
 - host-awake - Server-owned, process-lifetime idle-sleep inhibition with an
   optional macOS closed-lid-on-external-power strategy.
 - host-identity - Optional server-owned emoji marker for connected headers and
@@ -161,13 +172,64 @@
   isolation, and partial-observation nondowngrade rules.
 - agents-activity-preview - Optional bounded multi-session activity previews
   for active and recently idle process cards on Agents.
+- agents-process-observability - Default-on, request-driven host process
+  metrics and read-only external provider process discovery for Agents.
+- session-sandboxing - Default-off, all-provider Project writes only
+  confinement; Linux v1 requires Bubblewrap with provider defense in depth.
 - interactives - Zero-setup container for agent-built project web apps:
   opinionated template, committed project files, registry, icon links,
-  YA-server-only reach (relay, or auto Cloudflare tunnel when enabled),
-  and a meta-UI comment-to-agent channel.
+  YA-server-only reach (relay core, with optional globally configured
+  Tailscale and Cloudflare paths), and a meta-UI comment-to-agent channel.
 - rich-interviews - Banked: multi-round structured-input interview flows;
   YA renders declared formats inline; revisit atop interactives machinery.
 - server-plugin-arch - Banked no: settings-gated loadable server plugins;
   monolith convenience wins absent a contributing community.
 - project-settings-overrides - Banked seed: project-scoped settings
   overriding global; easy mechanically, painful to visualize; no current use.
+- composer-recall-drawer - Ctrl+Up prefix-match history drawer folding up
+  from the composer (reuses isearch/UserTurnNavigator machinery); bundled
+  enablement change makes !! execution and the recall drawer always-on,
+  with only the "!! Commands" sidebar section opt-in. Vanilla Defaults
+  amended with an established-convention carve-out to allow it.
+- composer-input-latency - Session composer typing stays local regardless of
+  transcript size; quote and queued-edit consumers subscribe below the
+  transcript boundary, while reactive browser preferences use cached
+  snapshots and draft-presence decoration is event-driven.
+- settings-search - live substring filter over the Settings UI: shared
+  SettingsItem/SettingsSection row layer, operable-in-place results with
+  highlighted matches and jump links, default-off "Match values" toggle.
+- source-review-to-session - Read-only source review comments accumulated into
+  a new agent session; issue #95's broader source manager is inspiration only.
+- conversation-view - Opt-in condensed transcript preserving user/agent text,
+  images, and failures behind per-turn expandable elapsed/activity summaries.
+- acli-ui - ACLI capability detection (`acli:` help line) and richer
+  bang-composer completion/help UI proposal.
+- ui-testing - Capture-confirmed browser QA by default, with an explicit
+  user-owned visual-verification handoff that skips agent capture work.
+- source-control - Repository-navigation workbench: changes, commits, files,
+  blame, diffs, responsive panes, and links to relevant agent sessions.
+- federated-super-sessions - One canonical YA session whose active provider
+  runtime can migrate safely between trusted cross-platform YA peers.
+- skill-invocation - Provider-aware `/name` and `$name` skill discovery,
+  composer completion, and exact-token dispatch without constraining prompt
+  text.
+- relay-client-mux - Optional relay-owned client multiplexing for several
+  independently authenticated YA hosts with exact legacy `/ws` fallback.
+- desktop-v0 - Windows-first self-contained Tauri release with an atomic
+  private runtime/server resource, advisory external providers, reload-safe
+  loopback bootstrap, and owned process lifecycle.
+- android-fcm-push - Native Android device push subscriptions through a
+  hosted FCM broker, with SRP-first enrollment, generic/descriptive privacy
+  modes, and registration-lifecycle details deferred to implementation.
+- css-architecture - Containment for legacy global stylesheets: CSS Modules by
+  default, frozen line-count ceilings, and opportunistic extraction with a
+  downward-only ratchet.
+- session-reactivation - Message-less provider resume lifecycle, idle reaping,
+  and recovered patient-queue delivery.
+- notifications - Cross-platform event, delivery, and recipient-presentation
+  boundaries for browser Web Push and native app push.
+- active-content-security - Source-first active-file viewing and isolated
+  origins for executable agent- or project-authored web content.
+- website-product-communication - Canonical public feature/provider/
+  distribution claims, public docs ownership, and the marketing analytics
+  boundary.

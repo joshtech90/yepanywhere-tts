@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type AgentStatus,
+  type ClaudeProviderName,
   type ProviderChildSessionSummary,
   type ProviderName,
   type UrlProjectId,
@@ -181,7 +182,6 @@ export function computeCompactionOverhead(
  * agent sessions, orphaned tool detection, and context window tracking.
  */
 export class ClaudeSessionReader implements ISessionReader {
-  private sessionDir: string;
   private allSessionDirs: string[];
   private resolveContextWindow: (
     model: string | undefined,
@@ -191,7 +191,6 @@ export class ClaudeSessionReader implements ISessionReader {
   private summaryParserClient?: SummaryParserClient;
 
   constructor(options: ClaudeSessionReaderOptions) {
-    this.sessionDir = options.sessionDir;
     this.allSessionDirs = [
       options.sessionDir,
       ...(options.additionalDirs ?? []),
@@ -317,6 +316,24 @@ export class ClaudeSessionReader implements ISessionReader {
     return this.summaryParserClient;
   }
 
+  /**
+   * Absolute path to a session's `.jsonl`, or null if no on-disk file exists.
+   * Claude sessions are `<sessionDir>/<sessionId>.jsonl`; a project can map to
+   * more than one session dir (alias/encoding), so probe each candidate.
+   */
+  async getSessionFilePath(sessionId: string): Promise<string | null> {
+    for (const dir of this.allSessionDirs) {
+      const filePath = join(dir, `${sessionId}.jsonl`);
+      try {
+        const stats = await stat(filePath);
+        if (stats.isFile()) return filePath;
+      } catch {
+        // Try the next candidate directory.
+      }
+    }
+    return null;
+  }
+
   async getSession(
     sessionId: string,
     projectId: UrlProjectId,
@@ -357,7 +374,7 @@ export class ClaudeSessionReader implements ISessionReader {
     return {
       summary,
       data: {
-        provider: summary.provider as "claude" | "claude-ollama",
+        provider: summary.provider as ClaudeProviderName,
         session: {
           messages: finalMessages,
         },

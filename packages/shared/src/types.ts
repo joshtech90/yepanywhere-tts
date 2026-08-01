@@ -3,6 +3,8 @@ import type { UrlProjectId } from "./projectId.js";
 /**
  * Provider name - which AI agent provider to use.
  * - "claude": Claude via Anthropic SDK
+ * - "claude-gateway": Claude SDK routed through a configured LLM gateway
+ * - "claude-ollama": Legacy Claude SDK transport for Ollama
  * - "codex": OpenAI Codex via SDK (cloud models)
  * - "codex-oss": Codex via CLI with --oss (local models via Ollama)
  * - "gemini": Google Gemini via CLI
@@ -17,6 +19,7 @@ import type { UrlProjectId } from "./projectId.js";
  */
 export type ProviderName =
   | "claude"
+  | "claude-gateway"
   | "claude-ollama"
   | "codex"
   | "codex-oss"
@@ -35,6 +38,7 @@ export type ProviderName =
  */
 export const ALL_PROVIDERS: readonly ProviderName[] = [
   "claude",
+  "claude-gateway",
   "claude-ollama",
   "codex",
   "codex-oss",
@@ -44,6 +48,18 @@ export const ALL_PROVIDERS: readonly ProviderName[] = [
   "opencode",
   "pi",
 ] as const;
+
+export type ClaudeProviderName = "claude" | "claude-gateway" | "claude-ollama";
+
+export function isClaudeProviderName(
+  provider: string | undefined,
+): provider is ClaudeProviderName {
+  return (
+    provider === "claude" ||
+    provider === "claude-gateway" ||
+    provider === "claude-ollama"
+  );
+}
 
 /**
  * The default provider when none is specified.
@@ -98,6 +114,8 @@ export interface ModelInfo {
   supportsPersonality?: boolean;
   /** Provider-reported opt-in service tiers, e.g. faster paid processing. */
   serviceTiers?: ModelServiceTier[];
+  /** Non-primary provider catalog group, omitted for the curated/default list. */
+  catalogGroup?: "additional";
 }
 
 export interface ModelServiceTier {
@@ -220,7 +238,10 @@ export interface CacheMissBillingRecord {
   sessionId: string;
   projectId: UrlProjectId;
   sessionPath: string;
+  /** Interactive Mother session when the observed fork is a `/btw` aside. */
   parentSessionId?: string;
+  /** Source session for an ordinary Clone/Fork/helper lineage. */
+  forkedFromSessionId?: string;
   reason: CacheMissBillingReason;
   outcome: CacheMissBillingOutcome;
   messageId?: string;
@@ -301,6 +322,21 @@ export interface SlashCommandEmulation {
   providerText: string;
 }
 
+export type SlashCommandInvocationKind = "native" | "skill" | "emulated";
+export type SlashCommandInvocationPrefix = "/" | "$";
+export type SlashCommandInventoryState = "current" | "stale";
+
+export interface SlashCommandInvocation {
+  /** What the inventory entry invokes, when the provider can say precisely. */
+  kind: SlashCommandInvocationKind;
+  /** Provider-canonical sigil used for insertion and provider ingress. */
+  prefix: SlashCommandInvocationPrefix;
+  /** Provider-reported alternative names, without a sigil. */
+  aliases?: string[];
+  /** Freshness of the provider inventory that established a skill entry. */
+  inventoryState?: SlashCommandInventoryState;
+}
+
 export interface SlashCommand {
   /** Command name without leading slash (e.g., "commit", "review-pr") */
   name: string;
@@ -312,6 +348,8 @@ export interface SlashCommand {
   emulation?: SlashCommandEmulation;
   /** Optional provider-specific provenance or capability detail. */
   providerDetails?: SlashCommandProviderDetails;
+  /** Optional invocation semantics; absent on legacy command inventories. */
+  invocation?: SlashCommandInvocation;
 }
 
 /**
@@ -321,12 +359,19 @@ export interface ProviderInfo {
   name: ProviderName;
   displayName: string;
   installed: boolean;
+  /**
+   * Coarse desktop-only hint that provider-owned app/config data was found.
+   * It does not assert authentication or that the provider can be launched.
+   */
+  applicationDetected?: boolean;
   authenticated: boolean;
   enabled: boolean;
   expiresAt?: string;
   user?: { email?: string; name?: string };
   /** Available models for this provider */
   models?: ModelInfo[];
+  /** Server-maintained opt-in choices that do not enter models by default. */
+  additionalModelOptions?: ModelInfo[];
   /** Long-edge image sizing guidance for client-side attachment rescaling. */
   imageSizing?: ProviderImageSizing;
   /** Whether this provider supports permission modes (default: true for backward compat) */
@@ -348,6 +393,17 @@ export interface ProviderInfo {
   supportsNativeRecaps?: boolean;
   /** Whether this provider emits prompt suggestions in its ordinary protocol. */
   supportsNativePromptSuggestions?: boolean;
+  /**
+   * Whether this provider accepts an explicit automatic-compaction threshold.
+   * Absence means YA must orchestrate a configured threshold itself.
+   */
+  supportsNativeCompactThreshold?: boolean;
+  /**
+   * Whether this provider accepts a launch-time percentage override for its
+   * own automatic-compaction window. This is distinct from a percentage of
+   * the model's full context window and cannot be changed in-place.
+   */
+  supportsLaunchCompactPercentOverride?: boolean;
   /** Prompt-cache keepalive capability exposed for provider-economics UI. */
   promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo;
   /**
@@ -389,6 +445,45 @@ export const ALL_PERMISSION_MODES: readonly PermissionMode[] = [
 ] as const;
 
 /**
+ * YA-owned host filesystem confinement selected before provider launch.
+ * "none" preserves provider/default behavior; "project-write" makes the
+ * selected project the only persistent writable project-facing root.
+ */
+export type SessionSandboxLevel = "none" | "project-write";
+
+export const SESSION_SANDBOX_LEVELS: readonly SessionSandboxLevel[] = [
+  "none",
+  "project-write",
+] as const;
+
+export interface SessionSandboxEnforcement {
+  requested: SessionSandboxLevel;
+  effective: SessionSandboxLevel;
+  state: "enforced" | "unsupported" | "setup-failed";
+  hostBackend?: string;
+  providerPolicy?: string;
+}
+
+export type SessionSandboxAvailabilityState =
+  | "available"
+  | "unsupported-platform"
+  | "missing-bubblewrap"
+  | "untrusted-bubblewrap"
+  | "unsupported-version"
+  | "probe-failed";
+
+/**
+ * Server-host preflight for offering YA session sandboxing. This is advisory
+ * UI availability only; every enabled launch repeats the authoritative probe.
+ */
+export interface SessionSandboxAvailability {
+  state: SessionSandboxAvailabilityState;
+  platform: string;
+  backend?: "bubblewrap";
+  version?: string;
+}
+
+/**
  * Saved defaults for the new session form.
  */
 export interface ProviderSessionDefaults {
@@ -410,6 +505,8 @@ export interface NewSessionDefaults {
   /** @deprecated Use providers[provider].serviceTier. Preserved for migration. */
   serviceTier?: string;
   permissionMode?: PermissionMode;
+  /** Default-off YA host filesystem confinement for newly created sessions. */
+  sandboxLevel?: SessionSandboxLevel;
   recapMode?: RecapMode;
   /**
    * Browser-away duration before YA asks the live process for a recap.
@@ -470,6 +567,7 @@ export interface SessionToolbarPresenceClientDefaults {
   sessionStatus?: ToolbarControlPresence;
   projectQueue?: ToolbarControlPresence;
   projectQueueNewSessionShortcut?: ToolbarControlPresence;
+  composerRecall?: ToolbarControlPresence;
 }
 
 export type BusyComposerDefaultAction = "steer" | "queue";
@@ -521,15 +619,18 @@ export interface ClientDefaults {
   sessionToolbarPresence?: SessionToolbarPresenceClientDefaults;
   /**
    * Preemptive compaction thresholds, keyed by model id, each a percent (1–99)
-   * of that model's context window. When a model's live context reaches its
-   * percent, YA queues the provider `/compact` before delivering the next turn.
-   * A model absent from the map (or a value >= 100) is off — defer to the
-   * provider's own auto-compaction. Tokens are derived from model metadata at
-   * runtime. This is per-model, not a single global setting; the default for a
-   * model migrated off its non-1M variant is seeded to ~20% (≈200K of 1M). See
-   * tasks/029.
+   * of that model's full context window. Native-capable providers receive the
+   * derived token threshold; otherwise YA starts the provider's compact command
+   * when an assistant turn reaches idle above the threshold. A model absent
+   * from the map is off: YA sends no threshold and leaves provider defaults
+   * unchanged.
    */
   compactAtContextPercent?: Record<string, number>;
+  /**
+   * Force YA to watch and trigger configured compaction thresholds even when a
+   * provider can accept the threshold natively. Global and off when absent.
+   */
+  forceYaOrchestratedCompaction?: boolean;
 }
 
 /**
@@ -671,6 +772,8 @@ export type SessionOwnership =
       owner: "self";
       processId: string;
       permissionMode?: PermissionMode;
+      /** Mode applied at the latest successful provider policy boundary. */
+      appliedPermissionMode?: PermissionMode;
       modeVersion?: number;
       recapAfterSeconds?: number;
     }

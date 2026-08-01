@@ -35,6 +35,8 @@ import {
   getProviderSessionDefaults,
   withProviderSessionDefaults,
 } from "../../lib/newSessionDefaults";
+import { providerSupportsLocalSessionSandbox } from "../../lib/providerCapabilities";
+import { serverHasAvailableSessionSandbox } from "../../lib/sessionSandboxAvailability";
 import { getRecapModeDescription } from "../../lib/recapModes";
 import { getPermissionModeOptions } from "../../lib/permissionModes";
 import {
@@ -44,9 +46,14 @@ import {
 } from "../../hooks/useProviders";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForkSummaryAutoOpen } from "../../hooks/useForkSummaryAutoOpen";
+import { useProviderSubscriptionUsage } from "../../hooks/useProviderSubscriptionUsage";
 import { useServerSettings } from "../../hooks/useServerSettings";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
+import { HideInSettingsSearch } from "./SettingsSearchContext";
+import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 import { useToastContext } from "../../contexts/ToastContext";
 import {
@@ -55,6 +62,7 @@ import {
 } from "../../components/FilterDropdown";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import { ProviderBadge } from "../../components/ProviderBadge";
+import { ModelSubscriptionUsage } from "../../components/ModelSubscriptionUsage";
 import { RecapAfterSecondsControl } from "../../components/RecapAfterSecondsControl";
 import {
   ShowThinkingControls,
@@ -207,6 +215,8 @@ export function ModelSettings() {
     isLoading: settingsLoading,
     updateSetting,
   } = useServerSettings();
+  const { version } = useVersion();
+  const supportsSessionSandboxing = serverHasAvailableSessionSandbox(version);
 
   const availableProviders = getAvailableProviders(providers);
   const savedDefaults = settings?.newSessionDefaults;
@@ -241,6 +251,12 @@ export function ModelSettings() {
   useSettingsUndoBaseline(undoState, restoreUndoState);
   const selectedProvider =
     getPreferredProvider(providers, savedDefaults?.provider) ?? null;
+  const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
+    selectedProvider?.name,
+  );
+  const canConfigureSessionSandbox =
+    supportsSessionSandboxing &&
+    providerSupportsLocalSessionSandbox(selectedProvider?.name);
   const selectedModels = selectedProvider?.models ?? [];
   const selectedModel =
     selectedProvider === null
@@ -261,10 +277,13 @@ export function ModelSettings() {
       })
     : ({} satisfies ProviderSessionDefaults);
   const helperSelectableModels = selectedModels;
-  const selectedRecapMode = getPreferredRecapMode(
-    selectedProvider,
-    savedDefaults,
-  );
+  const savedRecapMode = getPreferredRecapMode(selectedProvider, savedDefaults);
+  const selectedRecapMode =
+    canConfigureSessionSandbox &&
+    savedDefaults?.sandboxLevel === "project-write" &&
+    savedRecapMode === "side-session"
+      ? "off"
+      : savedRecapMode;
   const selectedRecapAfterSeconds = normalizeRecapAfterSeconds(
     savedDefaults?.recapAfterSeconds ?? DEFAULT_RECAP_AFTER_SECONDS,
   );
@@ -294,8 +313,11 @@ export function ModelSettings() {
   useEffect(() => {
     setCompactPercentDraft(storedCompactPercent);
   }, [storedCompactPercent]);
+  const forceYaOrchestratedCompaction =
+    settings?.clientDefaults?.forceYaOrchestratedCompaction === true;
   const showCompactThreshold =
-    selectedProvider?.name === "claude" &&
+    (selectedProvider?.name.startsWith("claude") === true ||
+      selectedProvider?.supportsNativeCompactThreshold === true) &&
     selectedModelInfo != null &&
     // The live trigger keys by the running process model, which is always a
     // concrete id (e.g. "opus") — never the "default" sentinel. Offering a
@@ -441,6 +463,12 @@ export function ModelSettings() {
       icon: selectedProvider ? (
         <ProviderBadge provider={selectedProvider.name} model={option.id} />
       ) : undefined,
+      meta: (
+        <ModelSubscriptionUsage
+          usage={subscriptionUsage}
+          modelId={option.id}
+        />
+      ),
     };
   });
   const helperSideModelOptions: FilterOption<string>[] = [
@@ -464,10 +492,14 @@ export function ModelSettings() {
     updates: NewSessionDefaults,
   ): Promise<void> => {
     try {
-      await updateSetting("newSessionDefaults", {
+      const nextDefaults: NewSessionDefaults = {
         ...savedDefaults,
         ...updates,
-      });
+      };
+      if (!supportsSessionSandboxing) {
+        delete nextDefaults.sandboxLevel;
+      }
+      await updateSetting("newSessionDefaults", nextDefaults);
       showToast(t("newSessionDefaultsSaved"), "success");
     } catch (err) {
       showToast(
@@ -559,382 +591,468 @@ export function ModelSettings() {
   };
 
   return (
-    <section className="settings-section">
-      <div className="settings-group">
-        <div className="settings-session-defaults-panel">
-          <div className="session-default-discovery-row">
-            <div className="new-session-helper-section session-default-recap-section">
-              <h3>{t("newSessionRecapTitle")}</h3>
-              <div className="new-session-helper-options">
-                {availableRecapModes.map((modeValue) => (
-                  <button
-                    key={modeValue}
-                    type="button"
-                    className={`new-session-helper-option ${
-                      selectedRecapMode === modeValue ? "selected" : ""
-                    }`}
-                    onClick={() =>
-                      void updateNewSessionDefaults({ recapMode: modeValue })
-                    }
+    <SettingsSection
+      keywords={[
+        "session defaults",
+        "default model",
+        "provider",
+        "permission mode",
+        "thinking",
+        "recap",
+        "prompt suggestions",
+        "compact",
+        "prompt cache keepalive",
+        "sandbox bubblewrap project writes",
+        "helper model",
+        "fork summary",
+      ]}
+    >
+      <HideInSettingsSearch>
+        <div className="settings-group">
+          <div className="settings-session-defaults-panel">
+            {canConfigureSessionSandbox && (
+              <div className="new-session-helper-section session-default-sandbox-section">
+                <h3>{t("modelSettingsSandboxDefaultTitle")}</h3>
+                <label className="settings-item">
+                  <div className="settings-item-info">
+                    <strong>{t("newSessionSandboxLabel")}</strong>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={savedDefaults?.sandboxLevel === "project-write"}
                     disabled={settingsLoading}
-                    title={getRecapModeDescription(
-                      modeValue,
-                      t,
-                      selectedRecapAfterSeconds,
-                    )}
-                  >
-                    <span className={`mode-option-dot recap-${modeValue}`} />
-                    <span>{recapModeLabels[modeValue]}</span>
-                  </button>
-                ))}
+                    onChange={(event) => {
+                      const enabled = event.currentTarget.checked;
+                      void updateNewSessionDefaults({
+                        sandboxLevel: enabled ? "project-write" : "none",
+                        ...(enabled && savedRecapMode === "side-session"
+                          ? { recapMode: "off" }
+                          : {}),
+                      });
+                    }}
+                    aria-label={t("modelSettingsSandboxDefaultTitle")}
+                  />
+                </label>
+                <p className="session-default-section-description">
+                  {t("newSessionSandboxDescription")}
+                </p>
+                <p className="session-default-section-description">
+                  {t("newSessionSandboxAvailability")}
+                </p>
               </div>
-              {selectedRecapMode !== "off" && (
-                <RecapAfterSecondsControl
-                  value={selectedRecapAfterSeconds}
-                  disabled={settingsLoading}
-                  label={recapAfterSecondsInlineLabels[selectedRecapMode]}
-                  mode={selectedRecapMode}
-                  className="recap-after-seconds-control--inline"
-                  onCommit={(seconds) =>
-                    updateNewSessionDefaults({ recapAfterSeconds: seconds })
-                  }
-                />
-              )}
+            )}
+            <div className="session-default-discovery-row">
+              <div className="new-session-helper-section session-default-recap-section">
+                <h3>{t("newSessionRecapTitle")}</h3>
+                <div className="new-session-helper-options">
+                  {availableRecapModes.map((modeValue) => (
+                    <button
+                      key={modeValue}
+                      type="button"
+                      className={`new-session-helper-option ${
+                        selectedRecapMode === modeValue ? "selected" : ""
+                      }`}
+                      onClick={() =>
+                        void updateNewSessionDefaults({ recapMode: modeValue })
+                      }
+                      disabled={
+                        settingsLoading ||
+                        (canConfigureSessionSandbox &&
+                          savedDefaults?.sandboxLevel === "project-write" &&
+                          modeValue === "side-session")
+                      }
+                      title={getRecapModeDescription(
+                        modeValue,
+                        t,
+                        selectedRecapAfterSeconds,
+                      )}
+                    >
+                      <span className={`mode-option-dot recap-${modeValue}`} />
+                      <span>{recapModeLabels[modeValue]}</span>
+                    </button>
+                  ))}
+                </div>
+                {selectedRecapMode !== "off" && (
+                  <RecapAfterSecondsControl
+                    value={selectedRecapAfterSeconds}
+                    disabled={settingsLoading}
+                    label={recapAfterSecondsInlineLabels[selectedRecapMode]}
+                    mode={selectedRecapMode}
+                    className="recap-after-seconds-control--inline"
+                    onCommit={(seconds) =>
+                      updateNewSessionDefaults({ recapAfterSeconds: seconds })
+                    }
+                  />
+                )}
+              </div>
+
+              <div className="new-session-helper-section session-default-suggestions-section">
+                <h3>{t("newSessionPromptSuggestionsTitle")}</h3>
+                <div className="new-session-helper-options">
+                  {availablePromptSuggestionModes.map((modeValue) => (
+                    <button
+                      key={modeValue}
+                      type="button"
+                      className={`new-session-helper-option ${
+                        selectedPromptSuggestionMode === modeValue
+                          ? "selected"
+                          : ""
+                      }`}
+                      onClick={() =>
+                        void updateNewSessionDefaults({
+                          promptSuggestionMode: modeValue,
+                        })
+                      }
+                      disabled={settingsLoading}
+                      title={promptSuggestionModeDescriptions[modeValue]}
+                    >
+                      <span
+                        className={`mode-option-dot suggestion-${modeValue}`}
+                      />
+                      <span>{promptSuggestionModeLabels[modeValue]}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <div className="new-session-helper-section session-default-suggestions-section">
-              <h3>{t("newSessionPromptSuggestionsTitle")}</h3>
-              <div className="new-session-helper-options">
-                {availablePromptSuggestionModes.map((modeValue) => (
+            {supportsPermissionMode && (
+              <div className="new-session-mode-section session-default-mode-section">
+                <h3>{t("newSessionModeTitle")}</h3>
+                <div className="mode-options">
+                  {permissionModeOptions.map((modeValue) => (
+                    <button
+                      key={modeValue}
+                      type="button"
+                      className={`mode-option ${
+                        effectiveDefaultPermissionMode === modeValue
+                          ? "selected"
+                          : ""
+                      }`}
+                      onClick={() =>
+                        void updateNewSessionDefaults({
+                          permissionMode: modeValue,
+                        })
+                      }
+                      disabled={settingsLoading}
+                      title={modeDescriptions[modeValue]}
+                    >
+                      <span className={`mode-option-dot mode-${modeValue}`} />
+                      <div className="mode-option-content">
+                        <span className="mode-option-label">
+                          {modeLabels[modeValue]}
+                        </span>
+                        <span className="mode-option-desc">
+                          {modeDescriptions[modeValue]}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="new-session-helper-section session-default-show-thinking-section">
+              <h3>{t("showThinkingTitle")}</h3>
+              <p className="session-default-section-description">
+                {t("showThinkingHint")}
+              </p>
+              <ShowThinkingControls
+                value={showThinking}
+                onChange={setShowThinking}
+                t={t}
+                showLabel={false}
+              />
+            </div>
+
+            <div className="new-session-helper-section session-default-fork-summary-section">
+              <h3>{t("modelSettingsForkSummaryAutoOpenTitle")}</h3>
+              <p className="session-default-section-description">
+                {t("modelSettingsForkSummaryAutoOpenDescription")}
+              </p>
+              <label className="settings-item">
+                <div className="settings-item-info">
+                  <strong>{t("modelSettingsForkSummaryAutoOpenLabel")}</strong>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={forkSummaryAutoOpen}
+                  onChange={(e) => setForkSummaryAutoOpen(e.target.checked)}
+                  aria-label={t("modelSettingsForkSummaryAutoOpenLabel")}
+                />
+              </label>
+            </div>
+
+            <div className="new-session-provider-section session-default-provider-section">
+              <h3>{t("newSessionProviderTitle")}</h3>
+              <p className="session-default-section-description">
+                {t("modelSettingsDefaultProviderDescription")}
+              </p>
+              <div className="provider-options">
+                {availableProviders.map((provider) => (
                   <button
-                    key={modeValue}
+                    key={provider.name}
                     type="button"
-                    className={`new-session-helper-option ${
-                      selectedPromptSuggestionMode === modeValue
-                        ? "selected"
-                        : ""
+                    className={`provider-option ${
+                      selectedProvider?.name === provider.name ? "selected" : ""
                     }`}
-                    onClick={() =>
-                      void updateNewSessionDefaults({
-                        promptSuggestionMode: modeValue,
-                      })
-                    }
-                    disabled={settingsLoading}
-                    title={promptSuggestionModeDescriptions[modeValue]}
+                    onClick={() => void handleProviderChange(provider.name)}
+                    disabled={providersLoading || settingsLoading}
                   >
                     <span
-                      className={`mode-option-dot suggestion-${modeValue}`}
+                      className={`provider-option-dot provider-${provider.name}`}
                     />
-                    <span>{promptSuggestionModeLabels[modeValue]}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {supportsPermissionMode && (
-            <div className="new-session-mode-section session-default-mode-section">
-              <h3>{t("newSessionModeTitle")}</h3>
-              <div className="mode-options">
-                {permissionModeOptions.map((modeValue) => (
-                  <button
-                    key={modeValue}
-                    type="button"
-                    className={`mode-option ${
-                      effectiveDefaultPermissionMode === modeValue
-                        ? "selected"
-                        : ""
-                    }`}
-                    onClick={() =>
-                      void updateNewSessionDefaults({
-                        permissionMode: modeValue,
-                      })
-                    }
-                    disabled={settingsLoading}
-                    title={modeDescriptions[modeValue]}
-                  >
-                    <span className={`mode-option-dot mode-${modeValue}`} />
-                    <div className="mode-option-content">
-                      <span className="mode-option-label">
-                        {modeLabels[modeValue]}
-                      </span>
-                      <span className="mode-option-desc">
-                        {modeDescriptions[modeValue]}
+                    <div className="provider-option-content">
+                      <span className="provider-option-label">
+                        {provider.displayName}
                       </span>
                     </div>
                   </button>
                 ))}
               </div>
             </div>
-          )}
 
-          <div className="new-session-helper-section session-default-show-thinking-section">
-            <h3>{t("showThinkingTitle")}</h3>
-            <p className="session-default-section-description">
-              {t("showThinkingHint")}
-            </p>
-            <ShowThinkingControls
-              value={showThinking}
-              onChange={setShowThinking}
-              t={t}
-              showLabel={false}
-            />
-          </div>
-
-          <div className="new-session-helper-section session-default-fork-summary-section">
-            <h3>{t("modelSettingsForkSummaryAutoOpenTitle")}</h3>
-            <p className="session-default-section-description">
-              {t("modelSettingsForkSummaryAutoOpenDescription")}
-            </p>
-            <label className="settings-item">
-              <div className="settings-item-info">
-                <strong>{t("modelSettingsForkSummaryAutoOpenLabel")}</strong>
-              </div>
-              <input
-                type="checkbox"
-                checked={forkSummaryAutoOpen}
-                onChange={(e) => setForkSummaryAutoOpen(e.target.checked)}
-                aria-label={t("modelSettingsForkSummaryAutoOpenLabel")}
-              />
-            </label>
-          </div>
-
-          <div className="new-session-provider-section session-default-provider-section">
-            <h3>{t("newSessionProviderTitle")}</h3>
-            <p className="session-default-section-description">
-              {t("modelSettingsDefaultProviderDescription")}
-            </p>
-            <div className="provider-options">
-              {availableProviders.map((provider) => (
-                <button
-                  key={provider.name}
-                  type="button"
-                  className={`provider-option ${
-                    selectedProvider?.name === provider.name ? "selected" : ""
-                  }`}
-                  onClick={() => void handleProviderChange(provider.name)}
-                  disabled={providersLoading || settingsLoading}
-                >
-                  <span
-                    className={`provider-option-dot provider-${provider.name}`}
+            <div className="new-session-model-section session-default-model-section">
+              <div className="new-session-model-field">
+                <h3>{t("newSessionModelTitle")}</h3>
+                <p className="session-default-section-description">
+                  {t("modelSettingsDefaultModelDescription")}
+                </p>
+                {selectedModels.length > 0 ? (
+                  <FilterDropdown
+                    label={t("newSessionModelTitle")}
+                    options={modelOptions}
+                    selected={selectedModel ? [selectedModel] : []}
+                    onChange={(selected) => {
+                      const nextModel = selected[0];
+                      if (nextModel) void handleDefaultModelChange(nextModel);
+                    }}
+                    multiSelect={false}
+                    placeholder={t("newSessionModelPlaceholder")}
+                    fullWidth
                   />
-                  <div className="provider-option-content">
-                    <span className="provider-option-label">
-                      {provider.displayName}
-                    </span>
-                  </div>
-                </button>
-              ))}
+                ) : (
+                  <span className="model-settings-empty">
+                    {t("modelSwitchEmpty")}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
 
-          <div className="new-session-model-section session-default-model-section">
-            <div className="new-session-model-field">
-              <h3>{t("newSessionModelTitle")}</h3>
-              <p className="session-default-section-description">
-                {t("modelSettingsDefaultModelDescription")}
-              </p>
-              {selectedModels.length > 0 ? (
-                <FilterDropdown
-                  label={t("newSessionModelTitle")}
-                  options={modelOptions}
-                  selected={selectedModel ? [selectedModel] : []}
-                  onChange={(selected) => {
-                    const nextModel = selected[0];
-                    if (nextModel) void handleDefaultModelChange(nextModel);
-                  }}
-                  multiSelect={false}
-                  placeholder={t("newSessionModelPlaceholder")}
-                />
-              ) : (
-                <span className="model-settings-empty">
-                  {t("modelSwitchEmpty")}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {showCompactThreshold && (
-            <div className="new-session-helper-section session-default-compact-section">
-              <h3>{t("modelSettingsCompactThresholdTitle")}</h3>
-              <p className="session-default-section-description">
-                {t("modelSettingsCompactThresholdDescription")}
-              </p>
-              <span className="output-appearance-slider-row">
-                <CommittedRangeInput
-                  min={0}
-                  max={99}
-                  step={1}
-                  value={compactPercentDraft}
-                  disabled={settingsLoading}
-                  aria-label={t("modelSettingsCompactThresholdTitle")}
-                  onDraftChange={setCompactPercentDraft}
-                  onCommit={commitCompactPercent}
-                />
-                <span className="output-appearance-number-wrap">
-                  <input
-                    type="number"
-                    className="settings-input-small output-appearance-number"
+            {showCompactThreshold && (
+              <div className="new-session-helper-section session-default-compact-section">
+                <h3>{t("modelSettingsCompactThresholdTitle")}</h3>
+                <p className="session-default-section-description">
+                  {t("modelSettingsCompactThresholdDescription")}
+                </p>
+                <span className="output-appearance-slider-row">
+                  <CommittedRangeInput
                     min={0}
                     max={99}
                     step={1}
                     value={compactPercentDraft}
                     disabled={settingsLoading}
                     aria-label={t("modelSettingsCompactThresholdTitle")}
-                    onChange={(e) =>
-                      setCompactPercentDraft(Number(e.target.value))
-                    }
-                    onBlur={() => commitCompactPercent(compactPercentDraft)}
+                    onDraftChange={setCompactPercentDraft}
+                    onCommit={commitCompactPercent}
                   />
-                  <span className="output-appearance-unit">%</span>
-                </span>
-              </span>
-              <span className="settings-hint">
-                {compactPercentDraft > 0
-                  ? t("modelSettingsCompactThresholdOnHint", {
-                      percent: String(compactPercentDraft),
-                      tokens: compactTokenPreview ?? "—",
-                    })
-                  : t("modelSettingsCompactThresholdOffHint")}
-              </span>
-            </div>
-          )}
-
-          {showThinkingControls && (
-            <div className="new-session-helper-section session-default-thinking-section">
-              <h3>{t("modelSettingsThinkingTitle")}</h3>
-              <p className="session-default-section-description">
-                {t("modelSettingsThinkingDescription")}
-              </p>
-              <ThinkingControlsPanel
-                mode={effectiveThinkingMode}
-                modeOptions={thinkingModeOptions}
-                onSetMode={(mode: ThinkingMode) =>
-                  void updateProviderSessionDefaults({ thinkingMode: mode })
-                }
-                level={effectiveEffortLevel}
-                effortOptions={effortOptions}
-                onSetEffort={(level: EffortLevel) =>
-                  void updateProviderSessionDefaults({ effortLevel: level })
-                }
-                onSetEffortMode={(level: EffortLevel) =>
-                  void updateProviderSessionDefaults({
-                    thinkingMode: "on",
-                    effortLevel: level,
-                  })
-                }
-                showThinkingControl={false}
-                provider={selectedProvider?.name}
-                t={t}
-                className="thinking-controls-panel--inline session-default-thinking-controls"
-              />
-            </div>
-          )}
-
-          {showHelperSideModel && (
-            <div className="new-session-helper-section session-default-helper-model-section">
-              <h3>{t("helperSideModelTitle")}</h3>
-              <FilterDropdown
-                label={t("helperSideModelTitle")}
-                options={helperSideModelOptions}
-                selected={[selectedHelperSideModel]}
-                onChange={(selected) => {
-                  const helperSideModel =
-                    selected[0] ?? HELPER_SIDE_MODEL_CHEAPEST;
-                  void updateProviderSessionDefaults({ helperSideModel });
-                }}
-                multiSelect={false}
-                placeholder={t("helperSideModelCheapest")}
-              />
-            </div>
-          )}
-
-          {showPromptCacheKeepalive && (
-            <div className="new-session-helper-section session-default-cache-keepalive-section">
-              <div className="session-default-cache-keepalive-text">
-                <h3>{t("promptCacheKeepaliveTitle")}</h3>
-                <p className="session-default-section-description">
-                  {t("promptCacheKeepaliveDescription", {
-                    provider: selectedProvider.displayName,
-                  })}
-                </p>
-              </div>
-              <div className="session-default-cache-keepalive-controls">
-                <div className="new-session-helper-options">
-                  {PROMPT_CACHE_KEEPALIVE_MODE_ORDER.map((modeValue) => (
-                    <button
-                      key={modeValue}
-                      type="button"
-                      className={`new-session-helper-option ${
-                        selectedPromptCacheKeepalive.mode === modeValue
-                          ? "selected"
-                          : ""
-                      }`}
-                      onClick={() =>
-                        void updatePromptCacheKeepalive({ mode: modeValue })
-                      }
+                  <span className="output-appearance-number-wrap">
+                    <input
+                      type="number"
+                      className="settings-input-small output-appearance-number"
+                      min={0}
+                      max={99}
+                      step={1}
+                      value={compactPercentDraft}
                       disabled={settingsLoading}
-                      title={promptCacheKeepaliveModeDescriptions[modeValue]}
-                    >
-                      <span
-                        className={`mode-option-dot keepalive-${modeValue}`}
+                      aria-label={t("modelSettingsCompactThresholdTitle")}
+                      onChange={(e) =>
+                        setCompactPercentDraft(Number(e.target.value))
+                      }
+                      onBlur={() => commitCompactPercent(compactPercentDraft)}
+                    />
+                    <span className="output-appearance-unit">%</span>
+                  </span>
+                </span>
+                <span className="settings-hint">
+                  {compactPercentDraft > 0
+                    ? t("modelSettingsCompactThresholdOnHint", {
+                        percent: String(compactPercentDraft),
+                        tokens: compactTokenPreview ?? "—",
+                      })
+                    : t("modelSettingsCompactThresholdOffHint")}
+                </span>
+                {selectedProvider?.supportsNativeCompactThreshold === true && (
+                  <>
+                    <label className="settings-item">
+                      <div className="settings-item-info">
+                        <strong>
+                          {t("modelSettingsForceYaCompactionLabel")}
+                        </strong>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={forceYaOrchestratedCompaction}
+                        disabled={settingsLoading}
+                        onChange={(event) => {
+                          void updateSetting("clientDefaults", {
+                            forceYaOrchestratedCompaction:
+                              event.currentTarget.checked,
+                          });
+                        }}
+                        aria-label={t(
+                          "modelSettingsForceYaCompactionLabel",
+                        )}
                       />
-                      <span>{promptCacheKeepaliveModeLabels[modeValue]}</span>
-                    </button>
-                  ))}
-                </div>
-                <label className="prompt-cache-keepalive-cadence">
-                  <span>{t("promptCacheKeepaliveCadenceLabel")}</span>
-                  <input
-                    key={`${selectedProvider.name}-${selectedPromptCacheKeepalive.inactivityMinutes}`}
-                    type="number"
-                    min={1}
-                    max={1440}
-                    step={1}
-                    defaultValue={
-                      selectedPromptCacheKeepalive.inactivityMinutes
-                    }
-                    disabled={
-                      settingsLoading ||
-                      selectedPromptCacheKeepalive.mode === "off"
-                    }
-                    aria-label={t("promptCacheKeepaliveCadenceAria")}
-                    onBlur={(event) => {
-                      const minutes = normalizeKeepaliveMinutes(
-                        Number(event.currentTarget.value),
-                      );
-                      if (minutes === null) {
-                        event.currentTarget.value = String(
-                          selectedPromptCacheKeepalive.inactivityMinutes,
-                        );
-                        return;
-                      }
-                      event.currentTarget.value = String(minutes);
-                      if (
-                        minutes !==
-                        selectedPromptCacheKeepalive.inactivityMinutes
-                      ) {
-                        void updatePromptCacheKeepalive({
-                          inactivityMinutes: minutes,
-                        });
-                      }
-                    }}
-                  />
-                  <span>{t("promptCacheKeepaliveCadenceUnit")}</span>
-                </label>
+                    </label>
+                    <p className="session-default-section-description">
+                      {t("modelSettingsForceYaCompactionDescription")}
+                    </p>
+                  </>
+                )}
               </div>
-            </div>
-          )}
+            )}
+
+            {showThinkingControls && (
+              <div className="new-session-helper-section session-default-thinking-section">
+                <h3>{t("modelSettingsThinkingTitle")}</h3>
+                <p className="session-default-section-description">
+                  {t("modelSettingsThinkingDescription")}
+                </p>
+                <ThinkingControlsPanel
+                  mode={effectiveThinkingMode}
+                  modeOptions={thinkingModeOptions}
+                  onSetMode={(mode: ThinkingMode) =>
+                    void updateProviderSessionDefaults({ thinkingMode: mode })
+                  }
+                  level={effectiveEffortLevel}
+                  effortOptions={effortOptions}
+                  onSetEffort={(level: EffortLevel) =>
+                    void updateProviderSessionDefaults({ effortLevel: level })
+                  }
+                  onSetEffortMode={(level: EffortLevel) =>
+                    void updateProviderSessionDefaults({
+                      thinkingMode: "on",
+                      effortLevel: level,
+                    })
+                  }
+                  showThinkingControl={false}
+                  provider={selectedProvider?.name}
+                  t={t}
+                  className="thinking-controls-panel--inline session-default-thinking-controls"
+                />
+              </div>
+            )}
+
+            {showHelperSideModel && (
+              <div className="new-session-helper-section session-default-helper-model-section">
+                <h3>{t("helperSideModelTitle")}</h3>
+                <FilterDropdown
+                  label={t("helperSideModelTitle")}
+                  options={helperSideModelOptions}
+                  selected={[selectedHelperSideModel]}
+                  onChange={(selected) => {
+                    const helperSideModel =
+                      selected[0] ?? HELPER_SIDE_MODEL_CHEAPEST;
+                    void updateProviderSessionDefaults({ helperSideModel });
+                  }}
+                  multiSelect={false}
+                  placeholder={t("helperSideModelCheapest")}
+                  fullWidth
+                />
+              </div>
+            )}
+
+            {showPromptCacheKeepalive && (
+              <div className="new-session-helper-section session-default-cache-keepalive-section">
+                <div className="session-default-cache-keepalive-text">
+                  <h3>{t("promptCacheKeepaliveTitle")}</h3>
+                  <p className="session-default-section-description">
+                    {t("promptCacheKeepaliveDescription", {
+                      provider: selectedProvider.displayName,
+                    })}
+                  </p>
+                  <p className="session-default-section-description">
+                    {t("promptCacheKeepaliveCadenceHint")}
+                  </p>
+                </div>
+                <div className="session-default-cache-keepalive-controls">
+                  <div className="new-session-helper-options">
+                    {PROMPT_CACHE_KEEPALIVE_MODE_ORDER.map((modeValue) => (
+                      <button
+                        key={modeValue}
+                        type="button"
+                        className={`new-session-helper-option ${
+                          selectedPromptCacheKeepalive.mode === modeValue
+                            ? "selected"
+                            : ""
+                        }`}
+                        onClick={() =>
+                          void updatePromptCacheKeepalive({ mode: modeValue })
+                        }
+                        disabled={settingsLoading}
+                        title={promptCacheKeepaliveModeDescriptions[modeValue]}
+                      >
+                        <span
+                          className={`mode-option-dot keepalive-${modeValue}`}
+                        />
+                        <span>{promptCacheKeepaliveModeLabels[modeValue]}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <label className="prompt-cache-keepalive-cadence">
+                    <span>{t("promptCacheKeepaliveCadenceLabel")}</span>
+                    <input
+                      key={`${selectedProvider.name}-${selectedPromptCacheKeepalive.inactivityMinutes}`}
+                      type="number"
+                      min={1}
+                      max={1440}
+                      step={1}
+                      defaultValue={
+                        selectedPromptCacheKeepalive.inactivityMinutes
+                      }
+                      disabled={
+                        settingsLoading ||
+                        selectedPromptCacheKeepalive.mode === "off"
+                      }
+                      aria-label={t("promptCacheKeepaliveCadenceAria")}
+                      onBlur={(event) => {
+                        const minutes = normalizeKeepaliveMinutes(
+                          Number(event.currentTarget.value),
+                        );
+                        if (minutes === null) {
+                          event.currentTarget.value = String(
+                            selectedPromptCacheKeepalive.inactivityMinutes,
+                          );
+                          return;
+                        }
+                        event.currentTarget.value = String(minutes);
+                        if (
+                          minutes !==
+                          selectedPromptCacheKeepalive.inactivityMinutes
+                        ) {
+                          void updatePromptCacheKeepalive({
+                            inactivityMinutes: minutes,
+                          });
+                        }
+                      }}
+                    />
+                    <span>{t("promptCacheKeepaliveCadenceUnit")}</span>
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      </HideInSettingsSearch>
 
       {selectedProvider?.name === "claude" && (
         <div className="settings-group">
-          <div className="settings-item model-settings-item">
-            <div className="settings-item-info">
-              <strong>{t("modelSettingsModelTitle")}</strong>
-              <p>{t("modelSettingsModelDescription")}</p>
-            </div>
+          <SettingsItem
+            label={t("modelSettingsModelTitle")}
+            description={t("modelSettingsModelDescription")}
+            className="model-settings-item"
+          >
             <div className="font-size-selector model-settings-chip-group">
               {MODEL_OPTIONS.map((opt) => (
                 <button
@@ -947,9 +1065,9 @@ export function ModelSettings() {
                 </button>
               ))}
             </div>
-          </div>
+          </SettingsItem>
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

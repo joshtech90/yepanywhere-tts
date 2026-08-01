@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataContext";
 import { I18nProvider } from "../../../../i18n";
 import { UI_KEYS } from "../../../../lib/storageKeys";
@@ -30,6 +31,15 @@ if (!editRenderer.renderCollapsedPreview) {
   throw new Error("Edit renderer must provide collapsed preview");
 }
 const renderCollapsedPreview = editRenderer.renderCollapsedPreview;
+
+function LocationStateProbe() {
+  const location = useLocation();
+  return (
+    <pre data-testid="location-state">
+      {JSON.stringify({ pathname: location.pathname, state: location.state })}
+    </pre>
+  );
+}
 
 describe("EditRenderer collapsed preview fallback", () => {
   beforeEach(() => {
@@ -104,7 +114,7 @@ describe("EditRenderer collapsed preview fallback", () => {
       ],
     };
 
-    render(
+    const { container } = render(
       <div>
         {renderCollapsedPreview(
           input as never,
@@ -116,8 +126,12 @@ describe("EditRenderer collapsed preview fallback", () => {
     );
 
     expect(screen.queryByText("Computing diff...")).toBeNull();
-    expect(screen.getByText("-const x = 1;")).toBeDefined();
-    expect(screen.getByText("+const x = 2;")).toBeDefined();
+    expect(container.querySelector(".diff-removed")?.textContent).toBe(
+      "-const x = 1;",
+    );
+    expect(container.querySelector(".diff-added")?.textContent).toBe(
+      "+const x = 2;",
+    );
   });
 
   it("reveals the omitted Edit tail from the fade and +N badge", () => {
@@ -298,6 +312,83 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(container.textContent).toContain("-| old | $x^2$ |");
   });
 
+  it("renders bracket-delimited display math in completed edits", () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 3,
+        lines: ["-old score", "+\\[", "+e_t(y)=(Wh_t+b)_y", "+\\]"],
+      },
+    ];
+
+    const { container } = render(
+      <div>
+        {renderCollapsedPreview(
+          {
+            _structuredPatch: structuredPatch,
+          } as never,
+          {
+            filePath: "notes.md",
+            structuredPatch,
+          } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    expect(container.querySelector(".katex-display")).toBeTruthy();
+    expect(container.querySelector(".katex .msupsub")).toBeTruthy();
+    expect(
+      container.querySelector(".fixed-font-diff-added .katex-display"),
+    ).toBeTruthy();
+    expect(
+      Array.from(container.querySelectorAll(".fixed-font-diff-gutter")).map(
+        (node) => node.textContent,
+      ),
+    ).toContain("+");
+  });
+
+  it("keeps bracketed display math diff-aware in non-Markdown edits", () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 3,
+        lines: ["-old score", "+\\[", "+e_t(y)=(Wh_t+b)_y", "+\\]"],
+      },
+    ];
+
+    const { container } = render(
+      <div>
+        {renderCollapsedPreview(
+          {
+            _structuredPatch: structuredPatch,
+          } as never,
+          {
+            filePath: "model.py",
+            structuredPatch,
+          } as never,
+          false,
+          renderContext,
+        )}
+      </div>,
+    );
+
+    expect(
+      container.querySelector(".fixed-font-diff-added .katex-display"),
+    ).toBeTruthy();
+    expect(container.querySelector(".katex .msupsub")).toBeTruthy();
+    expect(
+      Array.from(container.querySelectorAll(".fixed-font-diff-gutter")).map(
+        (node) => node.textContent,
+      ),
+    ).toContain("+");
+  });
+
   it("renders markdown headings and inline markup in completed edits", () => {
     const structuredPatch = [
       {
@@ -365,7 +456,9 @@ describe("EditRenderer collapsed preview fallback", () => {
       </div>,
     );
 
-    expect(screen.getByText("+const label = `dev`;")).toBeDefined();
+    expect(container.querySelector(".diff-added")?.textContent).toBe(
+      "+const label = `dev`;",
+    );
     expect(
       container.querySelector(".fixed-font-rendered__content code"),
     ).toBeNull();
@@ -487,6 +580,7 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(
       container.querySelector(".highlighted-diff .line-inserted"),
     ).toBeTruthy();
+    expect(container.querySelector(".diff-gutter-aligned")).toBeTruthy();
     expect(screen.getAllByText(/const/)).toHaveLength(2);
   });
 
@@ -613,6 +707,83 @@ describe("EditRenderer collapsed preview fallback", () => {
     );
 
     expect(screen.getByRole("button", { name: /Foo\.tsx/i })).toBeDefined();
+  });
+
+  it("links an Edit block to its dirty file with this session as the default", async () => {
+    if (!editRenderer.renderInteractiveSummary) {
+      throw new Error("Edit renderer must provide interactive summary");
+    }
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ["-const x = 1;", "+const x = 2;"],
+      },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={["/projects/project-1/sessions/session-1"]}>
+        <SessionMetadataProvider
+          projectId="project-1"
+          projectPath="/repo"
+          sessionId="session-1"
+          sessionTitle="Fix polling"
+          provider="codex"
+          model="gpt-5.4"
+          thinking={{ type: "adaptive", display: "summarized" }}
+          effort="high"
+        >
+          <I18nProvider>
+            <Routes>
+              <Route
+                path="/projects/:projectId/sessions/:sessionId"
+                element={editRenderer.renderInteractiveSummary(
+                  {
+                    file_path: "/repo/src/example.ts",
+                    _structuredPatch: structuredPatch,
+                  } as never,
+                  undefined,
+                  false,
+                  renderContext,
+                )}
+              />
+              <Route path="/git-status" element={<LocationStateProbe />} />
+            </Routes>
+          </I18nProvider>
+        </SessionMetadataProvider>
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", { name: "Review" });
+    expect(link.getAttribute("href")).toBe(
+      "/git-status?projectId=project-1&worktreeFile=src%2Fexample.ts",
+    );
+    fireEvent.click(link);
+
+    const route = JSON.parse(
+      (await screen.findByTestId("location-state")).textContent ?? "{}",
+    ) as {
+      pathname: string;
+      state: unknown;
+    };
+    expect(route).toEqual({
+      pathname: "/git-status",
+      state: {
+        defaultSession: {
+          projectId: "project-1",
+          id: "session-1",
+          title: "Fix polling",
+          newSession: {
+            provider: "codex",
+            model: "gpt-5.4",
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "high",
+          },
+        },
+      },
+    });
   });
 
   it("puts all multi-file patch targets in the interactive summary title", () => {
@@ -910,14 +1081,14 @@ describe("EditRenderer collapsed preview fallback", () => {
       </SessionMetadataProvider>,
     );
 
-    const selectedText = screen.getByText("+selected replacement text");
-    const textNode = selectedText.firstChild;
-    if (!textNode) {
+    const selectedText = document.querySelector<HTMLElement>(".diff-added");
+    const textNode = selectedText?.lastChild;
+    if (!selectedText || !textNode) {
       throw new Error("Expected selectable diff text");
     }
     const range = document.createRange();
-    range.setStart(textNode, 1);
-    range.setEnd(textNode, "selected replacement".length + 1);
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, "selected replacement".length);
     document.getSelection()?.addRange(range);
 
     fireEvent.click(selectedText);
@@ -964,14 +1135,15 @@ describe("EditRenderer collapsed preview fallback", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Show source" }));
-    const selectedText = screen.getByText("+# Selected heading");
-    const textNode = selectedText.firstChild;
-    if (!textNode) {
+    const selectedText = document.querySelector<HTMLElement>(".diff-added");
+    const prefixText = selectedText?.querySelector(".diff-prefix")?.firstChild;
+    const contentText = selectedText?.lastChild;
+    if (!selectedText || !prefixText || !contentText) {
       throw new Error("Expected selectable source diff text");
     }
     const range = document.createRange();
-    range.setStart(textNode, 0);
-    range.setEnd(textNode, 2);
+    range.setStart(prefixText, 0);
+    range.setEnd(contentText, 1);
     document.getSelection()?.removeAllRanges();
     document.getSelection()?.addRange(range);
 

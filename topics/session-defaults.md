@@ -18,8 +18,9 @@ Those scopes must stay separate in storage, UI grouping, and migration.
 ### All-provider defaults
 
 All-provider defaults apply no matter which provider is selected. Provider
-capabilities may decide whether a choice has an effect at launch, but the UI
-should not hide or rewrite the user's standing preference merely because the
+capabilities may decide whether a choice has an effect at launch. Except for a
+security boundary whose current execution host cannot enforce, the UI should
+not hide or rewrite the user's standing preference merely because the
 currently selected provider lacks the feature.
 
 - **Default AI provider** — the provider chosen when opening a new-session form.
@@ -30,6 +31,11 @@ currently selected provider lacks the feature.
 - **Permission mode** — the requested approval policy. A model may hide or
   ignore unsupported modes such as provider-decided `Auto`, but the saved
   default is not a provider/model economics choice.
+- **Sandbox new sessions** — the default-off launch-time host-confinement
+  toggle. The saved value is provider-independent and each New Session may
+  override it before process creation. The control is rendered and sent only
+  when the server reports a currently available host backend; see
+  [session-sandboxing](session-sandboxing.md).
 - **Recaps** — recap mode and away threshold belong together. They are
   presented above AI Provider because they are standing session-helper choices,
   not properties of whichever provider button happens to be selected.
@@ -64,6 +70,35 @@ Switching AI Provider should restore that provider's provider-specific defaults
 without disturbing all-provider defaults. Changing an all-provider default should
 not overwrite per-provider model/thinking/effort choices.
 
+### Provider catalog readiness
+
+The first authenticated or remotely connected YA visit in a browser tab primes
+provider status and model catalogs through the same source-scoped request/cache
+used by New Session, settings, and restart surfaces. A consumer mounted during
+that primer joins its in-flight request rather than repeating provider probes.
+Catalogs and in-flight work from one local or remote host must never satisfy a
+consumer viewing another host. Primer failure remains advisory: the first
+consumer retries through its normal loading/error path.
+
+Readiness is client-presence-driven. YA does not periodically probe provider
+catalogs while no browser is visiting it; the existing bounded client and server
+cache lifetimes govern freshness during active use, and explicit refresh actions
+retain their stronger semantics. When a primer overlaps a later explicit
+refresh or reload for the same source, only the later request may update the
+shared cache or mounted consumer state, regardless of response order.
+
+Selecting a configured provider whose model list is authoritative but dynamic
+triggers a background explicit refresh, even when a cached empty catalog made
+the provider eligible to select. The current provider list remains visible
+while that refresh runs. When Claude Gateway still advertises no models, New
+Session shows a retryable unavailable state and blocks fresh launch instead of
+submitting without a model. When models arrive, the selection reconciles to a
+provider-scoped saved model or the first advertised row and capability-driven
+controls appear. An exact saved model that is absent from an authoritative
+Gateway catalog is neither displayed nor submitted; this applies equally to
+the New Session picker and its informational floating-composer badge. Providers
+whose contracts permit exact unlisted ids retain their existing behavior.
+
 ## Recap fallback semantics
 
 `Forked` is a preference for the higher-fidelity recap path. **Tailed Recap
@@ -75,12 +110,52 @@ with provider-specific defaults when `Tailed` is selected and hidden for `Off`,
 offers a meaningful way to request native recaps. Do not show it in the UI until
 a provider capability makes it real.
 
+## Per-session live picks vs global defaults
+
+The rest of this doc is about *defaults that seed a new session*. A separate
+concern is what happens when a user changes model/effort/thinking **inside an
+existing session** and then reloads or the server process is torn down: the live
+pick should survive as a per-session choice, not silently reset or leak to every
+other session. This is the same contract [permission-mode](permission-mode.md)
+already meets — a per-session UI choice persisted in `localStorage`
+(`permission-mode-{sessionId}` in `useSession`) so a reload restores it instead
+of dropping to `default`.
+
+- **Model — per session (as of this note).** A session's model pick persists to
+  `localStorage` keyed by session id (`session-model-{sessionId}`,
+  `lib/sessionModelStorage.ts`), saved in `useSession`'s `setSessionModel` and
+  restored on load for an idle (non-self-owned) session. This closes the gap
+  where a model change — which only reaches the server at the next turn — was
+  lost if the tab closed before sending. A live self-owned process's model stays
+  authoritative (its config arrives via the stream); the stored pick only
+  overlays when idle.
+
+- **Effort / thinking mode — still global, and that seems unintended.** Unlike
+  model and permission mode, effort level and thinking mode persist only
+  *globally* via `useModelSettings` (`BROWSER_LOCAL_KEYS.thinkingLevel` /
+  `.thinkingMode`). Changing effort inside one session therefore rewrites the
+  effort used by *every* session, and reopening a session shows the global value
+  rather than what was last chosen for that session. The idle `ModelSwitchModal`
+  reads these same global values (`getEffortLevel()` / `getThinkingMode()`), and
+  `applyConfig` writes them back globally (`setEffortLevel` / `setThinkingMode`).
+
+  **Intent:** make effort and thinking-mode changes per-session too, mirroring
+  the model/permission-mode persistence above (a `session-effort-{sessionId}` /
+  `session-thinking-{sessionId}` pair, or a single per-session config record),
+  so a live pick sticks to its own session instead of the whole browser. Keep
+  **show-thinking** display policy all-provider/per-install (it is a render
+  preference, not a spend control) — only effort and thinking *mode* move
+  per-session. The global values become the seed for a session's first pick,
+  preserving today's behavior for sessions the user never touches. This is
+  deferred, not yet built; the model change is the first step of the pattern.
+
 ## UI placement
 
 In the session-defaults panel and the new-session form:
 
-1. All-provider defaults: recaps; prompt suggestions; permission mode;
-   show-thinking display policy; and forked-session behavior.
+1. All-provider defaults: recaps; prompt suggestions; permission mode; the
+   sandbox-new-sessions toggle; show-thinking display policy; and
+   forked-session behavior.
 2. AI Provider. The selector is the boundary between all-provider defaults above
    and provider-specific defaults below.
 3. Provider-specific defaults for the selected provider: model, service tier,
@@ -105,6 +180,7 @@ provider-default map, for example:
 interface NewSessionDefaults {
   provider?: ProviderName;
   permissionMode?: PermissionMode;
+  sandboxLevel?: SessionSandboxLevel;
   recapMode?: RecapMode;
   recapAfterSeconds?: number;
   promptSuggestionMode?: PromptSuggestionMode;
@@ -126,6 +202,10 @@ provider's first provider-specific entry. Do not discard configured values on
 read; normalize into the scoped shape on the next save.
 
 ## Implementation plan
+
+Session sandboxing follows the separate backend-integration gate in
+[session-sandboxing](session-sandboxing.md); it is not part of the
+UI/storage sequence below.
 
 1. **Pin this contract.** Create this topic, add the glossary/topic index row,
    and use it as the commit topic for the UI/storage changes.

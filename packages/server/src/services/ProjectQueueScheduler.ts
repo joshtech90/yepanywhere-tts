@@ -271,6 +271,15 @@ export class ProjectQueueScheduler {
     projectId: UrlProjectId,
     options: PromoteNowOptions = {},
   ): Promise<ProjectQueuePromoteNowResult> {
+    if (this.projectQueueService.isDispatchPaused()) {
+      const projectItems = this.projectQueueService.listProject(projectId).items;
+      const requestedItem = options.itemId
+        ? projectItems.find((item) => item.id === options.itemId)
+        : projectItems[0];
+      if (requestedItem?.status === "queued") {
+        await this.projectQueueService.resumeDispatch();
+      }
+    }
     this.clearProjectTimer(projectId);
     const result = await this.runProject(projectId, options);
     return {
@@ -693,6 +702,9 @@ export class ProjectQueueScheduler {
       ...(thinkingConfig.effort ? { effort: thinkingConfig.effort } : {}),
       ...(target.provider ? { providerName: target.provider } : {}),
       ...(target.executor ? { executor: target.executor } : {}),
+      ...(target.type === "new-session" && target.sandboxLevel
+        ? { sandboxLevel: target.sandboxLevel }
+        : {}),
       ...(globalInstructions ? { globalInstructions } : {}),
     };
   }

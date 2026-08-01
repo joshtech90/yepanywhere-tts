@@ -18,6 +18,7 @@ import {
   getThinkingMode,
   useModelSettings,
 } from "../hooks/useModelSettings";
+import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
 import { useI18n } from "../i18n";
 import {
   getEffortLevelLabel,
@@ -32,7 +33,12 @@ import {
   getThinkingModeFromProcess,
   normalizeEffortLevel,
 } from "../lib/modelConfigIndicator";
+import {
+  startsAdditionalModelGroup,
+  withVisibleModelSelection,
+} from "../lib/modelCatalog";
 import { ProviderBadge } from "./ProviderBadge";
+import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
 import { Modal } from "./ui/Modal";
 
 interface ModelSwitchModalProps {
@@ -106,6 +112,8 @@ export function ModelSwitchModal({
   const { setThinkingMode, setEffortLevel } = useModelSettings();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [provider, setProvider] = useState<ProviderName | null>(null);
+  const { usage: subscriptionUsage } =
+    useProviderSubscriptionUsage(provider);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
@@ -172,7 +180,13 @@ export function ModelSwitchModal({
           process?.effort,
         );
 
-        setModels(modelsRes.models);
+        setModels(
+          withVisibleModelSelection(
+            modelsRes.models,
+            resolvedModel,
+            t("modelSelectionUnavailable"),
+          ),
+        );
         setProvider(processProvider);
         setCurrentModelId(resolvedModel);
         setSelectedModel(resolvedModel);
@@ -558,58 +572,69 @@ export function ModelSwitchModal({
                   <strong>{t("newSessionModelTitle")}</strong>
                 </div>
                 <div className="model-switch-list">
-                  {models.map((model) => {
+                  {models.map((model, index) => {
                     const isCurrent = currentModelId === model.id;
                     const isSelected = selectedModel === model.id;
                     const showInlineSave =
                       dirty && lastTouchedSection === "model" && isSelected;
                     return (
-                      <div key={model.id} className="model-switch-item-row">
-                        <button
-                          type="button"
-                          className={`model-switch-item ${isCurrent ? "current" : ""} ${isSelected ? "active" : ""}`}
-                          onClick={() => {
-                            if (selectedModel !== model.id) {
-                              setLastTouchedSection("model");
-                            }
-                            setSelectedModel(model.id);
-                          }}
-                          disabled={switching}
-                        >
-                          <span className="model-switch-item-main">
-                            <span className="model-switch-name-row">
-                              <span className="model-switch-name">
-                                {model.name}
+                      <Fragment key={model.id}>
+                        {startsAdditionalModelGroup(models, index) && (
+                          <div className="model-switch-group-label">
+                            {t("previousModelsGroup")}
+                          </div>
+                        )}
+                        <div className="model-switch-item-row">
+                          <button
+                            type="button"
+                            className={`model-switch-item ${isCurrent ? "current" : ""} ${isSelected ? "active" : ""}`}
+                            onClick={() => {
+                              if (selectedModel !== model.id) {
+                                setLastTouchedSection("model");
+                              }
+                              setSelectedModel(model.id);
+                            }}
+                            disabled={switching}
+                          >
+                            <span className="model-switch-item-main">
+                              <span className="model-switch-name-row">
+                                <span className="model-switch-name">
+                                  {model.name}
+                                </span>
+                                {provider && (
+                                  <ProviderBadge
+                                    provider={provider}
+                                    model={model.id}
+                                  />
+                                )}
                               </span>
-                              {provider && (
-                                <ProviderBadge
-                                  provider={provider}
-                                  model={model.id}
-                                />
+                              {model.description && (
+                                <span className="model-switch-description">
+                                  {model.description}
+                                </span>
                               )}
                             </span>
-                            {model.description && (
-                              <span className="model-switch-description">
-                                {model.description}
+                            <span className="model-switch-item-meta">
+                              <ModelSubscriptionUsage
+                                usage={subscriptionUsage}
+                                modelId={model.id}
+                              />
+                              {isCurrent && (
+                                <span className="model-switch-tag">
+                                  {t("modelSwitchCurrent")}
+                                </span>
+                              )}
+                              <span
+                                className={`model-switch-radio ${isSelected ? "selected" : ""}`}
+                                aria-hidden="true"
+                              >
+                                {isSelected ? "●" : "○"}
                               </span>
-                            )}
-                          </span>
-                          <span className="model-switch-item-meta">
-                            {isCurrent && (
-                              <span className="model-switch-tag">
-                                {t("modelSwitchCurrent")}
-                              </span>
-                            )}
-                            <span
-                              className={`model-switch-radio ${isSelected ? "selected" : ""}`}
-                              aria-hidden="true"
-                            >
-                              {isSelected ? "●" : "○"}
                             </span>
-                          </span>
-                        </button>
-                        {showInlineSave && renderInlineSave()}
-                      </div>
+                          </button>
+                          {showInlineSave && renderInlineSave()}
+                        </div>
+                      </Fragment>
                     );
                   })}
                 </div>

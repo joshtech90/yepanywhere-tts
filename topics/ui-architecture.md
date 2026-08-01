@@ -60,6 +60,22 @@ measured demand exceeds available width, and on any >1px widening resets to
 is history-free and identical from either direction, so restore is
 reverse-of-removal by construction — form 1 above.
 
+## Desktop Sidebar Display Modes
+
+The desktop sidebar has three browser-persisted display modes. Expanded mode
+reserves the configured sidebar width; collapsed mode reserves only the icon
+rail; minimized mode reserves no width and leaves the standard sidebar toggle
+fixed over the page at 2px from the top-left viewport edge. The floating toggle
+is an overlay: page headers and content do not add padding or otherwise reflow
+around it.
+
+Minimize is available only from the collapsed desktop rail. Its small
+bottom-line control removes the entire rail, and the floating standard toggle
+restores the collapsed rail rather than expanding it. Mobile overlay behavior
+is unchanged. The normal default remains the expanded sidebar, so the new
+control appears only after the user has already selected or reached collapsed
+desktop mode.
+
 ## Public Share Example
 
 Public shares have a valid reason for an independent unauthenticated top-level
@@ -97,6 +113,28 @@ Structured explanatory tooltips use the same timing coordinator explicitly.
 Interactive help panels remain popovers with their own state. The observable
 contract and native fallback are in
 [tooltip-interactions](tooltip-interactions.md).
+
+## Global Reload Notice Placement
+
+The shared backend/frontend reload notice preserves page identity and
+navigation rather than claiming the full top edge. On desktop and tablet it is
+an intrinsic-width card at the lower viewport edge, where unused space is more
+likely; it must not cover a session title, page-level navigation, or session
+composer controls or another fixed lower-corner action. The notice stack
+measures live fixed occupants as one allocation problem: it occupies the
+lower-right space when that space is clear and lifts the entire stack above
+the session composer or floating action button when it would collide. A second
+notice must not grow underneath a higher-z-index occupant. On phone it may
+remain at the top, but stays inset from both viewport edges instead of becoming
+a full-width bar.
+
+Every form has an explicit × dismiss control with at least a 36×36 pixel hit
+target. Visible copy stays compact; complete restart-risk and action wording
+remains available through accessible names and hover titles. All
+`ReloadBanner` callers inherit this placement and interaction contract.
+Choosing any action consumes the current notice instead of morphing it into a
+status or confirmation panel. The requested reload or safe-restart schedule
+continues; after a reload, later source changes may produce a fresh notice.
 
 ## Settings Pane Conventions
 

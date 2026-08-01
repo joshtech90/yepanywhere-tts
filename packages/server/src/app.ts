@@ -11,12 +11,14 @@ import {
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   buildEffectiveAgentContext,
   clampProjectQueueQuietSeconds,
+  isClaudeProviderName,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { join } from "node:path";
 import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
+import type { DesktopBootstrapService } from "./desktop/DesktopBootstrapService.js";
 import type { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import type { FrontendProxy } from "./frontend/index.js";
 import type { SessionIndexService } from "./indexes/index.js";
@@ -24,8 +26,14 @@ import type {
   ProjectMetadataService,
   SessionMetadataService,
 } from "./metadata/index.js";
+import { ToolResultMediaStore } from "./media/ToolResultMediaStore.js";
+import {
+  getClaudeSandboxProjectDir,
+  getCodexSandboxSessionsDir,
+} from "./session-sandbox.js";
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
+import { structuredErrorHandler } from "./middleware/error-handler.js";
 import {
   getAllowedFilePaths,
   shouldIncludeProjects,
@@ -66,16 +74,22 @@ import { createClientLogsRoutes } from "./routes/client-logs.js";
 import { createConnectionsRoutes } from "./routes/connections.js";
 import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
 import { createDevRoutes } from "./routes/dev.js";
+import { createDesktopBootstrapRoutes } from "./routes/desktop-bootstrap.js";
 import { createDeviceRoutes } from "./routes/devices.js";
 import { createFilesRoutes } from "./routes/files.js";
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
+import { createGitBrowseRoutes } from "./routes/git-browse.js";
+import { createGitProjectionRoutes } from "./routes/git-projections.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
 import { createGlobalSessionsRoutes } from "./routes/global-sessions.js";
+import { createReviewCommentsRoutes } from "./routes/review-comments.js";
+import { createSupervisorReviewLauncher } from "./review/reviewSessionLauncher.js";
 import { health } from "./routes/health.js";
 import { createInboxRoutes } from "./routes/inbox.js";
 import { createNetworkBindingRoutes } from "./routes/network-binding.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
+import { createHostAgentProcessesRoutes } from "./routes/host-agent-processes.js";
 import { createProcessesRoutes } from "./routes/processes.js";
 import {
   createGlobalProjectQueueRoutes,
@@ -100,11 +114,14 @@ import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSharingRoutes } from "./routes/sharing.js";
 import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
+import { createToolResultMediaRoutes } from "./routes/tool-result-media.js";
+import { ClaudeGatewayProvider } from "./sdk/providers/claude-gateway.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 
 import { createLocalFileRoutes } from "./routes/local-file.js";
 import { createLocalImageRoutes } from "./routes/local-image.js";
+import { createLocalResourcePathPolicy } from "./routes/local-resource-policy.js";
 import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
 import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
@@ -146,6 +163,7 @@ import { CodexSessionReader } from "./sessions/codex-reader.js";
 import { createCodexSessionDiscoveryIndex } from "./sessions/codex-discovery.js";
 import { GeminiSessionReader } from "./sessions/gemini-reader.js";
 import { GrokSessionReader } from "./sessions/grok-reader.js";
+import { MergedSessionReader } from "./sessions/merged-reader.js";
 import { OpenCodeSessionReader } from "./sessions/opencode-reader.js";
 import { PiSessionReader } from "./sessions/pi-reader.js";
 import {
@@ -228,6 +246,10 @@ export interface AppOptions {
   authDisabled?: boolean;
   /** Desktop auth token for Tauri app. Requests with matching X-Desktop-Token header bypass auth. */
   desktopAuthToken?: string;
+  /** Reload-safe desktop bootstrap/session service owned by the native shell. */
+  desktopBootstrapService?: DesktopBootstrapService;
+  /** Whether this server was launched by the signed desktop runtime. */
+  desktopRuntime?: boolean;
   /** RemoteAccessService for SRP-based remote access (optional) */
   remoteAccessService?: RemoteAccessService;
   /** RemoteSessionService for session persistence (optional) */
@@ -262,6 +284,8 @@ export interface AppOptions {
     ) => Promise<{ success: boolean; error?: string }>;
     /** Live accessor for the addresses the server is actually listening on. */
     getActiveListeners?: () => string[];
+    /** Live localhost port after an optional port-0 bind. */
+    getLocalhostPort?: () => number;
   };
   /** ConnectedBrowsersService for tracking active browser connections */
   connectedBrowsers?: ConnectedBrowsersService;
@@ -363,10 +387,35 @@ function getPreservedRestartWork(
 }
 
 export function createApp(options: AppOptions): AppResult {
-  configureProviderRuntime({ codexCliPath: options.codexCliPath });
+  configureProviderRuntime({
+    codexCliPath: options.codexCliPath,
+    getClaudeAdditionalModels: () =>
+      options.serverSettingsService?.getSetting("claudeAdditionalModels"),
+    isClaudeOllamaVisible: () =>
+      ClaudeOllamaProvider.isExplicitlyConfigured() ||
+      Boolean(
+        options.serverSettingsService?.getSetting("ollamaSystemPrompt") ||
+          options.serverSettingsService?.getSetting(
+            "ollamaUseFullSystemPrompt",
+          ),
+      ) ||
+      Object.values(
+        options.sessionMetadataService?.getAllMetadata() ?? {},
+      ).some((metadata) => metadata.provider === "claude-ollama"),
+  });
   const codexSessionsDir = options.codexSessionsDir ?? CODEX_SESSIONS_DIR;
 
   const app = new Hono<{ Bindings: HttpBindings }>();
+  if (options.desktopBootstrapService) {
+    app.route(
+      "/desktop-bootstrap",
+      createDesktopBootstrapRoutes(options.desktopBootstrapService),
+    );
+  }
+  // Unhandled route throws — including from every mounted sub-app, whose
+  // errors Hono routes here rather than to the sub-app — return structured
+  // JSON instead of an opaque empty 500.
+  app.onError(structuredErrorHandler);
   const attachmentStagingService =
     options.attachmentStagingService ??
     new AttachmentStagingService({
@@ -406,6 +455,7 @@ export function createApp(options: AppOptions): AppResult {
         authService: options.authService,
         authDisabled: options.authDisabled,
         desktopAuthToken: options.desktopAuthToken,
+        desktopBootstrapService: options.desktopBootstrapService,
       }),
     );
   }
@@ -419,6 +469,7 @@ export function createApp(options: AppOptions): AppResult {
         authService: options.authService,
         authDisabled: options.authDisabled,
         desktopAuthToken: options.desktopAuthToken,
+        desktopBootstrapService: options.desktopBootstrapService,
       }),
     );
   }
@@ -476,6 +527,33 @@ export function createApp(options: AppOptions): AppResult {
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
+  const localResourcePathPolicy = createLocalResourcePathPolicy({
+    allowedPaths: getAllowedFilePaths,
+    scanner,
+    includeProjects: shouldIncludeProjects,
+  });
+  const toolResultMediaStore = new ToolResultMediaStore({
+    dataDir: options.dataDir,
+    resolveSourcePath: async (absolutePath) => {
+      const resolved =
+        await localResourcePathPolicy.resolveAllowedFilePath(absolutePath);
+      return resolved.ok ? resolved.file.resolvedPath : null;
+    },
+    providerSourceRoots: ({ provider, projectPath, sessionId }) =>
+      provider === "grok"
+        ? [
+            join(
+              GROK_SESSIONS_DIR,
+              encodeURIComponent(projectPath),
+              sessionId,
+              "images",
+            ),
+          ]
+        : [],
+  });
+  const effectiveDataDir =
+    options.dataDir ??
+    join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
   const bangCommandService =
     options.sessionMetadataService && options.dataDir
       ? new BangCommandService({
@@ -536,10 +614,73 @@ export function createApp(options: AppOptions): AppResult {
         : "";
 
     switch (project.provider) {
-      case "codex":
+      case "codex": {
+        const sandboxSessionRoots = [
+          ...new Map(
+            Object.values(
+              options.sessionMetadataService?.getAllMetadata() ?? {},
+            ).flatMap((metadata) => {
+              if (
+                metadata.provider !== "codex" ||
+                metadata.sandboxLevel !== "project-write" ||
+                !metadata.sandboxStateKey ||
+                metadata.workingProjectId !== project.id
+              ) {
+                return [];
+              }
+              const root = {
+                sessionsDir: getCodexSandboxSessionsDir({
+                  dataDir: effectiveDataDir,
+                  stateKey: metadata.sandboxStateKey,
+                }),
+                projectPath: metadata.sandboxProjectPath ?? project.path,
+              };
+              return [
+                [`${root.sessionsDir}\0${root.projectPath}`, root] as const,
+              ];
+            }),
+          ).values(),
+        ];
+        const sandboxKey =
+          sandboxSessionRoots.length > 0
+            ? `::sandbox=${sandboxSessionRoots
+                .map(
+                  ({ sessionsDir, projectPath }) =>
+                    `${sessionsDir}:${projectPath}`,
+                )
+                .join(",")}`
+            : "";
+        return getOrCreateReader(
+          `codex::${project.sessionDir}::${project.path}${sandboxKey}`,
+          () => {
+            const discoveryIndex = getCodexDiscoveryIndex(project.sessionDir);
+            const globalReader = new CodexSessionReader({
+              sessionsDir: project.sessionDir,
+              projectPath: project.path,
+              summaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+              ...(discoveryIndex ? { discoveryIndex } : {}),
+            });
+            if (sandboxSessionRoots.length === 0) {
+              return globalReader;
+            }
+            return new MergedSessionReader([
+              ...sandboxSessionRoots.map(
+                ({ sessionsDir, projectPath }) =>
+                  new CodexSessionReader({
+                    sessionsDir,
+                    projectPath,
+                    summaryParserWorkerMode:
+                      options.codexSummaryParserWorkerMode,
+                  }),
+              ),
+              globalReader,
+            ]);
+          },
+        );
+      }
       case "codex-oss":
         return getOrCreateReader(
-          `codex::${project.sessionDir}::${project.path}`,
+          `codex-oss::${project.sessionDir}::${project.path}`,
           () => {
             const discoveryIndex = getCodexDiscoveryIndex(project.sessionDir);
             return new CodexSessionReader({
@@ -562,14 +703,44 @@ export function createApp(options: AppOptions): AppResult {
             }),
         );
       case "claude":
+      case "claude-gateway":
       case "claude-ollama": {
         const mis = options.modelInfoService;
+        const sandboxSessionDirs = [
+          ...new Set(
+            Object.values(
+              options.sessionMetadataService?.getAllMetadata() ?? {},
+            ).flatMap((metadata) =>
+              metadata.provider &&
+              isClaudeProviderName(metadata.provider) &&
+              metadata.sandboxLevel === "project-write" &&
+              metadata.sandboxStateKey &&
+              metadata.workingProjectId === project.id
+                ? [
+                    getClaudeSandboxProjectDir({
+                      dataDir: effectiveDataDir,
+                      stateKey: metadata.sandboxStateKey,
+                      projectPath: metadata.sandboxProjectPath ?? project.path,
+                    }),
+                  ]
+                : [],
+            ),
+          ),
+        ];
+        const allAdditionalDirs = [
+          ...(project.mergedSessionDirs ?? []),
+          ...sandboxSessionDirs,
+        ];
+        const sandboxKey =
+          sandboxSessionDirs.length > 0
+            ? `::sandbox=${sandboxSessionDirs.join(",")}`
+            : "";
         return getOrCreateReader(
-          `claude::${project.sessionDir}${mergedKey}`,
+          `claude::${project.sessionDir}${mergedKey}${sandboxKey}`,
           () =>
             new ClaudeSessionReader({
               sessionDir: project.sessionDir,
-              additionalDirs: project.mergedSessionDirs,
+              additionalDirs: allAdditionalDirs,
               summaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
               getContextWindow: mis
                 ? (model, provider) => mis.getContextWindow(model, provider)
@@ -799,6 +970,8 @@ export function createApp(options: AppOptions): AppResult {
     idlePreemptThresholdMs: options.idlePreemptThresholdMs,
     maxQueueSize: options.maxQueueSize,
     sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+    toolResultMediaStore,
+    sandboxStateRoot: join(effectiveDataDir, "session-sandboxes"),
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
       ? (sessionId, executor) =>
@@ -982,7 +1155,6 @@ export function createApp(options: AppOptions): AppResult {
       eventBus: options.eventBus,
       pushService: options.pushService,
       supervisor,
-      connectedBrowsers: options.connectedBrowsers,
     });
   }
 
@@ -993,7 +1165,6 @@ export function createApp(options: AppOptions): AppResult {
       supervisor,
       projectQueueService: options.projectQueueService,
       externalTracker,
-      connectedBrowsers: options.connectedBrowsers,
     });
   }
 
@@ -1040,16 +1211,20 @@ export function createApp(options: AppOptions): AppResult {
         options.speechBackendRegistry?.enabledCapabilities() ?? {},
       getClientDefaults: () =>
         options.serverSettingsService?.getSetting("clientDefaults"),
+      desktopRuntime: options.desktopRuntime,
     }),
   );
 
   // Server info (host/port binding info for Local Access settings)
-  if (options.serverHost && options.serverPort) {
+  if (options.serverHost && options.serverPort !== undefined) {
     app.route(
       "/api/server-info",
       createServerInfoRoutes({
         host: options.serverHost,
-        port: options.serverPort,
+        port: () =>
+          options.networkBindingCallbackHolder?.getLocalhostPort?.() ??
+          options.serverPort ??
+          0,
         installId: options.installId,
         deviceBridgeAvailable: !!options.deviceBridgeService?.hasBinary(),
       }),
@@ -1121,7 +1296,10 @@ export function createApp(options: AppOptions): AppResult {
   if (options.dataDir) {
     app.route(
       "/api/onboarding",
-      createOnboardingRoutes({ dataDir: options.dataDir }),
+      createOnboardingRoutes({
+        dataDir: options.dataDir,
+        completeByDefault: options.desktopRuntime === true,
+      }),
     );
   }
 
@@ -1208,7 +1386,7 @@ export function createApp(options: AppOptions): AppResult {
         scanner,
         sessionMetadataService: options.sessionMetadataService,
         bangCommandService,
-        bangCommandsEnabled: () =>
+        bangHistoryViewEnabled: () =>
           options.serverSettingsService?.getSetting("clientDefaults")
             ?.bangCommandsEnabled === true,
         sessionBelongsToProject: async (project, sessionId) => {
@@ -1253,7 +1431,15 @@ export function createApp(options: AppOptions): AppResult {
       workstreamService: options.workstreamService,
       modelInfoService: options.modelInfoService,
       sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+      toolResultMediaStore,
       dataDir: options.dataDir,
+    }),
+  );
+  app.route(
+    "/api",
+    createToolResultMediaRoutes({
+      scanner,
+      store: toolResultMediaStore,
     }),
   );
   app.route(
@@ -1321,6 +1507,15 @@ export function createApp(options: AppOptions): AppResult {
       },
     }),
   );
+  if (options.serverSettingsService) {
+    app.route(
+      "/api/host-agent-processes",
+      createHostAgentProcessesRoutes({
+        supervisor,
+        serverSettingsService: options.serverSettingsService,
+      }),
+    );
+  }
 
   // Inbox routes (cross-project session aggregation)
   app.route(
@@ -1387,6 +1582,21 @@ export function createApp(options: AppOptions): AppResult {
   // Git status routes
   app.route("/api/projects", createGitStatusRoutes({ scanner }));
 
+  // Read-only git browse routes (commit list/diff, blame, search — stage 3)
+  app.route("/api/projects", createGitBrowseRoutes({ scanner }));
+
+  // Optional Source Control diff projections.
+  app.route("/api/projects", createGitProjectionRoutes({ scanner }));
+
+  // Source-review draft comments (topic: source-review-to-session)
+  app.route(
+    "/api/projects",
+    createReviewCommentsRoutes({
+      scanner,
+      launcher: createSupervisorReviewLauncher(supervisor),
+    }),
+  );
+
   if (options.serverSettingsService && options.workstreamService) {
     app.route(
       "/api/projects",
@@ -1427,6 +1637,7 @@ export function createApp(options: AppOptions): AppResult {
     createProvidersRoutes({
       modelInfoService: options.modelInfoService,
       enabledProviders: options.enabledProviders,
+      desktopRuntime: options.desktopRuntime,
     }),
   );
 
@@ -1444,6 +1655,8 @@ export function createApp(options: AppOptions): AppResult {
           ? (enabled) =>
               options.remoteSessionService?.setDiskPersistenceEnabled(enabled)
           : undefined,
+        onClaudeGatewaySettingsChanged: (settings) =>
+          ClaudeGatewayProvider.configureGateway(settings),
         onOllamaUrlChanged: (url) => {
           ClaudeOllamaProvider.setOllamaUrl(url);
         },

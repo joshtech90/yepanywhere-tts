@@ -1,6 +1,8 @@
 import type { PatchHunk } from "./types.js";
 
 export {
+  GIT_SOURCE_REVIEW_CAPABILITY,
+  GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
@@ -37,6 +39,112 @@ export interface GitRecentCommit {
   authorDate: string;
 }
 
+/**
+ * A commit's metadata plus the files it changed (topic:
+ * source-review-to-session, stage 3 commit browser). Diffs are fetched per
+ * file via `POST /git/commit-diff`, mirroring the working-tree diff flow.
+ */
+export interface GitCommitDetail extends GitRecentCommit {
+  /** Full commit message body (may be empty or multi-line). */
+  body: string;
+  /** Files changed by the commit. Reuses {@link GitFileChange} with `staged` always false. */
+  files: GitFileChange[];
+}
+
+/** A direct two-tree comparison from a selected revision to a pinned HEAD. */
+export interface GitRevisionComparison {
+  /** Resolved full SHA of the selected revision. */
+  baseSha: string;
+  /** Resolved full SHA of HEAD when the comparison was created. */
+  headSha: string;
+  /** Files whose content differs between the two revisions. */
+  files: GitFileChange[];
+}
+
+/** One page of commits for the commit browser. */
+export interface GitCommitListResult {
+  commits: GitRecentCommit[];
+  /** True when more commits exist past this page (for "load more"). */
+  hasMore: boolean;
+}
+
+/**
+ * Complete commit order for the on-demand browser search index. Metadata is
+ * intentionally small; changed-line text is fetched in bounded batches.
+ */
+export interface GitCommitSearchManifest {
+  /** Current repository HEAD, or null for an empty repository. */
+  head: string | null;
+  /** Reachable commits, newest first, up to the server's manifest bound. */
+  commits: GitRecentCommit[];
+  /** Set when history exceeded the bound: the index covers a recent prefix. */
+  truncated?: boolean;
+}
+
+/** Searchable changed-line/path text for one commit. */
+export interface GitCommitSearchRecord {
+  hash: string;
+  deltaText: string;
+}
+
+export interface GitCommitSearchRecordsResult {
+  records: GitCommitSearchRecord[];
+}
+
+/** One source line's blame in the all-files provenance browser. */
+export interface GitBlameLine {
+  /** 1-based line number in the blamed revision. */
+  line: number;
+  /** Originating commit sha (40-hex; all-zero when not yet committed). */
+  sha: string;
+  shortSha: string;
+  author: string;
+  /**
+   * Stable project-owned hue preference. Older servers omit it; clients then
+   * derive a deterministic preference from the author display name.
+   */
+  authorColorSeed?: number;
+  /** ISO 8601 author time, or "" when unknown. */
+  authorTime: string;
+  /** First line of the originating commit's message. */
+  summary: string;
+  /** The line's text (diff prefix stripped; it is plain file content). */
+  content: string;
+  /** True when the line is a working-tree change with no commit yet. */
+  uncommitted: boolean;
+}
+
+/** Whole-file blame plus the highlighted file body for the viewer. */
+export interface GitBlameResult {
+  path: string;
+  /** The blamed revision: a resolved full sha, or "working-tree". */
+  rev: string;
+  lines: GitBlameLine[];
+  /** Shiki HTML of the file (per-line spans), aligned to `lines` by order. */
+  highlightedHtml?: string;
+  highlightedLanguage?: string;
+  /** True when the file was too large to blame/highlight in full. */
+  truncated?: boolean;
+}
+
+/** Tracked-file list for the all-files tree / filename search. */
+export interface GitFileListResult {
+  /** Repo-relative paths (`git ls-files`), optionally filtered by a query. */
+  files: string[];
+  /** True when the list was capped by the server limit. */
+  truncated: boolean;
+}
+
+/** Rudimentary commit-delta / filename search results. */
+export interface GitSearchResult {
+  /** Matching file paths (filename search). */
+  files?: string[];
+  /** Commits whose diff touched the query (delta search). */
+  commits?: GitRecentCommit[];
+  /** True when results were capped by the server limit. */
+  truncated: boolean;
+}
+
 export interface GitUntrackedFolderInfo {
   /** Compact untracked directory path, with trailing slash */
   path: string;
@@ -49,6 +157,7 @@ export interface GitUntrackedFolderInfo {
 }
 
 export type GitDiffPreviewSkippedReason =
+  | "binary"
   | "content-too-large"
   | "line-too-long"
   | "html-too-large";
@@ -56,9 +165,9 @@ export type GitDiffPreviewSkippedReason =
 export interface GitDiffPreviewSkipped {
   /** Why the preview was omitted or downgraded. */
   reason: GitDiffPreviewSkippedReason;
-  /** Source content size in UTF-8 bytes, when known. */
+  /** Size of the content the guard measured — the diff, or the source it refused to diff. */
   totalBytes?: number;
-  /** Longest source line in JavaScript string characters, when known. */
+  /** Longest measured line in JavaScript string characters, when known. */
   maxLineChars?: number;
   /** Highlighted HTML size in JavaScript string characters, for client guards. */
   htmlChars?: number;
@@ -121,6 +230,8 @@ export interface GitPullResult {
   status: GitPullStatus;
   checkedRemoteAt: string | null;
   gitStatus?: GitStatusInfo;
+  /** Commits by which the local branch advanced; omitted by older servers or when unavailable. */
+  commitsAdvanced?: number;
   detail?: string;
 }
 
@@ -138,6 +249,8 @@ export interface GitPushResult {
   status: GitPushStatus;
   checkedRemoteAt: string | null;
   gitStatus?: GitStatusInfo;
+  /** Commits by which the remote branch advanced; omitted by older servers or when unavailable. */
+  commitsAdvanced?: number;
   detail?: string;
 }
 

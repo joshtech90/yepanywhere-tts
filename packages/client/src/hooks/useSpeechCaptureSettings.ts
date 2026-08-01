@@ -60,7 +60,6 @@ export function useSpeechCaptureSettings() {
   const [micDeviceId, setMicDeviceIdState] = useState(
     getSpeechMicDeviceIdSetting,
   );
-
   useEffect(() => {
     const update = () => {
       setKeepMicWarmState(getSpeechKeepMicWarmSetting());

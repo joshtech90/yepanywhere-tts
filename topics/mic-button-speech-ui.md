@@ -55,12 +55,43 @@ when the selected text starts lowercase and the replacement context is not
 sentence-initial. It must not do this for collapsed-cursor insertion or for
 all-caps/acronym-looking words.
 
+Across separate finalized chunks in one mic transaction, YA also smooths a
+provider-created capitalization boundary when the new chunk begins with a
+conservative allowlist of ordinary continuation words in mid-sentence context.
+This behavior is always active and has no setting. It applies only after at
+least one chunk has committed, never to provider revisions or explicit
+selected-span replacements, and preserves sentence starts, acronyms, single
+letters, and unlisted title-case words such as likely names. A provisional
+preview for such a later chunk uses the same normalization, so capitalization
+does not visibly change merely because the chunk commits.
+
+For browser-native Web Speech, YA feature-detects the
+`SpeechRecognition.unspokenPunctuation` property and enables it when present.
+Recognizers without that property must continue normally with their raw
+transcripts; browser support is detected from the recognition instance rather
+than inferred from a user-agent string. The capitalization fallback above
+remains active because older Chrome and Android do not provide inferred
+punctuation through this interface.
+
 ## Streaming Behavior
 
 Streaming providers may emit mutable interim text, finalized chunks
 (`is_final`), and utterance-final or end-of-turn events. YA commits finalized
 chunks into the speech transaction as they arrive, using provider audio timing
 where available to advance the insertion target.
+
+Mutable interim text uses the same typography and text color as committed
+draft text, with a thin underline in that same text color as its only
+provisional treatment. The textarea's native caret is hidden while this mirror
+preview is visible, and the mirror draws a caret immediately after the
+provisional phrase so the visible insertion endpoint follows the user's
+speech. The mirror is used only while actual provisional text exists. Active
+capture does not insert a `Listening…` label into the draft; the animated mic
+control is the capture affordance.
+
+Stopping capture returns focus to the textarea. This keeps the native typing
+caret visible at the speech insertion point while batch transcription or a
+streaming flush finishes.
 
 xAI STT has two timing notions. The top-level `start`/`duration` on a partial
 can identify the current segment window and remain fixed while several
@@ -166,43 +197,32 @@ clear its red/listening state immediately; slower upload, provider latency,
 local model load, or a slow CPU plus large ASR model are post-capture
 processing and must not make the mic look active.
 
-While the batch result is pending, the composer stays usable: the textarea
-keeps its real, visible draft and the user may type or edit **before** the
-insertion point freely (the primary use case). Editing at or after the
-insertion span is limited while a preview is active — see the known limitation
-below. The pending state is
-surfaced **inline at the insertion point** — in place of any selected span —
-through the same draft mirror that previews streaming interim text: a muted
-`Transcribing…` label shows where the result will land. The label lives in an
-aria-hidden mirror, never as characters in the textarea value, so no keystroke
-or backspace can disturb or delete it. The mirror keeps the live draft visible
-and the textarea editable (the caret shows through), so this is **not** the old
-transparent-textarea overlay that hid the whole draft and let an accidental
-backspace edit invisible text — that earlier hazard is why the label is
-non-editable, not why it lives below the field. Streaming interim text and the
-post-capture label share the one inline mirror; the label shows for the
-no-interim waits (`processing`/`finalizing`) and during active `listening`
-before any interim arrives.
+While the batch result is pending, the composer stays fully native and usable:
+the textarea keeps its real, visible draft and native caret, and the user may
+type or edit anywhere. The captured insertion target maps through those
+ordinary textarea edits. A single `Transcribing…` status appears beside the
+mic in the toolbar, never inside the textarea or its mirror. Overlapping
+requests must not duplicate status strings in the draft.
 
 **Known limitation — typing at/after the insertion span.** While a speech
-preview is active (streaming interim *or* a pending label), the inline
-span/tag is zero-width in the textarea value but the overlaid mirror reserves
-visual space for it, so the native caret and the rendered text diverge at and
-after that point. In practice the caret is "stolen" to the pre-span position:
-typing to edit text *at or after* the insertion/replaced span is effectively
-unavailable until the preview resolves. This is the textarea/mirror divergence,
-not a race. Editing *before* the span works normally — the primary use case —
-so the limitation is accepted; the clean fix is a richer input (see
+preview is active, the provisional span is absent from the textarea value but
+the overlaid mirror reserves visual space for it, so the native selection and
+the rendered text diverge at and after that point. A mirror-drawn caret
+communicates the visible speech insertion endpoint, but typing to edit text
+*at or after* the insertion/replaced span is effectively unavailable until
+the provisional preview resolves. This limitation applies only while actual
+interim speech is visible; processing and finalizing never activate the
+mirror. The clean fix for the remaining provisional-state limitation is a
+richer input (see
 [composer-rich-input.md](composer-rich-input.md)).
 
 ### Cancel contract
 
-Cancel during the post-capture wait is **Escape** — a deliberate key, distinct
-from the accidental-backspace path the inline label must never trigger. The
-mirror is non-interactive (`pointer-events: none`), so there is no inline `✕`.
-Escape ends the pending speech transaction and drops its insertion target;
-active `listening` still finalizes on Escape instead (keeping interim), and the
-mic can still start an overlapping new recording during the wait.
+Cancel during the post-capture wait is **Escape**. The toolbar status is
+informational and there is no inline `✕`. Escape ends the pending speech
+transaction and drops its insertion target; active `listening` still finalizes
+on Escape instead (keeping interim), and the mic can still start an overlapping
+new recording during the wait.
 
 The guarantee is result-suppression, not necessarily work-interruption: a
 transcription that finishes after cancel must be fully inert — it inserts
@@ -218,12 +238,11 @@ result is a no-op.
 Batch is a special case of streaming: one `is_final` block per mic activation,
 possibly with a high startup latency (model cold-load). The pending-result wait
 (`processing`) and the streaming finalize wait (`finalizing`) are the same
-conceptual state at different latencies, surfaced by one inline label at the
-insertion point. The distinct surface wording is deliberate and stays —
-`Transcribing…` for batch, `Finalizing…` for streaming, `Listening…` during
-active capture — only the mechanism unifies. The composer receives a single
-pending *kind* (`listening` | `transcribing` | `finalizing`) from the mic button
-and renders the matching label inline through the streaming-preview mirror.
+conceptual state at different latencies, surfaced by one status beside the mic.
+The distinct surface wording is deliberate and stays — `Transcribing…` for
+batch and `Finalizing…` for streaming. The composer still receives the pending
+*kind* (`listening` | `transcribing` | `finalizing`) from the mic button for
+transaction lifecycle, but none of those status strings enter the draft.
 
 Cancel (Escape) abandons only the in-progress, non-final portion of the active
 mini-turn; already-accepted `is_final` blocks remain in the draft. For batch
@@ -233,22 +252,12 @@ tail and ignores any racing `final` (a start-token bump makes later socket
 messages inert), while the `is_final` blocks already emitted to the draft stay;
 this is distinct from `stop()`, which finalizes/flushes the tail.
 
-Implemented: the inline label across the whole mic transaction — `listening`
-(active capture), `processing`, and `finalizing` — plus the streaming
-`cancel()`. The draft mirror surfaces `Listening…` during active capture, then
-`Transcribing…` (batch) or `Finalizing…` (streaming flush) at the insertion
-point; Escape cancels the post-capture wait and routes to the unified
-`cancel()`. During active capture the mic button stays stop/finalize (flush the
-tail and finalize); on desktop the mic's own status text and the inline label
-may both read `Listening…`/`Finalizing…` (the label is the in-draft readout, the
-mic status is the capture-state readout) — an accepted minor redundancy.
-
-Implemented: the inline label is an interactive tag. Each pending batch
-transcription renders as its own `Transcribing… ✕` tag at its insertion point,
-before the faked caret and in arrival order. Each tag has its own cancel action;
-later overlapping targets carry an ordinal so their order remains legible.
-Only the tag enables pointer events inside the otherwise aria-hidden,
-non-interactive mirror.
+Implemented: the draft mirror surfaces underlined provisional speech during
+capture and nothing else. `Transcribing…` (batch) and `Finalizing…` (streaming
+flush) render once beside the mic while the textarea and native caret remain
+untouched. During active capture the animated mic remains the stop/finalize
+control. Escape cancels the post-capture wait and routes to the unified
+`cancel()`.
 
 When the batch result arrives, YA treats it as one delayed finalized streaming
 chunk. It uses the speech transaction target captured at mic start, including
@@ -292,19 +301,50 @@ speech chunk and keeps recognition running.
 
 ## Feedback
 
-The mic's capture readiness stays event-driven. Yellow means capture is
-starting or connecting; red/listening means the active path has produced a real
-listening/capture event. While capture is active, the configurable live waveform
-uses whatever measured center space remains between the bottom row's anchored
-control groups; it yields before moving or overlapping those controls, as
-specified in
+The mic's capture readiness stays event-driven. While the capture path is
+initializing, the mic retains its normal inactive appearance and the
+wide-screen status says `Starting…`; startup does not add an amber color or
+pulse. Once the path produces a real capture event, the wide-screen status says
+`Speak now…`; while the recognizer reports speech or delivers transcription
+results, it says `Listening…`. Because browsers do not reliably emit a matching
+speech-end event, 1.2 seconds without a provisional or final recognition update
+returns the status to `Speak now…`; an explicit speech-end event returns it
+immediately. This inactivity inference changes only the feedback label, never
+transcript boundaries or capitalization.
+Browser-native Web Speech sessions that end unexpectedly and are automatically
+restarted return to `Starting…`; they do not expose the network-sounding
+internal `reconnecting` state. The changing words provide the status feedback;
+all non-error status text keeps the normal text color and weight instead of
+flashing between state-specific red, green, and amber treatments. Actual error
+text remains red. The mic control itself turns red after the active path
+produces a real listening/capture event. Its active icon is a microphone
+knocked out of a filled circle in the input background color. The unified disc
+stays still at `Speak now…` and pulses only while the state says `Listening…`.
+Only the filled circle changes size; the larger microphone glyph remains fixed
+so the activity cue does not make the symbol itself wobble. Idle, starting, and
+active states all render the exact same microphone SVG geometry and size;
+capture changes only its foreground/background treatment and adds the disc
+behind it. The 18px icon is sized to balance with neighboring toolbar glyphs
+without filling the button. Even at rest, the disc fully contains the
+microphone and its stand; active pulsing expands outward from that baseline
+rather than shrinking behind the glyph. Its resting scale includes the
+microphone stroke extending beyond the path's nominal bounds. This is
+deliberately activity-driven, not a fabricated volume meter;
+browser-native Web Speech exposes sound/speech events but not audio samples.
+While capture is active, the configurable live waveform uses whatever measured
+center space remains between the bottom row's anchored control groups; it
+yields before moving or overlapping those controls. The animated mic and
+changing status copy are the only persistent capture indicators: neither the
+session composer nor the new-session composer draws a pulsing red strip across
+its top edge. Overflow behavior remains as specified in
 [composer-bottom-bar-overflow.md](composer-bottom-bar-overflow.md). The
 waveform is a default-on element in Appearance → Session toolbar. The
 waveform is available for YA-controlled capture paths, where YA receives real
 audio samples; browser-native Web Speech does not expose its microphone samples
 and therefore does not show a fabricated waveform. When the waveform is shown,
-the desktop `Listening…` text beside the mic is suppressed as redundant;
-connecting, finalizing, and error text remain useful state feedback. Waveform
+the desktop `Speak now…` / `Listening…` text beside the mic is suppressed as
+redundant; starting, finalizing, and error text remain useful state feedback.
+Waveform
 amplitude uses a bounded decibel scale, saturates at 80% input amplitude, and
 may reach the toolbar's exact top and bottom bounds without a rectangular
 background or outline. The visible sample count is a client-side presentation

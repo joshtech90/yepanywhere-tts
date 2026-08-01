@@ -31,8 +31,6 @@ import {
   encodeUploadChunkPayload,
   isBinaryData,
   isCompressionSupported,
-  isRelayClientConnected,
-  isRelayClientError,
   isSequencedEncryptedPayload,
   isSrpError,
   isSrpServerChallenge,
@@ -44,7 +42,12 @@ import {
 import { getRelayDebugEnabled } from "../../hooks/useDeveloperMode";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import type { ConnectionManager } from "./ConnectionManager";
+import {
+  openRelayClientSocket,
+  type OpenRelayClientSocketOptions,
+} from "./RelayClientSocket";
 import { RelayProtocol } from "./RelayProtocol";
+import type { SecureConnectionSocket } from "./SecureConnectionSocket";
 import {
   decrypt,
   decryptBinaryEnvelopeWithDecompression,
@@ -106,10 +109,15 @@ export interface StoredSession {
   resumeProtocolVersion?: number;
 }
 
-interface RelayConnectionConfig {
+export type RelaySocketFactory = (
+  options: OpenRelayClientSocketOptions,
+) => Promise<SecureConnectionSocket>;
+
+export interface RelayConnectionConfig {
   relayUrl: string;
   relayUsername: string;
   channel?: RelayChannel;
+  openSocket?: RelaySocketFactory;
 }
 
 export interface SecureConnectionCallbacks {
@@ -153,7 +161,7 @@ function toUint8ArrayView(
 export class SecureConnection implements Connection {
   readonly mode = "secure" as const;
 
-  private ws: WebSocket | null = null;
+  private ws: SecureConnectionSocket | null = null;
   private srpSession: SrpClientSession | null = null;
   private sessionKey: Uint8Array | null = null;
   private sessionId: string | null = null;
@@ -181,6 +189,7 @@ export class SecureConnection implements Connection {
   private relayUrl: string | null = null;
   private relayUsername: string | null = null;
   private relayChannel: RelayChannel = DEFAULT_RELAY_CHANNEL;
+  private relaySocketFactory: RelaySocketFactory | null = null;
 
   // Stored session for resumption (optional)
   private storedSession: StoredSession | null = null;
@@ -309,7 +318,7 @@ export class SecureConnection implements Connection {
    * then resume the SRP session on the paired socket.
    */
   static async forResumeOnlyWithSocket(
-    ws: WebSocket,
+    ws: SecureConnectionSocket,
     storedSession: StoredSession,
     callbacks: SecureConnectionCallbacks = {},
     relayConfig?: RelayConnectionConfig,
@@ -330,6 +339,7 @@ export class SecureConnection implements Connection {
       conn.relayUrl = relayConfig.relayUrl;
       conn.relayUsername = relayConfig.relayUsername;
       conn.relayChannel = relayConfig.channel ?? DEFAULT_RELAY_CHANNEL;
+      conn.relaySocketFactory = relayConfig.openSocket ?? null;
     }
 
     // Resume the session on the existing socket
@@ -1063,79 +1073,19 @@ export class SecureConnection implements Connection {
     relayUrl: string,
     relayUsername: string,
     channel: RelayChannel = DEFAULT_RELAY_CHANNEL,
-  ): Promise<WebSocket> {
-    const ws = new WebSocket(relayUrl);
-    ws.binaryType = "arraybuffer";
-
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("Relay connection timeout"));
-      }, 15000);
-
-      ws.onopen = () => {
-        clearTimeout(timeout);
-        resolve();
-      };
-
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        reject(new Error("Failed to connect to relay server"));
-      };
+    openSocket: RelaySocketFactory = openRelayClientSocket,
+  ): Promise<SecureConnectionSocket> {
+    const ws = await openSocket({
+      relayUrl,
+      relayUsername,
+      channel,
+      onOpen: () => {
+        console.log(
+          `[SecureConnection] Relay connected, sending client_connect (${channel})`,
+        );
+      },
     });
-
-    console.log(
-      `[SecureConnection] Relay connected, sending client_connect (${channel})`,
-    );
-
-    ws.send(
-      JSON.stringify(
-        channel === DEFAULT_RELAY_CHANNEL
-          ? { type: "client_connect", username: relayUsername }
-          : {
-              type: "client_connect_channel",
-              username: relayUsername,
-              channel,
-            },
-      ),
-    );
-
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("Waiting for server timed out"));
-      }, 30000);
-
-      ws.onmessage = (event) => {
-        clearTimeout(timeout);
-        try {
-          const msg = JSON.parse(event.data as string);
-          if (isRelayClientConnected(msg)) {
-            console.log("[SecureConnection] Relay paired with server");
-            resolve();
-          } else if (isRelayClientError(msg)) {
-            ws.close();
-            reject(new Error(msg.reason));
-          } else {
-            resolve();
-          }
-        } catch {
-          ws.close();
-          reject(new Error("Invalid relay response"));
-        }
-      };
-
-      ws.onclose = () => {
-        clearTimeout(timeout);
-        reject(new Error("Relay connection closed"));
-      };
-
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        reject(new Error("Relay connection error"));
-      };
-    });
-
+    console.log("[SecureConnection] Relay paired with server");
     return ws;
   }
 
@@ -1151,6 +1101,7 @@ export class SecureConnection implements Connection {
       this.relayUrl,
       this.relayUsername,
       this.relayChannel,
+      this.relaySocketFactory ?? openRelayClientSocket,
     );
 
     console.log("[SecureConnection] Resuming SRP session on new relay socket");
@@ -1724,7 +1675,7 @@ export class SecureConnection implements Connection {
    * Skips WebSocket creation and goes straight to SRP authentication.
    */
   static async connectWithExistingSocket(
-    ws: WebSocket,
+    ws: SecureConnectionSocket,
     username: string,
     password: string,
     callbacks: SecureConnectionCallbacks = {},
@@ -1742,6 +1693,7 @@ export class SecureConnection implements Connection {
       conn.relayUrl = relayConfig.relayUrl;
       conn.relayUsername = relayConfig.relayUsername;
       conn.relayChannel = relayConfig.channel ?? DEFAULT_RELAY_CHANNEL;
+      conn.relaySocketFactory = relayConfig.openSocket ?? null;
     }
     ws.binaryType = "arraybuffer";
 

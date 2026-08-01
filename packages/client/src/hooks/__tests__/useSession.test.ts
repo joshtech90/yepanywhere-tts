@@ -9,6 +9,7 @@ import type {
   SessionStatusEvent,
   SessionUpdatedEvent,
 } from "../../lib/activityBus";
+import { sessionModelPick } from "../../lib/sessionPickStorage";
 import type { SessionStatus } from "../../types";
 import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
 
@@ -785,7 +786,7 @@ describe("useSession completion reconciliation", () => {
     ]);
   });
 
-  it("does not clear deferred chips from a user-message echo", () => {
+  it("clears every delivered deferred chip from a bundled user echo", () => {
     const { result } = renderHook(() =>
       useSession(PROJECT_ID, "sess-1", {
         owner: "self",
@@ -799,27 +800,100 @@ describe("useSession completion reconciliation", () => {
         messages: [
           {
             tempId: "temp-a",
-            content: "still queued",
+            content: "first queued message",
             timestamp: "2026-04-24T00:00:00.000Z",
+          },
+          {
+            tempId: "temp-b",
+            content: "second queued message",
+            timestamp: "2026-04-24T00:00:01.000Z",
+          },
+          {
+            tempId: "temp-c",
+            content: "unrelated queued message",
+            timestamp: "2026-04-24T00:00:02.000Z",
           },
         ],
       });
     });
 
-    // A user echo with matching text must NOT remove the chip — only a server
-    // deferred-queue event can change the mirror.
     act(() => {
       sessionStreamHandler?.({
         eventType: "message",
         type: "user",
         uuid: "uuid-echo",
         tempId: "temp-a",
-        message: { role: "user", content: "still queued" },
+        tempIds: ["temp-a", "temp-b"],
+        message: {
+          role: "user",
+          content: "first queued message\n\n--------\n\nsecond queued message",
+        },
       });
     });
 
     expect(result.current.deferredMessages).toMatchObject([
-      { tempId: "temp-a", content: "still queued" },
+      { tempId: "temp-c", content: "unrelated queued message" },
+    ]);
+
+    // A slower queue snapshot must not resurrect rows whose delivery was
+    // already proven by the user echo.
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "deferred-queue",
+        messages: [
+          {
+            tempId: "temp-a",
+            content: "first queued message",
+            timestamp: "2026-04-24T00:00:00.000Z",
+          },
+          {
+            tempId: "temp-b",
+            content: "second queued message",
+            timestamp: "2026-04-24T00:00:01.000Z",
+          },
+          {
+            tempId: "temp-c",
+            content: "unrelated queued message",
+            timestamp: "2026-04-24T00:00:02.000Z",
+          },
+        ],
+      });
+    });
+
+    expect(result.current.deferredMessages).toMatchObject([
+      { tempId: "temp-c", content: "unrelated queued message" },
+    ]);
+  });
+
+  it("does not clear a deferred chip from matching echo text alone", () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "deferred-queue",
+        messages: [
+          {
+            tempId: "temp-a",
+            content: "repeatable prompt",
+            timestamp: "2026-04-24T00:00:00.000Z",
+          },
+        ],
+      });
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "user",
+        uuid: "uuid-echo",
+        message: { role: "user", content: "repeatable prompt" },
+      });
+    });
+
+    expect(result.current.deferredMessages).toMatchObject([
+      { tempId: "temp-a", content: "repeatable prompt" },
     ]);
   });
 
@@ -1143,6 +1217,45 @@ describe("useSession completion reconciliation", () => {
     expect(result.current.modeVersion).toBe(2);
   });
 
+  it("keeps a Codex mode pending until the server reports it applied", async () => {
+    apiMocks.setPermissionMode.mockResolvedValueOnce({
+      permissionMode: "bypassPermissions",
+      appliedPermissionMode: "default",
+      modeVersion: 3,
+    });
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+        permissionMode: "default",
+        appliedPermissionMode: "default",
+        modeVersion: 2,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.setPermissionMode("bypassPermissions");
+    });
+
+    expect(result.current.permissionMode).toBe("bypassPermissions");
+    expect(result.current.status).toMatchObject({
+      owner: "self",
+      appliedPermissionMode: "default",
+    });
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "mode-applied",
+        appliedPermissionMode: "bypassPermissions",
+      });
+    });
+
+    expect(result.current.status).toMatchObject({
+      owner: "self",
+      appliedPermissionMode: "bypassPermissions",
+    });
+  });
+
   it("keeps the same-page toolbar mode after ownership drops", async () => {
     const { result } = renderHook(() =>
       useSession(PROJECT_ID, "sess-1", {
@@ -1421,5 +1534,41 @@ describe("useSession permission mode persistence", () => {
     expect(window.localStorage.getItem("permission-mode-sess-1")).toBe(
       "bypassPermissions",
     );
+  });
+
+  it("restores the stored per-session model when reopening an idle session", () => {
+    // A model picked earlier in this session and abandoned before the next turn
+    // only lives in localStorage (see sessionPickStorage). The mocked session
+    // reports "gpt-5.4", so a restore to "opus" proves the pick was reapplied.
+    sessionModelPick.save("sess-1", "opus");
+    // No initialStatus → the hook defaults to an idle { owner: "none" } session.
+    renderHook(() => useSession(PROJECT_ID, "sess-1", undefined));
+
+    const restoredModels = updateSession.mock.calls
+      .map(([update]) =>
+        typeof update === "function"
+          ? update({ id: "sess-1", model: "gpt-5.4" })
+          : update,
+      )
+      .map((next) => next?.model);
+    expect(restoredModels).toContain("opus");
+  });
+
+  it("does not override a live self-owned process's model on load", () => {
+    // A running process's model is authoritative; the stored pick must not clobber
+    // it on reopen — it only overlays when the session is idle.
+    sessionModelPick.save("sess-1", "opus");
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", { owner: "self", processId: "proc-1" }),
+    );
+
+    const restoredModels = updateSession.mock.calls
+      .map(([update]) =>
+        typeof update === "function"
+          ? update({ id: "sess-1", model: "gpt-5.4" })
+          : update,
+      )
+      .map((next) => next?.model);
+    expect(restoredModels).not.toContain("opus");
   });
 });

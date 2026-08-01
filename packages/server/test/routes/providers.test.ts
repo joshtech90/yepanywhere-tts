@@ -41,6 +41,33 @@ function deferred<T>(): {
 }
 
 describe("Providers Routes", () => {
+  it("adds a coarse application hint only for the desktop runtime", async () => {
+    const provider = createProvider({
+      getAuthStatus: vi.fn(async () => ({
+        installed: false,
+        authenticated: false,
+        enabled: false,
+      })),
+    });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      desktopRuntime: true,
+      applicationDetector: () => true,
+    });
+
+    const response = await routes.request("/");
+
+    expect(await response.json()).toEqual({
+      providers: [
+        expect.objectContaining({
+          name: "claude",
+          installed: false,
+          applicationDetected: true,
+        }),
+      ],
+    });
+  });
+
   it("caches provider scans for repeated list requests", async () => {
     const provider = createProvider();
     const routes = createProvidersRoutes({
@@ -132,6 +159,103 @@ describe("Providers Routes", () => {
     expect(provider.getAvailableModels).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps disabled providers out of collection and named routes", async () => {
+    const claude = createProvider();
+    const codexUsage = vi.fn(async () => null);
+    const codex = createProvider({
+      name: "codex",
+      displayName: "Codex",
+      getSubscriptionUsage: codexUsage,
+    });
+    const routes = createProvidersRoutes({
+      providers: [claude, codex],
+      enabledProviders: ["claude"],
+    });
+
+    const list = await routes.request("/");
+    const detail = await routes.request("/codex");
+    const usage = await routes.request("/codex/subscription-usage");
+
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({
+      providers: [expect.objectContaining({ name: "claude" })],
+    });
+    expect(detail.status).toBe(404);
+    expect(usage.status).toBe(404);
+    expect(codex.getAuthStatus).not.toHaveBeenCalled();
+    expect(codex.getAvailableModels).not.toHaveBeenCalled();
+    expect(codexUsage).not.toHaveBeenCalled();
+  });
+
+  it("invalidates cached model projection when its settings key changes", async () => {
+    let selected = false;
+    const provider = createProvider({
+      getModelCatalogCacheKey: () => String(selected),
+      getAvailableModels: vi.fn(async () => [
+        { id: "opus", name: "Opus" },
+        ...(selected
+          ? [
+              {
+                id: "claude-opus-4-8",
+                name: "Opus 4.8",
+                catalogGroup: "additional" as const,
+              },
+            ]
+          : []),
+      ]),
+    });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      cacheTtlMs: 60_000,
+    });
+
+    await routes.request("/");
+    selected = true;
+    const response = await routes.request("/");
+    const json = (await response.json()) as {
+      providers: Array<{ models: ModelInfo[] }>;
+    };
+
+    expect(provider.getAvailableModels).toHaveBeenCalledTimes(2);
+    expect(json.providers[0]?.models).toContainEqual(
+      expect.objectContaining({
+        id: "claude-opus-4-8",
+        catalogGroup: "additional",
+      }),
+    );
+  });
+
+  it("serializes provider-maintained opt-in model choices", async () => {
+    const provider = createProvider({
+      getAdditionalModelOptions: () => [
+        {
+          id: "claude-opus-4-8",
+          name: "Opus 4.8",
+          catalogGroup: "additional",
+        },
+      ],
+    });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      cacheTtlMs: 60_000,
+    });
+
+    const response = await routes.request("/");
+    const json = (await response.json()) as { providers: Array<unknown> };
+
+    expect(json.providers).toEqual([
+      expect.objectContaining({
+        additionalModelOptions: [
+          {
+            id: "claude-opus-4-8",
+            name: "Opus 4.8",
+            catalogGroup: "additional",
+          },
+        ],
+      }),
+    ]);
+  });
+
   it("serializes active-turn steering capability flags", async () => {
     const provider = createProvider({
       supportsSteering: true,
@@ -181,6 +305,26 @@ describe("Providers Routes", () => {
     ]);
   });
 
+  it("serializes launch-time compact percentage capability", async () => {
+    const provider = createProvider({
+      supportsLaunchCompactPercentOverride: true,
+    });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      cacheTtlMs: 60_000,
+    });
+
+    const response = await routes.request("/");
+    const json = (await response.json()) as { providers: Array<unknown> };
+
+    expect(json.providers).toEqual([
+      expect.objectContaining({
+        name: "claude",
+        supportsLaunchCompactPercentOverride: true,
+      }),
+    ]);
+  });
+
   it("includes provider login command hints", async () => {
     const provider = createProvider({
       getAuthStatus: vi.fn(async () => ({
@@ -207,5 +351,53 @@ describe("Providers Routes", () => {
           '& "C:\\Users\\me\\AppData\\Local\\Claude\\claude.exe" auth login --claudeai',
       }),
     ]);
+  });
+
+  it("caches normalized subscription usage and refreshes on demand", async () => {
+    const getSubscriptionUsage = vi.fn(async () => ({
+      provider: "claude" as const,
+      fetchedAt: "2026-07-29T00:00:00.000Z",
+      windows: [
+        {
+          id: "weekly",
+          usedPercent: 72,
+          windowDurationMinutes: 10_080,
+          scope: { type: "provider" as const },
+        },
+      ],
+    }));
+    const provider = createProvider({ getSubscriptionUsage });
+    const routes = createProvidersRoutes({
+      providers: [provider],
+      usageCacheTtlMs: 60_000,
+    });
+
+    const first = await routes.request("/claude/subscription-usage");
+    const cached = await routes.request("/claude/subscription-usage");
+    const refreshed = await routes.request(
+      "/claude/subscription-usage?refresh=1",
+    );
+
+    expect(first.status).toBe(200);
+    expect(cached.status).toBe(200);
+    expect(refreshed.status).toBe(200);
+    expect(getSubscriptionUsage).toHaveBeenCalledTimes(2);
+    expect(await refreshed.json()).toEqual({
+      usage: expect.objectContaining({
+        provider: "claude",
+        windows: [expect.objectContaining({ usedPercent: 72 })],
+      }),
+    });
+  });
+
+  it("returns null usage when a provider has no supported read path", async () => {
+    const routes = createProvidersRoutes({
+      providers: [createProvider()],
+    });
+
+    const response = await routes.request("/claude/subscription-usage");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ usage: null });
   });
 });

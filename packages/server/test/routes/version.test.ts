@@ -3,8 +3,15 @@ import {
   APPROVAL_AUDIT_LOG_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
+  CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  CLAUDE_GATEWAY_CAPABILITY,
+  GIT_SOURCE_REVIEW_CAPABILITY,
+  GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
+  SESSION_SANDBOXING_CAPABILITY,
+  SESSION_SANDBOXING_STATUS_CAPABILITY,
+  SESSION_FORK_TURN_INTENTS_CAPABILITY,
 } from "@yep-anywhere/shared";
 import { getServerCapabilities } from "../../src/routes/version.js";
 
@@ -32,5 +39,47 @@ describe("Version Routes", () => {
 
   it("advertises host-awake settings and status", () => {
     expect(getServerCapabilities()).toContain(HOST_AWAKE_CONTROL_CAPABILITY);
+  });
+
+  it("advertises isolated Claude gateway configuration", () => {
+    expect(getServerCapabilities()).toContain(CLAUDE_GATEWAY_CAPABILITY);
+    expect(getServerCapabilities()).toContain(
+      CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+    );
+  });
+
+  it("advertises the complete source browser and review contract", () => {
+    expect(getServerCapabilities()).toContain(GIT_SOURCE_REVIEW_CAPABILITY);
+  });
+
+  it("advertises Source Control diff projections", () => {
+    expect(getServerCapabilities()).toContain(
+      GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+    );
+  });
+
+  it("advertises sandbox status but only advertises use when preflight passes", () => {
+    expect(getServerCapabilities()).toContain(
+      SESSION_SANDBOXING_STATUS_CAPABILITY,
+    );
+    expect(getServerCapabilities()).not.toContain(
+      SESSION_SANDBOXING_CAPABILITY,
+    );
+    expect(
+      getServerCapabilities({
+        sessionSandboxAvailability: {
+          state: "available",
+          platform: "linux",
+          backend: "bubblewrap",
+          version: "0.4.0",
+        },
+      }),
+    ).toContain(SESSION_SANDBOXING_CAPABILITY);
+  });
+
+  it("advertises server-resolved session fork intents", () => {
+    expect(getServerCapabilities()).toContain(
+      SESSION_FORK_TURN_INTENTS_CAPABILITY,
+    );
   });
 });

@@ -138,6 +138,16 @@ function optionalShowThinking(value: unknown): ShowThinking | undefined {
   return value;
 }
 
+function optionalSandboxLevel(
+  value: unknown,
+): "none" | "project-write" | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "none" && value !== "project-write") {
+    throw new ProjectQueueValidationError("target.sandboxLevel is invalid");
+  }
+  return value;
+}
+
 function normalizeUploadedFile(value: unknown, index: number): UploadedFile {
   if (!isRecord(value)) {
     throw new ProjectQueueValidationError(
@@ -379,6 +389,7 @@ function normalizeTarget(raw: unknown): ProjectQueueTarget {
     return {
       type: "new-session",
       title: optionalString(raw.title, "target.title"),
+      sandboxLevel: optionalSandboxLevel(raw.sandboxLevel),
       ...common,
     };
   }
@@ -721,6 +732,7 @@ export class ProjectQueueService {
         lastError: undefined,
         updatedAt: new Date().toISOString(),
       };
+      const resumedDispatch = this.resumeDispatchForItemAction();
       this.state.items[index] = updated;
       await this.save();
       if (request.message !== undefined) {
@@ -730,7 +742,12 @@ export class ProjectQueueService {
           updated.message.stagedAttachments,
         );
       }
-      this.emitChange(projectId, "updated", itemId);
+      this.emitItemActionChange(
+        projectId,
+        "updated",
+        itemId,
+        resumedDispatch,
+      );
       return summarizeItem(updated);
     });
   }
@@ -745,11 +762,17 @@ export class ProjectQueueService {
           "Cannot delete an item while it is dispatching",
         );
       }
+      const resumedDispatch = this.resumeDispatchForItemAction();
       const [deleted] = this.state.items.splice(index, 1);
       this.clearDispatchPauseIfEmpty();
       await this.save();
       await this.cleanupQueueAttachments(deleted);
-      this.emitChange(projectId, "deleted", itemId);
+      this.emitItemActionChange(
+        projectId,
+        "deleted",
+        itemId,
+        resumedDispatch,
+      );
       return true;
     });
   }
@@ -774,9 +797,10 @@ export class ProjectQueueService {
         lastError: undefined,
         updatedAt: new Date().toISOString(),
       };
+      const resumedDispatch = this.resumeDispatchForItemAction();
       this.state.items[index] = updated;
       await this.save();
-      this.emitChange(projectId, "retry", itemId);
+      this.emitItemActionChange(projectId, "retry", itemId, resumedDispatch);
       return summarizeItem(updated);
     });
   }
@@ -823,7 +847,12 @@ export class ProjectQueueService {
       const reordered = projectItems.some(
         (item, position) => item.id !== originalIds[position],
       );
+      const resumedDispatch = this.resumeDispatchForItemAction();
       if (!reordered) {
+        if (resumedDispatch) {
+          await this.save();
+          this.emitAllProjectChanges("resumed");
+        }
         return summarizeItem(existing);
       }
 
@@ -831,7 +860,12 @@ export class ProjectQueueService {
         this.state.items[projectIndex] = projectItems[position]!;
       }
       await this.save();
-      this.emitChange(projectId, "reordered", itemId);
+      this.emitItemActionChange(
+        projectId,
+        "reordered",
+        itemId,
+        resumedDispatch,
+      );
       return summarizeItem(moved);
     });
   }
@@ -959,6 +993,12 @@ export class ProjectQueueService {
   private clearDispatchPauseIfEmpty(): void {
     if (this.state.items.length > 0) return;
     this.state.dispatchState = RUNNING_DISPATCH_STATE;
+  }
+
+  private resumeDispatchForItemAction(): boolean {
+    if (this.state.dispatchState.status !== "paused") return false;
+    this.state.dispatchState = RUNNING_DISPATCH_STATE;
+    return true;
   }
 
   private getProjectIdsWithItems(): UrlProjectId[] {
@@ -1094,6 +1134,21 @@ export class ProjectQueueService {
       timestamp: new Date().toISOString(),
     };
     this.options.eventBus?.emit(event);
+  }
+
+  private emitItemActionChange(
+    projectId: UrlProjectId,
+    reason: ProjectQueueChangedEvent["reason"],
+    itemId: string,
+    resumedDispatch: boolean,
+  ): void {
+    this.emitChange(projectId, reason, itemId);
+    if (!resumedDispatch) return;
+    for (const otherProjectId of this.getProjectIdsWithItems()) {
+      if (otherProjectId !== projectId) {
+        this.emitChange(otherProjectId, "resumed");
+      }
+    }
   }
 
   private emitAllProjectChanges(

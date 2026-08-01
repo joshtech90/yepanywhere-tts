@@ -1,9 +1,19 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toUrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../contexts/SessionMetadataContext";
 import { I18nProvider } from "../../i18n";
+import { ImageViewer } from "../ImageViewer";
+import imageViewerStyles from "../ImageViewer.module.css";
 import { LocalFileModal, LocalMediaModal } from "../LocalMediaModal";
+import localMediaStyles from "../LocalMediaModal.module.css";
 
 const originalCreateObjectUrlDescriptor = Object.getOwnPropertyDescriptor(
   URL,
@@ -13,6 +23,24 @@ const originalRevokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(
   URL,
   "revokeObjectURL",
 );
+const originalImageDecodeDescriptor = Object.getOwnPropertyDescriptor(
+  HTMLImageElement.prototype,
+  "decode",
+);
+
+function hasClass(element: Element, className: string | undefined): boolean {
+  return className !== undefined && element.classList.contains(className);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
 
 function restoreObjectProperty(
   target: object,
@@ -26,9 +54,10 @@ function restoreObjectProperty(
   }
 }
 
-describe("LocalFileModal", () => {
+describe("LocalMediaModal loading transitions", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     restoreObjectProperty(
       URL,
@@ -40,6 +69,237 @@ describe("LocalFileModal", () => {
       "revokeObjectURL",
       originalRevokeObjectUrlDescriptor,
     );
+    restoreObjectProperty(
+      HTMLImageElement.prototype,
+      "decode",
+      originalImageDecodeDescriptor,
+    );
+  });
+
+  it("keeps its fullscreen modal identity while the first image loads", async () => {
+    const imageBlob = deferred<Blob>();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:first-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    render(
+      <I18nProvider>
+        <LocalMediaModal
+          path="/tmp/first.png"
+          mediaType="image"
+          mediaSource={{ fetchBlob: () => imageBlob.promise }}
+          onClose={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      document.querySelector(".modal-overlay--image-viewer"),
+    ).toBeTruthy();
+    expect(screen.getByRole("dialog").classList).toContain(
+      "modal--image-viewer",
+    );
+    expect(
+      screen
+        .getByRole("dialog")
+        .querySelector(`.${localMediaStyles.imagePlaceholder}`),
+    ).toBeTruthy();
+
+    imageBlob.resolve(new Blob(["png"], { type: "image/png" }));
+    expect(
+      await screen.findByRole("img", { name: "first.png" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps the decoded image visible until its replacement is ready", async () => {
+    const nextImageDecoded = deferred<void>();
+    const createObjectUrl = vi
+      .fn()
+      .mockReturnValueOnce("blob:first-image")
+      .mockReturnValueOnce("blob:second-image");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const decode = vi.fn(() => nextImageDecoded.promise);
+    Object.defineProperty(HTMLImageElement.prototype, "decode", {
+      configurable: true,
+      value: decode,
+    });
+    const mediaSource = {
+      fetchBlob: async (path: string) =>
+        new Blob([path], { type: "image/png" }),
+    };
+    const renderModal = (path: string, current: number) => (
+      <I18nProvider>
+        <LocalMediaModal
+          path={path}
+          mediaType="image"
+          mediaSource={mediaSource}
+          imageNavigation={{
+            count: 2,
+            current,
+            onNext: () => {},
+            onPrevious: () => {},
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>
+    );
+    const { rerender } = render(renderModal("/tmp/first.png", 1));
+
+    const firstImage = await screen.findByRole("img", { name: "first.png" });
+    expect(firstImage.getAttribute("src")).toBe("blob:first-image");
+    rerender(renderModal("/tmp/second.png", 2));
+
+    await waitFor(() => expect(decode).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("img", { name: "first.png" })).toBe(firstImage);
+    expect(screen.getByRole("link", { name: "first.png" })).toBeTruthy();
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    expect(screen.getByRole("dialog").classList).toContain(
+      "modal--image-viewer",
+    );
+    expect(revokeObjectUrl).not.toHaveBeenCalledWith("blob:first-image");
+
+    nextImageDecoded.resolve();
+    const secondImage = await screen.findByRole("img", {
+      name: "second.png",
+    });
+    expect(secondImage.getAttribute("src")).toBe("blob:second-image");
+    expect(screen.getByRole("link", { name: "second.png" })).toBeTruthy();
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+    await waitFor(() =>
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:first-image"),
+    );
+  });
+
+  it("keeps the displayed image when a replacement fails", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:first-image"),
+    });
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const mediaSource = {
+      fetchBlob: async (path: string) => {
+        if (path.endsWith("second.png")) {
+          throw new Error("Replacement failed");
+        }
+        return new Blob([path], { type: "image/png" });
+      },
+    };
+    const renderModal = (path: string, current: number) => (
+      <I18nProvider>
+        <LocalMediaModal
+          path={path}
+          mediaType="image"
+          mediaSource={mediaSource}
+          imageNavigation={{
+            count: 2,
+            current,
+            onNext: () => {},
+            onPrevious: () => {},
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>
+    );
+    const { rerender } = render(renderModal("/tmp/first.png", 1));
+    const firstImage = await screen.findByRole("img", { name: "first.png" });
+
+    rerender(renderModal("/tmp/second.png", 2));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Replacement failed",
+    );
+    expect(screen.getByRole("img", { name: "first.png" })).toBe(firstImage);
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    expect(revokeObjectUrl).not.toHaveBeenCalledWith("blob:first-image");
+  });
+
+  it("ignores a decoded replacement after newer navigation supersedes it", async () => {
+    const decodedByUrl = new Map<string, ReturnType<typeof deferred<void>>>();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi
+        .fn()
+        .mockReturnValueOnce("blob:first-image")
+        .mockReturnValueOnce("blob:second-image")
+        .mockReturnValueOnce("blob:third-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(HTMLImageElement.prototype, "decode", {
+      configurable: true,
+      value: vi.fn(function (this: HTMLImageElement) {
+        const pendingDecode = deferred<void>();
+        decodedByUrl.set(this.src, pendingDecode);
+        return pendingDecode.promise;
+      }),
+    });
+    const mediaSource = {
+      fetchBlob: async (path: string) =>
+        new Blob([path], { type: "image/png" }),
+    };
+    const renderModal = (path: string, current: number) => (
+      <I18nProvider>
+        <LocalMediaModal
+          path={path}
+          mediaType="image"
+          mediaSource={mediaSource}
+          imageNavigation={{
+            count: 3,
+            current,
+            onNext: () => {},
+            onPrevious: () => {},
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>
+    );
+    const { rerender } = render(renderModal("/tmp/first.png", 1));
+    await screen.findByRole("img", { name: "first.png" });
+
+    rerender(renderModal("/tmp/second.png", 2));
+    await waitFor(() =>
+      expect(decodedByUrl.has("blob:second-image")).toBe(true),
+    );
+    rerender(renderModal("/tmp/third.png", 3));
+    await waitFor(() =>
+      expect(decodedByUrl.has("blob:third-image")).toBe(true),
+    );
+
+    decodedByUrl.get("blob:second-image")?.resolve();
+    await act(async () => {});
+    expect(screen.getByRole("img", { name: "first.png" })).toBeTruthy();
+
+    decodedByUrl.get("blob:third-image")?.resolve();
+    expect(
+      await screen.findByRole("img", { name: "third.png" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "second.png" })).toBeNull();
+    expect(screen.getByText("3 of 3")).toBeTruthy();
+  });
+});
+
+describe("LocalFileModal project paths", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("shows project-relative metadata while fetching the raw local path", async () => {
@@ -89,6 +349,7 @@ describe("LocalFileModal", () => {
 describe("LocalMediaModal", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     restoreObjectProperty(
       URL,
@@ -100,9 +361,14 @@ describe("LocalMediaModal", () => {
       "revokeObjectURL",
       originalRevokeObjectUrlDescriptor,
     );
+    restoreObjectProperty(
+      HTMLImageElement.prototype,
+      "decode",
+      originalImageDecodeDescriptor,
+    );
   });
 
-  it("renders image media as a raw image tab link", async () => {
+  it("opens one fullscreen viewer with explicit zoom and download", async () => {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
       value: vi.fn(() => "blob:local-media-image"),
@@ -114,7 +380,6 @@ describe("LocalMediaModal", () => {
     const fetchBlob = vi.fn(
       async () => new Blob(["png"], { type: "image/png" }),
     );
-
     render(
       <I18nProvider>
         <LocalMediaModal
@@ -126,17 +391,297 @@ describe("LocalMediaModal", () => {
       </I18nProvider>,
     );
 
-    const imageLink = await screen.findByRole("link", {
-      name: "Open image in new tab",
-    });
+    const imageLink = await screen.findByRole("link", { name: "plot.png" });
     expect(imageLink.getAttribute("href")).toBe("blob:local-media-image");
     expect(imageLink.getAttribute("target")).toBe("_blank");
     expect(imageLink.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(screen.getByRole("img", { name: "plot.png" })).toBeTruthy();
+
+    const downloadLink = screen.getByRole("link", {
+      name: "Download plot.png",
+    });
+    expect(downloadLink.getAttribute("href")).toBe("blob:local-media-image");
+    expect(downloadLink.getAttribute("download")).toBe("plot.png");
+
+    expect(
+      screen
+        .getByRole("dialog")
+        .querySelector(`.${imageViewerStyles.viewer}`),
+    ).toBeTruthy();
+    const imageSurface = screen
+      .getByRole("dialog")
+      .querySelector<HTMLElement>(`.${imageViewerStyles.stage}`);
+    expect(imageSurface).toBeTruthy();
+    if (!imageSurface) return;
+    fireEvent.click(screen.getByRole("button", { name: "100%" }));
+    expect(hasClass(imageSurface, imageViewerStyles.zoom)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(hasClass(imageSurface, imageViewerStyles.fit)).toBe(true);
+
+    const image = screen.getByRole("img", { name: "plot.png" });
+    Object.defineProperties(image, {
+      naturalHeight: { configurable: true, value: 1080 },
+      naturalWidth: { configurable: true, value: 1920 },
+    });
+    fireEvent.load(image);
+    const stage = screen
+      .getByRole("dialog")
+      .querySelector<HTMLElement>(`.${imageViewerStyles.stage}`);
+    expect(stage).toBeTruthy();
+    if (!stage) return;
+    Object.defineProperties(stage, {
+      clientHeight: { configurable: true, value: 700 },
+      clientWidth: { configurable: true, value: 1000 },
+      setPointerCapture: { configurable: true, value: vi.fn() },
+    });
+    stage.getBoundingClientRect = vi.fn(() => ({
+      bottom: 700,
+      height: 700,
+      left: 0,
+      right: 1000,
+      toJSON: () => ({}),
+      top: 0,
+      width: 1000,
+      x: 0,
+      y: 0,
+    }));
+    const dispatchTouchPointer = (
+      type: "pointerdown" | "pointermove",
+      pointerId: number,
+      clientX: number,
+    ) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        clientX,
+        clientY: 300,
+      });
+      Object.defineProperties(event, {
+        pointerId: { value: pointerId },
+        pointerType: { value: "touch" },
+      });
+      fireEvent(stage, event);
+    };
+    dispatchTouchPointer("pointerdown", 1, 300);
+    dispatchTouchPointer("pointerdown", 2, 500);
+    dispatchTouchPointer("pointermove", 2, 700);
+    expect(hasClass(imageSurface, imageViewerStyles.zoom)).toBe(true);
+    expect(
+      screen
+        .getByRole("dialog")
+        .querySelector(`.${imageViewerStyles.zoomLevel}`)?.textContent,
+    ).toBe("101%");
+
     expect(fetchBlob).toHaveBeenCalledWith(
       "/tmp/plot.png",
       "/api/local-image?path=%2Ftmp%2Fplot.png",
       "modal",
     );
+  });
+
+  it("exposes gallery navigation through buttons and arrow keys", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:local-media-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const onNext = vi.fn();
+    const onPrevious = vi.fn();
+    const mediaSource = {
+      fetchBlob: async () => new Blob(["png"], { type: "image/png" }),
+    };
+
+    const renderModal = (
+      next: () => void,
+      previous: () => void,
+    ) => (
+      <I18nProvider>
+        <LocalMediaModal
+          path="/tmp/plot.png"
+          mediaType="image"
+          mediaSource={mediaSource}
+          imageNavigation={{
+            count: 4,
+            current: 2,
+            onNext: next,
+            onPrevious: previous,
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>
+    );
+    const { rerender } = render(renderModal(onNext, onPrevious));
+
+    expect(await screen.findByText("2 of 4")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+    expect(onPrevious).toHaveBeenCalledTimes(1);
+    expect(onNext).toHaveBeenCalledTimes(1);
+
+    const updatedOnNext = vi.fn();
+    const updatedOnPrevious = vi.fn();
+    rerender(renderModal(updatedOnNext, updatedOnPrevious));
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    expect(
+      hasClass(
+        screen.getByRole("group", { name: "Gallery image navigation" }),
+        imageViewerStyles.hidden,
+      ),
+    ).toBe(true);
+    expect(
+      hasClass(screen.getByText("2 of 4"), imageViewerStyles.visible),
+    ).toBe(true);
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    fireEvent.keyDown(document, { key: "ArrowRight", repeat: true });
+    fireEvent.keyDown(document, { ctrlKey: true, key: "ArrowRight" });
+
+    expect(onPrevious).toHaveBeenCalledTimes(1);
+    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(updatedOnPrevious).toHaveBeenCalledTimes(1);
+    expect(updatedOnNext).toHaveBeenCalledTimes(2);
+  });
+
+  it("reveals transient gallery chrome without covering the image", () => {
+    vi.useFakeTimers();
+    const onNext = vi.fn();
+    const onPrevious = vi.fn();
+    const navigationModel = {
+      count: 4,
+      current: 2,
+      onNext,
+      onPrevious,
+    };
+
+    const { rerender } = render(
+      <I18nProvider>
+        <ImageViewer
+          fileName="plot.png"
+          navigation={navigationModel}
+          onClose={() => {}}
+          url="blob:local-media-image"
+        />
+      </I18nProvider>,
+    );
+
+    const viewer = document.querySelector<HTMLElement>(
+      `.${imageViewerStyles.viewer}`,
+    );
+    const stageShell = document.querySelector<HTMLElement>(
+      `.${imageViewerStyles.stageShell}`,
+    );
+    const stage = document.querySelector<HTMLElement>(
+      `.${imageViewerStyles.stage}`,
+    );
+    const navigation = screen.getByRole("group", {
+      name: "Gallery image navigation",
+    });
+    const position = screen.getByText("2 of 4");
+    expect(viewer).toBeTruthy();
+    expect(stageShell).toBeTruthy();
+    expect(stage).toBeTruthy();
+    if (!viewer || !stageShell || !stage) return;
+
+    expect(hasClass(navigation, imageViewerStyles.visible)).toBe(true);
+    expect(hasClass(position, imageViewerStyles.visible)).toBe(true);
+    expect(stageShell.contains(position)).toBe(false);
+    expect(position.parentElement).toBe(viewer);
+    expect(
+      screen
+        .getByRole("button", { name: "Previous image" })
+        .querySelector("path")
+        ?.getAttribute("d"),
+    ).toBe("m15 18-6-6 6-6");
+
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(hasClass(navigation, imageViewerStyles.hidden)).toBe(true);
+    expect(hasClass(position, imageViewerStyles.hidden)).toBe(true);
+
+    const mouseMove = new MouseEvent("pointermove", { bubbles: true });
+    Object.defineProperty(mouseMove, "pointerType", { value: "mouse" });
+    fireEvent(stage, mouseMove);
+    expect(hasClass(navigation, imageViewerStyles.visible)).toBe(true);
+    expect(hasClass(position, imageViewerStyles.visible)).toBe(true);
+
+    rerender(
+      <I18nProvider>
+        <ImageViewer
+          fileName="plot.png"
+          initialNavigationChrome="position"
+          keyboardNavigationSequence={1}
+          navigation={navigationModel}
+          onClose={() => {}}
+          url="blob:local-media-image"
+        />
+      </I18nProvider>,
+    );
+    expect(hasClass(navigation, imageViewerStyles.hidden)).toBe(true);
+    expect(hasClass(position, imageViewerStyles.visible)).toBe(true);
+
+    Object.defineProperty(stage, "setPointerCapture", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    for (const type of ["pointerdown", "pointerup"]) {
+      const touchEvent = new MouseEvent(type, { bubbles: true });
+      Object.defineProperties(touchEvent, {
+        pointerId: { value: 1 },
+        pointerType: { value: "touch" },
+      });
+      fireEvent(stage, touchEvent);
+    }
+    expect(hasClass(navigation, imageViewerStyles.visible)).toBe(true);
+    expect(hasClass(position, imageViewerStyles.visible)).toBe(true);
+  });
+
+  it("dismisses the image viewer only from explicit controls or Escape", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:local-media-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const onClose = vi.fn();
+
+    render(
+      <I18nProvider>
+        <LocalMediaModal
+          path="/tmp/plot.png"
+          mediaType="image"
+          mediaSource={{
+            fetchBlob: async () =>
+              new Blob(["png"], { type: "image/png" }),
+          }}
+          onClose={onClose}
+        />
+      </I18nProvider>,
+    );
+
+    await screen.findByRole("img", { name: "plot.png" });
+    const stage = screen
+      .getByRole("dialog")
+      .querySelector<HTMLElement>(`.${imageViewerStyles.stage}`);
+    expect(stage).toBeTruthy();
+    if (!stage) return;
+    expect(stage.getAttribute("role")).toBeNull();
+    expect(stage.tabIndex).toBe(-1);
+
+    fireEvent.click(stage);
+    fireEvent.click(screen.getByRole("img", { name: "plot.png" }));
+    fireEvent.keyDown(stage, { key: "Enter" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close image viewer" }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(3);
   });
 });

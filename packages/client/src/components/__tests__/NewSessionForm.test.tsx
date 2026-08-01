@@ -8,8 +8,13 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { PROJECT_QUEUE_CAPABILITY } from "@yep-anywhere/shared";
 import {
+  PROJECT_QUEUE_CAPABILITY,
+  SESSION_SANDBOXING_CAPABILITY,
+  SESSION_SANDBOXING_STATUS_CAPABILITY,
+} from "@yep-anywhere/shared";
+import {
+  Fragment,
   forwardRef,
   useCallback,
   useImperativeHandle,
@@ -25,6 +30,7 @@ import { NewSessionForm } from "../NewSessionForm";
 
 const {
   mockNavigate,
+  mockRefetchProviders,
   mockUpdateSetting,
   mockStartSession,
   mockStartDetachedSession,
@@ -60,6 +66,7 @@ const {
   draftAttachmentState,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
+  mockRefetchProviders: vi.fn(),
   mockUpdateSetting: vi.fn(),
   mockStartSession: vi.fn(),
   mockStartDetachedSession: vi.fn(),
@@ -87,6 +94,7 @@ const {
         kind: "listening" | "transcribing" | "finalizing" | null,
       ) => void;
       onInterimTranscript?: (text: string) => void;
+      onListeningStop?: () => void;
     },
   },
   draftKeys: [] as string[],
@@ -121,6 +129,12 @@ const {
         id: string;
         name: string;
         description?: string;
+        catalogGroup?: "additional";
+        supportsAdaptiveThinking?: boolean;
+        supportsEffort?: boolean;
+        supportedEffortLevels?: Array<
+          "low" | "medium" | "high" | "xhigh" | "max"
+        >;
         supportsAutoMode?: boolean;
       }>;
     }>,
@@ -129,16 +143,17 @@ const {
   serverSettingsState: {
     settings: null as {
       newSessionDefaults?: {
-        provider?: "claude" | "codex";
+        provider?: "claude" | "claude-gateway" | "codex" | "opencode";
         model?: string;
         permissionMode?: "default" | "auto";
         recapMode?: "off" | "native" | "side-session" | "fork";
         recapAfterSeconds?: number;
         promptSuggestionMode?: "off" | "native";
+        sandboxLevel?: "none" | "project-write";
         helperSideModel?: string;
         providers?: Partial<
           Record<
-            "claude" | "codex",
+            "claude" | "claude-gateway" | "codex",
             {
               model?: string;
               thinkingMode?: "off" | "auto" | "on";
@@ -162,6 +177,18 @@ const {
   versionState: {
     version: null as {
       capabilities?: string[];
+      sessionSandboxing?: {
+        state:
+          | "available"
+          | "unsupported-platform"
+          | "missing-bubblewrap"
+          | "untrusted-bubblewrap"
+          | "unsupported-version"
+          | "probe-failed";
+        platform: string;
+        backend?: "bubblewrap";
+        version?: string;
+      };
       voiceBackends?: string[];
       voiceBackendCapabilities?: Record<
         string,
@@ -323,7 +350,12 @@ vi.mock("../../hooks/useModelSettings", () => ({
 }));
 
 vi.mock("../../hooks/useProviders", () => ({
-  useProviders: () => providersState,
+  useProviders: () => ({
+    ...providersState,
+    error: null,
+    refetch: mockRefetchProviders,
+    reload: vi.fn(),
+  }),
   getAvailableProviders: (providers: typeof providersState.providers) =>
     providers.filter(
       (provider) => provider.installed && provider.authenticated,
@@ -483,7 +515,11 @@ vi.mock("../FilterDropdown", () => ({
     selected,
     onChange,
   }: {
-    options: Array<{ value: string; label: string }>;
+    options: Array<{
+      value: string;
+      label: string;
+      groupLabelBefore?: string;
+    }>;
     selected: string[];
     onChange: (selected: string[]) => void;
   }) => {
@@ -492,13 +528,12 @@ vi.mock("../FilterDropdown", () => ({
       <div>
         <div data-testid="filter-selected">{selected[0] ?? ""}</div>
         {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange([option.value])}
-          >
-            {option.label}
-          </button>
+          <Fragment key={option.value}>
+            {option.groupLabelBefore && <p>{option.groupLabelBefore}</p>}
+            <button type="button" onClick={() => onChange([option.value])}>
+              {option.label}
+            </button>
+          </Fragment>
         ))}
       </div>
     );
@@ -586,6 +621,19 @@ function installObjectUrlMock() {
 describe("NewSessionForm", () => {
   beforeEach(() => {
     installObjectUrlMock();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
     providersState.providers = [
       {
         name: "claude",
@@ -627,6 +675,8 @@ describe("NewSessionForm", () => {
     modelSettingsState.thinkingMode = "off";
     modelSettingsState.effortLevel = "high";
     mockNavigate.mockReset();
+    mockRefetchProviders.mockReset();
+    mockRefetchProviders.mockResolvedValue(undefined);
     mockUpdateSetting.mockReset();
     mockStartSession.mockReset();
     mockStartDetachedSession.mockReset();
@@ -741,7 +791,9 @@ describe("NewSessionForm", () => {
     expect(screen.getByRole("button", { name: "Claude" }).className).toContain(
       "selected",
     );
-    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      "opus",
+    );
 
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -761,7 +813,9 @@ describe("NewSessionForm", () => {
       expect(
         screen.getByRole("button", { name: "Codex" }).className,
       ).not.toContain("selected");
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "opus",
+      );
     });
   });
 
@@ -782,7 +836,9 @@ describe("NewSessionForm", () => {
       expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
         "selected",
       );
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("gpt-5.4");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "gpt-5.4",
+      );
     });
   });
 
@@ -816,7 +872,9 @@ describe("NewSessionForm", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "opus",
+      );
       expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
         "active",
       );
@@ -837,11 +895,235 @@ describe("NewSessionForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe("opus");
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "opus",
+      );
       expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
         "active",
       );
     });
+  });
+
+  it("reuses new-session selection semantics for a seeded launch", async () => {
+    const submit = vi.fn(async () => {});
+    const codexProvider = providersState.providers.find(
+      (candidate) => candidate.name === "codex",
+    );
+    const seededCodexModel = codexProvider?.models?.find(
+      (model) => model.id === "gpt-5.3-codex",
+    );
+    if (!seededCodexModel) throw new Error("expected Codex model fixture");
+    seededCodexModel.supportsAdaptiveThinking = true;
+    seededCodexModel.supportsEffort = true;
+    seededCodexModel.supportedEffortLevels = ["low", "high", "xhigh"];
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "default",
+        providers: {
+          claude: {
+            model: "default",
+            thinkingMode: "off",
+            effortLevel: "low",
+          },
+          codex: {
+            model: "gpt-5.3-codex",
+            thinkingMode: "auto",
+            effortLevel: "xhigh",
+          },
+        },
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        preferredProvider="claude"
+        preferredModel="opus"
+        preferredThinking="on:xhigh"
+        preferredPermissionMode="plan"
+        preferredExecutor="build-host"
+        launch={{
+          draftKey: "draft-handoff:session-1",
+          initialMessage: "Prepared handoff",
+          fixedProject: true,
+          allowAttachments: false,
+          allowProjectQueue: false,
+          submit,
+        }}
+      />,
+    );
+
+    const composer = await screen.findByDisplayValue("Prepared handoff");
+    expect(draftKeys).toContain("draft-handoff:session-1");
+    expect(screen.queryByLabelText("newSessionAttachFiles")).toBeNull();
+    expect(screen.queryByText("Alpha")).toBeNull();
+    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      "opus",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "gpt-5.3-codex",
+      );
+      expect(
+        screen.getByRole("radio", { name: "Extra High" }).className,
+      ).toContain("active");
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledWith({
+        message: "Prepared handoff",
+        options: expect.objectContaining({
+          mode: "plan",
+          model: "gpt-5.3-codex",
+          thinking: "on:xhigh",
+          provider: "codex",
+          executor: "build-host",
+        }),
+        clientTimestamp: expect.any(Number),
+      });
+    });
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect((composer as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("groups previous models and keeps an unlisted saved default selected", async () => {
+    const claudeProvider = providersState.providers[0];
+    if (!claudeProvider) throw new Error("expected Claude provider fixture");
+    providersState.providers[0] = {
+      ...claudeProvider,
+      models: [
+        { id: "latest", name: "Latest" },
+        {
+          id: "previous",
+          name: "Previous",
+          catalogGroup: "additional",
+        },
+      ],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "default",
+        providers: {
+          claude: { model: "removed-default" },
+        },
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "removed-default",
+      );
+    });
+    expect(screen.getAllByText("previousModelsGroup").length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getAllByRole("button", { name: "removed-default" }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("refreshes and blocks Claude Gateway until its catalog has a model", async () => {
+    providersState.providers.push({
+      name: "claude-gateway",
+      displayName: "Claude Gateway",
+      installed: true,
+      authenticated: true,
+      enabled: true,
+      supportsThinkingToggle: true,
+      models: [],
+    });
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude-gateway",
+        permissionMode: "default",
+        providers: {
+          "claude-gateway": { model: "gpt-5.5" },
+        },
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    const { rerender } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockRefetchProviders).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      screen.getByText("newSessionGatewayCatalogUnavailable"),
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "gpt-5.5" })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionGatewayCatalogRetry" }),
+    );
+    expect(mockRefetchProviders).toHaveBeenCalledTimes(2);
+
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    fireEvent.change(composer, { target: { value: "hello" } });
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", true);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(mockStartSession).not.toHaveBeenCalled();
+
+    const gateway = providersState.providers.find(
+      (provider) => provider.name === "claude-gateway",
+    );
+    if (!gateway) throw new Error("expected Claude Gateway provider fixture");
+    gateway.models = [
+      {
+        id: "claude-opus-4-8",
+        name: "Opus 4.8",
+        supportsAdaptiveThinking: true,
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high", "xhigh"],
+      },
+    ];
+    rerender(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+        "claude-opus-4-8",
+      );
+    });
+    expect(
+      screen.queryByText("newSessionGatewayCatalogUnavailable"),
+    ).toBeNull();
+    expect(screen.getByRole("radio", { name: "Low" })).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    ).toHaveProperty("disabled", false);
   });
 
   it("preserves Auto as the all-provider permission default across unsupported providers", async () => {
@@ -973,6 +1255,284 @@ describe("NewSessionForm", () => {
           initialProvider: "claude",
         }),
       }),
+    );
+  });
+
+  it("shows and submits the saved sandbox only with server capability", async () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SESSION_SANDBOXING_CAPABILITY,
+        SESSION_SANDBOXING_STATUS_CAPABILITY,
+      ],
+      sessionSandboxing: {
+        state: "available",
+        platform: "linux",
+        backend: "bubblewrap",
+        version: "0.4.0",
+      },
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        model: "opus",
+        permissionMode: "default",
+        sandboxLevel: "project-write",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "newSessionSandboxLabel",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "sandbox this" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ sandboxLevel: "project-write" }),
+    );
+  });
+
+  it("turns off side-session recaps when sandboxing is enabled", async () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SESSION_SANDBOXING_CAPABILITY,
+        SESSION_SANDBOXING_STATUS_CAPABILITY,
+      ],
+      sessionSandboxing: {
+        state: "available",
+        platform: "linux",
+        backend: "bubblewrap",
+        version: "0.4.0",
+      },
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        permissionMode: "default",
+        recapMode: "side-session",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const sandbox = screen.getByRole("checkbox", {
+      name: "newSessionSandboxLabel",
+    });
+    const sideSession = screen.getByRole("button", {
+      name: "recapModeSideSession",
+    }) as HTMLButtonElement;
+    expect(sideSession.disabled).toBe(false);
+
+    fireEvent.click(sandbox);
+
+    expect(sideSession.disabled).toBe(true);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "recapModeFork",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "recapModeOff" }).className,
+    ).toContain("selected");
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "sandbox without side helper" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        sandboxLevel: "project-write",
+        recapMode: "off",
+      }),
+    );
+  });
+
+  it("hides and omits sandbox state from an older server", async () => {
+    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        model: "opus",
+        permissionMode: "default",
+        sandboxLevel: "project-write",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+    ).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "ordinary session" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStartSession.mock.calls[0]?.[2]).not.toHaveProperty(
+      "sandboxLevel",
+    );
+  });
+
+  it("hides sandboxing from an intermediate protocol-only server", () => {
+    versionState.version = {
+      capabilities: [PROJECT_QUEUE_CAPABILITY, SESSION_SANDBOXING_CAPABILITY],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        sandboxLevel: "project-write",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+    ).toBeNull();
+  });
+
+  it("hides sandboxing when the server reports an unsupported host", () => {
+    versionState.version = {
+      capabilities: [SESSION_SANDBOXING_STATUS_CAPABILITY],
+      sessionSandboxing: {
+        state: "unsupported-platform",
+        platform: "darwin",
+      },
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "claude",
+        sandboxLevel: "project-write",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+    ).toBeNull();
+  });
+
+  it("hides and disables sandboxing for an unimplemented provider", async () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SESSION_SANDBOXING_CAPABILITY,
+        SESSION_SANDBOXING_STATUS_CAPABILITY,
+      ],
+      sessionSandboxing: {
+        state: "available",
+        platform: "linux",
+        backend: "bubblewrap",
+        version: "0.4.0",
+      },
+    };
+    providersState.providers = [
+      {
+        name: "opencode",
+        displayName: "OpenCode",
+        installed: true,
+        authenticated: true,
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        models: [{ id: "default", name: "Default" }],
+      },
+    ];
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "opencode",
+        model: "default",
+        permissionMode: "default",
+        sandboxLevel: "project-write",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+    ).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "ordinary OpenCode session" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ sandboxLevel: "none" }),
     );
   });
 
@@ -1235,9 +1795,10 @@ describe("NewSessionForm", () => {
     );
     expect(mockStartSession).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockReportProjectQueueCollectionSnapshot).toHaveBeenCalledWith(
-      { projectId: "project-1", items: [] },
-    );
+    expect(mockReportProjectQueueCollectionSnapshot).toHaveBeenCalledWith({
+      projectId: "project-1",
+      items: [],
+    });
   });
 
   it("uses Ctrl+Enter to queue a new session through Project Queue", async () => {
@@ -1843,7 +2404,7 @@ describe("NewSessionForm", () => {
     expect(mockVoiceToggle).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the new-session composer editable with a cancellable transcribing chip", async () => {
+  it("keeps the real new-session textarea editable while transcribing", async () => {
     render(
       <NewSessionForm
         projectId="project-1"
@@ -1855,17 +2416,18 @@ describe("NewSessionForm", () => {
       "newSessionPlaceholder",
     ) as HTMLTextAreaElement;
 
-    expect(document.querySelector(".speech-processing-inline")).toBeNull();
-
     act(() => {
+      screen.getByRole("button", { name: "voice" }).focus();
+      voicePropsState.current?.onListeningStop?.();
       voicePropsState.current?.onPendingSpeechChange?.("transcribing");
     });
-    const badge = await waitFor(() => {
-      const el = document.querySelector(".speech-processing-inline");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
     });
-    expect(badge.textContent).toContain("Transcribing");
+    expect(
+      document.querySelector(".speech-draft-field")?.classList,
+    ).not.toContain("has-interim");
+    expect(document.activeElement).toBe(textarea);
 
     expect(textarea.disabled).toBe(false);
     fireEvent.change(textarea, {
@@ -1875,10 +2437,36 @@ describe("NewSessionForm", () => {
 
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(document.querySelector(".speech-processing-inline")).toBeNull();
-    });
     expect(textarea.value).toBe("typed while transcribing");
+  });
+
+  it("keeps Listening out of the draft and places the caret after provisional speech", async () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+    });
+    await waitFor(() =>
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull(),
+    );
+
+    act(() => {
+      voicePropsState.current?.onInterimTranscript?.("live words");
+    });
+    const interim = await waitFor(() => {
+      const el = document.querySelector(".speech-interim-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(interim.nextElementSibling?.classList).toContain(
+      "speech-interim-caret",
+    );
   });
 
   it("hides a stored YA-routed Grok batch method from the method list", () => {

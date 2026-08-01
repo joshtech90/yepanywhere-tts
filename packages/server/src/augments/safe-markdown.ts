@@ -6,7 +6,9 @@ import {
   Marked,
   type RendererObject,
   type RendererThis,
+  type Token,
   type Tokens,
+  type TokensList,
 } from "marked";
 import sanitizeHtml from "sanitize-html";
 
@@ -148,6 +150,146 @@ function isMarkdownExtension(ext: string): boolean {
 
 function isWindowsDriveAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path);
+}
+
+interface RawMarkdownDestination {
+  enclosed: boolean;
+  pathStart: number;
+}
+
+function findRawWindowsDriveDestination(
+  raw: string,
+  kind: "definition" | "inline",
+): RawMarkdownDestination | null {
+  const match =
+    kind === "definition"
+      ? /^ {0,3}\[(?:\\.|[^\]\\])+\]:[ \t]*(<?)([A-Za-z]:[\\/])/.exec(raw)
+      : /\]\([ \t]*(<?)([A-Za-z]:[\\/])/.exec(raw);
+  if (!match || match.index === undefined) {
+    return null;
+  }
+
+  const drivePrefix = match[2];
+  if (!drivePrefix) {
+    return null;
+  }
+
+  return {
+    enclosed: match[1] === "<",
+    pathStart: match.index + match[0].length - drivePrefix.length,
+  };
+}
+
+function canonicalizeRawWindowsDriveDestination(
+  raw: string,
+  kind: "definition" | "inline",
+): string | null {
+  const destination = findRawWindowsDriveDestination(raw, kind);
+  if (!destination) {
+    return null;
+  }
+
+  let pathEnd = destination.pathStart;
+  let parenthesisDepth = 0;
+  while (pathEnd < raw.length) {
+    const character = raw[pathEnd];
+    if (destination.enclosed) {
+      if (character === ">") break;
+    } else {
+      if (/\s/.test(character ?? "") && parenthesisDepth === 0) break;
+      if (character === "(") {
+        parenthesisDepth += 1;
+      } else if (character === ")") {
+        if (parenthesisDepth === 0) break;
+        parenthesisDepth -= 1;
+      }
+    }
+    pathEnd += 1;
+  }
+
+  const filePath = raw.slice(destination.pathStart, pathEnd);
+  if (!filePath.includes("\\") || !isWindowsDriveAbsolutePath(filePath)) {
+    return null;
+  }
+
+  return filePath.replace(/\\+/g, "/");
+}
+
+function walkMarkdownTokenTree(
+  tokens: Token[],
+  visit: (token: Token) => void,
+): void {
+  for (const token of tokens) {
+    visit(token);
+
+    if ("tokens" in token && Array.isArray(token.tokens)) {
+      walkMarkdownTokenTree(token.tokens, visit);
+    }
+
+    if (token.type === "list") {
+      walkMarkdownTokenTree(token.items, visit);
+    } else if (token.type === "table") {
+      for (const cell of [...token.header, ...token.rows.flat()]) {
+        walkMarkdownTokenTree(cell.tokens, visit);
+      }
+    }
+  }
+}
+
+/**
+ * Marked applies CommonMark backslash escapes before renderer callbacks. Repair
+ * only recognized drive-letter destinations from each token's untouched raw
+ * syntax so path separators before punctuation cannot disappear.
+ */
+function repairWindowsDriveMarkdownDestinations(
+  tokens: Token[] | TokensList,
+): Token[] | TokensList {
+  const referenceCorrections = new Map<string, string | null>();
+  const links = "links" in tokens ? tokens.links : undefined;
+
+  walkMarkdownTokenTree(tokens, (token) => {
+    if (token.type === "def") {
+      const corrected = canonicalizeRawWindowsDriveDestination(
+        token.raw,
+        "definition",
+      );
+      if (!corrected || corrected === token.href) return;
+
+      const originalHref = token.href;
+      const existing = referenceCorrections.get(originalHref);
+      referenceCorrections.set(
+        originalHref,
+        existing === undefined || existing === corrected ? corrected : null,
+      );
+      token.href = corrected;
+      const link = links?.[token.tag];
+      if (link) {
+        link.href = corrected;
+      }
+      return;
+    }
+
+    if (token.type !== "link" && token.type !== "image") return;
+    const corrected = canonicalizeRawWindowsDriveDestination(
+      token.raw,
+      "inline",
+    );
+    if (corrected) {
+      token.href = corrected;
+    }
+  });
+
+  if (referenceCorrections.size > 0) {
+    walkMarkdownTokenTree(tokens, (token) => {
+      if (token.type !== "link" && token.type !== "image") return;
+      const referenceCorrection = referenceCorrections.get(token.href);
+      if (referenceCorrection) {
+        token.href = referenceCorrection;
+      }
+    });
+  }
+
+  return tokens;
 }
 
 function getProjectPathFlavor(path: string): "posix" | "windows" {
@@ -658,6 +800,12 @@ const markdownRenderer = new Marked({
   gfm: true,
 });
 
+markdownRenderer.use({
+  hooks: {
+    processAllTokens: repairWindowsDriveMarkdownDestinations,
+  },
+});
+
 // KaTeX output is generated inside the marked renderer and stashed in
 // this buffer; the renderer emits placeholder spans that survive
 // sanitize-html unchanged, and we substitute the real HTML back in
@@ -688,8 +836,55 @@ function renderKatexPlaceholder(tex: string, displayMode: boolean): string {
   return `<span class="yepkatex-placeholder yepkatex-id-${id}"></span>`;
 }
 
+function findUnescapedDelimiter(
+  source: string,
+  delimiter: string,
+  start = 0,
+): number | undefined {
+  let index = source.indexOf(delimiter, start);
+  while (index >= 0) {
+    let precedingBackslashes = 0;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (source[cursor] !== "\\") {
+        break;
+      }
+      precedingBackslashes += 1;
+    }
+    if (precedingBackslashes % 2 === 0) {
+      return index;
+    }
+    index = source.indexOf(delimiter, index + delimiter.length);
+  }
+  return undefined;
+}
+
 markdownRenderer.use({
   extensions: [
+    {
+      name: "mathBracketBlock",
+      level: "block",
+      start(src: string) {
+        return findUnescapedDelimiter(src, "\\[");
+      },
+      tokenizer(src: string) {
+        if (!src.startsWith("\\[")) return undefined;
+        const closing = findUnescapedDelimiter(src, "\\]", 2);
+        if (closing === undefined) return undefined;
+        const suffix = /^[ \t]*(?:\n|$)/.exec(src.slice(closing + 2));
+        const tex = src.slice(2, closing).trim();
+        if (!suffix || !tex) return undefined;
+        const rawEnd = closing + 2 + suffix[0].length;
+        return {
+          type: "mathBracketBlock",
+          raw: src.slice(0, rawEnd),
+          text: tex,
+        };
+      },
+      renderer(token) {
+        const tex = (token as { text?: string }).text ?? "";
+        return renderKatexPlaceholder(tex, true);
+      },
+    },
     {
       name: "mathBlock",
       level: "block",
@@ -709,6 +904,29 @@ markdownRenderer.use({
       renderer(token) {
         const tex = (token as { text?: string }).text ?? "";
         return renderKatexPlaceholder(tex, true);
+      },
+    },
+    {
+      name: "mathBracketInline",
+      level: "inline",
+      start(src: string) {
+        return findUnescapedDelimiter(src, "\\(");
+      },
+      tokenizer(src: string) {
+        if (!src.startsWith("\\(")) return undefined;
+        const closing = findUnescapedDelimiter(src, "\\)", 2);
+        if (closing === undefined) return undefined;
+        const tex = src.slice(2, closing).trim();
+        if (!tex || tex.includes("\n")) return undefined;
+        return {
+          type: "mathBracketInline",
+          raw: src.slice(0, closing + 2),
+          text: tex,
+        };
+      },
+      renderer(token) {
+        const tex = (token as { text?: string }).text ?? "";
+        return renderKatexPlaceholder(tex, false);
       },
     },
     {

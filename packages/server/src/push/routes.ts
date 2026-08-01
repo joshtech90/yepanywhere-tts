@@ -3,6 +3,7 @@
  */
 
 import { Hono } from "hono";
+import { structuredErrorHandler } from "../middleware/error-handler.js";
 import type { PushService } from "./PushService.js";
 import type {
   NotificationSettings,
@@ -41,6 +42,10 @@ const PUSH_DELIVERY_URGENCIES = new Set<PushDeliveryUrgency>([
 
 export function createPushRoutes(deps: PushRoutesDeps): Hono {
   const app = new Hono();
+  // When mounted, Hono routes a thrown error to the root app's handler (the
+  // same structuredErrorHandler, installed in app.ts); this local install
+  // covers direct requests against the unmounted sub-app, as in tests.
+  app.onError(structuredErrorHandler);
   const { pushService } = deps;
 
   /**
@@ -152,6 +157,9 @@ export function createPushRoutes(deps: PushRoutesDeps): Hono {
    */
   app.delete("/subscriptions/:browserProfileId", async (c) => {
     const browserProfileId = c.req.param("browserProfileId");
+    if (!browserProfileId) {
+      return c.json({ error: "browserProfileId is required" }, 400);
+    }
     const removed = await pushService.unsubscribe(browserProfileId);
 
     if (!removed) {

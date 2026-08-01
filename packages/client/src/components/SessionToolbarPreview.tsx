@@ -8,6 +8,7 @@ import {
 } from "../hooks/useSessionToolbarPresence";
 import { useI18n } from "../i18n";
 import { getEffortLevelOptions } from "../lib/effortLevels";
+import { createClientSlashCommand } from "../lib/slashCommands";
 import type { ContextUsage } from "../types";
 import {
   type LivenessDisplay,
@@ -68,6 +69,7 @@ function usePreviewToolbarControls(previewNowMs: number) {
       | "slashControl"
       | "thinkingControl"
       | "renderModeControl"
+      | "conversationViewControl"
       | "nudgeControl"
       | "speechControl"
       | "statusControl"
@@ -87,7 +89,9 @@ function usePreviewToolbarControls(previewNowMs: number) {
         onAttachClick: noop,
       },
       slashControl: {
-        commands: ["model", "btw", "compact", "done"],
+        commands: ["model", "btw", "compact", "done"].map(
+          createClientSlashCommand,
+        ),
         onSelectCommand: noop,
       },
       thinkingControl: {
@@ -103,6 +107,11 @@ function usePreviewToolbarControls(previewNowMs: number) {
       renderModeControl: {
         state: "mixed",
         title: t("toolbarRenderModeMixed"),
+        onToggle: noop,
+      },
+      conversationViewControl: {
+        enabled: true,
+        title: t("toolbarConversationViewDisable"),
         onToggle: noop,
       },
       nudgeControl: {
@@ -221,6 +230,7 @@ export function SessionToolbarPreview() {
           slashControl={controls.slashControl}
           thinkingControl={controls.thinkingControl}
           renderModeControl={controls.renderModeControl}
+          conversationViewControl={controls.conversationViewControl}
           nudgeControl={controls.nudgeControl}
           speechControl={controls.speechControl}
           statusControl={controls.statusControl}
@@ -306,6 +316,7 @@ export function ToolbarControlPreview({
         slashControl={controls.slashControl}
         thinkingControl={controls.thinkingControl}
         renderModeControl={controls.renderModeControl}
+        conversationViewControl={controls.conversationViewControl}
         nudgeControl={controls.nudgeControl}
         speechControl={controls.speechControl}
         speechWaveformActive={controlKey === "waveform"}

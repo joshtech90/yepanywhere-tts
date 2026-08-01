@@ -36,7 +36,9 @@ YA-spawned processes),
 [public-share-content-censorship](public-share-content-censorship.md) and
 [security](security.md) (exec surface gating and share exposure),
 [architecture-mandates](architecture-mandates.md) (bounded storage/render
-obligations the history view inherits).
+obligations the history view inherits),
+[acli-ui](acli-ui.md) (proposal: acli capability detection and the richer
+completion/help UI for allowlisted tools in this composer).
 
 ## Motivation
 
@@ -61,13 +63,17 @@ project directory:
 
 ## Contracts
 
-- **Default-off feature gate.** Bang commands are available only when the
-  server advertises the permanent `bang-commands` capability and
-  `clientDefaults.bangCommandsEnabled` is explicitly `true`. Absence means
-  off. The server returns 404 from every bang route while disabled; clients
-  hide the sidebar entry and do not give composers `bangSupport`. The opt-in
-  lives in Message Delivery settings because it changes composer submission
-  routing.
+- **Execution always-on; the history surface default-off.** Wherever the
+  server advertises the permanent `bang-commands` capability, `!!`
+  execution, completions, and the per-session object routes are always
+  available (vanilla-defaults.md § Known Exceptions: an established,
+  deliberately invoked shell-escape adds no default-visible surface).
+  Only the discoverable "!! Commands" surface — the sidebar entry and the
+  top-level `GET /api/bang-commands` history view — is gated on
+  `clientDefaults.bangCommandsEnabled` being explicitly `true`; absence
+  means hidden, and the server returns 404 from that route while hidden.
+  The toggle stays in Message Delivery settings next to the composer
+  routing it documents.
 - **`!!` is YA-routed, never provider ingress.** Routing happens in the
   composer (`MessageInput` resolves the draft before its trim/send step,
   because the leading-space escape depends on pre-trim text) and only on
@@ -93,7 +99,7 @@ project directory:
 - **Trust boundary.** No new one: YA already executes arbitrary code as the
   server user via agent sessions. Bang exec is gated by the same
   authentication as sending a turn (owner clients over direct or E2E relay
-  transport), the explicit default-off feature setting, and a
+  transport) and a
   project/session ownership check on every session-scoped route. A URL cannot
   pair a session from one project with another project's working directory.
   Bang APIs and display objects are absent from public share surfaces; until
@@ -143,11 +149,24 @@ project directory:
 `classifyBangOutput` (server) classifies stdout once, then forks to the
 render path the repo already has — no bang-private renderer:
 
+- **Uniform JSONL runs render as tables, regardless of surrounding
+  prose.** Before the markdown/json fork, any run of >= 2 consecutive
+  JSON-object lines sharing an identical key set is rendered as a GFM
+  markdown table via the shared `jsonlTablesToMarkdown` →
+  `toonDocumentToMarkdown` path (mode reported as `markdown`), with every
+  non-tabular line — prose before, between, or after the runs — passed
+  through verbatim. The run itself is the trigger; a prose-led document
+  still tabulates. This is the common list-shaped acli output (e.g.
+  `almanac query`); the per-block Raw toggle still shows the original
+  lines. Output with no qualifying run falls through to its classified
+  path below.
 - **markdown** (the default): rendered as-is through the assistant-text
   markdown pipeline (`renderMarkdownToHtml`).
 - **json** — a whole-document JSON parse or first-lines JSONL parse (the
   acli spec mandates compact JSONL for non-TTY callers, so spec-compliant
-  tools land here): fenced as ```json for shiki highlighting.
+  tools land here): fenced as ```json for shiki highlighting. Single
+  objects, JSON arrays, and non-uniform JSONL keep the plain ```json
+  fence.
 - **ansi** — CSI escapes detected: fenced as ```ansi; the augment layer's
   existing ANSI renderer produces colored HTML. acli tools that respect a
   TTY-ish TERM and emit color render correctly.
@@ -186,6 +205,25 @@ keeps the submitted draft intact so the user can correct or retry it.
   project-root executables (`GET
   /api/projects/:id/bang-completions?kind=command`), served from a 30 s
   cached scan.
+- **Global command history — ranked first.** Typing `!!` then Tab (the
+  `! ! Tab` sequence) offers, before the PATH / project-executable / path
+  candidates, prior *whole* `!!` command lines that prefix-match the
+  current `!!` body. The source is YA-global: every bang command run
+  across all sessions and all time — the same corpus the top-level "!!
+  Commands" view lists (`collectGlobalBangCommands` over
+  `listTranscriptDisplayObjectSessions`), deduped by command line,
+  most-recent-first, prefix-filtered server-side through a cached prefix
+  index (`BangHistoryIndex`, rebuilt at most every few seconds rather than
+  rescanning per keystroke). The
+  completion endpoint returns `{ completions, history }`; the client merges
+  them into one menu (history rows first, `bang-history-item`), and
+  selecting a history row replaces the whole `!!` body, while a token row
+  keeps token replacement. This is the bang-side twin of the composer
+  recall drawer (composer-recall-drawer.md): same menu UI, but the corpus
+  is bang history and selecting *completes the command* rather than
+  drafting a turn. Known limit: history engages on the same gate as token
+  completion (non-empty trailing token), so `!!git` offers history but
+  `!!git ` (trailing space) does not — loosening that is a separate change.
 - **Argument tokens** (not starting with `-`): per-tool acli completion
   first, then project-relative path completion (directories suffixed `/`,
   `..` escapes refused).
@@ -226,6 +264,27 @@ open-session link, and the same block component fetching rendered output on
 demand. It starts from bounded previews and keeps at most one entry's full
 output expanded and retained. Reads only the bounded metadata already in
 `session-metadata.json` plus that single on-demand output fetch.
+
+**Per-entry actions — three small icons.** Each entry knows its source
+session id, bang object id, and project directory (cwd), so it offers,
+all scoped to that entry's **project cwd via its source session** (no
+session-less or project-less run), each navigating to the source session
+with `SessionNavigationState` fields consumed once on mount (then cleared
+via a `replace` so Back/refresh does not replay them):
+
+1. **Edit / re-issue** (`composerPrefill: "!!<command>"`) — opens the
+   source session and prefills its composer for modification/resubmission.
+2. **New** (`focusComposer: true`) — opens the source session and focuses
+   the composer without changing any existing draft.
+3. **Jump** (`scrollToRenderId: object.id`) — scrolls the source session to
+   the bang block's pseudo-turn (its row's `data-render-id` is exactly the
+   display object id), reusing the composer-recall `scrollToTurnRequest`
+   path. Lands only if the target row is within the loaded active window
+   (bang blocks anchor at the tail, so a fresh load normally shows it).
+
+Icon aria-labels are inline literals pending en.json keys
+(`bangHistoryAction{Edit,New,Jump}`) and the action-row CSS is a follow-up
+(`styles/index.css` was peer-held this session).
 
 ## Fork views may omit bang blocks
 

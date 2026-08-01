@@ -1,12 +1,37 @@
-import { useCallback, useEffect, useId, useState } from "react";
-import type { HelperTargetConfig, ModelInfo } from "@yep-anywhere/shared";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
+  CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  CLAUDE_GATEWAY_CAPABILITY,
+  MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH,
+  isValidClaudeAdditionalModelId,
+  isValidClaudeAdditionalModelLabel,
+  type ClaudeAdditionalModelSelection,
+  type HelperTargetConfig,
+  type ModelInfo,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { api, type ServerSettings } from "../../api/client";
+import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
+import { Modal, type ModalAnchorRect } from "../../components/ui/Modal";
 import { useToastContext } from "../../contexts/ToastContext";
 import { useCodexUpdateStatus } from "../../hooks/useCodexUpdateStatus";
 import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
+import { HideInSettingsSearch } from "./SettingsSearchContext";
+import { SettingsSection } from "./SettingsSection";
 import {
   helperTargetDescription,
   helperTargetValue,
@@ -16,8 +41,33 @@ import { getAllProviders } from "../../providers/registry";
 const DEFAULT_OLLAMA_SYSTEM_PROMPT =
   "You are a helpful coding assistant. You help users with software engineering tasks. You have access to tools for reading files, editing files, running shell commands, and searching code. Use tools when needed to answer questions or make changes. Be concise and direct.";
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
+const CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY =
+  "yep-anywhere:claude-ollama-deprecation-v1";
 // Re-enable with topics/openai-compatible-helper-sessions.md.
 const SHOW_HELPER_TARGETS_SETTINGS = false;
+
+function shouldShowClaudeOllamaDeprecation(): boolean {
+  try {
+    return (
+      window.localStorage.getItem(
+        CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY,
+      ) !== "dismissed"
+    );
+  } catch {
+    return true;
+  }
+}
+
+function rememberClaudeOllamaDeprecationDismissal(): void {
+  try {
+    window.localStorage.setItem(
+      CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY,
+      "dismissed",
+    );
+  } catch {
+    // The notice still stays dismissed for this mounted settings pane.
+  }
+}
 
 interface HelperTargetDraft {
   id?: string;
@@ -209,152 +259,159 @@ function HelperTargetsSettings({
   const modelOptions = mergeModelOptions(draft.model, discoveredModels);
 
   return (
-    <div className="settings-item helper-targets-settings">
-      <div className="settings-item-info">
-        <strong>{t("helperTargetsTitle")}</strong>
-        <p>{t("helperTargetsDescription")}</p>
-        <p className="settings-hint">{t("helperTargetsRuntimeNote")}</p>
-      </div>
-
-      <div className="helper-targets-panel">
-        {targets.length === 0 ? (
-          <p className="settings-hint">{t("helperTargetsEmpty")}</p>
-        ) : (
-          <div className="helper-target-list">
-            {targets.map((target) => (
-              <div key={target.id} className="helper-target-row">
-                <div className="helper-target-row-main">
-                  <strong>{target.name}</strong>
-                  <span>{helperTargetDescription(target)}</span>
-                  <code>
-                    {t("helperTargetsIdPrefix")} {helperTargetValue(target)}
-                  </code>
+    <SettingsItem
+      label={t("helperTargetsTitle")}
+      description={t("helperTargetsDescription")}
+      className="helper-targets-settings"
+      info={
+        <>
+          <strong>{t("helperTargetsTitle")}</strong>
+          <p>{t("helperTargetsDescription")}</p>
+          <p className="settings-hint">{t("helperTargetsRuntimeNote")}</p>
+        </>
+      }
+    >
+      <HideInSettingsSearch>
+        <div className="helper-targets-panel">
+          {targets.length === 0 ? (
+            <p className="settings-hint">{t("helperTargetsEmpty")}</p>
+          ) : (
+            <div className="helper-target-list">
+              {targets.map((target) => (
+                <div key={target.id} className="helper-target-row">
+                  <div className="helper-target-row-main">
+                    <strong>{target.name}</strong>
+                    <span>{helperTargetDescription(target)}</span>
+                    <code>
+                      {t("helperTargetsIdPrefix")} {helperTargetValue(target)}
+                    </code>
+                  </div>
+                  <div className="helper-target-row-actions">
+                    <button
+                      type="button"
+                      className="settings-button settings-button-secondary"
+                      onClick={() => beginEdit(target)}
+                      disabled={isSaving}
+                    >
+                      {t("helperTargetsEdit")}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-button settings-button-secondary"
+                      onClick={() => void deleteTarget(target.id)}
+                      disabled={isSaving}
+                    >
+                      {t("helperTargetsDelete")}
+                    </button>
+                  </div>
                 </div>
-                <div className="helper-target-row-actions">
-                  <button
-                    type="button"
-                    className="settings-button settings-button-secondary"
-                    onClick={() => beginEdit(target)}
-                    disabled={isSaving}
-                  >
-                    {t("helperTargetsEdit")}
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-button settings-button-secondary"
-                    onClick={() => void deleteTarget(target.id)}
-                    disabled={isSaving}
-                  >
-                    {t("helperTargetsDelete")}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
 
-        <div className="helper-target-editor">
-          <label>
-            <span>{t("helperTargetsNameLabel")}</span>
-            <input
-              type="text"
-              className="settings-input"
-              value={draft.name}
-              onChange={(event) =>
-                setDraft((prev) => ({ ...prev, name: event.target.value }))
-              }
-            />
-          </label>
-          <label>
-            <span>{t("helperTargetsBaseUrlLabel")}</span>
-            <input
-              type="text"
-              className="settings-input"
-              value={draft.baseUrl}
-              placeholder={t("helperTargetsBaseUrlPlaceholder")}
-              onChange={(event) =>
-                setDraft((prev) => ({ ...prev, baseUrl: event.target.value }))
-              }
-            />
-          </label>
-          <label htmlFor={modelFieldId}>
-            <span>{t("helperTargetsModelLabel")}</span>
-            {modelOptions.length > 0 ? (
-              <select
-                id={modelFieldId}
-                className="settings-select"
-                value={draft.model}
-                onChange={(event) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    model: event.target.value,
-                  }))
-                }
-              >
-                <option value="">{t("helperTargetsModelDefault")}</option>
-                {modelOptions.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
+          <div className="helper-target-editor">
+            <label>
+              <span>{t("helperTargetsNameLabel")}</span>
               <input
-                id={modelFieldId}
                 type="text"
                 className="settings-input"
-                value={draft.model}
-                placeholder={t("helperTargetsModelPlaceholder")}
+                value={draft.name}
                 onChange={(event) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    model: event.target.value,
-                  }))
+                  setDraft((prev) => ({ ...prev, name: event.target.value }))
                 }
               />
-            )}
-          </label>
-        </div>
+            </label>
+            <label>
+              <span>{t("helperTargetsBaseUrlLabel")}</span>
+              <input
+                type="text"
+                className="settings-input"
+                value={draft.baseUrl}
+                placeholder={t("helperTargetsBaseUrlPlaceholder")}
+                onChange={(event) =>
+                  setDraft((prev) => ({ ...prev, baseUrl: event.target.value }))
+                }
+              />
+            </label>
+            <label htmlFor={modelFieldId}>
+              <span>{t("helperTargetsModelLabel")}</span>
+              {modelOptions.length > 0 ? (
+                <select
+                  id={modelFieldId}
+                  className="settings-select"
+                  value={draft.model}
+                  onChange={(event) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      model: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">{t("helperTargetsModelDefault")}</option>
+                  {modelOptions.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id={modelFieldId}
+                  type="text"
+                  className="settings-input"
+                  value={draft.model}
+                  placeholder={t("helperTargetsModelPlaceholder")}
+                  onChange={(event) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      model: event.target.value,
+                    }))
+                  }
+                />
+              )}
+            </label>
+          </div>
 
-        <div className="helper-target-actions">
-          <button
-            type="button"
-            className="settings-button settings-button-secondary"
-            onClick={() => void discoverModels()}
-            disabled={isDiscovering || !draft.baseUrl.trim()}
-          >
-            {isDiscovering
-              ? t("helperTargetsDiscovering")
-              : t("helperTargetsDiscover")}
-          </button>
-          {editingId && (
+          <div className="helper-target-actions">
             <button
               type="button"
               className="settings-button settings-button-secondary"
-              onClick={resetDraft}
+              onClick={() => void discoverModels()}
+              disabled={isDiscovering || !draft.baseUrl.trim()}
+            >
+              {isDiscovering
+                ? t("helperTargetsDiscovering")
+                : t("helperTargetsDiscover")}
+            </button>
+            {editingId && (
+              <button
+                type="button"
+                className="settings-button settings-button-secondary"
+                onClick={resetDraft}
+                disabled={isSaving}
+              >
+                {t("helperTargetsCancelEdit")}
+              </button>
+            )}
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void saveTarget()}
               disabled={isSaving}
             >
-              {t("helperTargetsCancelEdit")}
+              {isSaving
+                ? t("providersSaving")
+                : editingId
+                  ? t("helperTargetsSave")
+                  : t("helperTargetsAdd")}
             </button>
-          )}
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => void saveTarget()}
-            disabled={isSaving}
-          >
-            {isSaving
-              ? t("providersSaving")
-              : editingId
-                ? t("helperTargetsSave")
-                : t("helperTargetsAdd")}
-          </button>
-        </div>
+          </div>
 
-        {message && <p className="settings-hint">{message}</p>}
-        {error && <p className="settings-warning">{error}</p>}
-      </div>
-    </div>
+          {message && <p className="settings-hint">{message}</p>}
+          {error && <p className="settings-warning">{error}</p>}
+        </div>
+      </HideInSettingsSearch>
+    </SettingsItem>
   );
 }
 
@@ -763,6 +820,120 @@ function OllamaSettings() {
   );
 }
 
+function ClaudeGatewaySettings({
+  reloadProviders,
+  supportsAutostart,
+}: {
+  reloadProviders: () => Promise<void>;
+  supportsAutostart: boolean;
+}) {
+  const exampleUrl = "http://localhost:4141";
+  const { t } = useI18n();
+  const { settings, updateSetting, updateSettings } = useServerSettings();
+  const [url, setUrl] = useState("");
+  const [startCommand, setStartCommand] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const serverValue = settings?.claudeGatewayUrl ?? "";
+  const serverStartCommand = settings?.claudeGatewayStartCommand ?? "";
+  const hasChanges =
+    url.trim() !== serverValue ||
+    (supportsAutostart && startCommand.trim() !== serverStartCommand);
+
+  useEffect(() => {
+    setUrl(settings?.claudeGatewayUrl ?? "");
+  }, [settings?.claudeGatewayUrl]);
+
+  useEffect(() => {
+    setStartCommand(settings?.claudeGatewayStartCommand ?? "");
+  }, [settings?.claudeGatewayStartCommand]);
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      if (supportsAutostart) {
+        await updateSettings({
+          claudeGatewayUrl: url.trim() || undefined,
+          claudeGatewayStartCommand: startCommand.trim() || undefined,
+        });
+      } else {
+        await updateSetting("claudeGatewayUrl", url.trim() || undefined);
+      }
+      await reloadProviders();
+    } catch {
+      // Error handled by useServerSettings.
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    reloadProviders,
+    startCommand,
+    supportsAutostart,
+    updateSetting,
+    updateSettings,
+    url,
+  ]);
+
+  return (
+    <SettingsItem
+      id="provider-claude-gateway-configuration"
+      label={t("providersClaudeGatewayTitle")}
+      description={t("providersClaudeGatewayDescription")}
+      className="settings-item-inline-field"
+      valueText={
+        serverValue ? t("providersClaudeGatewayConfigured") : t("commonOff")
+      }
+    >
+      <div className="claude-gateway-settings-control">
+        <div className="claude-gateway-settings-row">
+          <input
+            type="url"
+            className="settings-input"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            onFocus={() => {
+              if (!url.trim()) setUrl(exampleUrl);
+            }}
+            placeholder={exampleUrl}
+            aria-label={t("providersClaudeGatewayUrlAria")}
+          />
+          <button
+            type="button"
+            className="settings-button"
+            disabled={!hasChanges || isSaving}
+            onClick={() => void handleSave()}
+          >
+            {isSaving ? t("providersSaving") : t("providersSave")}
+          </button>
+        </div>
+        {supportsAutostart && (
+          <>
+            <label className="claude-gateway-start-command">
+              <span>{t("providersClaudeGatewayStartCommandLabel")}</span>
+              <input
+                type="text"
+                className="settings-input"
+                value={startCommand}
+                maxLength={10_000}
+                onChange={(event) => setStartCommand(event.target.value)}
+                placeholder={t(
+                  "providersClaudeGatewayStartCommandPlaceholder",
+                )}
+                aria-label={t("providersClaudeGatewayStartCommandAria")}
+              />
+            </label>
+            <p className="settings-hint">
+              {t("providersClaudeGatewayStartCommandHint")}
+            </p>
+          </>
+        )}
+        <p className="settings-hint">
+          {t("providersClaudeGatewayIsolationHint")}
+        </p>
+      </div>
+    </SettingsItem>
+  );
+}
+
 function ClaudeLoginCommandPanel({
   command,
   onCopy,
@@ -792,12 +963,321 @@ function ClaudeLoginCommandPanel({
   );
 }
 
+function ClaudeAutoCompactPercentOverrideSettings({
+  value,
+  updateSetting,
+}: {
+  value: number | undefined;
+  updateSetting: UpdateServerSetting;
+}) {
+  const { t } = useI18n();
+  const { showToast } = useToastContext();
+
+  const save = useCallback(
+    async (percent: number) => {
+      try {
+        await updateSetting(
+          "claudeAutoCompactPercentOverride",
+          percent === 0 ? undefined : percent,
+        );
+        showToast(t("providersClaudeAutoCompactSaved"), "success");
+      } catch (error) {
+        showToast(
+          error instanceof Error
+            ? error.message
+            : t("providersClaudeAutoCompactSaveError"),
+          "error",
+        );
+      }
+    },
+    [showToast, t, updateSetting],
+  );
+
+  return (
+    <SettingsItem
+      id="provider-claude-auto-compact"
+      label={t("providersClaudeAutoCompactTitle")}
+      description={t("providersClaudeAutoCompactDescription")}
+      keywords={["compact", "context", "threshold", "percentage"]}
+      valueText={
+        value === undefined
+          ? t("providersClaudeAutoCompactOff")
+          : `${value}%`
+      }
+      className="settings-item--wide-control"
+    >
+      <CommittedRangeNumberInput
+        id="claude-auto-compact-percent"
+        min={0}
+        max={100}
+        step={1}
+        value={value ?? 0}
+        unit="%"
+        ariaLabel={t("providersClaudeAutoCompactTitle")}
+        onCommit={(percent) => void save(percent)}
+      />
+    </SettingsItem>
+  );
+}
+
+interface ClaudeAdditionalModelsSettingsProps {
+  modelOptions: readonly ModelInfo[];
+  selections: readonly ClaudeAdditionalModelSelection[];
+  updateSetting: UpdateServerSetting;
+  reloadProviders: () => Promise<void>;
+}
+
+function ClaudeAdditionalModelsSettings({
+  modelOptions,
+  selections,
+  updateSetting,
+  reloadProviders,
+}: ClaudeAdditionalModelsSettingsProps) {
+  const { t } = useI18n();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<ModalAnchorRect | null>(null);
+  const [customId, setCustomId] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedIds = useMemo(
+    () => new Set(selections.map((selection) => selection.id)),
+    [selections],
+  );
+  const choices = useMemo(() => {
+    const maintainedIds = new Set(modelOptions.map((model) => model.id));
+    return [
+      ...modelOptions,
+      ...selections
+        .filter((selection) => !maintainedIds.has(selection.id))
+        .map(
+          (selection): ModelInfo => ({
+            id: selection.id,
+            name: selection.label,
+            description:
+              selection.origin === "registry"
+                ? t("providersAdditionalModelsUnlistedDescription")
+                : t("providersAdditionalModelsCustomDescription"),
+            catalogGroup: "additional",
+          }),
+        ),
+    ];
+  }, [modelOptions, selections, t]);
+
+  const summary =
+    selections.length === 0
+      ? t("providersAdditionalModelsNone")
+      : selections.length === 1
+        ? t("providersAdditionalModelsOne")
+        : t("providersAdditionalModelsMany", {
+            count: String(selections.length),
+          });
+
+  const saveSelections = useCallback(
+    async (nextSelections: ClaudeAdditionalModelSelection[]) => {
+      setIsSaving(true);
+      setError(null);
+      try {
+        await updateSetting("claudeAdditionalModels", nextSelections);
+        await reloadProviders();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("providersAdditionalModelsSaveError"),
+        );
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [reloadProviders, t, updateSetting],
+  );
+
+  const toggleModel = useCallback(
+    (model: ModelInfo) => {
+      const nextSelections = selectedIds.has(model.id)
+        ? selections.filter((selection) => selection.id !== model.id)
+        : [
+            ...selections,
+            {
+              id: model.id,
+              label: model.name,
+              origin: "registry" as const,
+            },
+          ];
+      void saveSelections(nextSelections);
+    },
+    [saveSelections, selectedIds, selections],
+  );
+
+  const addCustomModel = useCallback(() => {
+    const id = customId.trim();
+    if (!isValidClaudeAdditionalModelId(id)) {
+      setError(t("providersAdditionalModelsInvalidId"));
+      return;
+    }
+    if (selectedIds.has(id)) {
+      setError(t("providersAdditionalModelsDuplicateId"));
+      return;
+    }
+
+    const maintained = modelOptions.find((model) => model.id === id);
+    // A custom entry stores label = id, so the id must also satisfy the label
+    // bounds the server enforces; a registry match carries the maintained name.
+    if (!maintained && !isValidClaudeAdditionalModelLabel(id)) {
+      setError(t("providersAdditionalModelsInvalidId"));
+      return;
+    }
+    const nextSelection: ClaudeAdditionalModelSelection = maintained
+      ? {
+          id,
+          label: maintained.name,
+          origin: "registry",
+        }
+      : {
+          id,
+          label: id,
+          origin: "custom",
+        };
+    setCustomId("");
+    void saveSelections([...selections, nextSelection]);
+  }, [customId, modelOptions, saveSelections, selectedIds, selections, t]);
+
+  const openEditor = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    setAnchorRect(
+      rect
+        ? {
+            bottom: rect.bottom,
+            height: rect.height,
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            width: rect.width,
+          }
+        : null,
+    );
+    setError(null);
+    setOpen(true);
+  }, []);
+
+  return (
+    <>
+      <SettingsItem
+        id="provider-claude-additional-models"
+        label={t("providersAdditionalModelsTitle")}
+        description={t("providersAdditionalModelsDescription")}
+        valueText={summary}
+        className="providers-additional-models-setting"
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          className="settings-button settings-button-secondary providers-additional-models-trigger"
+          onClick={openEditor}
+          aria-haspopup="dialog"
+        >
+          <span>{summary}</span>
+          <span aria-hidden="true">▾</span>
+        </button>
+      </SettingsItem>
+      {open && (
+        <Modal
+          title={t("providersAdditionalModelsTitle")}
+          onClose={() => setOpen(false)}
+          anchorRect={anchorRect}
+        >
+          <div className="providers-additional-models-editor">
+            <p className="settings-hint">
+              {t("providersAdditionalModelsEditorDescription")}
+            </p>
+            <div className="providers-additional-models-list">
+              {choices.map((model) => (
+                <label
+                  key={model.id}
+                  className="providers-additional-model-option"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(model.id)}
+                    disabled={isSaving}
+                    onChange={() => toggleModel(model)}
+                  />
+                  <span>
+                    <strong>{model.name}</strong>
+                    <code>{model.id}</code>
+                    {model.description && (
+                      <span className="settings-hint">{model.description}</span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <details className="providers-additional-models-custom">
+              <summary>{t("providersAdditionalModelsCustomTitle")}</summary>
+              <p className="settings-hint">
+                {t("providersAdditionalModelsCustomHint")}
+              </p>
+              <div className="providers-additional-models-custom-row">
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={customId}
+                  maxLength={MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH}
+                  placeholder={t("providersAdditionalModelsCustomPlaceholder")}
+                  aria-label={t("providersAdditionalModelsCustomInputAria")}
+                  onChange={(event) => setCustomId(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addCustomModel();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="settings-button"
+                  disabled={isSaving || !customId.trim()}
+                  onClick={addCustomModel}
+                >
+                  {t("providersAdditionalModelsAdd")}
+                </button>
+              </div>
+            </details>
+            {isSaving && (
+              <p className="settings-hint">{t("providersSaving")}</p>
+            )}
+            {error && <p className="settings-warning">{error}</p>}
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 export function ProvidersSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("providersSectionTitle"));
+  const [showClaudeOllamaDeprecation, setShowClaudeOllamaDeprecation] =
+    useState(shouldShowClaudeOllamaDeprecation);
   const { showToast } = useToastContext();
-  const { providers: serverProviders } = useProviders();
+  const { providers: serverProviders, reload: reloadProviders } =
+    useProviders();
   const { settings, updateSetting } = useServerSettings();
+  const { version } = useVersion();
+  const supportsAdditionalModels = serverHasCapability(
+    version,
+    CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
+  );
+  const supportsClaudeGateway = serverHasCapability(
+    version,
+    CLAUDE_GATEWAY_CAPABILITY,
+  );
+  const supportsClaudeGatewayAutostart = serverHasCapability(
+    version,
+    CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  );
 
   const handleCopyClaudeLoginCommand = useCallback(
     async (command: string) => {
@@ -811,25 +1291,39 @@ export function ProvidersSettings() {
     [showToast, t],
   );
 
+  const dismissClaudeOllamaDeprecation = useCallback(() => {
+    setShowClaudeOllamaDeprecation(false);
+    rememberClaudeOllamaDeprecationDismissal();
+  }, []);
+
   // Merge server detection status with client-side metadata
   const registeredProviders = getAllProviders();
-  const providerDisplayList = registeredProviders.map((clientProvider) => {
+  const providerDisplayList = registeredProviders.flatMap((clientProvider) => {
     const serverInfo = serverProviders.find(
       (p) => p.name === clientProvider.id,
     );
-    return {
-      ...clientProvider,
-      installed: serverInfo?.installed ?? false,
-      authenticated: serverInfo?.authenticated ?? false,
-      loginCommand: serverInfo?.loginCommand,
-    };
+    if (
+      (clientProvider.id === "claude-gateway" ||
+        clientProvider.id === "claude-ollama") &&
+      !serverInfo
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...clientProvider,
+        installed: serverInfo?.installed ?? false,
+        authenticated: serverInfo?.authenticated ?? false,
+        loginCommand: serverInfo?.loginCommand,
+        additionalModelOptions: serverInfo?.additionalModelOptions,
+        supportsLaunchCompactPercentOverride:
+          serverInfo?.supportsLaunchCompactPercentOverride === true,
+      },
+    ];
   });
 
   return (
-    <section className="settings-section">
-      <p className="settings-section-description">
-        {t("providersSectionDescription")}
-      </p>
+    <SettingsSection description={t("providersSectionDescription")}>
       {SHOW_HELPER_TARGETS_SETTINGS && (
         <div className="settings-group">
           <HelperTargetsSettings
@@ -840,64 +1334,115 @@ export function ProvidersSettings() {
       )}
       <div className="settings-group">
         {providerDisplayList.map((provider) => (
-          <div key={provider.id} className="settings-item">
-            <div className="settings-item-info">
-              <div className="settings-item-header">
-                <strong>{provider.displayName}</strong>
-                {provider.installed ? (
-                  <span className="settings-status-badge settings-status-detected">
-                    {t("providersDetected")}
-                  </span>
-                ) : (
-                  <span className="settings-status-badge settings-status-not-detected">
-                    {t("providersNotDetected")}
-                  </span>
-                )}
-              </div>
-              <p>{provider.metadata.description}</p>
-              {provider.metadata.limitations.length > 0 && (
-                <ul className="settings-limitations">
-                  {provider.metadata.limitations.map((limitation) => (
-                    <li key={limitation}>{limitation}</li>
-                  ))}
-                </ul>
-              )}
-              {provider.id === "claude" &&
-                provider.installed &&
-                !provider.authenticated && (
-                  <div style={{ marginTop: "var(--space-2)" }}>
-                    <p className="settings-hint">
-                      {t("providersClaudeLoginHint")}
-                    </p>
-                    <ClaudeLoginCommandPanel
-                      command={
-                        provider.loginCommand ?? DEFAULT_CLAUDE_LOGIN_COMMAND
-                      }
-                      onCopy={(command) =>
-                        void handleCopyClaudeLoginCommand(command)
-                      }
-                    />
+          <Fragment key={provider.id}>
+            <SettingsItem
+              id={`provider-${provider.id}`}
+              label={provider.displayName}
+              description={provider.metadata.description}
+              after={
+                provider.id === "claude-ollama" &&
+                showClaudeOllamaDeprecation ? (
+                  <div
+                    className="provider-deprecation-notice"
+                    role="status"
+                  >
+                    <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
+                    <button
+                      type="button"
+                      className="provider-deprecation-notice__dismiss"
+                      aria-label={t(
+                        "providersClaudeOllamaDeprecationDismissAria",
+                      )}
+                      onClick={dismissClaudeOllamaDeprecation}
+                    >
+                      ×
+                    </button>
                   </div>
-                )}
-              {provider.id === "claude-ollama" && <OllamaSettings />}
-              {provider.id === "grok" && <GrokBuildApiKeySettings />}
-              {provider.id === "codex" && provider.installed && (
-                <CodexUpdatePanel />
+                ) : undefined
+              }
+              info={
+                <>
+                  <div className="settings-item-header">
+                    <strong>{provider.displayName}</strong>
+                    {provider.installed ? (
+                      <span className="settings-status-badge settings-status-detected">
+                        {t("providersDetected")}
+                      </span>
+                    ) : (
+                      <span className="settings-status-badge settings-status-not-detected">
+                        {t("providersNotDetected")}
+                      </span>
+                    )}
+                  </div>
+                  <p>{provider.metadata.description}</p>
+                  {provider.metadata.limitations.length > 0 && (
+                    <ul className="settings-limitations">
+                      {provider.metadata.limitations.map((limitation) => (
+                        <li key={limitation}>{limitation}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {provider.id === "claude" &&
+                    provider.installed &&
+                    !provider.authenticated && (
+                      <div style={{ marginTop: "var(--space-2)" }}>
+                        <p className="settings-hint">
+                          {t("providersClaudeLoginHint")}
+                        </p>
+                        <ClaudeLoginCommandPanel
+                          command={
+                            provider.loginCommand ??
+                            DEFAULT_CLAUDE_LOGIN_COMMAND
+                          }
+                          onCopy={(command) =>
+                            void handleCopyClaudeLoginCommand(command)
+                          }
+                        />
+                      </div>
+                    )}
+                  {provider.id === "claude-ollama" && <OllamaSettings />}
+                  {provider.id === "grok" && <GrokBuildApiKeySettings />}
+                  {provider.id === "codex" && provider.installed && (
+                    <CodexUpdatePanel />
+                  )}
+                </>
+              }
+            >
+              {provider.metadata.website && (
+                <a
+                  href={provider.metadata.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="settings-link"
+                >
+                  {t("providersWebsite")}
+                </a>
               )}
-            </div>
-            {provider.metadata.website && (
-              <a
-                href={provider.metadata.website}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="settings-link"
-              >
-                {t("providersWebsite")}
-              </a>
+            </SettingsItem>
+            {provider.id === "claude" &&
+              provider.supportsLaunchCompactPercentOverride && (
+                <ClaudeAutoCompactPercentOverrideSettings
+                  value={settings?.claudeAutoCompactPercentOverride}
+                  updateSetting={updateSetting}
+                />
+              )}
+            {provider.id === "claude" && supportsClaudeGateway && (
+              <ClaudeGatewaySettings
+                reloadProviders={reloadProviders}
+                supportsAutostart={supportsClaudeGatewayAutostart}
+              />
             )}
-          </div>
+            {provider.id === "claude" && supportsAdditionalModels && (
+              <ClaudeAdditionalModelsSettings
+                modelOptions={provider.additionalModelOptions ?? []}
+                selections={settings?.claudeAdditionalModels ?? []}
+                updateSetting={updateSetting}
+                reloadProviders={reloadProviders}
+              />
+            )}
+          </Fragment>
         ))}
       </div>
-    </section>
+    </SettingsSection>
   );
 }

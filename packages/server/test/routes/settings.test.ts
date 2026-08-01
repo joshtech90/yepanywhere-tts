@@ -7,7 +7,10 @@ import type {
   ServerSettings,
   ServerSettingsService,
 } from "../../src/services/ServerSettingsService.js";
-import { DEFAULT_SERVER_SETTINGS } from "../../src/services/ServerSettingsService.js";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH,
+} from "../../src/services/ServerSettingsService.js";
 
 describe("Settings Routes", () => {
   let settings: ServerSettings;
@@ -22,6 +25,7 @@ describe("Settings Routes", () => {
       speechAudioRetention: DEFAULT_SERVER_SETTINGS.speechAudioRetention,
       publicSharesEnabled: false,
       workstreamsEnabled: false,
+      hostProcessObservabilityEnabled: true,
       hostAwakeMode: "off",
       hostAwakeBatteryFloorPercent: 10,
     };
@@ -86,6 +90,41 @@ describe("Settings Routes", () => {
   });
 
   describe("PUT /", () => {
+    it("persists a host process observability opt-out", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostProcessObservabilityEnabled: false }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        hostProcessObservabilityEnabled: false,
+      });
+    });
+
+    it("rejects a non-boolean host process observability setting", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostProcessObservabilityEnabled: "yes" }),
+      });
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain(
+        "hostProcessObservabilityEnabled",
+      );
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it.each([
       [{ hostAwakeMode: "always" }, "hostAwakeMode"],
       [{ hostAwakeBatteryFloorPercent: 10.5 }, "hostAwakeBatteryFloorPercent"],
@@ -498,6 +537,130 @@ describe("Settings Routes", () => {
       expect(onGrokBuildUseXaiApiKeyChanged).toHaveBeenCalledWith(true);
     });
 
+    it("normalizes and applies a Claude gateway URL live", async () => {
+      const onClaudeGatewaySettingsChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onClaudeGatewaySettingsChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claudeGatewayUrl: "  http://localhost:4141/  ",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeGatewayUrl: "http://localhost:4141",
+      });
+      expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
+        url: "http://localhost:4141",
+        startCommand: undefined,
+      });
+    });
+
+    it("persists and applies a Claude gateway start command live", async () => {
+      settings = {
+        ...settings,
+        claudeGatewayUrl: "http://localhost:4141",
+      };
+      const onClaudeGatewaySettingsChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onClaudeGatewaySettingsChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claudeGatewayStartCommand: "  HOST=localhost gateway start  ",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeGatewayStartCommand: "HOST=localhost gateway start",
+      });
+      expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
+        url: "http://localhost:4141",
+        startCommand: "HOST=localhost gateway start",
+      });
+    });
+
+    it.each([
+      ["non-string", 42],
+      [
+        "too long",
+        `gateway start ${"x".repeat(MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH)}`,
+      ],
+      ["NUL byte", "gateway\u0000start"],
+    ])("rejects a %s Claude gateway start command", async (_case, command) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeGatewayStartCommand: command }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      "ftp://localhost:4141",
+      "http://user:secret@localhost:4141",
+      "http://localhost:4141?token=secret",
+      "http://localhost:4141#gateway",
+      "localhost:4141",
+    ])("rejects unsafe Claude gateway URL %s", async (claudeGatewayUrl) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeGatewayUrl }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("clears and applies the Claude gateway URL", async () => {
+      settings = {
+        ...settings,
+        claudeGatewayUrl: "http://localhost:4141",
+      };
+      const onClaudeGatewaySettingsChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onClaudeGatewaySettingsChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeGatewayUrl: null }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeGatewayUrl: undefined,
+      });
+      expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
+        url: undefined,
+        startCommand: undefined,
+      });
+    });
+
     it("accepts speech audio retention settings", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -815,6 +978,49 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
+    it("persists the global YA-orchestrated compaction override", async () => {
+      settings = {
+        ...settings,
+        clientDefaults: { compactAtContextPercent: { opus: 20 } },
+      };
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientDefaults: { forceYaOrchestratedCompaction: true },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        clientDefaults: {
+          compactAtContextPercent: { opus: 20 },
+          forceYaOrchestratedCompaction: true,
+        },
+      });
+    });
+
+    it("rejects a non-boolean YA compaction override", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientDefaults: { forceYaOrchestratedCompaction: "yes" },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("accepts provider-scoped prompt-cache keepalive settings", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -920,6 +1126,7 @@ describe("Settings Routes", () => {
             provider: "codex",
             model: "legacy-codex",
             serviceTier: "legacy-priority",
+            sandboxLevel: "project-write",
             providers: {
               claude: {
                 model: "opus",
@@ -945,6 +1152,7 @@ describe("Settings Routes", () => {
           provider: "codex",
           model: "legacy-codex",
           serviceTier: "legacy-priority",
+          sandboxLevel: "project-write",
           providers: {
             claude: {
               model: "opus",
@@ -963,6 +1171,134 @@ describe("Settings Routes", () => {
         },
       });
     });
+
+    it("rejects an invalid new-session sandbox default", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newSessionDefaults: {
+            sandboxLevel: "home-write",
+          },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Invalid newSessionDefaults setting",
+      });
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("accepts exact opt-in Claude model selections", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const selections = [
+        {
+          id: "claude-opus-4-8",
+          label: "Opus 4.8",
+          origin: "registry",
+        },
+        {
+          id: "claude-future-6[1m]",
+          label: "claude-future-6[1m]",
+          origin: "custom",
+        },
+      ];
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeAdditionalModels: selections }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeAdditionalModels: selections,
+      });
+    });
+
+    it("rejects duplicate opt-in Claude model ids", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claudeAdditionalModels: [
+            { id: "same", label: "Same", origin: "custom" },
+            { id: "same", label: "Same again", origin: "custom" },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Invalid claudeAdditionalModels setting",
+      });
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("accepts and clears the global Claude auto-compaction override", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const enabled = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeAutoCompactPercentOverride: 60 }),
+      });
+      expect(enabled.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenLastCalledWith(
+        {
+          claudeAutoCompactPercentOverride: 60,
+        },
+      );
+
+      const cleared = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeAutoCompactPercentOverride: 0 }),
+      });
+      expect(cleared.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenLastCalledWith(
+        {
+          claudeAutoCompactPercentOverride: undefined,
+        },
+      );
+    });
+
+    it.each([101, -1, 50.5, "50"])(
+      "rejects invalid Claude auto-compaction override %p",
+      async (claudeAutoCompactPercentOverride) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claudeAutoCompactPercentOverride }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          error:
+            "claudeAutoCompactPercentOverride must be an integer from 1 to 100, or 0/null to clear",
+        });
+        expect(
+          mockServerSettingsService.updateSettings,
+        ).not.toHaveBeenCalled();
+      },
+    );
 
     it("rejects invalid provider-scoped helper model defaults", async () => {
       const routes = createSettingsRoutes({

@@ -10,6 +10,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import webPush, { type RequestOptions } from "web-push";
+import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { HttpError } from "../middleware/error-handler.js";
 import {
   DEFAULT_NOTIFICATION_SETTINGS,
   type NotificationSettings,
@@ -38,8 +40,8 @@ export class PushService {
   private filePath: string;
   private vapidKeys?: VapidKeys;
   private initialized = false;
-  private savePromise: Promise<void> | null = null;
-  private pendingSave = false;
+  /** Writes coalesce; a rejected write surfaces to its caller without wedging. */
+  private save = createCoalescingSaver(() => this.doSave()).save;
 
   constructor(options: PushServiceOptions = {}) {
     this.dataDir =
@@ -205,9 +207,7 @@ export class PushService {
   /**
    * Check if a specific notification type is enabled.
    */
-  isNotificationTypeEnabled(
-    type: keyof NotificationSettings,
-  ): boolean {
+  isNotificationTypeEnabled(type: keyof NotificationSettings): boolean {
     const settings = this.getNotificationSettings();
     return settings[type];
   }
@@ -216,12 +216,10 @@ export class PushService {
    * Send a push notification to all subscribed browser profiles.
    * @param payload - The notification payload
    * @param options - Optional settings
-   * @param options.excludeBrowserProfileIds - Browser profile IDs to skip (e.g., already connected)
    */
   async sendToAll(
     payload: PushPayload,
     options?: {
-      excludeBrowserProfileIds?: string[];
       deliveryUrgency?: PushDeliveryUrgency;
     },
   ): Promise<SendResult[]> {
@@ -231,10 +229,7 @@ export class PushService {
       throw new Error("VAPID keys not configured");
     }
 
-    const excludeSet = new Set(options?.excludeBrowserProfileIds ?? []);
-    const browserProfileIds = Object.keys(this.state.subscriptions).filter(
-      (id) => !excludeSet.has(id),
-    );
+    const browserProfileIds = Object.keys(this.state.subscriptions);
 
     if (browserProfileIds.length === 0) {
       return [];
@@ -356,26 +351,12 @@ export class PushService {
    */
   private ensureInitialized(): void {
     if (!this.initialized) {
-      throw new Error("PushService not initialized. Call initialize() first.");
-    }
-  }
-
-  /**
-   * Save state to disk with debouncing.
-   */
-  private async save(): Promise<void> {
-    if (this.savePromise) {
-      this.pendingSave = true;
-      return;
-    }
-
-    this.savePromise = this.doSave();
-    await this.savePromise;
-    this.savePromise = null;
-
-    if (this.pendingSave) {
-      this.pendingSave = false;
-      await this.save();
+      // 503: a not-yet-initialized service is a server-config problem, not a
+      // client error — same status as the missing-VAPID case in routes.ts.
+      throw new HttpError(
+        503,
+        "PushService not initialized. Call initialize() first.",
+      );
     }
   }
 

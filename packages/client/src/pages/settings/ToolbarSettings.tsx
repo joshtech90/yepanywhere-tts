@@ -10,6 +10,13 @@ import {
   ToolbarControlPreview,
 } from "../../components/SessionToolbarPreview";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
+import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
+import {
+  CONVERSATION_VIEW_TURN_LIMIT_STEP,
+  MAX_CONVERSATION_VIEW_TURN_LIMIT,
+  MIN_CONVERSATION_VIEW_TURN_LIMIT,
+  useConversationViewTurnLimit,
+} from "../../hooks/useConversationView";
 import {
   type SessionToolbarVisibilityKey,
   useSessionToolbarPresence,
@@ -21,7 +28,10 @@ import {
   serverSupportsProjectQueue,
   serverSupportsProjectQueueNewSessionShortcutSetting,
 } from "../../lib/projectQueueVisibility";
+import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
+import { HideInSettingsSearch } from "./SettingsSearchContext";
+import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
 const BUSY_COMPOSER_DEFAULT_ACTIONS: BusyComposerDefaultAction[] = [
@@ -43,7 +53,18 @@ interface ToolbarControlMeta {
   description: string;
   side: ToolbarSide;
   canSetPriority: boolean;
+  /**
+   * Whether the control has a toolbar rendering to preview. Controls that only
+   * appear elsewhere in the composer would render an empty preview tile, so
+   * they get the copy and slider alone.
+   */
+  hasToolbarPreview: boolean;
 }
+
+/** Presence-configurable controls that never render on the toolbar itself. */
+const NON_TOOLBAR_CONTROLS = new Set<SessionToolbarVisibilityKey>([
+  "composerRecall",
+]);
 
 const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
   "modeSelector",
@@ -51,6 +72,7 @@ const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
   "slashMenu",
   "thinkingToggle",
   "renderMode",
+  "conversationView",
   "nudge",
   "sessionStatus",
   "shortcutsHelp",
@@ -174,6 +196,8 @@ export function ToolbarSettings() {
   const [placementPresence] = useState(() => ({ ...toolbarPresence }));
   const { settings, error, updateSettings } = useServerSettings();
   const { version } = useVersion();
+  const { conversationViewTurnLimit, setConversationViewTurnLimit } =
+    useConversationViewTurnLimit();
   const supportsProjectQueue = serverSupportsProjectQueue(version);
   const supportsProjectQueueNewSessionShortcutSetting =
     serverSupportsProjectQueueNewSessionShortcutSetting(version);
@@ -190,11 +214,13 @@ export function ToolbarSettings() {
             toolbarPresence,
             busyComposerDefaultAction,
             collapsedComposerButton,
+            conversationViewTurnLimit,
           }
         : null,
     [
       busyComposerDefaultAction,
       collapsedComposerButton,
+      conversationViewTurnLimit,
       settings,
       toolbarPresence,
     ],
@@ -205,6 +231,7 @@ export function ToolbarSettings() {
       for (const [key, value] of Object.entries(snapshot.toolbarPresence)) {
         setControlPresence(key as SessionToolbarVisibilityKey, value);
       }
+      setConversationViewTurnLimit(snapshot.conversationViewTurnLimit);
       void updateSettings({
         clientDefaults: {
           busyComposerDefaultAction: snapshot.busyComposerDefaultAction,
@@ -214,7 +241,7 @@ export function ToolbarSettings() {
         // surfaced via the hook's error state
       });
     },
-    [setControlPresence, updateSettings],
+    [setControlPresence, setConversationViewTurnLimit, updateSettings],
   );
   useSettingsUndoBaseline(undoState, restoreUndoState);
 
@@ -229,6 +256,7 @@ export function ToolbarSettings() {
     description,
     side,
     canSetPriority: PRIORITY_EDITABLE_CONTROLS.has(key),
+    hasToolbarPreview: !NON_TOOLBAR_CONTROLS.has(key),
   });
 
   const toolbarControls: ToolbarControlMeta[] = [
@@ -260,6 +288,12 @@ export function ToolbarSettings() {
       "renderMode",
       t("appearanceToolbarRenderModeTitle"),
       t("appearanceToolbarRenderModeDescription"),
+      "left",
+    ),
+    controlMeta(
+      "conversationView",
+      t("appearanceToolbarConversationViewTitle"),
+      t("appearanceToolbarConversationViewDescription"),
       "left",
     ),
     controlMeta(
@@ -308,6 +342,12 @@ export function ToolbarSettings() {
       "steerNow",
       t("appearanceToolbarSteerNowTitle"),
       t("appearanceToolbarSteerNowDescription"),
+      "right",
+    ),
+    controlMeta(
+      "composerRecall",
+      t("appearanceToolbarComposerRecallTitle"),
+      t("appearanceToolbarComposerRecallDescription"),
       "right",
     ),
   ];
@@ -371,17 +411,19 @@ export function ToolbarSettings() {
       }`}
       key={control.key}
     >
-      <span className="session-toolbar-control-preview-cell">
-        <ToolbarControlPreview
-          activationLabel={t("appearanceToolbarActivateControl", {
-            control: control.title,
-          })}
-          controlKey={control.key}
-          onActivate={() => {
-            document.getElementById(presenceSliderId(control.key))?.focus();
-          }}
-        />
-      </span>
+      {control.hasToolbarPreview && (
+        <span className="session-toolbar-control-preview-cell">
+          <ToolbarControlPreview
+            activationLabel={t("appearanceToolbarActivateControl", {
+              control: control.title,
+            })}
+            controlKey={control.key}
+            onActivate={() => {
+              document.getElementById(presenceSliderId(control.key))?.focus();
+            }}
+          />
+        </span>
+      )}
       <span className="session-toolbar-control-copy">
         <strong>{control.title}</strong>
         <span>{control.description}</span>
@@ -410,17 +452,12 @@ export function ToolbarSettings() {
   );
 
   return (
-    <section className="settings-section">
-      <p className="settings-section-description">
-        {t("appearanceSessionToolbarDescription")}
-      </p>
-
+    <SettingsSection description={t("appearanceSessionToolbarDescription")}>
       <div className="settings-group">
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("appearanceToolbarDefaultActionTitle")}</strong>
-            <p>{t("appearanceToolbarDefaultActionDescription")}</p>
-          </div>
+        <SettingsItem
+          label={t("appearanceToolbarDefaultActionTitle")}
+          description={t("appearanceToolbarDefaultActionDescription")}
+        >
           <select
             className="settings-select"
             value={busyComposerDefaultAction}
@@ -442,13 +479,12 @@ export function ToolbarSettings() {
               {t("appearanceToolbarDefaultActionQueue")}
             </option>
           </select>
-        </div>
+        </SettingsItem>
 
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("appearanceToolbarCollapsedButtonTitle")}</strong>
-            <p>{t("appearanceToolbarCollapsedButtonDescription")}</p>
-          </div>
+        <SettingsItem
+          label={t("appearanceToolbarCollapsedButtonTitle")}
+          description={t("appearanceToolbarCollapsedButtonDescription")}
+        >
           <select
             className="settings-select"
             value={collapsedComposerButton}
@@ -474,48 +510,74 @@ export function ToolbarSettings() {
               {t("appearanceToolbarCollapsedButtonMicrophone")}
             </option>
           </select>
-        </div>
+        </SettingsItem>
 
-        <div className="settings-item session-toolbar-settings">
-          <SessionToolbarPreview />
+        <SettingsItem
+          label={t("appearanceToolbarConversationViewTurnLimitTitle")}
+          description={t(
+            "appearanceToolbarConversationViewTurnLimitDescription",
+          )}
+          className="settings-item--wide-control"
+        >
+          <CommittedRangeNumberInput
+            id="conversation-view-turn-limit"
+            min={MIN_CONVERSATION_VIEW_TURN_LIMIT}
+            max={MAX_CONVERSATION_VIEW_TURN_LIMIT}
+            step={CONVERSATION_VIEW_TURN_LIMIT_STEP}
+            value={conversationViewTurnLimit}
+            unit={t("appearanceToolbarConversationViewTurnLimitUnit")}
+            ariaLabel={t("appearanceToolbarConversationViewTurnLimitTitle")}
+            onCommit={setConversationViewTurnLimit}
+          />
+        </SettingsItem>
 
-          <div className="session-toolbar-zone">
-            <div className="session-toolbar-zone-heading">
-              <strong>{t("appearanceToolbarHiddenHeading")}</strong>
-              <span>{t("appearanceToolbarHiddenDescription")}</span>
+        <HideInSettingsSearch>
+          <div className="settings-item session-toolbar-settings">
+            <SessionToolbarPreview />
+
+            <div className="session-toolbar-zone">
+              <div className="session-toolbar-zone-heading">
+                <strong>{t("appearanceToolbarHiddenHeading")}</strong>
+                <span>{t("appearanceToolbarHiddenDescription")}</span>
+              </div>
+              <div className="session-toolbar-hidden-groups">
+                {renderHiddenGroup(t("appearanceToolbarSideLeft"), hiddenLeft)}
+                {renderHiddenGroup(
+                  t("appearanceToolbarSideRight"),
+                  hiddenRight,
+                )}
+              </div>
             </div>
-            <div className="session-toolbar-hidden-groups">
-              {renderHiddenGroup(t("appearanceToolbarSideLeft"), hiddenLeft)}
-              {renderHiddenGroup(t("appearanceToolbarSideRight"), hiddenRight)}
+
+            <div className="session-toolbar-zone-separator" />
+
+            <div className="session-toolbar-zone">
+              <div className="session-toolbar-zone-heading">
+                <strong>{t("appearanceToolbarShownHeading")}</strong>
+                <span>{t("appearanceToolbarShownDescription")}</span>
+              </div>
+              <div className="session-toolbar-control-list">
+                {shownControls.map((control) =>
+                  renderControlRow(control, "shown"),
+                )}
+              </div>
+            </div>
+
+            <div className="settings-item-actions">
+              <button
+                type="button"
+                className="settings-button settings-button-secondary"
+                onClick={() => {
+                  resetPresence();
+                }}
+              >
+                {t("appearanceSessionToolbarReset")}
+              </button>
             </div>
           </div>
-
-          <div className="session-toolbar-zone-separator" />
-
-          <div className="session-toolbar-zone">
-            <div className="session-toolbar-zone-heading">
-              <strong>{t("appearanceToolbarShownHeading")}</strong>
-              <span>{t("appearanceToolbarShownDescription")}</span>
-            </div>
-            <div className="session-toolbar-control-list">
-              {shownControls.map((control) => renderControlRow(control, "shown"))}
-            </div>
-          </div>
-
-          <div className="settings-item-actions">
-            <button
-              type="button"
-              className="settings-button settings-button-secondary"
-              onClick={() => {
-                resetPresence();
-              }}
-            >
-              {t("appearanceSessionToolbarReset")}
-            </button>
-          </div>
-        </div>
+        </HideInSettingsSearch>
         {error && <p className="settings-warning">{error}</p>}
       </div>
-    </section>
+    </SettingsSection>
   );
 }

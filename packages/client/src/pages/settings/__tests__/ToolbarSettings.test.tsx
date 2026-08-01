@@ -12,6 +12,10 @@ import {
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
 } from "../../../lib/projectQueueVisibility";
+import {
+  DEFAULT_CONVERSATION_VIEW_TURN_LIMIT,
+  setConversationViewTurnLimit,
+} from "../../../hooks/useConversationView";
 import { ToolbarSettings } from "../ToolbarSettings";
 
 const state = vi.hoisted(() => {
@@ -22,6 +26,7 @@ const state = vi.hoisted(() => {
     slashMenu: "mid",
     thinkingToggle: "mid",
     renderMode: "hidden",
+    conversationView: "last",
     microphone: "pin",
     waveform: "pin",
     shortcutsHelp: "last",
@@ -31,6 +36,7 @@ const state = vi.hoisted(() => {
     sessionStatus: "pin",
     projectQueue: "pin",
     projectQueueNewSessionShortcut: "hidden",
+    composerRecall: "hidden",
   };
   return {
     defaultPresence,
@@ -120,6 +126,14 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarThinkingDescription: "Show thinking controls",
           appearanceToolbarRenderModeTitle: "Render Mode",
           appearanceToolbarRenderModeDescription: "Show rendered/source toggle",
+          appearanceToolbarConversationViewTitle: "Conversation View",
+          appearanceToolbarConversationViewDescription:
+            "Show condensed conversation",
+          appearanceToolbarConversationViewTurnLimitTitle:
+            "Conversation View history",
+          appearanceToolbarConversationViewTurnLimitDescription:
+            "Latest user turns",
+          appearanceToolbarConversationViewTurnLimitUnit: "turns",
           appearanceToolbarMicrophoneTitle: "Microphone",
           appearanceToolbarMicrophoneDescription: "Show microphone",
           appearanceToolbarWaveformTitle: "Live Microphone Waveform",
@@ -143,6 +157,9 @@ vi.mock("../../../i18n", () => ({
             "Queue as New Session Shortcut",
           appearanceToolbarProjectQueueNewSessionShortcutDescription:
             "Queue a separate session from an existing composer",
+          appearanceToolbarComposerRecallTitle: "Message recall button",
+          appearanceToolbarComposerRecallDescription:
+            "Open the earlier-message recall list",
           appearanceSessionToolbarDescription: "Toolbar controls",
           appearanceToolbarDefaultActionTitle: "Default action",
           appearanceToolbarDefaultActionDescription: "Choose an action",
@@ -181,6 +198,7 @@ describe("ToolbarSettings", () => {
   beforeEach(() => {
     state.version = { capabilities: [] };
     state.presence = { ...state.defaultPresence };
+    setConversationViewTurnLimit(DEFAULT_CONVERSATION_VIEW_TURN_LIMIT);
   });
 
   afterEach(() => {
@@ -224,15 +242,36 @@ describe("ToolbarSettings", () => {
     ).toBe("0");
   });
 
+  it("ships the message recall button hidden, with only Hide / Show always", () => {
+    render(<ToolbarSettings />);
+
+    const row = screen
+      .getByText("Message recall button")
+      .closest(".session-toolbar-control-row");
+    expect(row).toBeTruthy();
+    const slider = within(row as HTMLElement).getByRole<HTMLInputElement>(
+      "slider",
+      { name: "Message recall button visibility" },
+    );
+    expect(slider.value).toBe("0");
+    // Keyboard-row only, so it never enters the toolbar overflow engine.
+    expect(slider.getAttribute("max")).toBe("1");
+  });
+
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 13 controls without the projectQueue capability, one slider each.
-    expect(screen.getAllByRole("slider")).toHaveLength(13);
+    // 15 control-presence sliders plus the Conversation View history slider.
+    expect(screen.getAllByRole("slider")).toHaveLength(16);
     // Overflow-supported controls get the full notch scale...
     expect(
       screen
         .getByRole("slider", { name: "Mode Selector visibility" })
+        .getAttribute("max"),
+    ).toBe("4");
+    expect(
+      screen
+        .getByRole("slider", { name: "Conversation View visibility" })
         .getAttribute("max"),
     ).toBe("4");
     // ...while non-overflow controls only get Hide / Show always.
@@ -241,6 +280,20 @@ describe("ToolbarSettings", () => {
         .getByRole("slider", { name: "Microphone visibility" })
         .getAttribute("max"),
     ).toBe("1");
+  });
+
+  it("configures the browser-local Conversation View history window", () => {
+    render(<ToolbarSettings />);
+
+    const slider = screen.getByRole<HTMLInputElement>("slider", {
+      name: "Conversation View history",
+    });
+    expect(slider.value).toBe("100");
+
+    fireEvent.change(slider, { target: { value: "150" } });
+    fireEvent.pointerUp(slider);
+
+    expect(slider.value).toBe("150");
   });
 
   it("keeps hidden overflow controls priority-editable", () => {

@@ -1,13 +1,27 @@
-import { useCallback, useState } from "react";
+import type { HostAgentProcessObservation } from "@yep-anywhere/shared";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { PageHeader } from "../components/PageHeader";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
+import { useHostAgentProcesses } from "../hooks/useHostAgentProcesses";
 import { type ProcessInfo, useProcesses } from "../hooks/useProcesses";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
+import styles from "./AgentsPage.module.css";
+
+function cx(...classNames: (string | false | undefined)[]): string {
+  return classNames.filter(Boolean).join(" ");
+}
 
 /**
  * Format uptime duration from start time to now.
@@ -34,6 +48,19 @@ function formatUptime(startedAt: string): string {
   return `${seconds}s`;
 }
 
+function formatMemory(bytes: number): string {
+  const mebibytes = bytes / (1024 * 1024);
+  if (mebibytes < 1024) {
+    return `${Math.round(mebibytes)} MiB`;
+  }
+  const gibibytes = mebibytes / 1024;
+  return `${gibibytes < 10 ? gibibytes.toFixed(1) : Math.round(gibibytes)} GiB`;
+}
+
+function formatCpu(percent: number): string {
+  return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+}
+
 /**
  * Get a display label for the process state.
  */
@@ -55,16 +82,18 @@ function getStateLabel(state: string, t: (key: never) => string): string {
 /**
  * Get CSS class for state badge.
  */
-function getStateBadgeClass(state: string): string {
+function getStateBadgeClass(state: string): string | undefined {
   switch (state) {
+    // "running" never reached a badge: an in-turn card renders
+    // ThinkingIndicator instead, and no badge rule was ever authored for it.
     case "running":
-      return "agent-state-running";
+      return "";
     case "waiting-input":
-      return "agent-state-input";
+      return styles.stateInput;
     case "idle":
-      return "agent-state-idle";
+      return styles.stateIdle;
     case "terminated":
-      return "agent-state-terminated";
+      return styles.stateTerminated;
     default:
       return "";
   }
@@ -80,6 +109,10 @@ function getProviderLabel(
   switch (provider) {
     case "claude":
       return "Claude";
+    case "claude-gateway":
+      return "Claude Gateway";
+    case "claude-ollama":
+      return "Claude + Ollama";
     case "codex":
       return "Codex";
     case "gemini":
@@ -89,6 +122,8 @@ function getProviderLabel(
       return "Grok";
     case "opencode":
       return "OpenCode";
+    case "pi":
+      return "Pi";
     case "local":
       return t("agentsProviderLocal" as never);
     default:
@@ -99,26 +134,31 @@ function getProviderLabel(
 /**
  * Get CSS class for provider badge.
  */
-function getProviderBadgeClass(provider: string | undefined): string {
+function getProviderBadgeClass(
+  provider: string | undefined,
+): string | undefined {
   switch (provider) {
     case "codex":
-      return "agent-provider-codex";
+      return styles.providerCodex;
     case "gemini":
     case "gemini-acp":
-      return "agent-provider-gemini";
+      return styles.providerGemini;
     case "grok":
-      return "agent-provider-grok";
+      return styles.providerGrok;
     case "opencode":
-      return "agent-provider-opencode";
+      return styles.providerOpencode;
+    case "pi":
+      return styles.providerPi;
     case "local":
-      return "agent-provider-local";
+      return styles.providerLocal;
     default:
-      return "agent-provider-claude";
+      return styles.providerClaude;
   }
 }
 
 interface ProcessCardProps {
   process: ProcessInfo;
+  observation?: HostAgentProcessObservation;
   basePath?: string;
   isTerminated?: boolean;
   onKill?: (process: ProcessInfo) => void;
@@ -130,8 +170,150 @@ interface KillFeedback {
   message: string;
 }
 
+/** Explicit lookup: the tone set is finite, so no class name is built at runtime. */
+const KILL_FEEDBACK_TONE_CLASS: Record<
+  KillFeedback["tone"],
+  string | undefined
+> = {
+  success: styles.killFeedbackSuccess,
+  error: styles.killFeedbackError,
+};
+
+interface ProcessMetricsProps {
+  observation: HostAgentProcessObservation;
+  touchSurfaceRef?: RefObject<HTMLElement | null>;
+}
+
+function ProcessMetrics({ observation, touchSurfaceRef }: ProcessMetricsProps) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLSpanElement>(null);
+  const provider = getProviderLabel(observation.provider, t);
+  const age = formatUptime(observation.startedAt);
+  const cpu = observation.cpu
+    ? t("agentsMetricsCpuValue" as never, {
+        percent: formatCpu(observation.cpu.treePercent),
+      })
+    : t("agentsMetricsCpuSampling" as never);
+  const detail = [
+    t(
+      (observation.supervision === "ya"
+        ? "agentsMetricsManagedYa"
+        : "agentsMetricsManagedExternal") as never,
+    ),
+    t("agentsMetricsProvider" as never, { provider }),
+    t("agentsPid" as never, { pid: observation.pid }),
+    t("agentsMetricsStarted" as never, {
+      value: new Date(observation.startedAt).toLocaleString(),
+    }),
+    t("agentsMetricsAge" as never, { value: age }),
+    observation.cpu
+      ? t("agentsMetricsRecentCpu" as never, {
+          percent: formatCpu(observation.cpu.rootPercent),
+          treePercent: formatCpu(observation.cpu.treePercent),
+          seconds: (observation.cpu.windowMs / 1000).toFixed(1),
+        })
+      : t("agentsMetricsCpuSampling" as never),
+    t("agentsMetricsRootRss" as never, {
+      value: formatMemory(observation.memory.rootRssBytes),
+    }),
+    t("agentsMetricsTreeRss" as never, {
+      value: formatMemory(observation.memory.treeRssBytes),
+    }),
+    t("agentsMetricsDescendants" as never, {
+      count: observation.memory.descendantCount,
+    }),
+    t("agentsMetricsSampled" as never, {
+      value: new Date(observation.sampledAt).toLocaleTimeString(),
+    }),
+  ].join("\n");
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      const isTouchOnCard =
+        event.pointerType === "touch" &&
+        touchSurfaceRef?.current?.contains(event.target);
+      if (!wrapperRef.current?.contains(event.target) && !isTouchOnCard) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, touchSurfaceRef]);
+
+  useEffect(() => {
+    const touchSurface = touchSurfaceRef?.current;
+    if (!touchSurface) return;
+    const handlePointerUp = (event: PointerEvent) => {
+      if (
+        event.pointerType !== "touch" ||
+        !(event.target instanceof Node) ||
+        wrapperRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      const interactiveTarget =
+        event.target instanceof Element
+          ? event.target.closest(
+              "a, button, input, select, textarea, [role='button'], [role='link']",
+            )
+          : null;
+      if (!interactiveTarget) setOpen((value) => !value);
+    };
+    touchSurface.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      touchSurface.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [touchSurfaceRef]);
+
+  return (
+    <span
+      // `agent-metrics-wrap` stays for the global ContextUsageIndicator
+      // sibling rule in styles/index.css.
+      className={cx(
+        "agent-metrics-wrap",
+        styles.metricsWrap,
+        open && styles.metricsWrapOpen,
+      )}
+      ref={wrapperRef}
+    >
+      <button
+        type="button"
+        className={styles.metrics}
+        title={detail}
+        aria-label={detail}
+        aria-expanded={open}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+      >
+        <span>{formatMemory(observation.memory.rootRssBytes)} RSS</span>
+        <span aria-hidden>·</span>
+        <span>{cpu}</span>
+      </button>
+      {open && (
+        <span className={styles.metricsPopover} role="status">
+          {detail}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function ProcessCard({
   process,
+  observation,
   basePath = "",
   isTerminated = false,
   onKill,
@@ -142,15 +324,18 @@ function ProcessCard({
   return (
     <Link
       to={`${basePath}/projects/${process.projectId}/sessions/${process.sessionId}`}
-      className={`agent-card ${isTerminated ? "agent-card-terminated" : ""}`}
+      className={cx(styles.card, isTerminated && styles.cardTerminated)}
     >
-      <div className="agent-card-header">
-        <div className="agent-card-title">
-          <span className="agent-card-session-title">
+      <div className={styles.cardHeader}>
+        <div className={styles.cardTitle}>
+          <span className={styles.cardSessionTitle}>
             {process.sessionTitle || t("agentsUntitled" as never)}
           </span>
           <span
-            className={`agent-provider-badge ${getProviderBadgeClass(process.provider)}`}
+            className={cx(
+              styles.providerBadge,
+              getProviderBadgeClass(process.provider),
+            )}
           >
             {getProviderLabel(process.provider, t)}
           </span>
@@ -161,7 +346,10 @@ function ProcessCard({
             />
           ) : (
             <span
-              className={`agent-state-badge ${getStateBadgeClass(process.state)}`}
+              className={cx(
+                styles.stateBadge,
+                getStateBadgeClass(process.state),
+              )}
             >
               {getStateLabel(process.state, t)}
             </span>
@@ -169,7 +357,7 @@ function ProcessCard({
           {!isTerminated && onKill && (
             <button
               type="button"
-              className="agent-kill-button"
+              className={styles.killButton}
               disabled={killing}
               onClick={(e) => {
                 // The whole card is a Link; keep a kill tap from navigating.
@@ -183,17 +371,22 @@ function ProcessCard({
             </button>
           )}
         </div>
-        <div className="agent-card-meta">
-          <span className="agent-card-project">{process.projectName}</span>
+        {/* `agent-card-meta` stays for the global ContextUsageIndicator
+            descendant rule in styles/index.css. */}
+        <div className={cx("agent-card-meta", styles.cardMeta)}>
+          <span className={styles.cardProject}>{process.projectName}</span>
           {process.pid !== undefined && (
-            <span className="agent-card-pid">
+            <span className={styles.cardPid}>
               {t("agentsPid" as never, { pid: process.pid })}
             </span>
           )}
           {!isTerminated && (
-            <span className="agent-card-uptime">
+            <span className={styles.cardUptime}>
               {formatUptime(process.startedAt)}
             </span>
+          )}
+          {!isTerminated && observation && (
+            <ProcessMetrics observation={observation} />
           )}
           {process.contextUsage && (
             <ContextUsageIndicator usage={process.contextUsage} />
@@ -204,31 +397,31 @@ function ProcessCard({
       {(process.permissionMode ||
         process.queueDepth > 0 ||
         process.terminationReason) && (
-        <div className="agent-card-details">
+        <div className={styles.cardDetails}>
           {process.permissionMode && (
-            <div className="agent-detail-row">
-              <span className="agent-detail-label">
+            <div className={styles.detailRow}>
+              <span className={styles.detailLabel}>
                 {t("agentsPermissionMode" as never)}
               </span>
-              <span className="agent-detail-value">
+              <span className={styles.detailValue}>
                 {process.permissionMode}
               </span>
             </div>
           )}
           {process.queueDepth > 0 && (
-            <div className="agent-detail-row">
-              <span className="agent-detail-label">
+            <div className={styles.detailRow}>
+              <span className={styles.detailLabel}>
                 {t("agentsMessagesQueued" as never)}
               </span>
-              <span className="agent-detail-value">{process.queueDepth}</span>
+              <span className={styles.detailValue}>{process.queueDepth}</span>
             </div>
           )}
           {process.terminationReason && (
-            <div className="agent-detail-row">
-              <span className="agent-detail-label">
+            <div className={styles.detailRow}>
+              <span className={styles.detailLabel}>
                 {t("agentsStopReason" as never)}
               </span>
-              <span className="agent-detail-value">
+              <span className={styles.detailValue}>
                 {process.terminationReason}
               </span>
             </div>
@@ -238,7 +431,7 @@ function ProcessCard({
 
       {providerChildren.length > 0 && (
         <div
-          className="agent-provider-children"
+          className={styles.providerChildren}
           role="list"
           aria-label={t(
             (providerChildren.length === 1
@@ -254,18 +447,16 @@ function ProcessCard({
               t("providerChildFallback" as never);
             return (
               <div
-                className="agent-provider-child"
+                className={styles.providerChild}
                 key={child.id}
                 role="listitem"
               >
-                <span className="agent-provider-child-branch" aria-hidden>
+                <span className={styles.providerChildBranch} aria-hidden>
                   ↳
                 </span>
-                <span className="agent-provider-child-title">
-                  {childTitle}
-                </span>
+                <span className={styles.providerChildTitle}>{childTitle}</span>
                 {child.agentType && child.agentType !== childTitle && (
-                  <span className="agent-provider-child-type">
+                  <span className={styles.providerChildType}>
                     {child.agentType}
                   </span>
                 )}
@@ -278,11 +469,61 @@ function ProcessCard({
   );
 }
 
+function ExternalProcessCard({
+  observation,
+}: {
+  observation: HostAgentProcessObservation;
+}) {
+  const { t } = useI18n();
+  const provider = getProviderLabel(observation.provider, t);
+  const touchSurfaceRef = useRef<HTMLElement>(null);
+  return (
+    <article
+      className={cx(styles.card, styles.cardExternal)}
+      ref={touchSurfaceRef}
+    >
+      <div className={styles.cardHeader}>
+        <div className={styles.cardTitle}>
+          <span className={styles.cardSessionTitle}>
+            {t("agentsExternalProcessTitle" as never, { provider })}
+          </span>
+          <span
+            className={cx(
+              styles.providerBadge,
+              getProviderBadgeClass(observation.provider),
+            )}
+          >
+            {provider}
+          </span>
+          <span className={cx(styles.stateBadge, styles.stateExternal)}>
+            {t("agentsOutsideYa" as never)}
+          </span>
+        </div>
+        {/* `agent-card-meta` stays for the global ContextUsageIndicator
+            descendant rule in styles/index.css. */}
+        <div className={cx("agent-card-meta", styles.cardMeta)}>
+          <span className={styles.cardPid}>
+            {t("agentsPid" as never, { pid: observation.pid })}
+          </span>
+          <span className={styles.cardUptime}>
+            {formatUptime(observation.startedAt)}
+          </span>
+          <ProcessMetrics
+            observation={observation}
+            touchSurfaceRef={touchSurfaceRef}
+          />
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export function AgentsPage() {
   const { t } = useI18n();
   const { processes, terminatedProcesses, loading, error, refetch } =
     useProcesses();
   const basePath = useRemoteBasePath();
+  const hostProcesses = useHostAgentProcesses();
 
   const { openSidebar, isWideScreen } = useNavigationLayout();
 
@@ -319,8 +560,7 @@ export function AgentsPage() {
             tone: "error",
             message: `${stopped} ${t("agentsKillResumeBlockFailed" as never, {
               message:
-                exemption.error ??
-                t("agentsKillResumeBlockUnknown" as never),
+                exemption.error ?? t("agentsKillResumeBlockUnknown" as never),
             })}`,
           });
         } else {
@@ -356,6 +596,24 @@ export function AgentsPage() {
     (p) => p.state === "in-turn" || p.state === "waiting-input",
   );
   const idleProcesses = processes.filter((p) => p.state === "idle");
+  const observationsBySupervisorProcessId = useMemo(
+    () =>
+      new Map(
+        hostProcesses.observations
+          .filter(
+            (
+              observation,
+            ): observation is HostAgentProcessObservation & {
+              supervisorProcessId: string;
+            } => observation.supervisorProcessId !== undefined,
+          )
+          .map((observation) => [observation.supervisorProcessId, observation]),
+      ),
+    [hostProcesses.observations],
+  );
+  const externalProcesses = hostProcesses.observations.filter(
+    (observation) => observation.supervision === "external",
+  );
 
   return (
     <MainContent isWideScreen={isWideScreen}>
@@ -376,7 +634,10 @@ export function AgentsPage() {
 
           {killFeedback && (
             <p
-              className={`agents-kill-feedback agents-kill-feedback-${killFeedback.tone}`}
+              className={cx(
+                styles.killFeedback,
+                KILL_FEEDBACK_TONE_CLASS[killFeedback.tone],
+              )}
               role={killFeedback.tone === "error" ? "alert" : "status"}
             >
               {killFeedback.message}
@@ -385,18 +646,21 @@ export function AgentsPage() {
 
           {!loading && !error && (
             <>
-              <section className="agents-section">
+              <section className={styles.section}>
                 <h2>{t("agentsSectionActive" as never)}</h2>
                 {activeProcesses.length === 0 ? (
-                  <p className="agents-empty">
+                  <p className={styles.empty}>
                     {t("agentsEmptyActive" as never)}
                   </p>
                 ) : (
-                  <div className="agents-list">
+                  <div className={styles.list}>
                     {activeProcesses.map((process) => (
                       <ProcessCard
                         key={process.id}
                         process={process}
+                        observation={observationsBySupervisorProcessId.get(
+                          process.id,
+                        )}
                         basePath={basePath}
                         onKill={handleKill}
                         killing={killingIds.has(process.id)}
@@ -406,18 +670,53 @@ export function AgentsPage() {
                 )}
               </section>
 
-              <section className="agents-section">
+              {hostProcesses.enabled && (
+                <section className={styles.section}>
+                  <h2>{t("agentsSectionExternal" as never)}</h2>
+                  {hostProcesses.loading ? (
+                    <p className={styles.empty}>
+                      {t("agentsExternalLoading" as never)}
+                    </p>
+                  ) : hostProcesses.supported === false ? (
+                    <p className={styles.empty}>
+                      {t("agentsExternalUnsupported" as never)}
+                    </p>
+                  ) : hostProcesses.error ? (
+                    <p className={styles.empty}>
+                      {t("agentsExternalUnavailable" as never)}
+                    </p>
+                  ) : externalProcesses.length === 0 ? (
+                    <p className={styles.empty}>
+                      {t("agentsEmptyExternal" as never)}
+                    </p>
+                  ) : (
+                    <div className={styles.list}>
+                      {externalProcesses.map((observation) => (
+                        <ExternalProcessCard
+                          key={observation.observationId}
+                          observation={observation}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              <section className={styles.section}>
                 <h2>{t("agentsSectionIdle" as never)}</h2>
                 {idleProcesses.length === 0 ? (
-                  <p className="agents-empty">
+                  <p className={styles.empty}>
                     {t("agentsEmptyIdle" as never)}
                   </p>
                 ) : (
-                  <div className="agents-list">
+                  <div className={styles.list}>
                     {idleProcesses.map((process) => (
                       <ProcessCard
                         key={process.id}
                         process={process}
+                        observation={observationsBySupervisorProcessId.get(
+                          process.id,
+                        )}
                         basePath={basePath}
                         onKill={handleKill}
                         killing={killingIds.has(process.id)}
@@ -427,14 +726,14 @@ export function AgentsPage() {
                 )}
               </section>
 
-              <section className="agents-section">
+              <section className={styles.section}>
                 <h2>{t("agentsSectionStopped" as never)}</h2>
                 {terminatedProcesses.length === 0 ? (
-                  <p className="agents-empty">
+                  <p className={styles.empty}>
                     {t("agentsEmptyStopped" as never)}
                   </p>
                 ) : (
-                  <div className="agents-list">
+                  <div className={styles.list}>
                     {terminatedProcesses.map((process) => (
                       <ProcessCard
                         key={process.id}

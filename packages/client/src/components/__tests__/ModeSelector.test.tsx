@@ -10,8 +10,8 @@ const translations: Record<string, string> = {
   modeBypassPermissionsLabel: "Bypass",
   modeClickToSelect: "Click to select mode",
   modeDefaultLabel: "Ask",
-  modeNextTurnBadge: "Next turn",
   modeNextTurnHint: "Applies to the next user turn",
+  modePendingSuffix: "(pending)",
   modePlanLabel: "Plan",
   modeSelectLabel: "Select mode",
 };
@@ -28,13 +28,14 @@ describe("ModeSelector", () => {
     vi.restoreAllMocks();
   });
 
-  it("labels busy mode changes as next-turn changes", () => {
+  it("keeps the busy selector compact and explains timing when opened", () => {
     render(
       <ModeSelector mode="plan" onModeChange={vi.fn()} changesApplyNextTurn />,
     );
 
     expect(screen.getByText("Plan")).toBeTruthy();
-    expect(screen.getByText("Next turn")).toBeTruthy();
+    expect(screen.queryByText("Next turn")).toBeNull();
+    expect(screen.queryByText("Applies to the next user turn")).toBeNull();
     expect(
       screen.getByTitle("Click to select mode - Applies to the next user turn"),
     ).toBeTruthy();
@@ -50,6 +51,24 @@ describe("ModeSelector", () => {
     expect(screen.getByText("Ask")).toBeTruthy();
     expect(screen.queryByText("Next turn")).toBeNull();
     expect(screen.getByTitle("Click to select mode")).toBeTruthy();
+  });
+
+  it("marks only a selected mode that is still pending", () => {
+    render(
+      <ModeSelector
+        mode="bypassPermissions"
+        onModeChange={vi.fn()}
+        modeChangePending
+      />,
+    );
+
+    expect(screen.getByText("Bypass (pending)")).toBeTruthy();
+    expect(
+      screen.getByTitle("Click to select mode - Applies to the next user turn"),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Bypass \(pending\)/ }));
+    expect(screen.getByText("Applies to the next user turn")).toBeTruthy();
   });
 
   it("renders supplied auto mode choices", () => {

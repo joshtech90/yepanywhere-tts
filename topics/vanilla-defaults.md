@@ -36,6 +36,21 @@ novelty must never be the out-of-the-box experience.
   apart from explicitly invoked transforms (emulated slash-command
   expansion, attachment references): "when I send a message I want my
   exact message to be sent", with no YA-added framing or annotations.
+- **Established-convention affordances, invisible until invoked, may
+  ship always-on.** A behavior a first-party-trained user already
+  recognizes from common harnesses — a shell-escape command prefix such
+  as `!!`, echoing the Claude Code TUI's `!` bash mode — is not
+  YA-*novel*, so the novelty test that drives default-off does not fire.
+  It may ship always-on when all three hold: (1) it mirrors an
+  established cross-harness convention, (2) it manifests only when the
+  user deliberately types its trigger, and (3) it adds no default-visible
+  UI surface. This is the same "explicitly invoked transform" logic
+  carved out above (slash-command expansion), applied to a command prefix
+  that *diverts* rather than annotates: a `!!` line runs locally and is
+  never sent to the provider, so the verbatim-to-provider invariant is
+  untouched. Any *discoverable* surface such an affordance introduces (a
+  sidebar entry, a toolbar section) is itself YA-novel and still ships
+  default-off.
 - **Believed-useful is not proven-useful.** A plausible, even
   well-argued benefit does not earn default-on; it earns an option.
   Promotion to default-on is a product decision that should state why
@@ -48,12 +63,69 @@ novelty must never be the out-of-the-box experience.
 
 ## Known Exceptions
 
+**`!!` bang commands** ([bang-commands](bang-commands.md); recall drawer
+in [composer-recall-drawer](composer-recall-drawer.md)) run a local shell
+command from the composer instead of sending the line to the provider.
+Under the established-convention carve-out above — shell-escape is
+familiar (Claude Code `!` bash mode), the `!!` prefix is typed
+deliberately, and provider-bound text is untouched — bang *execution* and
+the Ctrl+Up recall drawer ship always-on; only the discoverable "!!
+Commands" sidebar section stays default-off. Authorized by graehl
+(2026-07-25) as an explicit amendment reversing an earlier default-off
+decision, and canonized here (and in the commit) for kzahel's review
+given the default-disabled preference ([kzahel-disabled](kzahel-disabled.md)).
+
 [prompt-cache-keepalive](prompt-cache-keepalive.md) is a deliberate
 default-on exception for active-enough live clients, but only where a provider
 exposes a no-context-move refresh path. The default must not create visible
 session rows, future-visible provider context, or autonomous server upkeep for
 sessions with no current client viewer; stronger hidden-message keepalive modes
 remain explicit per-provider choices.
+
+[conversation-view](conversation-view.md) and its Session Toolbar control ship
+default-on. The condensed projection keeps user/agent conversation, media, and
+important failures visible while preserving one-click access to every routine
+activity in original order. This was approved by graehl on 2026-07-28,
+relaying Kyle's chat approval, because the resulting default matches the
+condensed conversation presentation users already encounter in the Codex and
+Claude harnesses. Existing browser-local mode and toolbar-presence choices
+remain authoritative.
+
+[media-rendering-and-routing](media-rendering-and-routing.md) compact
+multi-image galleries ship default-on as a browser-local Appearance preference.
+For an assistant turn with at least two eligible images, the preference enables
+one turn gallery while preserving every original text link and full-size target.
+**Expand Inline Media by Default** controls only whether that gallery starts
+open. When inline expansion is off, a compact **Gallery** action beside the
+final image link makes the capability available without expanding content. It
+is a stateful **+ Gallery** / **− Gallery** toggle, while each image's own
+`+` / `−` toggles the same gallery centered on that image. Image links retain
+their conventional direct-view behavior without changing inline gallery state.
+Disabling the gallery preference removes the action and restores independent
+inline previews. Authorized by graehl on 2026-07-29 because the default bounds
+an already-requested automatic presentation, adds only a contextual action on
+multi-image turns otherwise, and avoids burdening new users with another
+preference.
+
+[agents-process-observability](agents-process-observability.md) ships
+default-on in the existing Agents view. Sampling is request-driven and occurs
+only while that view is open and visible; a Performance setting disables it,
+and a user can also avoid the work simply by not opening Agents. The browser
+receives only normalized provider identity, PID, start/sample times, recent
+CPU, and RSS/process-tree counts—never command lines, environment, executable
+paths, or working directories. Authorized by graehl on 2026-07-28 as an
+explicit product decision: Agents is already the process-inventory surface,
+and standard process metrics plus independently launched agent processes make
+that purpose useful without changing session or provider behavior elsewhere.
+
+[mic-button-speech-ui](mic-button-speech-ui.md) treats conservative
+mid-sentence capitalization smoothing as built-in speech-input behavior, with
+no preference. Some recognizers title-case every finalized phrase after a
+pause; YA lowercases only an allowlist of ordinary continuation words on a
+second or later chunk in the same mic transaction. Sentence starts, provider
+revisions, acronyms, single letters, and unlisted title-case words remain
+provider-verbatim. Authorized by Kyle on 2026-07-30 as an explicit product
+decision after observing the pause-boundary behavior interactively.
 
 ## Worked instances: queued-turn delivery
 

@@ -27,6 +27,7 @@ import {
   type ComposerToolbarOverflowLayoutSignatureInput,
 } from "../../hooks/useMessageInputToolbarLayout";
 import { SESSION_ISEARCH_GUIDE_EVENT } from "../../lib/sessionIsearchGuide";
+import { createClientSlashCommand } from "../../lib/slashCommands";
 import { UI_KEYS } from "../../lib/storageKeys";
 import {
   YA_GROK_BATCH_SPEECH_METHOD,
@@ -185,6 +186,30 @@ vi.mock("../../hooks/useModelSettings", () => ({
   }),
 }));
 
+// Toolbar presence is mocked all-visible so control-gating never masks an
+// unrelated failure. Tests that care about a specific control's gate flip it
+// on this mutable map and restore it in a finally/afterEach.
+const toolbarVisibilityOverrides = vi.hoisted(() => ({
+  value: {
+    modeSelector: true,
+    steerNow: true,
+    attachments: true,
+    slashMenu: true,
+    thinkingToggle: true,
+    renderMode: true,
+    microphone: true,
+    waveform: true,
+    shortcutsHelp: true,
+    contextUsage: true,
+    btw: true,
+    nudge: true,
+    sessionStatus: true,
+    projectQueue: true,
+    projectQueueNewSessionShortcut: true,
+    composerRecall: true,
+  },
+}));
+
 vi.mock("../../hooks/useSessionToolbarPresence", async () => {
   const actual = await vi.importActual<
     typeof import("../../hooks/useSessionToolbarPresence")
@@ -193,23 +218,7 @@ vi.mock("../../hooks/useSessionToolbarPresence", async () => {
     ...actual,
     useSessionToolbarPresence: () => ({
       presence: actual.DEFAULT_SESSION_TOOLBAR_PRIORITY,
-      visibility: {
-        modeSelector: true,
-        steerNow: true,
-        attachments: true,
-        slashMenu: true,
-        thinkingToggle: true,
-        renderMode: true,
-        microphone: true,
-        waveform: true,
-        shortcutsHelp: true,
-        contextUsage: true,
-        btw: true,
-        nudge: true,
-        sessionStatus: true,
-        projectQueue: true,
-        projectQueueNewSessionShortcut: true,
-      },
+      visibility: toolbarVisibilityOverrides.value,
       priority: actual.DEFAULT_SESSION_TOOLBAR_PRIORITY,
       setControlPresence: vi.fn(),
       resetPresence: vi.fn(),
@@ -270,6 +279,9 @@ vi.mock("../../i18n", () => ({
           toolbarSteerNowTooltip:
             "Steer now interrupts in-flight generation without ending the turn.",
           toolbarOverflowMenu: "More toolbar controls",
+          skillInvocationRecognized: "Recognized skill:",
+          skillInvocationUnrecognized: "Skill not found:",
+          skillInvocationStillSent: "Text will still be sent.",
           toolbarThinkingTitle: `Click to choose thinking mode. Current: ${params?.current ?? ""}`,
           toolbarThinkingAppliesNextTurn: "Applies next turn",
           newSessionThinkingOff: "Thinking off",
@@ -575,6 +587,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   slashMenu: false,
   thinkingToggle: true,
   renderMode: false,
+  conversationView: false,
   microphone: false,
   waveform: false,
   shortcutsHelp: false,
@@ -584,6 +597,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   sessionStatus: false,
   projectQueue: false,
   projectQueueNewSessionShortcut: false,
+  composerRecall: false,
 };
 
 const toolbarT = ((key: string, params?: Record<string, string>) => {
@@ -1157,6 +1171,278 @@ describe("MessageInput", () => {
     expect(onRecallLastSubmission).toHaveBeenCalledTimes(2);
   });
 
+  describe("composer recall drawer", () => {
+    const turnRecall = {
+      entries: [
+        {
+          id: "turn-deploy",
+          text: "deploy the app",
+          preview: "deploy the app",
+        },
+        {
+          id: "turn-debug",
+          text: "debug the crash",
+          preview: "debug the crash",
+        },
+        { id: "turn-run", text: "run the tests", preview: "run the tests" },
+      ],
+    };
+
+    function recallItems() {
+      return Array.from(
+        document.querySelectorAll(".composer-recall-menu .slash-command-item"),
+      );
+    }
+
+    function activeRecallItem() {
+      return document.querySelector(
+        ".composer-recall-menu .slash-command-item.active",
+      );
+    }
+
+    function recallGoToButtons() {
+      return Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".composer-recall-menu .composer-recall-goto",
+        ),
+      );
+    }
+
+    it("opens on Ctrl+ArrowUp and lists prior user turns newest-first", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+
+      expect(recallItems().map((item) => item.textContent)).toEqual([
+        "deploy the app",
+        "debug the crash",
+        "run the tests",
+      ]);
+      expect(activeRecallItem()?.textContent).toBe("deploy the app");
+    });
+
+    it("prefix-matches the current draft and drops non-matches", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+      fireEvent.change(textarea, { target: { value: "de" } });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+
+      expect(recallItems().map((item) => item.textContent)).toEqual([
+        "deploy the app",
+        "debug the crash",
+      ]);
+    });
+
+    it("does not open when nothing prefix-matches", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+      fireEvent.change(textarea, { target: { value: "zzz" } });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("moves the selection with Arrow keys and drafts on Enter", () => {
+      const textarea = renderMessageInput(vi.fn(), {
+        turnRecall,
+      }) as HTMLTextAreaElement;
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      fireEvent.keyDown(textarea, { key: "ArrowDown" });
+      expect(activeRecallItem()?.textContent).toBe("debug the crash");
+
+      fireEvent.keyDown(textarea, { key: "Enter" });
+      expect(textarea.value).toBe("debug the crash");
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("drafts the clicked entry", () => {
+      const textarea = renderMessageInput(vi.fn(), {
+        turnRecall,
+      }) as HTMLTextAreaElement;
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      const runItem = recallItems().find(
+        (item) => item.textContent === "run the tests",
+      ) as HTMLElement;
+      fireEvent.click(runItem);
+
+      expect(textarea.value).toBe("run the tests");
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("closes and keeps the draft on Escape", () => {
+      const textarea = renderMessageInput(vi.fn(), {
+        turnRecall,
+      }) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "de" } });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+
+      fireEvent.keyDown(textarea, { key: "Escape" });
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(textarea.value).toBe("de");
+    });
+
+    it("dismisses on any other key so typing continues", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+
+      const handled = fireEvent.keyDown(textarea, { key: "a" });
+      // Not consumed: the keystroke is allowed to reach the composer.
+      expect(handled).toBe(true);
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("restores focus loss by closing the drawer", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(document.querySelector(".composer-recall-menu")).not.toBeNull();
+
+      fireEvent.blur(textarea);
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("leaves plain ArrowUp last-submission recall intact", () => {
+      const onRecall = vi.fn(() => true);
+      const textarea = renderMessageInput(onRecall, { turnRecall });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp" });
+
+      expect(onRecall).toHaveBeenCalledTimes(1);
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+    });
+
+    it("omits the per-row go-to control when onGoToTurn is absent", () => {
+      const textarea = renderMessageInput(vi.fn(), { turnRecall });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+
+      expect(recallItems()).toHaveLength(3);
+      expect(recallGoToButtons()).toHaveLength(0);
+    });
+
+    it("go-to control navigates to the turn id, closing the drawer without changing the draft", () => {
+      const onGoToTurn = vi.fn();
+      const textarea = renderMessageInput(vi.fn(), {
+        turnRecall: { ...turnRecall, onGoToTurn },
+      }) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "de" } });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      // "de" prefix-matches deploy + debug; move selection to the second.
+      fireEvent.keyDown(textarea, { key: "ArrowDown" });
+      expect(activeRecallItem()?.textContent).toBe("debug the crash");
+
+      const gotoButtons = recallGoToButtons();
+      expect(gotoButtons).toHaveLength(2);
+      fireEvent.click(gotoButtons[1] as HTMLButtonElement);
+
+      // Navigation only: fires the render id, closes the drawer, and leaves the
+      // draft untouched (no recall, and no Esc-style restore).
+      expect(onGoToTurn).toHaveBeenCalledTimes(1);
+      expect(onGoToTurn).toHaveBeenCalledWith("turn-debug");
+      expect(document.querySelector(".composer-recall-menu")).toBeNull();
+      expect(textarea.value).toBe("de");
+    });
+
+    it("opens the drawer from the mobile keyboard recall button", () => {
+      const viewport = installMobileKeyboardViewport();
+      try {
+        const textarea = renderMessageInput(vi.fn(), { turnRecall });
+        fireEvent.focus(textarea);
+        act(() => viewport.setHeight(480));
+        // A prefix draft makes canSubmit true so the compact action row shows.
+        fireEvent.change(textarea, { target: { value: "de" } });
+
+        const openButton = document.querySelector(
+          ".message-input-keyboard-compact .composer-recall-open",
+        ) as HTMLButtonElement | null;
+        expect(openButton).toBeTruthy();
+        expect(document.querySelector(".composer-recall-menu")).toBeNull();
+
+        fireEvent.pointerDown(openButton as HTMLButtonElement);
+        fireEvent.click(openButton as HTMLButtonElement);
+
+        expect(recallItems().map((item) => item.textContent)).toEqual([
+          "deploy the app",
+          "debug the crash",
+        ]);
+      } finally {
+        viewport.restore();
+      }
+    });
+
+    it("hides the mobile keyboard recall button when there are no entries", () => {
+      const viewport = installMobileKeyboardViewport();
+      try {
+        const textarea = renderMessageInput(vi.fn(), {
+          turnRecall: { entries: [] },
+        });
+        fireEvent.focus(textarea);
+        act(() => viewport.setHeight(480));
+        fireEvent.change(textarea, { target: { value: "de" } });
+
+        expect(
+          document.querySelector(
+            ".message-input-keyboard-compact .composer-recall-open",
+          ),
+        ).toBeNull();
+      } finally {
+        viewport.restore();
+      }
+    });
+
+    it("hides the mobile keyboard recall button when the toolbar control is hidden", () => {
+      const viewport = installMobileKeyboardViewport();
+      const visibility = toolbarVisibilityOverrides.value;
+      toolbarVisibilityOverrides.value = {
+        ...visibility,
+        composerRecall: false,
+      };
+      try {
+        const textarea = renderMessageInput(vi.fn(), { turnRecall });
+        fireEvent.focus(textarea);
+        act(() => viewport.setHeight(480));
+        fireEvent.change(textarea, { target: { value: "de" } });
+
+        expect(
+          document.querySelector(
+            ".message-input-keyboard-compact .composer-recall-open",
+          ),
+        ).toBeNull();
+      } finally {
+        toolbarVisibilityOverrides.value = visibility;
+        viewport.restore();
+      }
+    });
+
+    it("still opens the recall drawer with Ctrl+Up when the button is hidden", () => {
+      const visibility = toolbarVisibilityOverrides.value;
+      toolbarVisibilityOverrides.value = {
+        ...visibility,
+        composerRecall: false,
+      };
+      try {
+        const textarea = renderMessageInput(vi.fn(), { turnRecall });
+        fireEvent.change(textarea, { target: { value: "de" } });
+
+        fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+
+        expect(recallItems().map((item) => item.textContent)).toEqual([
+          "deploy the app",
+          "debug the crash",
+        ]);
+      } finally {
+        toolbarVisibilityOverrides.value = visibility;
+      }
+    });
+  });
+
   it("opens explicit thinking choices from the toolbar button", () => {
     const onSetMode = vi.fn();
     renderToolbarView({
@@ -1372,22 +1658,26 @@ describe("MessageInput", () => {
     });
   });
 
-  it("shows the Transcribing label inline at the cursor and cancels on Escape", async () => {
+  it("keeps the real draft and caret mode while transcribing; Escape cancels", async () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
-
-    expect(document.querySelector(".speech-processing-inline")).toBeNull();
+    fireEvent.change(textarea, { target: { value: "draft" } });
+    act(() => {
+      textarea.focus();
+      textarea.setSelectionRange(5, 5);
+    });
 
     // Enter the batch processing wait (no interim), e.g. parakeet first-load.
     act(() => {
       voicePropsState.current?.onPendingSpeechChange?.("transcribing");
     });
 
-    const badge = await waitFor(() => {
-      const el = document.querySelector(".speech-processing-inline");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
     });
-    expect(badge.textContent).toContain("Transcribing");
+    expect(
+      document.querySelector(".speech-draft-field")?.classList,
+    ).not.toContain("has-interim");
+    expect(textarea.selectionStart).toBe(5);
 
     // The field stays editable while transcription is pending.
     expect(textarea.disabled).toBe(false);
@@ -1396,87 +1686,71 @@ describe("MessageInput", () => {
     });
     expect(textarea.value).toBe("typed while transcribing");
 
-    // Escape is the deliberate cancel path now (no chip ✕; backspace can't
-    // reach it). Cancel leaves the user's typed text intact.
+    // Escape remains the deliberate cancel path and leaves typed text intact.
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(document.querySelector(".speech-processing-inline")).toBeNull();
-    });
     expect(textarea.value).toBe("typed while transcribing");
   });
 
-  it("previews interim inline, then shows the Finalizing label inline; Escape cancels", async () => {
+  it("previews interim inline, then restores the real field while finalizing", async () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
 
-    // Active streaming: interim text previews inline (green highlight).
+    // Active streaming: provisional text previews inline with a mirror caret
+    // immediately after the visible dictated phrase.
     act(() => {
       voicePropsState.current?.onInterimTranscript?.("live words");
     });
-    await waitFor(() => {
-      expect(document.querySelector(".speech-interim-inline")).not.toBeNull();
-    });
-    expect(document.querySelector(".speech-processing-inline")).toBeNull();
-
-    // Flush (stop): the finalize wait shows its label inline at the same place,
-    // unified with the batch transcribe wait; Escape cancels.
-    act(() => {
-      voicePropsState.current?.onInterimTranscript?.("");
-      voicePropsState.current?.onPendingSpeechChange?.("finalizing");
-    });
-    const badge = await waitFor(() => {
-      const el = document.querySelector(".speech-processing-inline");
+    const interim = await waitFor(() => {
+      const el = document.querySelector(".speech-interim-inline");
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(badge.textContent).toContain("Finalizing");
+    expect(interim.nextElementSibling?.classList).toContain(
+      "speech-interim-caret",
+    );
+    // Flush (stop): provisional text disappears and the textarea returns to
+    // native rendering/caret behavior. Finalizing status belongs to the mic.
+    act(() => {
+      screen.getAllByRole("button", { name: "voice" })[0]?.focus();
+      voicePropsState.current?.onListeningStop?.();
+      voicePropsState.current?.onInterimTranscript?.("");
+      voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
+    });
+    expect(
+      document.querySelector(".speech-draft-field")?.classList,
+    ).not.toContain("has-interim");
+    expect(document.activeElement).toBe(textarea);
 
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the Listening label inline during active capture", async () => {
+  it("does not insert a Listening label into the draft", async () => {
     renderMessageInput();
 
-    // Active live capture previews the pending state inline at the insertion
-    // point too, not as a chip below the composer.
     act(() => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
-    const badge = await waitFor(() => {
-      const el = document.querySelector(".speech-processing-inline");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(badge.textContent).toContain("Listening");
-  });
 
-  it("cancels the inline pending tag via its ✕ button", async () => {
-    renderMessageInput();
-
-    act(() => {
-      voicePropsState.current?.onPendingSpeechChange?.("transcribing");
-    });
-    const badge = await waitFor(() => {
-      const el = document.querySelector(".speech-processing-inline");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    fireEvent.click(
-      badge.querySelector(".speech-tag-cancel") as HTMLButtonElement,
+    await waitFor(() =>
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull(),
     );
-    expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(document.querySelector(".speech-processing-inline")).toBeNull();
-    });
   });
 
-  it("renders one tag per overlapping pending target, ordinal on the 2nd", async () => {
+  it("never duplicates pending statuses inside the draft", async () => {
     const textarea = renderMessageInput() as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "draft" } });
+    act(() => {
+      textarea.focus();
+      textarea.setSelectionRange(5, 5);
+    });
 
-    // Two recordings started before either result lands: each gets its own tag.
+    // Two overlapping recordings used to create "Transcribing… Transcribing…
+    // (2)" in the mirror and hide the native caret.
     act(() => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("transcribing");
@@ -1485,14 +1759,13 @@ describe("MessageInput", () => {
     });
 
     await waitFor(() => {
-      expect(
-        document.querySelectorAll(".speech-processing-inline").length,
-      ).toBe(2);
+      expect(document.querySelector(".speech-draft-mirror")).toBeNull();
     });
-    // Only the 2nd (later) tag carries a "(N)" ordinal.
-    const ordinals = document.querySelectorAll(".speech-tag-ordinal");
-    expect(ordinals.length).toBe(1);
-    expect(ordinals[0]?.textContent).toContain("2");
+    expect(
+      document.querySelector(".speech-draft-field")?.classList,
+    ).not.toContain("has-interim");
+    expect(textarea.value).toBe("draft");
+    expect(textarea.selectionStart).toBe(5);
   });
 
   it("retires an older failed target while a newer recording stays active", async () => {
@@ -1509,60 +1782,45 @@ describe("MessageInput", () => {
       voicePropsState.current?.onPendingSpeechChange?.("listening");
     });
 
-    await waitFor(() => {
-      expect(
-        document.querySelectorAll(".speech-processing-inline"),
-      ).toHaveLength(2);
-    });
-
     act(() => {
       voicePropsState.current?.onTranscriptionSettled?.({
         speechTargetId: firstTargetId,
         status: "error",
       });
+      voicePropsState.current?.onInterimTranscript?.("new recording");
     });
 
-    await waitFor(() => {
-      expect(
-        document.querySelectorAll(".speech-processing-inline"),
-      ).toHaveLength(1);
+    const interim = await waitFor(() => {
+      const el = document.querySelector(".speech-interim-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
     });
-    expect(document.querySelector(".speech-tag-ordinal")).toBeNull();
-    expect(document.querySelector(".speech-tag-cancel")).not.toBeNull();
+    expect(interim.textContent).toBe("new recording");
   });
 
-  it("clears a completed recording's tag; a later activation does not revive it", async () => {
+  it("does not revive a completed recording in a later provisional preview", async () => {
     renderMessageInput();
 
     act(() => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("transcribing");
     });
-    await waitFor(() => {
-      expect(
-        document.querySelectorAll(".speech-processing-inline").length,
-      ).toBe(1);
-    });
-
-    // Recording completes (result committed, pending ends) -> tag clears.
     act(() => {
       voicePropsState.current?.onPendingSpeechChange?.(null);
     });
-    await waitFor(() => {
-      expect(document.querySelector(".speech-processing-inline")).toBeNull();
-    });
 
-    // A second activation shows exactly one tag, not a revived stack.
     act(() => {
       voicePropsState.current?.onListeningStart?.();
       voicePropsState.current?.onPendingSpeechChange?.("listening");
+      voicePropsState.current?.onInterimTranscript?.("fresh words");
     });
-    await waitFor(() => {
-      expect(
-        document.querySelectorAll(".speech-processing-inline").length,
-      ).toBe(1);
+
+    const interim = await waitFor(() => {
+      const el = document.querySelector(".speech-interim-inline");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
     });
-    expect(document.querySelector(".speech-tag-ordinal")).toBeNull();
+    expect(interim.textContent).toBe("fresh words");
   });
 
   it("does not grace-delay the selection that started the mic transaction", () => {
@@ -2113,7 +2371,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput(
       vi.fn(() => true),
       {
-        slashCommands: ["compact", "goal"],
+        slashCommands: ["compact", "goal"].map(createClientSlashCommand),
         onCustomCommand: vi.fn(() => false),
       },
     );
@@ -2128,7 +2386,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput(
       vi.fn(() => true),
       {
-        slashCommands: ["compact", "goal"],
+        slashCommands: ["compact", "goal"].map(createClientSlashCommand),
         onCustomCommand: vi.fn(() => false),
       },
     ) as HTMLTextAreaElement;
@@ -2143,7 +2401,7 @@ describe("MessageInput", () => {
     const textarea = renderMessageInput(
       vi.fn(() => true),
       {
-        slashCommands: ["clear", "compact"],
+        slashCommands: ["clear", "compact"].map(createClientSlashCommand),
         onCustomCommand: vi.fn(() => false),
       },
     ) as HTMLTextAreaElement;
@@ -2160,7 +2418,7 @@ describe("MessageInput", () => {
       vi.fn(() => true),
       {
         onSend,
-        slashCommands: ["clear"],
+        slashCommands: ["clear"].map(createClientSlashCommand),
         onCustomCommand: vi.fn(() => false),
       },
     ) as HTMLTextAreaElement;
@@ -2172,6 +2430,118 @@ describe("MessageInput", () => {
 
     expectSubmission(onSend, "/clear", "direct");
     restoreMatchMedia();
+  });
+
+  it("completes a provider-canonical skill token inside ordinary text", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: [
+          {
+            name: "doubt",
+            description: "Verify independently",
+            invocation: {
+              kind: "skill",
+              prefix: "$",
+              inventoryState: "current",
+            },
+          },
+        ],
+        onCustomCommand: vi.fn(() => false),
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "please /dou" } });
+
+    expect(screen.getByRole("menuitem", { name: "$doubt" })).toBeTruthy();
+    expect(screen.queryByText("Skill not found:")).toBeNull();
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(textarea.value).toBe("please $doubt ");
+  });
+
+  it("shows resolved and soft-unrecognized skill feedback", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: [
+          {
+            name: "doubt",
+            description: "Verify independently",
+            invocation: {
+              kind: "skill",
+              prefix: "$",
+              inventoryState: "current",
+            },
+          },
+        ],
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "use /doubt" } });
+    expect(screen.getByText("Recognized skill:")).toBeTruthy();
+    expect(screen.getByText("$doubt")).toBeTruthy();
+
+    fireEvent.change(textarea, { target: { value: "use $missing" } });
+    expect(screen.getByText("Skill not found:")).toBeTruthy();
+    expect(screen.getByText("$missing")).toBeTruthy();
+    expect(screen.getByText("Text will still be sent.")).toBeTruthy();
+  });
+
+  it("does not infer a missing skill from stale inventory", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: [
+          {
+            name: "doubt",
+            description: "Verify independently",
+            invocation: {
+              kind: "skill",
+              prefix: "$",
+              inventoryState: "stale",
+            },
+          },
+        ],
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "use $doubt" } });
+    expect(screen.queryByText("Recognized skill:")).toBeNull();
+
+    fireEvent.change(textarea, { target: { value: "use $missing" } });
+    expect(screen.queryByText("Skill not found:")).toBeNull();
+  });
+
+  it("shows one position-appropriate completion for a native/skill collision", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: [
+          {
+            name: "goal",
+            description: "Set a native goal",
+            invocation: { kind: "native", prefix: "/" },
+          },
+          {
+            name: "goal",
+            description: "Invoke the goal skill",
+            invocation: {
+              kind: "skill",
+              prefix: "$",
+              inventoryState: "current",
+            },
+          },
+        ],
+      },
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: "/go" } });
+    expect(screen.getByRole("menuitem", { name: "/goal" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "$goal" })).toBeNull();
+
+    fireEvent.change(textarea, { target: { value: "please /go" } });
+    expect(screen.getByRole("menuitem", { name: "$goal" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "/goal" })).toBeNull();
   });
 
   it("shows the isearch key guide on shortcut help hover while search is active", async () => {
@@ -3870,6 +4240,7 @@ describe("MessageInput", () => {
       slashMenu: "mid",
       thinkingToggle: "mid",
       renderMode: "last",
+      conversationView: "last",
       nudge: "last",
       sessionStatus: "pin",
       shortcutsHelp: "last",
@@ -4082,6 +4453,16 @@ describe("MessageInput bang commands", () => {
     vi.restoreAllMocks();
   });
 
+  // Completion fetch result shape: token candidates plus the global
+  // command-history matches the client ranks ahead of them.
+  const completionsResult = (
+    completions: string[],
+    history: string[] = [],
+  ) => ({
+    completions,
+    history,
+  });
+
   function bangSupport(
     overrides: Partial<{
       onRun: ReturnType<typeof vi.fn>;
@@ -4092,7 +4473,7 @@ describe("MessageInput bang commands", () => {
     return {
       onRun: overrides.onRun ?? vi.fn(),
       fetchCompletions:
-        overrides.fetchCompletions ?? vi.fn(async () => [] as string[]),
+        overrides.fetchCompletions ?? vi.fn(async () => completionsResult([])),
       history: overrides.history ?? [],
     };
   }
@@ -4145,7 +4526,9 @@ describe("MessageInput bang commands", () => {
   });
 
   it("fetches typing-triggered completions with token, kind, and line", async () => {
-    const fetchCompletions = vi.fn(async () => ["gitalike", "gizmo"]);
+    const fetchCompletions = vi.fn(async () =>
+      completionsResult(["gitalike", "gizmo"]),
+    );
     const support = bangSupport({ fetchCompletions });
     const textarea = renderMessageInput(undefined, {
       bangSupport: support,
@@ -4160,7 +4543,7 @@ describe("MessageInput bang commands", () => {
   });
 
   it("applies a single Tab completion immediately", async () => {
-    const fetchCompletions = vi.fn(async () => ["gitalike"]);
+    const fetchCompletions = vi.fn(async () => completionsResult(["gitalike"]));
     const textarea = renderMessageInput(undefined, {
       bangSupport: bangSupport({ fetchCompletions }),
     });
@@ -4172,10 +4555,13 @@ describe("MessageInput bang commands", () => {
   });
 
   it("discards a Tab completion after the draft changes", async () => {
-    let resolveCompletions: (completions: string[]) => void = () => {};
+    let resolveCompletions: (result: {
+      completions: string[];
+      history: string[];
+    }) => void = () => {};
     const fetchCompletions = vi.fn(
       () =>
-        new Promise<string[]>((resolve) => {
+        new Promise<{ completions: string[]; history: string[] }>((resolve) => {
           resolveCompletions = resolve;
         }),
     );
@@ -4185,7 +4571,7 @@ describe("MessageInput bang commands", () => {
     fireEvent.change(textarea, { target: { value: "!!gi" } });
     fireEvent.keyDown(textarea, { key: "Tab" });
     fireEvent.change(textarea, { target: { value: "!!git status" } });
-    resolveCompletions(["gitalike"]);
+    resolveCompletions(completionsResult(["gitalike"]));
 
     await waitFor(() => expect(fetchCompletions).toHaveBeenCalled());
     expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
@@ -4201,5 +4587,108 @@ describe("MessageInput bang commands", () => {
     expect((textarea as HTMLTextAreaElement).value).toBe("!!ls");
     fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
     expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
+  });
+
+  const bangMenuLabels = () =>
+    Array.from(
+      document.querySelectorAll(".bang-completion-menu .slash-command-item"),
+    ).map((el) => el.textContent);
+
+  it("ranks global history above token candidates in the menu", async () => {
+    const fetchCompletions = vi.fn(async () =>
+      completionsResult(["gitalike"], ["git status", "git log"]),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!git" } });
+    await waitFor(() =>
+      expect(bangMenuLabels()).toEqual(["git status", "git log", "gitalike"]),
+    );
+    // History rows carry the distinguishing class; candidates do not.
+    const items = document.querySelectorAll(
+      ".bang-completion-menu .slash-command-item",
+    );
+    expect(items[0]?.classList.contains("bang-history-item")).toBe(true);
+    expect(items[2]?.classList.contains("bang-history-item")).toBe(false);
+  });
+
+  it("applies a highlighted history row as the whole !! body", async () => {
+    const fetchCompletions = vi.fn(async () =>
+      completionsResult(["gitalike"], ["git status", "git log"]),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!git" } });
+    await waitFor(() =>
+      expect(bangMenuLabels()).toEqual(["git status", "git log", "gitalike"]),
+    );
+    // Tab accepts the highlighted (first = history) row, replacing the body.
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!git status");
+    // The menu closes after a whole-line history apply.
+    expect(document.querySelector(".bang-completion-menu")).toBeNull();
+  });
+
+  it("applies a token candidate by replacing only the token", async () => {
+    const fetchCompletions = vi.fn(async () =>
+      completionsResult(["gitalike", "gitother"], ["git status"]),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!git" } });
+    await waitFor(() =>
+      expect(bangMenuLabels()).toEqual(["git status", "gitalike", "gitother"]),
+    );
+    // Move selection down to the first token candidate ("gitalike").
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!gitalike ");
+  });
+
+  it("opens the menu on Tab when only history matches (no auto-apply)", async () => {
+    let resolve: (result: {
+      completions: string[];
+      history: string[];
+    }) => void = () => {};
+    const fetchCompletions = vi.fn(
+      () =>
+        new Promise<{ completions: string[]; history: string[] }>((r) => {
+          resolve = r;
+        }),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!gi" } });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    resolve(completionsResult([], ["git status", "git log"]));
+    await waitFor(() =>
+      expect(bangMenuLabels()).toEqual(["git status", "git log"]),
+    );
+    // Whole-line history never auto-applies on Tab; the draft is unchanged.
+    expect((textarea as HTMLTextAreaElement).value).toBe("!!gi");
+  });
+
+  it("keeps Escape-dismiss and re-show-on-typing for history matches", async () => {
+    const fetchCompletions = vi.fn(async () =>
+      completionsResult([], ["git status"]),
+    );
+    const textarea = renderMessageInput(undefined, {
+      bangSupport: bangSupport({ fetchCompletions }),
+    });
+    fireEvent.change(textarea, { target: { value: "!!gi" } });
+    await waitFor(() =>
+      expect(document.querySelector(".bang-completion-menu")).toBeTruthy(),
+    );
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(document.querySelector(".bang-completion-menu")).toBeNull();
+    // Typing further changes the query key, so the menu is eligible again.
+    fireEvent.change(textarea, { target: { value: "!!git" } });
+    await waitFor(() =>
+      expect(document.querySelector(".bang-completion-menu")).toBeTruthy(),
+    );
   });
 });

@@ -24,7 +24,10 @@ in the same row:
   deleting the number while editing neither changes mode nor commits a delay.
 - The mode and delay are portable browser preferences. The retired session
   hover-card delay seeds the shared delay at one third of its stored value when
-  the new delay is absent, preserving that card's prior timing.
+  the new delay is absent, preserving that card's prior timing. Committing or
+  resetting the shared delay removes that retired value and invalidates its
+  same-tab cache immediately; returning to Native mode cannot resurrect the
+  retired card delay until reload.
 
 ## Scope of the mode
 
@@ -80,12 +83,17 @@ Keyboard-visible focus uses the same configured delay. Pointer-generated focus,
 including touch focus, does not open a tooltip after activation. Escape,
 primary click, blur, and a deliberate pointer departure dismiss the tooltip.
 Other keystrokes, including modifier combinations used to capture a screenshot,
-leave a visible tooltip alone. Scroll—including transcript
-follow-scroll—also does not dismiss a tooltip the user may be reading. Browser
-re-hit-testing can emit pointer boundary events when scrolling moves content
-under a stationary pointer; unchanged pointer coordinates are not treated as
-departure. A visible tooltip keeps its fixed reading position during scroll and
-is re-clamped to the viewport after resize.
+leave a visible tooltip alone unless they edit a composer. Every composer edit
+dismisses visible YA-rendered text, rich, and session-preview tooltips, cancels
+their pending reveals, clears tooltip warmth, and suppresses new pointer/focus
+activation for 100 ms after the latest edit. Suppression never schedules an
+automatic reopen; fresh pointer or focus intent after the window is required.
+Browser-native `title` presentation remains browser-owned. Scroll—including
+transcript follow-scroll—otherwise does not dismiss a tooltip the user may be
+reading. Browser re-hit-testing can emit pointer boundary events when scrolling
+moves content under a stationary pointer; unchanged pointer coordinates are not
+treated as departure. A visible tooltip keeps its fixed reading position during
+scroll and is re-clamped to the viewport after resize.
 
 Only a tooltip that actually became visible warms the tooltip system. After it
 closes, entering another target within six times the configured delay opens the
@@ -139,14 +147,16 @@ tooltip presentation.
 A hint that exactly repeats its target's visible text is omitted only when the
 target is measurably visible in its own scrollport, every clipping ancestor,
 and the viewport. If any of those clips the content—or the target cannot be
-measured—the hint remains. Explanatory hints and extra metadata are not
-inferred to be redundant. Ran commands use their producer's hidden-content
-count first, then the same actual scroll-visibility check on hover. Thus a
-command without a `+N` badge still reveals its full text when partly scrolled
-out of view, while any fully scroll-visible command has neither a themed nor
-native command tooltip. Expansion alone does not suppress the hint when the
-command remains clipped by its own scrollport, an ancestor, or the viewport.
-The Ran-label hint separately owns elapsed time.
+measured—the hint remains. When an outer target fits but an exact-text
+descendant is ellipsized, that descendant's visibility governs too; measuring
+only the row or button would incorrectly suppress the hint. Explanatory hints
+and extra metadata are not inferred to be redundant. Ran commands use their
+producer's hidden-content count first, then the same actual scroll-visibility
+check on hover. Thus a command without a `+N` badge still reveals its full text
+when partly scrolled out of view, while any fully scroll-visible command has
+neither a themed nor native command tooltip. Expansion alone does not suppress
+the hint when the command remains clipped by its own scrollport, an ancestor,
+or the viewport. The Ran-label hint separately owns elapsed time.
 
 Faded output/diff previews reveal a plain-text tail through shared preview
 machinery: an ellipsis plus the final configured number of lines. The same
@@ -203,10 +213,13 @@ not the surface into a card.
   pointer-generated focus while retaining their activation-to-dialog path.
 - Once visible, a tooltip survives same-target pointer motion, transcript
   follow-scroll, scroll-generated pointer boundary events, and non-Escape
-  keystrokes. Escape and a completed pointer departure still dismiss it.
-- Exact visible-content hints are absent only when fully scroll-visible and
-  remain when clipped by self, ancestor, or viewport; no-`+N` Ran commands
-  follow the same measured rule.
+  keystrokes that do not edit a composer. Composer edits dismiss every
+  YA-rendered tooltip owner and suppress pending/new reveals for 100 ms after
+  the latest edit; nothing reopens without a later pointer/focus event.
+- Exact visible-content hints are absent only when the target and any
+  exact-text descendant are fully scroll-visible, and remain when clipped by
+  self, descendant, ancestor, or viewport; no-`+N` Ran commands follow the
+  same measured rule.
 - Every faded hidden-content preview exposes its actual tail from the fade and
   `+N` badge where present; an unfaded preview exposes its full content when
   any of its rendered surface is not scroll-visible.

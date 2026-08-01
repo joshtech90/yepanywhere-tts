@@ -10,7 +10,9 @@ A mobile-first supervisor for Claude Code agents. Like the VS Code Claude extens
 - **Server-owned processes** — Claude runs on your dev machine; client disconnects don't interrupt work
 - **Multi-session dashboard** — See all projects at a glance, no window cycling
 - **Mobile supervision** — Push notifications for approvals, respond from your lock screen
-- **Zero external dependencies** — No Firebase, no accounts
+- **Self-contained core** — The server/web app needs no hosted account or
+  Firebase dependency; the optional published native app uses its separate
+  hosted push broker for platform notifications
 
 **Architecture:** Hono server manages Claude SDK processes. React client connects via WebSocket for real-time streaming. Sessions persist to jsonl files (handled by SDK).
 
@@ -22,6 +24,31 @@ For UI rendering-boundary and shared-view decisions, see
 - **Relay** — Client connects through a relay server (`packages/relay/`). SRP (Secure Remote Password) authenticates without exposing the password to the relay. All messages are end-to-end encrypted with NaCl (XSalsa20-Poly1305) so the relay sees only opaque ciphertext.
 
 For detailed overview, see `docs/project/`. Historical vision docs in `docs/archive/`.
+
+## Client/Server Backwards Compatibility
+
+Before making the client depend on a server route, response field, event, or
+changed semantic that a supported stable release lacks, read
+[`topics/server-capabilities.md`](topics/server-capabilities.md) and
+[`topics/remote-hosted-compatibility.md`](topics/remote-hosted-compatibility.md).
+Inspect at least the latest two stable releases plus every stable release from
+the preceding 14 days for an optional feature or 60 days for core
+functionality.
+
+Before implementation, present the maintainer with the release corpus, new
+contract, capability/protocol gate, exact missing-gate fallback, and any change
+to an existing capability meaning or older capable behavior. Wait for approval
+unless the originating request already approved all of those decisions. Never
+retroactively broaden an advertised capability, and never call a new endpoint
+before its gate is known present. A support horizon expiring permits review; it
+does not automatically remove compatibility.
+
+Use this prompt shape:
+
+> Compatibility review for `<feature>`: releases `<corpus>` lack
+> `<routes/fields/events>`. I propose `<capability/protocol>`; without it the
+> client `<fallback>` and makes no unsupported requests. Existing capability
+> meanings and older capable behavior remain unchanged. Approve?
 
 ## Port Configuration
 
@@ -93,7 +120,7 @@ ENABLED_PROVIDERS=claude VOICE_INPUT=false PORT=4000 YEP_PROFILE=dev pnpm dev
 ```
 
 Environment variables:
-- `ENABLED_PROVIDERS` - Comma-separated list of provider names to expose (default: all). Valid names: `claude`, `claude-ollama`, `codex`, `codex-oss`, `gemini`, `gemini-acp`, `opencode`, `grok`
+- `ENABLED_PROVIDERS` - Comma-separated list of provider names to expose (default: all). Valid names: `claude`, `claude-gateway`, `claude-ollama`, `codex`, `codex-oss`, `gemini`, `gemini-acp`, `opencode`, `grok`
 - `VOICE_INPUT` - Set to `false` to disable the voice input button server-side (default: `true`)
 
 ## Device Control Testing
@@ -115,7 +142,7 @@ pnpm --filter @yep-anywhere/client exec playwright screenshot \
   --ignore-https-errors \
   --block-service-workers \
   --wait-for-timeout 500 \
-  --viewport-size "1440,900" \
+  --viewport-size "1920,1080" \
   https://localhost:3400/ \
   .artifacts/ui-testing/ya-desktop.png
 ```
@@ -123,7 +150,10 @@ pnpm --filter @yep-anywhere/client exec playwright screenshot \
 Use `--viewport-size "375,812"` for a mobile-width capture. For multi-step
 interaction testing, add or run a focused `@playwright/test` case under
 `packages/client/e2e/`. A missing in-app browser backend is not a blocker while
-the repository Playwright command is available.
+the repository Playwright command is available. Default capture-confirmation
+requirements for UI tweak requests (final result at 1920×1080 + phone width,
+inspected before claiming completion), including the explicit user-owned
+visual-review exception, are in `topics/ui-testing.md`.
 
 ## ChromeOS Debugging
 
@@ -158,6 +188,20 @@ Fix any errors before considering the task complete.
 ## Dependency Security Maintenance
 
 Periodically run `pnpm audit --prod` and pay special attention to the `web-push -> asn1.js -> bn.js` chain. Keep `bn.js` patched (currently via pnpm override) until `web-push` ships an upstream fix.
+
+When a transitive dep has no direct upgrade path, prefer a pnpm override. Pin it exactly if a newer major would escape the parent's declared range — `fast-uri` is pinned to `3.1.4` rather than `^3.1.4` because 4.x is published and `ajv` declares `^3.0.1`.
+
+### Known-unreachable advisories
+
+`pnpm audit --prod` is expected to report a non-zero count. As of 2026-07-25 three advisories remain, each triaged as unreachable with no safe fix available. Re-check when the listed trigger fires rather than re-deriving the analysis:
+
+| Advisory | Why unreachable | Revisit when |
+|---|---|---|
+| `react-router` RSC-mode CSRF (GHSA-qwww-vcr4-c8h2) | Client is SPA-only — `BrowserRouter`/`Routes`, no `createBrowserRouter`, RSC, or server actions | Migrating to react-router v8. The fix lands in 8.3.0 and `react-router-dom` never reaches it (v8 consolidated into `react-router`) |
+| `@hono/node-server` serve-static traversal (GHSA-frvp-7c67-39w9) | `serveStatic` is never imported; only `serve`, `getRequestListener`, `HttpBindings`, `RESPONSE_ALREADY_SENT` | `@hono/node-ws` supports node-server 2.x — its peer is currently `^1.19.11`, so 2.x breaks the WebSocket path |
+| `body-parser` limit DoS (GHSA-v422-hmwv-36x6) | Arrives via `@modelcontextprotocol/sdk`'s express *server* transports; YA is an MCP client and never loads express | `@modelcontextprotocol/sdk` bumps its express dep |
+
+Anything not on this list is untriaged — treat a new advisory as actionable.
 
 ## Git Commits
 

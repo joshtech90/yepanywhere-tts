@@ -69,6 +69,20 @@ that choice explicit. See [cost-efficiency](cost-efficiency.md).
    audit rule in `AGENTS.md`: the read-only drift check is allowed immediately;
    code edits should be explicitly approved.
 
+## Pi
+
+YA drives the user's installed `pi` binary over RPC. Root `package.json`
+`yepAnywhere.piCli.compatibleThroughVersion` records the latest Pi CLI release
+whose startup flags, consumed RPC shapes, lifecycle events, model fields, and
+session JSONL assumptions were checked. It is an audited-through marker, not a
+pin or minimum version.
+
+After updating Pi, run the opt-in installed-binary check documented in
+[pi provider](pi-provider.md#installed-binary-compatibility-check). Compare the
+matching upstream release tags when the version changed; the real zero-token
+probe covers the production model-discovery command but intentionally does not
+exercise authenticated assistant events or persisted sessions.
+
 ## Codex
 
 YA's active Codex backend is the installed `codex` CLI app-server path.
@@ -92,6 +106,8 @@ Primary sources:
 - `packages/server/src/sdk/providers/codex-protocol/README.md`;
 - `packages/server/src/sdk/providers/codex.ts`;
 - `packages/shared/src/codex-schema/`;
+- `topics/codex-permission-mode.md` for approval/sandbox coupling and live
+  turn-boundary invariants;
 - persisted JSONL under `~/.codex/sessions/`.
 
 Routine probes:
@@ -116,6 +132,9 @@ Difference detectors:
   `parseCodexSessionEntry()` returns raw unknown entries.
 - App-server turn, steer, interrupt, approval, user-input, raw-item, or token
   usage notifications change shape.
+- `turn/start` approval, `sandboxPolicy`, or named `permissions` fields change
+  shape or sticky-default semantics in a way that could break
+  [codex-permission-mode](codex-permission-mode.md).
 - Server startup warns that detected Codex version differs from
   `expectedVersion`; this alone is a trigger to run the checks above.
 
@@ -385,6 +404,57 @@ Difference detectors:
   by `claude-sdk-schema` or visible normalization tests.
 - Model ids, effort levels, or context windows change enough to make fallback
   constants or model glyph rules misleading.
+- A model disappears from the live/latest catalog, changes lifecycle status,
+  reaches a published retirement boundary, starts rejecting requests, or
+  silently resolves to another id. Compare those changes with the opt-in
+  previous-model registry in
+  [older-claude-models](older-claude-models.md).
+
+Previous-model registry review:
+
+1. Treat a displaced model as a candidate, not an automatic registry addition.
+2. Retain only exact ids that remain usable and have a concrete product reason.
+3. Add deprecation/retirement copy when it helps users make a choice.
+4. Remove an entry when upstream retires, rejects, or remaps it.
+5. Preserve existing saved selections as unlisted/custom entries; never
+   auto-migrate them.
+6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
+   on live model turns without explicit approval.
+
+Current source refresh, 2026-07-25:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.218` to `0.3.220`;
+  its native executable reports Claude Code `2.1.220`. Claude Code `2.1.219`
+  introduced Claude Opus 5 as `claude-opus-5`, the default Opus model with a
+  1M context window; `2.1.220` contains reliability fixes.
+- An authenticated, no-turn SDK handshake reports `default` and `opus[1m]`
+  resolving to `claude-opus-5[1m]` on this account. Both rows advertise
+  adaptive thinking, fast mode, auto permission mode, and
+  `low`/`medium`/`high`/`xhigh`/`max` effort. The live command inventory
+  contains both `/goal` and `/loop`, so YA's conditional `/goal` alias
+  correctly steps aside for the native command.
+- YA now transfers the live `opus[1m]` capability fields to its stable visible
+  `opus` selection token, preserves live capability/context metadata while
+  keeping the generic `default` label, and identifies canonical
+  `claude-opus-5`/`claude-sonnet-5` model ids as 1M. The auth/probe-failure
+  fallback describes Opus 5 and retains its adaptive, fast, auto, and effort
+  controls.
+- SDK type drift is additive on unconsumed surfaces: `DirectoryAdded` hooks,
+  fast-mode disabled reasons, strict sandbox-network allowlists, workflow size
+  guidance, and an interrupt capability that can cancel queued commands. YA's
+  model/command discovery, model and thinking updates, ordinary interrupt,
+  MCP status, and existing message union remain source-compatible. Adopting
+  cancel-queued interrupt semantics would be a separate queue/control design
+  change, not an Opus 5 compatibility requirement.
+- The durable transcript census also found three older Claude records outside
+  the schema: an informational warning, assistant `fallback` content, and its
+  paired `model_refusal_fallback` system audit row. YA now retains all three
+  shapes without changing their renderer behavior; all 975,598 lines across
+  7,100 local Claude transcript files validate.
+
+Status: Claude Opus 5 is available through Claude Code `2.1.220` / SDK
+`0.3.220`, with provider catalog, fallback metadata, and context-window
+normalization refreshed.
 
 Current source refresh, 2026-07-23:
 
@@ -708,7 +778,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.218` | `0.3.218` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.220` | `0.3.220` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

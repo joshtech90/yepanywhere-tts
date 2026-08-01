@@ -40,8 +40,12 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../codex/normalization.js";
+import { attachToolResultMediaCandidates } from "../media/inlineImageData.js";
 import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
-import { normalizeOpenCodeTool } from "../sdk/providers/opencode-tools.js";
+import {
+  normalizeOpenCodeTool,
+  normalizeOpenCodeToolResult,
+} from "../sdk/providers/opencode-tools.js";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
 import {
@@ -60,6 +64,31 @@ interface CodexToolUseConversion {
 }
 
 const CODEX_CONTEXT_COMPACTED_DEDUPE_WINDOW_MS = 5000;
+const CODEX_PROVIDER_FORK_TURN_ID = Symbol("codexProviderForkTurnId");
+
+type MessageWithCodexForkTurnId = Message & {
+  [CODEX_PROVIDER_FORK_TURN_ID]?: string;
+};
+
+/** Read server-only Codex turn identity retained during rollout normalization. */
+export function getCodexProviderForkTurnId(message: Message): string | null {
+  return (
+    (message as MessageWithCodexForkTurnId)[CODEX_PROVIDER_FORK_TURN_ID] ?? null
+  );
+}
+
+function attachCodexProviderForkTurnId(
+  message: Message,
+  turnId: string | null,
+): void {
+  if (!turnId) return;
+  Object.defineProperty(message, CODEX_PROVIDER_FORK_TURN_ID, {
+    configurable: false,
+    enumerable: false,
+    value: turnId,
+    writable: false,
+  });
+}
 const codexMessageCache = new WeakMap<
   CodexSessionEntry[],
   {
@@ -114,6 +143,7 @@ export function normalizeSession(loaded: LoadedSession): Session {
 
   switch (data.provider) {
     case "claude":
+    case "claude-gateway":
     case "claude-ollama": {
       const rawMessages = data.session.messages;
       const { entries, orphanedToolUses } =
@@ -272,6 +302,10 @@ function convertCodexEntries(
           : undefined,
       );
       if (msg) {
+        attachCodexProviderForkTurnId(
+          msg,
+          getCodexResponseItemTurnId(entry.payload),
+        );
         if (isCodexCorrelationDebugEnabled()) {
           logCodexCorrelationDebug({
             sessionId,
@@ -716,10 +750,7 @@ function convertCodexMessagePayload(
   payload: CodexMessagePayload,
   uuid: string,
   timestamp: string,
-  userTurnProvenance?: Exclude<
-    CodexUserTurnMessageProvenance,
-    "event-only"
-  >,
+  userTurnProvenance?: Exclude<CodexUserTurnMessageProvenance, "event-only">,
 ): Message {
   const content: ContentBlock[] = [];
 
@@ -1032,7 +1063,7 @@ function convertCodexToolCallOutputPayload(
     ...(isError && { is_error: true }),
   };
 
-  return {
+  const message: Message = {
     uuid,
     type: "user",
     message: {
@@ -1044,6 +1075,8 @@ function convertCodexToolCallOutputPayload(
     }),
     timestamp,
   };
+  attachToolResultMediaCandidates(message, normalized.mediaCandidates);
+  return message;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1328,13 +1361,17 @@ function convertOpenCodeEntries(entries: OpenCodeSessionEntry[]): Message[] {
       : undefined;
 
     const content = convertOpenCodeParts(parts);
+    const assistantContent =
+      message.role === "assistant"
+        ? content.filter((block) => block.type !== "tool_result")
+        : content;
 
     messages.push({
       uuid,
       type: message.role,
       message: {
         role: message.role,
-        content,
+        content: assistantContent,
         model: message.modelID,
         usage: message.tokens
           ? {
@@ -1351,6 +1388,24 @@ function convertOpenCodeEntries(entries: OpenCodeSessionEntry[]): Message[] {
       ...(message.agent && { agent: message.agent }),
       ...(message.finish && { finish: message.finish }),
     });
+
+    if (message.role !== "assistant") continue;
+    for (const part of parts) {
+      const result = convertOpenCodeToolResultPart(part);
+      if (!result) continue;
+      messages.push({
+        uuid: `${uuid}:${part.callID}:result`,
+        type: "user",
+        message: {
+          role: "user",
+          content: [result.block],
+        },
+        timestamp,
+        ...(result.toolUseResult !== undefined
+          ? { toolUseResult: result.toolUseResult }
+          : {}),
+      });
+    }
   }
 
   return messages;
@@ -1401,22 +1456,8 @@ export function convertOpenCodeParts(
           // Once the tool settles (completed OR error), add a result block.
           // Previously only "completed" was handled, so failed tools silently
           // dropped their error text on reload.
-          const status = part.state?.status;
-          if (status === "completed" || status === "error") {
-            const error = part.state?.error;
-            const resultContent = error
-              ? error
-              : typeof part.state?.output === "string"
-                ? part.state.output
-                : JSON.stringify(part.state?.output ?? "");
-
-            blocks.push({
-              type: "tool_result",
-              tool_use_id: part.callID,
-              content: resultContent,
-              is_error: status === "error" || !!error,
-            });
-          }
+          const result = convertOpenCodeToolResultPart(part);
+          if (result) blocks.push(result.block);
         }
         break;
 
@@ -1439,4 +1480,30 @@ export function convertOpenCodeParts(
   }
 
   return blocks;
+}
+
+function convertOpenCodeToolResultPart(
+  part: OpenCodeStoredPart,
+): { block: ContentBlock; toolUseResult?: unknown } | undefined {
+  if (part.type !== "tool" || !part.tool || !part.callID) return undefined;
+  const status = part.state?.status;
+  if (status !== "completed" && status !== "error") return undefined;
+  const error = part.state?.error;
+  const content =
+    error ??
+    (typeof part.state?.output === "string"
+      ? part.state.output
+      : JSON.stringify(part.state?.output ?? ""));
+  return {
+    block: {
+      type: "tool_result",
+      tool_use_id: part.callID,
+      content,
+      is_error: status === "error" || Boolean(error),
+    },
+    toolUseResult: normalizeOpenCodeToolResult(
+      part.tool,
+      part.state?.attachments,
+    ),
+  };
 }

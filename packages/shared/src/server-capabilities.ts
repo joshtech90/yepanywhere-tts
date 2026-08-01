@@ -24,7 +24,9 @@ export interface ServerCapabilityDefinition {
     | "gitStatus"
     | "localAccess"
     | "projectQueue"
+    | "providers"
     | "remoteAccess"
+    | "sessions"
     | "settings"
     | "speech";
   description: string;
@@ -32,6 +34,13 @@ export interface ServerCapabilityDefinition {
   clientFallback: string;
   serverContract?: {
     routes?: readonly string[];
+    /**
+     * Repository-relative server route modules wholly owned by this
+     * capability. `pnpm capabilities:audit` requires every route declared in
+     * these modules to appear in `routes`, and rejects stale route entries.
+     */
+    routeModules?: readonly string[];
+    requestFields?: readonly string[];
     responseFields?: readonly string[];
     events?: readonly string[];
   };
@@ -145,6 +154,81 @@ export const SERVER_CAPABILITIES = {
         "Integration-option analysis depends on server-side route behavior older servers may not expose.",
     },
   },
+  gitSourceReview: {
+    name: "git-source-review",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.1",
+    description:
+      "Server supports the commit/file browser and server-owned source-review workflow.",
+    clientFallback:
+      "Keep basic Source Control status and individually capability-gated remote actions; explain that browsing and review require a server update.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/git/commits",
+        "GET /api/projects/:projectId/git/commit-search-manifest",
+        "POST /api/projects/:projectId/git/commit-search-records",
+        "GET /api/projects/:projectId/git/commit/:sha",
+        "POST /api/projects/:projectId/git/commit-diff",
+        "GET /api/projects/:projectId/git/blame",
+        "GET /api/projects/:projectId/git/files",
+        "GET /api/projects/:projectId/git/search",
+        "GET /api/projects/:projectId/review/comments",
+        "POST /api/projects/:projectId/review/comments",
+        "PATCH /api/projects/:projectId/review/comments/:commentId",
+        "DELETE /api/projects/:projectId/review/comments/:commentId",
+        "POST /api/projects/:projectId/review/preview",
+        "POST /api/projects/:projectId/review/submit",
+      ],
+      routeModules: [
+        "packages/server/src/routes/git-browse.ts",
+        "packages/server/src/routes/review-comments.ts",
+      ],
+      requestFields: ["gitDiff.againstHead", "gitDiff.origPath"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, while Source Control must retain its released basic status and synchronization path.",
+    },
+  },
+  gitSourceReviewProjections: {
+    name: "git-source-review-projections",
+    kind: "transitional",
+    area: "gitStatus",
+    introducedIn: "0.7.1",
+    description:
+      "Server supports ignore-whitespace rendering and direct selected-revision-to-HEAD comparisons in Source Control.",
+    clientFallback:
+      "Keep ordinary working-tree and commit review available; make no projection request and explain that the server must be updated or restarted.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/git/compare/:sha",
+        "POST /api/projects/:projectId/git/compare-diff",
+      ],
+      routeModules: ["packages/server/src/routes/git-projections.ts"],
+      requestFields: [
+        "gitDiff.ignoreWhitespace",
+        "gitCommitDiff.ignoreWhitespace",
+        "gitCompareDiff.baseSha",
+        "gitCompareDiff.headSha",
+        "gitCompareDiff.ignoreWhitespace",
+      ],
+      responseFields: [
+        "gitRevisionComparison.baseSha",
+        "gitRevisionComparison.headSha",
+        "gitRevisionComparison.files",
+      ],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-28",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the Source Control projection contract.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on git-source-review-projections.",
+    },
+  },
   approvalAuditLog: {
     name: "approvalAuditLog",
     kind: "permanent",
@@ -184,13 +268,111 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients must not offer server-backed browser settings controls to older servers without the storage route.",
     },
   },
+  claudeAdditionalModels: {
+    name: "claude-additional-models",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.6.3",
+    description:
+      "Server persists opt-in previous/custom Claude model ids and exposes the maintained optional catalog.",
+    clientFallback: "Hide the Additional models provider setting.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "GET /api/providers",
+        "GET /api/processes/:processId/models",
+      ],
+      responseFields: [
+        "settings.claudeAdditionalModels",
+        "providers[].additionalModelOptions",
+        "providers[].models[].catalogGroup",
+      ],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-25",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the additional-model settings/catalog API.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on claude-additional-models.",
+    },
+  },
+  claudeGateway: {
+    name: "claude-gateway",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.7.1",
+    description:
+      "Server can persist a Claude LLM-gateway URL and expose its models as an isolated Claude Gateway provider.",
+    clientFallback:
+      "Hide Claude Gateway configuration and make no unsupported settings write.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings", "GET /api/providers"],
+      requestFields: ["settings.claudeGatewayUrl"],
+      responseFields: ["settings.claudeGatewayUrl", "providers[].name"],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-27",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the Claude Gateway settings/provider contract.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on claude-gateway.",
+    },
+  },
+  claudeGatewayAutostart: {
+    name: "claude-gateway-autostart",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.7.1",
+    description:
+      "Server can persist and run an explicit shell command when a configured loopback Claude Gateway has no TCP listener.",
+    clientFallback:
+      "Hide the Gateway start-command field and make no unsupported settings write.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings", "GET /api/providers"],
+      requestFields: ["settings.claudeGatewayStartCommand"],
+      responseFields: ["settings.claudeGatewayStartCommand"],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-28",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the Gateway autostart setting and provider-refresh behavior.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on claude-gateway-autostart.",
+    },
+  },
+  providerSubscriptionUsage: {
+    name: "provider-subscription-usage",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.7.1",
+    description:
+      "Server exposes normalized read-only provider subscription and rate-limit windows.",
+    clientFallback:
+      "Make no subscription-usage request and hide model usage badges and context usage detail.",
+    serverContract: {
+      routes: ["GET /api/providers/:name/subscription-usage"],
+      responseFields: ["usage"],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-29",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the subscription-usage route.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on provider-subscription-usage.",
+    },
+  },
   bangCommands: {
     name: "bang-commands",
     kind: "permanent",
     area: "localAccess",
     introducedIn: "0.6.3",
     description:
-      "Server supports explicitly enabled local shell commands and persisted bang-command history.",
+      "Server supports always-on local `!!` shell commands, completions, and persisted bang-command history; the top-level history view stays behind an explicit default-off setting.",
     clientFallback: "Hide bang-command entry points and composer routing.",
     serverContract: {
       routes: [
@@ -255,6 +437,103 @@ export const SERVER_CAPABILITIES = {
         "The hosted-client compatibility floor excludes servers older than the host-awake settings/status API.",
       removeServerAdvertisementWhen:
         "No maintained client still branches on host-awake-control.",
+    },
+  },
+  hostAgentProcessObservability: {
+    name: "host-agent-process-observability",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.7.1",
+    description:
+      "Server can report minimized host metrics for YA-owned and independently launched provider process trees.",
+    clientFallback:
+      "Keep the existing Agents inventory, hide host metrics and external rows, and make no host-process request.",
+    serverContract: {
+      routes: [
+        "GET /api/host-agent-processes",
+        "GET /api/settings",
+        "PUT /api/settings",
+      ],
+      requestFields: ["settings.hostProcessObservabilityEnabled"],
+      responseFields: [
+        "settings.hostProcessObservabilityEnabled",
+        "hostAgentProcesses.enabled",
+        "hostAgentProcesses.supported",
+        "hostAgentProcesses.sampledAt",
+        "hostAgentProcesses.observations",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, and older servers do not expose the minimized host process route or setting.",
+    },
+  },
+  sessionSandboxing: {
+    name: "session-sandboxing",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.7.1",
+    description:
+      "Server currently has a usable local backend for accepting, persisting, enforcing, and reporting the default-off YA session filesystem sandbox selection.",
+    clientFallback:
+      "Hide session sandbox controls, omit sandbox fields, and preserve unsandboxed session behavior.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /api/projects/:projectId/sessions",
+        "POST /api/projects/:projectId/sessions/create",
+        "POST /api/projects/:projectId/queue",
+        "POST /api/projects/:projectId/sessions/:sessionId/resume",
+        "POST /api/projects/:projectId/sessions/:sessionId/reactivate",
+        "POST /api/projects/:projectId/sessions/:sessionId/recap",
+        "POST /api/projects/:projectId/sessions/:sessionId/restart",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork",
+        "POST /api/projects/:projectId/sessions/:sessionId/retitle",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork-summary",
+        "POST /api/sessions",
+        "POST /api/sessions/create",
+      ],
+      requestFields: [
+        "settings.newSessionDefaults.sandboxLevel",
+        "sessionStart.sandboxLevel",
+        "sessionCreate.sandboxLevel",
+        "projectQueue.target.sandboxLevel",
+        "sessionRestart.sandboxLevel",
+      ],
+      responseFields: [
+        "settings.newSessionDefaults.sandboxLevel",
+        "sessionStart.sandboxEnforcement",
+        "sessionResume.sandboxEnforcement",
+        "sessionReactivate.sandboxEnforcement",
+        "sessionRestart.sandboxEnforcement",
+        "process.sandboxEnforcement",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers and unsupported hosts cannot preserve and enforce the launch boundary, so clients must never imply or request it without a dynamically advertised usable backend.",
+    },
+  },
+  sessionSandboxingStatus: {
+    name: "session-sandboxing-status",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.7.1",
+    description:
+      "Server reports the local session-sandbox backend preflight state independently from launch-time enforcement.",
+    clientFallback:
+      "Hide session sandbox controls and make no unsupported sandbox requests.",
+    serverContract: {
+      routes: ["GET /api/version"],
+      responseFields: ["version.sessionSandboxing"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients need to distinguish protocol-aware but unsupported hosts and intermediate development servers from hosts with a verified usable backend.",
     },
   },
   projectQueue: {
@@ -413,6 +692,28 @@ export const SERVER_CAPABILITIES = {
         "Update availability is dynamic state advertised for older clients that branch on capability strings.",
     },
   },
+  sessionForkTurnIntents: {
+    name: "session-fork-turn-intents",
+    kind: "transitional",
+    area: "sessions",
+    introducedIn: "0.7.1",
+    description:
+      "Server resolves Clone and direct Fork requests at real completed user-turn boundaries.",
+    clientFallback:
+      "Hide unified Clone and direct Fork actions and make no fork request.",
+    serverContract: {
+      routes: ["POST /api/projects/:projectId/sessions/:sessionId/fork"],
+      requestFields: ["forkKind", "sourceMessageId"],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-09-01",
+      removeClientGateWhen:
+        "The optional hosted-client support corpus contains no server without server-resolved fork intents and the Maintainer approves removal.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on session-fork-turn-intents.",
+    },
+  },
 } as const satisfies Record<string, ServerCapabilityDefinition>;
 
 export type ServerCapabilityKey = keyof typeof SERVER_CAPABILITIES;
@@ -434,6 +735,10 @@ export const GIT_STATUS_PUSH_CAPABILITY =
   SERVER_CAPABILITIES.gitStatusPush.name;
 export const GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY =
   SERVER_CAPABILITIES.gitStatusIntegrationOptions.name;
+export const GIT_SOURCE_REVIEW_CAPABILITY =
+  SERVER_CAPABILITIES.gitSourceReview.name;
+export const GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY =
+  SERVER_CAPABILITIES.gitSourceReviewProjections.name;
 
 export const APPROVAL_AUDIT_LOG_CAPABILITY =
   SERVER_CAPABILITIES.approvalAuditLog.name;
@@ -441,12 +746,35 @@ export const APPROVAL_AUDIT_LOG_CAPABILITY =
 export const BROWSER_SETTINGS_BACKUP_CAPABILITY =
   SERVER_CAPABILITIES.browserSettingsBackup.name;
 
+export const CLAUDE_ADDITIONAL_MODELS_CAPABILITY =
+  SERVER_CAPABILITIES.claudeAdditionalModels.name;
+
+export const CLAUDE_GATEWAY_CAPABILITY = SERVER_CAPABILITIES.claudeGateway.name;
+
+export const CLAUDE_GATEWAY_AUTOSTART_CAPABILITY =
+  SERVER_CAPABILITIES.claudeGatewayAutostart.name;
+
+export const PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY =
+  SERVER_CAPABILITIES.providerSubscriptionUsage.name;
+
 export const BANG_COMMANDS_CAPABILITY = SERVER_CAPABILITIES.bangCommands.name;
 
 export const HOST_IDENTITY_CAPABILITY = SERVER_CAPABILITIES.hostIdentity.name;
 
 export const HOST_AWAKE_CONTROL_CAPABILITY =
   SERVER_CAPABILITIES.hostAwakeControl.name;
+
+export const HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY =
+  SERVER_CAPABILITIES.hostAgentProcessObservability.name;
+
+export const SESSION_SANDBOXING_CAPABILITY =
+  SERVER_CAPABILITIES.sessionSandboxing.name;
+
+export const SESSION_SANDBOXING_STATUS_CAPABILITY =
+  SERVER_CAPABILITIES.sessionSandboxingStatus.name;
+
+export const SESSION_FORK_TURN_INTENTS_CAPABILITY =
+  SERVER_CAPABILITIES.sessionForkTurnIntents.name;
 
 export const VOICE_INPUT_CAPABILITY = SERVER_CAPABILITIES.voiceInput.name;
 

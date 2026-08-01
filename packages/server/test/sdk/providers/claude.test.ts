@@ -1,17 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ClaudeProvider,
   claudeProvider,
   formatClaudeLoginCommand,
+  getClaudeAutoCompactOverrideEnv,
   mergeClaudeModels,
+  normalizeClaudeLaunchModel,
   probeClaudeControlLiveness,
   resolveClaudeSdkNativeExecutable,
   withClaudeGoalAlias,
 } from "../../../src/sdk/providers/claude.js";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 
+describe("normalizeClaudeLaunchModel", () => {
+  it("keeps Opus on the stable alias and retains Sonnet's extended spelling", () => {
+    expect(normalizeClaudeLaunchModel("opus")).toBe("opus");
+    expect(normalizeClaudeLaunchModel("opus[1m]")).toBe("opus[1m]");
+    expect(normalizeClaudeLaunchModel("sonnet")).toBe("sonnet[1m]");
+    expect(normalizeClaudeLaunchModel(undefined)).toBeUndefined();
+  });
+});
+
 describe("ClaudeProvider.yaModelIdForReported", () => {
   it("maps reported ids to the canonical family alias", () => {
     expect(claudeProvider.yaModelIdForReported("claude-opus-4-8")).toBe("opus");
+    expect(claudeProvider.yaModelIdForReported("claude-opus-5")).toBe("opus");
     expect(claudeProvider.yaModelIdForReported("claude-sonnet-4-6")).toBe(
       "sonnet",
     );
@@ -44,6 +57,24 @@ describe("ClaudeProvider.yaModelIdForReported", () => {
   });
 });
 
+describe("Claude auto-compaction launch environment", () => {
+  it("sets the exact documented environment variable when configured", () => {
+    expect(getClaudeAutoCompactOverrideEnv(50)).toEqual({
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "50",
+    });
+  });
+
+  it("omits the override when the global setting is off", () => {
+    expect(getClaudeAutoCompactOverrideEnv(undefined)).toBeUndefined();
+  });
+
+  it.each([0, 101, 50.5])("rejects invalid percentage %p", (percent) => {
+    expect(() => getClaudeAutoCompactOverrideEnv(percent)).toThrow(
+      "integer from 1 to 100",
+    );
+  });
+});
+
 function control(
   mcpServerStatus: () => Promise<unknown>,
 ): Pick<Query, "mcpServerStatus"> {
@@ -53,6 +84,40 @@ function control(
 }
 
 describe("ClaudeProvider model list", () => {
+  it("projects server-selected models without caching the setting value", async () => {
+    const provider = new ClaudeProvider();
+    let selected = false;
+    provider.setAdditionalModelsGetter(() =>
+      selected
+        ? [
+            {
+              id: "claude-opus-4-6",
+              label: "Opus 4.6",
+              origin: "registry",
+            },
+          ]
+        : [],
+    );
+    vi.spyOn(provider, "getAuthStatus").mockResolvedValue({
+      installed: true,
+      authenticated: false,
+      enabled: false,
+    });
+
+    expect(
+      (await provider.getAvailableModels()).map((model) => model.id),
+    ).not.toContain("claude-opus-4-6");
+    selected = true;
+    expect(
+      (await provider.getAvailableModels()).find(
+        (model) => model.id === "claude-opus-4-6",
+      ),
+    ).toMatchObject({
+      name: "Opus 4.6",
+      catalogGroup: "additional",
+    });
+  });
+
   it("keeps the default option generic when SDK returns a concrete-looking label", () => {
     const models = mergeClaudeModels([
       {
@@ -70,8 +135,7 @@ describe("ClaudeProvider model list", () => {
     expect(models[0]).toMatchObject({
       id: "default",
       name: "Default",
-      description:
-        "Claude Code chooses the recommended model for your account (probably Sonnet)",
+      description: "Claude Code chooses the recommended model for your account",
     });
     expect(models.map((model) => model.id)).toContain("claude-sonnet-4-6");
   });
@@ -126,6 +190,54 @@ describe("ClaudeProvider model list", () => {
         supportedEffortLevels: ["low", "medium", "high"],
       },
     );
+  });
+
+  it("merges the live Opus 5 extended row into the stable opus alias", () => {
+    const models = mergeClaudeModels([
+      {
+        id: "default",
+        name: "Default (recommended)",
+        description: "Opus 5 with 1M context",
+        contextWindow: 1_000_000,
+        supportsAdaptiveThinking: true,
+        supportsAutoMode: true,
+        supportsEffort: true,
+        supportsFastMode: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        id: "opus[1m]",
+        name: "Opus (1M context)",
+        description: "Opus 5 with 1M context",
+        contextWindow: 1_000_000,
+        supportsAdaptiveThinking: true,
+        supportsAutoMode: true,
+        supportsEffort: true,
+        supportsFastMode: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+    ]);
+
+    expect(models.map((model) => model.id)).not.toContain("opus[1m]");
+    expect(models.find((model) => model.id === "default")).toMatchObject({
+      name: "Default",
+      description: "Claude Code chooses the recommended model for your account",
+      contextWindow: 1_000_000,
+      supportsAdaptiveThinking: true,
+      supportsAutoMode: true,
+      supportsFastMode: true,
+    });
+    expect(models.find((model) => model.id === "opus")).toMatchObject({
+      name: "Opus",
+      description: "Opus 5 with the full 1M-token context window",
+      contextWindow: 1_000_000,
+      supportsAdaptiveThinking: true,
+      supportsAutoMode: true,
+      supportsEffort: true,
+      supportsFastMode: true,
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultEffortLevel: "high",
+    });
   });
 });
 
@@ -220,6 +332,7 @@ describe("Claude provider slash commands", () => {
           "Keep working toward a verifiable end state until it is met",
         argumentHint: "<verifiable end state>",
         emulation: { providerText: "/loop wish {{argument}}" },
+        invocation: { kind: "emulated", prefix: "/" },
       },
     ]);
   });

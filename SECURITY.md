@@ -65,8 +65,25 @@ This document describes security features that are present in upstream
 - Production static HTML responses include a `frame-ancestors` Content Security
   Policy for the web app and supported desktop origins.
 
+## Maintenance Practice
+
+- The runtime dependency surface is kept deliberately narrow. Additions must
+  justify their long-term update and audit cost; established cryptography,
+  authentication, frameworks, and official provider SDKs are preferred where
+  hand-rolled code would create more risk.
+- The maintainers regularly audit authentication, transport and relay
+  boundaries, rendered content, local file access, dependencies, packaging,
+  and provider integrations as those surfaces change. These are
+  maintainer-led reviews, not independent security certification.
+- The two core maintainers are
+  [Jonathan Graehl (@graehl)](https://github.com/graehl) and
+  [Kyle Graehl (@kzahel)](https://github.com/kzahel).
+
 ## Reporting
 
-For suspected vulnerabilities, avoid public issues that include exploit details
-until a fix or mitigation is available upstream. Prefer a private maintainer
-channel first, then publish a minimal public summary after the fix is merged.
+Email [graehlarts@gmail.com](mailto:graehlarts@gmail.com) for private disclosure
+of suspected vulnerabilities. Do not open a public issue containing exploit
+details, credentials, or other sensitive evidence. Use
+[GitHub Issues](https://github.com/kzahel/yepanywhere/issues) for non-sensitive
+bugs and support requests. Publish a minimal public summary only after a fix or
+mitigation is available upstream.

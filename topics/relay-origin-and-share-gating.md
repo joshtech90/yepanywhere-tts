@@ -57,6 +57,15 @@ item flow, inspection affordances, copy interactions, spacing, and other
 read-only UI behavior should stay shared with the normal session surface where
 the trust boundary permits it.
 
+Public session shares start in the shared Conversation View projection and
+offer a compact floating icon to restore the full activity transcript. This
+viewer state is ephemeral and independent of the owner's toolbar visibility
+and last local Conversation View choice. Live viewers also use the shared
+session near-bottom follow machinery: new output follows while they remain at
+the live edge, and scrolling away exposes **Follow** beside the floating
+Conversation control. Frozen shares have no Follow action because their
+transcript cannot advance. See [conversation-view.md](conversation-view.md).
+
 Share-scoped file requests are allowed only for files visible from shared
 session content and for bounded transitive render assets from visible
 Markdown/HTML sources. Frozen snapshot shares should eventually capture an
@@ -79,3 +88,16 @@ decryption key, encrypted request/response envelopes for the public share API,
 opaque manifest asset ids instead of raw paths, and snapshot assets encrypted at
 capture time. The browser fragment can keep secrets out of HTTP requests, but
 the design still has to account for hosted JavaScript integrity and revocation.
+
+## Source Control Is Not Shareable
+
+The source-control surface (git browse, blame, diffs, review comments,
+review submit) is security-sensitive to the same degree as issuing
+commands in a session: it reads arbitrary repository content and its
+submit path launches or steers agent sessions. It is never available
+through read-only share links, live or not. Structurally, public
+shares live in the secret-token `/public-api/shares` namespace while
+every source-control route mounts under authenticated `/api/projects/*`
+— keep that separation; a future share mode that wants any source view
+must be modeled as a new explicit capability, not reached by widening
+share rendering.

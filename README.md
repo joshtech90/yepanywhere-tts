@@ -14,23 +14,33 @@
   <a href="https://yepanywhere.com">yepanywhere.com</a>
 </p>
 
-A better remote interface for Claude Code and Codex. Self-hosted, no cloud accounts. Supervise your agents from your phone while they run on your dev machines.
+A durable, browser-based interface for Claude Code and Codex. Supervise agents
+from another computer, a tablet, or a phone while they run on the machines you
+control.
+
+Use an eligible Claude or ChatGPT plan through the account already signed in to
+the official provider tool. Yep Anywhere can also show current subscription
+limits when the provider exposes them.
 
 ## Features
 
-- **Interop** — View and resume sessions started in CLI, VS Code, or other tools. No new database — piggybacks on CLI persistence
-- **File uploads** — Share screenshots, photos, PDFs, and code files directly from your phone's camera roll
-- **Push notifications** — Get alerted when approval is needed, respond from your lock screen
-- **E2E encrypted remote access** — Connect from anywhere via our free relay. We can't see your data (SRP-6a + TweetNaCl)
-- **Fork/clone conversations** — Branch from any message point to explore alternatives
-- **Tiered inbox** — Needs Attention → Active → Recent → Unread. Stop cycling through terminal tabs
-- **Global activity stream** — See what all your agents are doing across sessions
-- **Remote device control** — Stream Android emulators and devices to your phone over WebRTC. Touch input, nav buttons, adaptive quality
-- **Server-owned processes** — Client disconnects don't interrupt work
-- **Voice input** — Talk to your agents via browser speech API
-- **Fast on mobile** — Syntax highlighting and markdown rendering happen server-side
+- **Persistent, interoperable sessions** — View and resume compatible work from
+  CLIs, VS Code, and first-party desktop apps. Client disconnects do not stop
+  server-owned processes.
+- **Mobile supervision** — Approve tools, answer questions, upload files and
+  photos, use voice input, and receive attention notifications.
+- **Multi-agent coordination** — Use the tiered inbox, global activity view,
+  mid-turn steering, follow-up queues, search, recaps, forks, and clones.
+- **Review and source control** — Inspect files, diffs, Git status, and
+  read-only session shares without returning to the host machine.
+- **Remote device control** — Stream Android devices and Apple Simulators over
+  peer-to-peer WebRTC with touch controls and adaptive quality.
+- **Flexible remote access** — Connect directly or enable the end-to-end
+  encrypted public relay and sign in from any modern browser without device
+  pairing, a VPN, or port forwarding.
 
-No database, no cloud, no accounts. 100% open source (MIT).
+See the [complete feature catalog](https://yepanywhere.com/features) and
+[public documentation](https://yepanywhere.com/docs) for availability and setup.
 
 ## Supported Providers
 
@@ -38,6 +48,10 @@ No database, no cloud, no accounts. 100% open source (MIT).
 |----------|-------|-----------|-----------|-------|
 | Claude Code | Full | Yes | Yes | Primary provider, full feature support |
 | Codex | Full | Yes | Yes | Full support including diffs and approvals |
+
+OpenCode, Grok Build, Claude + Ollama, Gemini, and pi integrations are
+experimental; capabilities vary. See the
+[provider guide](https://yepanywhere.com/docs/providers).
 
 ## Screenshots
 
@@ -62,7 +76,14 @@ No database, no cloud, no accounts. 100% open source (MIT).
 
 ## Getting Started
 
-If you can install Claude Code or Codex, you can install this. Minimal dependencies.
+If you can install Claude Code or Codex, you can install this. The runtime has a
+narrow dependency surface.
+
+**Desktop apps (beta):** Signed macOS and Windows installers are
+available on [GitHub Releases](https://github.com/kzahel/yepanywhere/releases).
+They are available now while release-readiness work continues.
+
+**npm (established path):**
 
 ```
 npm i -g yepanywhere
@@ -79,6 +100,14 @@ pnpm start
 ```
 
 Open http://localhost:3400 in your browser. The app auto-detects installed CLI agents.
+
+The complete phone and tablet experience is the responsive browser client. A
+native app should add more than an app-store wrapper, so Android is in
+development around reliable background notifications, deep links, trusted
+packaging, and a multi-server inbox, with iOS planned afterward. Neither is
+published. Follow the
+[getting-started guide](https://yepanywhere.com/docs/getting-started) for the
+current platform choices.
 
 ## Updating
 
@@ -156,7 +185,9 @@ yepanywhere --setup-remote-access --username myserver --password "secretpass123"
 
 Then connect from anywhere at [yepanywhere.com/remote](https://yepanywhere.com/remote).
 
-All traffic is end-to-end encrypted and we can't see your data. No accounts required.
+Remote Access application traffic is end-to-end encrypted, so the relay
+cannot read session contents. Public session shares are a separate opt-in path:
+the current relay operator can read shared content. No accounts are required.
 
 **Private network:** If you only need to reach a solo install from your phone,
 a VPN such as Tailscale is usually simpler than deploying your own relay: put

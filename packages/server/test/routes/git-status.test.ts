@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   type GitDiffResult,
   type GitIntegrationOptionsResult,
+  type GitPullResult,
   type GitPushResult,
   type GitStatusInfo,
   type GitUntrackedFolderInfo,
@@ -120,6 +121,7 @@ describe("git-status routes", () => {
   it("reports pushed when push sends local commits", async () => {
     const repoDir = await createRepoWithUpstream();
     await commitFile(repoDir, "README.md", "hello again\n", "Update readme");
+    await commitFile(repoDir, "SECOND.md", "second\n", "Add second file");
     const { projectId, routes } = createRoutesForProject(repoDir);
 
     const response = await routes.request(`/${projectId}/git/push`, {
@@ -129,7 +131,51 @@ describe("git-status routes", () => {
 
     expect(response.status).toBe(200);
     expect(body.status).toBe("pushed");
+    expect(body.commitsAdvanced).toBe(2);
     expect(body.gitStatus?.ahead).toBe(0);
+  });
+
+  it("reports how many commits a pull advances", async () => {
+    const repoDir = await createRepoWithUpstream();
+    const remoteDir = join(tempDir, "remote.git");
+    const peerDir = join(tempDir, "peer");
+
+    await execFileAsync("git", ["clone", remoteDir, peerDir]);
+    await runGit(peerDir, ["config", "user.email", "ya-test@example.com"]);
+    await runGit(peerDir, ["config", "user.name", "YA Test"]);
+    await commitFile(peerDir, "REMOTE.md", "remote\n", "Remote commit");
+    await commitFile(
+      peerDir,
+      "REMOTE-SECOND.md",
+      "remote second\n",
+      "Second remote commit",
+    );
+    await runGit(peerDir, ["push"]);
+
+    const { projectId, routes } = createRoutesForProject(repoDir);
+    const response = await routes.request(`/${projectId}/git/pull`, {
+      method: "POST",
+    });
+    const body = (await response.json()) as GitPullResult;
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("pulled");
+    expect(body.commitsAdvanced).toBe(2);
+    expect(body.gitStatus?.behind).toBe(0);
+  });
+
+  it("reports zero commits when pull is already up to date", async () => {
+    const repoDir = await createRepoWithUpstream();
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/pull`, {
+      method: "POST",
+    });
+    const body = (await response.json()) as GitPullResult;
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("pulled");
+    expect(body.commitsAdvanced).toBe(0);
   });
 
   it("reports the last fetch time recorded by git", async () => {
@@ -316,6 +362,152 @@ describe("git-status routes", () => {
     expect(body.previewSkipped?.totalBytes).toBeGreaterThan(262_144);
   });
 
+  it("previews a small change inside a file far larger than the render budget", async () => {
+    const repoDir = await createRepoWithUpstream();
+    const lines = Array.from(
+      { length: 12_000 },
+      (_, index) => `  "key${index}": "value ${index}",`,
+    );
+    await commitFile(
+      repoDir,
+      "big.json",
+      `{\n${lines.join("\n")}\n}\n`,
+      "Add big file",
+    );
+    lines[6_000] = `  "key6000": "edited",`;
+    await writeFile(join(repoDir, "big.json"), `{\n${lines.join("\n")}\n}\n`);
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "big.json",
+        staged: false,
+        status: "M",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body.previewSkipped).toBeUndefined();
+    expect(body.structuredPatch).toHaveLength(1);
+    expect(body.structuredPatch[0]?.lines).toContain(`+  "key6000": "edited",`);
+    // Hunk coordinates stay absolute even though only the hunk was highlighted.
+    expect(body.structuredPatch[0]?.newStart).toBeGreaterThan(5_990);
+    expect(body.diffHtml).toContain("line-inserted");
+    expect(body.diffHtml).toContain("edited");
+    // Only the hunk is rendered, not the file it came from.
+    expect(body.diffHtml.length).toBeLessThan(20_000);
+  });
+
+  it("skips a large file rewritten wholesale", async () => {
+    const repoDir = await createRepoWithUpstream();
+    const original = Array.from(
+      { length: 12_000 },
+      (_, index) => `line ${index} ${"padding".repeat(4)}`,
+    ).join("\n");
+    await commitFile(repoDir, "rewritten.txt", `${original}\n`, "Add file");
+    const rewritten = Array.from(
+      { length: 12_000 },
+      (_, index) => `changed ${index} ${"different".repeat(4)}`,
+    ).join("\n");
+    await writeFile(join(repoDir, "rewritten.txt"), `${rewritten}\n`);
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "rewritten.txt",
+        staged: false,
+        status: "M",
+      }),
+    });
+    const rawBody = await response.text();
+    const body = JSON.parse(rawBody) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(rawBody.length).toBeLessThan(2_000);
+    expect(body).toMatchObject({
+      diffHtml: "",
+      structuredPatch: [],
+      previewSkipped: { reason: "content-too-large" },
+    });
+  });
+
+  it("measures line length across the diff rather than the whole file", async () => {
+    const repoDir = await createRepoWithUpstream();
+    // The long line sits well outside the changed hunk's context window.
+    const minified = `const bundled = "${"x".repeat(30_000)}";`;
+    const filler = Array.from(
+      { length: 50 },
+      (_, index) => `const spacer${index} = ${index};`,
+    ).join("\n");
+    await commitFile(
+      repoDir,
+      "mixed.ts",
+      `${minified}\n${filler}\nexport const value = 1;\n`,
+      "Add mixed file",
+    );
+    await writeFile(
+      join(repoDir, "mixed.ts"),
+      `${minified}\n${filler}\nexport const value = 2;\n`,
+    );
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "mixed.ts",
+        staged: false,
+        status: "M",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    // The 30k-character line is context the hunk never touches.
+    expect(body.previewSkipped).toBeUndefined();
+    expect(body.structuredPatch[0]?.lines).toContain("+export const value = 2;");
+  });
+
+  it("skips full-context requests for files over the render budget", async () => {
+    const repoDir = await createRepoWithUpstream();
+    const lines = Array.from(
+      { length: 12_000 },
+      (_, index) => `  "key${index}": "value ${index}",`,
+    );
+    await commitFile(
+      repoDir,
+      "big.json",
+      `{\n${lines.join("\n")}\n}\n`,
+      "Add big file",
+    );
+    lines[6_000] = `  "key6000": "edited",`;
+    await writeFile(join(repoDir, "big.json"), `{\n${lines.join("\n")}\n}\n`);
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "big.json",
+        staged: false,
+        status: "M",
+        fullContext: true,
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body.previewSkipped).toMatchObject({
+      reason: "content-too-large",
+      maxTotalBytes: 262_144,
+    });
+  });
+
   it("returns normal git diff previews for small untracked files", async () => {
     const repoDir = await createRepoWithUpstream();
     await writeFile(join(repoDir, "small.ts"), "export const value = 1;\n");
@@ -337,6 +529,201 @@ describe("git-status routes", () => {
     expect(body.diffHtml).toContain("<pre");
     expect(body.structuredPatch).toHaveLength(1);
     expect(body.structuredPatch[0]?.lines).toContain("+export const value = 1;");
+  });
+
+  it("skips small untracked binary content regardless of its extension", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(
+      join(repoDir, "misleading.txt"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0xff, 0x01]),
+    );
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "misleading.txt",
+        staged: false,
+        status: "?",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      diffHtml: "",
+      structuredPatch: [],
+      previewSkipped: {
+        reason: "binary",
+        totalBytes: 7,
+      },
+    });
+  });
+
+  it("renders UTF-8 text even when its extension usually denotes binary", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(join(repoDir, "notes.png"), "plain UTF-8 notes\n");
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "notes.png",
+        staged: false,
+        status: "?",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body.previewSkipped).toBeUndefined();
+    expect(body.structuredPatch[0]?.lines).toContain("+plain UTF-8 notes");
+  });
+
+  it("uses Git attributes when classifying a tracked diff", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(join(repoDir, ".gitattributes"), "forced.txt -diff\n");
+    await writeFile(join(repoDir, "forced.txt"), "before\n");
+    await runGit(repoDir, ["add", ".gitattributes", "forced.txt"]);
+    await runGit(repoDir, ["commit", "-m", "Add binary diff policy"]);
+    await writeFile(join(repoDir, "forced.txt"), "after\n");
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "forced.txt",
+        staged: false,
+        status: "M",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      diffHtml: "",
+      structuredPatch: [],
+      previewSkipped: { reason: "binary" },
+    });
+  });
+
+  it("rejects unsafe bytes even when Git attributes force a text diff", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(join(repoDir, ".gitattributes"), "forced.data diff\n");
+    await writeFile(
+      join(repoDir, "forced.data"),
+      Buffer.from([0xff, 0xfe, 0x41]),
+    );
+    await runGit(repoDir, ["add", ".gitattributes", "forced.data"]);
+    await runGit(repoDir, ["commit", "-m", "Force text diff policy"]);
+    await writeFile(
+      join(repoDir, "forced.data"),
+      Buffer.from([0xff, 0xfe, 0x42]),
+    );
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "forced.data",
+        staged: false,
+        status: "M",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      diffHtml: "",
+      structuredPatch: [],
+      previewSkipped: {
+        reason: "binary",
+        totalBytes: 6,
+      },
+    });
+  });
+
+  it("skips staged binary changes before reading them as text", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(
+      join(repoDir, "artifact.data"),
+      Buffer.from([0, 1, 2, 3]),
+    );
+    await runGit(repoDir, ["add", "artifact.data"]);
+    await runGit(repoDir, ["commit", "-m", "Add artifact"]);
+    await writeFile(
+      join(repoDir, "artifact.data"),
+      Buffer.from([0, 1, 2, 4]),
+    );
+    await runGit(repoDir, ["add", "artifact.data"]);
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "artifact.data",
+        staged: true,
+        status: "M",
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body.previewSkipped).toEqual({ reason: "binary" });
+    expect(body.diffHtml).toBe("");
+    expect(body.structuredPatch).toEqual([]);
+  });
+
+  it("can hide whitespace-only working-tree changes", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(join(repoDir, "README.md"), "hello   \n");
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "README.md",
+        staged: false,
+        status: "M",
+        ignoreWhitespace: true,
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+
+    expect(response.status).toBe(200);
+    expect(body.structuredPatch).toEqual([]);
+  });
+
+  it("can diff the current filesystem directly against HEAD", async () => {
+    const repoDir = await createRepoWithUpstream();
+    await writeFile(join(repoDir, "README.md"), "staged\n");
+    await runGit(repoDir, ["add", "README.md"]);
+    await writeFile(join(repoDir, "README.md"), "working\n");
+    const { projectId, routes } = createRoutesForProject(repoDir);
+
+    const response = await routes.request(`/${projectId}/git/diff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "README.md",
+        staged: false,
+        status: "M",
+        againstHead: true,
+      }),
+    });
+    const body = (await response.json()) as GitDiffResult;
+    const lines = body.structuredPatch.flatMap((hunk) => hunk.lines);
+
+    expect(response.status).toBe(200);
+    expect(lines).toContain("-hello");
+    expect(lines).toContain("+working");
+    expect(lines).not.toContain("+staged");
   });
 
   it("reports automatic integration options for a clean diverged branch", async () => {

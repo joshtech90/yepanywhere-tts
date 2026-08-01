@@ -41,6 +41,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS,
   DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES,
+  MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH,
 } from "../services/ServerSettingsService.js";
 import {
   isValidSshHostAlias,
@@ -66,6 +67,7 @@ const SESSION_TOOLBAR_PRESENCE_CLIENT_DEFAULT_KEYS = [
   "sessionStatus",
   "projectQueue",
   "projectQueueNewSessionShortcut",
+  "composerRecall",
 ] as const satisfies readonly (keyof SessionToolbarPresenceClientDefaults)[];
 const TOOLBAR_CONTROL_PRESENCES = [
   "hidden",
@@ -84,6 +86,7 @@ const CLIENT_DEFAULT_KEYS = [
   "patientQueueDefault",
   "projectQueueCtrlEnterEnabled",
   "compactAtContextPercent",
+  "forceYaOrchestratedCompaction",
 ] as const;
 const BUSY_COMPOSER_DEFAULT_ACTIONS = [
   "steer",
@@ -156,6 +159,56 @@ export function normalizeOpenAiCompatibleBaseUrl(raw: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+export function normalizeClaudeGatewayUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 2000) return null;
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password || url.search || url.hash) return null;
+
+    const normalized = url.toString();
+    return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
+  } catch {
+    return null;
+  }
+}
+
+export function parseClaudeGatewayStartCommand(
+  raw: unknown,
+): string | undefined | null {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (
+    trimmed.length > MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH ||
+    trimmed.includes("\0")
+  ) {
+    return null;
+  }
+  return trimmed;
+}
+
+export function parseClaudeAutoCompactPercentOverride(
+  raw: unknown,
+): number | undefined | null {
+  if (raw === undefined || raw === null || raw === "" || raw === 0) {
+    return undefined;
+  }
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < 1 ||
+    raw > 100
+  ) {
+    return null;
+  }
+  return raw;
 }
 
 /**
@@ -478,6 +531,24 @@ export function parseNewSessionDefaults(
     }
   }
 
+  if ("sandboxLevel" in input) {
+    if (
+      input.sandboxLevel !== undefined &&
+      input.sandboxLevel !== null &&
+      input.sandboxLevel !== "" &&
+      input.sandboxLevel !== "none" &&
+      input.sandboxLevel !== "project-write"
+    ) {
+      return null;
+    }
+    if (
+      input.sandboxLevel === "none" ||
+      input.sandboxLevel === "project-write"
+    ) {
+      parsed.sandboxLevel = input.sandboxLevel;
+    }
+  }
+
   if ("recapMode" in input) {
     if (
       input.recapMode !== undefined &&
@@ -794,6 +865,19 @@ export function parseClientDefaults(
     if (parsedCompact === null) return null;
     parsed.compactAtContextPercent = parsedCompact;
   }
+  if ("forceYaOrchestratedCompaction" in raw) {
+    if (
+      raw.forceYaOrchestratedCompaction === undefined ||
+      raw.forceYaOrchestratedCompaction === null
+    ) {
+      parsed.forceYaOrchestratedCompaction = undefined;
+    } else if (typeof raw.forceYaOrchestratedCompaction !== "boolean") {
+      return null;
+    } else {
+      parsed.forceYaOrchestratedCompaction =
+        raw.forceYaOrchestratedCompaction;
+    }
+  }
 
   return Object.keys(parsed).length > 0 ? parsed : undefined;
 }
@@ -873,6 +957,14 @@ export function mergeClientDefaults(
       delete merged.compactAtContextPercent;
     } else {
       merged.compactAtContextPercent = update.compactAtContextPercent;
+    }
+  }
+  if ("forceYaOrchestratedCompaction" in update) {
+    if (update.forceYaOrchestratedCompaction === undefined) {
+      delete merged.forceYaOrchestratedCompaction;
+    } else {
+      merged.forceYaOrchestratedCompaction =
+        update.forceYaOrchestratedCompaction;
     }
   }
   return Object.keys(merged).length > 0 ? merged : undefined;

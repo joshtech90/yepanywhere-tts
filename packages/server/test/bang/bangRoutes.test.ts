@@ -42,16 +42,16 @@ function createDeps() {
       listTranscriptDisplayObjectSessions: vi.fn(() => []),
     },
     bangCommandService,
-    bangCommandsEnabled: vi.fn(() => true),
+    bangHistoryViewEnabled: vi.fn(() => true),
     sessionBelongsToProject: vi.fn(async () => false),
   } as unknown as BangCommandsDeps;
   return { deps, bangCommandService };
 }
 
 describe("bang command project/session boundary", () => {
-  it("keeps every command route unavailable until explicitly enabled", async () => {
+  it("keeps execution and completions available while only the history view is hidden", async () => {
     const { deps, bangCommandService } = createDeps();
-    deps.bangCommandsEnabled = vi.fn(() => false);
+    deps.bangHistoryViewEnabled = vi.fn(() => false);
     deps.sessionBelongsToProject = vi.fn(async () => true);
     const app = createBangCommandsRoutes(deps);
     const prefix = `/projects/${projectId}/sessions/${sessionId}/bang-commands`;
@@ -64,23 +64,21 @@ describe("bang command project/session boundary", () => {
       }),
       app.request(`${prefix}/${object.id}/kill`, { method: "POST" }),
       app.request(`${prefix}/${object.id}/output`),
-      app.request(`${prefix}/${object.id}`, { method: "DELETE" }),
       app.request(`/projects/${projectId}/bang-completions?token=git`),
       app.request("/bang-commands"),
     ]);
 
     expect(responses.map((response) => response.status)).toEqual([
-      404, 404, 404, 404, 404, 404,
+      200, 200, 200, 200, 404,
     ]);
-    expect(bangCommandService.run).not.toHaveBeenCalled();
-    expect(bangCommandService.kill).not.toHaveBeenCalled();
-    expect(bangCommandService.readOutput).not.toHaveBeenCalled();
-    expect(bangCommandService.remove).not.toHaveBeenCalled();
+    expect(bangCommandService.run).toHaveBeenCalled();
+    expect(bangCommandService.kill).toHaveBeenCalled();
+    expect(bangCommandService.readOutput).toHaveBeenCalled();
   });
 
-  it("does not intercept unrelated API routes while disabled", async () => {
+  it("does not intercept unrelated API routes while the history view is hidden", async () => {
     const { deps } = createDeps();
-    deps.bangCommandsEnabled = vi.fn(() => false);
+    deps.bangHistoryViewEnabled = vi.fn(() => false);
     const app = new Hono();
     app.route("/api", createBangCommandsRoutes(deps));
     app.get("/api/projects/:projectId/files", (c) =>
@@ -93,7 +91,7 @@ describe("bang command project/session boundary", () => {
     await expect(response.json()).resolves.toEqual({ route: "files" });
   });
 
-  it("runs only after the feature and project/session boundary both allow it", async () => {
+  it("runs when the project/session boundary allows it", async () => {
     const { deps, bangCommandService } = createDeps();
     deps.sessionBelongsToProject = vi.fn(async () => true);
     const app = createBangCommandsRoutes(deps);
@@ -139,5 +137,82 @@ describe("bang command project/session boundary", () => {
     expect(bangCommandService.kill).not.toHaveBeenCalled();
     expect(bangCommandService.readOutput).not.toHaveBeenCalled();
     expect(bangCommandService.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("bang completions global command history", () => {
+  const bang = (id: string, command: string, createdAt: string) => ({
+    id,
+    kind: "bang-command" as const,
+    createdAt,
+    placementAfterMessageId: "",
+    command,
+    cwd: "/project-a",
+    status: "done" as const,
+    exitCode: 0,
+  });
+
+  function depsWithHistory() {
+    const { deps } = createDeps();
+    // Two sessions' worth of bang objects, out of createdAt order and with a
+    // duplicate "git status" (older + newer) to exercise dedup.
+    deps.sessionMetadataService.listTranscriptDisplayObjectSessions = vi.fn(
+      () => [
+        {
+          sessionId: "s1",
+          workingProjectId: projectId,
+          objects: [
+            bang("b1", "git status", "2026-07-24T00:00:00.000Z"),
+            bang("b2", "git log --oneline", "2026-07-24T02:00:00.000Z"),
+          ],
+        },
+        {
+          sessionId: "s2",
+          workingProjectId: projectId,
+          objects: [
+            bang("b3", "git status", "2026-07-24T03:00:00.000Z"),
+            bang("b4", "ls -la", "2026-07-24T01:00:00.000Z"),
+            bang("b5", "git status -s", "2026-07-24T04:00:00.000Z"),
+          ],
+        },
+      ],
+    );
+    return deps;
+  }
+
+  it("returns prefix-matched history, most-recent-first and deduped", async () => {
+    const app = createBangCommandsRoutes(depsWithHistory());
+    const response = await app.request(
+      `/projects/${projectId}/bang-completions?token=zznomatch&kind=command&line=${encodeURIComponent(
+        "git ",
+      )}`,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { history: string[] };
+    expect(body.history).toEqual([
+      "git status -s",
+      "git status",
+      "git log --oneline",
+    ]);
+  });
+
+  it("excludes the command exactly equal to the current body", async () => {
+    const app = createBangCommandsRoutes(depsWithHistory());
+    const response = await app.request(
+      `/projects/${projectId}/bang-completions?token=zznomatch&kind=command&line=${encodeURIComponent(
+        "git status",
+      )}`,
+    );
+    const body = (await response.json()) as { history: string[] };
+    expect(body.history).toEqual(["git status -s"]);
+  });
+
+  it("returns empty history when the line is empty", async () => {
+    const app = createBangCommandsRoutes(depsWithHistory());
+    const response = await app.request(
+      `/projects/${projectId}/bang-completions?token=git&kind=command`,
+    );
+    const body = (await response.json()) as { history: string[] };
+    expect(body.history).toEqual([]);
   });
 });

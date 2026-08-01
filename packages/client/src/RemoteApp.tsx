@@ -23,7 +23,10 @@ import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
 import { ConnectionBar } from "./components/ConnectionBar";
 import { FloatingActionButton } from "./components/FloatingActionButton";
 import { HostOfflineModal } from "./components/HostOfflineModal";
-import { ReloadBanner } from "./components/ReloadBanner";
+import {
+  ReloadBanner,
+  ReloadBannerStack,
+} from "./components/ReloadBanner";
 import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNotices";
 import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
 import {
@@ -40,6 +43,7 @@ import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
+import { primeProviderCache } from "./hooks/useProviders";
 import {
   getVisibleReloadBanners,
   useReloadNotifications,
@@ -47,6 +51,7 @@ import {
 import { useRemoteActivityBusConnection } from "./hooks/useRemoteActivityBusConnection";
 import { useRemoteBasePath } from "./hooks/useRemoteBasePath";
 import { useVersion } from "./hooks/useVersion";
+import { useClientSummarySourceKey } from "./lib/clientSummaryStore";
 import { initClientLogCollection } from "./lib/diagnostics";
 import {
   getRelayCanonicalRedirectTarget,
@@ -68,6 +73,14 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
   const { currentRelayUsername } = useRemoteConnection();
   const { version: versionInfo } = useVersion();
   const { icon: hostIdentityIcon } = useHostIdentity();
+  const sourceKey = useClientSummarySourceKey();
+
+  useEffect(() => {
+    void primeProviderCache(sourceKey).catch(() => {
+      // Connected consumers retain their normal loading/error path when this
+      // advisory background request cannot populate the catalog.
+    });
+  }, [sourceKey]);
 
   useNeedsAttentionBadge(hostIdentityIcon ?? undefined);
 
@@ -99,27 +112,29 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
         versionInfo={versionInfo}
         relayUsername={currentRelayUsername}
       />
-      {visibleReloads.backend && (
-        <ReloadBanner
-          target="backend"
-          onReload={reloadBackend}
-          onDismiss={() => dismiss("backend")}
-          onRestartWhenSafe={scheduleSafeRestart}
-          onCancelSafeRestart={cancelSafeRestart}
-          unsafeToRestart={unsafeToRestart}
-          interruptibleSessionCount={interruptibleSessionCount}
-          queuedSessionMessageCount={queuedSessionMessageCount}
-          safeRestartState={safeRestartState}
-          safeRestartMutating={safeRestartMutating}
-        />
-      )}
-      {visibleReloads.frontend && (
-        <ReloadBanner
-          target="frontend"
-          onReload={reloadFrontend}
-          onDismiss={() => dismiss("frontend")}
-        />
-      )}
+      <ReloadBannerStack avoidSessionComposer={isSessionDetailRoute}>
+        {visibleReloads.backend && (
+          <ReloadBanner
+            target="backend"
+            onReload={reloadBackend}
+            onDismiss={() => dismiss("backend")}
+            onRestartWhenSafe={scheduleSafeRestart}
+            onCancelSafeRestart={cancelSafeRestart}
+            unsafeToRestart={unsafeToRestart}
+            interruptibleSessionCount={interruptibleSessionCount}
+            queuedSessionMessageCount={queuedSessionMessageCount}
+            safeRestartState={safeRestartState}
+            safeRestartMutating={safeRestartMutating}
+          />
+        )}
+        {visibleReloads.frontend && (
+          <ReloadBanner
+            target="frontend"
+            onReload={reloadFrontend}
+            onDismiss={() => dismiss("frontend")}
+          />
+        )}
+      </ReloadBannerStack>
       <BottomOverscrollReload
         disabled={isSessionDetailRoute}
         onReload={reloadFrontend}

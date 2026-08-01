@@ -8,7 +8,9 @@ import {
   type PromptSuggestionMode,
   type ProviderName,
   type RecapMode,
+  type SessionSandboxLevel,
   type ThinkingMode,
+  type ThinkingOption,
   type Workstream,
   type WorkstreamId,
   normalizeRecapAfterSeconds,
@@ -17,7 +19,6 @@ import {
 import {
   type ChangeEvent,
   type ClipboardEvent,
-  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -28,8 +29,13 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { type UploadedFile, api } from "../api/client";
+import {
+  type SessionOptions,
+  type UploadedFile,
+  api,
+} from "../api/client";
 import { ENTER_SENDS_MESSAGE } from "../constants";
+import styles from "./NewSessionForm.module.css";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useToastContext } from "../contexts/ToastContext";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
@@ -62,10 +68,17 @@ import {
   resolveSupportedThinkingMode,
 } from "../lib/effortLevels";
 import {
-  getPreferredModelId,
+  getPreferredProviderModelId,
   getProviderSessionDefaults,
+  hasRequiredProviderModel,
   withProviderSessionDefaults,
 } from "../lib/newSessionDefaults";
+import {
+  startsAdditionalModelGroup,
+  withProviderVisibleModelSelection,
+} from "../lib/modelCatalog";
+import { providerSupportsLocalSessionSandbox } from "../lib/providerCapabilities";
+import { serverHasAvailableSessionSandbox } from "../lib/sessionSandboxAvailability";
 import {
   type PendingFile,
   type PendingLocalFile,
@@ -84,6 +97,7 @@ import {
   getDefaultHelperSideModel,
   getPreferredPromptSuggestionMode,
   getPreferredRecapMode,
+  parseThinkingOption,
   resolvePromptSuggestionMode,
   resolveRecapMode,
   toThinkingOption,
@@ -146,7 +160,7 @@ import {
   clearSpeechInsertionRangeReplacement,
   createSpeechInsertionRange,
   getSpeechSelectionFinalDelayMs,
-  getSpeechMirrorSegments,
+  getSpeechInterimDisplayTranscript,
   getSpeechTranscriptInsertionParts,
   getSpeechTranscriptReplacementParts,
   mapSpeechInsertionRangeThroughEdit,
@@ -161,11 +175,13 @@ import {
 import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
 import { generateUUID } from "../lib/uuid";
 import { useVersion } from "../hooks/useVersion";
+import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
 import { shortenPath } from "../lib/text";
 import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import { ProviderBadge } from "./ProviderBadge";
+import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
 import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import { SpeechControlMenu } from "./SpeechControlMenu";
 import {
@@ -225,6 +241,44 @@ export interface NewSessionFormProps {
   preferredProvider?: ProviderName;
   /** Seed the model selection; applied when preferredProvider matches. */
   preferredModel?: string;
+  /** Seed thinking and effort from an existing session. */
+  preferredThinking?: ThinkingOption;
+  /** Seed approval behavior from an existing session. */
+  preferredPermissionMode?: PermissionMode;
+  /** Seed the execution host from an existing session. */
+  preferredExecutor?: string;
+  /**
+   * Reuse the New Session composer and launch controls for a specialized
+   * session start such as handoff.
+   */
+  launch?: {
+    draftKey: string;
+    initialMessage: string;
+    fixedProject?: boolean;
+    allowAttachments?: boolean;
+    allowProjectQueue?: boolean;
+    /**
+     * How the seeded message is offered. `editable` is an ordinary draft.
+     * `muted` shows it dimmed, compact, and read-only: the launch composes
+     * its own first turn — a fork copies the real transcript — so the draft
+     * is context for the choice rather than something being sent.
+     */
+    composer?: "editable" | "muted";
+    /** Start-control wording, for a launch whose verb is not "start session". */
+    startLabel?: string;
+    startingLabel?: string;
+    /**
+     * Withhold the provider and model pickers. A fork continues an existing
+     * provider transcript, so changing either would not be a fork; offering
+     * the choice would only invite a request the server refuses.
+     */
+    fixedProviderModel?: boolean;
+    submit: (request: {
+      message: string;
+      options: SessionOptions;
+      clientTimestamp: number;
+    }) => Promise<void>;
+  };
 }
 
 export function NewSessionForm({
@@ -240,6 +294,10 @@ export function NewSessionForm({
   compact = false,
   preferredProvider,
   preferredModel,
+  preferredThinking,
+  preferredPermissionMode,
+  preferredExecutor,
+  launch,
 }: NewSessionFormProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -249,8 +307,8 @@ export function NewSessionForm({
   const sourceSummary = sourceRuntime.summary;
   const sourceTransport = sourceRuntime.transport;
   const newSessionDraftKey = useMemo(
-    () => createNewSessionDraftKey(clientSummarySourceKey),
-    [clientSummarySourceKey],
+    () => launch?.draftKey ?? createNewSessionDraftKey(clientSummarySourceKey),
+    [clientSummarySourceKey, launch?.draftKey],
   );
   const [message, setMessage, draftControls] =
     useDraftPersistence(newSessionDraftKey);
@@ -264,6 +322,7 @@ export function NewSessionForm({
   const [selectedEffortLevel, setSelectedEffortLevel] =
     useState<EffortLevel>("high");
   const [selectedRecapMode, setSelectedRecapMode] = useState<RecapMode>("off");
+  const [sandboxLevel, setSandboxLevel] = useState<SessionSandboxLevel>("none");
   const [recapAfterSeconds, setRecapAfterSeconds] = useState(
     DEFAULT_RECAP_AFTER_SECONDS,
   );
@@ -327,6 +386,7 @@ export function NewSessionForm({
   const hasInitializedDefaultsRef = useRef(false);
   const hasUserCustomizedDefaultsRef = useRef(false);
   const lastSyncedProjectIdRef = useRef<string | null>(null);
+  const hasSeededMessageRef = useRef(false);
 
   // Thinking toggle state
   const {
@@ -343,7 +403,16 @@ export function NewSessionForm({
   } = useModelSettings();
 
   // Server version for voiceBackends advertisement
-  const { version: versionInfo } = useVersion();
+  const { version: versionInfo, loading: versionLoading } = useVersion();
+  const supportsSessionSandboxing =
+    serverHasAvailableSessionSandbox(versionInfo);
+  const canConfigureSessionSandbox =
+    supportsSessionSandboxing &&
+    selectedExecutor === null &&
+    providerSupportsLocalSessionSandbox(selectedProvider);
+  const effectiveSandboxLevel: SessionSandboxLevel = canConfigureSessionSandbox
+    ? sandboxLevel
+    : "none";
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
   const projectQueueCtrlEnterEnabled =
     versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
@@ -352,6 +421,22 @@ export function NewSessionForm({
 
   // Toast for error messages
   const { showToast } = useToastContext();
+  const allowAttachments = launch?.allowAttachments ?? true;
+  const allowProjectQueue = launch?.allowProjectQueue ?? true;
+  const fixedProject = launch?.fixedProject ?? false;
+  const composerMuted = launch?.composer === "muted";
+  const showProviderAndModel = !(launch?.fixedProviderModel ?? false);
+
+  // A launch may resolve its seed asynchronously — the handoff draft is
+  // fetched — so wait for content rather than seeding an empty composer once
+  // and never again. A restored draft is the user's own earlier edit of this
+  // same launch, so it wins over re-seeding.
+  useLayoutEffect(() => {
+    if (!launch || hasSeededMessageRef.current) return;
+    if (!launch.initialMessage) return;
+    hasSeededMessageRef.current = true;
+    if (!message) setMessage(launch.initialMessage);
+  }, [launch, message, setMessage]);
 
   const writeDraftAttachmentState = useCallback(
     (nextFiles: readonly PendingFile[]) => {
@@ -683,7 +768,13 @@ export function NewSessionForm({
   );
 
   // Fetch available providers
-  const { providers, loading: providersLoading } = useProviders();
+  const {
+    providers,
+    loading: providersLoading,
+    refetch: refetchProviders,
+  } = useProviders();
+  const { usage: subscriptionUsage } =
+    useProviderSubscriptionUsage(selectedProvider);
   const {
     settings,
     isLoading: settingsLoading,
@@ -734,9 +825,24 @@ export function NewSessionForm({
     (p) => p.name === selectedProvider,
   );
   const availableModels: ModelInfo[] = selectedProviderInfo?.models ?? [];
+  const visibleModels = useMemo(
+    () =>
+      withProviderVisibleModelSelection(
+        selectedProvider,
+        availableModels,
+        selectedModel,
+        t("modelSelectionUnavailable"),
+      ),
+    [availableModels, selectedModel, selectedProvider, t],
+  );
+  const hasSelectedProviderModel = hasRequiredProviderModel(
+    selectedProvider,
+    availableModels,
+    selectedModel,
+  );
   const helperSelectableModels = useMemo(
-    () => [...availableModels],
-    [availableModels],
+    () => [...visibleModels],
+    [visibleModels],
   );
   const helperSideModelOptions: FilterOption<string>[] = useMemo(
     () => [
@@ -762,7 +868,7 @@ export function NewSessionForm({
     selectedProviderInfo?.supportsPermissionMode ?? true;
   const supportsThinkingToggle =
     selectedProviderInfo?.supportsThinkingToggle ?? true;
-  const selectedModelInfo = availableModels.find(
+  const selectedModelInfo = visibleModels.find(
     (model) => model.id === selectedModel,
   );
   const effortOptions = useMemo(
@@ -1088,7 +1194,8 @@ export function NewSessionForm({
     if (
       hasInitializedDefaultsRef.current ||
       providersLoading ||
-      settingsLoading
+      settingsLoading ||
+      versionLoading
     ) {
       return;
     }
@@ -1127,7 +1234,8 @@ export function NewSessionForm({
       requestedProviderName &&
       initialProvider.name === requestedProviderName &&
       preferredModel &&
-      (initialModels.length === 0 ||
+      ((initialProvider.name !== "claude-gateway" &&
+        initialModels.length === 0) ||
         initialModels.some((model) => model.id === preferredModel))
         ? preferredModel
         : null;
@@ -1141,11 +1249,42 @@ export function NewSessionForm({
     setSelectedProvider(initialProvider.name);
     setSelectedModel(
       requestedModelId ??
-        getPreferredModelId(initialModels, initialProviderDefaults.model),
+        getPreferredProviderModelId(
+          initialProvider.name,
+          initialModels,
+          initialProviderDefaults.model,
+        ),
     );
-    setSelectedThinkingMode(initialProviderDefaults.thinkingMode ?? "off");
-    setSelectedEffortLevel(initialProviderDefaults.effortLevel ?? "high");
-    setSelectedRecapMode(getPreferredRecapMode(initialProvider, savedDefaults));
+    const preferredThinkingSelection = preferredThinking
+      ? parseThinkingOption(preferredThinking)
+      : null;
+    setSelectedThinkingMode(
+      preferredThinkingSelection?.mode ??
+        initialProviderDefaults.thinkingMode ??
+        "off",
+    );
+    setSelectedEffortLevel(
+      preferredThinkingSelection?.effort ??
+        initialProviderDefaults.effortLevel ??
+        "high",
+    );
+    const savedSandboxLevel =
+      supportsSessionSandboxing &&
+      savedDefaults?.sandboxLevel === "project-write"
+        ? "project-write"
+        : "none";
+    const savedRecapMode = getPreferredRecapMode(
+      initialProvider,
+      savedDefaults,
+    );
+    setSelectedRecapMode(
+      providerSupportsLocalSessionSandbox(initialProvider.name) &&
+        savedSandboxLevel === "project-write" &&
+        savedRecapMode === "side-session"
+        ? "off"
+        : savedRecapMode,
+    );
+    setSandboxLevel(savedSandboxLevel);
     setRecapAfterSeconds(
       normalizeRecapAfterSeconds(savedDefaults?.recapAfterSeconds),
     );
@@ -1153,16 +1292,26 @@ export function NewSessionForm({
     setHelperSideModel(
       getDefaultHelperSideModel(initialModels, initialProviderDefaults),
     );
-    setMode(savedDefaults?.permissionMode ?? "default");
+    setMode(
+      preferredPermissionMode ??
+        savedDefaults?.permissionMode ??
+        "default",
+    );
+    setSelectedExecutor(preferredExecutor ?? null);
   }, [
     availableProviders,
     providers,
     providersLoading,
     settings,
     settingsLoading,
+    supportsSessionSandboxing,
+    versionLoading,
     getLegacyProviderDefaultSeed,
     preferredProvider,
     preferredModel,
+    preferredThinking,
+    preferredPermissionMode,
+    preferredExecutor,
   ]);
 
   useEffect(() => {
@@ -1215,21 +1364,73 @@ export function NewSessionForm({
     );
     if (provider?.models && provider.models.length > 0) {
       setSelectedModel(
-        getPreferredModelId(providerModels, providerDefaults.model),
+        getPreferredProviderModelId(
+          providerName,
+          providerModels,
+          providerDefaults.model,
+        ),
       );
     } else {
       setSelectedModel(null);
     }
-    setSelectedThinkingMode(providerDefaults.thinkingMode ?? "off");
-    setSelectedEffortLevel(providerDefaults.effortLevel ?? "high");
+    const preferredThinkingSelection = preferredThinking
+      ? parseThinkingOption(preferredThinking)
+      : null;
+    setSelectedThinkingMode(
+      preferredThinkingSelection?.mode ??
+        providerDefaults.thinkingMode ??
+        "off",
+    );
+    setSelectedEffortLevel(
+      preferredThinkingSelection?.effort ??
+        providerDefaults.effortLevel ??
+        "high",
+    );
     setHelperSideModel(
       getDefaultHelperSideModel(providerModels, providerDefaults),
     );
   };
 
+  useEffect(() => {
+    if (selectedProvider !== "claude-gateway") return;
+    void refetchProviders();
+  }, [refetchProviders, selectedProvider]);
+
+  useEffect(() => {
+    if (selectedProvider !== "claude-gateway") return;
+    if (
+      selectedModel &&
+      availableModels.some((model) => model.id === selectedModel)
+    ) {
+      return;
+    }
+    const providerDefaults = getProviderSessionDefaults(
+      settings?.newSessionDefaults,
+      selectedProvider,
+      getLegacyProviderDefaultSeed(selectedProvider),
+    );
+    const nextModel = getPreferredProviderModelId(
+      selectedProvider,
+      availableModels,
+      providerDefaults.model,
+    );
+    if (selectedModel !== nextModel) {
+      setSelectedModel(nextModel);
+      setHelperSideModel(
+        getDefaultHelperSideModel(availableModels, providerDefaults),
+      );
+    }
+  }, [
+    availableModels,
+    getLegacyProviderDefaultSeed,
+    selectedModel,
+    selectedProvider,
+    settings?.newSessionDefaults,
+  ]);
+
   // Build model options for FilterDropdown
   const modelOptions = useMemo((): FilterOption<string>[] => {
-    return availableModels.map((model) => {
+    return visibleModels.map((model, index) => {
       const label = model.size
         ? `${model.name} (${(model.size / (1024 * 1024 * 1024)).toFixed(1)} GB)`
         : model.name;
@@ -1250,15 +1451,24 @@ export function NewSessionForm({
         value: model.id,
         label,
         description,
+        groupLabelBefore: startsAdditionalModelGroup(visibleModels, index)
+          ? t("previousModelsGroup")
+          : undefined,
         // Reuse the session-header/tooltip badge so the model's route (e.g.
         // pi's "copilot") is visible in the picker, in the same provider →
         // route → model order the badge already establishes.
         icon: selectedProvider ? (
           <ProviderBadge provider={selectedProvider} model={model.id} />
         ) : undefined,
+        meta: (
+          <ModelSubscriptionUsage
+            usage={subscriptionUsage}
+            modelId={model.id}
+          />
+        ),
       };
     });
-  }, [availableModels, selectedProvider]);
+  }, [selectedProvider, subscriptionUsage, t, visibleModels]);
 
   // Handle model selection from FilterDropdown
   const handleModelSelect = useCallback((selected: string[]) => {
@@ -1414,10 +1624,13 @@ export function NewSessionForm({
   // avoid a toast on every click.
   useEffect(() => {
     if (!hasUserCustomizedDefaultsRef.current || !selectedProvider) return;
-    const { helperSideModel: _legacyHelperSideModel, ...baseDefaults } =
-      (newSessionDefaultsRef.current ?? {}) as NonNullable<
-        typeof newSessionDefaultsRef.current
-      > & { helperSideModel?: string };
+    const {
+      helperSideModel: _legacyHelperSideModel,
+      sandboxLevel: _savedSandboxLevel,
+      ...baseDefaults
+    } = (newSessionDefaultsRef.current ?? {}) as NonNullable<
+      typeof newSessionDefaultsRef.current
+    > & { helperSideModel?: string };
     void Promise.resolve(
       updateServerSetting("newSessionDefaults", {
         ...withProviderSessionDefaults(
@@ -1431,6 +1644,7 @@ export function NewSessionForm({
             recapMode: selectedRecapMode,
             recapAfterSeconds,
             promptSuggestionMode: selectedPromptSuggestionMode,
+            ...(supportsSessionSandboxing ? { sandboxLevel } : {}),
           },
           selectedProvider,
           {
@@ -1450,12 +1664,14 @@ export function NewSessionForm({
     helperSideModel,
     mode,
     recapAfterSeconds,
+    sandboxLevel,
     selectedModel,
     selectedEffortLevel,
     selectedProvider,
     selectedPromptSuggestionMode,
     selectedRecapMode,
     selectedThinkingMode,
+    supportsSessionSandboxing,
     updateServerSetting,
   ]);
 
@@ -1583,7 +1799,14 @@ export function NewSessionForm({
       }
 
       const hasContent = finalMessage.trim() || pendingFiles.length > 0;
-      if (!hasContent || isStarting) return;
+      // A muted composer composes its own first turn, so an empty message is
+      // not a reason to refuse the start.
+      if (
+        (!hasContent && !composerMuted) ||
+        isStarting ||
+        !hasSelectedProviderModel
+      )
+        return;
 
       const trimmedMessage = finalMessage.trim();
       const trimmedProjectInput = normalizeProjectInput(projectInput);
@@ -1601,6 +1824,7 @@ export function NewSessionForm({
         let processId: string;
         const sessionMode = effectivePermissionMode;
         let initialPermissionMode: PermissionMode = sessionMode;
+        let initialAppliedPermissionMode: PermissionMode | undefined;
         let initialModeVersion = 0;
         const uploadedFiles: UploadedFile[] = [];
 
@@ -1627,6 +1851,9 @@ export function NewSessionForm({
           showThinking,
           provider: selectedProvider ?? undefined,
           executor: selectedExecutor ?? undefined,
+          ...(supportsSessionSandboxing
+            ? { sandboxLevel: effectiveSandboxLevel }
+            : {}),
           recapMode: effectiveRecapMode,
           recapAfterSeconds,
           promptSuggestionMode: effectivePromptSuggestionMode,
@@ -1641,6 +1868,9 @@ export function NewSessionForm({
           thinking,
           provider: selectedProvider ?? null,
           executor: selectedExecutor ?? null,
+          sandboxLevel: supportsSessionSandboxing
+            ? effectiveSandboxLevel
+            : null,
           recapMode: effectiveRecapMode,
           recapAfterSeconds,
           promptSuggestionMode: effectivePromptSuggestionMode,
@@ -1650,6 +1880,20 @@ export function NewSessionForm({
           clientTimestamp,
           serverOffsetMs: getEstimatedServerOffsetMs(),
         });
+
+        if (launch) {
+          if (pendingFiles.length > 0) {
+            throw new Error("This session launch does not accept attachments");
+          }
+          await launch.submit({
+            message: trimmedMessage,
+            options: sessionOptions,
+            clientTimestamp,
+          });
+          draftControls.clearDraft();
+          setIsStarting(false);
+          return;
+        }
 
         if (pendingFiles.length > 0) {
           // Two-phase flow: create session first, then upload to real session folder
@@ -1668,6 +1912,8 @@ export function NewSessionForm({
           sessionId = createResult.sessionId;
           processId = createResult.processId;
           initialPermissionMode = createResult.permissionMode;
+          initialAppliedPermissionMode =
+            createResult.appliedPermissionMode;
           initialModeVersion = createResult.modeVersion;
           resolvedProjectId = activeProjectId;
           logSessionUiTrace("new-session-created", {
@@ -1752,6 +1998,7 @@ export function NewSessionForm({
           sessionId = result.sessionId;
           processId = result.processId;
           initialPermissionMode = result.permissionMode;
+          initialAppliedPermissionMode = result.appliedPermissionMode;
           initialModeVersion = result.modeVersion;
           resolvedProjectId = result.projectId;
           logSessionUiTrace("new-session-started", {
@@ -1796,6 +2043,7 @@ export function NewSessionForm({
                 owner: "self",
                 processId,
                 permissionMode: initialPermissionMode,
+                appliedPermissionMode: initialAppliedPermissionMode,
                 modeVersion: initialModeVersion,
                 recapAfterSeconds,
               },
@@ -1856,12 +2104,16 @@ export function NewSessionForm({
       effectivePermissionMode,
       effectiveThinkingMode,
       helperSideModel,
+      hasSelectedProviderModel,
       isStarting,
+      launch,
       message,
+      composerMuted,
       navigate,
       pendingFiles,
       projectInput,
       recapAfterSeconds,
+      effectiveSandboxLevel,
       resolvePendingAttachmentsForSession,
       resolveProjectIdForSubmission,
       selectedExecutor,
@@ -1873,6 +2125,7 @@ export function NewSessionForm({
       selectedRecapMode,
       setPendingFiles,
       showToast,
+      supportsSessionSandboxing,
       t,
     ],
   );
@@ -1898,7 +2151,14 @@ export function NewSessionForm({
       .filter(isPendingStagedFile)
       .map(toPersistedStagedAttachmentRef);
     const canQueueAttachments = stagedRefs.length === pendingFiles.length;
-    if (!trimmedMessage || !canQueueAttachments || isStarting) return;
+    if (
+      !trimmedMessage ||
+      !canQueueAttachments ||
+      isStarting ||
+      !hasSelectedProviderModel
+    ) {
+      return;
+    }
 
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
@@ -1938,6 +2198,9 @@ export function NewSessionForm({
           showThinking,
           provider: selectedProvider ?? undefined,
           executor: selectedExecutor ?? undefined,
+          ...(supportsSessionSandboxing
+            ? { sandboxLevel: effectiveSandboxLevel }
+            : {}),
           title: trimmedMessage,
         },
         message: {
@@ -1966,6 +2229,7 @@ export function NewSessionForm({
         thinking,
         provider: selectedProvider ?? null,
         executor: selectedExecutor ?? null,
+        sandboxLevel: supportsSessionSandboxing ? effectiveSandboxLevel : null,
         textLength: trimmedMessage.length,
         attachmentCount: stagedRefs.length,
         uploadWaitMs: Date.now() - actionAtMs,
@@ -1987,8 +2251,8 @@ export function NewSessionForm({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    // Escape cancels a pending post-capture wait (its label is inline at the
-    // cursor; no chip ✕). Active listening still finalizes on Escape below.
+    // Escape cancels a pending post-capture wait. Active listening still
+    // finalizes on Escape below.
     if (
       e.key === "Escape" &&
       !e.ctrlKey &&
@@ -2199,8 +2463,8 @@ export function NewSessionForm({
         transcript,
         metadata,
       );
-      // A completed overlapping (non-active) target's result has landed; forget
-      // its range so its tag clears (active target is forgotten on pending->null).
+      // A completed overlapping (non-active) target's result has landed;
+      // forget its range (active target is forgotten on pending->null).
       const committedTargetId = metadata?.speechTargetId;
       if (
         committedTargetId &&
@@ -2251,6 +2515,7 @@ export function NewSessionForm({
   const handleListeningStop = useCallback(() => {
     flushPendingSpeechFinal();
     setInterimTranscript("");
+    textareaRef.current?.focus();
   }, [flushPendingSpeechFinal]);
 
   const handleInterimTranscript = useCallback((transcript: string) => {
@@ -2260,8 +2525,8 @@ export function NewSessionForm({
   const handlePendingSpeechChange = useCallback(
     (kind: SpeechPendingKind | null) => {
       if (kind === null) {
-        // Active recording finished: forget its target so the inline tag clears
-        // and completed targets don't accumulate (see MessageInput).
+        // Active recording finished: forget its target so completed targets do
+        // not accumulate (see MessageInput).
         const targetId = activeSpeechTargetIdRef.current;
         if (targetId) {
           speechInsertionRangesRef.current.delete(targetId);
@@ -2274,10 +2539,9 @@ export function NewSessionForm({
     [],
   );
 
-  // Cancel a pending transcription/finalization from the chip's ✕. The provider
-  // discards the in-flight result (keeping committed text); here we drop the
-  // pending speech target. Cancel is explicit-click-only so backspace can never
-  // trigger it.
+  // Cancel a pending transcription/finalization. The provider discards the
+  // in-flight result (keeping committed text); here we drop the pending speech
+  // target.
   const handleCancelTranscription = useCallback(() => {
     voiceButtonRef.current?.cancelProcessing();
     clearPendingSpeechFinal();
@@ -2311,7 +2575,9 @@ export function NewSessionForm({
   );
 
   const hasContent = message.trim() || pendingFiles.length > 0;
-  const canStart = Boolean(hasContent);
+  const canStart = Boolean(
+    (hasContent || composerMuted) && hasSelectedProviderModel,
+  );
   const hasProjectQueueTargetProject = Boolean(projectQueueTargetProjectId);
   const pendingFilesReadyForProjectQueue =
     pendingFiles.every(isPendingStagedFile);
@@ -2327,10 +2593,12 @@ export function NewSessionForm({
   });
   useAttachmentNavigationGuard(attachmentNavigationGuardActive);
   const canQueueProjectSession = Boolean(
+    allowProjectQueue &&
     showProjectQueueAction &&
       message.trim() &&
       pendingFilesReadyForProjectQueue &&
-      hasProjectQueueTargetProject,
+      hasProjectQueueTargetProject &&
+      hasSelectedProviderModel,
   );
   const projectQueueNewSessionTitle = !pendingFilesReadyForProjectQueue
     ? t("projectQueueNewSessionAttachmentsPreparing")
@@ -2339,73 +2607,27 @@ export function NewSessionForm({
         ? t("toolbarProjectQueueTooltipWithShortcut")
         : t("toolbarProjectQueueTooltip")
       : t("projectQueueNewSessionNeedsProject");
-  const interimDisplayTranscript = interimTranscript.trim();
-  // The inline mirror previews speech in place at the insertion point: streaming
-  // interim text, otherwise the pending-state label (Listening…/Transcribing…/
-  // Finalizing…), unified with the streaming preview rather than a sibling chip.
-  // See topics/mic-button-speech-ui.md.
-  const speechPendingLabel = speechPending
-    ? speechPending === "finalizing"
-      ? t("speechFinalizingPlaceholder" as never)
-      : speechPending === "listening"
-        ? t("speechListeningPlaceholder" as never)
-        : t("speechTranscribingPlaceholder" as never)
-    : "";
-  const speechInlineTranscript = interimDisplayTranscript || speechPendingLabel;
   const speechInsertionRange = speechInsertionRangeRef.current;
+  const interimDisplayTranscript = getSpeechInterimDisplayTranscript(
+    message,
+    interimTranscript,
+    speechInsertionRange,
+  );
+  // Only mutable provisional speech uses the textarea mirror. Capture and
+  // post-capture status live with the mic so the real draft and caret stay
+  // untouched while transcription is pending.
   const interimInsertion = speechInsertionRange
     ? getSpeechTranscriptReplacementParts(
         message,
-        speechInlineTranscript,
+        interimDisplayTranscript,
         speechInsertionRange.end,
         speechInsertionRange.replaceEnd ?? speechInsertionRange.end,
       )
     : getSpeechTranscriptInsertionParts(
         message,
-        speechInlineTranscript,
+        interimDisplayTranscript,
         message.length,
       );
-
-  // One tag per pending speech target at its own insertion point (arrival
-  // order, "(N)" on the Nth>1); see MessageInput / topics/mic-button-speech-ui.md.
-  const pendingTagLabel = (kind: SpeechPendingKind | null): string =>
-    kind === "finalizing"
-      ? t("speechFinalizingPlaceholder" as never)
-      : kind === "listening"
-        ? t("speechListeningPlaceholder" as never)
-        : t("speechTranscribingPlaceholder" as never);
-  const speechRangeTags = interimDisplayTranscript
-    ? []
-    : [...speechInsertionRangesRef.current.entries()].map(
-        ([targetId, range], index) => {
-          const active = targetId === activeSpeechTargetIdRef.current;
-          return {
-            targetId,
-            position: range.end,
-            replaceEnd: range.replaceEnd ?? range.end,
-            active,
-            ordinal: index + 1,
-            label: pendingTagLabel(active ? speechPending : "transcribing"),
-          };
-        },
-      );
-  const speechPendingTags =
-    speechRangeTags.length === 0 && !interimDisplayTranscript && speechPending
-      ? [
-          {
-            targetId: "pending",
-            position: message.length,
-            replaceEnd: message.length,
-            active: true,
-            ordinal: 1,
-            label: pendingTagLabel(speechPending),
-          },
-        ]
-      : speechRangeTags;
-  const speechMirrorSegments = getSpeechMirrorSegments(
-    message,
-    speechPendingTags,
-  );
 
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
@@ -2423,61 +2645,26 @@ export function NewSessionForm({
   const inputArea = (
     <>
       <div
-        className={`speech-draft-field ${speechInlineTranscript ? "has-interim" : ""}${
-          speechInlineTranscript && !interimDisplayTranscript
-            ? " has-pending-tag"
-            : ""
+        className={`speech-draft-field ${
+          interimDisplayTranscript ? "has-interim" : ""
         }`}
       >
         <div className="speech-draft-inline">
-          {speechInlineTranscript && (
+          {interimDisplayTranscript && (
             <div className="speech-draft-mirror" aria-hidden="true">
-              {interimDisplayTranscript ? (
-                <>
-                  <span>{interimInsertion.before}</span>
-                  {interimInsertion.separatorBefore}
-                  <span className="speech-interim-inline">
-                    {interimInsertion.transcript}
-                  </span>
-                  {interimInsertion.separatorAfter}
-                  <span>{interimInsertion.after}</span>
-                </>
-              ) : (
-                speechMirrorSegments.map((seg) =>
-                  seg.type === "text" ? (
-                    <span key={seg.key}>{seg.text}</span>
-                  ) : (
-                    <Fragment key={seg.tag.targetId}>
-                      <span className="speech-processing-inline">
-                        {seg.tag.label}
-                        {seg.tag.ordinal > 1 && (
-                          <span className="speech-tag-ordinal">
-                            {` (${seg.tag.ordinal})`}
-                          </span>
-                        )}
-                        {seg.tag.active && (
-                          <button
-                            type="button"
-                            className="speech-tag-cancel"
-                            tabIndex={-1}
-                            aria-hidden="true"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={handleCancelTranscription}
-                            title={t("speechTranscribingCancel" as never)}
-                          >
-                            ×
-                          </button>
-                        )}
-                      </span>
-                      {seg.tag.active && <span className="speech-tag-caret" />}
-                    </Fragment>
-                  ),
-                )
-              )}
+              <span>{interimInsertion.before}</span>
+              {interimInsertion.separatorBefore}
+              <span className="speech-interim-inline">
+                {interimInsertion.transcript}
+              </span>
+              <span className="speech-interim-caret" />
+              {interimInsertion.separatorAfter}
+              <span>{interimInsertion.after}</span>
             </div>
           )}
           <textarea
             ref={textareaRef}
+            data-composer-input
             value={message}
             onChange={(e) => {
               const nextMessage = e.target.value;
@@ -2521,11 +2708,16 @@ export function NewSessionForm({
             onCopy={clearSpeechSelectionTarget}
             onPaste={(event) => {
               clearSpeechSelectionTarget();
-              handlePaste(event);
+              if (allowAttachments) {
+                handlePaste(event);
+              }
             }}
             placeholder={resolvedPlaceholder}
             disabled={isStarting}
-            rows={rows}
+            // Read-only rather than disabled: the draft stays selectable and
+            // scrollable so it can still be read, just not sent.
+            readOnly={composerMuted}
+            rows={composerMuted ? Math.min(rows, 3) : rows}
             className="new-session-form-textarea"
           />
         </div>
@@ -2542,32 +2734,36 @@ export function NewSessionForm({
       </div>
       <div className="new-session-form-toolbar">
         <div className="new-session-form-toolbar-left">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            style={{ display: "none" }}
-            onChange={handleFileSelect}
-          />
-          <button
-            type="button"
-            className="toolbar-button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isStarting}
-            aria-label={t("newSessionAttachFiles")}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              aria-hidden="true"
-            >
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-          </button>
+          {allowAttachments && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleFileSelect}
+              />
+              <button
+                type="button"
+                className="toolbar-button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isStarting}
+                aria-label={t("newSessionAttachFiles")}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden="true"
+                >
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
+            </>
+          )}
           <SpeechControlMenu
             showMethodSelector={showSpeechMethodSelector}
             methodOptions={speechMethodOptions}
@@ -2607,7 +2803,8 @@ export function NewSessionForm({
           />
           {selectedProvider && modelOptions.length > 0 && (
             <FilterDropdown
-              className="composer-model-chip"
+              triggerVariant="chip"
+              panelVariant="model"
               label={t("newSessionModelTitle")}
               options={modelOptions}
               selected={selectedModel ? [selectedModel] : []}
@@ -2641,7 +2838,7 @@ export function NewSessionForm({
             onClick={handleStartSession}
             disabled={isStarting || !canStart}
             className="send-button new-session-submit-button"
-            aria-label={t("newSessionStartAction")}
+            aria-label={launch?.startLabel ?? t("newSessionStartAction")}
           >
             {isStarting ? (
               <span className="send-spinner" />
@@ -2848,7 +3045,7 @@ export function NewSessionForm({
     ) : null;
 
   const providerSection =
-    !providersLoading && availableProviders.length > 1 ? (
+    availableProviders.length > 1 ? (
       <div className="new-session-provider-section">
         <h3>{t("newSessionProviderTitle")}</h3>
         <div className="provider-options">
@@ -2895,19 +3092,49 @@ export function NewSessionForm({
       <div className="new-session-model-field">
         <h3>{t("newSessionModelTitle")}</h3>
         <FilterDropdown
-          className="model-filter-dropdown"
+          panelVariant="model"
           label={t("newSessionModelTitle")}
           options={modelOptions}
           selected={selectedModel ? [selectedModel] : []}
           onChange={handleModelSelect}
           multiSelect={false}
           placeholder={t("newSessionModelPlaceholder")}
+          fullWidth
         />
       </div>
     ) : null;
-  const modelSection = modelField ? (
-    <div className="new-session-model-section">{modelField}</div>
-  ) : null;
+  const gatewayCatalogStatus =
+    selectedProvider === "claude-gateway" && availableModels.length === 0 ? (
+      <div className="new-session-model-field">
+        <h3>{t("newSessionModelTitle")}</h3>
+        <div
+          className="new-session-provider-catalog-status"
+          role="status"
+          aria-live="polite"
+        >
+          <span>
+            {providersLoading
+              ? t("newSessionGatewayCatalogLoading")
+              : t("newSessionGatewayCatalogUnavailable")}
+          </span>
+          <button
+            type="button"
+            className="new-session-provider-catalog-retry"
+            disabled={providersLoading}
+            onClick={() => void refetchProviders()}
+          >
+            {t("newSessionGatewayCatalogRetry")}
+          </button>
+        </div>
+      </div>
+    ) : null;
+  const modelSection =
+    modelField || gatewayCatalogStatus ? (
+      <div className="new-session-model-section">
+        {modelField}
+        {gatewayCatalogStatus}
+      </div>
+    ) : null;
   const showThinkingSection = (
     <div className="new-session-helper-section new-session-show-thinking-section">
       <h3>{t("showThinkingTitle")}</h3>
@@ -2962,7 +3189,11 @@ export function NewSessionForm({
               hasUserCustomizedDefaultsRef.current = true;
               setSelectedRecapMode(modeValue);
             }}
-            disabled={isStarting}
+            disabled={
+              isStarting ||
+              (effectiveSandboxLevel === "project-write" &&
+                modeValue === "side-session")
+            }
             title={getRecapModeDescription(modeValue, t, recapAfterSeconds)}
           >
             <span className={`mode-option-dot recap-${modeValue}`} />
@@ -2999,6 +3230,7 @@ export function NewSessionForm({
         }}
         multiSelect={false}
         placeholder={t("helperSideModelCheapest")}
+        fullWidth
       />
     </div>
   ) : null;
@@ -3049,12 +3281,42 @@ export function NewSessionForm({
       </div>
     </div>
   ) : null;
+  const sandboxSection = canConfigureSessionSandbox ? (
+    <div className="new-session-helper-section new-session-sandbox-section">
+      <h3>{t("newSessionSandboxTitle")}</h3>
+      <label className="settings-item">
+        <div className="settings-item-info">
+          <strong>{t("newSessionSandboxLabel")}</strong>
+        </div>
+        <input
+          type="checkbox"
+          checked={sandboxLevel === "project-write"}
+          disabled={isStarting}
+          onChange={(event) => {
+            hasUserCustomizedDefaultsRef.current = true;
+            const enabled = event.currentTarget.checked;
+            setSandboxLevel(enabled ? "project-write" : "none");
+            if (enabled && selectedRecapMode === "side-session") {
+              setSelectedRecapMode("off");
+            }
+          }}
+          aria-label={t("newSessionSandboxLabel")}
+        />
+      </label>
+      <p className="session-default-section-description">
+        {t("newSessionSandboxDescription")}
+      </p>
+      <p className="session-default-section-description">
+        {t("newSessionSandboxAvailability")}
+      </p>
+    </div>
+  ) : null;
 
   // Compact mode: just the input area, no header or mode selector
   if (compact) {
     return (
       <div
-        className={`new-session-form new-session-form-compact ${interimTranscript ? "voice-recording" : ""}`}
+        className="new-session-form new-session-form-compact"
         onKeyDownCapture={handleComposerKeyDown}
       >
         {inputArea}
@@ -3065,35 +3327,51 @@ export function NewSessionForm({
   // Full mode: form with header, input area, and mode selector
   return (
     <div
-      className={`new-session-form new-session-container ${interimTranscript ? "voice-recording" : ""}`}
+      className="new-session-form new-session-container"
       onKeyDownCapture={handleComposerKeyDown}
     >
-      <div className="new-session-header">
-        <p className="new-session-subtitle">{t("newSessionHeaderSubtitle")}</p>
-      </div>
+      {/* A launch is introduced by its own surface — the handoff dialog has a
+          title — so the new-session prompt would only contradict it. */}
+      {!launch && (
+        <div className="new-session-header">
+          <p className="new-session-subtitle">
+            {t("newSessionHeaderSubtitle")}
+          </p>
+        </div>
+      )}
 
       <div className="new-session-top-layout">
         <div className="new-session-main-stack">
-          <div className="new-session-input-area">{inputArea}</div>
+          <div
+            className={`new-session-input-area${
+              composerMuted ? ` ${styles.mutedComposer}` : ""
+            }`}
+          >
+            {inputArea}
+          </div>
         </div>
-        <aside className="new-session-project-slot">
-          {projectChooser}
-          {workstreamChooser}
-        </aside>
+        {!fixedProject && (
+          <aside className="new-session-project-slot">
+            {projectChooser}
+            {workstreamChooser}
+          </aside>
+        )}
         {(providerSection ||
           modelSection ||
           thinkingSection ||
           helperSideModelSection ||
           recapSection ||
           promptSuggestionSection ||
+          sandboxSection ||
           permissionSection) && (
           <div className="new-session-provider-slot">
             {recapSection}
             {promptSuggestionSection}
+            {sandboxSection}
             {permissionSection}
             {showThinkingSection}
-            {providerSection}
-            {modelSection}
+            {showProviderAndModel && providerSection}
+            {showProviderAndModel && modelSection}
             {thinkingSection}
             {helperSideModelSection}
           </div>
@@ -3142,6 +3420,7 @@ export function NewSessionForm({
           </div>
         </div>
       )}
+
     </div>
   );
 }

@@ -4,10 +4,13 @@ import type { ProviderName } from "@yep-anywhere/shared";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import type { PendingInputType, SessionStatus } from "../types";
 import { DEFAULT_HOVERCARD_MAX_HEIGHT_PX } from "../hooks/useHoverCardAppearance";
+import { useQuoteableTextSource } from "../hooks/useQuoteableTextSource";
 import { parseCommandTurn } from "../lib/commandTurn";
+import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../lib/markdownSelectionCopy";
 import { estimateHoverCardPromptLines } from "./sessionHoverCardLines";
 import { ProviderBadge } from "./ProviderBadge";
 import { SessionStatusBadge } from "./StatusBadge";
+import styles from "./SessionHoverCard.module.css";
 
 const GAP_PX = 4;
 const MARGIN_PX = 8;
@@ -80,6 +83,8 @@ export function SessionHoverCard({
   maxHeightPx = DEFAULT_HOVERCARD_MAX_HEIGHT_PX,
 }: SessionHoverCardProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const promptRef = useQuoteableTextSource<HTMLDivElement>(prompt);
+  const replyRef = useQuoteableTextSource<HTMLDivElement>(lastAgentText);
   const [placement, setPlacement] = useState<Placement | null>(null);
   const contentMeasurementKey = [
     prompt,
@@ -144,9 +149,8 @@ export function SessionHoverCard({
     <div
       ref={ref}
       data-session-hovercard-id={hoverCardId}
-      className={`session-hovercard${
-        placement?.loosened ? " session-hovercard--wide" : ""
-      }`}
+      {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
+      className={`${styles.root}${placement?.loosened ? ` ${styles.wide}` : ""}`}
       onMouseLeave={onMouseLeave}
       style={
         placement
@@ -161,11 +165,12 @@ export function SessionHoverCard({
     >
       {prompt && (
         <div
-          className="session-hovercard__turn"
+          ref={promptRef}
+          className={styles.turn}
           style={maxLines ? { WebkitLineClamp: maxLines } : undefined}
         >
           {command ? (
-            <span className="session-hovercard__command">
+            <span className={styles.command}>
               {command.command}
               {command.args ? ` ${command.args}` : ""}
             </span>
@@ -174,12 +179,10 @@ export function SessionHoverCard({
           )}
         </div>
       )}
-      <div className="session-hovercard__meta">
+      <div className={styles.meta}>
         <ProviderBadge provider={provider} model={model} />
-        {projectName && (
-          <span className="session-hovercard__project">{projectName}</span>
-        )}
-        {ageLabel && <span className="session-hovercard__age">{ageLabel}</span>}
+        {projectName && <span className={styles.project}>{projectName}</span>}
+        {ageLabel && <span className={styles.age}>{ageLabel}</span>}
         {status && (
           <SessionStatusBadge
             status={status}
@@ -190,11 +193,11 @@ export function SessionHoverCard({
         )}
       </div>
       {lastAgentText && (
-        <div className="session-hovercard__reply">
-          <span className="session-hovercard__reply-marker" aria-hidden="true">
+        <div ref={replyRef} className={styles.reply}>
+          <span className={styles.replyMarker} aria-hidden="true">
             ↳
           </span>
-          <span className="session-hovercard__reply-text">{lastAgentText}</span>
+          <span className={styles.replyText}>{lastAgentText}</span>
         </div>
       )}
     </div>,

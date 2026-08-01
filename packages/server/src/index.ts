@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { createNodeWebSocket } from "@hono/node-ws";
-import { SPEECH_RELAY_CHANNEL } from "@yep-anywhere/shared";
+import {
+  SPEECH_RELAY_CHANNEL,
+  isClaudeProviderName,
+} from "@yep-anywhere/shared";
 import { createApp } from "./app.js";
 import { AuthService } from "./auth/AuthService.js";
 import {
@@ -18,6 +21,8 @@ import {
 import { loadConfig } from "./config.js";
 import { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import { detectAdb } from "./device/adb.js";
+import { DESKTOP_BOOTSTRAP_PROTOCOL_VERSION } from "./desktop/DesktopBootstrapService.js";
+import { readDesktopBootstrapServiceFromStdin } from "./desktop/startup.js";
 import {
   attachUnifiedUpgradeHandler,
   createFrontendProxy,
@@ -57,6 +62,7 @@ import { createWsRelayRoutes } from "./routes/ws-relay.js";
 import { createAcceptRelayConnection } from "./routes/ws-relay.js";
 import { detectClaudeCli, detectCodexCli } from "./sdk/cli-detection.js";
 import { initMessageLogger } from "./sdk/messageLogger.js";
+import { ClaudeGatewayProvider } from "./sdk/providers/claude-gateway.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 import { RealClaudeSDK } from "./sdk/real.js";
@@ -125,6 +131,7 @@ process.on("unhandledRejection", (reason) => {
   }
 });
 
+const desktopBootstrapService = await readDesktopBootstrapServiceFromStdin();
 const config = loadConfig();
 const ATTACHMENT_STAGING_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -187,6 +194,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
         }),
       );
     }
+  }
+
+  try {
+    await ClaudeGatewayProvider.shutdownGateway();
+    console.log("[Shutdown] Managed Claude Gateway stopped");
+  } catch (error) {
+    console.error("[Shutdown] Error stopping managed Claude Gateway:", error);
   }
 
   if (disposeAppForShutdown) {
@@ -612,24 +626,40 @@ async function startServer() {
   });
   updateFileAccess(serverSettingsService.getSetting("fileAccess"));
 
-  // Seed Ollama settings from persisted settings
+  // Seed Claude transport settings from persisted settings
+  await ClaudeGatewayProvider.configureGateway({
+    url: serverSettingsService.getSetting("claudeGatewayUrl"),
+    startCommand: serverSettingsService.getSetting("claudeGatewayStartCommand"),
+  });
   const savedOllamaUrl = serverSettingsService.getSetting("ollamaUrl");
+  const savedOllamaSystemPrompt =
+    serverSettingsService.getSetting("ollamaSystemPrompt");
+  const savedOllamaUseFullSystemPrompt =
+    serverSettingsService.getSetting("ollamaUseFullSystemPrompt") ?? false;
   if (savedOllamaUrl) {
     ClaudeOllamaProvider.setOllamaUrl(savedOllamaUrl);
   }
-  ClaudeOllamaProvider.setSystemPrompt(
-    serverSettingsService.getSetting("ollamaSystemPrompt"),
-  );
-  ClaudeOllamaProvider.setUseFullSystemPrompt(
-    serverSettingsService.getSetting("ollamaUseFullSystemPrompt") ?? false,
-  );
+  ClaudeOllamaProvider.setSystemPrompt(savedOllamaSystemPrompt);
+  ClaudeOllamaProvider.setUseFullSystemPrompt(savedOllamaUseFullSystemPrompt);
   grokACPProvider.setAmbientXaiApiKey(config.ambientXaiApiKey);
   grokACPProvider.setUseAmbientXaiApiKey(
     serverSettingsService.getSetting("grokBuildUseXaiApiKey") ?? false,
   );
 
-  // Warm model info cache (non-blocking, best-effort)
-  modelInfoService.warmProvider("claude-ollama").catch(() => {});
+  // Warm configured model catalogs (non-blocking, best-effort).
+  if (ClaudeGatewayProvider.isConfigured()) {
+    modelInfoService.warmProvider("claude-gateway").catch(() => {});
+  }
+  if (
+    ClaudeOllamaProvider.isExplicitlyConfigured() ||
+    savedOllamaSystemPrompt ||
+    savedOllamaUseFullSystemPrompt ||
+    Object.values(sessionMetadataService.getAllMetadata()).some(
+      (metadata) => metadata.provider === "claude-ollama",
+    )
+  ) {
+    modelInfoService.warmProvider("claude-ollama").catch(() => {});
+  }
 
   // Log auth status
   if (config.authDisabled) {
@@ -673,6 +703,8 @@ async function startServer() {
     ) => Promise<{ success: boolean; error?: string }>;
     /** Live: addresses currently bound (reads real sockets at call time). */
     getActiveListeners?: () => string[];
+    /** Live localhost port after an optional port-0 bind. */
+    getLocalhostPort?: () => number;
   } = {};
 
   // Determine effective port for server-info (CLI override or saved setting)
@@ -750,6 +782,8 @@ async function startServer() {
     authService,
     authDisabled: config.authDisabled,
     desktopAuthToken: config.desktopAuthToken,
+    desktopBootstrapService,
+    desktopRuntime: config.desktopRuntime,
     remoteAccessService,
     remoteSessionService,
     relayClientService,
@@ -809,7 +843,7 @@ async function startServer() {
       // Find the project by scanning - projectPath is the absolute path
       const projects = await scanner.listProjects();
       const project = projects.find((p) => p.path === projectPath);
-      if (project?.provider !== "claude") return null;
+      if (!isClaudeProviderName(project?.provider)) return null;
       return new ClaudeSessionReader({
         sessionDir: project.sessionDir,
         summaryParserWorkerMode: config.claudeSummaryParserWorkerMode,
@@ -1254,10 +1288,17 @@ async function startServer() {
     }
     return listeners;
   };
+  networkBindingCallbackHolder.getLocalhostPort = () => {
+    const address = localhostServer?.address();
+    return address && typeof address === "object"
+      ? address.port
+      : effectiveServerPort;
+  };
 
   // Create the main localhost server
   const expectedServerUrl = `${serverProtocol}://127.0.0.1:${effectivePort}`;
   console.log(`[Server] Starting on ${expectedServerUrl}`);
+  let desktopReadySent = false;
   localhostServer = createServer(
     effectivePort,
     "127.0.0.1",
@@ -1269,6 +1310,15 @@ async function startServer() {
       }
 
       const serverUrl = `${serverProtocol}://127.0.0.1:${info.port}`;
+      if (desktopBootstrapService && !desktopReadySent) {
+        desktopReadySent = true;
+        process.stdout.write(
+          `YEP_DESKTOP_READY ${JSON.stringify({
+            protocol: DESKTOP_BOOTSTRAP_PROTOCOL_VERSION,
+            port: info.port,
+          })}\n`,
+        );
+      }
       console.log(`Server URL: ${serverUrl}`);
       console.log(`Server running at ${serverUrl}`);
       console.log(`Projects dir: ${config.claudeProjectsDir}`);

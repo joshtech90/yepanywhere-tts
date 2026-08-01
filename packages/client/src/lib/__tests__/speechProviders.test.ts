@@ -469,19 +469,51 @@ describe("browser-native speech provider", () => {
     }
   }
 
-  function installFakeSpeechRecognition(): typeof FakeSpeechRecognition {
+  function installFakeSpeechRecognition(
+    Recognition = FakeSpeechRecognition,
+  ): typeof FakeSpeechRecognition {
     FakeSpeechRecognition.instance = null;
     Object.defineProperty(window, "webkitSpeechRecognition", {
       configurable: true,
-      value: FakeSpeechRecognition,
+      value: Recognition,
     });
-    return FakeSpeechRecognition;
+    return Recognition;
   }
 
   it("does not expose prewarm, avoiding browser-owned recording indicators", () => {
     const provider = new BrowserNativeProvider();
 
     expect("prewarm" in provider).toBe(false);
+  });
+
+  it("enables inferred punctuation when the recognizer supports it", () => {
+    class PunctuatedSpeechRecognition extends FakeSpeechRecognition {
+      unspokenPunctuation = false;
+    }
+    const Recognition = installFakeSpeechRecognition(
+      PunctuatedSpeechRecognition,
+    );
+    const provider = new BrowserNativeProvider();
+
+    provider.start();
+
+    expect(
+      (Recognition.instance as PunctuatedSpeechRecognition | null)
+        ?.unspokenPunctuation,
+    ).toBe(true);
+    provider.dispose();
+  });
+
+  it("starts normally when inferred punctuation is unsupported", () => {
+    const Recognition = installFakeSpeechRecognition();
+    const provider = new BrowserNativeProvider();
+
+    provider.start();
+
+    expect(Recognition.instance?.continuous).toBe(true);
+    expect(Recognition.instance?.interimResults).toBe(true);
+    expect("unspokenPunctuation" in (Recognition.instance ?? {})).toBe(false);
+    provider.dispose();
   });
 
   it("keeps browser-native amber until Chrome reports audio capture", () => {
@@ -506,6 +538,80 @@ describe("browser-native speech provider", () => {
     expect(states.some((state) => state.status === "listening")).toBe(true);
 
     provider.dispose();
+  });
+
+  it("distinguishes capture readiness from active speech", () => {
+    const Recognition = installFakeSpeechRecognition();
+    const provider = new BrowserNativeProvider();
+
+    provider.start();
+    Recognition.instance?.onaudiostart?.(new Event("audiostart"));
+    expect(provider.getState()).toMatchObject({
+      status: "listening",
+      isListening: true,
+    });
+
+    Recognition.instance?.onspeechstart?.(new Event("speechstart"));
+    expect(provider.getState()).toMatchObject({
+      status: "receiving",
+      isListening: true,
+    });
+
+    Recognition.instance?.onspeechend?.(new Event("speechend"));
+    expect(provider.getState()).toMatchObject({
+      status: "listening",
+      isListening: true,
+    });
+
+    Recognition.instance?.onresult?.({
+      resultIndex: 0,
+      results: {
+        length: 1,
+        0: {
+          isFinal: true,
+          0: { transcript: "hello" },
+        },
+      },
+    } as unknown as Event);
+    expect(provider.getState()).toMatchObject({
+      status: "receiving",
+      isListening: true,
+    });
+
+    provider.dispose();
+  });
+
+  it("returns to capture-ready after recognition results go quiet", () => {
+    vi.useFakeTimers();
+    try {
+      const Recognition = installFakeSpeechRecognition();
+      const provider = new BrowserNativeProvider();
+
+      provider.start();
+      Recognition.instance?.onresult?.({
+        resultIndex: 0,
+        results: {
+          length: 1,
+          0: {
+            isFinal: false,
+            0: { transcript: "hello" },
+          },
+        },
+      } as unknown as Event);
+      expect(provider.getState().status).toBe("receiving");
+
+      vi.advanceTimersByTime(1199);
+      expect(provider.getState().status).toBe("receiving");
+      vi.advanceTimersByTime(1);
+      expect(provider.getState()).toMatchObject({
+        status: "listening",
+        isListening: true,
+      });
+
+      provider.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("treats browser-native results as capture evidence if audio-start is skipped", () => {

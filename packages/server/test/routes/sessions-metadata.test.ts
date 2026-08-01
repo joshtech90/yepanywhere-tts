@@ -252,6 +252,7 @@ describe("Sessions metadata route", () => {
         getProcessForSession: vi.fn(() => ({
           isTerminated: false,
           setPermissionMode,
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle,
@@ -321,6 +322,86 @@ describe("Sessions metadata route", () => {
     });
   });
 
+  it("records input intent before deferred slash-command preparation awaits", async () => {
+    const noteInputIntent = vi.fn();
+    let resolvePrime!: () => void;
+    const primeSupportedCommandsForMessage = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePrime = resolve;
+        }),
+    );
+    const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          isTerminated: false,
+          noteInputIntent,
+          primeSupportedCommandsForMessage,
+          deferMessage,
+          waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
+          getDeferredQueueSummary: vi.fn(() => []),
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+    });
+
+    const request = routes.request("/sessions/sess-1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "queued text", deferred: true }),
+    });
+
+    // Intent must be recorded synchronously, while the prime is still pending,
+    // so an in-flight idle-threshold compaction check yields to this turn
+    // rather than racing ahead during preparation.
+    await vi.waitFor(() => {
+      expect(primeSupportedCommandsForMessage).toHaveBeenCalledOnce();
+    });
+    expect(noteInputIntent).toHaveBeenCalledOnce();
+    expect(deferMessage).not.toHaveBeenCalled();
+
+    resolvePrime();
+    const response = await request;
+    expect(response.status).toBe(200);
+    expect(deferMessage).toHaveBeenCalledOnce();
+  });
+
+  it("records input intent before provider-native command dispatch awaits", async () => {
+    const noteInputIntent = vi.fn();
+    let resolveCommand!: (result: { handled: boolean }) => void;
+    const runProviderCommand = vi.fn(
+      () =>
+        new Promise<{ handled: boolean }>((resolve) => {
+          resolveCommand = resolve;
+        }),
+    );
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          isTerminated: false,
+          noteInputIntent,
+          runProviderCommand,
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+    });
+
+    const request = routes.request("/sessions/sess-1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/compact" }),
+    });
+
+    await vi.waitFor(() => {
+      expect(runProviderCommand).toHaveBeenCalledWith("compact", "");
+    });
+    expect(noteInputIntent).toHaveBeenCalledOnce();
+
+    resolveCommand({ handled: true });
+    const response = await request;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ queued: true });
+  });
+
   it("reports immediate promotion when returned by the process", async () => {
     const primeSupportedCommandsForMessage = vi.fn(async () => {});
     const deferMessage = vi.fn(() => ({
@@ -336,6 +417,7 @@ describe("Sessions metadata route", () => {
       supervisor: {
         getProcessForSession: vi.fn(() => ({
           isTerminated: false,
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle,
@@ -423,6 +505,60 @@ describe("Sessions metadata route", () => {
       "sess-1",
       project.id,
     );
+  });
+
+  it("keeps explicit gateway identity over Claude model heuristics", async () => {
+    const project = createProject();
+    const summary: SessionSummary = {
+      ...createSummary(),
+      provider: "claude-ollama",
+      model: "gpt-5.6-terra",
+    };
+    const reader = {
+      getSessionSummary: vi.fn(async () => summary),
+      getSession: vi.fn(async () => ({
+        summary,
+        data: {
+          provider: "claude-ollama",
+          session: { messages: [] },
+        },
+      })),
+    } as unknown as ISessionReader;
+    const sessionMetadataService = {
+      getMetadata: vi.fn(() => ({ provider: "claude-gateway" })),
+      getProvider: vi.fn(() => "claude-gateway"),
+      getRequestedModel: vi.fn(() => "gpt-5.6-terra"),
+      getRecapMessages: vi.fn(() => []),
+    } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>;
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        wasEverOwned: vi.fn(() => false),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getProject: vi.fn(async () => project),
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => reader),
+      sessionMetadataService,
+    });
+
+    const metadataResponse = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/metadata`,
+    );
+    expect(metadataResponse.status).toBe(200);
+    await expect(metadataResponse.json()).resolves.toMatchObject({
+      session: { provider: "claude-gateway", model: "gpt-5.6-terra" },
+    });
+
+    const detailResponse = await routes.request(
+      `/projects/${project.id}/sessions/sess-1`,
+    );
+    expect(detailResponse.status).toBe(200);
+    await expect(detailResponse.json()).resolves.toMatchObject({
+      session: { provider: "claude-gateway", model: "gpt-5.6-terra" },
+    });
   });
 
   it("returns paused recovered patient queue entries in metadata", async () => {
@@ -556,6 +692,7 @@ describe("Sessions metadata route", () => {
           modeVersion: 0,
           recapAfterSeconds: 300,
           setPermissionMode: vi.fn(),
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage: vi.fn(async () => {}),
           deferMessage,
           waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
@@ -674,6 +811,7 @@ describe("Sessions metadata route", () => {
           modeVersion: 0,
           recapAfterSeconds: 300,
           setPermissionMode: vi.fn(),
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage: vi.fn(async () => {}),
           deferMessage,
           waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
@@ -739,6 +877,7 @@ describe("Sessions metadata route", () => {
           modeVersion: 0,
           recapAfterSeconds: 300,
           setPermissionMode: vi.fn(),
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage: vi.fn(async () => {}),
           deferMessage,
           steerPatientDeferredMessagesThrough,
@@ -845,6 +984,7 @@ describe("Sessions metadata route", () => {
           modeVersion: 0,
           recapAfterSeconds: 300,
           setPermissionMode: vi.fn(),
+          noteInputIntent: vi.fn(),
           primeSupportedCommandsForMessage,
           deferMessage,
           waitForPatientQueuePersistenceIdle,
@@ -1701,6 +1841,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -1709,6 +1853,11 @@ describe("Sessions metadata route", () => {
         setRequestedModel: vi.fn(async () => undefined),
         getExecutor: vi.fn(() => undefined),
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+      serverSettingsService: {
+        getSetting: vi.fn((key: string) =>
+          key === "claudeAutoCompactPercentOverride" ? 60 : undefined,
+        ),
+      } as unknown as NonNullable<SessionsDeps["serverSettingsService"]>,
     });
 
     const response = await routes.request(
@@ -2119,6 +2268,7 @@ describe("Sessions metadata route", () => {
           model: "gpt-5.4",
           resolvedModel: "gpt-5.4",
           executor: undefined,
+          noteInputIntent: vi.fn(),
         })),
         queueMessageToSession,
       } as unknown as SessionsDeps["supervisor"],
@@ -2129,6 +2279,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -2159,6 +2313,69 @@ describe("Sessions metadata route", () => {
         model: "gpt-5.4",
         serviceTier: "priority",
         providerName: "codex",
+        claudeAutoCompactPercentOverride: undefined,
+      }),
+    );
+  });
+
+  it("passes the global Claude compaction override to queued launches", async () => {
+    const project = createProject();
+    const queueMessageToSession = vi.fn(async () => ({
+      success: true as const,
+      restarted: false,
+      process: { id: "proc-1" },
+    }));
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          projectPath: project.path,
+          isTerminated: false,
+          provider: "claude",
+          model: "sonnet",
+          resolvedModel: "claude-sonnet-4-6",
+          executor: undefined,
+          noteInputIntent: vi.fn(),
+        })),
+        queueMessageToSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        getRequestedModel: vi.fn(() => "sonnet"),
+        setRequestedModel: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+      serverSettingsService: {
+        getSetting: vi.fn((key: string) =>
+          key === "claudeAutoCompactPercentOverride" ? 60 : undefined,
+        ),
+      } as unknown as NonNullable<SessionsDeps["serverSettingsService"]>,
+    });
+
+    const response = await routes.request("/sessions/sess-1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "continue" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(queueMessageToSession).toHaveBeenCalledWith(
+      "sess-1",
+      project.path,
+      expect.objectContaining({ text: "continue" }),
+      undefined,
+      expect.objectContaining({
+        providerName: "claude",
+        claudeAutoCompactPercentOverride: 60,
       }),
     );
   });
@@ -2220,6 +2437,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -2296,9 +2517,59 @@ describe("Sessions metadata route", () => {
     expect(abortProcess).toHaveBeenCalledWith("proc-old");
   });
 
+  it("does not allow a handoff restart to weaken the source sandbox", async () => {
+    const project = createProject();
+    const startSession = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => undefined),
+        startSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({
+          sandboxLevel: "project-write",
+          sandboxStateKey: "project-sandbox",
+          sandboxProjectPath: project.path,
+        })),
+        getExecutor: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/restart`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restartMode: "handoff",
+          sandboxLevel: "none",
+        }),
+      },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        "A restarted session inherits the source sandbox level and cannot change it",
+    });
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
   it("forks the transcript instead of handing off when restartMode is fork", async () => {
     const project = createProject();
-    const forkSession = vi.fn(async () => ({ sessionId: "sess-fork" }));
+    const forkSession = vi.fn(async () => ({
+      sessionId: "sess-fork",
+      sandboxStateKey: "project-sandbox",
+    }));
     const startSession = vi.fn();
     const resumeSession = vi.fn(async () => ({
       id: "proc-new",
@@ -2309,6 +2580,7 @@ describe("Sessions metadata route", () => {
       resolvedModel: "sonnet",
       permissionMode: "default",
       modeVersion: 0,
+      sandboxStateKey: "project-sandbox",
       subscribe: vi.fn(() => vi.fn()),
     }));
     const interruptProcess = vi.fn(async () => ({
@@ -2317,6 +2589,7 @@ describe("Sessions metadata route", () => {
     }));
     const abortProcess = vi.fn(async () => true);
     const updateMetadata = vi.fn(async () => undefined);
+    const setSessionSandbox = vi.fn(async () => undefined);
     const emit = vi.fn();
 
     const routes = createSessionsRoutes({
@@ -2360,8 +2633,14 @@ describe("Sessions metadata route", () => {
         getRequestedModel: vi.fn(() => undefined),
         setRequestedModel: vi.fn(async () => undefined),
         getExecutor: vi.fn(() => undefined),
-        getMetadata: vi.fn(() => ({ customTitle: "Refactor session" })),
+        getMetadata: vi.fn(() => ({
+          customTitle: "Refactor session",
+          sandboxLevel: "project-write",
+          sandboxStateKey: "project-sandbox",
+          sandboxProjectPath: project.path,
+        })),
         setProvider: vi.fn(async () => undefined),
+        setSessionSandbox,
         updateMetadata,
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
       eventBus: { emit } as unknown as SessionsDeps["eventBus"],
@@ -2395,6 +2674,8 @@ describe("Sessions metadata route", () => {
       providerName: "claude",
       upToMessageId: "msg-uuid-7",
       title: "Fork: Refactor session",
+      sandboxLevel: "project-write",
+      sandboxStateKey: "project-sandbox",
     });
     expect(startSession).not.toHaveBeenCalled();
     expect(resumeSession).toHaveBeenCalledWith(
@@ -2402,8 +2683,18 @@ describe("Sessions metadata route", () => {
       project.path,
       expect.objectContaining({ text: "Continue from this fork point." }),
       undefined,
-      expect.objectContaining({ providerName: "claude" }),
+      expect.objectContaining({
+        providerName: "claude",
+        sandboxLevel: "project-write",
+        sandboxStateKey: "project-sandbox",
+      }),
     );
+    expect(setSessionSandbox).toHaveBeenCalledWith("sess-fork", {
+      level: "project-write",
+      stateKey: "project-sandbox",
+      projectPath: project.path,
+      projectId: project.id,
+    });
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork", {
       title: "Fork: Refactor session",
     });
@@ -2411,10 +2702,14 @@ describe("Sessions metadata route", () => {
 
   it("forks a transcript without starting a process via the fork endpoint", async () => {
     const project = createProject();
-    const forkSession = vi.fn(async () => ({ sessionId: "sess-fork" }));
+    const forkSession = vi.fn(async () => ({
+      sessionId: "sess-fork",
+      sandboxStateKey: "project-sandbox",
+    }));
     const resumeSession = vi.fn();
     const startSession = vi.fn();
     const setProvider = vi.fn(async () => undefined);
+    const setSessionSandbox = vi.fn(async () => undefined);
     const updateMetadata = vi.fn(async () => undefined);
     const emit = vi.fn();
 
@@ -2440,8 +2735,14 @@ describe("Sessions metadata route", () => {
         getRequestedModel: vi.fn(() => undefined),
         setRequestedModel: vi.fn(async () => undefined),
         getExecutor: vi.fn(() => undefined),
-        getMetadata: vi.fn(() => ({ customTitle: "Refactor session" })),
+        getMetadata: vi.fn(() => ({
+          customTitle: "Refactor session",
+          sandboxLevel: "project-write",
+          sandboxStateKey: "project-sandbox",
+          sandboxProjectPath: project.path,
+        })),
         setProvider,
+        setSessionSandbox,
         updateMetadata,
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
       eventBus: { emit } as unknown as SessionsDeps["eventBus"],
@@ -2471,15 +2772,474 @@ describe("Sessions metadata route", () => {
       providerName: "claude",
       upToMessageId: "msg-uuid-3",
       title: "Fork: Refactor session",
+      sandboxLevel: "project-write",
+      sandboxStateKey: "project-sandbox",
     });
     // Fork-only: no process is started or resumed, no message sent.
     expect(resumeSession).not.toHaveBeenCalled();
     expect(startSession).not.toHaveBeenCalled();
     expect(setProvider).toHaveBeenCalledWith("sess-fork", "claude");
+    expect(setSessionSandbox).toHaveBeenCalledWith("sess-fork", {
+      level: "project-write",
+      stateKey: "project-sandbox",
+      projectPath: project.path,
+      projectId: project.id,
+    });
     expect(updateMetadata).toHaveBeenCalledWith("sess-fork", {
       title: "Fork: Refactor session",
-      parentSessionId: "sess-1",
+      forkedFromSessionId: "sess-1",
     });
+  });
+
+  it("clones the latest completed transcript cold with Clone lineage", async () => {
+    const project = createProject();
+    const forkSession = vi.fn(async () => ({ sessionId: "sess-clone" }));
+    const resumeSession = vi.fn();
+    const updateMetadata = vi.fn(async () => undefined);
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          provider: "claude",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => []),
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+        resumeSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+            getSession: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        setProvider: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+        getRequestedModel: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({ customTitle: "Short session" })),
+        updateMetadata,
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forkKind: "clone-latest-complete" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      sessionId: "sess-clone",
+      title: "Clone: Short session",
+      forkKind: "clone-latest-complete",
+      forkedFrom: "sess-1",
+    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-1",
+        providerName: "claude",
+        title: "Clone: Short session",
+      }),
+    );
+    expect(forkSession.mock.calls[0]?.[0]).toMatchObject({
+      boundary: undefined,
+      upToMessageId: undefined,
+    });
+    expect(updateMetadata).toHaveBeenCalledWith("sess-clone", {
+      title: "Clone: Short session",
+      forkedFromSessionId: "sess-1",
+    });
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit Clone while the current response is active", async () => {
+    const project = createProject();
+    const forkSession = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          provider: "claude",
+          state: { type: "in-turn", since: new Date() },
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        setProvider: vi.fn(async () => undefined),
+        getRequestedModel: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({})),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forkKind: "clone-latest-complete" }),
+      },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("source is unchanged"),
+    });
+    expect(forkSession).not.toHaveBeenCalled();
+  });
+
+  it("resolves before and after intents across tool-result user rows", async () => {
+    const project = createProject();
+    const messages: Message[] = [
+      {
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        message: { role: "user", content: "First request" },
+      },
+      {
+        type: "assistant",
+        uuid: "tool-call-1",
+        parentUuid: "user-1",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "tool-result-1",
+        parentUuid: "tool-call-1",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-1-final",
+        parentUuid: "tool-result-1",
+        message: { role: "assistant", content: "First response" },
+      },
+      {
+        type: "user",
+        uuid: "user-2",
+        parentUuid: "assistant-1-final",
+        message: { role: "user", content: "Second request" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-2-final",
+        parentUuid: "user-2",
+        message: { role: "assistant", content: "Second response" },
+      },
+    ];
+    const forkSession = vi
+      .fn()
+      .mockResolvedValueOnce({ sessionId: "sess-after" })
+      .mockResolvedValueOnce({ sessionId: "sess-before" });
+    const summary: SessionSummary = {
+      ...createSummary(),
+      provider: "claude",
+      model: "sonnet",
+    };
+    const durableReader = {
+      getSessionSummary: vi.fn(async () => summary),
+      getSession: vi.fn(async () => ({
+        summary,
+        data: { provider: "claude", session: { messages } },
+      })),
+    } as unknown as ISessionReader;
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          provider: "claude",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => [
+            {
+              type: "user",
+              uuid: "sdk-history-user-1",
+              message: { role: "user", content: "First request" },
+            },
+          ]),
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => durableReader),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        setProvider: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+        getRequestedModel: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({ customTitle: "Tool turn" })),
+        updateMetadata: vi.fn(async () => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    for (const request of [
+      { forkKind: "after-user-turn", sourceMessageId: "user-1" },
+      { forkKind: "before-user-turn", sourceMessageId: "user-2" },
+    ]) {
+      const response = await routes.request(
+        `/projects/${project.id}/sessions/sess-1/fork`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    for (const call of forkSession.mock.calls) {
+      expect(call[0]).toMatchObject({
+        boundary: {
+          kind: "message",
+          provider: "claude",
+          messageId: "assistant-1-final",
+        },
+      });
+    }
+    expect(durableReader.getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps a positional Codex display id to its persisted provider turn", async () => {
+    const project = createProject();
+    const summary = createSummary();
+    const timestamp = "2026-08-01T07:38:02.999Z";
+    const loaded: LoadedSession = {
+      summary,
+      data: {
+        provider: "codex",
+        session: {
+          entries: [
+            {
+              timestamp,
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: [{ type: "input_text", text: "Use a tool" }],
+                internal_chat_message_metadata_passthrough: {
+                  turn_id: "turn-provider-1",
+                },
+              },
+            },
+            {
+              timestamp: "2026-08-01T07:38:03.000Z",
+              type: "response_item",
+              payload: {
+                type: "function_call",
+                name: "read_file",
+                arguments: "{}",
+                call_id: "call-provider-1",
+                internal_chat_message_metadata_passthrough: {
+                  turn_id: "turn-provider-1",
+                },
+              },
+            },
+            {
+              timestamp: "2026-08-01T07:38:03.100Z",
+              type: "response_item",
+              payload: {
+                type: "function_call_output",
+                call_id: "call-provider-1",
+                output: "file contents",
+                internal_chat_message_metadata_passthrough: {
+                  turn_id: "turn-provider-1",
+                },
+              },
+            },
+            {
+              timestamp: "2026-08-01T07:38:04.000Z",
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "Tool turn done" }],
+                internal_chat_message_metadata_passthrough: {
+                  turn_id: "turn-provider-1",
+                },
+              },
+            },
+            {
+              timestamp: "2026-08-01T07:39:00.000Z",
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: [{ type: "input_text", text: "Next turn" }],
+                internal_chat_message_metadata_passthrough: {
+                  turn_id: "turn-provider-2",
+                },
+              },
+            },
+          ],
+        },
+      },
+    };
+    const codexReader = {
+      getSessionSummary: vi.fn(async () => summary),
+      getSession: vi.fn(async () => loaded),
+    } as unknown as CodexSessionReader;
+    const forkSession = vi.fn(async () => ({ sessionId: "codex-fork" }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => undefined),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      codexSessionsDir: "/tmp/codex-sessions",
+      codexReaderFactory: vi.fn(() => codexReader),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "codex"),
+        setProvider: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+        getRequestedModel: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({ customTitle: "Codex tools" })),
+        updateMetadata: vi.fn(async () => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          forkKind: "after-user-turn",
+          sourceMessageId: `codex-0-${timestamp}`,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerName: "codex",
+        boundary: {
+          kind: "turn",
+          provider: "codex",
+          turnId: "turn-provider-1",
+        },
+      }),
+    );
+    expect(forkSession.mock.calls[0]?.[0].upToMessageId).toBeUndefined();
+  });
+
+  it("rejects impossible or mixed turn-intent request shapes", async () => {
+    const project = createProject();
+    const forkSession = vi.fn();
+    const messages: Message[] = [
+      {
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        message: { role: "user", content: "Only request" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: "Only response" },
+      },
+    ];
+    const summary: SessionSummary = {
+      ...createSummary(),
+      provider: "claude",
+      model: "sonnet",
+    };
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          provider: "claude",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => []),
+        })),
+        supportsForkSession: vi.fn(() => true),
+        forkSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => summary),
+            getSession: vi.fn(async () => ({
+              summary,
+              data: { provider: "claude", session: { messages } },
+            })),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "claude"),
+        getMetadata: vi.fn(() => ({})),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const mixed = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          forkKind: "after-user-turn",
+          sourceMessageId: "user-1",
+          upToMessageId: "assistant-1",
+        }),
+      },
+    );
+    expect(mixed.status).toBe(400);
+
+    const beforeFirst = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          forkKind: "before-user-turn",
+          sourceMessageId: "user-1",
+        }),
+      },
+    );
+    expect(beforeFirst.status).toBe(409);
+    expect(forkSession).not.toHaveBeenCalled();
   });
 
   it("generates a retitle proposal without updating source metadata", async () => {
@@ -2563,7 +3323,7 @@ describe("Sessions metadata route", () => {
     expect(updateMetadata).toHaveBeenCalledWith("sess-retitle-generator", {
       title: "Retitle generator",
       archived: true,
-      parentSessionId: "sess-1",
+      forkedFromSessionId: "sess-1",
     });
     expect(updateMetadata).not.toHaveBeenCalledWith(
       "sess-1",
@@ -2675,13 +3435,22 @@ describe("Sessions metadata route", () => {
 
   it("owns fork-summary generation after returning a durable display object", async () => {
     const project = createProject();
+    const sessionSandbox = { stateKey: "project-sandbox" };
     const generateSummary = vi.fn(async () => ({
       text: "Title: Refactor continuation\n\nKept the setup; continue from the fixed test failure.",
     }));
     const forkSession = vi
       .fn()
-      .mockResolvedValueOnce({ sessionId: "sess-generator" })
-      .mockResolvedValueOnce({ sessionId: "sess-target" });
+      .mockResolvedValueOnce({
+        sessionId: "sess-generator",
+        sandboxStateKey: "project-sandbox",
+        sessionSandbox,
+      })
+      .mockResolvedValueOnce({
+        sessionId: "sess-target",
+        sandboxStateKey: "project-sandbox",
+        sessionSandbox,
+      });
     const resumeSession = vi.fn(async () => ({
       id: "proc-target",
       sessionId: "sess-target",
@@ -2692,11 +3461,13 @@ describe("Sessions metadata route", () => {
       permissionMode: "default",
       modeVersion: 0,
       promptSuggestionMode: "native",
+      sandboxStateKey: "project-sandbox",
       subscribe: vi.fn(() => vi.fn()),
     }));
     const updateMetadata = vi.fn(async () => undefined);
     const setProvider = vi.fn(async () => undefined);
     const setRequestedModel = vi.fn(async () => undefined);
+    const setSessionSandbox = vi.fn(async () => undefined);
     const emit = vi.fn();
     let transcriptDisplayObjects: TranscriptDisplayObject[] = [];
     const addTranscriptDisplayObject = vi.fn(async (_sessionId, object) => {
@@ -2765,11 +3536,15 @@ describe("Sessions metadata route", () => {
         getMetadata: vi.fn(() => ({
           customTitle: "Refactor session",
           promptSuggestionMode: "native",
+          sandboxLevel: "project-write",
+          sandboxStateKey: "project-sandbox",
+          sandboxProjectPath: project.path,
         })),
         getTranscriptDisplayObjects: vi.fn(() => transcriptDisplayObjects),
         addTranscriptDisplayObject,
         updateTranscriptDisplayObject,
         setProvider,
+        setSessionSandbox,
         updateMetadata,
       } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
       eventBus: { emit } as unknown as SessionsDeps["eventBus"],
@@ -2806,6 +3581,8 @@ describe("Sessions metadata route", () => {
       projectPath: project.path,
       providerName: "claude",
       title: "Fork summary generator",
+      sandboxLevel: "project-write",
+      sandboxStateKey: "project-sandbox",
     });
     expect(generateSummary).toHaveBeenCalledWith(
       "claude",
@@ -2817,14 +3594,21 @@ describe("Sessions metadata route", () => {
         afterTurnMessageId: "msg-after-initial-turn",
         afterTurnContext: "Loaded AGENTS and found the failing test.",
         instructions: "focus on verification and next action",
+        sessionSandbox,
       }),
     );
     expect(forkSession).toHaveBeenNthCalledWith(2, {
       sessionId: "sess-1",
       projectPath: project.path,
       providerName: "claude",
-      upToMessageId: "msg-after-initial-turn",
+      boundary: {
+        kind: "message",
+        provider: "claude",
+        messageId: "msg-after-initial-turn",
+      },
       title: "Refactor continuation",
+      sandboxLevel: "project-write",
+      sandboxStateKey: "project-sandbox",
     });
     expect(resumeSession).toHaveBeenCalledWith(
       "sess-target",
@@ -2837,22 +3621,40 @@ describe("Sessions metadata route", () => {
         providerName: "claude",
         model: "sonnet",
         promptSuggestionMode: "native",
+        sandboxLevel: "project-write",
+        sandboxStateKey: "project-sandbox",
+      }),
+    );
+    expect(setSessionSandbox).toHaveBeenCalledWith(
+      "sess-generator",
+      expect.objectContaining({
+        level: "project-write",
+        stateKey: "project-sandbox",
+        projectPath: project.path,
+      }),
+    );
+    expect(setSessionSandbox).toHaveBeenCalledWith(
+      "sess-target",
+      expect.objectContaining({
+        level: "project-write",
+        stateKey: "project-sandbox",
+        projectPath: project.path,
       }),
     );
     expect(updateMetadata).toHaveBeenCalledWith("sess-generator", {
       title: "Fork summary generator",
       archived: true,
-      parentSessionId: "sess-1",
+      forkedFromSessionId: "sess-1",
     });
     expect(updateMetadata).toHaveBeenCalledWith("sess-target", {
       title: "Refactor continuation",
       archived: true,
-      parentSessionId: "sess-1",
+      forkedFromSessionId: "sess-1",
     });
     expect(updateMetadata).toHaveBeenCalledWith("sess-target", {
       title: "Refactor continuation",
       archived: false,
-      parentSessionId: "sess-1",
+      forkedFromSessionId: "sess-1",
     });
     expect(setProvider).toHaveBeenCalledWith("sess-target", "claude");
     expect(setProvider).toHaveBeenCalledWith("sess-generator", "claude");
@@ -2868,14 +3670,14 @@ describe("Sessions metadata route", () => {
       expect.objectContaining({
         sessionId: "sess-generator",
         archived: true,
-        parentSessionId: "sess-1",
+        forkedFromSessionId: "sess-1",
       }),
     );
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "sess-target",
         archived: true,
-        parentSessionId: "sess-1",
+        forkedFromSessionId: "sess-1",
       }),
     );
   });
@@ -2966,6 +3768,12 @@ describe("Sessions metadata route", () => {
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
       sessionMetadataService: {
         getProvider: vi.fn(() => "claude"),
         getRequestedModel: vi.fn(() => "sonnet"),
@@ -3003,7 +3811,11 @@ describe("Sessions metadata route", () => {
     expect(forkSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        upToMessageId: "compact-summary",
+        boundary: {
+          kind: "message",
+          provider: "claude",
+          messageId: "compact-summary",
+        },
       }),
     );
   });
@@ -3038,6 +3850,12 @@ describe("Sessions metadata route", () => {
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
       sessionMetadataService: {
         getProvider: vi.fn(() => "claude"),
         getTranscriptDisplayObjects: vi.fn(() => []),
@@ -3090,6 +3908,12 @@ describe("Sessions metadata route", () => {
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
       sessionMetadataService: {
         getProvider: vi.fn(() => "codex"),
         getTranscriptDisplayObjects: vi.fn(() => []),
@@ -3149,6 +3973,12 @@ describe("Sessions metadata route", () => {
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
       sessionMetadataService: {
         getProvider: vi.fn(() => "claude"),
         getTranscriptDisplayObjects: vi.fn(() => []),
@@ -3198,6 +4028,12 @@ describe("Sessions metadata route", () => {
       scanner: {
         getOrCreateProject: vi.fn(async () => project),
       } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
       sessionMetadataService: {
         getProvider: vi.fn(() => "claude"),
         getTranscriptDisplayObjects: vi.fn(() => []),
@@ -3341,6 +4177,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -3575,6 +4415,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -3693,6 +4537,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -3721,14 +4569,166 @@ describe("Sessions metadata route", () => {
       interruptProcess.mock.invocationCallOrder[0] ?? 0,
     );
     const handoffText = startSession.mock.calls[0]?.[1].text;
-    expect(handoffText).toContain(
-      "- Provider-native compact: completed with /compact",
-    );
+    // The compact attempt still runs (its boundary feeds the summary section),
+    // but its status is no longer echoed as a handoff header line.
+    expect(handoffText).not.toContain("Provider-native compact:");
     expect(handoffText).toContain("## Provider-Native Compact Summary");
     expect(handoffText).toContain("Native compact summary text");
-    expect(handoffText).not.toContain(
-      "### user 2026-04-24T20:00:01.000Z\n\n/compact",
+    // The internal /compact command is still filtered out of the user turns.
+    expect(handoffText).not.toContain("### user\n\n/compact");
+  });
+
+  /**
+   * A compact-capable source process, shared by the draft tests so they can
+   * assert what the preview and an edited restart each do to it.
+   */
+  const createHandoffDraftRoutes = () => {
+    const project = createProject();
+    const history: unknown[] = [
+      {
+        type: "user",
+        uuid: "u1",
+        timestamp: "2026-04-24T20:00:00.000Z",
+        message: { role: "user", content: "draft this handoff" },
+      },
+    ];
+    let compactListener:
+      | ((event: { type: string; message?: unknown }) => void)
+      | undefined;
+    const queueMessage = vi.fn((message) => {
+      history.push({
+        type: "user",
+        uuid: "compact-command",
+        timestamp: "2026-04-24T20:00:01.000Z",
+        message: { role: "user", content: message.text },
+      });
+      queueMicrotask(() => {
+        const compactMessage = {
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "compact-1",
+          timestamp: "2026-04-24T20:00:02.000Z",
+          message: { role: "system", content: "Native compact summary text" },
+        };
+        history.push(compactMessage);
+        compactListener?.({ type: "message", message: compactMessage });
+      });
+      return { success: true, position: 1 };
+    });
+    const interruptProcess = vi.fn(async () => ({
+      success: true,
+      supported: true,
+    }));
+    const startSession = vi.fn(async () => ({
+      id: "proc-new",
+      sessionId: "sess-new",
+      projectId: project.id,
+      provider: "codex",
+      model: "gpt-5.4",
+      resolvedModel: "gpt-5.4",
+      permissionMode: "default",
+      modeVersion: 0,
+      subscribe: vi.fn(() => vi.fn()),
+    }));
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-old",
+          provider: "codex",
+          model: "gpt-5.5",
+          resolvedModel: "gpt-5.5",
+          permissionMode: "default",
+          modeVersion: 0,
+          state: { type: "idle", since: new Date() },
+          supportsDynamicCommands: true,
+          supportedCommands: vi.fn(async () => [
+            { name: "compact", description: "Compact conversation" },
+          ]),
+          queueMessage,
+          subscribe: vi.fn((listener) => {
+            compactListener = listener;
+            return vi.fn();
+          }),
+          getMessageHistory: vi.fn(() => history),
+          getDeferredQueueSummary: vi.fn(() => []),
+        })),
+        startSession,
+        interruptProcess,
+        abortProcess: vi.fn(async () => true),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () => "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "codex"),
+        getRequestedModel: vi.fn(() => undefined),
+        setRequestedModel: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => undefined),
+        setProvider: vi.fn(async () => undefined),
+        updateMetadata: vi.fn(async () => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    return { project, routes, queueMessage, interruptProcess, startSession };
+  };
+
+  it("previews the handoff draft without starting or interrupting", async () => {
+    const { project, routes, queueMessage, interruptProcess, startSession } =
+      createHandoffDraftRoutes();
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/restart/handoff`,
     );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.handoff).toContain("draft this handoff");
+    // The draft is the computed content, so it carries the compact boundary a
+    // real handoff would have.
+    expect(queueMessage).toHaveBeenCalledWith({ text: "/compact" });
+    expect(body.handoff).toContain("## Provider-Native Compact Summary");
+    expect(body.compactStatus).toBe("completed");
+    // Previewing is not starting: the source session keeps running.
+    expect(interruptProcess).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it("seeds an edited handoff draft verbatim without compacting again", async () => {
+    const { project, routes, queueMessage, interruptProcess, startSession } =
+      createHandoffDraftRoutes();
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/restart`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "codex",
+          model: "gpt-5.4",
+          handoffText: "Only what I chose to carry forward.",
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(startSession.mock.calls[0]?.[1].text).toBe(
+      "Only what I chose to carry forward.",
+    );
+    // The preview already compacted; doing it again would only spend tokens.
+    expect(queueMessage).not.toHaveBeenCalled();
+    // Starting still replaces the old process.
+    expect(interruptProcess).toHaveBeenCalled();
   });
 
   it("summarizes fallback activity and appends queued turns last", async () => {
@@ -3807,6 +4807,24 @@ describe("Sessions metadata route", () => {
               },
             },
             {
+              type: "assistant",
+              uuid: "a2",
+              timestamp: "2026-04-24T20:03:30.000Z",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "thinking", thinking: "PRIVATE_REASONING_TEXT" },
+                  { type: "text", text: "assistant conclusion prose" },
+                  {
+                    type: "tool_use",
+                    id: "bash-1",
+                    name: "Bash",
+                    input: { command: "pnpm test foo" },
+                  },
+                ],
+              },
+            },
+            {
               type: "user",
               uuid: "u2",
               timestamp: "2026-04-24T20:04:00.000Z",
@@ -3836,6 +4854,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
@@ -3854,33 +4876,61 @@ describe("Sessions metadata route", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "codex", model: "gpt-5.4" }),
+        body: JSON.stringify({
+          provider: "codex",
+          model: "gpt-5.4",
+          reason: "Manual restart from Yep Anywhere",
+          sourceUrl:
+            "https://localhost:3400/projects/proj-1/sessions/sess-1",
+        }),
       },
     );
 
     expect(response.status).toBe(200);
-    const handoffText = startSession.mock.calls[0]?.[1].text;
+    const handoffText = startSession.mock.calls[0]?.[1].text ?? "";
+    // Source Session block: self-documenting URL, no internal process id, no
+    // restart-reason or provider-compact noise.
     expect(handoffText).toContain(
-      "- Provider-native compact: skipped: source process was in-turn",
+      "- URL: https://localhost:3400/projects/proj-1/sessions/sess-1",
     );
+    expect(handoffText).not.toContain("Previous YA process");
+    expect(handoffText).not.toContain("Restart reason");
+    expect(handoffText).not.toContain("Provider-native compact:");
+    expect(handoffText).toContain("- Full transcript on ");
+    expect(handoffText).toContain(
+      "(read or grep there for detail beyond this summary): /home/user/.claude/projects/enc/sess-1.jsonl",
+    );
+    // The real compact summary section still renders.
     expect(handoffText).toContain("## Provider-Native Compact Summary");
     expect(handoffText).toContain("Existing compact summary");
+    // User turns keep a light divider; their content is verbatim.
     expect(handoffText).toContain("## Recent User Turns");
+    expect(handoffText).toContain("### user");
     expect(handoffText).toContain("older user turn");
     expect(handoffText).toContain("latest user direction");
-    expect(handoffText).toContain("[tool_use Read]");
-    expect(handoffText).toContain("read/search details omitted");
-    expect(handoffText).toContain("[tool_result] output omitted");
+    // Activity: assistant prose and bash commands survive, bare.
+    expect(handoffText).toContain("assistant conclusion prose");
+    expect(handoffText).toContain("$ pnpm test foo");
+    expect(handoffText).not.toContain("### assistant");
+    // Slimmed noise is gone: no timestamps, non-bash tool_use, tool results,
+    // or thinking.
+    expect(handoffText).not.toContain("2026-04-24T20:04:00.000Z");
+    expect(handoffText).not.toContain("[tool_use");
+    expect(handoffText).not.toContain("[tool_result");
+    expect(handoffText).not.toContain("thinking");
+    expect(handoffText).not.toContain("PRIVATE_REASONING_TEXT");
+    expect(handoffText).not.toContain("read/search details omitted");
     expect(handoffText).not.toContain(verboseReadOutput);
+    // Queued turns still come last.
     expect(handoffText).toContain("## Queued User Turns (Not Yet Processed)");
     expect(handoffText).toContain(
       "No agent response in the source session has processed them yet.",
     );
     expect(handoffText).toContain("queued follow-up");
     expect(handoffText).toContain("Attachments queued: 1");
-    expect(handoffText?.trim().endsWith("Temp ID: queued-1")).toBe(true);
-    expect(handoffText?.indexOf("## Queued User Turns")).toBeGreaterThan(
-      handoffText?.indexOf("## Recent Agent and Tool Activity") ?? -1,
+    expect(handoffText.trim().endsWith("Temp ID: queued-1")).toBe(true);
+    expect(handoffText.indexOf("## Queued User Turns")).toBeGreaterThan(
+      handoffText.indexOf("## Recent Agent and Tool Activity"),
     );
   });
 
@@ -3921,6 +4971,10 @@ describe("Sessions metadata route", () => {
         () =>
           ({
             getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () =>
+                "/home/user/.claude/projects/enc/sess-1.jsonl",
+            ),
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {

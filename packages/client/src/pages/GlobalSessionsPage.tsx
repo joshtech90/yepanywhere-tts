@@ -45,6 +45,7 @@ type AgeFilter = "3" | "7" | "14" | "30";
 // Provider colors for filter dropdown (matching ProviderBadge)
 const PROVIDER_COLORS: Record<ProviderName, string> = {
   claude: "var(--app-yep-green)",
+  "claude-gateway": "var(--app-yep-green)",
   "claude-ollama": "var(--app-yep-green)", // Same as Claude
   codex: "#10a37f",
   "codex-oss": "#f97316",
@@ -837,7 +838,7 @@ export function GlobalSessionsPage() {
                 onChange={setStatusFilters}
                 placeholder={t("globalSessionsStatusAll")}
                 placeholderContent={statusPlaceholder}
-                className="filter-dropdown--status"
+                triggerClassName="filter-dropdown-trigger--status"
               />
               {providerOptions.length > 1 && (
                 <FilterDropdown
@@ -846,7 +847,7 @@ export function GlobalSessionsPage() {
                   selected={providerFilters}
                   onChange={setProviderFilters}
                   placeholder={t("globalSessionsProviderAll")}
-                  className="filter-dropdown--provider"
+                  triggerClassName="filter-dropdown-trigger--provider"
                 />
               )}
               {executorOptions.length > 1 && (
@@ -1029,6 +1030,7 @@ export function GlobalSessionsPage() {
                       provider={session.provider}
                       model={session.model}
                       parentSessionId={session.parentSessionId}
+                      parentSessionKind={session.parentSessionKind}
                       providerChildren={providerChildrenBySessionId.get(
                         session.id,
                       )}
@@ -1113,6 +1115,7 @@ export function GlobalSessionsPage() {
                             provider={session.provider}
                             model={session.model}
                             parentSessionId={session.parentSessionId}
+                            parentSessionKind={session.parentSessionKind}
                             providerChildren={providerChildrenBySessionId.get(
                               session.id,
                             )}

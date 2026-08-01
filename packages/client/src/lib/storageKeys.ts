@@ -17,6 +17,7 @@ export const UI_KEYS = {
   locale: "yep-anywhere-locale",
   theme: "yep-anywhere-theme",
   fontSize: "yep-anywhere-font-size",
+  diffViewMode: "yep-anywhere-diff-view-mode",
   outputProseFont: "yep-anywhere-output-prose-font",
   outputUiFont: "yep-anywhere-output-ui-font",
   outputProseFontSize: "yep-anywhere-output-prose-font-size",
@@ -34,8 +35,10 @@ export const UI_KEYS = {
   outputToolPreviewLineCount: "yep-anywhere-output-tool-preview-line-count",
   tabSize: "yep-anywhere-tab-size",
   contentMaxWidth: "yep-anywhere-content-max-width",
+  commitReadWatermarks: "yep-anywhere-commit-read-watermarks",
   sidebarWidth: "yep-anywhere-sidebar-width",
   sidebarExpanded: "yep-anywhere-sidebar-expanded",
+  sidebarMinimized: "yep-anywhere-sidebar-minimized",
   sidebarSectionExpansion: "yep-anywhere-sidebar-section-expansion",
   sidebarDuplicateHidingEnabled:
     "yep-anywhere-sidebar-duplicate-hiding-enabled",
@@ -45,6 +48,10 @@ export const UI_KEYS = {
   speechMicDeviceId: "yep-anywhere-speech-mic-device-id",
   floatingActionButtonEnabled: "yep-anywhere-floating-action-button-enabled",
   developerMode: "yep-anywhere-developer-mode",
+  conversationView: "yep-anywhere-conversation-view-enabled",
+  conversationViewTurnLimit: "yep-anywhere-conversation-view-turn-limit",
+  widerConversationActivityPreviews:
+    "yep-anywhere-wider-conversation-activity-previews-enabled",
   sessionToolbarPresence: "yep-anywhere-session-toolbar-presence",
   // Legacy pre-presence keys, read once for migration then removed.
   sessionToolbarVisibility: "yep-anywhere-session-toolbar-visibility",
@@ -58,13 +65,13 @@ export const UI_KEYS = {
   sessionGeneratedTitleLength: "yep-anywhere-session-generated-title-length",
   quoteReplyButtonMode: "yep-anywhere-quote-reply-button-mode",
   sessionThinkingVisible: "yep-anywhere-session-thinking-visible",
+  settingsSearchMatchValues: "yep-anywhere-settings-search-match-values",
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",
   sessionLoadingProgress: "yep-anywhere-session-loading-progress-enabled",
   sessionDomLinger: "yep-anywhere-session-dom-linger-enabled",
   sessionOffscreenTranscriptRendering:
     "yep-anywhere-session-offscreen-transcript-rendering-enabled",
-  sessionActiveWindowTrim:
-    "yep-anywhere-session-active-window-trim-enabled",
+  sessionActiveWindowTrim: "yep-anywhere-session-active-window-trim-enabled",
   // Legacy boolean toggle; seeds the budget preference until the slider
   // is first used, and stays coherent for older bundles.
   sessionTranscriptCache: "yep-anywhere-session-transcript-cache-enabled",
@@ -80,6 +87,8 @@ export const UI_KEYS = {
     "yep-anywhere-stable-tool-preview-rendering-enabled",
   // Preserve the first-shipped key; true now means previews start expanded.
   inlineMediaExpandedByDefault: "yep-anywhere-inline-images-enabled",
+  compactMultiImageGalleries:
+    "yep-anywhere-compact-multi-image-galleries-enabled",
   schemaValidation: "yep-anywhere-schema-validation",
   emulatorMaxFps: "yep-anywhere-emulator-max-fps",
   emulatorMaxWidth: "yep-anywhere-emulator-max-width",

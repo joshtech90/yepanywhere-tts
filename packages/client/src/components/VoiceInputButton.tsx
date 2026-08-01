@@ -15,14 +15,11 @@ import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
-import {
-  SPEECH_STATUS_LABELS,
-  useSpeechRecognition,
-} from "../hooks/useSpeechRecognition";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useVersion } from "../hooks/useVersion";
 import { useViewportWidth } from "../hooks/useViewportWidth";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
-import { useI18n } from "../i18n";
+import { type MessageKey, useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import {
   DEFAULT_SPEECH_METHOD,
@@ -37,17 +34,29 @@ import {
   publishSpeechWaveformSamples,
 } from "../lib/speechWaveform";
 import type {
+  SpeechProviderStatus,
   SpeechSmartTurnSettings,
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
   SpeechTranscriptionSettlement,
 } from "../lib/speechProviders/SpeechProvider";
 
+const SPEECH_STATUS_MESSAGE_KEYS: Record<SpeechProviderStatus, MessageKey> = {
+  idle: "speechReadyStatus",
+  starting: "speechStartingStatus",
+  listening: "speechSpeakNowStatus",
+  receiving: "speechListeningPlaceholder",
+  processing: "speechTranscribingPlaceholder",
+  finalizing: "speechFinalizingPlaceholder",
+  reconnecting: "speechStartingStatus",
+  error: "speechErrorStatus",
+};
+
 /**
- * A cancellable in-progress speech state the composer surfaces as a chip:
- * `listening` during active capture, `transcribing` for a batch wait,
- * `finalizing` for a streaming flush. The chip's ✕ cancels the non-final
- * portion in every case; already-committed finals stay in the draft.
+ * A cancellable in-progress speech state the composer uses for lifecycle:
+ * `listening` during active capture, `transcribing` for a batch wait, and
+ * `finalizing` for a streaming flush. Already-committed finals stay in the
+ * draft when the remaining work is cancelled.
  */
 export type SpeechPendingKind = "listening" | "transcribing" | "finalizing";
 
@@ -232,13 +241,14 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   const isActive = isCapturing || isBusy;
   const isPressed = isCapturing || isStarting || status === "reconnecting";
   const isProcessing = status === "processing";
+  const speechActivityDetected = status === "receiving";
   const wasCapturingRef = useRef(false);
   const waveformVisible =
     showWaveform && speechMethod !== DEFAULT_SPEECH_METHOD && isCapturing;
-  // A cancellable in-progress speech state the composer surfaces as a chip.
-  // Active capture is "listening"; the batch wait is "transcribing"; the
-  // streaming flush is "finalizing". The chip's ✕ routes to the unified
-  // cancel() (drops the non-final portion, keeps committed finals) in all three.
+  const showPostCaptureStatus = isProcessing || isFinalizing;
+  // Keep the parent informed for insertion-target and keyboard-cancel
+  // lifecycle. Visual capture/processing status stays with this mic control;
+  // the composer never inserts it into the textarea mirror.
   const pendingKind: SpeechPendingKind | null = isProcessing
     ? "transcribing"
     : isFinalizing
@@ -249,8 +259,9 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
 
   const isAvailable = isSupported && voiceInputEnabled && serverVoiceEnabled;
 
-  // Get display text for status
-  const statusLabel = error || SPEECH_STATUS_LABELS[status];
+  // Translate provider lifecycle states into familiar dictation language.
+  // "reconnecting" is an internal recognizer restart, not a network failure.
+  const statusLabel = error || t(SPEECH_STATUS_MESSAGE_KEYS[status]);
 
   // Expose methods and state to parent
   useImperativeHandle(
@@ -342,7 +353,7 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   const button = (
     <button
       type="button"
-      className={`voice-input-button ${isCapturing ? "listening" : ""} ${isStarting ? "connecting" : ""} ${className}`}
+      className={`voice-input-button ${isCapturing ? "listening" : ""} ${className}`}
       onClick={handleClick}
       disabled={disabled}
       title={
@@ -363,71 +374,62 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
       }
       aria-pressed={isPressed}
     >
-      {isCapturing ? (
-        // Recording indicator - animated bars (only once audio is actually
-        // flowing; during "starting" we show the mic so the button does not
-        // look like it is capturing before the pipeline is live).
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          aria-hidden="true"
-          className="voice-input-recording"
-        >
-          <rect x="4" y="8" width="3" height="8" rx="1" className="bar bar-1" />
-          <rect
-            x="10.5"
-            y="5"
-            width="3"
-            height="14"
-            rx="1"
-            className="bar bar-2"
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        className={
+          isCapturing
+            ? `voice-input-recording ${
+                speechActivityDetected ? "is-speech-active" : ""
+              }`
+            : undefined
+        }
+      >
+        {isCapturing && (
+          <circle
+            cx="12"
+            cy="12"
+            r="11.5"
+            fill="currentColor"
+            className="voice-input-level-disc"
           />
-          <rect
-            x="17"
-            y="8"
-            width="3"
-            height="8"
-            rx="1"
-            className="bar bar-3"
-          />
-        </svg>
-      ) : (
-        // Microphone icon
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
+        )}
+        <g
+          className={isCapturing ? "voice-input-level-glyph" : undefined}
           stroke="currentColor"
           strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
         >
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
           <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
           <line x1="12" y1="19" x2="12" y2="23" />
           <line x1="8" y1="23" x2="16" y2="23" />
-        </svg>
-      )}
+        </g>
+      </svg>
     </button>
   );
 
-  // If showing status text, wrap in container; otherwise just return the button.
-  // Show during "starting" too so the user sees "Connecting..." instead of a
-  // button that looks live before capture has actually begun. Errors break
-  // through the desktop-only gate: on a phone (coarse pointer / narrow) the
-  // status text is normally hidden, which left mic failures with no feedback
-  // at all — the original complaint. An error must always be visible.
-  if ((showStatusText && isActive && !waveformVisible) || error) {
+  // Active-capture status text remains a wide-screen enhancement. Post-capture
+  // waits and errors always remain visible beside the mic, including on phones:
+  // the textarea must stay entirely real/editable while those states are
+  // pending, so the toolbar is their single visual home.
+  if (
+    (showStatusText && isActive && !waveformVisible) ||
+    showPostCaptureStatus ||
+    error
+  ) {
     return (
       <div
         className={`voice-input-container ${isCapturing ? "listening" : ""} ${statusClass}`}
       >
         {button}
-        <span className="voice-input-status">{statusLabel}</span>
+        <span className="voice-input-status" role="status" aria-live="polite">
+          {statusLabel}
+        </span>
       </div>
     );
   }

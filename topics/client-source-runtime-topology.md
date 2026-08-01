@@ -243,6 +243,39 @@ Likely UI shapes:
 The first architectural bar is simpler: no subsystem should make side-by-side
 sources impossible by hiding source or connection identity in a singleton.
 
+The first concrete product/E2E probe is implemented in
+[`docs/tactical/066-multi-host-monitor-coexistence-harness.md`](../docs/tactical/066-multi-host-monitor-coexistence-harness.md):
+a hidden/default-off monitor backed by three real secure relay sources. It
+uses one relay mux socket when a shared relay advertises
+`client-mux-v1`, and otherwise preserves the proven independent-socket
+fallback.
+
+### Experimental monitor contract
+
+- The remote client owns `/-/monitor` outside the ordinary single-current-host
+  provider tree. Direct navigation is deliberate experimental access; the
+  normal remote UI exposes a link near **Switch Host** only when the
+  browser-local development setting is enabled.
+- Mounting the route selects all saved hosts and attempts resume only for hosts
+  with a stored session. A host without one is **Sign-in required** and does
+  not open a login dialog automatically.
+- Each host progresses independently through connecting, connected, offline,
+  or sign-in-required. `Connected N of M` counts ready sources only. One
+  source's failure never redirects or signs out healthy peers.
+- Connected cards show source-scoped activity, attention, and recent-session
+  summaries. Colliding project and YA-visible session ids on different servers
+  must resolve to the data from their own source.
+- An offline host can be retried independently. Stale or rejected resume state
+  is cleared only for the affected saved host and becomes an explicit sign-in
+  action.
+- Deactivating one source releases its transport/runtime while peer runtimes
+  remain usable. Leaving the route disposes every acquired connection,
+  subscription, activity lease, reconnect owner, and runtime; it must not keep
+  hidden background sockets alive.
+- A shared capable relay uses one browser-to-relay `/mux` WebSocket for up to
+  five selected hosts. A missing or failed capability probe preserves one
+  ordinary `/ws` socket per host, with the same visible behavior.
+
 ## Concurrent Runtime Cost
 
 This is a mobile-first client. Every live remote runtime is a WebSocket, a

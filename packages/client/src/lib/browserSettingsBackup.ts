@@ -28,6 +28,7 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   UI_KEYS.contentMaxWidth,
   UI_KEYS.sidebarWidth,
   UI_KEYS.sidebarExpanded,
+  UI_KEYS.sidebarMinimized,
   UI_KEYS.sidebarSectionExpansion,
   UI_KEYS.sidebarDuplicateHidingEnabled,
   UI_KEYS.funPhrases,
@@ -35,6 +36,9 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   UI_KEYS.speechKeepMicWarm,
   UI_KEYS.floatingActionButtonEnabled,
   UI_KEYS.developerMode,
+  UI_KEYS.conversationView,
+  UI_KEYS.conversationViewTurnLimit,
+  UI_KEYS.widerConversationActivityPreviews,
   UI_KEYS.sessionToolbarPresence,
   UI_KEYS.tooltipMode,
   UI_KEYS.tooltipDelayMs,
@@ -57,6 +61,7 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   UI_KEYS.sessionDetailShadowDiagnostics,
   UI_KEYS.stableToolPreviewRendering,
   UI_KEYS.inlineMediaExpandedByDefault,
+  UI_KEYS.compactMultiImageGalleries,
   UI_KEYS.schemaValidation,
   UI_KEYS.emulatorMaxFps,
   UI_KEYS.emulatorMaxWidth,
@@ -93,9 +98,7 @@ function restoreValues(
   storage: Pick<Storage, "setItem" | "removeItem">,
 ): void {
   for (const key of BROWSER_SETTINGS_BACKUP_KEYS) {
-    const value = Object.hasOwn(values, key)
-      ? values[key]
-      : undefined;
+    const value = Object.hasOwn(values, key) ? values[key] : undefined;
     if (typeof value === "string") {
       storage.setItem(key, value);
     } else {
@@ -107,8 +110,10 @@ function restoreValues(
 /** Replace the portable preference set, rolling back if localStorage rejects. */
 export function applyBrowserSettingsBackup(
   backup: BrowserSettingsBackup,
-  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> =
-    window.localStorage,
+  storage: Pick<
+    Storage,
+    "getItem" | "setItem" | "removeItem"
+  > = window.localStorage,
 ): void {
   if (backup.version !== BROWSER_SETTINGS_BACKUP_VERSION) {
     throw new Error(`Unsupported browser settings version: ${backup.version}`);

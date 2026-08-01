@@ -18,6 +18,39 @@ YA has several surfaces with different security expectations:
   itself. Authentication, encryption, explicit opt-ins, and server-side gates
   remain the controlling security mechanisms.
 
+### Desktop loopback
+
+The desktop loopback dashboard is authenticated local content, but a random
+port or a localhost origin is not identity. The native shell must not expose a
+long-lived desktop credential to renderer JavaScript.
+
+Desktop v0 uses a private native/server startup secret to mint a short-lived,
+single-use navigation code. Consuming that code establishes a host-only,
+HttpOnly, SameSite=Strict session cookie. Bootstrap credentials and routes are
+accepted only on the loopback listener, never optional LAN, relay, or
+internally forwarded surfaces. Reload uses the cookie and must not require a
+token in the URL, JavaScript module state, request header, or WebSocket query.
+
+The implementation bounds bootstrap state to 16 codes with a 30-second
+lifetime, 30 invalid attempts per minute, and 32 in-memory desktop sessions
+with a 30-day server-side lifetime. State dies with the bundled server and is
+never persisted. Because v0 serves plain loopback HTTP, its host-only cookie
+cannot use `Secure`; it remains HttpOnly, SameSite=Strict, and path-rooted.
+
+The loopback dashboard is a remote origin from Tauri's perspective and receives
+no custom native-command capability. Packaged Tauri-origin diagnostic surfaces
+receive narrowly scoped commands. See [`desktop-v0.md`](desktop-v0.md) for the
+distribution, compatibility, lifecycle, and same-user-process threat model.
+
+The signed macOS runtime grants `com.apple.security.cs.allow-jit` to Tauri's
+executable signing targets because the bundled Bun/JavaScriptCore sidecar
+cannot expose the JavaScript runtime required by the server under hardened
+runtime without it. Tauri's shared signing configuration also puts the
+entitlement on the native shell; it does not grant it to remote dashboard
+content running in WKWebView. The release must not add the broader
+unsigned-executable-memory, executable-page-protection, or
+disable-library-validation exceptions.
+
 ## Public Share File Access
 
 Public read-only shares may open project files through a share-scoped public
@@ -96,11 +129,17 @@ bearer-link read-only views, not as relay-operator-private views. See
 
 ## Related Notes
 
+- [`active-content-security.md`](active-content-security.md) records the
+  confirmed same-origin active-document execution path, the source-first file
+  contract, and the isolated-origin requirement for agent-built applications.
 - [`docs/tactical/000-relay-origin-and-share-gating.md`](../docs/tactical/000-relay-origin-and-share-gating.md)
   records the current public-share relay, opt-in, and revocation decisions.
 - [`public-share-content-censorship.md`](public-share-content-censorship.md)
   records the proposed content-aware redaction layer for public transcript
   output.
+- [`session-sandboxing.md`](session-sandboxing.md) defines the proposed
+  host-enforced project-write boundary and the additional admission work a
+  future interactive “locked to this session” share would require.
 - [`SECURITY.md`](../SECURITY.md) is the public security-policy entry point for
   reporting vulnerabilities and should stay operator-facing rather than carrying
   implementation-specific design contracts.

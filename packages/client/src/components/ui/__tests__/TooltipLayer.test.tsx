@@ -16,6 +16,7 @@ import {
 import { UI_KEYS } from "../../../lib/storageKeys";
 import "../../../../test/pointerEventShim";
 import { TooltipLayer } from "../TooltipLayer";
+import styles from "../TooltipLayer.module.css";
 
 const originalClipboard = navigator.clipboard;
 
@@ -117,6 +118,55 @@ describe("TooltipLayer", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(target.getAttribute("title")).toBe("");
     expect(target.getAttribute("data-tooltip")).toBe("Command tail");
+  });
+
+  it("dismisses and briefly suppresses tooltips while the composer changes", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" title="Accidental hint">
+          Hover target
+        </button>
+        <textarea data-composer-input aria-label="Composer" />
+      </>,
+    );
+    const target = screen.getByRole("button", { name: "Hover target" });
+    const composer = screen.getByRole("textbox", { name: "Composer" });
+
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip").textContent).toBe("Accidental hint");
+
+    fireEvent.input(composer, { target: { value: "a" } });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(99));
+    fireEvent.pointerMove(target, {
+      pointerType: "mouse",
+      clientX: 11,
+      clientY: 10,
+    });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.pointerMove(target, {
+      pointerType: "mouse",
+      clientX: 16,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip").textContent).toBe("Accidental hint");
   });
 
   it("keeps the tooltip open while hovering and selecting its text", () => {
@@ -332,6 +382,45 @@ describe("TooltipLayer", () => {
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
 
     expect(screen.getByRole("tooltip").textContent).toBe("Clipped command");
+  });
+
+  it("keeps a row tooltip when its exact-text child is clipped", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" data-tooltip="src/a/long-file-name.ts">
+          <span>src/a/long-file-name.ts</span>
+        </button>
+      </>,
+    );
+    const target = screen.getByRole("button", {
+      name: "src/a/long-file-name.ts",
+    });
+    const path = target.querySelector("span");
+    expect(path).not.toBeNull();
+    Object.defineProperties(target, {
+      clientWidth: { configurable: true, value: 160 },
+      clientHeight: { configurable: true, value: 24 },
+      scrollWidth: { configurable: true, value: 160 },
+      scrollHeight: { configurable: true, value: 24 },
+    });
+    Object.defineProperties(path, {
+      clientWidth: { configurable: true, value: 80 },
+      clientHeight: { configurable: true, value: 24 },
+      scrollWidth: { configurable: true, value: 160 },
+      scrollHeight: { configurable: true, value: 24 },
+    });
+
+    fireEvent.pointerOver(path!, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "src/a/long-file-name.ts",
+    );
   });
 
   it("keeps an exact-content tooltip when a scroll ancestor clips it", () => {
@@ -555,9 +644,7 @@ describe("TooltipLayer", () => {
     fireEvent.contextMenu(screen.getByRole("tooltip"));
 
     expect(writeText).toHaveBeenCalledWith("Copy this tail");
-    expect(screen.getByRole("tooltip").classList).toContain(
-      "ya-tooltip--enlarged",
-    );
+    expect(screen.getByRole("tooltip").classList).toContain(styles.enlarged);
   });
 
   it("preserves the browser menu for selected tooltip text", () => {
@@ -590,7 +677,7 @@ describe("TooltipLayer", () => {
 
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.getByRole("tooltip").classList).not.toContain(
-      "ya-tooltip--enlarged",
+      styles.enlarged,
     );
   });
 
@@ -624,7 +711,7 @@ describe("TooltipLayer", () => {
 
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.getByRole("tooltip").classList).not.toContain(
-      "ya-tooltip--enlarged",
+      styles.enlarged,
     );
   });
 
@@ -637,6 +724,7 @@ describe("TooltipLayer", () => {
     render(
       <>
         <TooltipLayer />
+        {/* biome-ignore lint/a11y/noAmbiguousAnchorText: Generic link text exercises browser-owned context-menu behavior. */}
         <a href="/elsewhere" title="Link destination">
           Link
         </a>
@@ -654,7 +742,7 @@ describe("TooltipLayer", () => {
 
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.getByRole("tooltip").classList).not.toContain(
-      "ya-tooltip--enlarged",
+      styles.enlarged,
     );
   });
 

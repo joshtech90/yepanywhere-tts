@@ -5,6 +5,8 @@ import { setStableToolPreviewRenderingPreference } from "../../../hooks/useStabl
 import { I18nProvider } from "../../../i18n";
 import { extractMarkdownSnippetsFromSelection } from "../../../lib/markdownSelectionCopy";
 import { UI_KEYS } from "../../../lib/storageKeys";
+import globStyles from "../../renderers/tools/GlobRenderer.module.css";
+import grepStyles from "../../renderers/tools/GrepRenderer.module.css";
 import {
   DEFERRED_PREVIEW_HEIGHT,
   estimateDeferredPreviewHeightPx,
@@ -804,12 +806,14 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    expect(container.querySelector(".grep-summary-pattern-full")).toBeNull();
+    expect(
+      container.querySelector(`.${grepStyles.summaryPatternFull}`),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand summary" }));
 
     expect(
-      container.querySelector(".grep-summary-pattern-full")?.textContent,
+      container.querySelector(`.${grepStyles.summaryPatternFull}`)?.textContent,
     ).toBe(pattern);
     expect(
       screen.getByRole("button", { name: "Collapse summary" }),
@@ -945,17 +949,17 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    expect(container.querySelector(".glob-result")).toBeNull();
+    expect(container.querySelector(`.${globStyles.result}`)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
 
-    expect(container.querySelector(".glob-result")).not.toBeNull();
+    expect(container.querySelector(`.${globStyles.result}`)).not.toBeNull();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Collapse expanded tool row" }),
     );
 
-    expect(container.querySelector(".glob-result")).toBeNull();
+    expect(container.querySelector(`.${globStyles.result}`)).toBeNull();
     expect(screen.getByRole("button", { name: "Expand" })).toBeDefined();
   });
 

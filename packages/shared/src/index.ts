@@ -12,11 +12,51 @@ export {
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
 } from "./agent-context.js";
 
+export {
+  MAX_CLAUDE_ADDITIONAL_MODELS,
+  MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH,
+  MAX_CLAUDE_ADDITIONAL_MODEL_LABEL_LENGTH,
+  isValidClaudeAdditionalModelId,
+  isValidClaudeAdditionalModelLabel,
+  parseClaudeAdditionalModelSelections,
+  type ClaudeAdditionalModelOrigin,
+  type ClaudeAdditionalModelSelection,
+} from "./claude-additional-models.js";
+
+export {
+  DEFAULT_SNIPPET_CONTEXT_RADIUS,
+  MAX_REVIEW_BATCHES,
+  MAX_REVIEW_COMMENT_TEXT_LENGTH,
+  MAX_REVIEW_COMMENTS,
+  MAX_REVIEW_PATH_LENGTH,
+  MAX_REVIEW_SNIPPET_LENGTH,
+  REVIEW_COMMENTS_FILE_VERSION,
+  anchorFromPatch,
+  emptyReviewCommentsFile,
+  parseReviewCommentAnchor,
+  parseReviewCommentsFile,
+  patchLineCount,
+  type PatchLineLocation,
+  type ReviewBatch,
+  type ReviewComment,
+  type ReviewCommentAnchor,
+  type ReviewCommentRevision,
+  type ReviewCommentSide,
+  type ReviewCommentStatus,
+  type ReviewCommentsFile,
+  type ReviewNewSessionOptions,
+} from "./review-comments.js";
+
 export type { HostIdentity } from "./host-identity.js";
 export {
   MAX_HOST_IDENTITY_ICON_CODE_UNITS,
   normalizeHostIdentityIcon,
 } from "./host-identity.js";
+export type {
+  HostAgentProcessObservation,
+  HostAgentProcessesResponse,
+  HostAgentProcessSupervision,
+} from "./host-agent-processes.js";
 
 // File path detection (shared between server and client)
 export type { DetectedFilePath, TextSegment } from "./filePathDetection.js";
@@ -42,6 +82,14 @@ export {
   parseLocalResourceLink,
 } from "./local-resource.js";
 
+export {
+  TOOL_RESULT_MEDIA_REJECTION_REASONS,
+  type RejectedToolResultMedia,
+  type StoredToolResultMedia,
+  type ToolResultMedia,
+  type ToolResultMediaRejectionReason,
+} from "./tool-result-media.js";
+
 // ANSI escape rendering (shared between server and client)
 export { hasAnsiEscapes, renderAnsiToHtml } from "./ansi-renderer.js";
 export {
@@ -50,8 +98,13 @@ export {
   toonDocumentToMarkdown,
   type ToonTable,
 } from "./toon.js";
+export {
+  jsonlTablesToMarkdown,
+  type JsonlTablesResult,
+} from "./jsonlTable.js";
 
 export type {
+  ClaudeProviderName,
   ProviderName,
   ProviderInfo,
   ProviderImageSizing,
@@ -70,7 +123,15 @@ export type {
   PromptSuggestionMode,
   HelperTargetConfig,
   SlashCommand,
+  SlashCommandInvocation,
+  SlashCommandInvocationKind,
+  SlashCommandInvocationPrefix,
+  SlashCommandInventoryState,
   PermissionMode,
+  SessionSandboxLevel,
+  SessionSandboxEnforcement,
+  SessionSandboxAvailability,
+  SessionSandboxAvailabilityState,
   ProviderSessionDefaults,
   NewSessionDefaults,
   BusyComposerDefaultAction,
@@ -97,8 +158,27 @@ export type {
   PermissionRules,
 } from "./types.js";
 export {
+  canonicalInvocationName,
+  canonicalizeSkillInvocations,
+  commandMatchesInvocationQuery,
+  findInvocationCandidates,
+  findSkillInvocations,
+  findUnrecognizedInvocations,
+  getCanonicalInvocationNames,
+  getCanonicalInvocationToken,
+  getInvocationCompletionQuery,
+  getInvocationNames,
+  hasInvocationCandidate,
+  normalizeInvocationName,
+  type InvocationCompletionQuery,
+  type InvocationCandidate,
+  type SkillInvocationMatch,
+} from "./skill-invocations.js";
+export {
   ALL_PROVIDERS,
   ALL_PERMISSION_MODES,
+  SESSION_SANDBOX_LEVELS,
+  isClaudeProviderName,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   HELPER_SIDE_MODEL_TARGET_PREFIX,
@@ -123,6 +203,15 @@ export {
 } from "./types.js";
 
 export type {
+  GitBlameLine,
+  GitBlameResult,
+  GitCommitDetail,
+  GitCommitListResult,
+  GitCommitSearchManifest,
+  GitCommitSearchRecord,
+  GitCommitSearchRecordsResult,
+  GitFileListResult,
+  GitSearchResult,
   GitDiffPreviewSkipped,
   GitDiffPreviewSkippedReason,
   GitDiffResult,
@@ -135,6 +224,7 @@ export type {
   GitPushResult,
   GitPushStatus,
   GitRecentCommit,
+  GitRevisionComparison,
   GitRemoteCheckResult,
   GitRemoteCheckStatus,
   GitStatusInfo,
@@ -151,6 +241,8 @@ export type {
   SafeRestartStatus,
 } from "./safe-restart.js";
 export {
+  GIT_SOURCE_REVIEW_CAPABILITY,
+  GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
@@ -251,17 +343,32 @@ export {
   clampProjectQueueQuietSeconds,
 } from "./project-queue.js";
 export {
+  getApplicableSubscriptionUsageWindows,
+  getMostUsedSubscriptionUsageWindow,
+  type ProviderSubscriptionUsage,
+  type ProviderSubscriptionUsageScope,
+  type ProviderSubscriptionUsageWindow,
+} from "./provider-subscription-usage.js";
+export {
   APPROVAL_AUDIT_LOG_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
+  CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
+  CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  CLAUDE_GATEWAY_CAPABILITY,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
+  HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
+  SESSION_SANDBOXING_CAPABILITY,
+  SESSION_SANDBOXING_STATUS_CAPABILITY,
+  SESSION_FORK_TURN_INTENTS_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY,
   SERVER_CAPABILITIES,
   VOICE_INPUT_CAPABILITY,
   serverHasCapability,
@@ -768,3 +875,34 @@ export {
   USERNAME_REGEX,
   isValidRelayUsername,
 } from "./relay-protocol.js";
+
+export type {
+  RelayMuxReady,
+  RelayMuxOpen,
+  RelayMuxOpened,
+  RelayMuxErrorReason,
+  RelayMuxError,
+  RelayMuxClose,
+  RelayMuxClosedReason,
+  RelayMuxClosed,
+  RelayMuxClientControl,
+  RelayMuxServerControl,
+  RelayMuxDataFrame,
+} from "./relay-mux.js";
+
+export {
+  RELAY_CLIENT_MUX_V1_CAPABILITY,
+  RELAY_MUX_PROTOCOL_VERSION,
+  RELAY_MUX_HEADER_BYTES,
+  RELAY_MUX_BINARY_FLAG,
+  RelayMuxFrameError,
+  isRelayMuxCircuitId,
+  isRelayMuxReady,
+  isRelayMuxOpen,
+  isRelayMuxOpened,
+  isRelayMuxError,
+  isRelayMuxClose,
+  isRelayMuxClosed,
+  encodeRelayMuxDataFrame,
+  decodeRelayMuxDataFrame,
+} from "./relay-mux.js";

@@ -17,9 +17,11 @@ const {
   hostAwakeState,
   hostIdentityState,
   hookState,
+  developerModeState,
   mockHostAwakeRefetch,
   mockUpdateSetting,
   mockUpdateSettings,
+  remoteConnectionState,
 } = vi.hoisted(() => ({
   hostAwakeState: {
     supported: false,
@@ -27,6 +29,7 @@ const {
     error: null as Error | null,
   },
   hostIdentityState: { supported: true },
+  developerModeState: { multiHostMonitorEnabled: false },
   hookState: {
     settings: {
       serviceWorkerEnabled: true,
@@ -38,12 +41,20 @@ const {
   mockHostAwakeRefetch: vi.fn(),
   mockUpdateSetting: vi.fn(),
   mockUpdateSettings: vi.fn(),
+  remoteConnectionState: {
+    value: null as null | {
+      currentHostId: string | null;
+      disconnect: () => void;
+      storedUsername: string;
+    },
+  },
 }));
 
 vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual<typeof import("react-router-dom")>(
-    "react-router-dom",
-  );
+  const actual =
+    await vi.importActual<typeof import("react-router-dom")>(
+      "react-router-dom",
+    );
   return { ...actual, useNavigate: () => vi.fn() };
 });
 
@@ -59,7 +70,11 @@ vi.mock("../../../contexts/HostIdentityContext", () => ({
 }));
 
 vi.mock("../../../contexts/RemoteConnectionContext", () => ({
-  useOptionalRemoteConnection: () => null,
+  useOptionalRemoteConnection: () => remoteConnectionState.value,
+}));
+
+vi.mock("../../../hooks/useDeveloperMode", () => ({
+  useDeveloperMode: () => developerModeState,
 }));
 
 vi.mock("../../../hooks/usePublicShareStatus", () => ({
@@ -93,8 +108,11 @@ vi.mock("../../../hooks/useVersion", () => ({
 
 vi.mock("../../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string, values?: { icon?: string }) =>
-      values?.icon ? `${key}:${values.icon}` : key,
+    t: (key: string, values?: { icon?: string; reason?: string }) => {
+      if (values?.icon) return `${key}:${values.icon}`;
+      if (values?.reason) return `${key}:${values.reason}`;
+      return key;
+    },
   }),
 }));
 
@@ -114,6 +132,8 @@ describe("RemoteAccessSettings host identity", () => {
     hostAwakeState.supported = false;
     hostAwakeState.status = null;
     hostAwakeState.error = null;
+    developerModeState.multiHostMonitorEnabled = false;
+    remoteConnectionState.value = null;
     mockHostAwakeRefetch.mockResolvedValue(undefined);
     mockUpdateSetting.mockResolvedValue(undefined);
     mockUpdateSettings.mockResolvedValue(undefined);
@@ -178,10 +198,7 @@ describe("RemoteAccessSettings host identity", () => {
     fireEvent.click(screen.getByRole("button", { name: "hostIdentityClear" }));
 
     await waitFor(() =>
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "hostIdentity",
-        undefined,
-      ),
+      expect(mockUpdateSetting).toHaveBeenCalledWith("hostIdentity", undefined),
     );
   });
 
@@ -255,6 +272,33 @@ describe("RemoteAccessSettings host identity", () => {
     ).toBeNull();
   });
 
+  it("shows the bounded backend reason when host-awake is unsupported", () => {
+    hostAwakeState.supported = true;
+    hostAwakeState.status = {
+      requestedMode: "off",
+      state: "unsupported",
+      platform: "win32",
+      support: {
+        idleSleepPrevention: false,
+        batteryFloor: false,
+        closedLidOnExternalPower: false,
+      },
+      hasInternalBattery: "unknown",
+      powerSource: "unknown",
+      powerObservedAt: 123,
+      batteryFloorPercent: 10,
+      reason: "Windows application policy blocked the required power APIs",
+    };
+
+    render(<RemoteAccessSettings />);
+
+    expect(
+      screen.getByText(
+        "hostAwakeStatusUnavailableReason:Windows application policy blocked the required power APIs",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows and saves the battery floor only for a detected battery", async () => {
     hostAwakeState.supported = true;
     hostAwakeState.status = {
@@ -292,5 +336,25 @@ describe("RemoteAccessSettings host identity", () => {
         hostAwakeBatteryFloorPercent: 15,
       }),
     );
+  });
+
+  it("exposes the all-hosts link only when the experiment is enabled", () => {
+    remoteConnectionState.value = {
+      currentHostId: null,
+      disconnect: vi.fn(),
+      storedUsername: "alpha",
+    };
+    const view = render(<RemoteAccessSettings />);
+
+    expect(
+      screen.queryByRole("button", { name: "multiHostMonitorOpen" }),
+    ).toBeNull();
+
+    developerModeState.multiHostMonitorEnabled = true;
+    view.rerender(<RemoteAccessSettings />);
+
+    expect(
+      screen.getByRole("button", { name: "multiHostMonitorOpen" }),
+    ).toBeTruthy();
   });
 });

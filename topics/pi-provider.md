@@ -57,14 +57,13 @@ deltas: `text_delta`, etc.), `tool_execution_start/update/end`, plus
 `auto_retry_start/end`, and (from 0.80.4) `agent_settled`. This is already
 close to a normalized envelope.
 
-### Settled-turn boundary — refreshed for pi 0.81.1
+### Settled-turn boundary — compatible through Pi 0.82.1
 
-The installed and npm-latest `@earendil-works/pi-coding-agent` version is
-`0.81.1`. The official `v0.79.9..v0.81.1` source diff changes the RPC lifecycle
-contract: `agent_end` ends one low-level agent run and now reports
-`willRetry`, while `agent_settled` fires only after no automatic retry,
-compaction, or queued continuation remains. Upstream's RPC client now uses
-`agent_settled` for both `waitForIdle()` and event collection.
+The official `v0.79.9..v0.81.1` source diff changed the RPC lifecycle contract:
+`agent_end` ends one low-level agent run and reports `willRetry`, while
+`agent_settled` fires only after no automatic retry, compaction, or queued
+continuation remains. Upstream's RPC client uses `agent_settled` for both
+`waitForIdle()` and event collection.
 
 For Pi 0.80.4 and newer, YA therefore treats only `agent_settled` as the
 provider-turn boundary. `agent_end` must not emit a YA `result`, even when its
@@ -85,6 +84,17 @@ Evidence: official `earendil-works/pi` tag `v0.81.1`
 `packages/coding-agent/src/core/agent-session.ts` and
 `packages/coding-agent/src/modes/rpc/rpc-client.ts`. The event first appears
 in `v0.80.4` (`e9fa5a68`).
+
+The 2026-07-25 refresh compared official tags `v0.81.1`
+(`20be4b18d4c57487f8993d2762bace129f0cf7c6`) and `v0.82.1`
+(`b4f293684bba718d59cc1157679bcf6157b3a7f5`), then passed the real-binary
+contract against installed Pi 0.82.1. The flags and RPC responses YA consumes,
+the lifecycle boundary, and session JSONL format are unchanged; model-catalog
+additions preserve the `provider` / `id` / `name` fields YA reads. Pi 0.82.0
+adds `bash_execution_update` only for the direct RPC `bash` command. YA does
+not issue that command, while model-driven Bash continues to arrive through
+the existing `tool_execution_update` path, so the provider needs no new event
+branch.
 
 ## Why YA cares
 
@@ -188,6 +198,37 @@ Performance Path Coverage*).
 `readline` is **not** protocol-compliant (it also splits on U+2028/U+2029, valid
 inside JSON strings) — the YA-side reader must split on `\n` only and strip a
 trailing `\r`. The docs call this out explicitly.
+
+### Installed-binary compatibility check
+
+The normal Pi suite remains synthetic: provider lifecycle tests use fabricated
+events, the RPC client uses fake streams, tool normalization uses known shapes,
+and the durable reader uses checked-in JSONL fixtures. Those tests are the fast
+default suite, but updating Pi on a test host does not exercise the installed
+binary by itself.
+
+The explicit zero-token check is:
+
+```bash
+PI_CONTRACT_TEST=true pnpm --filter @yep-anywhere/server test:e2e
+```
+
+`pi-contract.e2e.test.ts` runs the installed `pi --version`, requires YA to
+recognize its lifecycle boundary, launches the same
+`pi --mode rpc --no-session` command used for production model discovery, and
+requires successful `get_state` and `get_available_models` responses with the
+fields YA consumes. It sends no prompt and closes RPC stdin only after both
+responses arrive; Pi must then exit successfully rather than leaving a child
+process behind. The probe captures stdout, stderr, and extension UI requests
+and fails with the emitted notice if either command reports an `Update
+Available` / `New version ... available` banner.
+
+Run this check after upgrading the Pi installation used for YA development.
+It deliberately bypasses `PiProvider.getAvailableModels()` because that
+production convenience path falls back to a synthetic `Default` model on RPC
+failure and could otherwise make a broken protocol look healthy. An
+authenticated one-turn check covering live events plus a real persisted JSONL
+reload remains separate because it spends tokens and depends on credentials.
 
 ## Plan B — in-process SDK embed (alternative bypass)
 
@@ -366,6 +407,41 @@ these pieces:
    `transcriptProjection.test.ts`, and `ToolCallRow.test.tsx` cover canonical
    names/fields/results, durable reload parity, duplicate live tool snapshots,
    and pending Bash preview rendering.
+
+### Pi 0.82.1 action-vocabulary refresh — 2026-07-29
+
+The current release was exercised end to end with installed Pi 0.82.1 and
+`github-copilot/claude-haiku-4.5` at low effort in a disposable project. The
+prompt requested directory listing, file finding, content search, read, write,
+edit, shell, image read, Markdown image linking, web fetch/search, interactive
+question, and todos. Raw RPC, live YA normalization, persisted Pi JSONL, durable
+YA normalization, and the rendered conversation were compared.
+
+**Default tool vocabulary.** Pi's default coding-agent profile exposes
+`read`, `write`, `edit`, and `bash`. Its `grep`, `find`, and `ls` tools belong
+to a different/read-only profile, so the model used `bash` for listing,
+finding, and searching. Web fetch/search, interactive questions, and todos
+were not exposed. Those absences are provider/model-profile choices, not YA
+normalization gaps. The exercised canonical YA actions were `Read`, `Write`,
+`Edit`, and `Bash`, including progressive Bash previews and edit patches.
+
+**Image-result contract.** Pi 0.82.1 returns an image read as a
+`tool_execution_end` result whose `content` contains both a text block and an
+`{type:"image", data, mimeType}` block. `normalizePiToolResult()` must preserve
+the image block as YA's structured
+`{type:"image", file:{base64,type,originalSize}}` result. The tool-result media
+materializer then removes inline base64 from the API message, stores the bytes,
+and emits `toolResultMedia`; live and durable readers use the same result
+normalizer. The coverage fixture was a 6,071-byte, 192×192 PNG, retained
+identically in both paths and rendered as the canonical `Read … (image)` row
+at desktop and phone widths.
+
+**Executable-selection caution.** `PiProvider.findPiPath()` gives
+`PI_EXECUTABLE` / `PI_PATH` precedence over the configured `piPath`. A provider
+refresh intended to test a newly installed release must unset an older shell
+override or it will unknowingly exercise that override instead. The initial
+probe encountered exactly this with a local 0.80.2 build; the recorded 0.82.1
+coverage explicitly removed `PI_EXECUTABLE`.
 
 ## Capability flags (initial `AgentProvider`)
 

@@ -6,6 +6,7 @@ import {
   type RecapMode,
   type SessionQueuedMessageSummary,
   type SessionLivenessSnapshot,
+  type SlashCommand,
   type UploadedFile,
   DEFAULT_RECAP_AFTER_SECONDS,
   getModelContextWindow,
@@ -22,6 +23,10 @@ import {
   extractParentSessionIdFromAgentFileEvent,
   extractSessionIdFromFileEvent,
 } from "../lib/sessionFile";
+import {
+  sessionModelPick,
+  sessionPermissionModePick,
+} from "../lib/sessionPickStorage";
 import type {
   InputRequest,
   Message,
@@ -290,9 +295,10 @@ export interface PendingMessage {
 /**
  * Deferred message queued server-side, waiting for the agent's turn to end.
  *
- * This is a pure mirror of the server's queue summary — the client never
- * persists it, never reconciles it by text, and never adds delivery states of
- * its own. The server is the single source of truth.
+ * The server owns the queue summary. The client never persists it or
+ * reconciles it by text, but a delivered user echo can remove matching rows by
+ * tempId because that identity is definitive proof that the server accepted
+ * them.
  */
 export type DeferredMessage = SessionQueuedMessageSummary;
 
@@ -376,50 +382,6 @@ function userTextContainsDeferredContent(
     .some(partMatches);
 }
 
-const PERMISSION_MODE_KEY_PREFIX = "permission-mode-";
-
-function getPermissionModeStorageKey(sessionId: string): string {
-  return `${PERMISSION_MODE_KEY_PREFIX}${sessionId}`;
-}
-
-// The UI-selected permission mode is persisted per session so a page reload or
-// server-process teardown restores the user's choice instead of silently
-// dropping to "default" — which would re-enable provider sandboxing and approval
-// prompts the user had deliberately turned off.
-function loadStoredPermissionMode(
-  sessionId: string,
-): PermissionMode | undefined {
-  if (typeof localStorage === "undefined") {
-    return undefined;
-  }
-  try {
-    const raw = localStorage.getItem(getPermissionModeStorageKey(sessionId));
-    return raw === "default" ||
-      raw === "acceptEdits" ||
-      raw === "plan" ||
-      raw === "bypassPermissions"
-      ? raw
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function saveStoredPermissionMode(
-  sessionId: string,
-  mode: PermissionMode,
-): void {
-  if (typeof localStorage === "undefined") {
-    return;
-  }
-  try {
-    localStorage.setItem(getPermissionModeStorageKey(sessionId), mode);
-  } catch {
-    // localStorage may be unavailable or full; the in-memory mode still applies
-    // for the current page.
-  }
-}
-
 function removeEchoedQueueMessage<
   T extends { tempId?: string; content: string },
 >(messages: T[], tempIds?: string[], incomingText?: string | null): T[] {
@@ -493,6 +455,7 @@ export function useSession(
     owner: "self";
     processId: string;
     permissionMode?: PermissionMode;
+    appliedPermissionMode?: PermissionMode;
     modeVersion?: number;
     recapAfterSeconds?: number;
     recapMode?: RecapMode;
@@ -660,18 +623,30 @@ export function useSession(
   // These are displayed separately from the main message list
   const [pendingMessages, setPendingMessages] = useState<PendingMessage[]>([]);
 
-  // Deferred messages queue — a pure mirror of the server's queue summary.
-  // The server is authoritative: the client never persists this or reconciles
-  // it by text. It is replaced wholesale whenever the server reports new state
-  // (connected event, deferred-queue event, or a queue/cancel REST response).
-  const [deferredMessages, setDeferredMessages] = useState<DeferredMessage[]>(
-    [],
-  );
+  // Deferred messages queue — a mirror of the server's queue summary. Server
+  // snapshots replace it wholesale; delivered user echoes may remove rows by
+  // tempId so a missed queue event cannot leave accepted messages visible.
+  const [deferredMessages, setDeferredMessagesState] = useState<
+    DeferredMessage[]
+  >([]);
+  const deliveredDeferredTempIdsRef = useRef<Set<string>>(new Set());
+  const setDeferredMessages = useCallback((messages: DeferredMessage[]) => {
+    const deliveredTempIds = deliveredDeferredTempIdsRef.current;
+    setDeferredMessagesState(
+      deliveredTempIds.size === 0
+        ? messages
+        : messages.filter(
+            (message) =>
+              !message.tempId || !deliveredTempIds.has(message.tempId),
+          ),
+    );
+  }, []);
 
   // Reset when switching sessions; the server's connected event repopulates it.
   useEffect(() => {
     void sessionId;
-    setDeferredMessages([]);
+    deliveredDeferredTempIdsRef.current.clear();
+    setDeferredMessagesState([]);
   }, [sessionId]);
 
   // Compacting state - true when context is being compressed. The setter below
@@ -692,7 +667,7 @@ export function useSession(
   // of dropping to "default".
   const initialPermissionMode =
     initialStatus?.permissionMode ??
-    loadStoredPermissionMode(sessionId) ??
+    sessionPermissionModePick.load(sessionId) ??
     "default";
   const initialModeVersion = initialStatus?.modeVersion ?? 0;
   const [localMode, setLocalMode] = useState<PermissionMode>(
@@ -710,7 +685,7 @@ export function useSession(
       return;
     }
     restoredModeSessionRef.current = sessionId;
-    setLocalMode(loadStoredPermissionMode(sessionId) ?? "default");
+    setLocalMode(sessionPermissionModePick.load(sessionId) ?? "default");
   }, [sessionId]);
   // Track whether we've already processed a stream "connected" event in this mount.
   // For Codex providers, the first connected-event catch-up fetch can duplicate
@@ -797,7 +772,7 @@ export function useSession(
   }, [sessionId, projectId]);
 
   // Slash commands available for this session (from init message)
-  const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   // Tools available for this session (from init message)
   const [sessionTools, setSessionTools] = useState<string[]>([]);
   // MCP servers available for this session (from init message)
@@ -819,7 +794,7 @@ export function useSession(
         setModeVersion(version);
         localModeRef.current = mode;
         setLocalMode(mode);
-        saveStoredPermissionMode(sessionId, mode);
+        sessionPermissionModePick.save(sessionId, mode);
       }
     },
     [sessionId],
@@ -862,7 +837,7 @@ export function useSession(
       // Set slash commands from API response so the "/" button appears reliably.
       // The SSE init message that normally carries these is discarded after
       // ~30s; stopped providers with static commands also rely on this payload.
-      setSlashCommands(result.slashCommands?.map((c) => c.name) ?? []);
+      setSlashCommands(result.slashCommands ?? []);
       setDeferredMessages(result.deferredMessages ?? []);
 
       // Focusing a non-running session: its list/hover preview gets no live
@@ -873,7 +848,7 @@ export function useSession(
         void api.refreshSessionPreview(projectId, sessionId).catch(() => {});
       }
     },
-    [applyServerModeUpdate, projectId, sessionId],
+    [applyServerModeUpdate, projectId, sessionId, setDeferredMessages],
   );
 
   // Handle initial load error
@@ -996,8 +971,8 @@ export function useSession(
   }, [sessionId]);
 
   // Optimistic pending sends (the normal-send flow) reconcile against the
-  // transcript by content. Deferred messages do not: the server removes them
-  // from its queue and pushes the updated list, which we mirror directly.
+  // transcript by content. Deferred rows reconcile only by explicit tempId in
+  // the live echo; queue snapshots remain authoritative for every other change.
   useEffect(() => {
     setPendingMessages((prev) =>
       removeDeliveredPendingMessages(prev, messages),
@@ -1017,7 +992,7 @@ export function useSession(
     async (mode: PermissionMode) => {
       localModeRef.current = mode;
       setLocalMode(mode);
-      saveStoredPermissionMode(sessionId, mode);
+      sessionPermissionModePick.save(sessionId, mode);
 
       // If there's an active process, immediately sync to server
       if (status.owner === "self" || status.owner === "external") {
@@ -1028,6 +1003,16 @@ export function useSession(
             lastKnownModeVersionRef.current = result.modeVersion;
             setServerMode(result.permissionMode);
             setModeVersion(result.modeVersion);
+          }
+          if (result.appliedPermissionMode) {
+            setStatus((prev) =>
+              prev.owner === "self"
+                ? {
+                    ...prev,
+                    appliedPermissionMode: result.appliedPermissionMode,
+                  }
+                : prev,
+            );
           }
         } catch (err) {
           // If API fails (e.g., no active process), mode will be sent on next message
@@ -1269,6 +1254,12 @@ export function useSession(
           ...(event.parentSessionId !== undefined && {
             parentSessionId: event.parentSessionId ?? undefined,
           }),
+          ...(event.parentSessionKind !== undefined && {
+            parentSessionKind: event.parentSessionKind ?? undefined,
+          }),
+          ...(event.forkedFromSessionId !== undefined && {
+            forkedFromSessionId: event.forkedFromSessionId ?? undefined,
+          }),
           ...(event.heartbeatTurnsEnabled !== undefined && {
             heartbeatTurnsEnabled: event.heartbeatTurnsEnabled,
           }),
@@ -1391,7 +1382,12 @@ export function useSession(
         });
       }
     },
-    [projectId, reportProviderRuntimeStatus, sessionId],
+    [
+      projectId,
+      reportProviderRuntimeStatus,
+      sessionId,
+      setDeferredMessages,
+    ],
   );
 
   // Handle activity bus reconnection (e.g., after phone screen wake).
@@ -1427,7 +1423,13 @@ export function useSession(
     } catch {
       // Silent fail - non-critical
     }
-  }, [projectId, sessionId, fetchNewMessages, reportProviderRuntimeStatus]);
+  }, [
+    projectId,
+    sessionId,
+    fetchNewMessages,
+    reportProviderRuntimeStatus,
+    setDeferredMessages,
+  ]);
 
   useFileActivity({
     onSessionStatusChange: handleSessionStatusChange,
@@ -1598,10 +1600,25 @@ export function useSession(
         // Remove eventType from the message (it's stream envelope, not message data)
         (incoming as { eventType?: string }).eventType = undefined;
 
+        if (Array.isArray(sdkMessage.slash_command_inventory)) {
+          setSlashCommands(
+            sdkMessage.slash_command_inventory as SlashCommand[],
+          );
+        }
+
         // Extract slash_commands, tools, and mcp_servers from init messages
         if (msgType === "system" && sdkMessage.subtype === "init") {
           if (Array.isArray(sdkMessage.slash_commands)) {
-            setSlashCommands(sdkMessage.slash_commands as string[]);
+            const legacyNames = sdkMessage.slash_commands as string[];
+            setSlashCommands((current) => {
+              if (current.some((command) => command.invocation)) {
+                return current;
+              }
+              return legacyNames.map((name) => ({
+                name,
+                description: "",
+              }));
+            });
           }
           if (Array.isArray(sdkMessage.tools)) {
             setSessionTools(sdkMessage.tools as string[]);
@@ -1668,12 +1685,16 @@ export function useSession(
           });
           // Clear optimistic pending sends (the normal-send flow) by id, or by
           // content for providers that omit tempId on the user echo. Deferred
-          // messages are not reconciled here — the server removes them from its
-          // queue on promotion and the deferred-queue event mirrors that.
+          // rows clear only by identity: matching text is not enough because an
+          // identical prompt could still be queued.
           if (echoedTempIds.length) {
             for (const id of echoedTempIds) {
               removePendingMessage(id);
+              deliveredDeferredTempIdsRef.current.add(id);
             }
+            setDeferredMessagesState((prev) =>
+              removeEchoedQueueMessage(prev, echoedTempIds),
+            );
           } else if (incomingText) {
             setPendingMessages((prev) =>
               removeEchoedQueueMessage(prev, undefined, incomingText),
@@ -1820,6 +1841,7 @@ export function useSession(
           sessionId?: string;
           state?: string;
           permissionMode?: PermissionMode;
+          appliedPermissionMode?: PermissionMode;
           modeVersion?: number;
           request?: InputRequest;
           provider?: ProviderName;
@@ -1850,6 +1872,8 @@ export function useSession(
           serverSessionId: serverSessionId ?? null,
           state: connectedData.state ?? null,
           permissionMode: connectedData.permissionMode ?? null,
+          appliedPermissionMode:
+            connectedData.appliedPermissionMode ?? null,
           modeVersion: connectedData.modeVersion ?? null,
           provider: connectedData.provider ?? null,
           model: connectedData.model ?? null,
@@ -1894,6 +1918,16 @@ export function useSession(
           applyServerModeUpdate(
             connectedData.permissionMode,
             connectedData.modeVersion,
+          );
+        }
+        if (connectedData.appliedPermissionMode) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? {
+                  ...prev,
+                  appliedPermissionMode: connectedData.appliedPermissionMode,
+                }
+              : prev,
           );
         }
 
@@ -1942,6 +1976,21 @@ export function useSession(
         };
         if (modeData.permissionMode && modeData.modeVersion !== undefined) {
           applyServerModeUpdate(modeData.permissionMode, modeData.modeVersion);
+        }
+      } else if (data.eventType === "mode-applied") {
+        const modeData = data as {
+          eventType: string;
+          appliedPermissionMode?: PermissionMode;
+        };
+        if (modeData.appliedPermissionMode) {
+          setStatus((prev) =>
+            prev.owner === "self"
+              ? {
+                  ...prev,
+                  appliedPermissionMode: modeData.appliedPermissionMode,
+                }
+              : prev,
+          );
         }
       } else if (data.eventType === "markdown-augment") {
         // Handle markdown augment events (server-rendered)
@@ -2028,6 +2077,7 @@ export function useSession(
       clearAgentStreamingPlaceholders,
       clearStreamingPlaceholders,
       setIsCompacting,
+      setDeferredMessages,
       updateSession,
       fetchNewMessages,
       throttledFetch,
@@ -2071,7 +2121,12 @@ export function useSession(
       setProcessState("idle");
       setPendingInputRequest(null);
     }
-  }, [projectId, sessionId, reportProviderRuntimeStatus]);
+  }, [
+    projectId,
+    sessionId,
+    reportProviderRuntimeStatus,
+    setDeferredMessages,
+  ]);
 
   // Only connect to session stream when we own the session
   // External sessions are tracked via the activity stream instead
@@ -2087,12 +2142,34 @@ export function useSession(
         ? sessionWatchConnected
         : false;
 
-  // Allow external model update (e.g., after /model command switches mid-session)
+  // Restore the user's last per-session model pick when reopening a session
+  // that no self-owned process is running, mirroring the permission-mode restore
+  // above. A live process's model stays authoritative (its config arrives via the
+  // stream), so we only overlay the stored pick when idle, and only once per
+  // loaded session id so later metadata updates and the stream can still move it.
+  const restoredModelSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!session) return;
+    if (restoredModelSessionRef.current === sessionId) return;
+    restoredModelSessionRef.current = sessionId;
+    if (status.owner === "self") return;
+    const stored = sessionModelPick.load(sessionId);
+    if (stored && stored !== session.model) {
+      updateSession((prev) => (prev ? { ...prev, model: stored } : prev));
+    }
+  }, [session, sessionId, status.owner, updateSession]);
+
+  // Allow external model update (e.g., after /model command switches mid-session).
+  // Persist the pick per session so reopening an idle session restores it
+  // instead of falling back to the JSONL-derived model — the model change only
+  // reaches the server at the next turn, so an abandoned pick would otherwise be
+  // lost (mirrors the per-session permission-mode persistence above).
   const setSessionModel = useCallback(
     (model: string) => {
+      sessionModelPick.save(sessionId, model);
       updateSession((prev) => (prev ? { ...prev, model } : prev));
     },
-    [updateSession],
+    [sessionId, updateSession],
   );
 
   return {

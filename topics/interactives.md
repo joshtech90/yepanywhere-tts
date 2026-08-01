@@ -3,9 +3,10 @@
 > Proposal: a zero-setup container for agent-built web apps — dev servers or
 > static page bundles scaffolded from an opinionated template and registered
 > in project-local config — that YA surfaces as persistent icon links on the
-> project's sessions and reaches through its authenticated transports, or an
-> auto-managed Cloudflare tunnel when enabled and discoverable, so a user on
-> a phone or tablet can open them with no hosting knowledge.
+> project's sessions and reaches through its authenticated relay, while
+> executing only on an isolated untrusted-content origin and optionally
+> reusing globally configured Tailscale and Cloudflare access, so a user on a
+> phone or tablet can open them with no hosting knowledge.
 
 Topic: interactives
 
@@ -14,7 +15,16 @@ is the Vite dev-client proxy (`createFrontendProxy`,
 `packages/server/src/frontend/proxy.ts`); no arbitrary-port proxying and no
 project app registry exists. The rich annotator/interview flow originally
 drafted here is split out to [[rich-interviews]] — different intent, different
-lifecycle, no committed implementation overlap.
+lifecycle, no committed implementation overlap. The serving and security
+direction was revised on 2026-08-01 after the confirmed same-origin execution
+path in [[active-content-security]]; the former main-origin `/apps/...` shape
+is no longer a valid implementation direction.
+
+**Maintainer architectural review (2026-08-01):** the creative, novice-friendly
+motivation is valuable, but executable application hosting is outside YA's
+current core and same-origin execution is a security non-starter. Any future
+experiment belongs behind a separately isolated, optional companion boundary.
+See [`interactives-architectural-review.md`](interactives-architectural-review.md).
 
 ## Motivation
 
@@ -47,11 +57,14 @@ than leaving each app's organization to per-session improvisation.
 Two classes, one registry:
 
 - **Proxied app** — a regular web server (UI or REST) on a loopback dev port
-  on the YA machine. YA proxies it; YA does not serve or build it.
+  on the YA machine. YA proxies it through an isolated application host; YA
+  does not serve or build it.
 - **Served page** — a static rich html+js bundle (no server of its own) that
-  YA serves directly from a project path. For the novice vision this is the
+  YA reads from a project path and delivers only through an isolated
+  application host or opaque sandbox. For the novice vision this is the
   *primary* class: a plain html+js animation or game has no process to keep
-  alive, so its icon is always live.
+  alive, so its icon is always live. It is never a raw file served on YA's
+  authenticated or hosted-client origin.
 
 ## Vocabulary
 
@@ -169,14 +182,33 @@ without a UI landing page) are open; start minimal.
   affiliated: visible on sessions belonging to the declaring project — just
   left of the title in recent-session rows and in the main session view
   header.
-- Icon click opens the interactive through YA's transport (new tab or
-  embedded view — open decision; embedding interacts with the sandbox
-  question under *Security*).
+- Icon click opens the interactive through YA's transport. The primary vision
+  is an embedded app-and-session workspace; an independent new-tab view may
+  remain a secondary action only when it has a genuine isolated application
+  URL. It cannot fall back to a raw main-origin page. Embedding follows the
+  sandbox and origin contract under *Security*.
 - Liveness: a proxied app whose port is dead renders dimmed (probe =
   `healthPath` or TCP connect), with an affordance to start it when a managed
   `start` command exists. Served pages are always live.
 - Hideable via session-UI customization; default-on rendering is acceptable
   only because the project itself opted in by carrying the registry.
+
+### Session/app responsive presentation
+
+The interactive and the session directing its development form one workspace.
+When the measured available width can keep both surfaces usable, the intended
+presentation is **side by side**: the app remains live while the session stays
+visible for reading progress, commenting, and requesting changes. "Wide
+enough" is a content-fit decision, not a desktop/tablet device label; a
+landscape tablet may qualify while the same tablet in portrait may not.
+
+When both panes cannot remain useful, YA shows one primary surface at a time.
+An explicit toggle or collapse control is required; a horizontal switch
+gesture is an optional complementary path. Switching between app and session
+must preserve the live app state, transcript position, and composer draft
+rather than reload either side. The exact narrow-screen control and gesture
+remain open, but hiding the session must not remove the template-provided
+comment-to-agent affordance from the app view.
 
 ## Lifecycle (YA's management role)
 
@@ -192,42 +224,59 @@ YA manages lifecycle/visibility only; it does not own the app's code.
 
 ## Transport and serving
 
-Reach tiers, preferred in order when available:
+The existing end-to-end-encrypted relay is the defining Interactives
+transport, not a fallback. Arbitrary interactive asset, navigation, and
+WebSocket forwarding is not implemented; making a YA-owned but origin-isolated
+application URL space work over relay is part of this proposal. Template
+conventions reduce
+absolute-origin breakage but do not remove the proxy work.
 
-1. **Direct (LAN/Tailscale)** — the YA proxy route below, behind YA auth.
-2. **Cloudflare tunnel** — automatic when tunnel exposure is enabled *and* a
-   Cloudflare tunnel capability is discoverable ("present + authed +
-   effective"); details below.
-3. **Proposed relay fallback** — the existing end-to-end-encrypted relay is a
-   transport substrate, but arbitrary interactive asset, navigation, and
-   WebSocket forwarding is not implemented. Making a YA-owned URL space work
-   over relay is part of this proposal, not an always-available capability.
-   Template conventions reduce absolute-origin breakage but do not remove the
-   proxy work.
+An operator may additionally enable **Tailscale**, **Cloudflare Tunnel**, or
+both. These are YA-installation-level capabilities configured once and reused
+by registered interactives, not setup repeated for each app. They may coexist
+with one another and with relay access; neither replaces the requirement that
+Interactives work through YA's relay.
 
-The YA proxy route:
+The YA proxy boundary:
 
-- Shape: `/apps/:projectId/:name/*` on the main server, forwarding HTTP and
-  WebSocket upgrades to the registered loopback port. `createFrontendProxy`
-  is already a parameterized host/port HTTP+WS raw-socket proxy — generalize
-  it rather than adding a proxy dependency.
-- The route sits behind YA auth like `/api/*`. Over relay, requests ride the
-  E2E channel, so the relay sees ciphertext as usual.
+- A trusted control route may inspect the registry, report liveness, and mint
+  a short-lived/revocable entry capability. Browser-visible app bytes and
+  WebSockets must not use `/apps/:projectId/:name/*` on the main authenticated
+  YA origin; path separation does not remove ambient API authority.
+- The application host forwards HTTP and WebSocket traffic to the registered
+  loopback port. `createFrontendProxy` is already a parameterized host/port
+  HTTP+WS raw-socket proxy — its forwarding core may be generalized rather
+  than adding a proxy dependency, but the browser-facing origin and credential
+  boundary are new work.
+- Admission is scoped to the one interactive and is not a YA API session. The
+  application handler strips YA cookies, Authorization, and identity-bearing
+  forwarding headers before contacting the loopback app. Over relay, app
+  traffic stays E2E-carried without sharing the hosted YA client origin.
 - **Never** reachable from public-share surfaces: public-share relay plaintext
   stays restricted to `GET /public-api/shares/...`
   ([[relay-origin-and-share-gating]]); interactives join speech/STT on the
   must-not-tunnel list.
 
-**Cloudflare tunnel tier** (direction set 2026-07-24, after kzahel suggested
-Cloudflare tunnels/ngrok as the standard localhost-exposure tools and an
-authenticated Cloudflare CLI as the agent-operable path, like `gh`): prefer
-the Cloudflare tool when it is present + authed + effective, over ad hoc
-"use relay." Without an effective tunnel, remote reach remains unavailable
-until the proposed relay proxy exists. Mechanics:
+**Optional direct Tailscale path.** When the YA server machine and viewing
+device share an enabled Tailscale network, the device can reach the YA proxy
+through its isolated application hostname. Tailscale supplies reachability
+only; YA still owns the registry, app/session UI, lifecycle, proxy, and scoped
+app admission. It does not authorize placing app bytes on the main YA origin.
+This is a one-time global machine/device setup, not an Interactives deployment
+step.
+
+**Optional global Cloudflare path** (direction set 2026-07-24, after kzahel
+suggested Cloudflare tunnels/ngrok as standard localhost-exposure tools and
+an authenticated Cloudflare CLI as an agent-operable path, like `gh`). When
+Cloudflare reach is globally enabled and an effective tunnel capability is
+discoverable, registered interactives can reuse it alongside relay and
+Tailscale. The reusable shape tunnels the isolated application handler rather
+than creating and configuring a separate tunnel for every app; it does not
+expose the trusted YA origin and then separate apps by path. Mechanics:
 
 - Both current CLIs can expose an arbitrary localhost URL. `cloudflared
-  tunnel --url http://127.0.0.1:<port>` and `wrangler tunnel quick-start
-  http://127.0.0.1:<port>` create quick `*.trycloudflare.com` tunnels;
+  tunnel --url http://127.0.0.1:<ya-port>` and `wrangler tunnel quick-start
+  http://127.0.0.1:<ya-port>` create quick `*.trycloudflare.com` tunnels;
   Wrangler also exposes general `tunnel create`, `list`, and `run` commands.
   Discovery must probe the exact intended command rather than infer capability
   from a binary name. See the official
@@ -245,14 +294,15 @@ until the proposed relay proxy exists. Mechanics:
   (e.g. for a relay server) proves the account and could add interactive
   hostnames to that tunnel via dashboard/API, but the host's run token alone
   cannot.
-- Tunnel processes are YA-managed children under the [[architecture-mandates]]
-  idle bounds, like managed app starts.
-- Trust posture: a tunnel URL reaches the app **without YA auth** — a quick
-  tunnel is a public bearer URL; a named tunnel can add Cloudflare Access.
-  That is partly the point (a kid or guest opens the game with no YA login)
-  and a deliberate exposure change: enabling tunnels is an explicit setting,
-  default off ([[vanilla-defaults]]), and an icon whose app is
-  tunnel-exposed should show it.
+- A tunnel process launched by YA is a YA-managed child under the
+  [[architecture-mandates]] idle bounds. YA need not own an already-running
+  globally configured tunnel.
+- The preferred reusable tunnel terminates at the YA machine but routes the
+  dedicated application hostname to the isolated app handler, not to a shared
+  main-origin path. A tunnel is reachability, not permission. A separately
+  public app URL bypasses scoped app admission and is a distinct deliberate
+  exposure change: explicit, default off ([[vanilla-defaults]]), and visibly
+  marked. A named tunnel can add Cloudflare Access.
 - Consistency with the hard requirement: a tunnel is *transport to the YA
   machine*, not cloud hosting — the app and its files stay local and
   committed. "Cloud is right out" rejects hosting, not a tunnel.
@@ -267,45 +317,63 @@ target — and is out of v1 scope.
 
 ## Security
 
-The trust boundary ([[security]]) permits the *reach*: local and authenticated
-remote operators already command agents with full host power, so proxying a
-loopback port to them adds no new principal. The crux is different — **ambient
-authority under YA's origin**. YA auth is an httpOnly `yep-anywhere-session`
-cookie (`packages/server/src/auth/routes.ts`), so interactive JS cannot read
-the credential, but anything served/proxied under the YA origin can *make*
-authenticated same-origin `/api/*` requests as the operator — CSRF-equivalent
-full API power for agent-generated (LLM-authored, lightly reviewed) code. The
-kid-playable vision hardens this from concern to requirement: a child tapping
-a game icon must not be one script call away from operator API power, so
-isolation is the default posture, not an option.
+The complete contract is [[active-content-security]]. Its confirmed
+2026-08-01 reproduction showed that agent-written HTML opened on
+`/api/local-file` could call authenticated process APIs. Interactives are the
+intentional executable version of the same content class, so they must solve
+the origin boundary before either app kind is implemented.
 
-Direction, to verify at design time: render interactives in a sandboxed iframe
-without `allow-same-origin`, giving the page an opaque origin — SameSite=Lax
-should then withhold the session cookie from its requests <!-- assumed -->.
-Path-only separation (`/apps/...` with CSP) does **not** isolate origin and is
-insufficient alone. If sandboxing proves incompatible with useful apps (e.g.
-they need their own workers/storage), the fallback posture is informed
-consent: opening an interactive is running agent-authored code with operator
-power, stated plainly — acceptable for the operator, not for the kid case.
+The trust boundary ([[security]]) permits the *reach*: local and authenticated
+remote operators may already command powerful agents. It does not permit
+**ambient authority under YA's origin**. YA auth is an HttpOnly
+`yep-anywhere-session` cookie (`packages/server/src/auth/routes.ts`), so
+interactive JS cannot read the credential value, but same-origin code can make
+authenticated `/api/*` requests as the operator. On the hosted client origin,
+the analogous ambient state includes browser-local login/resume material even
+though that static host has no local `/api` backend.
+
+Required posture:
+
+- app bytes never execute on the authenticated YA origin or hosted-client
+  origin; path separation and a CSP on `/apps/...` are insufficient;
+- the default embedded app is an opaque-origin sandbox, with `allow-scripts`
+  only because execution is the feature and without `allow-same-origin`;
+- a dedicated untrusted-content hostname is required for top-level/new-tab
+  apps and for apps that need a stable multi-asset origin; a separate port on
+  the same host is not the preferred boundary because cookies are not
+  port-scoped;
+- the app host exposes no YA API/control routes, receives no YA cookie or
+  browser storage, and gets only a scoped app-entry capability;
+- proxy forwarding strips ambient credentials before reaching the loopback
+  app; and
+- the only YA capability available to template-built apps is the validated,
+  brokered meta-UI channel below.
+
+An informed-consent warning is not an isolation fallback. It cannot satisfy
+the sandboxed-agent or kid-playable use case and must not be described as
+equivalent protection. A separately explicit "open external localhost app"
+operator action may exist, but it is outside the isolated Interactives
+guarantee and cannot be the novice/default path.
 
 The meta-UI protocol (below) reinforces this posture: a templated app's only
 channel to YA is a brokered message channel, so it needs no ambient authority
 at all.
 
 Hosted-client wrinkle: on `ya.graehl.org` the client reaches the server
-through the relay tunnel, not direct HTTP, so an iframe `src` has no plain URL
-to point at; serving the interactive's assets to the hosted client needs a
-tunnel-backed URL space (service-worker-mediated fetch or blob/`srcdoc`
-injection). The general form of this: a *standard* unmodified web app can in
-theory be carried over relay as long as its view/URL is a YA-server one —
-every fetch, asset URL, and WebSocket the app makes must resolve inside the
-YA-owned URL space so the proxy machinery can carry it over the E2E channel;
-absolute-origin assumptions break it. That is significant machinery for
-arbitrary apps, and another argument for the template: the base prompt md
-mandates relay-compatible conventions (relative URLs, no hardcoded origins,
-WS via the served path). Direct (Tailscale/LAN) mode has no such problem,
-and a Cloudflare tunnel sidesteps it entirely by giving the app a real
-public origin.
+through the relay, not direct HTTP, so an iframe `src` has no plain local app
+URL to point at. Serving assets needs either a dedicated untrusted-content host
+reached through a scoped relay/broker or a trusted client that fetches a
+complete bundle and constructs an opaque sandbox with brokered assets. It must
+not use a service worker, blob top-level page, or `srcdoc` without sandboxing
+on the hosted YA client origin.
+
+A standard unmodified web app is difficult to carry over relay: every fetch,
+asset URL, navigation, worker, and WebSocket must resolve through the isolated
+app transport, and absolute-origin assumptions break it. That is significant
+machinery for arbitrary apps and another argument for the template: the base
+prompt md mandates relay-compatible conventions (relative URLs, no hardcoded
+origins, and WS via the isolated served path). Optional direct Tailscale or
+Cloudflare access does not remove that core relay or isolation requirement.
 
 ## Meta-UI protocol (comment-to-agent from the app view)
 
@@ -318,6 +386,9 @@ by the embedding YA client is the natural transport, and it doubles as the
 authority. A comment (plus optional app-supplied context such as the tapped
 element or app state) lands in the session composer for the user to send
 (v1; auto-send is a later opt-in), consistent with [[vanilla-defaults]].
+The parent validates the schema and expected child window. An opaque child has
+`event.origin === "null"`, so source-window and per-app capability checks are
+mandatory and the parent never posts ambient secrets to a wildcard target.
 This is the freeform, app-side sibling of [[rich-interviews]]: the same
 input-back-to-agent direction, but unstructured in-app comments rather than
 structured multi-round forms.
@@ -406,17 +477,21 @@ the operator's authenticated relay rather than vendor hosting.
 - Whether served-page bundles commit built output (servable from a fresh
   clone with no build step) or commit source only and rebuild on update
   (toolchain presence is an operator guarantee either way).
-- Meta-UI channel mechanics (message schema, context payload, composer
-  delivery vs queued turn; a fallback channel for new-tab opens where no
-  embedding parent exists).
-- Embed vs new-tab open; sandbox mechanism verification (opaque-origin cookie
-  behavior across target browsers).
-- Hosted-client (relay) asset serving for embedded interactives.
+- Meta-UI channel mechanics (message schema, child/source authentication,
+  context payload, composer delivery vs queued turn; a scoped fallback channel
+  for isolated new-tab opens where no embedding parent exists).
+- Minimum useful pane widths, the narrow-screen toggle/collapse and optional
+  switch gesture, and whether new-tab remains a secondary action; sandbox
+  behavior across target browsers, without treating cookie withholding as the
+  only security boundary.
+- Direct and hosted untrusted-content hostnames, scoped admission, cookie and
+  proxy-header stripping, hosted-client relay asset serving, and whether apps
+  share one isolated origin or receive per-app storage origins.
 - Managed-lifecycle idle-stop bound and its status surface.
-- Tunnel exposure scope and UI (global setting vs per-interactive; quick vs
-  named tunnels; Cloudflare Access policy for non-public apps; the
-  "present + authed + effective" discovery test across the auth capability
-  levels above; tunnel-child idle bound).
+- Optional-route selection and UI when global Tailscale and/or Cloudflare
+  access is enabled; quick vs named Cloudflare tunnels; Cloudflare Access
+  policy; the "present + authed + effective" discovery test across the auth
+  capability levels above; tunnel-child idle bound.
 - Optional push-deployed public/prod side for a matured interactive, when a
   project defines a deploy target.
 - Whether REST-kind entries get a YA-rendered landing (request console) or
@@ -426,6 +501,8 @@ the operator's authenticated relay rather than vendor hosting.
 
 - [[security]], [[relay-origin-and-share-gating]] — trust boundary and the
   must-not-tunnel list this extends.
+- [[active-content-security]] — binding source/preview and isolated-origin
+  contract for every app delivery mode.
 - [[rich-interviews]] — the split-out interview flow and its embed seam.
 - [[vanilla-defaults]], [[session-ui-customization]], [[server-capabilities]] —
   gating and visibility discipline.

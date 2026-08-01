@@ -32,6 +32,54 @@ describe("ServerSettingsService", () => {
     expect(service.getSetting("workstreamsEnabled")).toBe(false);
   });
 
+  it("enables host process observability by default and persists opt-out", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("hostProcessObservabilityEnabled")).toBe(true);
+    await service.updateSettings({ hostProcessObservabilityEnabled: false });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("hostProcessObservabilityEnabled")).toBe(false);
+  });
+
+  it("notifies process-local owners when live settings change", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    const changes: Array<{ current: boolean; previous: boolean }> = [];
+    const unsubscribe = service.onSettingsChanged((settings, previous) => {
+      changes.push({
+        current: settings.hostProcessObservabilityEnabled,
+        previous: previous.hostProcessObservabilityEnabled,
+      });
+    });
+
+    await service.updateSettings({ hostProcessObservabilityEnabled: false });
+    unsubscribe();
+    await service.updateSettings({ hostProcessObservabilityEnabled: true });
+
+    expect(changes).toEqual([{ current: false, previous: true }]);
+  });
+
+  it("normalizes malformed host process observability values to enabled", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          hostProcessObservabilityEnabled: "no",
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("hostProcessObservabilityEnabled")).toBe(true);
+  });
+
   it("keeps host-awake default-off with a ten-percent reserve", async () => {
     const service = new ServerSettingsService({ dataDir: testDir });
 
@@ -71,6 +119,79 @@ describe("ServerSettingsService", () => {
     await reloaded.initialize();
 
     expect(reloaded.getSetting("hostIdentity")).toEqual({ icon: "💻" });
+  });
+
+  it("persists registry provenance without consulting the current catalog", async () => {
+    const selection = {
+      id: "claude-opus-4-5",
+      label: "Opus 4.5",
+      origin: "registry" as const,
+    };
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    await service.updateSettings({ claudeAdditionalModels: [selection] });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+
+    expect(reloaded.getSetting("claudeAdditionalModels")).toEqual([selection]);
+  });
+
+  it("persists the optional Claude Gateway start command", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    await service.updateSettings({
+      claudeGatewayStartCommand: "HOST=localhost gateway start",
+    });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+
+    expect(reloaded.getSetting("claudeGatewayStartCommand")).toBe(
+      "HOST=localhost gateway start",
+    );
+  });
+
+  it("drops malformed persisted Claude Gateway start commands", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          claudeGatewayStartCommand: 42,
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeGatewayStartCommand")).toBeUndefined();
+  });
+
+  it("drops malformed persisted additional model settings", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          claudeAdditionalModels: [
+            {
+              id: "model with spaces",
+              label: "Invalid",
+              origin: "custom",
+            },
+          ],
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeAdditionalModels")).toBeUndefined();
   });
 
   it.each([

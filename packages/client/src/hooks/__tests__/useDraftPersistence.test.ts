@@ -175,15 +175,30 @@ describe("useDraftPersistence", () => {
       result.current[1]("indexed draft");
     });
 
+    const setItem = vi.mocked(window.localStorage.setItem);
+    expect(setItem.mock.calls.map(([key]) => key)).toEqual([
+      "draft-message:host%3Amacbook:session-a",
+      "draft-presence-message:host%3Amacbook:session-a",
+    ]);
     expect(
       window.localStorage.getItem("draft-message:host%3Amacbook:session-a"),
     ).not.toBe(null);
     expect(
       readStoredText("draft-message:host%3Amacbook:session-a"),
     ).toBe("indexed draft");
-    expect(window.localStorage.getItem("draft-index-message:host%3Amacbook")).toBe(
-      '["session-a"]',
-    );
+    expect(
+      window.localStorage.getItem(
+        "draft-presence-message:host%3Amacbook:session-a",
+      ),
+    ).toBe("1");
+
+    setItem.mockClear();
+    act(() => {
+      result.current[1]("indexed draft keeps changing");
+    });
+    expect(setItem.mock.calls.map(([key]) => key)).toEqual([
+      "draft-message:host%3Amacbook:session-a",
+    ]);
 
     act(() => {
       result.current[2].clearDraft();
@@ -192,8 +207,10 @@ describe("useDraftPersistence", () => {
     expect(
       window.localStorage.getItem("draft-message:host%3Amacbook:session-a"),
     ).toBe(null);
-    expect(window.localStorage.getItem("draft-index-message:host%3Amacbook")).toBe(
-      null,
-    );
+    expect(
+      window.localStorage.getItem(
+        "draft-presence-message:host%3Amacbook:session-a",
+      ),
+    ).toBe(null);
   });
 });

@@ -1,0 +1,53 @@
+/* Legacy-style global stylesheet. */
+
+.fixture-used-global {
+  color: red;
+}
+
+.fixture-unused-global {
+  color: blue;
+}
+
+/* A longer class must not make its prefix look used. */
+.fixture-prefix {
+  color: purple;
+}
+
+.fixture-prefix-button {
+  color: green;
+}
+
+/* Source comments must not count as runtime usage. */
+.fixture-comment-only {
+  color: orange;
+}
+
+/* Emitted by a producer outside the fixture's pretend client component. */
+.fixture-generated {
+  color: teal;
+}
+
+/* Referenced only from Widget.module.css through :global(...). */
+.fixture-modal-shell {
+  max-width: 30rem;
+}
+
+/* Exists, but InvalidGlobal.module.css reaches it without a local anchor. */
+.fixture-unanchored-shell {
+  max-width: 20rem;
+}
+
+/* Referenced only through `composes: ... from global`. */
+.fixture-composed-global {
+  font-weight: 600;
+}
+
+/* Pinned only by an escaped-dot selector inside a regex literal. */
+.fixture-regex-selector {
+  color: navy;
+}
+
+/* Named inside the same regex file, but never as a selector. */
+.fixture-regex-noise {
+  color: gray;
+}

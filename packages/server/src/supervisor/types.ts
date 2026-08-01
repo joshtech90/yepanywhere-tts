@@ -11,9 +11,11 @@ import type {
   ProviderChildSessionSummary,
   ProviderName,
   RecapMode,
+  SessionSandboxEnforcement,
   ThinkingConfig,
   UrlProjectId,
   SessionLivenessSnapshot,
+  ToolResultMedia,
   WorkstreamId,
 } from "@yep-anywhere/shared";
 import type { PermissionMode, SDKMessage } from "../sdk/types.js";
@@ -56,6 +58,8 @@ export type SessionOwnership =
       owner: "self";
       processId: string;
       permissionMode?: PermissionMode;
+      /** Mode applied at the latest successful provider policy boundary. */
+      appliedPermissionMode?: PermissionMode;
       modeVersion?: number;
       recapAfterSeconds?: number;
     } // we control it
@@ -97,8 +101,12 @@ export interface SessionSummary {
   isArchived?: boolean;
   /** Whether the session is starred/favorited */
   isStarred?: boolean;
-  /** Parent session when this session is a YA-owned fork/aside. */
+  /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
+  /** Explicit meaning of parentSessionId; absent on legacy records. */
+  parentSessionKind?: "btw-aside";
+  /** Source session whose provider transcript was cloned or forked. */
+  forkedFromSessionId?: string;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** Whether this session is opted in to heartbeat turns */
@@ -187,6 +195,7 @@ export interface Message {
     input: unknown;
   };
   toolUseResult?: unknown;
+  toolResultMedia?: ToolResultMedia[];
   // Computed fields (added by SessionReader)
   orphanedToolUseIds?: string[];
   /**
@@ -263,6 +272,8 @@ export interface ProcessInfo {
   providerChildren?: ProviderChildSessionSummary[];
   /** Session-level helper side model for simulated helper features. */
   helperSideModel?: string;
+  /** YA-owned host filesystem confinement evidence for this process. */
+  sandboxEnforcement?: SessionSandboxEnforcement;
 }
 
 export interface ProcessAbortResult {
@@ -284,6 +295,7 @@ export type ProcessEvent =
       status: ProviderRuntimeStatus;
     }
   | { type: "mode-change"; mode: PermissionMode; version: number }
+  | { type: "mode-applied"; mode: PermissionMode }
   | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
   | {
       type: "context-window-observed";
@@ -328,6 +340,11 @@ export interface ProcessOptions {
   projectPath: string;
   projectId: UrlProjectId;
   sessionId: string;
+  /**
+   * Lifecycle state before the provider emits anything. Message-less create
+   * and reactivate flows start idle; turn-bearing flows keep the default.
+   */
+  initialState?: "in-turn" | "idle";
   idleTimeoutMs?: number; // default 60 minutes
   permissionMode?: PermissionMode;
   provider: ProviderName; // which provider is running this process
@@ -339,6 +356,16 @@ export interface ProcessOptions {
   serviceTier?: string;
   /** Model used for this session (e.g., "claude-opus-4-5-20251101") */
   model?: string;
+  /** Configured per-model compaction threshold percentage, if any. */
+  compactAtContextPercent?: number;
+  /** Effective full context window used to derive the threshold. */
+  compactAtContextWindow?: number;
+  /** Whether YA, rather than a native provider threshold, owns the trigger. */
+  forceYaOrchestratedCompaction?: boolean;
+  /** Provider-native automatic-compaction limit applied at launch. */
+  compactAtContextTokenLimit?: number;
+  /** Provider auto-compaction-window percentage applied at launch. */
+  launchCompactPercentOverride?: number;
   /** SSH host for remote execution (undefined = local) */
   executor?: string;
   /** How this process should answer away-recap requests. */
@@ -353,4 +380,10 @@ export interface ProcessOptions {
   permissions?: PermissionRules;
   /** OS PID of the spawned agent child process, or getter for deferred resolution */
   pid?: number | (() => number | undefined);
+  /** YA-owned host filesystem confinement evidence for this process. */
+  sandboxEnforcement?: SessionSandboxEnforcement;
+  /** Opaque private provider-state key persisted with session metadata. */
+  sandboxStateKey?: string;
+  /** Canonical project path used by the sandbox mount and transcript layout. */
+  sandboxProjectPath?: string;
 }

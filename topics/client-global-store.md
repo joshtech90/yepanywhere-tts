@@ -67,7 +67,19 @@ The store does not own heavy or page-local state:
 - per-page filters, selection, expansion, and scroll state.
 
 The Session Page can keep detailed live transcript state local while reporting
-summary updates into the store.
+summary updates into the store. In particular, the complete composer string
+stays in `MessageInput`/draft persistence. A stable session-scoped signal may
+publish draft edits to narrow page-local consumers such as quote
+reconciliation, and queued action leaves may subscribe to a primitive
+composer-availability snapshot; neither belongs in the summary store.
+
+Reactive primitive browser preferences also stay outside the summary store.
+Their shared `localStorage` external-store interface lazily initializes an
+in-memory snapshot, updates it through application setters, and reconciles
+cross-tab storage events. A migration, settings import, or test that writes
+storage directly must explicitly invalidate the affected key or all preference
+snapshots. Unrelated React renders and direct same-tab DevTools writes do not
+implicitly reread storage.
 
 ## Source Model
 
@@ -204,8 +216,15 @@ targeted-session selector.
 All Sessions and Inbox now use the same Project Queue decoration path for
 visible session cards. Session draft badges also read from client-summary local
 decorations: the store wrapper owns the mounted `draft-message-*` localStorage
-scan and tears down its storage listener plus polling interval when the last
-draft-decoration consumer unmounts.
+initial scan, cross-tab storage listener, and owned same-tab presence-event
+subscription. It tears down both listeners when the last draft-decoration
+consumer unmounts; no draft-decoration polling timer remains. Draft discovery
+uses one private presence marker per `(source, session)` rather than a shared
+read/modify/write set, so simultaneous tabs cannot overwrite one another's
+index additions. Every successful envelope write reconciles its marker, even
+when text remains nonempty, so a failed first marker write is repaired by the
+next edit. Scans verify markers against their envelopes, prune stale markers,
+and migrate the retired aggregate index when encountered.
 
 The original session collection fields are now nested under `sessions`, matching
 the documented normalized shape.

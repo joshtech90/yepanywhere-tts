@@ -3,9 +3,16 @@ import {
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   type BusyComposerDefaultAction,
   clampPatientPatienceSeconds,
+  commandMatchesInvocationQuery,
   type CollapsedComposerButtonPreference,
   type EffortLevel,
+  findSkillInvocations,
+  findUnrecognizedInvocations,
+  getCanonicalInvocationToken,
+  getInvocationCompletionQuery,
+  getInvocationNames,
   type SessionLivenessSnapshot,
+  type SlashCommand,
   type ThinkingMode,
   type UserMessageCompositionMetadata,
   type UserMessageDeliveryIntent,
@@ -13,7 +20,6 @@ import {
 } from "@yep-anywhere/shared";
 import {
   type ClipboardEvent,
-  Fragment,
   type KeyboardEvent,
   useCallback,
   useEffect,
@@ -45,6 +51,10 @@ import {
   resizeComposerTextarea,
   scrollCollapsedTextareaToCursor,
 } from "../lib/composerTextarea";
+import {
+  type ComposerTurnRecallEntry,
+  filterComposerTurnRecall,
+} from "../lib/composerTurnRecall";
 import { hasCoarsePointer } from "../lib/deviceDetection";
 import type {
   SpeechTranscriptionContext,
@@ -55,7 +65,7 @@ import {
   clearSpeechInsertionRangeReplacement,
   createSpeechInsertionRange,
   getSpeechSelectionFinalDelayMs,
-  getSpeechMirrorSegments,
+  getSpeechInterimDisplayTranscript,
   getSpeechTranscriptInsertionParts,
   getSpeechTranscriptReplacementParts,
   mapSpeechInsertionRangeThroughEdit,
@@ -74,11 +84,7 @@ import {
   longestCommonPrefix,
   resolveComposerBangDraft,
 } from "../lib/bangCommands";
-import {
-  getLeadingSlashQuery,
-  getSlashCommandMenuParts,
-  normalizeSlashCommandForMatch,
-} from "../lib/slashCommands";
+import { getSlashCommandMenuParts } from "../lib/slashCommands";
 import {
   createClientSpeechTurnId,
   createSpeechTargetId,
@@ -176,6 +182,8 @@ interface Props {
   onModeChange?: (mode: PermissionMode) => void;
   /** Permission mode changes are visibly staged for the next user turn. */
   modeChangesApplyNextTurn?: boolean;
+  /** Selected permission mode is waiting for a provider turn boundary. */
+  modeChangePending?: boolean;
   isRunning?: boolean;
   isThinking?: boolean;
   onStop?: () => void;
@@ -222,8 +230,8 @@ interface Props {
   supportsSteerNow?: boolean;
   /** Current behavior of the primary composer action. */
   primaryActionKind?: "send" | "steer" | "queue";
-  /** Available slash commands (without "/" prefix) */
-  slashCommands?: string[];
+  /** Available provider and client commands. */
+  slashCommands?: SlashCommand[];
   /** Callback for custom client-side commands (e.g., "model"). Return true if handled. */
   onCustomCommand?: (command: string) => boolean;
   /** Start a /btw aside. When text is present, the caller may send it immediately. */
@@ -295,9 +303,38 @@ interface Props {
       token: string,
       kind: "command" | "path",
       line: string,
-    ) => Promise<string[]>;
+    ) => Promise<{ completions: string[]; history: string[] }>;
     history: readonly string[];
   };
+  /**
+   * Prior user turns for the always-on Ctrl+↑ composer recall drawer,
+   * newest-first. `onGoToTurn`, when provided, powers the per-row go-to
+   * control that scrolls the transcript to that turn by its render id
+   * (navigation only — no composer/draft change). See
+   * topics/composer-recall-drawer.md.
+   */
+  turnRecall?: {
+    entries: ComposerTurnRecallEntry[];
+    onGoToTurn?: (id: string) => void;
+  };
+}
+
+/**
+ * One row of the bang completion menu. Global command-history matches
+ * (`history`) are ranked ahead of PATH/project/path token candidates
+ * (`candidate`); selecting a history row replaces the whole `!!` body,
+ * a candidate keeps the token-replacement behavior.
+ */
+type BangMenuItem = { source: "history" | "candidate"; value: string };
+
+/**
+ * Opaque identity of a draft's completion query (kind, token, full body),
+ * compared — never parsed — to decide whether a dismissed menu stays
+ * dismissed for the current draft.
+ */
+function bangCompletionQueryKey(draft: string): string | null {
+  const query = getBangCompletionQuery(draft);
+  return query ? `${query.kind} ${query.token}\0${draft.slice(2)}` : null;
 }
 
 export function MessageInput({
@@ -310,6 +347,7 @@ export function MessageInput({
   mode = "default",
   onModeChange,
   modeChangesApplyNextTurn,
+  modeChangePending,
   isRunning,
   isThinking,
   onStop,
@@ -357,6 +395,7 @@ export function MessageInput({
   forkSummaryMode,
   onForkSummaryShortcut,
   bangSupport,
+  turnRecall,
 }: Props) {
   const { t } = useI18n();
   const { visibility: toolbarVisibility } = useSessionToolbarPresence();
@@ -398,164 +437,198 @@ export function MessageInput({
     null,
   );
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [composerCursor, setComposerCursor] = useState(text.length);
   const [bangCandidates, setBangCandidates] = useState<string[]>([]);
+  const [bangHistoryCandidates, setBangHistoryCandidates] = useState<string[]>(
+    [],
+  );
   const [selectedBangIndex, setSelectedBangIndex] = useState(0);
   const [dismissedBangQueryKey, setDismissedBangQueryKey] = useState<
     string | null
   >(null);
   const bangHistoryIndexRef = useRef(-1);
   const bangRecalledTextRef = useRef<string | null>(null);
+  // Composer recall drawer (always-on Ctrl+↑ prior-user-turn recall). Open
+  // while non-null; matches are frozen at open time (any editing keystroke
+  // closes it), so the draft stays constant while it is shown.
+  const [recallDrawer, setRecallDrawer] = useState<{
+    matches: ComposerTurnRecallEntry[];
+    index: number;
+    originalDraft: string;
+  } | null>(null);
   const [textareaFocused, setTextareaFocused] = useState(false);
   const [mobileKeyboardOpen, setMobileKeyboardOpen] = useState(false);
   const [mobileKeyboardMoreOpen, setMobileKeyboardMoreOpen] = useState(false);
 
   // Panel is collapsed if user collapsed it OR if externally collapsed (approval panel showing)
   const collapsed = userCollapsed || externalCollapsed;
-  const slashQuery = getLeadingSlashQuery(text);
+  const invocationQuery = getInvocationCompletionQuery(text, composerCursor);
+  const slashQueryKey = invocationQuery
+    ? `${invocationQuery.start}:${invocationQuery.end}:${invocationQuery.sigil}:${invocationQuery.query}`
+    : null;
   const matchingSlashCommands = useMemo(() => {
-    if (slashQuery === null) return [];
-    return slashCommands.filter((command) =>
-      normalizeSlashCommandForMatch(command).startsWith(slashQuery),
+    if (!invocationQuery) return [];
+    const matched = slashCommands.filter((command) =>
+      commandMatchesInvocationQuery(command, invocationQuery),
     );
-  }, [slashCommands, slashQuery]);
+    const preferredByName = new Map<string, SlashCommand>();
+    for (const command of matched) {
+      const normalizedName = command.name.trim().toLowerCase();
+      const existing = preferredByName.get(normalizedName);
+      if (
+        !existing ||
+        (invocationQuery.leading &&
+          invocationQuery.sigil === "/" &&
+          existing.invocation?.kind === "skill" &&
+          command.invocation?.kind !== "skill")
+      ) {
+        preferredByName.set(normalizedName, command);
+      }
+    }
+    return matched.filter(
+      (command) =>
+        preferredByName.get(command.name.trim().toLowerCase()) === command,
+    );
+  }, [invocationQuery, slashCommands]);
   const hasExactSlashCommand =
-    slashQuery !== null &&
-    matchingSlashCommands.some(
-      (command) => normalizeSlashCommandForMatch(command) === slashQuery,
+    invocationQuery !== null &&
+    matchingSlashCommands.some((command) =>
+      getInvocationNames(command).includes(invocationQuery.query),
     );
   const showSlashSuggestions =
     !collapsed &&
     !disabled &&
-    slashQuery !== null &&
+    invocationQuery !== null &&
     !hasExactSlashCommand &&
-    dismissedSlashQuery !== slashQuery &&
+    dismissedSlashQuery !== slashQueryKey &&
     matchingSlashCommands.length > 0;
+  const recognizedSkillTokens = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          findSkillInvocations(text, slashCommands)
+            .filter(
+              (match) => match.command.invocation?.inventoryState === "current",
+            )
+            .map((match) => match.canonicalToken),
+        ),
+      ),
+    [slashCommands, text],
+  );
+  const unrecognizedSkillTokens = useMemo(() => {
+    if (
+      !slashCommands.some(
+        (command) =>
+          command.invocation?.kind === "skill" &&
+          command.invocation.inventoryState === "current",
+      )
+    ) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        findUnrecognizedInvocations(text, slashCommands)
+          .filter(
+            (candidate) =>
+              matchingSlashCommands.length === 0 ||
+              invocationQuery === null ||
+              candidate.start !== invocationQuery.start ||
+              candidate.end !== invocationQuery.end,
+          )
+          .map((candidate) => candidate.token),
+      ),
+    );
+  }, [invocationQuery, matchingSlashCommands.length, slashCommands, text]);
   const bangQuery =
     bangSupport && !collapsed ? getBangCompletionQuery(text) : null;
-  const bangQueryKey = bangQuery
-    ? `${bangQuery.kind} ${bangQuery.token}\0${text.slice(2)}`
-    : null;
+  const bangQueryKey = bangQuery ? bangCompletionQueryKey(text) : null;
   const showBangChip = !!bangSupport && !collapsed && text.startsWith("!!");
   const showBangEscapedChip =
     !!bangSupport && !collapsed && text.startsWith(" !!");
+  // Global history rows first, then PATH/project/path token candidates; the
+  // selection index and arrow navigation span this combined list.
+  const bangMenuItems: BangMenuItem[] = [
+    ...bangHistoryCandidates.map(
+      (value): BangMenuItem => ({ source: "history", value }),
+    ),
+    ...bangCandidates.map(
+      (value): BangMenuItem => ({ source: "candidate", value }),
+    ),
+  ];
+  // A lone token candidate equal to the current token is nothing to complete;
+  // suppress that (unless history offers whole-line matches).
+  const hasUsefulBangCandidates =
+    bangCandidates.length > 0 &&
+    !(
+      bangCandidates.length === 1 &&
+      bangQuery !== null &&
+      (bangCandidates[0] === bangQuery.token ||
+        bangCandidates[0] === `${bangQuery.token}/`)
+    );
   const showBangSuggestions =
     !collapsed &&
     !disabled &&
     bangQuery !== null &&
     bangQuery.token.length > 0 &&
     dismissedBangQueryKey !== bangQueryKey &&
-    bangCandidates.length > 0 &&
-    !(
-      bangCandidates.length === 1 &&
-      (bangCandidates[0] === bangQuery.token ||
-        bangCandidates[0] === `${bangQuery.token}/`)
-    );
+    (bangHistoryCandidates.length > 0 || hasUsefulBangCandidates);
   const canSubmit = forkSummaryMode
     ? !forkSummaryMode.submitting &&
       attachments.length === 0 &&
       uploadProgress.length === 0
     : !!(text.trim() || attachments.length > 0);
-  const interimDisplayTranscript = interimTranscript.trim();
-  // The inline mirror previews speech in place at the insertion point (replacing
-  // any selected span): streaming interim text while words arrive, otherwise the
-  // pending-state label (Listening…/Transcribing…/Finalizing…) so the wait shows
-  // where the result will land — unified with the streaming preview rather than a
-  // separate chip below the composer. See topics/mic-button-speech-ui.md.
-  const speechPendingLabel = speechPending
-    ? speechPending === "finalizing"
-      ? t("speechFinalizingPlaceholder" as never)
-      : speechPending === "listening"
-        ? t("speechListeningPlaceholder" as never)
-        : t("speechTranscribingPlaceholder" as never)
-    : "";
-  const speechInlineTranscript = interimDisplayTranscript || speechPendingLabel;
   const speechInsertionRange = speechInsertionRangeRef.current;
+  const interimDisplayTranscript = getSpeechInterimDisplayTranscript(
+    text,
+    interimTranscript,
+    speechInsertionRange,
+  );
+  // Only mutable provisional speech uses the textarea mirror. Capture and
+  // post-capture status live with the mic so the real draft and caret stay
+  // untouched while transcription is pending.
   const interimInsertion = speechInsertionRange
     ? getSpeechTranscriptReplacementParts(
         text,
-        speechInlineTranscript,
+        interimDisplayTranscript,
         speechInsertionRange.end,
         speechInsertionRange.replaceEnd ?? speechInsertionRange.end,
       )
     : getSpeechTranscriptInsertionParts(
         text,
-        speechInlineTranscript,
+        interimDisplayTranscript,
         text.length,
       );
-
-  // Pending tags for the no-interim (batch/pending) mirror: one per active
-  // speech target at its own insertion point, in arrival order, so overlapping
-  // batch transcriptions each show where they will land. The active target's
-  // label follows speechPending; the rest are still transcribing. Streaming
-  // interim keeps the single interimInsertion path above. Range-map changes are
-  // accompanied by state updates (setText/setInterimTranscript/setSpeechPending
-  // or setSpeechPreviewRevision), so this recomputes on re-render.
-  const pendingTagLabel = (kind: SpeechPendingKind | null): string =>
-    kind === "finalizing"
-      ? t("speechFinalizingPlaceholder" as never)
-      : kind === "listening"
-        ? t("speechListeningPlaceholder" as never)
-        : t("speechTranscribingPlaceholder" as never);
-  const speechRangeTags = interimDisplayTranscript
-    ? []
-    : [...speechInsertionRangesRef.current.entries()].map(
-        ([targetId, range], index) => {
-          const active = targetId === activeSpeechTargetIdRef.current;
-          return {
-            targetId,
-            position: range.end,
-            replaceEnd: range.replaceEnd ?? range.end,
-            active,
-            ordinal: index + 1,
-            label: pendingTagLabel(active ? speechPending : "transcribing"),
-          };
-        },
-      );
-  // Pending but no tracked range yet: show a single tag at the cursor end so
-  // the label still appears inline.
-  const speechPendingTags =
-    speechRangeTags.length === 0 && !interimDisplayTranscript && speechPending
-      ? [
-          {
-            targetId: "pending",
-            position: text.length,
-            replaceEnd: text.length,
-            active: true,
-            ordinal: 1,
-            label: pendingTagLabel(speechPending),
-          },
-        ]
-      : speechRangeTags;
-  const speechMirrorSegments = getSpeechMirrorSegments(text, speechPendingTags);
   const bangFetchRef = useRef(bangSupport?.fetchCompletions);
   bangFetchRef.current = bangSupport?.fetchCompletions;
+  const bangFetchKind = bangQuery?.kind ?? null;
+  const bangFetchToken = bangQuery?.token ?? null;
+  const bangFetchLine = bangQuery ? text.slice(2) : null;
   useEffect(() => {
     const fetchCompletions = bangFetchRef.current;
-    if (!bangQueryKey || !fetchCompletions) {
+    if (
+      !fetchCompletions ||
+      !bangFetchKind ||
+      !bangFetchToken ||
+      bangFetchLine === null
+    ) {
       setBangCandidates([]);
-      return;
-    }
-    const separatorIndex = bangQueryKey.indexOf(" ");
-    const lineSeparatorIndex = bangQueryKey.indexOf("\0");
-    const kind = bangQueryKey.slice(0, separatorIndex) as "command" | "path";
-    const token = bangQueryKey.slice(separatorIndex + 1, lineSeparatorIndex);
-    const line = bangQueryKey.slice(lineSeparatorIndex + 1);
-    if (!token) {
-      setBangCandidates([]);
+      setBangHistoryCandidates([]);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      fetchCompletions(token, kind, line).then(
-        (completions) => {
+      fetchCompletions(bangFetchToken, bangFetchKind, bangFetchLine).then(
+        (result) => {
           if (!cancelled) {
-            setBangCandidates(completions);
+            setBangCandidates(result.completions);
+            setBangHistoryCandidates(result.history);
             setSelectedBangIndex(0);
           }
         },
         () => {
           if (!cancelled) {
             setBangCandidates([]);
+            setBangHistoryCandidates([]);
           }
         },
       );
@@ -564,7 +637,7 @@ export function MessageInput({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [bangQueryKey]);
+  }, [bangFetchKind, bangFetchToken, bangFetchLine]);
 
   // Any edit that diverges from the last Ctrl+↑ recall resets history cycling.
   useEffect(() => {
@@ -574,7 +647,7 @@ export function MessageInput({
     }
   }, [text]);
 
-  const slashSelectionResetKey = `${slashQuery}\0${matchingSlashCommands.length}`;
+  const slashSelectionResetKey = `${slashQueryKey}\0${matchingSlashCommands.length}`;
 
   useEffect(() => {
     void slashSelectionResetKey;
@@ -845,8 +918,15 @@ export function MessageInput({
       }
       noteComposerEdit(nextText);
       setText(nextText);
-      const nextSlashQuery = getLeadingSlashQuery(nextText);
-      if (nextSlashQuery !== dismissedSlashQuery) {
+      setComposerCursor(nextText.length);
+      const nextSlashQuery = getInvocationCompletionQuery(
+        nextText,
+        nextText.length,
+      );
+      const nextSlashQueryKey = nextSlashQuery
+        ? `${nextSlashQuery.start}:${nextSlashQuery.end}:${nextSlashQuery.sigil}:${nextSlashQuery.query}`
+        : null;
+      if (nextSlashQueryKey !== dismissedSlashQuery) {
         setDismissedSlashQuery(null);
       }
       return nextText;
@@ -1330,65 +1410,119 @@ export function MessageInput({
 
   // Handle slash command selection - run active client commands or insert text.
   const handleSlashCommand = useCallback(
-    (command: string) => {
-      if (!command) return;
-      const normalizedCommand = command.startsWith("/")
-        ? command
-        : `/${command}`;
-      const bare = normalizedCommand.slice(1);
-      if (onCustomCommand?.(bare)) {
+    (command: SlashCommand) => {
+      const canonicalToken = getCanonicalInvocationToken(command);
+      if (
+        command.invocation?.kind === "emulated" &&
+        onCustomCommand?.(command.name)
+      ) {
         return;
       }
 
-      const slashDraft = getLeadingSlashQuery(text) !== null;
-      const trimmed = text.trimEnd();
-      const nextText = slashDraft
-        ? `${normalizedCommand} `
-        : trimmed
-          ? `${trimmed} ${normalizedCommand} `
-          : `${normalizedCommand} `;
+      const activeQuery = getInvocationCompletionQuery(text, composerCursor);
+      let editStart: number;
+      let editEnd: number;
+      let nextText: string;
+      let nextCursor: number;
+      if (activeQuery) {
+        const suffix = /\s/.test(text[activeQuery.end] ?? "") ? "" : " ";
+        const replacement = `${canonicalToken}${suffix}`;
+        editStart = activeQuery.start;
+        editEnd = activeQuery.end;
+        nextText =
+          text.slice(0, activeQuery.start) +
+          replacement +
+          text.slice(activeQuery.end);
+        nextCursor = activeQuery.start + replacement.length;
+      } else {
+        const trimmed = text.trimEnd();
+        const separator = trimmed ? " " : "";
+        const replacement = `${separator}${canonicalToken} `;
+        editStart = trimmed.length;
+        editEnd = text.length;
+        nextText = `${trimmed}${replacement}`;
+        nextCursor = nextText.length;
+      }
       noteDraftTextChange(text, nextText, {
-        start: slashDraft ? 0 : trimmed.length,
-        end: text.length,
+        start: editStart,
+        end: editEnd,
         inputType: "insertText",
       });
       noteComposerEdit(nextText);
       setText(nextText);
+      setComposerCursor(nextCursor);
       setDismissedSlashQuery(null);
-      textareaRef.current?.focus();
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
     },
-    [text, setText, onCustomCommand, noteComposerEdit, noteDraftTextChange],
+    [
+      composerCursor,
+      text,
+      setText,
+      onCustomCommand,
+      noteComposerEdit,
+      noteDraftTextChange,
+    ],
   );
 
-  // Shared Tab-complete action for bang drafts: accept the highlighted
-  // candidate, else fetch immediately and extend to the longest common
-  // prefix (menu opens on ambiguity). Reused by the Tab key and by the
+  // Apply a highlighted/clicked bang menu row. A history row replaces the
+  // whole `!!` body (and dismisses the menu, since the body is now a complete
+  // prior command); a token candidate keeps the token-replacement behavior.
+  const applyBangMenuItem = (item: BangMenuItem) => {
+    if (!bangQuery) {
+      return;
+    }
+    if (item.source === "history") {
+      const nextText = `!!${item.value}`;
+      noteComposerEdit(nextText);
+      setText(nextText);
+      setDismissedBangQueryKey(bangCompletionQueryKey(nextText));
+      return;
+    }
+    const nextText = applyBangCompletion(text, bangQuery, item.value);
+    noteComposerEdit(nextText);
+    setText(nextText);
+  };
+
+  // Shared Tab-complete action for bang drafts: accept the highlighted row if
+  // the menu is open; else fetch immediately. Whole-line history matches never
+  // participate in the token longest-common-prefix logic — when the fetch
+  // returns any, open the menu (history first) instead of auto-applying;
+  // otherwise apply a single token match or extend to the longest common
+  // prefix (menu opens on ambiguity). Reused by the Tab key and the
   // mobile-keyboard button, since touch keyboards have no Tab key.
   const performBangTabComplete = (): boolean => {
     if (!bangQuery || !bangSupport) {
       return false;
     }
-    const applyCandidate = (candidate: string) => {
-      const nextText = applyBangCompletion(text, bangQuery, candidate);
-      noteComposerEdit(nextText);
-      setText(nextText);
-    };
     if (showBangSuggestions) {
-      const candidate = bangCandidates[selectedBangIndex];
-      if (candidate) {
-        applyCandidate(candidate);
+      const item = bangMenuItems[selectedBangIndex];
+      if (item) {
+        applyBangMenuItem(item);
       }
       return true;
     }
     bangSupport
       .fetchCompletions(bangQuery.token, bangQuery.kind, text.slice(2))
-      .then((completions) => {
+      .then((result) => {
         if (controls.getDraft() !== text) {
           return;
         }
+        if (result.history.length > 0) {
+          setBangCandidates(result.completions);
+          setBangHistoryCandidates(result.history);
+          setSelectedBangIndex(0);
+          setDismissedBangQueryKey(null);
+          return;
+        }
+        const completions = result.completions;
         const single = completions.length === 1 ? completions[0] : undefined;
         if (single) {
-          applyCandidate(single);
+          const nextText = applyBangCompletion(text, bangQuery, single);
+          noteComposerEdit(nextText);
+          setText(nextText);
           return;
         }
         const prefix = longestCommonPrefix(completions);
@@ -1398,11 +1532,48 @@ export function MessageInput({
           setText(nextText);
         }
         setBangCandidates(completions);
+        setBangHistoryCandidates([]);
         setSelectedBangIndex(0);
         setDismissedBangQueryKey(null);
       })
       .catch(() => {});
     return true;
+  };
+
+  // Open the recall drawer over the prior user turns that prefix-match the
+  // current draft (empty draft → all). No-op with nothing to show. Shared by
+  // Ctrl+↑ and the mobile open button. Returns whether it opened.
+  const openRecallDrawer = (): boolean => {
+    if (!turnRecall || turnRecall.entries.length === 0) {
+      return false;
+    }
+    const matches = filterComposerTurnRecall(turnRecall.entries, text);
+    if (matches.length === 0) {
+      return false;
+    }
+    setRecallDrawer({ matches, index: 0, originalDraft: text });
+    return true;
+  };
+  // Cancel the recall drawer, restoring the pre-open draft (Esc / click-away).
+  const cancelRecallDrawer = () => {
+    if (recallDrawer) {
+      setText(recallDrawer.originalDraft);
+      setRecallDrawer(null);
+    }
+  };
+  // Accept a recall entry: draft its full text and close the drawer.
+  const acceptRecallEntry = (entry: ComposerTurnRecallEntry) => {
+    noteComposerEdit(entry.text);
+    setText(entry.text);
+    setRecallDrawer(null);
+    textareaRef.current?.focus();
+  };
+  // Go to a recalled turn: scroll the transcript to it and close the drawer.
+  // Navigation, not recall — the composer text is left untouched and the Esc
+  // draft-restore is deliberately skipped (nothing was drafted to restore).
+  const goToRecallTurn = (entry: ComposerTurnRecallEntry) => {
+    turnRecall?.onGoToTurn?.(entry.id);
+    setRecallDrawer(null);
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -1450,6 +1621,78 @@ export function MessageInput({
       return;
     }
 
+    // Composer recall drawer. Runs after the bang Ctrl+↑ history block above,
+    // so bang shell-recall still wins for empty / "!!" drafts when bang
+    // support is enabled; otherwise Ctrl+↑ opens this drawer.
+    // See topics/composer-recall-drawer.md.
+    if (recallDrawer) {
+      if (
+        (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        setRecallDrawer((current) =>
+          current
+            ? {
+                ...current,
+                index:
+                  (current.index + delta + current.matches.length) %
+                  current.matches.length,
+              }
+            : current,
+        );
+        return;
+      }
+      if (
+        e.key === "Enter" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const entry = recallDrawer.matches[recallDrawer.index];
+        if (entry) {
+          acceptRecallEntry(entry);
+        } else {
+          setRecallDrawer(null);
+        }
+        return;
+      }
+      if (
+        e.key === "Escape" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        cancelRecallDrawer();
+        return;
+      }
+      // Any other key dismisses the drawer and types normally (no
+      // preventDefault, falls through to the composer).
+      setRecallDrawer(null);
+    }
+
+    // Ctrl+↑ opens the recall drawer over prior user turns prefix-matched by
+    // the current draft. Only reached when no bang shell-recall claimed it.
+    if (
+      e.key === "ArrowUp" &&
+      e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !recallDrawer
+    ) {
+      if (openRecallDrawer()) {
+        e.preventDefault();
+        return;
+      }
+    }
+
     // Tab always completes inside a bang draft, shell-style.
     if (e.key === "Tab" && !e.shiftKey && performBangTabComplete()) {
       e.preventDefault();
@@ -1467,7 +1710,7 @@ export function MessageInput({
         setSelectedBangIndex((current) => {
           const delta = e.key === "ArrowDown" ? 1 : -1;
           return (
-            (current + delta + bangCandidates.length) % bangCandidates.length
+            (current + delta + bangMenuItems.length) % bangMenuItems.length
           );
         });
         return;
@@ -1480,11 +1723,9 @@ export function MessageInput({
         !e.altKey
       ) {
         e.preventDefault();
-        const candidate = bangCandidates[selectedBangIndex];
-        if (candidate) {
-          const nextText = applyBangCompletion(text, bangQuery, candidate);
-          noteComposerEdit(nextText);
-          setText(nextText);
+        const item = bangMenuItems[selectedBangIndex];
+        if (item) {
+          applyBangMenuItem(item);
         }
         return;
       }
@@ -1493,7 +1734,7 @@ export function MessageInput({
     if (showSlashSuggestions) {
       if (e.key === "Escape") {
         e.preventDefault();
-        setDismissedSlashQuery(slashQuery);
+        setDismissedSlashQuery(slashQueryKey);
         return;
       }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -1516,14 +1757,15 @@ export function MessageInput({
           !e.altKey)
       ) {
         e.preventDefault();
-        handleSlashCommand(matchingSlashCommands[selectedSlashIndex] ?? "");
+        const command = matchingSlashCommands[selectedSlashIndex];
+        if (command) handleSlashCommand(command);
         return;
       }
     }
 
-    // The pending post-capture wait now shows its label inline at the cursor
-    // (no chip ✕). Escape cancels it — drops the uncommitted result, keeps any
-    // already-committed text. (Active listening still finalizes on Escape below.)
+    // Escape cancels a pending post-capture wait — dropping the uncommitted
+    // result while keeping any already-committed text. Active listening still
+    // finalizes on Escape below.
     if (
       e.key === "Escape" &&
       !e.ctrlKey &&
@@ -1875,8 +2117,9 @@ export function MessageInput({
 
   const handleTextareaSelectionTarget = useCallback(() => {
     handleSpeechSelectionTarget();
+    setComposerCursor(textareaRef.current?.selectionStart ?? text.length);
     revealCollapsedTextareaCursor();
-  }, [handleSpeechSelectionTarget, revealCollapsedTextareaCursor]);
+  }, [handleSpeechSelectionTarget, revealCollapsedTextareaCursor, text.length]);
 
   const clearSpeechSelectionTarget = useCallback(() => {
     clearPendingSpeechFinal();
@@ -1920,10 +2163,9 @@ export function MessageInput({
         transcript,
         metadata,
       );
-      // An overlapping (non-active) target's batch result has now landed; forget
-      // its range so its tag clears. The active target is forgotten on the
-      // pending->null transition instead (it may still get more streaming
-      // finals).
+      // An overlapping (non-active) target's batch result has now landed;
+      // forget its range. The active target is forgotten on the pending->null
+      // transition instead (it may still get more streaming finals).
       const committedTargetId = metadata?.speechTargetId;
       if (
         committedTargetId &&
@@ -1974,6 +2216,7 @@ export function MessageInput({
   const handleListeningStop = useCallback(() => {
     flushPendingSpeechFinal();
     setInterimTranscript("");
+    textareaRef.current?.focus();
   }, [flushPendingSpeechFinal]);
 
   const handleInterimTranscript = useCallback((transcript: string) => {
@@ -1984,9 +2227,8 @@ export function MessageInput({
     (kind: SpeechPendingKind | null) => {
       if (kind === null) {
         // The active recording finished (its result has already committed);
-        // forget its insertion target so the inline tag clears and the range
-        // map does not accumulate completed targets (which would revive as
-        // stale "Transcribing…" tags on the next mic activation).
+        // forget its insertion target so the range map does not accumulate
+        // completed targets.
         const targetId = activeSpeechTargetIdRef.current;
         if (targetId) {
           speechInsertionRangesRef.current.delete(targetId);
@@ -2019,10 +2261,9 @@ export function MessageInput({
     [clearPendingSpeechFinal],
   );
 
-  // Cancel a pending transcription/finalization from the chip's ✕. The provider
-  // discards the in-flight result (keeping any committed text); here we drop the
-  // pending speech target so the composer forgets the reserved insertion point.
-  // Backspace never reaches this — cancel is intentionally explicit-click-only.
+  // Cancel a pending transcription/finalization. The provider discards the
+  // in-flight result (keeping any committed text); here we drop the pending
+  // speech target so the composer forgets the reserved insertion point.
   const handleCancelTranscription = useCallback(() => {
     voiceButtonRef.current?.cancelProcessing();
     clearPendingSpeechFinal();
@@ -2059,6 +2300,7 @@ export function MessageInput({
     mode,
     onModeChange,
     modeChangesApplyNextTurn,
+    modeChangePending,
     supportsPermissionMode,
     supportsThinkingToggle,
     canAttach,
@@ -2181,71 +2423,29 @@ export function MessageInput({
           (showCollapsedLineCount || showCollapsedDesktopMicrophone)
             ? "has-collapsed-side-actions"
             : ""
-        } ${interimTranscript ? "voice-recording" : ""}`}
+        }`}
       >
         <div
-          className={`speech-draft-field ${speechInlineTranscript ? "has-interim" : ""}${
-            speechInlineTranscript && !interimDisplayTranscript
-              ? " has-pending-tag"
-              : ""
+          className={`speech-draft-field ${
+            interimDisplayTranscript ? "has-interim" : ""
           }`}
         >
           <div className="speech-draft-inline">
-            {speechInlineTranscript && (
+            {interimDisplayTranscript && (
               <div className="speech-draft-mirror" aria-hidden="true">
-                {interimDisplayTranscript ? (
-                  <>
-                    <span>{interimInsertion.before}</span>
-                    {interimInsertion.separatorBefore}
-                    <span className="speech-interim-inline">
-                      {interimInsertion.transcript}
-                    </span>
-                    {interimInsertion.separatorAfter}
-                    <span>{interimInsertion.after}</span>
-                  </>
-                ) : (
-                  // One tag per pending speech target at its own insertion point,
-                  // in arrival order; the Nth (N>1) carries a "(N)" ordinal. The
-                  // active tag gets the ✕ and the faked caret. The real caret
-                  // can't sit after a zero-width-in-value tag — see
-                  // composer-rich-input.md.
-                  speechMirrorSegments.map((seg) =>
-                    seg.type === "text" ? (
-                      <span key={seg.key}>{seg.text}</span>
-                    ) : (
-                      <Fragment key={seg.tag.targetId}>
-                        <span className="speech-processing-inline">
-                          {seg.tag.label}
-                          {seg.tag.ordinal > 1 && (
-                            <span className="speech-tag-ordinal">
-                              {` (${seg.tag.ordinal})`}
-                            </span>
-                          )}
-                          {seg.tag.active && (
-                            <button
-                              type="button"
-                              className="speech-tag-cancel"
-                              tabIndex={-1}
-                              aria-hidden="true"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={handleCancelTranscription}
-                              title={t("speechTranscribingCancel" as never)}
-                            >
-                              ×
-                            </button>
-                          )}
-                        </span>
-                        {seg.tag.active && (
-                          <span className="speech-tag-caret" />
-                        )}
-                      </Fragment>
-                    ),
-                  )
-                )}
+                <span>{interimInsertion.before}</span>
+                {interimInsertion.separatorBefore}
+                <span className="speech-interim-inline">
+                  {interimInsertion.transcript}
+                </span>
+                <span className="speech-interim-caret" />
+                {interimInsertion.separatorAfter}
+                <span>{interimInsertion.after}</span>
               </div>
             )}
             <textarea
               ref={textareaRef}
+              data-composer-input
               value={text}
               onBeforeInput={(event) => {
                 const nativeEvent = event.nativeEvent as InputEvent;
@@ -2307,12 +2507,21 @@ export function MessageInput({
                 }
                 noteComposerEdit(nextText);
                 setText(nextText);
-                const nextSlashQuery = getLeadingSlashQuery(nextText);
-                if (nextSlashQuery !== dismissedSlashQuery) {
+                const nextCursor = e.target.selectionStart;
+                setComposerCursor(nextCursor);
+                const nextSlashQuery = getInvocationCompletionQuery(
+                  nextText,
+                  nextCursor,
+                );
+                const nextSlashQueryKey = nextSlashQuery
+                  ? `${nextSlashQuery.start}:${nextSlashQuery.end}:${nextSlashQuery.sigil}:${nextSlashQuery.query}`
+                  : null;
+                if (nextSlashQueryKey !== dismissedSlashQuery) {
                   setDismissedSlashQuery(null);
                 }
               }}
               onBlur={() => {
+                cancelRecallDrawer();
                 controls.flushDraft();
                 setTextareaFocused(false);
               }}
@@ -2369,34 +2578,45 @@ export function MessageInput({
           </div>
         )}
 
+        {recognizedSkillTokens.length > 0 && (
+          <div className="skill-invocation-status" role="status">
+            <span>{t("skillInvocationRecognized")}</span>
+            <code>{recognizedSkillTokens.join(", ")}</code>
+          </div>
+        )}
+
+        {unrecognizedSkillTokens.length > 0 && (
+          <div
+            className="skill-invocation-status skill-invocation-status--warning"
+            role="status"
+          >
+            <span>{t("skillInvocationUnrecognized")}</span>
+            <code>{unrecognizedSkillTokens.join(", ")}</code>
+            <span>{t("skillInvocationStillSent")}</span>
+          </div>
+        )}
+
         {showBangSuggestions && (
           <div
             className="slash-command-menu composer-slash-command-menu bang-completion-menu"
             role="menu"
           >
-            {bangCandidates.map((candidate, index) => (
+            {bangMenuItems.map((item, index) => (
               <button
-                key={candidate}
+                key={`${item.source}:${item.value}`}
                 type="button"
                 className={`slash-command-item${
-                  index === selectedBangIndex ? " active" : ""
-                }`}
+                  item.source === "history" ? " bang-history-item" : ""
+                }${index === selectedBangIndex ? " active" : ""}`}
                 onMouseEnter={() => setSelectedBangIndex(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  if (!bangQuery) return;
-                  const nextText = applyBangCompletion(
-                    text,
-                    bangQuery,
-                    candidate,
-                  );
-                  noteComposerEdit(nextText);
-                  setText(nextText);
+                  applyBangMenuItem(item);
                   textareaRef.current?.focus();
                 }}
                 role="menuitem"
               >
-                <span>{candidate}</span>
+                <span>{item.value}</span>
               </button>
             ))}
           </div>
@@ -2411,7 +2631,7 @@ export function MessageInput({
               const parts = getSlashCommandMenuParts(command);
               return (
                 <button
-                  key={command}
+                  key={`${getCanonicalInvocationToken(command)}:${command.invocation?.kind ?? "legacy"}`}
                   type="button"
                   className={`slash-command-item${index === selectedSlashIndex ? " active" : ""}`}
                   onMouseEnter={() => setSelectedSlashIndex(index)}
@@ -2425,10 +2645,83 @@ export function MessageInput({
                       {parts.shortcut}
                     </strong>
                   )}
-                  <span>{parts.rest}</span>
+                  <span className="slash-command-copy">
+                    <span>{parts.rest}</span>
+                    {(command.description || command.argumentHint) && (
+                      <span className="slash-command-detail">
+                        {[command.description, command.argumentHint]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {recallDrawer && (
+          <div
+            className="slash-command-menu composer-slash-command-menu composer-recall-menu"
+            role="menu"
+            aria-label={t("composerRecallMenuLabel")}
+          >
+            {recallDrawer.matches.map((entry, index) => (
+              <div key={`${index}-${entry.id}`} className="composer-recall-row">
+                <button
+                  type="button"
+                  className={`slash-command-item composer-recall-preview${
+                    index === recallDrawer.index ? " active" : ""
+                  }`}
+                  onMouseEnter={() =>
+                    setRecallDrawer((current) =>
+                      current ? { ...current, index } : current,
+                    )
+                  }
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => acceptRecallEntry(entry)}
+                  role="menuitem"
+                >
+                  <span>{entry.preview}</span>
+                </button>
+                {turnRecall?.onGoToTurn && (
+                  // Navigation-only secondary control: scroll the transcript to
+                  // this turn and close the drawer (no composer/draft change).
+                  <button
+                    type="button"
+                    className="composer-recall-goto"
+                    onMouseEnter={() =>
+                      setRecallDrawer((current) =>
+                        current ? { ...current, index } : current,
+                      )
+                    }
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => goToRecallTurn(entry)}
+                    aria-label={t("composerRecallGoToTurn")}
+                    title={t("composerRecallGoToTurn")}
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="3" />
+                      <line x1="12" y1="2" x2="12" y2="5" />
+                      <line x1="12" y1="19" x2="12" y2="22" />
+                      <line x1="2" y1="12" x2="5" y2="12" />
+                      <line x1="19" y1="12" x2="22" y2="12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         )}
 
@@ -2730,6 +3023,42 @@ export function MessageInput({
                   <span aria-hidden="true">⇥</span>
                 </button>
               )}
+              {toolbarVisibility.composerRecall &&
+                turnRecall &&
+                turnRecall.entries.length > 0 &&
+                !recallDrawer &&
+                bangQuery === null && (
+                  // Touch-keyboard opener for the recall drawer, where there is
+                  // no Ctrl+↑. Opens over the same prefix-matched turns (empty
+                  // draft → all). Hidden by default via the composerRecall
+                  // toolbar control; Ctrl+↑ is unaffected by the setting.
+                  // See topics/composer-recall-drawer.md.
+                  <button
+                    type="button"
+                    className="message-input-keyboard-action message-input-keyboard-secondary composer-recall-open"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => openRecallDrawer()}
+                    disabled={disabled}
+                    aria-label={t("composerRecallOpenButton")}
+                    title={t("composerRecallOpenButton")}
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M3 3v5h5" />
+                      <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+                      <path d="M12 7v5l3 3" />
+                    </svg>
+                  </button>
+                )}
               <button
                 type="button"
                 className={`message-input-keyboard-action message-input-keyboard-primary ${effectivePrimaryActionKind}-mode`}

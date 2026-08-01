@@ -9,6 +9,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { api } from "../api/client";
@@ -29,6 +30,12 @@ import {
   FilePathContextMenu,
   useStartNewSessionFromFileAction,
 } from "./FileResourceActions";
+import {
+  ImageViewer,
+  type ImageViewerNavigation,
+  type ImageViewerNavigationInput,
+} from "./ImageViewer";
+import styles from "./LocalMediaModal.module.css";
 import { Modal } from "./ui/Modal";
 
 export interface LocalMediaSource {
@@ -44,7 +51,16 @@ interface LocalMediaModalProps {
   path: string;
   mediaType: LocalResourceMediaType;
   mediaSource?: LocalMediaSource;
+  imageNavigation?: ImageViewerNavigation;
   onClose: () => void;
+}
+
+interface DisplayedLocalMedia {
+  fileName: string;
+  imageNavigation?: Pick<ImageViewerNavigation, "count" | "current">;
+  mediaType: LocalResourceMediaType;
+  path: string;
+  url: string;
 }
 
 interface LocalFileModalProps {
@@ -240,11 +256,11 @@ function buildMediaApiPath(
   return mediaSource?.buildApiPath?.(path) ?? localMediaApiPath(path);
 }
 
-async function fetchMediaBlobWithSource(
+export async function fetchLocalMediaBlob(
   path: string,
   mediaSource: LocalMediaSource | undefined,
   purpose: "inline" | "modal",
-  transport: SourceTransport,
+  transport = getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
 ): Promise<Blob> {
   const apiPath = buildMediaApiPath(path, mediaSource);
   if (!apiPath) {
@@ -253,6 +269,28 @@ async function fetchMediaBlobWithSource(
   return mediaSource?.fetchBlob
     ? mediaSource.fetchBlob(path, apiPath, purpose)
     : fetchMediaBlob(apiPath, transport);
+}
+
+async function decodeImageUrl(url: string): Promise<void> {
+  const image = new Image();
+  image.src = url;
+
+  if (typeof image.decode === "function") {
+    await image.decode();
+    return;
+  }
+
+  if (image.complete) {
+    if (image.naturalWidth > 0) {
+      return;
+    }
+    throw new Error("Failed to decode image");
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Failed to decode image"));
+  });
 }
 
 async function fetchLocalResourceBlob(
@@ -302,6 +340,20 @@ function isTextContentType(contentType: string): boolean {
   );
 }
 
+/**
+ * The inline preview nodes are built imperatively, so their module classes are
+ * resolved once into a finite map instead of being looked up by computed key.
+ */
+const inlinePreviewClass = {
+  copied: styles.inlineCopied ?? "",
+  error: styles.inlineError ?? "",
+  frame: styles.inlineFrame ?? "",
+  image: styles.inlineImage ?? "",
+  imageButton: styles.inlineImageButton ?? "",
+  loading: styles.inlineLoading ?? "",
+  player: styles.inlinePlayer ?? "",
+} as const;
+
 function renderInlinePreview(
   target: HTMLElement,
   path: string,
@@ -310,24 +362,24 @@ function renderInlinePreview(
   objectUrl: string,
 ) {
   const frame = document.createElement("span");
-  frame.className = "local-media-inline-frame";
+  frame.className = inlinePreviewClass.frame;
 
   if (mediaType === "video") {
     const video = document.createElement("video");
     video.controls = true;
     video.muted = true;
-    video.className = "local-media-inline-player";
+    video.className = inlinePreviewClass.player;
     video.src = objectUrl;
     frame.append(video);
   } else {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "local-media-inline-image-button";
+    button.className = inlinePreviewClass.imageButton;
     button.title = "Copy image";
     button.setAttribute("aria-label", `Copy ${getFileName(path)}`);
 
     const image = document.createElement("img");
-    image.className = "local-media-inline-image";
+    image.className = inlinePreviewClass.image;
     image.src = objectUrl;
     image.alt = getFileName(path);
     button.append(image);
@@ -340,7 +392,7 @@ function renderInlinePreview(
         button.setAttribute("aria-label", "Copied image");
 
         const copied = document.createElement("span");
-        copied.className = "local-media-inline-copied";
+        copied.className = inlinePreviewClass.copied;
         copied.textContent = "Copied";
         frame.append(copied);
         setTimeout(() => {
@@ -368,28 +420,59 @@ export function LocalMediaModal({
   path,
   mediaType,
   mediaSource,
+  imageNavigation,
   onClose,
 }: LocalMediaModalProps) {
   const { t } = useI18n();
   const transport = useCurrentSourceRuntime().transport;
-  const [url, setUrl] = useState<string | null>(null);
+  const [displayedMedia, setDisplayedMedia] =
+    useState<DisplayedLocalMedia | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const fileName = getFileName(path);
+  const [keyboardNavigationSequence, setKeyboardNavigationSequence] =
+    useState(0);
+  const displayedMediaRef = useRef(displayedMedia);
+  displayedMediaRef.current = displayedMedia;
+  const imageNavigationInputRef =
+    useRef<ImageViewerNavigationInput>("controls");
+  const imageNavigationRef = useRef(imageNavigation);
+  imageNavigationRef.current = imageNavigation;
+  const hasImageNavigation = Boolean(imageNavigation);
+  const requestedImageCount = imageNavigation?.count;
+  const requestedImageCurrent = imageNavigation?.current;
+  const requestedFileName = getFileName(path);
   const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl: string | null = null;
+    let pendingObjectUrl: string | null = null;
+    let transferredObjectUrl = false;
     setLoading(true);
     setError(null);
-    setUrl(null);
 
-    void fetchMediaBlobWithSource(path, mediaSource, "modal", transport)
-      .then((blob) => {
+    void fetchLocalMediaBlob(path, mediaSource, "modal", transport)
+      .then(async (blob) => {
         if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
+        pendingObjectUrl = URL.createObjectURL(blob);
+        if (mediaType === "image" && displayedMediaRef.current) {
+          await decodeImageUrl(pendingObjectUrl);
+        }
+        if (cancelled) return;
+        setDisplayedMedia({
+          fileName: requestedFileName,
+          imageNavigation:
+            requestedImageCount !== undefined &&
+            requestedImageCurrent !== undefined
+            ? {
+                count: requestedImageCount,
+                current: requestedImageCurrent,
+              }
+            : undefined,
+          mediaType,
+          path,
+          url: pendingObjectUrl,
+        });
+        transferredObjectUrl = true;
         setLoading(false);
       })
       .catch((err) => {
@@ -400,34 +483,132 @@ export function LocalMediaModal({
 
     return () => {
       cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
+      if (pendingObjectUrl && !transferredObjectUrl) {
+        URL.revokeObjectURL(pendingObjectUrl);
       }
     };
-  }, [mediaSource, path, transport]);
+  }, [
+    mediaSource,
+    mediaType,
+    path,
+    requestedFileName,
+    requestedImageCount,
+    requestedImageCurrent,
+    transport,
+  ]);
+
+  const displayedUrl = displayedMedia?.url ?? null;
+  useEffect(
+    () => () => {
+      if (displayedUrl) {
+        URL.revokeObjectURL(displayedUrl);
+      }
+    },
+    [displayedUrl],
+  );
+
+  useEffect(() => {
+    if (mediaType !== "image" || !hasImageNavigation) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        event.stopPropagation();
+        imageNavigationInputRef.current = "keyboard";
+        setKeyboardNavigationSequence((value) => value + 1);
+        imageNavigationRef.current?.onPrevious();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        imageNavigationInputRef.current = "keyboard";
+        setKeyboardNavigationSequence((value) => value + 1);
+        imageNavigationRef.current?.onNext();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [hasImageNavigation, mediaType]);
+
+  const displayedImage =
+    displayedMedia?.mediaType === "image" ? displayedMedia : null;
+  const displayedNavigation =
+    displayedImage?.imageNavigation && hasImageNavigation
+      ? {
+          ...displayedImage.imageNavigation,
+          onNext: () => imageNavigationRef.current?.onNext(),
+          onPrevious: () => imageNavigationRef.current?.onPrevious(),
+        }
+      : undefined;
+  const imageModalActive =
+    mediaType === "image" || displayedMedia?.mediaType === "image";
 
   return (
-    <Modal title={fileName} onClose={onClose}>
-      <div className="local-media-modal-content">
-        {loading && <div className="local-media-loading">Loading...</div>}
-        {error && <div className="local-media-error">{error}</div>}
-        {url &&
-          (mediaType === "video" ? (
+    <Modal
+      title={
+        displayedImage ? (
+          <a
+            className={styles.titleLink}
+            href={displayedImage.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={openImageInNewTabLabel}
+          >
+            {displayedImage.fileName}
+          </a>
+        ) : (
+          (displayedMedia?.fileName ?? requestedFileName)
+        )
+      }
+      onClose={onClose}
+      variant={imageModalActive ? "image-viewer" : undefined}
+    >
+      {displayedImage ? (
+        <div className={styles.imageFrame} aria-busy={loading}>
+          <ImageViewer
+            key={`${displayedImage.path}\0${displayedImage.url}`}
+            fileName={displayedImage.fileName}
+            initialNavigationChrome={
+              imageNavigationInputRef.current === "keyboard"
+                ? "position"
+                : "all"
+            }
+            keyboardNavigationSequence={keyboardNavigationSequence}
+            navigation={displayedNavigation}
+            onNavigationInput={(input) => {
+              imageNavigationInputRef.current = input;
+            }}
+            onClose={onClose}
+            url={displayedImage.url}
+          />
+          {error ? (
+            <div className={styles.imageLoadError} role="alert">
+              {error}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div
+          className={`${styles.modalContent}${
+            imageModalActive ? ` ${styles.imagePlaceholder}` : ""
+          }`}
+        >
+          {loading && <div className={styles.loading}>Loading...</div>}
+          {error && <div className={styles.error}>{error}</div>}
+          {displayedMedia?.mediaType === "video" ? (
             // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
-            <video controls autoPlay className="local-media-player" src={url} />
-          ) : (
-            <a
-              className="local-media-image-link"
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={openImageInNewTabLabel}
-              aria-label={openImageInNewTabLabel}
-            >
-              <img className="local-media-image" src={url} alt={fileName} />
-            </a>
-          ))}
-      </div>
+            <video
+              controls
+              autoPlay
+              className={styles.player}
+              src={displayedMedia.url}
+            />
+          ) : null}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -502,30 +683,31 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
 
   return (
     <Modal title={fileName} onClose={onClose}>
-      <div className="local-file-modal-content">
+      <div className={styles.fileModalContent}>
         <div
-          className="local-file-modal-meta"
+          className={styles.fileModalMeta}
           title={`${resource.path}${locationSuffix}`}
         >
           {displayPath}
           {locationSuffix}
         </div>
         {state.status === "loading" && (
-          <div className="local-file-loading">Loading...</div>
+          <div className={styles.fileLoading}>Loading...</div>
         )}
         {state.status === "error" && (
-          <div className="local-file-error">{state.error}</div>
+          <div className={styles.fileError}>{state.error}</div>
         )}
         {state.status === "text" && (
-          <div className="local-file-text-frame">
-            <pre className="local-file-text">
+          <div className={styles.fileTextFrame}>
+            {/* The global class is the shared fixed-font hook in renderers.css. */}
+            <pre className={`${styles.fileText} local-file-text`}>
               <code>{state.text}</code>
             </pre>
           </div>
         )}
         {state.status === "html" && (
           <iframe
-            className="local-file-html-frame"
+            className={styles.fileHtmlFrame}
             sandbox=""
             srcDoc={state.html}
             title={fileName}
@@ -533,13 +715,13 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
         )}
         {state.status === "blob" && isPdfContentType(state.contentType) && (
           <iframe
-            className="local-file-blob-frame"
+            className={styles.fileBlobFrame}
             src={state.objectUrl}
             title={fileName}
           />
         )}
         {state.status === "blob" && !isPdfContentType(state.contentType) && (
-          <div className="local-file-error">
+          <div className={styles.fileError}>
             Preview is not available for {state.contentType || "this file"}.
           </div>
         )}
@@ -624,6 +806,7 @@ function LocalResourceContextMenu({
     y: number;
     resource: LocalResourceRef;
     projectFileTarget: ProjectFileModalTarget | null;
+    url: string | null;
   };
   projectContext: ProjectContext | null | undefined;
   sameOriginUrls: boolean;
@@ -635,6 +818,7 @@ function LocalResourceContextMenu({
   ) => void;
 }) {
   const startNewSessionFromFile = useStartNewSessionFromFileAction();
+  const copyUrl = contextMenu.url;
 
   return (
     <FilePathContextMenu
@@ -661,6 +845,9 @@ function LocalResourceContextMenu({
         void writeClipboardText(
           contextMenu.projectFileTarget?.filePath ?? contextMenu.resource.path,
         )
+      }
+      onCopyUrl={
+        copyUrl ? () => void writeClipboardText(copyUrl) : undefined
       }
       onCopyContents={() => {
         const { projectFileTarget, resource } = contextMenu;
@@ -709,6 +896,7 @@ export function useLocalResourceClick(
     y: number;
     resource: LocalResourceRef;
     projectFileTarget: ProjectFileModalTarget | null;
+    url: string | null;
   } | null>(null);
 
   const openResource = (
@@ -856,6 +1044,7 @@ export function useLocalResourceClick(
         resource,
         projectContext,
       ),
+      url: sameOriginUrls ? target.href : null,
     });
   };
 
@@ -898,6 +1087,7 @@ export function useLocalMediaInlinePreviews(
   rootRef: RefObject<HTMLElement | null>,
   refreshKey?: unknown,
   mediaSource?: LocalMediaSource,
+  options: { suppressAutomaticImages?: boolean } = {},
 ) {
   const { inlineMediaExpandedByDefault } = useInlineMedia();
   const transport = useCurrentSourceRuntime().transport;
@@ -947,26 +1137,22 @@ export function useLocalMediaInlinePreviews(
       );
       for (const toggle of toggles) {
         if (toggle.dataset.userToggled === "true") continue;
-        if (
-          toggle.dataset.defaultExpanded ===
-          String(inlineMediaExpandedByDefault)
-        ) {
+        const mediaType = getInlineMediaType(toggle);
+        const defaultExpanded =
+          options.suppressAutomaticImages && mediaType === "image"
+            ? false
+            : inlineMediaExpandedByDefault;
+        if (toggle.dataset.defaultExpanded === String(defaultExpanded)) {
           continue;
         }
 
-        const mediaType = getInlineMediaType(toggle);
-        setToggleExpanded(toggle, inlineMediaExpandedByDefault, mediaType);
-        toggle.dataset.defaultExpanded = String(inlineMediaExpandedByDefault);
+        setToggleExpanded(toggle, defaultExpanded, mediaType);
+        toggle.dataset.defaultExpanded = String(defaultExpanded);
 
         const preview = getPreviewForToggle(toggle);
         if (preview && preview.dataset.userToggled !== "true") {
-          preview.setAttribute(
-            "data-expanded",
-            String(inlineMediaExpandedByDefault),
-          );
-          preview.dataset.defaultExpanded = String(
-            inlineMediaExpandedByDefault,
-          );
+          preview.setAttribute("data-expanded", String(defaultExpanded));
+          preview.dataset.defaultExpanded = String(defaultExpanded);
         }
       }
     };
@@ -986,11 +1172,11 @@ export function useLocalMediaInlinePreviews(
         element.replaceChildren();
 
         const loading = document.createElement("span");
-        loading.className = "local-media-inline-loading";
+        loading.className = inlinePreviewClass.loading;
         loading.textContent = "Loading...";
         element.append(loading);
 
-        fetchMediaBlobWithSource(path, mediaSource, "inline", transport)
+        fetchLocalMediaBlob(path, mediaSource, "inline", transport)
           .then((blob) => {
             const objectUrl = URL.createObjectURL(blob);
             objectUrls.add(objectUrl);
@@ -998,7 +1184,7 @@ export function useLocalMediaInlinePreviews(
           })
           .catch((err) => {
             const error = document.createElement("span");
-            error.className = "local-media-inline-error";
+            error.className = inlinePreviewClass.error;
             error.textContent =
               err instanceof Error ? err.message : "Failed to load media";
             element.replaceChildren(error);
@@ -1025,6 +1211,7 @@ export function useLocalMediaInlinePreviews(
     rootRef,
     refreshKey,
     mediaSource,
+    options.suppressAutomaticImages,
     transport,
   ]);
 }

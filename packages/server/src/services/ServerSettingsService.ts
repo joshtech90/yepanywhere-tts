@@ -10,6 +10,7 @@ import * as path from "node:path";
 import type {
   AgentContextHints,
   CacheMissBillingSettings,
+  ClaudeAdditionalModelSelection,
   ClientDefaults,
   HelperTargetConfig,
   HostIdentity,
@@ -27,9 +28,11 @@ import {
   normalizeYaClientBaseUrlFromShareViewerUrl,
   isHostAwakeBatteryFloorPercent,
   isHostAwakeMode,
+  parseClaudeAdditionalModelSelections,
 } from "@yep-anywhere/shared";
 import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
+import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 
 export type { FileAccessSettings };
 
@@ -37,6 +40,7 @@ const CURRENT_VERSION = 2;
 export const DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS = 56;
 export const DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES = 400 * 1024 * 1024;
 const DEFAULT_HEARTBEAT_TURN_TEXT = "continue";
+export const MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH = 10_000;
 const LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS = new Set([
   "heartbeat",
   "yepanywhere heartbeat",
@@ -66,6 +70,8 @@ export interface ServerSettings {
   publicSharesEnabled: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether Agents may sample same-user provider processes on this host. */
+  hostProcessObservabilityEnabled: boolean;
   /** Base URL for the hosted YA client; remote login/share routes are appended */
   yaClientBaseUrl?: string;
   /** Optional visual marker identifying this YA host in connected clients. */
@@ -97,6 +103,10 @@ export interface ServerSettings {
   heartbeatTurnsAfterMinutes?: number;
   /** Default text queued as the synthetic heartbeat user turn */
   heartbeatTurnText?: string;
+  /** Anthropic-compatible endpoint for the isolated claude-gateway provider */
+  claudeGatewayUrl?: string;
+  /** Optional shell line that starts a loopback Claude Gateway on demand. */
+  claudeGatewayStartCommand?: string;
   /** Ollama server URL for claude-ollama provider (default: http://localhost:11434) */
   ollamaUrl?: string;
   /** Custom system prompt for Ollama provider (overrides the default minimal prompt) */
@@ -105,6 +115,13 @@ export interface ServerSettings {
   ollamaUseFullSystemPrompt?: boolean;
   /** Whether Grok Build may receive the scrubbed ambient XAI_API_KEY. */
   grokBuildUseXaiApiKey?: boolean;
+  /** Exact previous/custom Claude model ids opted into provider catalogs. */
+  claudeAdditionalModels?: ClaudeAdditionalModelSelection[];
+  /**
+   * Claude Code launch-time override for the percentage of its own
+   * auto-compaction window. Absent leaves Claude's environment unchanged.
+   */
+  claudeAutoCompactPercentOverride?: number;
   /** Whether the device bridge (emulator/device streaming) feature is enabled */
   deviceBridgeEnabled?: boolean;
   /** Defaults applied when opening the new session form */
@@ -165,9 +182,9 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   approvalAuditLogEnabled: false,
   publicSharesEnabled: false,
   workstreamsEnabled: false,
+  hostProcessObservabilityEnabled: true,
   hostAwakeMode: "off",
-  hostAwakeBatteryFloorPercent:
-    DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
+  hostAwakeBatteryFloorPercent: DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   heartbeatTurnsAfterMinutes: 15,
   heartbeatTurnText: DEFAULT_HEARTBEAT_TURN_TEXT,
   speechAudioRetention: {
@@ -273,22 +290,48 @@ function mergeLoadedClientDefaults(
   } else {
     delete merged.compactAtContextPercent;
   }
+  if (typeof merged.forceYaOrchestratedCompaction !== "boolean") {
+    delete merged.forceYaOrchestratedCompaction;
+  }
 
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   const normalized = { ...DEFAULT_SERVER_SETTINGS, ...settings };
+  normalized.hostProcessObservabilityEnabled =
+    typeof settings.hostProcessObservabilityEnabled === "boolean"
+      ? settings.hostProcessObservabilityEnabled
+      : DEFAULT_SERVER_SETTINGS.hostProcessObservabilityEnabled;
   normalized.hostAwakeMode = isHostAwakeMode(settings.hostAwakeMode)
     ? settings.hostAwakeMode
     : DEFAULT_SERVER_SETTINGS.hostAwakeMode;
-  normalized.hostAwakeBatteryFloorPercent =
-    isHostAwakeBatteryFloorPercent(settings.hostAwakeBatteryFloorPercent)
-      ? settings.hostAwakeBatteryFloorPercent
-      : DEFAULT_SERVER_SETTINGS.hostAwakeBatteryFloorPercent;
+  normalized.hostAwakeBatteryFloorPercent = isHostAwakeBatteryFloorPercent(
+    settings.hostAwakeBatteryFloorPercent,
+  )
+    ? settings.hostAwakeBatteryFloorPercent
+    : DEFAULT_SERVER_SETTINGS.hostAwakeBatteryFloorPercent;
   normalized.clientDefaults = mergeLoadedClientDefaults(
     settings.clientDefaults,
   );
+  normalized.claudeAdditionalModels =
+    parseClaudeAdditionalModelSelections(settings.claudeAdditionalModels) ??
+    undefined;
+  normalized.claudeAutoCompactPercentOverride =
+    typeof settings.claudeAutoCompactPercentOverride === "number" &&
+    Number.isInteger(settings.claudeAutoCompactPercentOverride) &&
+    settings.claudeAutoCompactPercentOverride >= 1 &&
+    settings.claudeAutoCompactPercentOverride <= 100
+      ? settings.claudeAutoCompactPercentOverride
+      : undefined;
+  const gatewayStartCommand = settings.claudeGatewayStartCommand;
+  normalized.claudeGatewayStartCommand =
+    typeof gatewayStartCommand === "string" &&
+    gatewayStartCommand.length <= MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH &&
+    !gatewayStartCommand.includes("\0") &&
+    gatewayStartCommand.trim()
+      ? gatewayStartCommand.trim()
+      : undefined;
   const loadedHeartbeatText = settings.heartbeatTurnText?.trim();
   if (
     loadedHeartbeatText &&
@@ -330,13 +373,18 @@ export interface ServerSettingsServiceOptions {
   dataDir: string;
 }
 
+export type ServerSettingsChangeListener = (
+  settings: Readonly<ServerSettings>,
+  previousSettings: Readonly<ServerSettings>,
+) => void;
+
 export class ServerSettingsService {
   private state: SettingsState;
   private dataDir: string;
   private filePath: string;
   private initialized = false;
-  private savePromise: Promise<void> | null = null;
-  private pendingSave = false;
+  private save = createCoalescingSaver(() => this.doSave()).save;
+  private readonly changeListeners = new Set<ServerSettingsChangeListener>();
 
   constructor(options: ServerSettingsServiceOptions) {
     this.dataDir = options.dataDir;
@@ -415,6 +463,15 @@ export class ServerSettingsService {
   }
 
   /**
+   * Observe live settings changes for process-local resources whose lifetime
+   * follows a setting.
+   */
+  onSettingsChanged(listener: ServerSettingsChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  /**
    * Update settings.
    */
   async updateSettings(
@@ -422,14 +479,20 @@ export class ServerSettingsService {
   ): Promise<ServerSettings> {
     this.ensureInitialized();
 
+    const previousSettings = this.state.settings;
     this.state.settings = {
-      ...this.state.settings,
+      ...previousSettings,
       ...updates,
     };
 
+    const settings = { ...this.state.settings };
+    const previous = { ...previousSettings };
+    for (const listener of this.changeListeners) {
+      listener(settings, previous);
+    }
     await this.save();
     this.publishDeferredDelivery();
-    return { ...this.state.settings };
+    return settings;
   }
 
   /**
@@ -440,25 +503,6 @@ export class ServerSettingsService {
       throw new Error(
         "ServerSettingsService not initialized. Call initialize() first.",
       );
-    }
-  }
-
-  /**
-   * Save state to disk with debouncing.
-   */
-  private async save(): Promise<void> {
-    if (this.savePromise) {
-      this.pendingSave = true;
-      return;
-    }
-
-    this.savePromise = this.doSave();
-    await this.savePromise;
-    this.savePromise = null;
-
-    if (this.pendingSave) {
-      this.pendingSave = false;
-      await this.save();
     }
   }
 

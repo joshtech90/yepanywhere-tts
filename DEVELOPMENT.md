@@ -87,6 +87,84 @@ pnpm i18n:missing -- --markdown --limit all > reports/i18n-missing-$(date +%F).m
 always treats missing translations as advisory. Use this for daily or weekly
 translation planning rather than as a blocking lint rule.
 
+## Client CSS
+
+Use co-located CSS Modules (`Component.module.css`) for component-owned client
+styles. The legacy global stylesheets are frozen at ratcheting line-count
+ceilings, enforced by:
+
+```bash
+pnpm css:check
+pnpm css:modules:check
+```
+
+`css:modules:check` is also part of `pnpm lint`. It blocks undeclared,
+production-unused, test-only, unimported, computed, and side-effect module
+usage, plus `:global(...)` references that are missing or lack a local anchor.
+Use `pnpm css:unused` for the broader investigative report; its known legacy
+findings are advisory and do not make ordinary lint fail.
+
+When moving rules out of a legacy global file lowers its line count, record the
+new lower ceiling in the same change:
+
+```bash
+pnpm css:check --record
+```
+
+Do not raise a ceiling to land a feature. Generated HTML vocabularies, themes,
+tokens, and document-level rules may remain global under the narrow exceptions
+in [`topics/css-architecture.md`](topics/css-architecture.md); ordinary React
+component layout and states belong in modules.
+
+The dedicated migration campaign is complete. Ongoing paydown is
+opportunistic: when a task changes a component that still emits legacy global
+classes, inspect its current ownership and move a bounded, locally verifiable
+slice with the feature change. Zero global CSS is not a target, and a feature
+task should not grow into generated-markup, dynamic-class, or cross-owner
+composition work merely to reduce a line count.
+
+Before finishing such a change, run:
+
+```bash
+pnpm css:touched
+```
+
+The command compares the working tree with `HEAD`; pass `--base <ref>` to
+include committed branch work from that ref's merge base. It prints concise
+ownership facts for changed React owners, labels bounded slices as
+opportunities, and labels coupled, scattered, dynamic, or unresolved evidence
+for deferral. The report is advisory and always succeeds for either outcome.
+
+For standalone paydown work, select a bounded owner from the parser-backed
+inventory instead of maintaining a speculative migration queue:
+
+```bash
+pnpm css:inventory
+pnpm css:inventory -- --owner <component-or-path>
+```
+
+The inventory is advisory. Inspect its coupled, generated, unresolved, dynamic,
+and test-reference findings before defining a slice. The full selection and
+verification protocol lives in the CSS architecture topic.
+
+If the touched component is not a safe extraction candidate, record the
+specific reason in the change handoff rather than adding it to a migration
+queue. CSS health is evaluated on demand across containment, ownership,
+module-contract, escape-hatch, dead-code, and shipping-size signals; the global
+line ratchet is one guardrail, not a complete progress score.
+
+For a CSS-focused review or occasional architecture audit, run:
+
+```bash
+pnpm css:health
+```
+
+This composes the existing analyzers into a human-readable summary; `--json`
+is available for a one-off comparison. It reports separate facts rather than a
+score and does not build the client, persist results, or fail on observational
+debt. Continue to use `css:check`, `lint`, and `css:unused` for their own exit
+contracts.
+
 ## Contribution Ethos: Minimalist Runtime
 
 Running code — everything outside test/build tooling — is hand-built and lean on
@@ -120,6 +198,27 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the entry-point map of how
 provider events flow through the server to the client, the transport modes,
 and the large-scope refactor proposals. Read it before changing message-flow
 or render-path code.
+
+## Client/Server Compatibility Review
+
+Hosted clients can update before installed servers. When a client change
+depends on a new server route, response field, event, or semantic, record and
+obtain maintainer approval for the compatibility decision before
+implementation:
+
+- identify whether the feature is core or optional;
+- inspect the latest two stable releases and every stable release from the
+  preceding 14 days (optional) or 60 days (core);
+- name the capability/protocol gate and the exact behavior when it is absent;
+- prove the fallback makes no unsupported request; and
+- call out any proposed change to an already-advertised capability or older
+  capable behavior.
+
+Existing capability meanings cannot be expanded retroactively: released
+servers already advertised the old contract. Passing the minimum support
+horizon allows a human review but does not automatically remove the fallback.
+See [`topics/server-capabilities.md`](topics/server-capabilities.md) and
+[`topics/remote-hosted-compatibility.md`](topics/remote-hosted-compatibility.md).
 
 ## Port Configuration
 

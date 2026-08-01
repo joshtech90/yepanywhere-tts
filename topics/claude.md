@@ -97,6 +97,81 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   behavior that YA consumes. Unknown SDK message types may be temporarily
   passed through for forward compatibility, but they must not become silent
   data loss or invisible state-machine drift.
+- Claude model discovery keeps YA's stable family selection tokens even when
+  the SDK reports only an extended-context variant. In particular,
+  `opus[1m]` supplies live capability metadata to the visible `opus` row rather
+  than appearing as a duplicate or losing adaptive-thinking, fast-mode, auto,
+  or effort support. Canonical Claude 5 Opus and Sonnet ids are 1M models; the
+  auth/probe-failure fallback must describe the current Opus generation and
+  retain the provider-native capability controls that are known without a
+  handshake.
+- Claude's primary model catalog remains the provider-native, latest-oriented
+  experience. Previous concrete versions and custom exact ids appear only
+  after a server-persisted, individual opt-in in Providers settings; projected
+  entries carry additional-catalog metadata so model choosers can group them
+  separately.
+- Removing a previous-model entry from YA's maintained registry must not erase
+  an existing saved selection. Preserve its exact provider id and saved label
+  as an unlisted/custom entry until the user removes it. Never silently replace
+  a rejected, retired, or provider-remapped model with a newer one.
+- `claude-gateway` is a separate, default-off provider for an
+  Anthropic-compatible LLM gateway. Configuring it must not reroute the regular
+  `claude` provider or mutate `~/.claude/settings.json`: every Gateway launch
+  supplies `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and
+  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` in the Claude SDK's per-launch
+  flag-settings layer and in that child process's environment only.
+- A Claude Gateway's `/v1/models` response is the authoritative selection
+  catalog. YA must not merge Claude Code's first-party `supportedModels()`
+  result or static Claude fallbacks into it, because those can advertise
+  regular-subscription models the gateway cannot serve. Invalid, duplicate,
+  disabled, non-chat, embedding, and trajectory-compaction rows are omitted;
+  an unavailable catalog produces no model choices rather than silently
+  escaping to regular Claude. When a row supplies catalog endpoint metadata,
+  it is authoritative: YA omits rows with no supported text endpoint, and the
+  gateway may use native Anthropic Messages, Responses translation, or
+  chat-completions translation only when the model advertises that endpoint.
+  Rows that omit endpoint metadata remain visible for generic and legacy
+  gateways whose model catalogs predate that extension; the gateway's
+  compatibility route owns the resulting success or visible API failure.
+  Model-specific failures never trigger a different provider transport.
+- Selecting Claude Gateway in New Session forces a background catalog refresh.
+  Until that authoritative catalog contains a selected model, the UI shows a
+  retryable unavailable state and blocks fresh launch through every submit
+  path. A saved model absent from the response is not offered as an unlisted
+  fallback, so a model id from Codex or regular Claude cannot bleed into a
+  Gateway launch. Once the catalog arrives, YA selects the saved advertised
+  model or its first row and derives thinking/effort controls from that row.
+- Claude Gateway may carry an explicit, default-off server-side start command.
+  Catalog discovery runs that shell line only when the configured URL is exact
+  `localhost` / `localhost.`, IPv4 `127.0.0.0/8`, or IPv6 `::1` and a bounded
+  TCP probe finds no listener on its port. Any listener suppresses execution,
+  even when `/v1/models` is unhealthy; non-loopback URLs never execute the
+  command. Concurrent catalog reads share one bounded Bash launch/readiness
+  attempt, and no timer retries after it settles. A later catalog refresh may
+  try again. The command runs on the YA server host and owns its working
+  directory, environment, and port choices. YA terminates a foreground child
+  it launched when Gateway configuration changes or the server shuts down;
+  commands that daemonize fall outside that ownership, so the settings UI
+  directs operators to keep the gateway in the foreground.
+- Claude Gateway retains the Claude harness, transcript, tools, permissions,
+  compaction, and resume contracts. Per-model gateway catalog metadata controls
+  whether YA advertises adaptive thinking and which effort levels it offers;
+  absent metadata means absent controls, never an invented Medium default.
+  Anthropic prompt-cache keepalive remains unavailable. Provider selection is
+  the routing boundary: a Gateway model stays on the configured gateway, while
+  regular Claude models stay on Anthropic's normal transport.
+- The provisional YA session id used before Claude SDK initialization must
+  remap its persisted metadata to the canonical Claude session id when the
+  provider reports it. Explicit persisted provider identity takes precedence
+  over transcript model-name heuristics, so a non-Claude model routed through
+  the Claude harness remains `claude-gateway` rather than being mislabeled as
+  `claude-ollama`.
+- `claude-ollama` remains a readable/resumable legacy provider during its
+  deprecation grace period, with no automatic migration. Hide it from provider
+  and model menus when neither Ollama settings nor persisted
+  `claude-ollama` session metadata exist; an explicitly configured or
+  previously used installation remains visible with a dismissible notice that
+  directs the user to Claude Gateway and says ClaudeOllama will be removed.
 - Claude provider-native interviews are `AskUserQuestion` tool calls surfaced
   through the SDK `canUseTool` path, not ordinary approval prompts and not a
   distinct session-state mode. YA must classify them as pending user questions,

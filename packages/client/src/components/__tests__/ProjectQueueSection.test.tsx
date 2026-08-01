@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { Project } from "../../types";
 import { ProjectQueueSection } from "../ProjectQueueSection";
+import styles from "../ProjectQueueSection.module.css";
 
 const PROJECT_ID = "project-1" as ProjectQueueItemSummary["projectId"];
 const OTHER_PROJECT_ID = "project-2" as ProjectQueueItemSummary["projectId"];
@@ -253,7 +254,7 @@ describe("ProjectQueueSection", () => {
     expect(handlers.onPauseDispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("resumes paused-after-restart dispatch from the header", () => {
+  it("offers resume in the header and inline after a restart pause", () => {
     const handlers = renderSection(
       [makeItem("1")],
       undefined,
@@ -271,11 +272,36 @@ describe("ProjectQueueSection", () => {
       screen.getByText("Dispatch is paused after server restart."),
     ).toBeTruthy();
     expect(
-      screen.getByText(/After Resume, the next item may still wait up to 30s/),
+      screen.getByText(
+        /After dispatch resumes, the next item may still wait up to 30s/,
+      ),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const resumeButtons = screen.getAllByRole("button", { name: "Resume" });
+    expect(resumeButtons).toHaveLength(2);
+    fireEvent.click(resumeButtons[1]!);
 
     expect(handlers.onResumeDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps explicit item dispatch available while paused", () => {
+    const handlers = renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      {
+        status: "paused",
+        reason: "restart",
+        pausedAt: "2026-06-30T00:00:00.000Z",
+      },
+      [],
+      { [PROJECT_ID]: makeProjectStatus("paused") },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Start now" }));
+
+    expect(handlers.onPromoteNow).toHaveBeenCalledWith("project-1", "1", {
+      force: false,
+    });
   });
 
   it("offers retry and shows errors for failed items", () => {
@@ -369,9 +395,7 @@ describe("ProjectQueueSection", () => {
     const highlighted = document.querySelector(
       '[data-project-queue-item-id="2"]',
     );
-    expect(
-      highlighted?.classList.contains("project-queue-item--highlighted"),
-    ).toBe(true);
+    expect(highlighted?.className).toContain(styles.itemHighlighted);
   });
 
   it("edits queued item text", async () => {

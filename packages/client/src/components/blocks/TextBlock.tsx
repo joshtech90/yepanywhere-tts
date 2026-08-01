@@ -1,12 +1,15 @@
 import {
   memo,
+  type MouseEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { createPortal } from "react-dom";
 import { useRenderModeToggle } from "../../contexts/RenderModeContext";
 import {
   getReadAloudState,
@@ -42,6 +45,11 @@ import {
 } from "../LocalMediaModal";
 import { renderFixedFontMath } from "../ui/FixedFontMathToggle";
 import { RenderModeGlyph } from "../ui/RenderModeGlyph";
+import { useTurnImageGalleryNavigation } from "../TurnImageGallery";
+import {
+  findTurnInlineImageAnchor,
+  getTurnInlineImageTargetForTarget,
+} from "../../lib/turnInlineMedia";
 
 const EMPTY_LOCAL_MATH_PREVIEW = { html: "", changed: false };
 
@@ -99,6 +107,7 @@ interface Props {
   onQuoteBlock?: (anchor: CommentAnchor) => void;
   alwaysShowQuoteCircle?: boolean;
   paragraphQuoteCirclesEnabled?: boolean;
+  renderItemId?: string;
 }
 
 export const TextBlock = memo(function TextBlock({
@@ -108,9 +117,12 @@ export const TextBlock = memo(function TextBlock({
   onQuoteBlock,
   alwaysShowQuoteCircle = false,
   paragraphQuoteCirclesEnabled = true,
+  renderItemId,
 }: Props) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [galleryActionHost, setGalleryActionHost] =
+    useState<HTMLElement | null>(null);
   const copySourceRef = useRef<HTMLDivElement>(null);
   const textBlockRef = useRef<HTMLDivElement>(null);
   const paragraphBlocksRef = useRef<HTMLElement[]>([]);
@@ -250,7 +262,40 @@ export const TextBlock = memo(function TextBlock({
     closeProjectFileModal,
     contextMenuElement,
   } = useLocalResourceClick();
-  useLocalMediaInlinePreviews(copySourceRef);
+  const turnImageGallery = useTurnImageGalleryNavigation();
+  useLocalMediaInlinePreviews(copySourceRef, undefined, undefined, {
+    suppressAutomaticImages: turnImageGallery?.available === true,
+  });
+  const handleContentClick = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      const content = copySourceRef.current;
+      const galleryImageTarget =
+        content && renderItemId && turnImageGallery?.available
+          ? getTurnInlineImageTargetForTarget(
+              content,
+              renderItemId,
+              event.target,
+            )
+          : null;
+      if (
+        galleryImageTarget &&
+        turnImageGallery?.candidateIds.has(galleryImageTarget.id)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (galleryImageTarget.kind === "link") {
+          turnImageGallery.openImage(galleryImageTarget.id);
+        } else if (turnImageGallery.active) {
+          turnImageGallery.collapse();
+        } else {
+          turnImageGallery.activate(galleryImageTarget.id);
+        }
+        return;
+      }
+      handleClick(event);
+    },
+    [handleClick, renderItemId, turnImageGallery],
+  );
 
   const showStreamingContent = isStreaming && useStreamingContent;
   const canToggleRendered = serverMarkdownChanged || localMathPreview.changed;
@@ -270,6 +315,76 @@ export const TextBlock = memo(function TextBlock({
   // before first augment arrives. Hidden until useStreamingContent becomes true.
   const renderStreamingContainer = isStreaming;
   const paragraphLayoutKey = [showRendered, text, augmentHtml ?? ""].join("\0");
+  const galleryActionTarget = turnImageGallery?.actionTarget ?? null;
+  const galleryActive = turnImageGallery?.active === true;
+
+  useEffect(() => {
+    const content = copySourceRef.current;
+    if (
+      !content ||
+      !showRendered ||
+      showStreamingContent ||
+      !renderItemId ||
+      !turnImageGallery?.available
+    ) {
+      return;
+    }
+
+    const toggles = content.querySelectorAll<HTMLButtonElement>(
+      "button.local-media-inline-toggle[data-media-type='image']",
+    );
+    for (const toggle of toggles) {
+      const target = getTurnInlineImageTargetForTarget(
+        content,
+        renderItemId,
+        toggle,
+      );
+      if (!target || !turnImageGallery.candidateIds.has(target.id)) {
+        continue;
+      }
+      const label = turnImageGallery.candidateLabels.get(target.id) ?? "";
+      const controlLabel = galleryActive
+        ? t("turnImageGalleryCollapse")
+        : t("turnImageGalleryExpandAt", { label });
+      toggle.dataset.expanded = String(galleryActive);
+      toggle.setAttribute("aria-expanded", String(galleryActive));
+      toggle.setAttribute("aria-label", controlLabel);
+      toggle.title = controlLabel;
+      toggle.textContent = galleryActive ? "−" : "+";
+    }
+  }, [
+    galleryActive,
+    renderItemId,
+    showRendered,
+    showStreamingContent,
+    t,
+    turnImageGallery,
+  ]);
+
+  useLayoutEffect(() => {
+    const content = copySourceRef.current;
+    let host: HTMLSpanElement | null = null;
+    if (
+      content &&
+      showRendered &&
+      !showStreamingContent &&
+      renderItemId &&
+      galleryActionTarget?.sourceItemId === renderItemId
+    ) {
+      const anchor = findTurnInlineImageAnchor(
+        content,
+        galleryActionTarget.sourceIndex,
+      );
+      const group = anchor?.closest(".local-media-link-group");
+      if (group) {
+        host = document.createElement("span");
+        host.className = "turn-image-gallery-inline-action-host";
+        group.append(host);
+      }
+    }
+    setGalleryActionHost(host);
+    return () => host?.remove();
+  }, [galleryActionTarget, renderItemId, showRendered, showStreamingContent]);
 
   // Measure each rendered top-level block so a per-paragraph quote circle can
   // sit at its end. Skipped while streaming (paragraph boundaries are still
@@ -322,6 +437,7 @@ export const TextBlock = memo(function TextBlock({
     <div
       ref={textBlockRef}
       className={`text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
+      data-turn-image-source-id={renderItemId}
     >
       {onQuoteBlock && (
         <div className="text-block-quote-rail">
@@ -397,7 +513,7 @@ export const TextBlock = memo(function TextBlock({
       <div
         ref={copySourceRef}
         className="text-block-content"
-        onClick={handleClick}
+        onClick={handleContentClick}
         onContextMenu={handleContextMenu}
       >
         {/* Always render streaming elements when streaming so refs are ready for augments */}
@@ -435,6 +551,38 @@ export const TextBlock = memo(function TextBlock({
             </pre>
           ))}
       </div>
+      {galleryActionHost
+        ? createPortal(
+            <button
+              type="button"
+              className="turn-image-gallery-inline-action"
+              aria-expanded={galleryActive}
+              aria-label={t(
+                galleryActive
+                  ? "turnImageGalleryCollapse"
+                  : "turnImageGalleryExpand",
+              )}
+              title={t(
+                galleryActive
+                  ? "turnImageGalleryCollapse"
+                  : "turnImageGalleryExpand",
+              )}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (galleryActive) {
+                  turnImageGallery?.collapse();
+                } else {
+                  turnImageGallery?.show();
+                }
+              }}
+            >
+              <span aria-hidden="true">{galleryActive ? "−" : "+"}</span>
+              {t("turnImageGalleryShow")}
+            </button>,
+            galleryActionHost,
+          )
+        : null}
 
       {modal && (
         <LocalMediaModal

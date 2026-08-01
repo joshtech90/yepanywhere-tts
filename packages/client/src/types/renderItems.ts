@@ -1,5 +1,6 @@
 import type {
   ToolDisplayAction,
+  ToolResultMedia,
   TranscriptDisplayObject,
 } from "@yep-anywhere/shared";
 import type { ContentBlock, Message } from "../types";
@@ -19,7 +20,8 @@ export type RenderItem =
   | SessionSetupItem
   | TranscriptDisplayObjectItem
   | SystemItem
-  | TaskNotificationItem;
+  | TaskNotificationItem
+  | ConversationActivityItem;
 
 /** Base fields shared by all render items */
 interface RenderItemBase {
@@ -64,6 +66,8 @@ export interface ToolResultData {
   isError: boolean;
   /** Structured result from JSONL toolUseResult field */
   structured?: unknown;
+  /** Session-scoped media captured from the tool result. */
+  media?: ToolResultMedia[];
 }
 
 export interface UserPromptItem extends RenderItemBase {
@@ -114,4 +118,51 @@ export interface SystemItem extends RenderItemBase {
   status?: "compacting" | null;
   /** For config_ack subtype: whether it differs from the previous config ack */
   configChanged?: boolean;
+}
+
+/**
+ * Compact Conversation-view replacement for routine activity in one assistant
+ * turn. Expanding it restores the hidden render items in their original
+ * positions; the summary itself remains at the turn end as the collapse
+ * control.
+ */
+export interface ConversationActivityItem extends RenderItemBase {
+  type: "conversation_activity";
+  id: string;
+  activityCount: number;
+  active: boolean;
+  expanded: boolean;
+  /**
+   * Compact intersection of Conversation View and the thinking-visibility
+   * control. These previews remain attached to the final activity summary;
+   * expanding an activity restores the original thinking item instead.
+   */
+  thinkingPreviews?: ConversationThinkingPreview[];
+  /**
+   * Newest concrete activity kinds for a live turn, newest first. Capped
+   * generously; the visible count is decided by layout — the list clips to the
+   * height beside the thinking preview. The visible row is only a name; its
+   * ordinary tool summary remains available as a tooltip.
+   */
+  recentActivities?: ConversationRecentActivity[];
+  /** Earliest observed source-message timestamp among condensed activities. */
+  startedAtMs: number | null;
+  /** Latest observed timestamp, or the current clock while the turn is active. */
+  endedAtMs: number | null;
+}
+
+export interface ConversationThinkingPreview {
+  id: string;
+  kind: "current" | "latest" | "previous";
+  slot: ConversationThinkingPreviewSlot;
+  thinking: string;
+  status: ThinkingItem["status"];
+}
+
+export type ConversationThinkingPreviewSlot = "latest" | "previous";
+
+export interface ConversationRecentActivity {
+  label: string;
+  detail: string;
+  preview?: string;
 }

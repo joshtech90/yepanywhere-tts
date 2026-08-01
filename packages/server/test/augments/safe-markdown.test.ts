@@ -20,6 +20,56 @@ describe("renderSafeMarkdown — math", () => {
     expect(html).not.toContain("yepkatex-placeholder");
   });
 
+  it("renders bracket-delimited inline and display math through katex", () => {
+    const html = renderSafeMarkdown(String.raw`
+For each token \(t\), it formed only a local emission score:
+
+\[
+e_t(y)=(Wh_t+b)_y
+\]
+`);
+
+    expect(html.match(/class="katex"/g)).toHaveLength(2);
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('class="msupsub"');
+    expect(html).not.toContain("\\(t\\)");
+    expect(html).not.toContain("\\[");
+  });
+
+  it("keeps escaped, empty, and unclosed bracket delimiters literal", () => {
+    const escaped = renderSafeMarkdown(
+      String.raw`literal \\(x\\) and \\[y\\]`,
+    );
+    const empty = renderSafeMarkdown("\\[\n\n\\]");
+    const unclosed = renderSafeMarkdown(String.raw`unclosed \(x`);
+
+    expect(escaped).not.toContain('class="katex"');
+    expect(empty).not.toContain('class="katex"');
+    expect(unclosed).not.toContain('class="katex"');
+  });
+
+  it("does not close bracketed math at escaped closing delimiters", () => {
+    const html = renderSafeMarkdown(String.raw`
+\[
+x \\] + y
+\]
+`);
+
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).toContain('class="katex-display"');
+    expect(html).not.toContain("<p>+ y");
+  });
+
+  it("keeps bracket delimiters literal inside code", () => {
+    const html = renderSafeMarkdown(
+      "inline `\\(x_t\\)`\n\n```text\n\\[\nx_t\n\\]\n```",
+    );
+
+    expect(html).not.toContain('class="katex"');
+    expect(html).toContain("<code>\\(x_t\\)</code>");
+    expect(html).toContain("\\[\nx_t\n\\]");
+  });
+
   it("does not treat currency-like $100 and $200 as math", () => {
     const html = renderSafeMarkdown("price is $100 and $200 total");
     expect(html).not.toContain("katex");
@@ -265,5 +315,86 @@ describe("renderSafeMarkdown — local file links", () => {
     expect(localMediaApiUrl(filePath)).toBe(
       "/api/local-image?path=C%3A%5Ctmp%5Cplaybox-autocollider-provider-fit.png",
     );
+  });
+
+  it("repairs backslash drive paths before Markdown consumes escapes", () => {
+    const html = renderSafeMarkdown(
+      String.raw`[capture](D:\repo\.artifacts\ui-testing\capture.png)`,
+    );
+
+    expect(html).toContain(
+      "path=D%3A%2Frepo%2F.artifacts%2Fui-testing%2Fcapture.png",
+    );
+    expect(html).toContain(
+      'data-ya-path="D:/repo/.artifacts/ui-testing/capture.png"',
+    );
+    expect(html).not.toContain("repo.artifacts");
+  });
+
+  it("repairs angle-enclosed image paths with spaces on any drive", () => {
+    const html = renderSafeMarkdown(
+      String.raw`![capture](<E:\folder with spaces\.artifacts\capture.png>)`,
+    );
+
+    expect(html).toContain(
+      "path=E%3A%2Ffolder%20with%20spaces%2F.artifacts%2Fcapture.png",
+    );
+    expect(html).toContain(
+      'data-ya-path="E:/folder with spaces/.artifacts/capture.png"',
+    );
+  });
+
+  it("preserves line hints and titles on repaired local-file links", () => {
+    const html = renderSafeMarkdown(
+      String.raw`[report](F:\repo\.artifacts\report.md:12:4 "details")`,
+    );
+
+    expect(html).toContain(
+      "path=F%3A%2Frepo%2F.artifacts%2Freport.md&amp;render=1&amp;line=12&amp;column=4",
+    );
+    expect(html).toContain('title="details"');
+    expect(html).toContain('data-ya-line="12"');
+    expect(html).toContain('data-ya-column="4"');
+  });
+
+  it("repairs drive paths supplied by reference definitions", () => {
+    const html = renderSafeMarkdown(String.raw`[capture][artifact]
+
+[artifact]: G:\repo\.artifacts\capture.png`);
+
+    expect(html).toContain(
+      "path=G%3A%2Frepo%2F.artifacts%2Fcapture.png",
+    );
+    expect(html).toContain(
+      'data-ya-path="G:/repo/.artifacts/capture.png"',
+    );
+  });
+
+  it("does not rewrite Windows-looking links inside code", () => {
+    const markdown = [
+      "Inline: `[capture](H:\\repo\\.artifacts\\capture.png)`",
+      "",
+      "```text",
+      "[capture](H:\\repo\\.artifacts\\capture.png)",
+      "```",
+    ].join("\n");
+    const html = renderSafeMarkdown(markdown);
+
+    expect(html).toContain(
+      String.raw`<code>[capture](H:\repo\.artifacts\capture.png)</code>`,
+    );
+    expect(html).toContain(
+      String.raw`[capture](H:\repo\.artifacts\capture.png)`,
+    );
+    expect(html).not.toContain("/api/local-image?path=H");
+  });
+
+  it("does not broaden drive-path handling to UNC paths", () => {
+    const html = renderSafeMarkdown(
+      String.raw`[capture](\\server\share\.artifacts\capture.png)`,
+    );
+
+    expect(html).not.toContain("/api/local-image");
+    expect(html).not.toContain("data-ya-resource");
   });
 });

@@ -2,6 +2,7 @@ import type { PromptSuggestionMode } from "@yep-anywhere/shared";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
+import styles from "./SessionMenu.module.css";
 
 export interface SessionMenuProps {
   sessionId: string;
@@ -23,6 +24,10 @@ export interface SessionMenuProps {
   onCopyPrompt?: () => void | Promise<void>;
   /** Open this session in a new browser tab/window. */
   onOpenNewTab?: () => void | Promise<void>;
+  /** Create a cold provider-native clone of the latest completed transcript. */
+  onClone?: () => void | Promise<void>;
+  /** Clone waits for the current provider response to complete. */
+  cloneDisabled?: boolean;
   /** Called to request compaction in the current session */
   onCompact?: () => void | Promise<void>;
   /** Called to hand off the session into a fresh agent session */
@@ -74,6 +79,8 @@ export function SessionMenu({
   onGenerateTitle,
   onCopyPrompt,
   onOpenNewTab,
+  onClone,
+  cloneDisabled = false,
   onCompact,
   onHandoff,
   onClear,
@@ -95,6 +102,7 @@ export function SessionMenu({
   const [isOpen, setIsOpen] = useState(false);
   const [isTerminating, setIsTerminating] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [isCloning, setIsCloning] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState<{
     top: number;
     left?: number;
@@ -107,6 +115,7 @@ export function SessionMenu({
   const dropdownItemCount =
     3 +
     (onOpenNewTab ? 1 : 0) +
+    (onClone ? 1 : 0) +
     (onGenerateTitle ? 1 : 0) +
     (onCopyPrompt ? 1 : 0) +
     (onConfigureHeartbeat ? 1 : 0) +
@@ -240,7 +249,21 @@ export function SessionMenu({
     }
   };
 
+  const handleClone = async () => {
+    if (isCloning || cloneDisabled || !onClone) return;
+    setIsCloning(true);
+    setIsOpen(false);
+    setDropdownPosition(null);
+    triggerRef.current?.blur();
+    try {
+      await onClone();
+    } finally {
+      setIsCloning(false);
+    }
+  };
+
   const wrapperClasses = [
+    styles.wrapper,
     "session-menu-wrapper",
     className,
     isOpen && "is-open",
@@ -263,7 +286,7 @@ export function SessionMenu({
   const dropdownContent = (
     <div
       ref={dropdownRef}
-      className="session-menu-dropdown"
+      className={styles.dropdown}
       style={dropdownStyle}
     >
       <button type="button" onClick={() => handleAction(onToggleStar)}>
@@ -311,6 +334,28 @@ export function SessionMenu({
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
           </svg>
           {t("sessionMenuOpenNewTab")}
+        </button>
+      )}
+      {onClone && (
+        <button
+          type="button"
+          onClick={handleClone}
+          disabled={cloneDisabled || isCloning}
+          title={cloneDisabled ? t("sessionMenuCloneDisabled") : undefined}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <rect x="8" y="8" width="12" height="12" rx="2" />
+            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+          </svg>
+          {isCloning ? t("sessionMenuCloning") : t("sessionMenuClone")}
         </button>
       )}
       {onGenerateTitle && (
@@ -550,7 +595,7 @@ export function SessionMenu({
           type="button"
           onClick={handleTerminate}
           disabled={isTerminating}
-          className="terminate-button"
+          className={styles.terminateButton}
         >
           <svg
             width="14"
@@ -610,7 +655,7 @@ export function SessionMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="session-menu-trigger"
+        className={[styles.trigger, "session-menu-trigger"].join(" ")}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();

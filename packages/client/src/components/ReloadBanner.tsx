@@ -3,8 +3,27 @@ import type {
   SafeRestartPreservedWork,
   SafeRestartState,
 } from "@yep-anywhere/shared";
-import { useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { useI18n } from "../i18n";
+import styles from "./ReloadBanner.module.css";
+
+const RELOAD_BANNER_CONTROL_GAP = 4;
+const RELOAD_BANNER_COMPOSER_GAP = 8;
+const RELOAD_BANNER_FIXED_OCCUPANT_GAP = 8;
+const RELOAD_BANNER_DEFAULT_BOTTOM = 12;
+
+function rectsOverlap(first: DOMRect, second: DOMRect, gap: number): boolean {
+  return (
+    first.left < second.right + gap &&
+    first.right > second.left - gap &&
+    first.top < second.bottom + gap &&
+    first.bottom > second.top - gap
+  );
+}
 
 interface Props {
   target: "backend" | "frontend";
@@ -17,6 +36,150 @@ interface Props {
   queuedSessionMessageCount?: number;
   safeRestartState?: SafeRestartState;
   safeRestartMutating?: boolean;
+}
+
+export function ReloadBannerStack({
+  children,
+  avoidSessionComposer = false,
+}: {
+  children: ReactNode;
+  avoidSessionComposer?: boolean;
+}) {
+  const stackRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const stack = stackRef.current;
+    if (!stack) return;
+
+    let animationFrame: number | null = null;
+    const updatePlacement = () => {
+      stack.style.setProperty("--reload-banner-stack-lift", "0px");
+
+      const stackRect = stack.getBoundingClientRect();
+      if (stackRect.width === 0 || stackRect.height === 0) return;
+
+      let lift = 0;
+      const composer =
+        avoidSessionComposer && window.innerWidth > 600
+          ? document.querySelector<HTMLElement>(".session-input")
+          : null;
+      if (composer) {
+        const controls = composer.querySelectorAll<HTMLElement>(
+          "button, a[href], [role='button'], input:not([type='hidden']), select",
+        );
+        const overlapsAControl = Array.from(controls).some((control) => {
+          const controlRect = control.getBoundingClientRect();
+          return (
+            controlRect.width > 0 &&
+            controlRect.height > 0 &&
+            rectsOverlap(
+              stackRect,
+              controlRect,
+              RELOAD_BANNER_CONTROL_GAP,
+            )
+          );
+        });
+        if (overlapsAControl) {
+          const composerRect = composer.getBoundingClientRect();
+          lift = Math.max(
+            lift,
+            window.innerHeight -
+              composerRect.top +
+              RELOAD_BANNER_COMPOSER_GAP -
+              RELOAD_BANNER_DEFAULT_BOTTOM,
+          );
+        }
+      }
+
+      const fixedOccupant =
+        document.querySelector<HTMLElement>(".fab-container");
+      if (fixedOccupant) {
+        const occupantRect = fixedOccupant.getBoundingClientRect();
+        if (
+          occupantRect.width > 0 &&
+          occupantRect.height > 0 &&
+          rectsOverlap(
+            stackRect,
+            occupantRect,
+            RELOAD_BANNER_FIXED_OCCUPANT_GAP,
+          )
+        ) {
+          lift = Math.max(
+            lift,
+            window.innerHeight -
+              occupantRect.top +
+              RELOAD_BANNER_FIXED_OCCUPANT_GAP -
+              RELOAD_BANNER_DEFAULT_BOTTOM,
+          );
+        }
+      }
+
+      stack.style.setProperty(
+        "--reload-banner-stack-lift",
+        `${Math.max(0, Math.ceil(lift))}px`,
+      );
+    };
+    const schedulePlacement = () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        updatePlacement();
+      });
+    };
+
+    updatePlacement();
+    window.addEventListener("resize", schedulePlacement);
+
+    const composer = avoidSessionComposer
+      ? document.querySelector<HTMLElement>(".session-input")
+      : null;
+    const fixedOccupant =
+      document.querySelector<HTMLElement>(".fab-container");
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(schedulePlacement);
+    resizeObserver?.observe(stack);
+    if (composer) resizeObserver?.observe(composer);
+    if (fixedOccupant) resizeObserver?.observe(fixedOccupant);
+
+    const mutationObserver = composer || fixedOccupant
+      ? new MutationObserver(schedulePlacement)
+      : null;
+    if (composer && mutationObserver) {
+      mutationObserver.observe(composer, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }
+    if (fixedOccupant && mutationObserver) {
+      mutationObserver.observe(fixedOccupant, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    return () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      window.removeEventListener("resize", schedulePlacement);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [avoidSessionComposer]);
+
+  return (
+    // `reload-banner-stack` stays literal: the placement effect above and
+    // the focused test both find this element by class to stub geometry.
+    <div ref={stackRef} className={`reload-banner-stack ${styles.stack}`}>
+      {children}
+    </div>
+  );
 }
 
 function blockerCount(
@@ -46,8 +209,6 @@ export function ReloadBanner({
   safeRestartMutating = false,
 }: Props) {
   const { t } = useI18n();
-  const [confirmingImmediateReloadLabel, setConfirmingImmediateReloadLabel] =
-    useState<string | null>(null);
   const label =
     target === "backend"
       ? t("reloadBannerTargetServer")
@@ -126,14 +287,10 @@ export function ReloadBanner({
     activeBlockers > 0 && queuedBlockers > 0
       ? t("reloadBannerStatusActiveAndQueuedCompact", {
           activeCount: activeBlockers,
-          activeSuffix: activeBlockers !== 1 ? "s" : "",
           queuedCount: queuedBlockers,
         })
       : activeBlockers > 0
-        ? t("reloadBannerStatusActiveCompact", {
-            count: activeBlockers,
-            suffix: activeBlockers !== 1 ? "s" : "",
-          })
+        ? t("reloadBannerStatusActiveCompact", { count: activeBlockers })
         : queuedBlockers > 0
           ? t("reloadBannerStatusQueuedCompact", { count: queuedBlockers })
           : null;
@@ -141,7 +298,6 @@ export function ReloadBanner({
     interruptibleSessionCount > 0 && queuedSessionMessageCount > 0
       ? t("reloadBannerStatusActiveAndQueuedCompact", {
           activeCount: interruptibleSessionCount,
-          activeSuffix: interruptibleSessionCount !== 1 ? "s" : "",
           queuedCount: queuedSessionMessageCount,
         })
       : queuedSessionMessageCount > 0
@@ -150,7 +306,6 @@ export function ReloadBanner({
           })
         : t("reloadBannerStatusActiveCompact", {
             count: interruptibleSessionCount,
-            suffix: interruptibleSessionCount !== 1 ? "s" : "",
           });
   const compactWarningStatus =
     safeRestartState?.status === "restarting"
@@ -158,116 +313,81 @@ export function ReloadBanner({
       : hasScheduledRestart
         ? (compactBlockerStatus ?? t("reloadBannerSafeRestartReadyCompact"))
         : compactImmediateRestartWarning;
+  const warningStatus = safeRestartStatus ?? immediateRestartWarning;
+  const warningDetail = safeRestartPreservedStatus
+    ? `${warningStatus} ${safeRestartPreservedStatus}`
+    : warningStatus;
   const primaryReloadLabel = showWarning
     ? t("reloadBannerReloadNow")
     : t("reloadBannerReloadTarget", { target: label });
-  const isConfirmingImmediateReload =
-    confirmingImmediateReloadLabel === primaryReloadLabel;
-  const displayedPrimaryReloadLabel = isConfirmingImmediateReload
-    ? t("reloadBannerConfirmImmediateReload")
-    : primaryReloadLabel;
-  const compactPrimaryReloadLabel = isConfirmingImmediateReload
-    ? t("reloadBannerConfirmImmediateReloadCompact")
-    : t("reloadBannerReloadTargetCompact");
-
-  useEffect(() => {
-    if (confirmingImmediateReloadLabel === null) return;
-
-    const timeout = window.setTimeout(() => {
-      setConfirmingImmediateReloadLabel(null);
-    }, 5000);
-
-    return () => window.clearTimeout(timeout);
-  }, [confirmingImmediateReloadLabel]);
 
   const handleImmediateReloadClick = () => {
-    if (!showWarning) {
-      onReload();
-      return;
-    }
-
-    if (!isConfirmingImmediateReload) {
-      setConfirmingImmediateReloadLabel(primaryReloadLabel);
-      return;
-    }
-
-    setConfirmingImmediateReloadLabel(null);
+    onDismiss();
     onReload();
   };
-  const clearImmediateReloadConfirmation = () => {
-    setConfirmingImmediateReloadLabel(null);
-  };
   const handleRestartWhenSafeClick = () => {
-    clearImmediateReloadConfirmation();
+    onDismiss();
     onRestartWhenSafe?.();
   };
   const handleCancelSafeRestartClick = () => {
-    clearImmediateReloadConfirmation();
+    onDismiss();
     onCancelSafeRestart?.();
   };
   const handleDismissClick = () => {
-    clearImmediateReloadConfirmation();
     onDismiss();
   };
 
   return (
+    // `reload-banner` stays literal: the global transcript-selection rule in
+    // styles/index.css and the transcript artifact smoke script name it.
     <div
-      className={`reload-banner ${showWarning ? "reload-banner-warning" : ""}`}
+      className={`reload-banner ${styles.banner} ${
+        showWarning ? styles.warning : ""
+      }`}
+      role="status"
     >
-      <span className="reload-banner-content">
-        <span className="reload-banner-message">
-          <span className="reload-banner-label-full">
-            {t("reloadBannerCodeChanged", { target: label })}
-          </span>
-          <span className="reload-banner-label-compact">
-            {t("reloadBannerCodeChangedCompact", { target: label })}
-          </span>
+      <span className={styles.content}>
+        <span className={styles.message}>
+          {t("reloadBannerCodeChangedCompact", { target: label })}
         </span>
         {showWarning && (
-          <span className="reload-banner-warning-text">
-            <span className="reload-banner-status-full">
-              {safeRestartStatus ?? immediateRestartWarning}
-              {safeRestartPreservedStatus
-                ? ` ${safeRestartPreservedStatus}`
-                : null}
-            </span>
-            <span className="reload-banner-status-compact">
-              {" · "}
-              {compactWarningStatus}
-            </span>
+          <span
+            className={styles.warningText}
+            aria-hidden="true"
+            title={warningDetail}
+          >
+            {" · "}
+            {compactWarningStatus}
           </span>
         )}
+        {showWarning && (
+          <span className={styles.warningDetail}>{warningDetail}</span>
+        )}
       </span>
-      <span className="reload-banner-actions">
+      <span className={styles.actions}>
         <button
           type="button"
-          className={`reload-banner-button reload-banner-button-primary ${
-            showWarning ? "reload-banner-button-danger" : ""
+          className={`${styles.button} ${styles.buttonPrimary} ${
+            showWarning ? styles.buttonDanger : ""
           }`}
           onClick={handleImmediateReloadClick}
-          aria-label={displayedPrimaryReloadLabel}
-          title={displayedPrimaryReloadLabel}
+          aria-label={primaryReloadLabel}
+          title={primaryReloadLabel}
         >
-          <span className="reload-banner-label-full">
-            {displayedPrimaryReloadLabel}
-          </span>
-          <span className="reload-banner-label-compact">
-            {compactPrimaryReloadLabel}
+          <span className={styles.buttonLabel}>
+            {t("reloadBannerReloadTargetCompact")}
           </span>
         </button>
         {canScheduleSafeRestart && (
           <button
             type="button"
-            className="reload-banner-button reload-banner-button-safe"
+            className={`${styles.button} ${styles.buttonSafe}`}
             onClick={handleRestartWhenSafeClick}
             disabled={safeRestartMutating}
             aria-label={t("reloadBannerRestartWhenSafe")}
             title={t("reloadBannerRestartWhenSafe")}
           >
-            <span className="reload-banner-label-full">
-              {t("reloadBannerRestartWhenSafe")}
-            </span>
-            <span className="reload-banner-label-compact">
+            <span className={styles.buttonLabel}>
               {t("reloadBannerRestartWhenSafeCompact")}
             </span>
           </button>
@@ -275,30 +395,26 @@ export function ReloadBanner({
         {hasScheduledRestart && onCancelSafeRestart && (
           <button
             type="button"
-            className="reload-banner-button"
+            className={styles.button}
             onClick={handleCancelSafeRestartClick}
             disabled={safeRestartMutating}
             aria-label={t("reloadBannerCancelSafeRestart")}
             title={t("reloadBannerCancelSafeRestart")}
           >
-            <span className="reload-banner-label-full">
-              {t("reloadBannerCancelSafeRestart")}
-            </span>
-            <span className="reload-banner-label-compact">
+            <span className={styles.buttonLabel}>
               {t("reloadBannerCancelSafeRestartCompact")}
             </span>
           </button>
         )}
         <button
           type="button"
-          className="reload-banner-button"
+          className={`${styles.button} ${styles.dismiss}`}
           onClick={handleDismissClick}
           aria-label={t("reloadBannerDismiss")}
           title={t("reloadBannerDismiss")}
         >
-          {t("reloadBannerDismiss")}
+          <span aria-hidden="true">×</span>
         </button>
-        <span className="reload-banner-shortcut">Ctrl+Shift+R</span>
       </span>
     </div>
   );

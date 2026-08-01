@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   asClientSummarySourceKey,
   createClientSummaryHostSourceKey,
@@ -8,9 +8,11 @@ import {
 } from "../clientSummaryStore";
 import {
   createSessionDraftStorageKey,
+  removeSessionDraft,
   saveSessionDraft,
   scanSessionDraftIds,
 } from "../sessionDraftStorage";
+import { subscribeDraftPresenceChanges } from "../draftPresenceEvents";
 
 function readStoredText(key: string): string | null {
   const raw = localStorage.getItem(key);
@@ -20,6 +22,7 @@ function readStoredText(key: string): string | null {
 
 afterEach(() => {
   localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe("sessionDraftStorage", () => {
@@ -36,9 +39,9 @@ describe("sessionDraftStorage", () => {
     expect([...scanSessionDraftIds(LOCAL_CLIENT_SUMMARY_SOURCE_KEY)]).toEqual([
       "session-a",
     ]);
-    expect(localStorage.getItem("draft-index-message:local")).toBe(
-      '["session-a"]',
-    );
+    expect(
+      localStorage.getItem("draft-presence-message:local:session-a"),
+    ).toBe("1");
   });
 
   it("discovers remote drafts from only the source index", () => {
@@ -67,6 +70,83 @@ describe("sessionDraftStorage", () => {
     expect(localStorage.getItem("draft-index-message:direct%3Aws%3A%2F%2Fexample%2Fws")).toBe(
       null,
     );
+  });
+
+  it("writes the index and publishes only on presence transitions", () => {
+    const sourceKey = asClientSummarySourceKey("host:macbook");
+    const reference = { sourceKey, sessionId: "session-a" };
+    const listener = vi.fn();
+    const unsubscribe = subscribeDraftPresenceChanges(listener);
+    const setItem = vi.spyOn(localStorage, "setItem");
+
+    saveSessionDraft(reference, "a");
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenLastCalledWith({
+      storageKey: "draft-message:host%3Amacbook:session-a",
+      hasContent: true,
+      sessionDraft: reference,
+    });
+
+    setItem.mockClear();
+    saveSessionDraft(reference, "ab");
+
+    expect(setItem.mock.calls.map(([key]) => key)).toEqual([
+      "draft-message:host%3Amacbook:session-a",
+    ]);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    removeSessionDraft(reference);
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenLastCalledWith({
+      storageKey: "draft-message:host%3Amacbook:session-a",
+      hasContent: false,
+      sessionDraft: reference,
+    });
+    unsubscribe();
+  });
+
+  it("repairs a failed presence-index transition on the next edit", () => {
+    const sourceKey = asClientSummarySourceKey("host:macbook");
+    const reference = { sourceKey, sessionId: "session-a" };
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    let writes = 0;
+    vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      writes += 1;
+      if (writes === 2) {
+        throw new DOMException("quota", "QuotaExceededError");
+      }
+      originalSetItem(key, value);
+    });
+
+    saveSessionDraft(reference, "a");
+    saveSessionDraft(reference, "ab");
+
+    expect(readStoredText(createSessionDraftStorageKey(reference))).toBe("ab");
+    expect([...scanSessionDraftIds(sourceKey)]).toEqual(["session-a"]);
+  });
+
+  it("indexes concurrent sessions with independent presence markers", () => {
+    const sourceKey = asClientSummarySourceKey("host:macbook");
+
+    saveSessionDraft({ sourceKey, sessionId: "session-a" }, "a");
+    saveSessionDraft({ sourceKey, sessionId: "session-b" }, "b");
+
+    expect(
+      localStorage.getItem(
+        "draft-presence-message:host%3Amacbook:session-a",
+      ),
+    ).toBe("1");
+    expect(
+      localStorage.getItem(
+        "draft-presence-message:host%3Amacbook:session-b",
+      ),
+    ).toBe("1");
+    expect([...scanSessionDraftIds(sourceKey)].sort()).toEqual([
+      "session-a",
+      "session-b",
+    ]);
   });
 
   it("keeps attachment-only envelopes in the index", () => {

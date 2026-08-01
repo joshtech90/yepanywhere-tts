@@ -61,7 +61,7 @@ async function attachTranscriptScreenshots(
         caret-color: transparent !important;
         transition-duration: 0s !important;
       }
-      .message-age, .user-turn-nav { visibility: hidden !important; }
+      .message-age, [data-turn-rail] { visibility: hidden !important; }
     `,
   });
   const transcript = page.locator(".session-messages");
@@ -104,11 +104,13 @@ for (const specimen of [
     const rows = await topLevelRenderRows(page);
     expect(rows).toEqual([
       { id: "specimen-user-1", type: "user_prompt" },
-      { id: "specimen-assistant-1-0", type: "thinking" },
       { id: "specimen-assistant-1-1", type: "text" },
-      { id: "specimen-tool-1", type: "tool_call" },
       { id: "specimen-compact-1", type: "system" },
       { id: "specimen-assistant-2", type: "text" },
+      {
+        id: "conversation-activity-specimen-assistant-1-0",
+        type: "conversation_activity",
+      },
     ]);
     expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
 

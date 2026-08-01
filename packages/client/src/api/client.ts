@@ -5,6 +5,7 @@ import type {
   CacheMissBillingSettings,
   BrowserSettingsBackupResponse,
   BrowserSettingsBackupValues,
+  ClaudeAdditionalModelSelection,
   ClientDefaults,
   ConnectionsResponse,
   CreateProjectWorkstreamRequest,
@@ -32,6 +33,7 @@ import type {
   PromptCacheKeepaliveSettings,
   ProviderInfo,
   ProviderName,
+  ProviderSubscriptionUsage,
   ProviderRuntimeStatus,
   RecapMode,
   PublicSessionShareSessionStatusResponse,
@@ -40,6 +42,8 @@ import type {
   SessionMetadataResponse,
   SessionQueuedMessageSummary,
   SessionLivenessSnapshot,
+  SessionSandboxEnforcement,
+  SessionSandboxLevel,
   ShowThinking,
   SlashCommand,
   ThinkingOption,
@@ -64,6 +68,7 @@ import { authApi } from "./authClient";
 import { browserProfilesApi } from "./browserProfilesClient";
 import { fileApi } from "./fileClient";
 import { gitApi } from "./gitClient";
+import { reviewApi } from "./reviewClient";
 import { onboardingApi } from "./onboardingClient";
 import { getDesktopAuthToken } from "./plainFetch";
 import { pushApi, pushSettingsApi } from "./pushClient";
@@ -132,8 +137,11 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
-  /** Parent session when this item is a YA-owned /btw aside. */
+  /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
+  parentSessionKind?: "btw-aside";
+  /** Source session whose provider transcript was cloned or forked. */
+  forkedFromSessionId?: string;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
@@ -186,6 +194,8 @@ export interface SessionOptions {
   provider?: ProviderName;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
+  /** Default-off YA host filesystem confinement for a newly created session. */
+  sandboxLevel?: SessionSandboxLevel;
   /** Recap behavior for future away-return triggers in this session. */
   recapMode?: RecapMode;
   /** Browser-away duration before YA asks this session for a recap. */
@@ -306,6 +316,19 @@ export const api = {
   getProviders: (options?: { refresh?: boolean }) =>
     fetchJSON<{ providers: ProviderInfo[] }>(
       options?.refresh ? "/providers?refresh=1" : "/providers",
+      options?.refresh
+        ? { headers: { "Cache-Control": "no-cache" } }
+        : undefined,
+    ),
+
+  getProviderSubscriptionUsage: (
+    provider: ProviderName,
+    options?: { refresh?: boolean },
+  ) =>
+    fetchJSON<{ usage: ProviderSubscriptionUsage | null }>(
+      `/providers/${encodeURIComponent(provider)}/subscription-usage${
+        options?.refresh ? "?refresh=1" : ""
+      }`,
       options?.refresh
         ? { headers: { "Cache-Control": "no-cache" } }
         : undefined,
@@ -542,8 +565,10 @@ export const api = {
       provider?: ProviderName;
       model?: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions`, {
       method: "POST",
@@ -556,6 +581,7 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         executor: options?.executor,
+        sandboxLevel: options?.sandboxLevel,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -577,8 +603,10 @@ export const api = {
       processId: string;
       projectId: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions/create`, {
       method: "POST",
@@ -590,6 +618,7 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         executor: options?.executor,
+        sandboxLevel: options?.sandboxLevel,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -610,8 +639,10 @@ export const api = {
       processId: string;
       projectId: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
     }>(`/sessions`, {
       method: "POST",
@@ -624,6 +655,7 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         executor: options?.executor,
+        sandboxLevel: options?.sandboxLevel,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -640,8 +672,10 @@ export const api = {
       processId: string;
       projectId: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
     }>(`/sessions/create`, {
       method: "POST",
@@ -653,6 +687,7 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         executor: options?.executor,
+        sandboxLevel: options?.sandboxLevel,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -673,8 +708,10 @@ export const api = {
     fetchJSON<{
       processId: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
       resume?: {
         requestedMode: "full" | "compact-first";
@@ -725,8 +762,10 @@ export const api = {
     fetchJSON<{
       processId: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       serverTimestamp: number;
     }>(`/projects/${projectId}/sessions/${sessionId}/reactivate`, {
       method: "POST",
@@ -748,6 +787,14 @@ export const api = {
       restartMode?: "handoff" | "fork";
       /** Fork slice point (transcript message UUID, inclusive). */
       forkUpToMessageId?: string;
+      /** Client URL the user was on; shown in the handoff Source Session block. */
+      sourceUrl?: string;
+      /**
+       * Seed the successor with this message instead of the text the server
+       * would build, set when the user edited the handoff draft. Ignored by
+       * "fork", which copies the real transcript.
+       */
+      handoffText?: string;
     },
   ) =>
     fetchJSON<{
@@ -757,8 +804,10 @@ export const api = {
       provider?: ProviderName;
       title?: string;
       permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion: number;
       recapAfterSeconds?: number;
+      sandboxEnforcement?: SessionSandboxEnforcement;
       restartedFrom: string;
       forkUpToMessageId?: string;
       oldProcessId?: string;
@@ -775,6 +824,7 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         executor: options?.executor,
+        sandboxLevel: options?.sandboxLevel,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -782,8 +832,32 @@ export const api = {
         reason: options?.reason,
         restartMode: options?.restartMode,
         forkUpToMessageId: options?.forkUpToMessageId,
+        sourceUrl: options?.sourceUrl,
+        handoffText: options?.handoffText,
       }),
     }),
+
+  /**
+   * The handoff message as it stands now, for the Handoff Session dialog to
+   * offer as an editable draft. Compacts first, like the handoff itself, but
+   * leaves the source session running.
+   */
+  getRestartHandoff: (
+    projectId: string,
+    sessionId: string,
+    options?: { sourceUrl?: string },
+  ) =>
+    fetchJSON<{
+      handoff: string;
+      handoffTitle: string;
+      compactStatus: string;
+    }>(
+      `/projects/${projectId}/sessions/${sessionId}/restart/handoff${
+        options?.sourceUrl
+          ? `?sourceUrl=${encodeURIComponent(options.sourceUrl)}`
+          : ""
+      }`,
+    ),
 
   /**
    * Fork the provider transcript into a new session without starting a
@@ -793,7 +867,15 @@ export const api = {
   forkSession: (
     projectId: string,
     sessionId: string,
-    options?: { upToMessageId?: string },
+    options?:
+      | { upToMessageId?: string }
+      | {
+          forkKind: "clone-latest-complete";
+        }
+      | {
+          forkKind: "before-user-turn" | "after-user-turn";
+          sourceMessageId: string;
+        },
   ) =>
     fetchJSON<{
       sessionId: string;
@@ -802,9 +884,15 @@ export const api = {
       title?: string;
       forkedFrom: string;
       upToMessageId?: string;
+      forkKind?:
+        | "clone-latest-complete"
+        | "before-user-turn"
+        | "after-user-turn";
+      sourceMessageId?: string;
+      retainedThroughMessageId?: string;
     }>(`/projects/${projectId}/sessions/${sessionId}/fork`, {
       method: "POST",
-      body: JSON.stringify({ upToMessageId: options?.upToMessageId }),
+      body: JSON.stringify(options ?? {}),
     }),
 
   forkSessionWithSummary: (
@@ -916,9 +1004,12 @@ export const api = {
     fetchJSON<{
       removed: boolean;
       transcriptDisplayObjects: TranscriptDisplayObject[];
-    }>(`/projects/${projectId}/sessions/${sessionId}/bang-commands/${objectId}`, {
-      method: "DELETE",
-    }),
+    }>(
+      `/projects/${projectId}/sessions/${sessionId}/bang-commands/${objectId}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   fetchBangCompletions: (
     projectId: string,
@@ -926,7 +1017,7 @@ export const api = {
     kind: "command" | "path",
     line: string,
   ) =>
-    fetchJSON<{ completions: string[] }>(
+    fetchJSON<{ completions: string[]; history: string[] }>(
       `/projects/${projectId}/bang-completions?token=${encodeURIComponent(token)}&kind=${kind}&line=${encodeURIComponent(line)}`,
     ),
 
@@ -1015,6 +1106,7 @@ export const api = {
       processId: string;
       processState?: "idle" | "in-turn" | "waiting-input";
       permissionMode?: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion?: number;
       recapAfterSeconds?: number;
       deferredMessages: DeferredQueueMessage[];
@@ -1033,6 +1125,7 @@ export const api = {
       processId: string;
       processState?: "idle" | "in-turn" | "waiting-input";
       permissionMode?: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
       modeVersion?: number;
       recapAfterSeconds?: number;
       deferredMessages: DeferredQueueMessage[];
@@ -1169,7 +1262,11 @@ export const api = {
     ),
 
   setPermissionMode: (sessionId: string, mode: PermissionMode) =>
-    fetchJSON<{ permissionMode: PermissionMode; modeVersion: number }>(
+    fetchJSON<{
+      permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
+      modeVersion: number;
+    }>(
       `/sessions/${sessionId}/mode`,
       { method: "PUT", body: JSON.stringify({ mode }) },
     ),
@@ -1277,6 +1374,9 @@ export const api = {
 
   // Git status API
   ...gitApi,
+
+  // Source-review draft comments (topic: source-review-to-session)
+  ...reviewApi,
 
   // Inbox API
   getInbox: (projectId?: string) =>
@@ -1574,6 +1674,8 @@ export interface ServerSettings {
   publicSharesEnabled?: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether Agents may sample same-user provider processes on this host. */
+  hostProcessObservabilityEnabled?: boolean;
   /** Base URL for the hosted YA client */
   yaClientBaseUrl?: string | null;
   /** Optional visual marker identifying the connected YA host. */
@@ -1600,6 +1702,10 @@ export interface ServerSettings {
   heartbeatTurnsAfterMinutes?: number;
   /** Default text queued as the synthetic heartbeat user turn */
   heartbeatTurnText?: string;
+  /** Anthropic-compatible endpoint for the isolated Claude Gateway provider */
+  claudeGatewayUrl?: string;
+  /** Optional shell line that starts a loopback Claude Gateway on demand */
+  claudeGatewayStartCommand?: string;
   /** Ollama server URL for claude-ollama provider */
   ollamaUrl?: string;
   /** Custom system prompt for Ollama provider */
@@ -1608,6 +1714,13 @@ export interface ServerSettings {
   ollamaUseFullSystemPrompt?: boolean;
   /** Whether Grok Build may receive the server's XAI_API_KEY */
   grokBuildUseXaiApiKey?: boolean;
+  /** Exact previous/custom Claude model ids opted into provider catalogs. */
+  claudeAdditionalModels?: ClaudeAdditionalModelSelection[];
+  /**
+   * Claude Code launch-time percentage override for its own auto-compaction
+   * window. Absent leaves Claude's environment/default unchanged.
+   */
+  claudeAutoCompactPercentOverride?: number;
   /** Whether the device bridge (emulator/device streaming) feature is enabled */
   deviceBridgeEnabled?: boolean;
   /** Defaults applied when opening the new session form */

@@ -6,6 +6,170 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [site-v1.9.0] - 2026-08-01
+
+### Fixed
+- Keep ordered-list markers inside the documentation article measure instead
+  of hanging into the outer gutter.
+- Add the shipped experimental pi integration to the provider registry, FAQ,
+  feature catalog, README, and provider guide, and validate that every runtime
+  provider maps to a public registry entry.
+
+### Added
+- Add a typed public feature, provider, and distribution registry; a complete
+  feature catalog; and public guides for installation, remote access,
+  providers, workflows, security, and troubleshooting.
+- Add build-time checks for catalog relationships, public internal links,
+  canonical metadata, and the marketing analytics boundary.
+- Add a homepage security-maintenance section covering the narrow runtime
+  dependency surface, regular maintainer-led audits, and the two public core
+  maintainers.
+
+### Changed
+- Make existing Claude and ChatGPT subscription-plan support a first-viewport
+  benefit, with provider-owned billing caveats in the public guide.
+- Replace the vague “Familiar by default” proof-strip fragment with the concrete
+  fact that the official Claude Code and Codex tools run on the user's host.
+- Name Claude Code and ChatGPT's first-party remote experiences in the Why
+  section, then distinguish Yep Anywhere through complete access from any
+  browser rather than only a phone.
+- Clarify that the relay option is end-to-end encrypted so the proof strip does
+  not imply that an unencrypted relay mode exists.
+- Describe relay application traffic as end-to-end encrypted, keeping server
+  authentication as a separate concept instead of calling the traffic itself
+  authenticated.
+- Rename the vague “Guarded source control” highlight to “Source control UI”
+  and describe the repository workbench directly.
+- Highlight the no-network-setup Remote Access path: install, set credentials,
+  and connect from any browser without device pairing, a VPN, or port
+  forwarding.
+- Replace the generic pre-install FAQ heading with a direct first-party remote
+  app comparison centered on one multi-provider browser workspace across hosts.
+- Pair every future Android client mention with the later iOS plan: Android is
+  in development, iOS follows, neither is published, and the complete mobile
+  browser remains available today.
+- Lead cross-device copy with “anything with a modern web browser” and use
+  computers, tablets, and phones as examples instead of an exhaustive device
+  list.
+- Add a private vulnerability-disclosure email to the public security guide
+  and reserve GitHub Issues for non-sensitive reports.
+- Remove the arbitrary capability, provider, and connection counts from the
+  feature-catalog hero.
+- Reframe the homepage hero around full access to all supported agents from
+  every device, and reduce the headline scale.
+- Replace implementation-oriented persistence proof with a familiar-by-default
+  workflow, optional product depth, and the application's six-language UI.
+- Add a prominent “Why Yep Anywhere?” section covering the combined capability,
+  privacy, and security advantages found in the project landscape survey.
+- Highlight full transcript and tool-call visibility alongside the optional
+  condensed conversation presentation.
+- Rebuild the homepage around persistent mobile agent supervision, catalog-
+  backed feature proof, local-data trust, and distinct installation paths.
+- Make cross-device control explicit: any browser can supervise another
+  computer, not only a phone, with Claude Code and Codex in one interface.
+- Explain why the browser remains the supported mobile experience while the
+  Android companion develops native notification and multi-server value.
+- Clarify that public session sharing is opt-in because the current share path
+  is readable by the relay operator, unlike authenticated Remote Access.
+- Document the default npm/source and desktop data directories on macOS,
+  Linux, and Windows.
+- Classify Project Queue as a stable, optional capability with opt-in entry
+  controls rather than an experimental feature.
+- Describe source checkouts as suitable for forks and customization as well as
+  contribution and following unreleased work.
+- Expose beta macOS and Windows downloads from GitHub Releases while
+  stating that Android is in development, iOS is planned later, and neither
+  native app is published.
+- Make Features and Docs first-class desktop and mobile navigation items, and
+  correct website analytics and public-relay disclosures in the privacy page.
+
+## [site-v1.8.3] - 2026-07-31
+
+### Fixed
+- Opt the Pages artifact uploader into hidden files so the checked deployment
+  directory's `/.well-known/assetlinks.json` reaches production.
+
+## [site-v1.8.2] - 2026-07-31
+
+### Fixed
+- Include hidden static directories such as `/.well-known` in the GitHub Pages
+  deployment artifact.
+
+## [site-v1.8.1] - 2026-07-31
+
+### Added
+- Associate the Yep Anywhere Android app with `yepanywhere.com` for compatible
+  password-manager credential sharing and verified `/open` App Links.
+
+## [site-v1.8.0] - 2026-07-25
+
+### Added
+- Add `!!` bang commands to the hosted composer: a draft starting with `!!`
+  runs the rest as a local shell command on the connected server and renders
+  inline as a transcript block with exit status, duration, streaming previews,
+  and on-demand full output. Includes cancel, raw/rendered toggle, re-run,
+  recall-to-composer, echo-to-session, delete, Tab completion (with a mobile
+  Tab button), and a `/bang-commands` page listing runs across sessions. Hidden
+  unless the connected server advertises the default-off capability, and never
+  offered on public shares.
+- Add hosted settings search: a substring filter whose matched rows stay
+  operable in place, highlight matched tokens, and link to their named section,
+  with a default-off value-matching toggle.
+- Add a hosted composer recall drawer: Ctrl+Up opens prefix-matched prior user
+  turns with per-row go-to-turn navigation, plus a default-hidden mobile open
+  button.
+- Add opt-in additional model controls so hosted model choosers surface a
+  server-maintained catalog of extra and exact-ID models as a separate group,
+  disabled by default and gated on the server capability.
+- Add hosted controls for the battery-aware host-awake setting and server-owned
+  per-host emoji identity markers, which appear beside headers and in
+  browser-tab titles. Both stay hidden against servers that do not advertise
+  them.
+- Add server-backed browser settings backup with Save and Load controls that
+  move an allowlisted set of browser-local preferences through one server-stored
+  snapshot.
+- Add a themed tooltip layer to the hosted client with a standard delay,
+  pointer-rest timing, warm adjacency scanning, keyboard association, and
+  secondary-click copy/enlarge. Browser-native tooltips remain the default.
+- Show provider child sessions nested under their canonical parent in the hosted
+  Agents page and session lists.
+- Add a keyboard-open mobile composer action row with large delivery targets,
+  inline Project Queue and Steer slots, and a More panel for the remaining
+  toolbar controls.
+- Add a hosted Project Queue new-session action behind its own default-off
+  Toolbar setting, distinguished by a darker violet and a prominent `+` badge,
+  and share Copy, Edit, Steer now, and Cancel across live queued rows.
+
+### Changed
+- Refresh hosted provider support for Claude Agent SDK 0.3.220 / Claude Code
+  2.1.220 with Opus 5 on the stable family alias, Codex app-server 0.145.0, Pi
+  0.81.1, and Grok ACP.
+- Queue live effort changes until turn completion instead of restarting the
+  provider process mid-turn.
+- Serve hosted Inbox refresh from bounded session summaries rather than full
+  transcript scans.
+- Copy rendered Markdown and Σ previews as semantic HTML without presentation
+  styles, retaining table structure and MathML, and keep text selections through
+  Edit diff expansion.
+- Render uniform JSONL and TOON command output as real tables instead of fenced
+  JSON blobs.
+- Recognize bracketed `\( \)` and `\[ \]` LaTeX delimiters in Σ rendering.
+- Rebuild hosted transcript rendering on the browser-free portable transcript
+  compiler with separate cache, semantic-folding, and web-adapter layers, with
+  no change to rendered output.
+
+### Fixed
+- Stop relay login from redirecting to an offline host after signing in to a
+  different one, and keep cached pages readable after a remote disconnect
+  instead of replacing them with a non-dismissible error.
+- Keep accepted steer messages visible through reconnect.
+- Merge provisional session IDs on canonical remap so a just-created session
+  cannot appear twice in hosted session lists.
+- Title Claude slash-command session openers from the first non-meta user turn
+  instead of the provider's local-command caveat.
+- Keep touch taps from opening or stranding hover-only tooltips and session
+  previews.
+
 ## [site-v1.7.4] - 2026-07-11
 
 ### Added

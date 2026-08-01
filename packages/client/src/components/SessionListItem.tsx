@@ -2,19 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { AgentActivity } from "../hooks/useFileActivity";
-import {
-  beginTooltipVisibility,
-  endTooltipVisibility,
-  isTooltipWarm,
-} from "../hooks/useTooltipAppearance";
+import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
+import { useSessionHoverCardController } from "../hooks/useSessionHoverCardController";
 import { useI18n } from "../i18n";
 import { activityBus } from "../lib/activityBus";
 import { toBrowserAppHref } from "../lib/appHref";
-import { formatBriefAge } from "../lib/sessionAge";
+import { formatBriefAge, formatSessionHoverAge } from "../lib/sessionAge";
 import {
   buildBtwAsideParentHref,
   getBtwAsideSessionDisplayTitle,
-  isBtwAsideSessionTitle,
+  isBtwAsideSession,
 } from "../lib/btwAsideSessions";
 import type {
   ContextUsage,
@@ -30,12 +27,6 @@ import { SessionMenu } from "./SessionMenu";
 import { SessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
 import { ThinkingIndicator } from "./ThinkingIndicator";
-import {
-  announceActiveSessionHoverCard,
-  createSessionHoverCardId,
-  subscribeActiveSessionHoverCard,
-} from "./sessionHoverCardRegistry";
-import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
 
 interface SessionListItemProps {
   // Core (required)
@@ -64,6 +55,7 @@ interface SessionListItemProps {
   executor?: string;
   /** Parent session when this item is a YA-owned /btw aside. */
   parentSessionId?: string;
+  parentSessionKind?: "btw-aside";
   /** Provider-native child work attached to this canonical YA session. */
   providerChildren?: ProviderChildSessionSummary[];
 
@@ -164,6 +156,7 @@ export function SessionListItem({
   model,
   executor,
   parentSessionId,
+  parentSessionKind,
   providerChildren = [],
   // Feature toggles
   mode,
@@ -227,23 +220,6 @@ export function SessionListItem({
     maxHeightPx: hoverCardMaxHeightPx,
   } = useHoverCardSettings();
   const liRef = useRef<HTMLLIElement>(null);
-  const hoverCardIdRef = useRef<string | null>(null);
-  if (!hoverCardIdRef.current) {
-    hoverCardIdRef.current = createSessionHoverCardId();
-  }
-  const [previewPos, setPreviewPos] = useState<{
-    rowTop: number;
-    rowBottom: number;
-    cursorX: number;
-  } | null>(null);
-  const previewShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previewVisibilityToken = useRef<symbol | null>(null);
-  const previewCursorX = useRef(0);
-  // Idle (non-running) sessions get no live session-updated events, so their
-  // recent-activity preview can be stale. After the delayed hover opens, we
-  // recompute it once on the server; the pushed session-updated refreshes the
-  // row in place. Owned/external sessions already update live.
-  const previewRefreshInFlight = useRef(false);
   // True while this row's ... menu is open; suppresses new card shows.
   const menuOpenRef = useRef(false);
 
@@ -261,11 +237,12 @@ export function SessionListItem({
   const displayTitle =
     localTitle ?? title ?? (isNewSession ? "New session" : "Untitled session");
   const hasEffectiveCustomTitle = !!localTitle || hasCustomTitle;
-  const isBtwAsideSession =
-    !!parentSessionId ||
-    isBtwAsideSessionTitle(displayTitle) ||
-    isBtwAsideSessionTitle(fullTitle);
-  const visibleTitle = isBtwAsideSession
+  const isBtwAside = isBtwAsideSession({
+    parentSessionKind,
+    title: displayTitle,
+    fullTitle,
+  });
+  const visibleTitle = isBtwAside
     ? getBtwAsideSessionDisplayTitle(displayTitle)
     : displayTitle;
   const copyPromptText = (initialPrompt ?? fullTitle ?? "").trim();
@@ -453,12 +430,7 @@ export function SessionListItem({
   // Hover tooltip age shows both: time since last activity (primary) with the
   // creation time as an "established" aside — "5m ago (est. 2d)". Either half
   // drops out when its timestamp is unknown/default.
-  const hoverActivityAge = formatBriefAge(updatedAt);
-  const hoverAgeLabel = hoverActivityAge
-    ? `${hoverActivityAge} ago${briefAge ? ` (est. ${briefAge})` : ""}`
-    : briefAge
-      ? `est. ${briefAge}`
-      : null;
+  const hoverAgeLabel = formatSessionHoverAge(updatedAt, createdAt);
 
   // Hover card fires on every list surface (sidebar compact + all-sessions /
   // search cards); it only needs a provider to badge.
@@ -476,101 +448,32 @@ export function SessionListItem({
   ).trim();
   const hoverLastAgent = lastAgentText?.trim() || undefined;
 
-  // Recompute an idle session's stale preview once on the server; the result
-  // arrives via the session-updated activity event (not this call), updating
-  // the row in place. Owned/external sessions are tracked live, so skip them.
-  const refreshIdlePreview = useCallback(() => {
-    if (status?.owner === "self" || status?.owner === "external") return;
-    // Already have the excerpt — nothing to refresh. (Crucially this re-fires
-    // after a list refetch clears it, unlike a sticky once-per-session guard,
-    // which left re-hover blocked while only click repopulated.)
-    if (hoverLastAgent) return;
-    if (previewRefreshInFlight.current) return; // dedup concurrent hovers
-    previewRefreshInFlight.current = true;
-    void api.refreshSessionPreview(projectId, sessionId).finally(() => {
-      previewRefreshInFlight.current = false;
-    });
-  }, [status?.owner, projectId, sessionId, hoverLastAgent]);
-
-  const clearPreviewTimers = useCallback(() => {
-    if (previewShowTimer.current) {
-      clearTimeout(previewShowTimer.current);
-      previewShowTimer.current = null;
-    }
-  }, []);
-
-  const releasePreviewVisibility = useCallback(() => {
-    const token = previewVisibilityToken.current;
-    if (!token) return;
-    previewVisibilityToken.current = null;
-    endTooltipVisibility(token);
-  }, []);
-
-  const clearPreview = useCallback(() => {
-    clearPreviewTimers();
-    releasePreviewVisibility();
-    setPreviewPos(null);
-  }, [clearPreviewTimers, releasePreviewVisibility]);
-
-  const schedulePreviewShow = useCallback(() => {
-    if (!showHoverCard || menuOpenRef.current) return;
-    clearPreviewTimers();
-    // Fetch the updated last-output immediately on hover; only the card's
-    // appearance waits for the show delay.
-    refreshIdlePreview();
-    previewShowTimer.current = setTimeout(() => {
-      const rect = liRef.current?.getBoundingClientRect();
-      const hoverCardId = hoverCardIdRef.current;
-      if (!rect || !hoverCardId) return;
-      announceActiveSessionHoverCard(hoverCardId);
-      previewVisibilityToken.current ??= beginTooltipVisibility(clearPreview);
-      setPreviewPos({
-        rowTop: rect.top,
-        rowBottom: rect.bottom,
-        cursorX: previewCursorX.current,
-      });
-      previewShowTimer.current = null;
-    }, isTooltipWarm() ? 0 : hoverCardShowDelayMs);
-  }, [
-    showHoverCard,
-    clearPreview,
-    clearPreviewTimers,
-    refreshIdlePreview,
-    hoverCardShowDelayMs,
-  ]);
+  const {
+    anchor: previewPos,
+    hoverCardId,
+    clear: clearPreview,
+    onPointerEnter: enterPreview,
+    onPointerMove: movePreview,
+    onPointerLeave: leavePreview,
+  } = useSessionHoverCardController({
+    targetRef: liRef,
+    showDelayMs: hoverCardShowDelayMs,
+    enabled: showHoverCard,
+    refreshPreview: {
+      projectId,
+      sessionId,
+      lastAgentText: hoverLastAgent,
+      owner: status?.owner,
+    },
+  });
 
   const handlePreviewEnter = useCallback(
-    (e: React.PointerEvent) => {
-      if (!showHoverCard || e.pointerType === "touch") return;
-      previewCursorX.current = e.clientX;
-      schedulePreviewShow();
+    (e: React.PointerEvent<HTMLLIElement>) => {
+      if (menuOpenRef.current) return;
+      enterPreview(e);
     },
-    [showHoverCard, schedulePreviewShow],
+    [enterPreview],
   );
-
-  const handlePreviewMove = useCallback((e: React.PointerEvent) => {
-    if (e.pointerType !== "touch") {
-      previewCursorX.current = e.clientX;
-    }
-  }, []);
-
-  // Only one session hovercard may be visible or pending across list surfaces.
-  useEffect(() => {
-    if (!showHoverCard) return;
-    return subscribeActiveSessionHoverCard((activeId) => {
-      if (activeId !== hoverCardIdRef.current) {
-        clearPreview();
-      }
-    });
-  }, [showHoverCard, clearPreview]);
-
-  // Clear pending timers if the row unmounts mid-hover.
-  useEffect(() => {
-    return () => {
-      clearPreviewTimers();
-      releasePreviewVisibility();
-    };
-  }, [clearPreviewTimers, releasePreviewVisibility]);
 
   // A fixed card would drift if the sidebar scrolls under it; clear only when
   // the row's own scroll ancestors move. Transcript autoscroll elsewhere should
@@ -597,31 +500,6 @@ export function SessionListItem({
     };
   }, [previewPos, clearPreview]);
 
-  const handlePreviewCancel = useCallback(() => {
-    const hoverCardId = hoverCardIdRef.current;
-    if (hoverCardId) {
-      announceActiveSessionHoverCard(hoverCardId);
-    }
-    clearPreview();
-  }, [clearPreview]);
-
-  const isOwnHoverCardTarget = useCallback((target: EventTarget | null) => {
-    if (!(target instanceof Element)) return false;
-    const hoverCardId = hoverCardIdRef.current;
-    if (!hoverCardId) return false;
-    return (
-      target.closest(`[data-session-hovercard-id="${hoverCardId}"]`) !== null
-    );
-  }, []);
-
-  const handlePreviewLeave = useCallback(
-    (e: React.PointerEvent) => {
-      if (isOwnHoverCardTarget(e.relatedTarget)) return;
-      handlePreviewCancel();
-    },
-    [handlePreviewCancel, isOwnHoverCardTarget],
-  );
-
   // The ... menu opening dismisses the card and, while open, suppresses new
   // shows so cursor moves over the row/menu do not pop cards. Hovering the
   // trigger itself no longer cancels — the card sits under the menu anyway.
@@ -639,7 +517,7 @@ export function SessionListItem({
     mode === "card" ? "session-list-item--card" : "session-list-item--compact",
     isCurrent && "current",
     hasUnread && "unread",
-    isBtwAsideSession && "btw-aside-session",
+    isBtwAside && "btw-aside-session",
     isSelected && "selected",
     isArchived && "archived",
   ]
@@ -648,7 +526,7 @@ export function SessionListItem({
 
   const sessionHref = `${basePath}/projects/${projectId}/sessions/${sessionId}`;
   const parentHref =
-    parentSessionId && isBtwAsideSession
+    parentSessionId && isBtwAside
       ? buildBtwAsideParentHref(basePath, projectId, parentSessionId, sessionId)
       : null;
 
@@ -752,9 +630,9 @@ export function SessionListItem({
       ref={liRef}
       className={liClasses}
       onPointerEnter={showHoverCard ? handlePreviewEnter : undefined}
-      onPointerMove={showHoverCard ? handlePreviewMove : undefined}
-      onPointerLeave={showHoverCard ? handlePreviewLeave : undefined}
-      onWheel={showHoverCard ? handlePreviewCancel : undefined}
+      onPointerMove={showHoverCard ? movePreview : undefined}
+      onPointerLeave={showHoverCard ? leavePreview : undefined}
+      onWheel={showHoverCard ? clearPreview : undefined}
     >
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
       {onSelect && (
@@ -794,7 +672,7 @@ export function SessionListItem({
               <strong className="session-list-item__title">
                 {isStarred && <StarIcon filled size={12} />}
                 {showCardThinkingIndicator && <ThinkingIndicator />}
-                {isBtwAsideSession && (
+                {isBtwAside && (
                   // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                   <span
                     className="session-badge session-badge-btw"
@@ -922,7 +800,7 @@ export function SessionListItem({
                 {isStarred && <StarIcon filled />}
                 <span className="session-list-item__title-text">
                   {isNewSession && <ThinkingIndicator />}
-                  {isBtwAsideSession && (
+                  {isBtwAside && (
                     // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                     <span
                       className="session-badge session-badge-btw"
@@ -1028,7 +906,7 @@ export function SessionListItem({
 
       {showHoverCard && provider && previewPos && (
         <SessionHoverCard
-          hoverCardId={hoverCardIdRef.current!}
+          hoverCardId={hoverCardId}
           anchor={previewPos}
           prompt={hoverPrompt}
           lastAgentText={hoverLastAgent}
@@ -1041,7 +919,7 @@ export function SessionListItem({
           hasUnread={hasUnread}
           activity={activity}
           maxHeightPx={hoverCardMaxHeightPx}
-          onMouseLeave={handlePreviewCancel}
+          onMouseLeave={clearPreview}
         />
       )}
     </li>

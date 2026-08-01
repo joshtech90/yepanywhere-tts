@@ -12,6 +12,7 @@ import {
   isHostAwakeMode,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
+  parseClaudeAdditionalModelSelections,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { type FileAccessSettings, getFileAccessInfo } from "../middleware/file-access.js";
@@ -36,9 +37,12 @@ import {
 import {
   discoverOpenAiCompatibleModels,
   mergeClientDefaults,
+  normalizeClaudeGatewayUrl,
   normalizeOpenAiCompatibleBaseUrl,
   parseAgentContextHints,
   parseCacheMissBilling,
+  parseClaudeAutoCompactPercentOverride,
+  parseClaudeGatewayStartCommand,
   parseClientDefaults,
   parseFileAccess,
   parseHelperTargets,
@@ -61,6 +65,11 @@ export interface SettingsRoutesDeps {
   onRemoteSessionPersistenceChanged?: (
     enabled: boolean,
   ) => Promise<void> | void;
+  /** Callback to apply Claude Gateway transport settings at runtime. */
+  onClaudeGatewaySettingsChanged?: (settings: {
+    url?: string;
+    startCommand?: string;
+  }) => Promise<void> | void;
   /** Callback to apply Ollama URL changes at runtime */
   onOllamaUrlChanged?: (url: string | undefined) => void;
   /** Callback to apply Ollama system prompt changes at runtime */
@@ -83,6 +92,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     onAllowedHostsChanged,
     onFileAccessChanged,
     onRemoteSessionPersistenceChanged,
+    onClaudeGatewaySettingsChanged,
     onOllamaUrlChanged,
     onOllamaSystemPromptChanged,
     onOllamaUseFullSystemPromptChanged,
@@ -161,6 +171,16 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     }
     if (typeof body.workstreamsEnabled === "boolean") {
       updates.workstreamsEnabled = body.workstreamsEnabled;
+    }
+    if ("hostProcessObservabilityEnabled" in body) {
+      if (typeof body.hostProcessObservabilityEnabled !== "boolean") {
+        return c.json(
+          { error: "hostProcessObservabilityEnabled must be a boolean" },
+          400,
+        );
+      }
+      updates.hostProcessObservabilityEnabled =
+        body.hostProcessObservabilityEnabled;
     }
     if (typeof body.composeAnchorsEnabled === "boolean") {
       updates.composeAnchorsEnabled = body.composeAnchorsEnabled;
@@ -413,6 +433,43 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       }
     }
 
+    if ("claudeGatewayUrl" in body) {
+      if (
+        body.claudeGatewayUrl === undefined ||
+        body.claudeGatewayUrl === null ||
+        body.claudeGatewayUrl === ""
+      ) {
+        updates.claudeGatewayUrl = undefined;
+      } else {
+        const url = normalizeClaudeGatewayUrl(body.claudeGatewayUrl);
+        if (!url) {
+          return c.json(
+            {
+              error:
+                "claudeGatewayUrl must be an http(s) URL without credentials, query parameters, or a fragment",
+            },
+            400,
+          );
+        }
+        updates.claudeGatewayUrl = url;
+      }
+    }
+    if ("claudeGatewayStartCommand" in body) {
+      const startCommand = parseClaudeGatewayStartCommand(
+        body.claudeGatewayStartCommand,
+      );
+      if (startCommand === null) {
+        return c.json(
+          {
+            error:
+              "claudeGatewayStartCommand must be a shell command of at most 10000 characters without NUL bytes",
+          },
+          400,
+        );
+      }
+      updates.claudeGatewayStartCommand = startCommand;
+    }
+
     // Handle ollamaUrl string (URL, or undefined/null/"" to clear)
     if ("ollamaUrl" in body) {
       if (
@@ -446,6 +503,35 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
 
     if (typeof body.grokBuildUseXaiApiKey === "boolean") {
       updates.grokBuildUseXaiApiKey = body.grokBuildUseXaiApiKey;
+    }
+
+    if ("claudeAdditionalModels" in body) {
+      const parsedSelections = parseClaudeAdditionalModelSelections(
+        body.claudeAdditionalModels,
+      );
+      if (parsedSelections === null) {
+        return c.json(
+          { error: "Invalid claudeAdditionalModels setting" },
+          400,
+        );
+      }
+      updates.claudeAdditionalModels = parsedSelections;
+    }
+
+    if ("claudeAutoCompactPercentOverride" in body) {
+      const parsedOverride = parseClaudeAutoCompactPercentOverride(
+        body.claudeAutoCompactPercentOverride,
+      );
+      if (parsedOverride === null) {
+        return c.json(
+          {
+            error:
+              "claudeAutoCompactPercentOverride must be an integer from 1 to 100, or 0/null to clear",
+          },
+          400,
+        );
+      }
+      updates.claudeAutoCompactPercentOverride = parsedOverride;
     }
 
     // Handle deviceBridgeEnabled boolean
@@ -635,6 +721,16 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     }
     if ("ollamaUrl" in updates && onOllamaUrlChanged) {
       onOllamaUrlChanged(settings.ollamaUrl);
+    }
+    if (
+      ("claudeGatewayUrl" in updates ||
+        "claudeGatewayStartCommand" in updates) &&
+      onClaudeGatewaySettingsChanged
+    ) {
+      await onClaudeGatewaySettingsChanged({
+        url: settings.claudeGatewayUrl,
+        startCommand: settings.claudeGatewayStartCommand,
+      });
     }
     if ("ollamaSystemPrompt" in updates && onOllamaSystemPromptChanged) {
       onOllamaSystemPromptChanged(settings.ollamaSystemPrompt);

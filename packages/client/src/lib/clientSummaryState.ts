@@ -119,10 +119,15 @@ function putRecord(
   const parentSessionId = record.parentSessionId
     ? resolveSessionCollectionId(state, record.parentSessionId)
     : record.parentSessionId;
+  const forkedFromSessionId = record.forkedFromSessionId
+    ? resolveSessionCollectionId(state, record.forkedFromSessionId)
+    : record.forkedFromSessionId;
   const normalizedRecord =
-    id === record.id && parentSessionId === record.parentSessionId
+    id === record.id &&
+    parentSessionId === record.parentSessionId &&
+    forkedFromSessionId === record.forkedFromSessionId
       ? record
-      : { ...record, id, parentSessionId };
+      : { ...record, id, parentSessionId, forkedFromSessionId };
   const entities = new Map(state.sessions.entities);
   entities.set(id, normalizedRecord);
   return {
@@ -150,6 +155,59 @@ function uniqueResolvedSessionIds(
   return resolvedIds;
 }
 
+// Field-group assignment for the remap merge below: every group's fields win
+// or lose together on the group's observation timestamp.
+const REMAP_MERGE_GROUPS = {
+  contentObservedAt: [
+    "title",
+    "fullTitle",
+    "createdAt",
+    "updatedAt",
+    "messageCount",
+    "provider",
+    "model",
+    "initialPrompt",
+    "lastAgentText",
+  ],
+  metadataObservedAt: [
+    "customTitle",
+    "isArchived",
+    "isStarred",
+    "parentSessionId",
+    "parentSessionKind",
+    "forkedFromSessionId",
+    "executor",
+  ],
+  projectObservedAt: ["projectId", "projectName"],
+  lifecycleObservedAt: [
+    "ownership",
+    "activity",
+    "activityInferredFromInboxTier",
+    "pendingInputType",
+    "activeStartedAt",
+  ],
+  unreadObservedAt: ["hasUnread"],
+} as const satisfies Record<string, readonly (keyof SessionCollectionRecord)[]>;
+
+// Compile-time exhaustiveness: every SessionCollectionRecord field must be in
+// a merge group above or merged individually below; a new field fails this
+// assignment instead of silently dropping during remap merges.
+type RemapMergedField =
+  | keyof typeof REMAP_MERGE_GROUPS
+  | (typeof REMAP_MERGE_GROUPS)[keyof typeof REMAP_MERGE_GROUPS][number]
+  | "id"
+  | "observedAt"
+  | "snapshotObservedAt"
+  | "eventCreatedAt";
+type RemapUnmergedField = Exclude<
+  keyof SessionCollectionRecord,
+  RemapMergedField
+>;
+const _remapMergeCoversAllRecordFields: [RemapUnmergedField] extends [never]
+  ? true
+  : { missingFromRemapMergeGroups: RemapUnmergedField } = true;
+void _remapMergeCoversAllRecordFields;
+
 function mergeRemappedSessionRecords(
   provisional: SessionCollectionRecord | undefined,
   canonical: SessionCollectionRecord | undefined,
@@ -160,12 +218,7 @@ function mergeRemappedSessionRecords(
   if (!canonical) return { ...provisional, id: canonicalId };
 
   const pickGroup = (
-    observedField:
-      | "contentObservedAt"
-      | "metadataObservedAt"
-      | "projectObservedAt"
-      | "lifecycleObservedAt"
-      | "unreadObservedAt",
+    observedField: keyof typeof REMAP_MERGE_GROUPS,
     fields: readonly (keyof SessionCollectionRecord)[],
   ): Partial<SessionCollectionRecord> => {
     const provisionalObservedAt = provisional[observedField] ?? NO_OBSERVATION;
@@ -195,34 +248,19 @@ function mergeRemappedSessionRecords(
   const merged: SessionCollectionRecord = {
     id: canonicalId,
     observedAt: Math.max(provisional.observedAt, canonical.observedAt),
-    ...pickGroup("contentObservedAt", [
-      "title",
-      "fullTitle",
-      "createdAt",
-      "updatedAt",
-      "messageCount",
-      "provider",
-      "model",
-      "initialPrompt",
-      "lastAgentText",
-    ]),
-    ...pickGroup("metadataObservedAt", [
-      "customTitle",
-      "isArchived",
-      "isStarred",
-      "parentSessionId",
-      "executor",
-    ]),
-    ...pickGroup("projectObservedAt", ["projectId", "projectName"]),
-    ...pickGroup("lifecycleObservedAt", [
-      "ownership",
-      "activity",
-      "activityInferredFromInboxTier",
-      "pendingInputType",
-      "activeStartedAt",
-    ]),
-    ...pickGroup("unreadObservedAt", ["hasUnread"]),
   };
+  // Drive the merge off the group table itself, so a group added to
+  // REMAP_MERGE_GROUPS is picked up here automatically. The exhaustiveness
+  // assertion above only proves every field is assigned to some group; this
+  // loop is what guarantees each group is actually merged.
+  for (const observedField of Object.keys(REMAP_MERGE_GROUPS) as Array<
+    keyof typeof REMAP_MERGE_GROUPS
+  >) {
+    Object.assign(
+      merged,
+      pickGroup(observedField, REMAP_MERGE_GROUPS[observedField]),
+    );
+  }
   if (
     provisional.snapshotObservedAt !== undefined ||
     canonical.snapshotObservedAt !== undefined
@@ -1177,7 +1215,9 @@ function withMetadataFields(
     customTitle?: string;
     isArchived?: boolean;
     isStarred?: boolean;
-    parentSessionId?: string;
+    parentSessionId?: string | null;
+    parentSessionKind?: "btw-aside" | null;
+    forkedFromSessionId?: string | null;
     executor?: string;
   },
   observation: SessionCollectionObservation,
@@ -1198,13 +1238,39 @@ function withMetadataFields(
     ...(canApplyObservedField(record.isStarred, fields.isStarred, isFresh)
       ? { isStarred: fields.isStarred }
       : {}),
-    ...(canApplyObservedField(
-      record.parentSessionId,
-      fields.parentSessionId,
-      isFresh,
-    )
-      ? { parentSessionId: fields.parentSessionId }
-      : {}),
+    ...(fields.parentSessionId === null
+      ? isFresh
+        ? { parentSessionId: undefined }
+        : {}
+      : canApplyObservedField(
+            record.parentSessionId,
+            fields.parentSessionId,
+            isFresh,
+          )
+        ? { parentSessionId: fields.parentSessionId }
+        : {}),
+    ...(fields.parentSessionKind === null
+      ? isFresh
+        ? { parentSessionKind: undefined }
+        : {}
+      : canApplyObservedField(
+            record.parentSessionKind,
+            fields.parentSessionKind,
+            isFresh,
+          )
+        ? { parentSessionKind: fields.parentSessionKind }
+        : {}),
+    ...(fields.forkedFromSessionId === null
+      ? isFresh
+        ? { forkedFromSessionId: undefined }
+        : {}
+      : canApplyObservedField(
+            record.forkedFromSessionId,
+            fields.forkedFromSessionId,
+            isFresh,
+          )
+        ? { forkedFromSessionId: fields.forkedFromSessionId }
+        : {}),
     ...(canApplyObservedField(record.executor, fields.executor, isFresh)
       ? { executor: fields.executor }
       : {}),
@@ -1359,6 +1425,8 @@ function upsertSnapshotRecord(
       isArchived: row.isArchived,
       isStarred: row.isStarred,
       parentSessionId: row.parentSessionId,
+      parentSessionKind: row.parentSessionKind,
+      forkedFromSessionId: row.forkedFromSessionId,
       executor: row.executor,
     },
     observation,
@@ -1646,13 +1714,21 @@ export function applySessionCollectionIdRemapped(
     entities.set(newSessionId, mergedRecord);
   }
   for (const [sessionId, record] of entities) {
-    if (!record.parentSessionId) continue;
-    const parentSessionId = resolveSessionCollectionId(
-      next,
-      record.parentSessionId,
-    );
-    if (parentSessionId !== record.parentSessionId) {
-      entities.set(sessionId, { ...record, parentSessionId });
+    const parentSessionId = record.parentSessionId
+      ? resolveSessionCollectionId(next, record.parentSessionId)
+      : undefined;
+    const forkedFromSessionId = record.forkedFromSessionId
+      ? resolveSessionCollectionId(next, record.forkedFromSessionId)
+      : undefined;
+    if (
+      parentSessionId !== record.parentSessionId ||
+      forkedFromSessionId !== record.forkedFromSessionId
+    ) {
+      entities.set(sessionId, {
+        ...record,
+        parentSessionId,
+        forkedFromSessionId,
+      });
     }
   }
 
@@ -1852,6 +1928,8 @@ export function applySessionCollectionCreated(
       isArchived: session.isArchived,
       isStarred: session.isStarred,
       parentSessionId: session.parentSessionId,
+      parentSessionKind: session.parentSessionKind,
+      forkedFromSessionId: session.forkedFromSessionId,
     },
     observation,
   );
@@ -1924,7 +2002,9 @@ export function applySessionCollectionMetadataChanged(
       customTitle: event.title,
       isArchived: event.archived,
       isStarred: event.starred,
-      parentSessionId: event.parentSessionId ?? undefined,
+      parentSessionId: event.parentSessionId,
+      parentSessionKind: event.parentSessionKind,
+      forkedFromSessionId: event.forkedFromSessionId,
     },
     observation,
   );

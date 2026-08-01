@@ -8,9 +8,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../../i18n";
+import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../../lib/markdownSelectionCopy";
 
 const ANCHORED_MODAL_MARGIN_PX = 8;
 const ANCHORED_MODAL_MIN_VIEWPORT_WIDTH_PX = 600;
+let modalHistoryEntrySequence = 0;
 
 export interface ModalAnchorRect {
   bottom: number;
@@ -26,6 +28,86 @@ interface ModalProps {
   children: ReactNode;
   onClose: () => void;
   anchorRect?: ModalAnchorRect | null;
+  variant?: "image-viewer";
+  /**
+   * When true, opening pushes a history entry so a browser "back" — the mobile
+   * OS back-swipe — dismisses the modal, keeping history balanced. Used by the
+   * mobile-only diff/blame viewers so a back-swipe closes them
+   * (topic: source-review-to-session).
+   */
+  closeOnBackGesture?: boolean;
+}
+
+function getHistoryState(): Record<string, unknown> {
+  return window.history.state &&
+    typeof window.history.state === "object" &&
+    !Array.isArray(window.history.state)
+    ? window.history.state
+    : {};
+}
+
+/**
+ * Own one same-URL history entry while a modal is open.
+ *
+ * Cleanup is deferred by a microtask so React Strict Mode's development-only
+ * effect replay can cancel it during the immediate re-setup. A real unmount
+ * still removes the entry, while a browser Back that already popped it only
+ * closes the modal.
+ */
+export function useModalBackGesture(
+  onClose: () => void,
+  enabled = true,
+  stateKey = "yaModal",
+) {
+  const onCloseRef = useRef(onClose);
+  const ownsHistoryEntryRef = useRef(false);
+  const cleanupGenerationRef = useRef(0);
+  const historyEntryIdRef = useRef<string | null>(null);
+  onCloseRef.current = onClose;
+  if (historyEntryIdRef.current === null) {
+    modalHistoryEntrySequence += 1;
+    historyEntryIdRef.current = `${stateKey}-${modalHistoryEntrySequence}`;
+  }
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    cleanupGenerationRef.current += 1;
+    const historyEntryId = historyEntryIdRef.current;
+    if (!ownsHistoryEntryRef.current) {
+      window.history.pushState(
+        { ...getHistoryState(), [stateKey]: historyEntryId },
+        "",
+      );
+      ownsHistoryEntryRef.current = true;
+    }
+
+    const onPopState = () => {
+      if (window.history.state?.[stateKey] === historyEntryId) {
+        return;
+      }
+      ownsHistoryEntryRef.current = false;
+      onCloseRef.current();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      const cleanupGeneration = cleanupGenerationRef.current + 1;
+      cleanupGenerationRef.current = cleanupGeneration;
+      queueMicrotask(() => {
+        if (
+          cleanupGenerationRef.current !== cleanupGeneration ||
+          !ownsHistoryEntryRef.current
+        ) {
+          return;
+        }
+        ownsHistoryEntryRef.current = false;
+        if (window.history.state?.[stateKey] === historyEntryId) {
+          window.history.back();
+        }
+      });
+    };
+  }, [enabled, stateKey]);
 }
 
 /**
@@ -33,11 +115,19 @@ interface ModalProps {
  * Renders via portal to avoid event bubbling issues.
  * Closes on Escape key or clicking the overlay.
  */
-export function Modal({ title, children, onClose, anchorRect }: ModalProps) {
+export function Modal({
+  title,
+  children,
+  onClose,
+  anchorRect,
+  closeOnBackGesture,
+  variant,
+}: ModalProps) {
   const { t } = useI18n();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const overlayPointerStartedOnOverlayRef = useRef(false);
+  useModalBackGesture(onClose, closeOnBackGesture);
   const isAnchored =
     !!anchorRect &&
     typeof window !== "undefined" &&
@@ -144,7 +234,9 @@ export function Modal({ title, children, onClose, anchorRect }: ModalProps) {
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click dismisses the modal; Escape is handled globally
     // biome-ignore lint/a11y/useKeyWithClickEvents: Escape key handled globally, click is for overlay dismiss
     <div
-      className={`modal-overlay${isAnchored ? " modal-overlay--anchored" : ""}`}
+      className={`modal-overlay${isAnchored ? " modal-overlay--anchored" : ""}${
+        variant ? ` modal-overlay--${variant}` : ""
+      }`}
       onClick={handleOverlayClick}
       onMouseDown={(e) => {
         overlayPointerStartedOnOverlayRef.current =
@@ -155,7 +247,10 @@ export function Modal({ title, children, onClose, anchorRect }: ModalProps) {
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click only stops propagation, keyboard handled globally */}
       <div
         ref={modalRef}
-        className={`modal${isAnchored ? " modal--anchored" : ""}`}
+        className={`modal${isAnchored ? " modal--anchored" : ""}${
+          variant ? ` modal--${variant}` : ""
+        }`}
+        {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
         role="dialog"
         aria-modal="true"
         onClick={handleModalClick}

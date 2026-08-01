@@ -8,6 +8,9 @@
 > attachment, or public share).
 
 See also:
+- [`active-content-security.md`](active-content-security.md) — why HTML, SVG,
+  and other active files must remain source/download data or execute only in
+  an isolated origin, regardless of which transport fetched their bytes.
 - [`ui-architecture.md`](ui-architecture.md) — the render-boundary principle
   these surfaces are supposed to share instead of each re-solving fetching.
 - [`rich-text-rendering.md`](rich-text-rendering.md) — how rendered Markdown/HTML
@@ -16,9 +19,9 @@ See also:
   *displayed* (compacted to project-relative) across these surfaces.
 - [`attachment-storage.md`](attachment-storage.md) — where uploaded attachments
   live and the allow-list behind `/api/local-image` and `/api/local-file`.
-- [`session-media-handles.md`](session-media-handles.md) — proposed transcript
-  media handles for inline base64 provider payloads that should be fetched
-  lazily instead of retained in session JSON.
+- [`session-media-handles.md`](session-media-handles.md) — materialized
+  tool-result media and transcript media handles that are fetched lazily
+  instead of retained as inline base64.
 - [`relay-origin-and-share-gating.md`](relay-origin-and-share-gating.md) — why
   the relay origin has no API, and the public-share serving path.
 - `docs/tactical/009-local-resource-link-routing.md` — the working log of the
@@ -62,20 +65,22 @@ and the route it pulls from.
 
 ### Inline in the transcript
 
-- **Read tool result, inline image preview** — under a `Read` tool-call row in
-  the message timeline, the expandable image with the `+ / -` toggle.
-  `ImageFileResult` in `renderers/tools/ReadRenderer.tsx`. Bytes come as a
-  base64 `data:` URL inside the tool result itself — no network, always works.
+- **Image-bearing tool result** — `Read`, `ViewImage`, and provider-neutral
+  image-bearing results converge on the shared outline media row. Its `+ / -`
+  toggle controls a lazy object-URL preview. Route:
+  `/api/projects/:id/sessions/:sid/media/:mediaId`. Relay-safe. Legacy
+  unmaterialized `Read` results retain their base64 renderer as a compatibility
+  fallback.
 - **Embedded media inside rendered Markdown/HTML** — an `![](...)` image or
   video that appears inline within an assistant/user message body.
   `useLocalMediaInlinePreviews` (`components/LocalMediaModal.tsx`) hydrates the
   `local-media-inline-preview` placeholders emitted by the server Markdown
   augment; it's wired from `blocks/TextBlock.tsx` and
   `renderers/blocks/TextRenderer.tsx`. Route: `/api/local-image`. Relay-safe.
-- **ViewImage tool result** — a "View Image" tool row (Codex `imageView` /
-  `view_image`). Clicking the filename opens a modal with the picture.
-  `renderers/tools/ViewImageRenderer.tsx` via `useFetchedImage` →
-  `/api/local-image`. Relay-safe.
+- **Legacy path-backed ViewImage result** — a historical result without a
+  media handle still opens its path through `LocalMediaModal` and
+  `/api/local-image`. New live and durable results snapshot permitted paths
+  into the session media store before rendering.
 
 ### Modals opened by clicking a link
 
@@ -92,7 +97,17 @@ and the route it pulls from.
 - **Local file modal (rendered-text file links)** — click a non-media local file
   link in rendered text; a modal renders text/JSON/log inline, PDFs from a blob
   URL, and (direct mode) HTML/Markdown in a sandboxed iframe. `LocalFileModal`
-  → `/api/local-file`. Relay-safe.
+  → `/api/local-file`. Relay-safe. The sandboxed modal is the only permitted
+  HTML preview shape; open/new-tab actions must not escape it to an inline raw
+  active response. See [`active-content-security.md`](active-content-security.md).
+
+File-viewer modals own one same-URL browser-history entry: Back dismisses the
+viewer without leaving the underlying session, while opening or React effect
+replay must never traverse pre-modal history. File-link custom context menus
+preserve the browser-standard copy-link affordance as **Copy URL** whenever the
+standalone target is valid for the current connection. Relay-only local API
+links omit that action rather than copying an unusable hosted-origin `/api`
+URL.
 
 ### Composer and new-session
 
@@ -138,6 +153,184 @@ turns, and parsed user-prompt blocks):
 - Leave touch behavior on the explicit click modal; hover-only enlargement is a
   desktop affordance.
 
+## Compact turn image galleries
+
+Status: implemented.
+
+When **Expand Inline Media by Default** is enabled, several tall images in one
+assistant turn can consume the visible transcript and push the turn's
+informative text above the viewport. A completed final response can then look
+like an interrupted response on return: the visible tail is mostly screenshots,
+while the actual completion text is offscreen.
+
+Appearance exposes **Compact Multi-Image Galleries** beside **Expand Inline
+Media by Default**. The gallery setting enables one gallery capability for
+completed assistant turns with two or more eligible linked images. **Expand
+Inline Media by Default** controls only its initial visibility: with inline
+expansion enabled, the gallery starts open; otherwise the ordinary compact
+image links remain and a small **+ Gallery** action follows the final eligible
+link in source order. While open, that action remains visible as **− Gallery**.
+Disabling the gallery setting removes that action and restores the existing
+independent inline-preview behavior.
+
+The gallery setting defaults on by explicit maintainer approval (graehl,
+2026-07-29). This is a deliberate default-on exception under
+[`vanilla-defaults.md`](vanilla-defaults.md): a gallery does not open unless the
+user already requested automatic inline expansion, and the closed-state action
+appears only where a turn has multiple images. It adds no provider behavior or
+transcript content and avoids another global preference merely to govern that
+one affordance.
+
+The compact presentation is owned by the whole assistant turn, not by one text
+block or the position of an image link within it. Eligible images are linked
+images in rendered Markdown text items across that turn. Image-bearing
+`ViewImage`, `Read`, and provider-neutral tool-result rows retain their own
+independent media controls and are not gallery candidates. One eligible image
+retains the existing inline presentation. With two or more eligible images and
+the gallery setting enabled, every per-image `+` control opens the same turn
+gallery centered on that image. While the gallery is open, all of those
+controls become `−`; activating any one collapses the whole gallery. The
+generic **+ Gallery** action opens it at the last featured image, or the first
+source image when none has yet been featured, and becomes **− Gallery** while
+open. With the gallery setting disabled, manual and automatic per-image
+expansion retain their ordinary full inline presentation.
+
+The original image links remain at their original positions in the turn text.
+Activating an image link opens that image directly in the full-screen viewer
+with the complete turn gallery as navigation context. It does not change the
+inline gallery's open or closed state. The gallery has one shared featured-item
+caption rather than repeating captions below every thumbnail:
+
+- On desktop, while the gallery is active, the pointer continuously features
+  the nearest thumbnail across the browser viewport, including above or below
+  the thumbnail rows and in their gaps. Opening the image viewer pauses this
+  tracking so returning preserves the selected item. Keyboard focus features
+  its item directly.
+- In the horizontally swipeable phone row, the item nearest the row's center
+  becomes featured as the user scrolls or drags.
+- The original link label is the primary caption. The literal basename may
+  appear as smaller, lower-emphasis secondary text when it differs and adds
+  useful identity.
+- Activating the featured caption scrolls back to and focuses that image's
+  original link in the turn text.
+
+Selecting a thumbnail also opens the full-screen image viewer at that image.
+Navigation between the turn text and gallery therefore remains distinct from
+full-size inspection.
+
+The shared image viewer uses the useful viewport rather than the generic modal
+preview ceiling. Selecting a thumbnail enters one maximized viewer state.
+Activating the modal **×** or visible **Close** control, or pressing Escape,
+returns to the prior transcript/gallery state. Clicking or tapping the image
+stage never dismisses the viewer. Toolbar controls remain operable without
+dismissing it. When a turn gallery supplies context, previous/next buttons and
+the Left/Right arrow keys move through eligible images in original transcript
+order and wrap at either end. The viewer shows the source-order position in
+reserved space outside the image stage, even when compact packing visually
+reorders the thumbnails.
+
+The previous/next buttons and position are transient viewer chrome. They appear
+briefly when the viewer opens. Fine-pointer movement over the image stage shows
+both, and inactivity hides them so they do not obscure the image. Keyboard
+Left/Right navigation reveals only the position; keyboard focus within the
+previous/next controls keeps the full chrome visible. On touch screens, a tap
+on the unzoomed or stationary image stage reveals the full chrome briefly
+instead of closing the viewer. Touch movement used for pan or pinch does not
+count as a tap.
+
+The full-screen modal shell remains mounted and maximized throughout image
+loading, decoding, navigation, and load failures; its geometry does not depend
+on whether the image viewer child is currently ready. During gallery
+navigation, the last decoded image, linked filename, and source-order position
+remain visible until the requested replacement has decoded, then change
+together. A superseded load must never replace a newer selection. If a
+replacement fails, the current image stays visible with the error reported
+over it rather than exposing or reflowing the transcript behind the modal.
+
+Fit, 1:1, and stepped zoom are explicit inspection controls within that one
+state, not further expansion levels. A 1:1 or otherwise zoomed image remains
+scrollable and pannable instead of being clipped; trackpad pinch/wheel zoom
+remains anchored near the pointer.
+
+On touch screens, the gallery row retains its horizontal swipe behavior until
+an image is selected. The selected image then owns a full-screen stage with
+two-finger pinch zoom and one-finger pan, while closing it returns to the same
+transcript/gallery position. The transient previous/next buttons remain
+practical touch targets; tapping the stage reveals them and full-screen
+horizontal swipe navigation is not required.
+
+The viewer header exposes the basename as a link to the fetched full-resolution
+image, and its explicit **Download** action saves those same fetched bytes under
+that basename. Both use the relay-safe object URL; neither navigates the browser
+to a bare API route.
+
+The compact-gallery goals, in priority order, are:
+
+- Where the turn is short enough, keep all of its informative text and the
+  gallery visible together. Long turns make that impossible, so this is a
+  target rather than a guarantee.
+- Give the gallery at most roughly one third of the transcript viewport while
+  a useful compact preview is possible. It may use less height when that lets
+  the turn text fit.
+- Keep relative reduction reasonably even: one screenshot should not become
+  illegible merely so another can remain close to its normal inline size.
+- Choose among the viable row counts by maximizing the smallest thumbnail
+  height, preferring fewer rows on a tie. Do not split a row when dividing the
+  same vertical budget would only make its images smaller.
+- A thumbnail's rendered height must never exceed its natural pixel height.
+  Natural-size caps may leave unused space or produce ragged alignment; do not
+  upscale an image merely to align it with its row or fill the gallery. The
+  phone swipe presentation retains the same natural width and height ceilings;
+  its target card width is not permission to enlarge a small image.
+- Use the available vertical budget without treating complete content-width
+  fill as a goal. Rows may have different heights.
+- Present ordinary completed rows as justified image rows. The final or
+  pathologically sparse row may remain ragged; dead horizontal space is
+  acceptable rather than enlarging images solely to consume it. Roughly 100
+  pixels of leftover row width is an initial tuning signal, not a persistent
+  format constant.
+- Preserve each image's stable filename/identity and full-size target, but do
+  not preserve image occurrence order as a presentation constraint. The
+  gallery may reorder a turn's automatically presented images to improve
+  legibility and packing. Filename references in the prose remain in their
+  original transcript order.
+
+A deterministic greedy row fill with one-image lookahead is a plausible first
+layout strategy. Small bounded exact searches are also acceptable, but the
+observable contract is balanced, stable packing rather than a globally optimal
+permutation. The same image dimensions and available space should produce the
+same arrangement, and small resize changes should not cause gratuitous
+reshuffling.
+
+The gallery footer has a turn-level **Collapse gallery** action with an Escape
+keyboard accelerator. The `−` beside every eligible source link and the
+persistent **− Gallery** action collapse the same turn-level state. Collapsing
+removes the reordered gallery and reinstates each image as the existing minimal
+link and `+` affordance at that image reference's original inline position.
+The generic action returns to **+ Gallery**. The transcript's original
+text/image-reference order is therefore always recoverable even though gallery
+packing may reorder thumbnails. Activating a specific `+` restores the same
+deterministic gallery arrangement centered on that image; activating
+**+ Gallery** restores it at the last featured image. There is no second
+“collapse to expanded inline images” state.
+
+### Phone presentation and deferred gesture
+
+On phone, a single horizontally swipeable thumbnail row is a reasonable compact
+presentation. It spends horizontal overflow instead of shrinking several
+screenshots into nearly unreadable fixed columns. A partially visible next
+thumbnail can disclose the swipe affordance. Selecting an image opens a
+scrollable, pinch-zoomable full-screen view, and returning preserves the
+transcript position.
+
+A post-v1 interaction experiment may combine selection and enlargement in one
+two-axis gesture: horizontal finger movement scrubs through the row, while
+moving the same drag upward toward the top of the screen enlarges the currently
+centered image. This is not required for the first gallery implementation. It
+needs touch testing for accidental activation and conflict with ordinary
+vertical transcript scrolling, plus a complete tap/full-screen path for users
+who do not discover or cannot perform the gesture.
+
 ## Which route serves the file (the "doors")
 
 There are two routing systems and several serving routes. The serving route
@@ -151,6 +344,7 @@ Serving routes:
 | `/api/local-file` | Same allow-set (text/PDF/HTML/Markdown) | `routes/local-file.ts` |
 | `/api/projects/:id/files` + `/files/raw` | Relative paths project-scoped; **absolute/`~` paths gated by the same file-access allow-set** | `routes/files.ts` |
 | `/api/projects/:id/sessions/:sid/upload/:filename` | Files uploaded to that session | `routes/upload.ts` |
+| `/api/projects/:id/sessions/:sid/media/:mediaId` | Authenticated session-scoped opaque tool-result handle | `routes/tool-result-media.ts` |
 | `/public-api/shares/:secret/files/raw` | Share-scoped, capability-gated by secret | `routes/public-shares.ts` |
 
 **The file-access allow-set** is one effective list enforced by **both** doors
@@ -182,6 +376,22 @@ against the same file-access allow-set. So a `C:\tmp` image that takes the
 project-files route enforces the same allow-set as the media door would — the
 historical "safe-dir image opened through the project files route" 404 is gone.
 
+### Windows Markdown destinations
+
+Agent-authored Markdown may use native drive paths such as
+`D:\repo\.artifacts\capture.png`. CommonMark treats a backslash before
+punctuation as an escape, so the Markdown lexer would otherwise turn
+`repo\.artifacts` into the nonexistent `repo.artifacts` before YA can classify
+the path.
+
+The server Markdown boundary repairs this deterministically from the raw link,
+image, or reference-definition token before rendering: any absolute
+drive-letter destination (`A:` through `Z:`, case-insensitive) containing
+backslashes is canonicalized to forward slashes. The original transcript text
+is not rewritten. Code spans, code blocks, relative paths, URLs, and UNC paths
+are not changed, and the resulting path still passes through the normal
+project/file-access allow-set without fallback lookup or filesystem guessing.
+
 ## Known sharp edges
 
 - **Bare API URLs in relay mode** — the canonical failure. Fixed in the
@@ -196,6 +406,8 @@ historical "safe-dir image opened through the project files route" 404 is gone.
   secure-by-default, so absolute paths outside projects/uploads/temp are denied
   until the user adds the folder (Settings → File access) or sets
   `ALLOWED_FILE_PATHS`.
-- **No single media component** — surfaces share the *fetch primitive*
-  (`fetchMediaBlob` / `useFetchedImage`), not one `<RemoteImage>` element, so a
-  fix has to be applied per surface or pushed into a shared source adapter.
+- **Context-specific media remains** — normalized tool-result images share one
+  media row, and modal-based local images share `LocalMediaModal`; attachments,
+  rendered Markdown placeholders, and the project `FileViewer` retain
+  context-specific presentation. Cross-surface fixes still belong in a shared
+  source adapter or the narrowest common rendering boundary.

@@ -1,0 +1,342 @@
+# Android FCM Push
+
+> The published YA Android app uses a small hosted push broker to turn
+> revocable, per-server device push subscriptions into FCM notifications while
+> self-hosted YA servers and relays remain under their operators' control.
+
+Topic: android-fcm-push
+
+Status: Approved architecture direction. The credential-free broker v1 is
+implemented and tested. The Android shell now has a minimal FID registration
+and receive probe, and direct Firebase Console delivery has been verified on a
+physical device. Live broker delivery, Android broker enrollment, and the YA
+server subscription protocol are not implemented.
+
+Related:
+
+- [Notifications system overview](notifications.md)
+- [Push broker v1 tactical plan](../docs/tactical/068-push-broker-v1.md)
+- [Android FCM live smoke](../docs/tactical/069-android-fcm-live-smoke.md)
+- [Android wrapper and notification integration](../docs/tactical/071-android-wrapper-notification-integration.md)
+- [Mobile companion app](../docs/project/mobile-companion-app.md)
+- [Relay design](../docs/project/relay-design.md)
+- [Relay client mux](relay-client-mux.md)
+- [Web Push notifications](../docs/push-notifications.md)
+- [Hard development rules](hard-development-rules.md)
+
+## Product Boundary
+
+YA servers and relays remain self-hostable. The normal published Android app
+belongs to the YA Firebase project and uses a YA-hosted push broker because the
+Firebase service-account credentials for that app cannot be distributed to
+arbitrary server installations.
+
+The push broker is not an account system or application-traffic relay. It
+should know only what it needs to register Android installations, authorize and
+rate-limit notification requests, and dispatch them through FCM.
+
+The planned published service endpoint is `https://push.yepanywhere.com`. The
+public name and protocol should use provider-neutral push terminology even
+though FCM is the first delivery implementation.
+
+Existing browser Web Push/VAPID remains supported independently. Native FCM is
+an additional Android delivery target, not a replacement for self-hosted Web
+Push.
+
+## Service Boundary
+
+The hosted push broker should be a separate runtime service from the relay. The
+two services may share physical hosting, but they should not share a process,
+event loop, database, or delivery credentials.
+
+The official push broker is Linux-hosted infrastructure. Windows is not a
+supported deployment target, so the push-broker package test command exits
+before loading broker dependencies on native Windows. Linux CI remains the
+authoritative broker verification environment; macOS development runs may
+continue exercising the same package tests.
+
+This preserves the relay's latency-sensitive opaque forwarding path, allows
+broker persistence and outbound provider calls to proceed independently, and
+keeps Firebase credentials outside the relay's otherwise narrow trust boundary.
+Broker deployments and restarts should not disconnect live relay circuits, and
+the public push endpoint should be movable without changing the relay endpoint.
+
+## Trust Model
+
+After a successful SRP login, the YA Android app and the user's YA server are
+fully trusted with each other's device-specific push material. The operator is
+responsible for protecting secrets stored by their server, just as they are for
+existing auth state and VAPID keys.
+
+The hosted broker has narrower trust:
+
+- it alone holds the official Firebase service-account credentials;
+- it may store Android installation identifiers, current FCM delivery
+  registrations, subscription associations, optional server/relay labels,
+  privacy preferences, and delivery/rate-limit metadata;
+- it does not receive SRP passwords or relay session keys; and
+- it must not become a transcript or general YA message service.
+
+An FCM registration does not need to be hidden from the Android app or its
+authenticated YA server. Keeping the broker's current registration mapping is
+primarily a delivery-lifecycle convenience, not a trust boundary between the
+phone and server.
+
+## Login And Push Enrollment
+
+The default server-login path is the existing username/password SRP flow over a
+direct or relay connection. Push enrollment happens only after that login:
+
+1. The user logs the YA Android app into a YA server with SRP.
+2. The user enables native notifications for that server.
+3. The Android app creates a device push subscription through the configured
+   broker.
+4. The Android app gives the resulting subscription credentials to the trusted
+   YA server over the authenticated, encrypted connection.
+5. The YA server stores those credentials in its data directory and uses them
+   for future notification requests.
+
+A future QR or deep-link flow may make the SRP device login easier. It is an
+optional login shortcut, not a prerequisite for push and not a separate push
+authorization model.
+
+## Device Push Subscription
+
+A device push subscription is conceptually similar to the Web Push
+subscription YA already stores. It is a one-way capability allowing one YA
+server to request notifications for one Android installation.
+
+Its conceptual fields are:
+
+- broker endpoint;
+- opaque subscription id; and
+- high-entropy send secret.
+
+These names describe the authority boundary, not a committed wire schema. The
+opaque id identifies broker state; the send secret authorizes delivery. The
+broker should store a verifier or hash rather than plaintext when its chosen
+authentication scheme permits that.
+
+One subscription per YA-server/Android-installation relationship permits
+independent attribution, rate limiting, muting, and revocation. It is not a
+chat room, a relay circuit, or an address that another server can discover by
+username.
+
+The broker maps the stable subscription to the Android installation's current
+FCM delivery registration. The YA server may also know that registration, but
+it should not need to use it as its durable destination.
+
+The credential-free broker milestone separates two capabilities:
+
+- an installation-management secret creates and revokes server-specific
+  subscriptions and replaces the installation's current provider target; and
+- each subscription has its own send secret, which can request notifications
+  for that installation but cannot read or replace its provider target.
+
+Both secrets are generated by the broker, returned once, and stored only as
+verifiers by the broker. Unknown, revoked, and incorrectly authenticated
+capabilities have the same externally visible failure.
+
+## Credential-Free Broker V1 Contract
+
+The standalone TypeScript service under `packages/push-broker/` exposes:
+
+- `POST /v1/installations` to register one opaque FCM delivery target and
+  receive an installation id and management secret;
+- authenticated replacement and deletion beneath
+  `/v1/installations/:installationId`;
+- authenticated subscription creation and revocation beneath that
+  installation; and
+- `POST /v1/subscriptions/:subscriptionId/notifications` to submit one generic
+  intent with the subscription send secret.
+
+The send route never accepts a provider target. Installation and send secrets
+are random 256-bit values returned once and retained by the broker only as
+SHA-256 verifiers. Revocation prevents later requests; a provider submission
+already in flight cannot be recalled.
+
+Defined JSON bodies are limited to 8 KiB and reject unknown fields. Mutation
+responses use `Cache-Control: no-store`. Invalid bodies return `400`, missing
+JSON content type returns `415`, oversized bodies return `413`, unknown or
+unauthorized capabilities return `404`, subscription-cap exhaustion returns
+`409`, and rate limits return `429` with `Retry-After`.
+
+The credential-free provider contract waits at most ten seconds. Accepted
+provider submissions return `202`, retryable failures return `503`, and
+rejections return `502`. There is no broker-owned queue or retry loop.
+
+The conservative process-local limits are:
+
+- 120 mutation requests per minute per source IP;
+- 10 installation registrations per hour per source IP;
+- 30 notification submissions per minute per subscription;
+- 120 notification submissions per minute per installation; and
+- 20 active subscriptions per installation.
+
+These counters are bounded in memory and reset on restart. Forwarding headers
+affect their source-IP key only when the immediate peer is in the explicit
+trusted-proxy configuration. Durable or distributed quotas remain deployment
+work.
+
+The fake provider is non-production only. FCM mode requires an explicit
+Firebase project id and uses Application Default Credentials. The process
+binds to loopback by default; explicit host, port, data directory, provider
+timeout, log level, and trusted-proxy settings are authoritative.
+
+## Delivery
+
+The intended flow is:
+
+```text
+YA server
+  -> authenticated notification request for one device push subscription
+  -> YA-hosted push broker
+  -> FCM
+  -> YA Android app / Android notification tray
+```
+
+The broker authenticates the subscription, applies payload policy and rate
+limits, resolves the current FCM delivery registration, and submits the
+message. Notification requests do not choose an arbitrary FCM registration or
+relay username.
+
+The credential-free v1 submits directly to its configured provider and returns
+only after that submission succeeds or fails. It has no durable delivery queue,
+retry loop, acknowledgement protocol, or delivery guarantee. Those mechanisms
+must be justified by observed live-provider behavior before being added.
+
+The broker may store a normalized relay origin, relay username, and
+user-visible server label with the subscription. Those fields support
+attribution, diagnostics, and secondary rate limits; they are not notification
+authorization.
+
+Primary abuse controls are based on the subscription, Android installation,
+and source IP. Relay-origin/username limits may supplement them. The v1 limits
+are recorded above; durable quotas, coalescing keys, retry policy, and
+idempotency rules should be chosen with live broker evidence.
+
+## Notification Privacy Modes
+
+The architecture supports two user choices:
+
+### Generic
+
+The notification contains no user-generated content. The broker receives a
+small intent such as "pending input" or "session finished" plus opaque routing
+metadata, and sends fixed notification copy. Opening the notification fetches
+details from the user's YA server over its normal authenticated connection.
+
+This is the conservative default direction.
+
+The credential-free v1 accepts only four fixed intents: approval required,
+input required, session completed, and session failed. They all produce the
+same bounded visible notification copy. The provider payload contains the
+intent and opaque subscription id so the app can fetch current details from its
+authenticated YA server.
+
+### Descriptive
+
+The user explicitly opts into notification title/body text passing in
+plaintext through the YA push broker and Google FCM. This may include bounded
+project, session, question, or approval text. The UI must explain that
+privacy/functionality trade-off before enabling it.
+
+The broker should validate and forward descriptive payloads without becoming a
+durable content store. Exact retention, logging redaction, payload size limits,
+and user-facing consent copy belong to the implementation contract.
+
+End-to-end-encrypted rich notification bodies are possible future work, not a
+requirement for the first useful Android push path.
+
+## FCM Registration Lifecycle
+
+FCM's delivery registration can change over the lifetime of an Android
+installation. The broad ownership rule is simple:
+
+- the Android app uses the supported Firebase SDK lifecycle to learn its
+  current delivery registration;
+- the broker associates that current registration with stable YA device push
+  subscriptions; and
+- ordinary FCM refresh should not require the user to repeat SRP login or
+  recreate otherwise-valid server/device relationships.
+
+The first physical-device probe pins Firebase Messaging `25.1.1` through BoM
+`34.16.0`, opts into FID targeting, and receives the current FID through
+`FirebaseMessagingService.onRegistered()`. Firebase auto-initialization
+registered a clean app installation without activity code, a custom background
+job, or a retry loop. Clearing the dev app's data caused a different FID to be
+minted and delivered through the same callback.
+
+The current probe logs that FID only in debug builds. It does not upload it to
+the broker. The eventual enrollment implementation should treat every
+`onRegistered()` callback as an opportunity to replace the broker
+installation's current target without recreating its server-specific
+subscriptions.
+
+The FID and broker installation capability are native installation state. A
+hosted foreground client does not need either value. The narrow bridge seam is
+server-specific push enrollment: native code may create a broker subscription
+and return that subscription's one-time send capability to the already
+authenticated hosted client for installation on the YA server. The FID and
+installation-management secret stay native.
+
+Do not prescribe a retry schedule, offline recovery algorithm,
+stale-registration threshold, or deletion policy here. Those details still
+need evidence from the pinned SDK against the live broker.
+
+Before this lifecycle is treated as complete, exercise real target refresh,
+offline app/broker recovery, reinstall or cleared-app-data behavior, invalid
+FCM send responses, and eventual stale-record cleanup. That implementation
+work should produce the concrete observable contract.
+
+## Future Apple Delivery
+
+A future YA iOS app should use the same device push subscription and broker
+service rather than introducing another public notification service.
+
+The initial iOS direction is to use Firebase Cloud Messaging's Apple-platform
+integration. The iOS app registers through the FCM SDK, Firebase maps that
+registration to Apple Push Notification service (APNs), and the broker submits
+through the same FCM server interface used for Android. The Firebase project
+must be configured with the YA app's APNs authentication material, but YA
+servers continue to use the same provider-neutral subscription contract.
+
+This keeps the first iOS delivery path small while leaving direct APNs delivery
+as a possible later broker adapter. Adding such an adapter should not require a
+new public hostname or a new YA-server subscription model.
+
+iOS silent/background delivery is opportunistic and subject to platform
+throttling. The dependable initial product path should use visible
+notifications and fetch current details from the authenticated YA server when
+the user opens them. Exact Apple notification behavior must be validated during
+iOS implementation.
+
+## Self-Hosted And Configured Variants
+
+The mainstream path is:
+
+- published YA Android app;
+- official YA Firebase project and push broker;
+- any user-operated YA server; and
+- either the hosted relay, a self-hosted relay, or a direct connection.
+
+A source-built Android app may expose build-time configuration for alternate
+service URLs and may use an operator-owned Firebase project and push broker.
+That is an advanced distribution path, not a requirement for ordinary
+self-hosting of YA servers and relays.
+
+Explicit broker, relay, and server configuration is authoritative. A client or
+server must not silently replace an operator-selected endpoint with the hosted
+default.
+
+## Deferred Implementation Decisions
+
+- YA-server storage/routes, their Android client contract, and their
+  compatibility gates.
+- Live broker validation of FID sends and provider failures.
+- Registration refresh, invalidation, offline recovery, and stale cleanup.
+- Durable quotas, coalescing, acknowledgement, and delivery-result semantics.
+- App-attestation requirements for official and source-built distributions.
+- Exact generic/descriptive notification settings and disclosure copy.
+- Whether a later iOS release continues through FCM or adds direct APNs as a
+  broker delivery adapter.

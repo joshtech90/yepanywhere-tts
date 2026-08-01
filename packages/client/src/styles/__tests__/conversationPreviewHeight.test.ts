@@ -1,0 +1,125 @@
+// @vitest-environment node
+
+import { readFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+
+const stylesheetUrl = new URL("../index.css", import.meta.url);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function readStylesheet(): Promise<string> {
+  return readFile(stylesheetUrl, "utf8");
+}
+
+function getRuleDeclarations(css: string, selector: string): string {
+  const match = new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`).exec(
+    css,
+  );
+  expect(
+    match,
+    `${selector} should have a dedicated rule in index.css.`,
+  ).not.toBeNull();
+  return match?.[1] ?? "";
+}
+
+describe("conversation preview height contract", () => {
+  it("caps the current thinking preview to a viewport fraction and scrolls past it", async () => {
+    const css = await readStylesheet();
+    const declarations = getRuleDeclarations(
+      css,
+      ".conversation-thinking-preview-content",
+    );
+    // Viewport-relative cap (contains vh, not a fixed pixel budget) so the
+    // preceding non-thinking turn keeps space; overflow scrolls internally.
+    // This is the measurement source, so it must NOT depend on the published
+    // height — see topics/responsive-layout-gaps.md.
+    expect(
+      declarations,
+      "current thinking preview must cap its height relative to the viewport, not a fixed px",
+    ).toMatch(/max-height:[^;]*vh[^;]*;/);
+    expect(declarations).toMatch(/overflow:\s*auto\s*;/);
+  });
+
+  it("caps the recent-activity list to the published thinking height and clips overflow", async () => {
+    const css = await readStylesheet();
+    const declarations = getRuleDeclarations(
+      css,
+      ".conversation-recent-activities",
+    );
+    // Never exceed the space the current thinking block requests: bound to the
+    // measured --conversation-thinking-height, with a viewport-relative fallback
+    // before the first measurement. Clips the oldest rows rather than showing a
+    // fixed count.
+    expect(
+      declarations,
+      "recent-activity list must cap to the published thinking height",
+    ).toMatch(/max-height:\s*var\(\s*--conversation-thinking-height/);
+    expect(declarations).toMatch(/overflow:\s*hidden\s*;/);
+  });
+
+  it("fades the activity list's clipped bottom edge instead of a hard cut", async () => {
+    const css = await readStylesheet();
+    const declarations = getRuleDeclarations(
+      css,
+      ".conversation-recent-activities.is-clipped",
+    );
+    // A bottom mask gradient fades the oldest (clipped) rows; applied only under
+    // .is-clipped so a fully-fitting list is not faded.
+    expect(
+      declarations,
+      "clipped activity list must fade its bottom edge via a mask gradient",
+    ).toMatch(/mask-image:\s*linear-gradient\([^;]*transparent[^;]*\)\s*;/);
+  });
+
+  it("caps the previous preview to the current height: min(current, previous)", async () => {
+    const css = await readStylesheet();
+    const match =
+      /\.conversation-thinking-preview\[data-preview-slot="previous"\]\s*\.conversation-thinking-preview-content\s*\{([^}]*)\}/.exec(
+        css,
+      );
+    expect(
+      match,
+      "previous preview content should have a dedicated cap rule in index.css",
+    ).not.toBeNull();
+    const declarations = match?.[1] ?? "";
+    // height(previous) = min(natural, current): capping to the current height
+    // keeps the current block owning the row height, so the previous preview
+    // disappearing at turn end causes no shrink (no autofollow flicker).
+    expect(
+      declarations,
+      "previous preview must cap to the published current thinking height",
+    ).toMatch(/max-height:\s*var\(\s*--conversation-thinking-height/);
+  });
+
+  it("uses leftover width for activities while keeping the summary pill intrinsic", async () => {
+    const css = await readStylesheet();
+    const rowDeclarations = getRuleDeclarations(
+      css,
+      ".conversation-activity-row.is-wide-activity-previews",
+    );
+    expect(rowDeclarations).toMatch(/justify-content:\s*flex-end\s*;/);
+
+    const columnDeclarations = getRuleDeclarations(
+      css,
+      ".conversation-activity-row.is-wide-activity-previews\n  > .conversation-activity-column",
+    );
+    expect(columnDeclarations).toMatch(/max-width:\s*100%\s*;/);
+    expect(columnDeclarations).toMatch(/flex:\s*1 1 12rem\s*;/);
+
+    const activityDeclarations = getRuleDeclarations(
+      css,
+      ".conversation-activity-row.is-wide-activity-previews\n  .conversation-recent-activities",
+    );
+    expect(activityDeclarations).toMatch(/width:\s*100%\s*;/);
+    expect(activityDeclarations).toMatch(/min-width:\s*0\s*;/);
+
+    const summaryDeclarations = getRuleDeclarations(
+      css,
+      ".conversation-activity-summary",
+    );
+    expect(summaryDeclarations).toMatch(/display:\s*inline-flex\s*;/);
+    expect(summaryDeclarations).not.toMatch(/(?:^|\n)\s*width:\s*100%\s*;/);
+  });
+});

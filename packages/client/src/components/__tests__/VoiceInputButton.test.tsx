@@ -12,35 +12,34 @@ const {
   sourceTransport,
   speechState,
   versionState,
-} =
-  vi.hoisted(() => {
-    const openSpeechSocket = vi.fn();
-    return {
-      observedSpeechOptions: [] as UseSpeechRecognitionOptions[],
-      openSpeechSocket,
-      sourceTransport: {
-        capabilities: {
-          sameOriginUrls: false,
-          speech: { open: openSpeechSocket },
-        },
+} = vi.hoisted(() => {
+  const openSpeechSocket = vi.fn();
+  return {
+    observedSpeechOptions: [] as UseSpeechRecognitionOptions[],
+    openSpeechSocket,
+    sourceTransport: {
+      capabilities: {
+        sameOriginUrls: false,
+        speech: { open: openSpeechSocket },
       },
-      speechState: {
-        isListening: false,
-        status: "idle" as
-          | "idle"
-          | "starting"
-          | "listening"
-          | "receiving"
-          | "processing"
-          | "finalizing"
-          | "reconnecting"
-          | "error",
-      },
-      versionState: {
-        capabilities: [] as string[],
-      },
-    };
-  });
+    },
+    speechState: {
+      isListening: false,
+      status: "idle" as
+        | "idle"
+        | "starting"
+        | "listening"
+        | "receiving"
+        | "processing"
+        | "finalizing"
+        | "reconnecting"
+        | "error",
+    },
+    versionState: {
+      capabilities: [] as string[],
+    },
+  };
+});
 
 vi.mock("../../contexts/SourceRuntimeContext", () => ({
   useCurrentSourceRuntime: () => ({
@@ -70,16 +69,6 @@ vi.mock("../../hooks/useSpeechCaptureSettings", () => ({
 }));
 
 vi.mock("../../hooks/useSpeechRecognition", () => ({
-  SPEECH_STATUS_LABELS: {
-    idle: "Idle",
-    starting: "Connecting...",
-    listening: "Listening",
-    receiving: "Receiving",
-    processing: "Transcribing",
-    finalizing: "Finalizing",
-    reconnecting: "Reconnecting...",
-    error: "Error",
-  },
   useSpeechRecognition: (options: UseSpeechRecognitionOptions) => {
     observedSpeechOptions.push(options);
     return {
@@ -112,7 +101,16 @@ vi.mock("../../hooks/useViewportWidth", () => ({
 
 vi.mock("../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string) => key,
+    t: (key: string) =>
+      ({
+        speechReadyStatus: "Ready",
+        speechStartingStatus: "Starting...",
+        speechSpeakNowStatus: "Speak now...",
+        speechListeningPlaceholder: "Listening...",
+        speechTranscribingPlaceholder: "Transcribing...",
+        speechFinalizingPlaceholder: "Finalizing...",
+        speechErrorStatus: "Error",
+      })[key] ?? key,
   }),
 }));
 
@@ -167,6 +165,7 @@ describe("VoiceInputButton", () => {
     expect(button.className).not.toContain("listening");
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(document.querySelector(".voice-input-recording")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Transcribing...");
   });
 
   it("passes the browser-selected Parakeet model to speech providers", () => {
@@ -194,7 +193,7 @@ describe("VoiceInputButton", () => {
       />,
     );
 
-    const button = screen.getByRole("button", { name: "Finalizing" });
+    const button = screen.getByRole("button", { name: "Finalizing..." });
     expect(button.className).not.toContain("listening");
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(document.querySelector(".voice-input-recording")).toBeNull();
@@ -233,10 +232,12 @@ describe("VoiceInputButton", () => {
     );
 
     expect(document.querySelector(".voice-input-status")).toBeNull();
-    expect(document.querySelector(".voice-input-recording")).toBeTruthy();
+    const recordingIcon = document.querySelector(".voice-input-recording");
+    expect(recordingIcon).toBeTruthy();
+    expect(recordingIcon?.classList.contains("is-speech-active")).toBe(false);
   });
 
-  it("keeps listening text for browser-native capture without sample access", () => {
+  it("prompts when browser-native capture is ready without sample access", () => {
     speechState.status = "listening";
     speechState.isListening = true;
 
@@ -250,7 +251,58 @@ describe("VoiceInputButton", () => {
     );
 
     expect(document.querySelector(".voice-input-status")?.textContent).toBe(
-      "Listening",
+      "Speak now...",
     );
+  });
+
+  it("shows listening while browser-native speech is active", () => {
+    speechState.status = "receiving";
+    speechState.isListening = true;
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="browser-native"
+      />,
+    );
+
+    expect(screen.getByRole("status").textContent).toBe("Listening...");
+    expect(
+      document
+        .querySelector(".voice-input-recording")
+        ?.classList.contains("is-speech-active"),
+    ).toBe(true);
+  });
+
+  it("describes an automatic recognizer restart as starting", () => {
+    speechState.status = "reconnecting";
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="browser-native"
+      />,
+    );
+
+    expect(screen.getByRole("status").textContent).toBe("Starting...");
+  });
+
+  it("keeps the microphone neutral while capture starts", () => {
+    speechState.status = "starting";
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="browser-native"
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "voiceInputStopLabel" });
+    expect(button.classList.contains("connecting")).toBe(false);
+    expect(button.classList.contains("listening")).toBe(false);
+    expect(document.querySelector(".voice-input-recording")).toBeNull();
   });
 });

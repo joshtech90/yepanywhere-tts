@@ -10,6 +10,7 @@ import {
   type RecapMode,
   type SessionLivenessProbeStatus,
   type SessionLivenessSnapshot,
+  type SessionSandboxLevel,
   type ThinkingConfig,
   type UrlProjectId,
   type WorkstreamId,
@@ -18,12 +19,18 @@ import {
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import type { SessionMetadataService } from "../metadata/index.js";
+import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import { getProjectName } from "../projects/paths.js";
+import {
+  getSessionSandboxSettingsError,
+  prepareSessionSandbox,
+} from "../session-sandbox.js";
 import { getProvider } from "../sdk/providers/index.js";
 import { CacheMissBillingMonitor } from "../services/CacheMissBillingMonitor.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import type {
   AgentProvider,
+  ProviderForkBoundary,
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "../sdk/providers/types.js";
@@ -71,7 +78,6 @@ import {
   type ProcessAbortResult,
   type ProcessInfo,
   type ProcessEvent,
-  type ProcessOptions,
   type SessionOwnership,
   type SessionSummary,
   encodeProjectId,
@@ -240,6 +246,69 @@ export function crossesCompactThreshold(
   return inputTokens >= (percent / 100) * contextWindow;
 }
 
+export function resolveNativeCompactTokenLimit(
+  provider:
+    | Pick<AgentProvider, "supportsNativeCompactThreshold">
+    | null
+    | undefined,
+  settings:
+    | Pick<
+        ModelSettings,
+        | "compactAtContextPercent"
+        | "compactAtContextWindow"
+        | "forceYaOrchestratedCompaction"
+      >
+    | undefined,
+): number | undefined {
+  if (
+    provider?.supportsNativeCompactThreshold !== true ||
+    settings?.forceYaOrchestratedCompaction === true
+  ) {
+    return undefined;
+  }
+  const percent = settings?.compactAtContextPercent;
+  const contextWindow = settings?.compactAtContextWindow;
+  if (
+    typeof percent !== "number" ||
+    percent <= 0 ||
+    percent >= 100 ||
+    typeof contextWindow !== "number" ||
+    !Number.isFinite(contextWindow) ||
+    contextWindow <= 0
+  ) {
+    return undefined;
+  }
+  return Math.max(1, Math.round((percent / 100) * contextWindow));
+}
+
+function resolveLaunchCompactPercentOverride(
+  provider:
+    | Pick<AgentProvider, "supportsLaunchCompactPercentOverride">
+    | null
+    | undefined,
+  settings:
+    | Pick<ModelSettings, "claudeAutoCompactPercentOverride">
+    | undefined,
+): number | undefined {
+  if (provider?.supportsLaunchCompactPercentOverride !== true) {
+    return undefined;
+  }
+  return settings?.claudeAutoCompactPercentOverride;
+}
+
+export function shouldYaOrchestrateCompactThreshold(
+  provider:
+    | Pick<AgentProvider, "supportsNativeCompactThreshold">
+    | null
+    | undefined,
+  forceYaOrchestratedCompaction: boolean | undefined,
+): boolean {
+  return (
+    forceYaOrchestratedCompaction === true ||
+    provider?.supportsNativeCompactThreshold !== true
+  );
+}
+
 function getStaleInTurnThresholdMs(provider: ProviderName): number {
   return provider === "codex" || provider === "codex-oss"
     ? CODEX_STALE_IN_TURN_THRESHOLD_MS
@@ -391,9 +460,23 @@ export interface ModelSettings {
   /**
    * Effective context window (tokens) for the compaction threshold, resolved
    * by the route. Preferred over `process.contextWindow`, which is often
-   * undefined and ignores always-1M for opus/sonnet.
+   * undefined before the provider reports usage.
    */
   compactAtContextWindow?: number;
+  /**
+   * Default-off escape hatch: ignore a provider-native threshold capability
+   * and retain YA's usage check plus manual compact command.
+   */
+  forceYaOrchestratedCompaction?: boolean;
+  /**
+   * Claude Code's launch-time percentage override for its own auto-compaction
+   * window. Undefined leaves Claude's environment/default unchanged.
+   */
+  claudeAutoCompactPercentOverride?: number;
+  /** Settled YA host filesystem confinement for this session. */
+  sandboxLevel?: SessionSandboxLevel;
+  /** Opaque project-private provider-state key restored from session metadata. */
+  sandboxStateKey?: string;
 }
 
 export interface SessionLaunchOptions {
@@ -495,6 +578,10 @@ export interface SupervisorOptions {
   sessionMetadataService?: SessionMetadataService;
   /** Durable store for long-lived patient queued messages. */
   sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  /** Durable store for image-bearing tool results. */
+  toolResultMediaStore?: ToolResultMediaStore;
+  /** Root for persistent project-private provider state. */
+  sandboxStateRoot?: string;
 }
 
 export class Supervisor {
@@ -543,9 +630,17 @@ export class Supervisor {
    * while a process holds patient deferred entries; cleared on unregister.
    */
   private patientCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Last assistant-output version considered for YA-owned threshold compaction,
+   * keyed by process id. One bounded check per completed assistant turn avoids
+   * retriggering on the idle boundary produced by compaction itself.
+   */
+  private compactThresholdCheckedAssistantVersion = new Map<string, number>();
   private interruptTimeoutMs: number;
   private sessionMetadataService?: SessionMetadataService;
   private sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  private toolResultMediaStore?: ToolResultMediaStore;
+  private sandboxStateRoot?: string;
   // In-flight forked recaps, keyed by process id. The AbortController cancels
   // the generator-fork helper turn when the parent becomes active again, so a
   // returning user's new turn is never shadowed by a stale recap. See
@@ -584,6 +679,8 @@ export class Supervisor {
     this.sessionMetadataService = options.sessionMetadataService;
     this.sessionQueuePersistenceService =
       options.sessionQueuePersistenceService;
+    this.toolResultMediaStore = options.toolResultMediaStore;
+    this.sandboxStateRoot = options.sandboxStateRoot;
     this.staleCheckTimer = setInterval(
       () => this.terminateStaleProcesses(),
       STALE_CHECK_INTERVAL_MS,
@@ -692,6 +789,7 @@ export class Supervisor {
     modelSettings?: ModelSettings,
     launchOptions?: SessionLaunchOptions,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
+    this.assertSessionSandboxSettings(modelSettings);
     const projectId = launchOptions?.projectId ?? encodeProjectId(projectPath);
 
     // Check if at capacity
@@ -757,6 +855,7 @@ export class Supervisor {
       message,
       undefined,
       permissionMode,
+      modelSettings,
     );
   }
 
@@ -771,6 +870,7 @@ export class Supervisor {
     modelSettings?: ModelSettings,
     launchOptions?: SessionLaunchOptions,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
+    this.assertSessionSandboxSettings(modelSettings);
     const projectId = launchOptions?.projectId ?? encodeProjectId(projectPath);
 
     // Check if at capacity
@@ -850,9 +950,11 @@ export class Supervisor {
     modelSettings?: ModelSettings,
     options?: { preempt?: boolean },
   ): Promise<Process> {
+    this.assertSessionSandboxSettings(modelSettings);
     const existing = this.getProcessForSession(resumeSessionId);
     if (existing) {
       if (!existing.isTerminated) {
+        this.assertProcessSandboxMatches(existing, modelSettings);
         return existing;
       }
       this.unregisterProcess(existing);
@@ -861,13 +963,16 @@ export class Supervisor {
     const activeActivation =
       this.sessionActivationInFlight.get(resumeSessionId);
     if (activeActivation) {
-      return activeActivation;
+      const activated = await activeActivation;
+      this.assertProcessSandboxMatches(activated, modelSettings);
+      return activated;
     }
 
     return this.startSessionActivation(resumeSessionId, async () => {
       const activated = this.getProcessForSession(resumeSessionId);
       if (activated) {
         if (!activated.isTerminated) {
+          this.assertProcessSandboxMatches(activated, modelSettings);
           return activated;
         }
         this.unregisterProcess(activated);
@@ -935,6 +1040,16 @@ export class Supervisor {
       modelSettings?.promptSuggestionMode,
       { supportsNativePromptSuggestions: true },
     );
+    const tempSessionId = resumeSessionId ?? randomUUID();
+    const sessionSandbox = await prepareSessionSandbox({
+      level: modelSettings?.sandboxLevel,
+      provider: "claude",
+      projectPath,
+      executor: modelSettings?.executor,
+      stateKey: modelSettings?.sandboxStateKey,
+      resumeSessionId,
+      stateRoot: this.sandboxStateRoot,
+    });
 
     // Start session WITHOUT an initial message - agent will wait
     const result = await this.realSdk.startSession({
@@ -945,9 +1060,12 @@ export class Supervisor {
       model: modelSettings?.model,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
+      launchCompactPercentOverride:
+        modelSettings?.claudeAutoCompactPercentOverride,
       clientName: modelSettings?.clientName,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      sessionSandbox,
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
@@ -975,14 +1093,15 @@ export class Supervisor {
       publishAgentctlSessionId,
     } = result;
 
-    const tempSessionId = resumeSessionId ?? randomUUID();
     const options: ProcessConstructorOptions = {
       projectPath,
       projectId,
       sessionId: tempSessionId,
+      initialState: "idle",
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+      toolResultMediaStore: this.toolResultMediaStore,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1007,6 +1126,12 @@ export class Supervisor {
       permissionMode: effectiveMode,
       provider: "claude", // Real SDK is always Claude
       model: modelSettings?.model,
+      compactAtContextPercent: modelSettings?.compactAtContextPercent,
+      compactAtContextWindow: modelSettings?.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        modelSettings?.forceYaOrchestratedCompaction,
+      launchCompactPercentOverride:
+        modelSettings?.claudeAutoCompactPercentOverride,
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
@@ -1016,6 +1141,9 @@ export class Supervisor {
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
+      sandboxEnforcement: sessionSandbox?.enforcement,
+      sandboxStateKey: sessionSandbox?.stateKey,
+      sandboxProjectPath: sessionSandbox?.projectPath,
     };
 
     const process = new Process(iterator, options);
@@ -1025,6 +1153,9 @@ export class Supervisor {
     // Wait for the real session ID from the SDK
     if (!resumeSessionId) {
       await process.waitForSessionId();
+    }
+    if (sessionSandbox) {
+      await this.persistProcessSandboxOrAbort(process);
     }
 
     // Recreated processes for an existing session should not emit session-created again.
@@ -1038,8 +1169,14 @@ export class Supervisor {
     message: UserMessage,
     options?: { allowSteer?: boolean },
   ): Promise<ReturnType<Process["queueMessage"]>> {
+    // Record delivery intent before slash-command discovery or any other
+    // awaited preparation. Speculative idle work must yield as soon as input
+    // arrives, even while the process still reports `idle`.
+    process.noteInputIntent();
     await process.primeSupportedCommandsForMessage(message);
-    return process.queueMessage(message, options);
+    return process.queueMessage(message, {
+      allowSteer: options?.allowSteer,
+    });
   }
 
   private watchResumeCompaction(
@@ -1168,15 +1305,20 @@ export class Supervisor {
 
   private async tryResumeCompaction(
     process: Process,
-    options?: { allowNonIdleStart?: boolean },
+    options?: {
+      allowNonIdleStart?: boolean;
+      expectedInputIntentVersion?: number;
+    },
   ): Promise<ResumeCompactionAttempt> {
-    if (process.provider !== "claude" && process.provider !== "claude-ollama") {
+    if (
+      options?.expectedInputIntentVersion !== undefined &&
+      process.inputIntentVersion !== options.expectedInputIntentVersion
+    ) {
       return {
-        status: "unavailable",
-        reason: `${process.provider} does not support compact-first resume`,
+        status: "skipped",
+        reason: "new input arrived before compaction started",
       };
     }
-
     if (!options?.allowNonIdleStart && process.state.type !== "idle") {
       return {
         status: "skipped",
@@ -1188,8 +1330,36 @@ export class Supervisor {
     if (!command.ok) {
       return command.attempt;
     }
+    if (
+      options?.expectedInputIntentVersion !== undefined &&
+      process.inputIntentVersion !== options.expectedInputIntentVersion
+    ) {
+      return {
+        status: "skipped",
+        reason: "new input arrived before compaction started",
+      };
+    }
+    if (!options?.allowNonIdleStart && process.state.type !== "idle") {
+      return {
+        status: "skipped",
+        reason: `process became ${process.state.type}`,
+      };
+    }
 
     const watcher = this.watchResumeCompaction(process, command.command);
+    const providerResult = await process.runProviderCommand(command.command);
+    if (providerResult.handled) {
+      if (providerResult.error) {
+        watcher.cancel();
+        return {
+          status: "failed",
+          command: command.command,
+          reason: providerResult.error,
+        };
+      }
+      return watcher.promise;
+    }
+
     const queued = process.queueMessage(
       // Hidden: native compaction shows no `/compact` user turn, so neither
       // should YA-initiated compaction (resume-time or threshold-triggered).
@@ -1209,46 +1379,53 @@ export class Supervisor {
   }
 
   /**
-   * Threshold-triggered preemptive compaction (task 029). When the per-model
-   * compact-at-% is set and live context already sits at/over that fraction of
-   * the model's window, run a `/compact` before delivering the next turn — the
-   * same native compaction the harness would eventually auto-fire, just
-   * earlier. Conservative per task 002: claude only, idle process only, only
-   * when usage is known. Best-effort — the turn is delivered regardless of the
-   * compaction outcome, and there is no retry loop. Reuses
-   * `tryResumeCompaction`, so the boundary the client renders is the native
-   * `compact_boundary` and the `/compact` carries no visible user echo.
+   * Threshold-triggered speculative compaction (task 029). At the first idle
+   * boundary after assistant output, check live usage and start the provider's
+   * compact command immediately when the configured YA-owned threshold has
+   * been crossed. This deliberately spends occasional unnecessary provider
+   * compute so a later user request never has to initiate and await compaction.
    *
-   * No double compaction: live usage is re-read and re-tested immediately
-   * before executing (there is no deferral gap between decide and run), so a
-   * prior compaction — the harness's enforced one or a previous voluntary one —
-   * that dropped usage below the threshold makes the next evaluation a no-op.
-   * The voluntary threshold also sits well below the harness's enforced point,
-   * so in steady state the two never fire together.
+   * One assistant-output version is considered once. The compact operation's
+   * own idle boundary therefore cannot recursively trigger another compact,
+   * even if the durable usage summary has not caught up yet.
    */
-  private async maybeCompactBeforeDelivery(
-    process: Process,
-    sessionId: string,
-    modelSettings: ModelSettings | undefined,
-  ): Promise<void> {
-    const percent = modelSettings?.compactAtContextPercent;
+  private async maybeCompactAfterIdle(process: Process): Promise<void> {
+    const percent = process.compactAtContextPercent;
     if (typeof percent !== "number" || percent <= 0 || percent >= 100) return;
-    // Only an idle claude process can be safely compacted before delivery;
-    // tryResumeCompaction also self-guards, but skip the usage read otherwise.
     if (process.state.type !== "idle") return;
-    if (process.provider !== "claude" && process.provider !== "claude-ollama") {
+    if (process.isRetainingProviderWork()) return;
+    const provider = this.resolveProvider({ providerName: process.provider });
+    if (
+      !shouldYaOrchestrateCompactThreshold(
+        provider,
+        process.forceYaOrchestratedCompaction,
+      )
+    ) {
       return;
     }
-    // Prefer the route-resolved window; process.contextWindow is often
-    // undefined and ignores always-1M for opus/sonnet.
+    const assistantActivityVersion = process.assistantActivityVersion;
+    const inputIntentVersion = process.inputIntentVersion;
+    if (
+      assistantActivityVersion <= 0 ||
+      this.compactThresholdCheckedAssistantVersion.get(process.id) ===
+        assistantActivityVersion
+    ) {
+      return;
+    }
+    this.compactThresholdCheckedAssistantVersion.set(
+      process.id,
+      assistantActivityVersion,
+    );
+
+    // Prefer the route-resolved window; process.contextWindow can be undefined.
     const contextWindow =
-      modelSettings?.compactAtContextWindow ?? process.contextWindow;
+      process.compactAtContextWindow ?? process.contextWindow;
     if (!contextWindow || contextWindow <= 0) return;
 
     let inputTokens: number | undefined;
     try {
       const summary = await this.onSessionSummary?.(
-        sessionId,
+        process.sessionId,
         process.projectId,
       );
       inputTokens = summary?.contextUsage?.inputTokens;
@@ -1256,33 +1433,44 @@ export class Supervisor {
       // Usage unavailable → never block the turn.
       return;
     }
+    // A user turn that arrived while the summary was loading wins immediately;
+    // do not interrupt it or make it wait for speculative work.
+    if (
+      process.state.type !== "idle" ||
+      process.assistantActivityVersion !== assistantActivityVersion ||
+      process.inputIntentVersion !== inputIntentVersion
+    ) {
+      return;
+    }
     if (!crossesCompactThreshold(percent, contextWindow, inputTokens)) return;
 
     try {
-      const attempt = await this.tryResumeCompaction(process);
+      const attempt = await this.tryResumeCompaction(process, {
+        expectedInputIntentVersion: inputIntentVersion,
+      });
       if (attempt.status !== "completed") {
         getLogger().info(
           {
             event: "threshold_compaction_skipped",
-            sessionId,
+            sessionId: process.sessionId,
             processId: process.id,
             status: attempt.status,
             percent,
             inputTokens,
             thresholdTokens: Math.round((percent / 100) * contextWindow),
           },
-          "Threshold compaction did not complete; delivering turn as-is",
+          "Idle threshold compaction did not complete",
         );
       }
     } catch (error) {
       getLogger().warn(
         {
           event: "threshold_compaction_failed",
-          sessionId,
+          sessionId: process.sessionId,
           processId: process.id,
           error: error instanceof Error ? error.message : String(error),
         },
-        "Threshold compaction errored; delivering turn as-is",
+        "Idle threshold compaction errored",
       );
     }
   }
@@ -1408,6 +1596,15 @@ export class Supervisor {
       modelSettings?.promptSuggestionMode,
       { supportsNativePromptSuggestions: true },
     );
+    const sessionSandbox = await prepareSessionSandbox({
+      level: modelSettings?.sandboxLevel,
+      provider: "claude",
+      projectPath,
+      executor: modelSettings?.executor,
+      stateKey: modelSettings?.sandboxStateKey,
+      resumeSessionId,
+      stateRoot: this.sandboxStateRoot,
+    });
 
     const result = await this.realSdk.startSession({
       cwd: projectPath,
@@ -1416,11 +1613,14 @@ export class Supervisor {
       model: modelSettings?.model,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
+      launchCompactPercentOverride:
+        modelSettings?.claudeAutoCompactPercentOverride,
       clientName: modelSettings?.clientName,
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      sessionSandbox,
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
@@ -1456,6 +1656,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+      toolResultMediaStore: this.toolResultMediaStore,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1480,6 +1681,12 @@ export class Supervisor {
       permissionMode: effectiveMode,
       provider: "claude", // Real SDK is always Claude
       model: modelSettings?.model,
+      compactAtContextPercent: modelSettings?.compactAtContextPercent,
+      compactAtContextWindow: modelSettings?.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        modelSettings?.forceYaOrchestratedCompaction,
+      launchCompactPercentOverride:
+        modelSettings?.claudeAutoCompactPercentOverride,
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
@@ -1489,6 +1696,9 @@ export class Supervisor {
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
+      sandboxEnforcement: sessionSandbox?.enforcement,
+      sandboxStateKey: sessionSandbox?.stateKey,
+      sandboxProjectPath: sessionSandbox?.projectPath,
     };
 
     const process = new Process(iterator, options);
@@ -1499,6 +1709,9 @@ export class Supervisor {
     // This ensures the client gets the correct ID to use for persistence
     if (!resumeSessionId) {
       await process.waitForSessionId();
+    }
+    if (sessionSandbox) {
+      await this.persistProcessSandboxOrAbort(process);
     }
 
     const queued = await this.queueProcessMessage(process, message, {
@@ -1537,6 +1750,22 @@ export class Supervisor {
       modelSettings?.promptSuggestionMode,
       activeProvider,
     );
+    const compactAtContextTokenLimit = resolveNativeCompactTokenLimit(
+      activeProvider,
+      modelSettings,
+    );
+    const launchCompactPercentOverride =
+      resolveLaunchCompactPercentOverride(activeProvider, modelSettings);
+    const tempSessionId = resumeSessionId ?? randomUUID();
+    const sessionSandbox = await prepareSessionSandbox({
+      level: modelSettings?.sandboxLevel,
+      provider: activeProvider.name,
+      projectPath,
+      executor: modelSettings?.executor,
+      stateKey: modelSettings?.sandboxStateKey,
+      resumeSessionId,
+      stateRoot: this.sandboxStateRoot,
+    });
 
     // Start session WITHOUT an initial message - agent will wait
     const result = await activeProvider.startSession({
@@ -1548,13 +1777,22 @@ export class Supervisor {
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
+      ...(compactAtContextTokenLimit === undefined
+        ? {}
+        : { compactAtContextTokenLimit }),
+      ...(launchCompactPercentOverride === undefined
+        ? {}
+        : { launchCompactPercentOverride }),
       clientName: modelSettings?.clientName,
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      sessionSandbox,
       shouldEmitLiveDeltas: () =>
         processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+      onPermissionModeApplied: (mode) =>
+        processHolder.process?.setAppliedPermissionMode(mode),
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
@@ -1584,14 +1822,15 @@ export class Supervisor {
       publishAgentctlSessionId,
     } = result;
 
-    const tempSessionId = resumeSessionId ?? randomUUID();
     const options: ProcessConstructorOptions = {
       projectPath,
       projectId,
       sessionId: tempSessionId,
+      initialState: "idle",
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+      toolResultMediaStore: this.toolResultMediaStore,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1619,6 +1858,12 @@ export class Supervisor {
       permissionMode: effectiveMode,
       provider: activeProvider.name,
       model: modelSettings?.model,
+      compactAtContextPercent: modelSettings?.compactAtContextPercent,
+      compactAtContextWindow: modelSettings?.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        modelSettings?.forceYaOrchestratedCompaction,
+      compactAtContextTokenLimit,
+      launchCompactPercentOverride,
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
@@ -1628,6 +1873,9 @@ export class Supervisor {
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
+      sandboxEnforcement: sessionSandbox?.enforcement,
+      sandboxStateKey: sessionSandbox?.stateKey,
+      sandboxProjectPath: sessionSandbox?.projectPath,
     };
 
     const process = new Process(iterator, options);
@@ -1637,6 +1885,9 @@ export class Supervisor {
     // Wait for the real session ID from the provider
     if (!resumeSessionId) {
       await process.waitForSessionId();
+    }
+    if (sessionSandbox) {
+      await this.persistProcessSandboxOrAbort(process);
     }
 
     // Recreated processes for an existing session should not emit session-created again.
@@ -1671,6 +1922,22 @@ export class Supervisor {
       modelSettings?.promptSuggestionMode,
       activeProvider,
     );
+    const compactAtContextTokenLimit = resolveNativeCompactTokenLimit(
+      activeProvider,
+      modelSettings,
+    );
+    const launchCompactPercentOverride =
+      resolveLaunchCompactPercentOverride(activeProvider, modelSettings);
+    const tempSessionId = resumeSessionId ?? randomUUID();
+    const sessionSandbox = await prepareSessionSandbox({
+      level: modelSettings?.sandboxLevel,
+      provider: activeProvider.name,
+      projectPath,
+      executor: modelSettings?.executor,
+      stateKey: modelSettings?.sandboxStateKey,
+      resumeSessionId,
+      stateRoot: this.sandboxStateRoot,
+    });
 
     const result = await activeProvider.startSession({
       cwd: projectPath,
@@ -1683,12 +1950,21 @@ export class Supervisor {
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
+      ...(compactAtContextTokenLimit === undefined
+        ? {}
+        : { compactAtContextTokenLimit }),
+      ...(launchCompactPercentOverride === undefined
+        ? {}
+        : { launchCompactPercentOverride }),
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
       globalInstructions: modelSettings?.globalInstructions,
       promptSuggestions: promptSuggestionMode === "native",
+      sessionSandbox,
       shouldEmitLiveDeltas: () =>
         processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+      onPermissionModeApplied: (mode) =>
+        processHolder.process?.setAppliedPermissionMode(mode),
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
       onToolApproval: async (toolName, input, opts) => {
@@ -1718,7 +1994,6 @@ export class Supervisor {
       publishAgentctlSessionId,
     } = result;
 
-    const tempSessionId = resumeSessionId ?? randomUUID();
     const options: ProcessConstructorOptions = {
       projectPath,
       projectId,
@@ -1726,6 +2001,7 @@ export class Supervisor {
       idleTimeoutMs: this.idleTimeoutMs,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+      toolResultMediaStore: this.toolResultMediaStore,
       abortFn: abort,
       isProcessAlive,
       shouldRetainIdleProcess: (sessionId) =>
@@ -1753,6 +2029,12 @@ export class Supervisor {
       permissionMode: effectiveMode,
       provider: activeProvider.name,
       model: modelSettings?.model,
+      compactAtContextPercent: modelSettings?.compactAtContextPercent,
+      compactAtContextWindow: modelSettings?.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        modelSettings?.forceYaOrchestratedCompaction,
+      compactAtContextTokenLimit,
+      launchCompactPercentOverride,
       serviceTier: modelSettings?.serviceTier,
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
@@ -1762,6 +2044,9 @@ export class Supervisor {
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
       promptSuggestionMode,
       helperSideModel: modelSettings?.helperSideModel,
+      sandboxEnforcement: sessionSandbox?.enforcement,
+      sandboxStateKey: sessionSandbox?.stateKey,
+      sandboxProjectPath: sessionSandbox?.projectPath,
     };
 
     const process = new Process(iterator, options);
@@ -1771,6 +2056,9 @@ export class Supervisor {
     // Wait for the real session ID from the provider before registering
     if (!resumeSessionId) {
       await process.waitForSessionId();
+    }
+    if (sessionSandbox) {
+      await this.persistProcessSandboxOrAbort(process);
     }
 
     const queued = await this.queueProcessMessage(process, message, {
@@ -1795,7 +2083,13 @@ export class Supervisor {
     message: UserMessage,
     resumeSessionId?: string,
     permissionMode?: PermissionMode,
+    modelSettings?: ModelSettings,
   ): Process {
+    if (modelSettings?.sandboxLevel === "project-write") {
+      throw new Error(
+        "Project-write session sandboxing requires a local Claude or Codex provider runtime.",
+      );
+    }
     // sdk is guaranteed to exist here (checked in startSession)
     if (!this.sdk) {
       throw new Error("sdk is not available");
@@ -1810,13 +2104,18 @@ export class Supervisor {
     // Use provided mode or fall back to default
     const effectiveMode = permissionMode ?? this.defaultPermissionMode;
 
-    const options: ProcessOptions = {
+    const options: ProcessConstructorOptions = {
       projectPath,
       projectId,
       sessionId,
       idleTimeoutMs: this.idleTimeoutMs,
       permissionMode: effectiveMode,
       provider: "claude", // Legacy mock SDK simulates Claude
+      compactAtContextPercent: modelSettings?.compactAtContextPercent,
+      compactAtContextWindow: modelSettings?.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        modelSettings?.forceYaOrchestratedCompaction,
+      toolResultMediaStore: this.toolResultMediaStore,
     };
 
     const process = new Process(iterator, options);
@@ -1836,6 +2135,7 @@ export class Supervisor {
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
+    this.assertSessionSandboxSettings(modelSettings);
     await this.waitForSessionActivation(sessionId);
 
     // Check if already have a process for this session
@@ -1847,6 +2147,7 @@ export class Supervisor {
         if (existingProcess.isTerminated) {
           this.unregisterProcess(existingProcess);
         } else {
+          this.assertProcessSandboxMatches(existingProcess, modelSettings);
           let restartExistingProcess = false;
           // Check if thinking/effort settings changed
           const thinkingChanged = !thinkingConfigsEqual(
@@ -2073,6 +2374,7 @@ export class Supervisor {
         message,
         sessionId,
         permissionMode,
+        modelSettings,
       );
     });
   }
@@ -2096,8 +2398,15 @@ export class Supervisor {
     projectPath: string;
     providerName?: ProviderName;
     upToMessageId?: string;
+    boundary?: ProviderForkBoundary;
     title?: string;
-  }): Promise<{ sessionId: string }> {
+    sandboxLevel?: SessionSandboxLevel;
+    sandboxStateKey?: string;
+  }): Promise<{
+    sessionId: string;
+    sandboxStateKey?: string;
+    sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
+  }> {
     const provider = this.resolveProvider(
       options.providerName ? { providerName: options.providerName } : undefined,
     );
@@ -2107,12 +2416,26 @@ export class Supervisor {
     if (typeof provider.forkSession !== "function") {
       throw new Error(`${provider.name} does not support transcript fork`);
     }
-    return provider.forkSession({
+    const sessionSandbox = await prepareSessionSandbox({
+      level: options.sandboxLevel,
+      provider: provider.name,
+      projectPath: options.projectPath,
+      stateKey: options.sandboxStateKey,
+      stateRoot: this.sandboxStateRoot,
+    });
+    const fork = await provider.forkSession({
       sessionId: options.sessionId,
       cwd: options.projectPath,
       upToMessageId: options.upToMessageId,
+      boundary: options.boundary,
       title: options.title,
+      sessionSandbox,
     });
+    return {
+      ...fork,
+      sandboxStateKey: sessionSandbox?.stateKey,
+      sessionSandbox,
+    };
   }
 
   async generateSummary(
@@ -2133,7 +2456,7 @@ export class Supervisor {
 
   private async archiveHelperFork(
     childSessionId: string,
-    parentSessionId: string,
+    sourceSessionId: string,
     title: string,
     providerName: ProviderName,
     process: Process,
@@ -2144,7 +2467,7 @@ export class Supervisor {
     await this.sessionMetadataService.updateMetadata(childSessionId, {
       title,
       archived: true,
-      parentSessionId,
+      forkedFromSessionId: sourceSessionId,
     });
     await this.sessionMetadataService.setProvider(childSessionId, providerName);
     await this.sessionMetadataService.setExecutor(
@@ -2155,6 +2478,18 @@ export class Supervisor {
       childSessionId,
       process.requestedModel,
     );
+    if (
+      process.sandboxEnforcement?.effective === "project-write" &&
+      process.sandboxStateKey
+    ) {
+      await this.sessionMetadataService.setSessionSandbox(childSessionId, {
+        level: "project-write",
+        stateKey: process.sandboxStateKey,
+        projectPath: process.sandboxProjectPath ?? process.projectPath,
+        projectId: process.projectId,
+        provider: providerName,
+      });
+    }
   }
 
   private publishRecapListUpdate(
@@ -2229,7 +2564,10 @@ export class Supervisor {
    * the last recap has nothing new to say — regenerating the same summary
    * from the same context is wasted work and stacks duplicate recap rows.
    */
-  private recapFloorMs(sessionId: string, sinceMs: number | null): number | null {
+  private recapFloorMs(
+    sessionId: string,
+    sinceMs: number | null,
+  ): number | null {
     const recaps = this.sessionMetadataService?.getRecapMessages(sessionId);
     const latest = recaps ? latestRecapMessage(recaps) : undefined;
     const lastRecapMs = latest ? messageTimestampMs(latest) : null;
@@ -2307,9 +2645,11 @@ export class Supervisor {
     try {
       const generator = await this.forkSession({
         sessionId: process.sessionId,
-        projectPath: process.projectPath,
+        projectPath: process.sandboxProjectPath ?? process.projectPath,
         providerName: process.provider,
         title: "Recap generator",
+        sandboxLevel: process.sandboxEnforcement?.effective,
+        sandboxStateKey: process.sandboxStateKey,
       });
       generatorSessionId = generator.sessionId;
       await this.archiveHelperFork(
@@ -2326,6 +2666,7 @@ export class Supervisor {
           generatorSessionId: generator.sessionId,
           cwd: process.projectPath,
           signal: abortController.signal,
+          sessionSandbox: generator.sessionSandbox,
         })
       ).text.trim();
       if (!text) {
@@ -2495,12 +2836,20 @@ export class Supervisor {
       serviceTier: nextServiceTier,
       thinking: nextThinking,
       effort: nextEffort,
+      compactAtContextPercent: process.compactAtContextPercent,
+      compactAtContextWindow: process.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        process.forceYaOrchestratedCompaction,
+      claudeAutoCompactPercentOverride:
+        process.launchCompactPercentOverride,
       providerName: process.provider,
       executor: process.executor,
       recapMode: process.recapMode,
       recapAfterSeconds: process.recapAfterSeconds,
       promptSuggestionMode: process.promptSuggestionMode,
       helperSideModel: process.helperSideModel,
+      sandboxLevel: process.sandboxEnforcement?.effective,
+      sandboxStateKey: process.sandboxStateKey,
     };
 
     await process.abort();
@@ -2528,11 +2877,19 @@ export class Supervisor {
     if (!process || process.isTerminated) {
       return null;
     }
+    const sandboxError = getSessionSandboxSettingsError(
+      process.sandboxEnforcement?.effective,
+      config.recapMode,
+    );
+    if (sandboxError) {
+      throw new Error(sandboxError);
+    }
     process.setRecapConfig(config);
     this.emitOwnershipChange(process.sessionId, process.projectId, {
       owner: "self",
       processId: process.id,
       permissionMode: process.permissionMode,
+      appliedPermissionMode: process.appliedPermissionMode,
       modeVersion: process.modeVersion,
       recapAfterSeconds: process.recapAfterSeconds,
     });
@@ -2545,9 +2902,7 @@ export class Supervisor {
     return this.processes.get(processId);
   }
 
-  getProviderRuntimeStatusForSession(
-    sessionId: string,
-  ): ProviderRuntimeStatus {
+  getProviderRuntimeStatusForSession(sessionId: string): ProviderRuntimeStatus {
     return (
       this.getProcessForSession(sessionId)?.getProviderRuntimeStatus() ??
       this.terminalProviderStatuses.get(sessionId) ??
@@ -2557,10 +2912,7 @@ export class Supervisor {
 
   private retainTerminalProviderStatus(
     sessionId: string,
-    status: Extract<
-      Exclude<ProviderRuntimeStatus, null>,
-      { kind: "terminal" }
-    >,
+    status: Extract<Exclude<ProviderRuntimeStatus, null>, { kind: "terminal" }>,
   ): void {
     this.terminalProviderStatuses.delete(sessionId);
     this.terminalProviderStatuses.set(sessionId, status);
@@ -2608,6 +2960,13 @@ export class Supervisor {
       return { success: false, error: "Process terminated" };
     }
 
+    // Record delivery intent at the ingress boundary, before the dynamic
+    // thinking/effort/service-tier updates below can await. An idle-threshold
+    // compaction check that is mid-flight must observe that a turn has arrived
+    // and yield, even while the process still reports `idle` during those
+    // awaits.
+    process.noteInputIntent();
+
     const isActiveSteeringMessage =
       message.metadata?.deliveryIntent === "steer" &&
       process.state.type === "in-turn";
@@ -2627,8 +2986,62 @@ export class Supervisor {
     const requestedServiceTier = isActiveSteeringMessage
       ? process.serviceTier
       : (modelSettings?.serviceTier ?? process.serviceTier);
+    const hasExplicitCompactSettings =
+      modelSettings !== undefined &&
+      (Object.hasOwn(modelSettings, "compactAtContextPercent") ||
+        Object.hasOwn(modelSettings, "compactAtContextWindow") ||
+        Object.hasOwn(modelSettings, "forceYaOrchestratedCompaction"));
+    const requestedCompactSettings = isActiveSteeringMessage
+      ? {
+          compactAtContextPercent: process.compactAtContextPercent,
+          compactAtContextWindow: process.compactAtContextWindow,
+          forceYaOrchestratedCompaction:
+            process.forceYaOrchestratedCompaction,
+        }
+      : hasExplicitCompactSettings
+        ? {
+            compactAtContextPercent: modelSettings?.compactAtContextPercent,
+            compactAtContextWindow: modelSettings?.compactAtContextWindow,
+            forceYaOrchestratedCompaction:
+              modelSettings?.forceYaOrchestratedCompaction,
+          }
+        : {
+            compactAtContextPercent: process.compactAtContextPercent,
+            compactAtContextWindow: process.compactAtContextWindow,
+            forceYaOrchestratedCompaction:
+              process.forceYaOrchestratedCompaction,
+          };
+    const effectiveProvider = this.resolveProvider({
+      providerName: process.provider,
+    });
+    const requestedCompactTokenLimit = isActiveSteeringMessage
+      ? process.compactAtContextTokenLimit
+      : resolveNativeCompactTokenLimit(
+          effectiveProvider,
+          requestedCompactSettings,
+        );
+    const compactThresholdChanged =
+      hasExplicitCompactSettings &&
+      !isActiveSteeringMessage &&
+      process.compactAtContextTokenLimit !== requestedCompactTokenLimit;
+    const hasExplicitLaunchCompactPercentOverride =
+      modelSettings !== undefined &&
+      Object.hasOwn(modelSettings, "claudeAutoCompactPercentOverride");
+    const requestedLaunchCompactPercentOverride = isActiveSteeringMessage
+      ? process.launchCompactPercentOverride
+      : hasExplicitLaunchCompactPercentOverride
+        ? resolveLaunchCompactPercentOverride(
+            effectiveProvider,
+            modelSettings,
+          )
+        : process.launchCompactPercentOverride;
+    const launchCompactPercentOverrideChanged =
+      hasExplicitLaunchCompactPercentOverride &&
+      !isActiveSteeringMessage &&
+      process.launchCompactPercentOverride !==
+        requestedLaunchCompactPercentOverride;
 
-    // Check if service tier/thinking/effort settings changed.
+    // Check if service tier/thinking/effort/launch compaction settings changed.
     // Service tier is cost-affecting, so changes require an explicit restart
     // rather than being inferred from a normal prompt.
     const serviceTierChanged = process.serviceTier !== requestedServiceTier;
@@ -2638,9 +3051,17 @@ export class Supervisor {
     );
     const effortChanged = process.effort !== requestedEffort;
 
-    if (serviceTierChanged || thinkingChanged || effortChanged) {
+    if (
+      serviceTierChanged ||
+      thinkingChanged ||
+      effortChanged ||
+      compactThresholdChanged ||
+      launchCompactPercentOverrideChanged
+    ) {
       if (
         !serviceTierChanged &&
+        !compactThresholdChanged &&
+        !launchCompactPercentOverrideChanged &&
         thinkingChanged &&
         !effortChanged &&
         canApplyThinkingConfigDynamically(
@@ -2669,6 +3090,8 @@ export class Supervisor {
         }
       } else if (
         !serviceTierChanged &&
+        !compactThresholdChanged &&
+        !launchCompactPercentOverrideChanged &&
         !thinkingChanged &&
         effortChanged &&
         process.supportsEffortChange
@@ -2678,11 +3101,11 @@ export class Supervisor {
           throw new Error("Provider did not apply the effort change");
         }
       } else {
-        // Effort changed or no dynamic support: restart process
+        // Launch-scoped configuration changed or no dynamic support: restart.
         const log = getLogger();
         log.info(
           {
-            event: "thinking_mode_changed_queue_restart",
+            event: "launch_scoped_settings_changed_queue_restart",
             sessionId,
             processId: process.id,
             oldThinking: process.thinking?.type,
@@ -2691,8 +3114,15 @@ export class Supervisor {
             newThinking: requestedThinking?.type,
             newEffort: requestedEffort,
             newServiceTier: requestedServiceTier,
+            oldCompactAtContextTokenLimit:
+              process.compactAtContextTokenLimit,
+            newCompactAtContextTokenLimit: requestedCompactTokenLimit,
+            oldLaunchCompactPercentOverride:
+              process.launchCompactPercentOverride,
+            newLaunchCompactPercentOverride:
+              requestedLaunchCompactPercentOverride,
           },
-          "Service tier/thinking/effort changed on queue, restarting process",
+          "Launch-scoped session settings changed on queue, restarting process",
         );
 
         await process.abort();
@@ -2700,6 +3130,9 @@ export class Supervisor {
 
         const restartModelSettings: ModelSettings = {
           ...modelSettings,
+          ...requestedCompactSettings,
+          claudeAutoCompactPercentOverride:
+            requestedLaunchCompactPercentOverride,
           serviceTier: requestedServiceTier,
           recapMode: modelSettings?.recapMode ?? process.recapMode,
           recapAfterSeconds:
@@ -2729,11 +3162,12 @@ export class Supervisor {
     if (permissionMode) {
       process.setPermissionMode(permissionMode);
     }
-
-    // Preemptively compact when this turn would push an already-near-threshold
-    // session over its per-model compact-early limit (task 029). No-op unless
-    // the threshold is set and the idle process is over it.
-    await this.maybeCompactBeforeDelivery(process, sessionId, modelSettings);
+    process.updateCompactThresholdSettings({
+      percent: requestedCompactSettings.compactAtContextPercent,
+      contextWindow: requestedCompactSettings.compactAtContextWindow,
+      forceYaOrchestratedCompaction:
+        requestedCompactSettings.forceYaOrchestratedCompaction,
+    });
 
     const result = await this.queueProcessMessage(process, message);
     if (result.success) {
@@ -3359,6 +3793,17 @@ export class Supervisor {
         reason: "process not found",
       };
     }
+    const sandboxError = getSessionSandboxSettingsError(
+      process.sandboxEnforcement?.effective,
+      process.recapMode,
+    );
+    if (sandboxError) {
+      return {
+        supported: false,
+        emitted: false,
+        reason: sandboxError,
+      };
+    }
 
     const provider = getProvider(process.provider);
     if (!provider) {
@@ -3610,6 +4055,19 @@ export class Supervisor {
           this.sessionToProcess.get(event.oldSessionId) === process.id;
         this.sessionToProcess.set(event.newSessionId, process.id);
         this.everOwnedSessions.add(event.newSessionId);
+        void this.sessionMetadataService
+          ?.remapSessionId(event.oldSessionId, event.newSessionId)
+          .catch((error) => {
+            log.warn(
+              {
+                event: "session_metadata_remap_failed",
+                oldSessionId: event.oldSessionId,
+                newSessionId: event.newSessionId,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "Failed to remap provisional session metadata",
+            );
+          });
         if (this.eventBus && oldIdWasPublished) {
           const remapped: SessionIdRemappedEvent = {
             type: "session-id-remapped",
@@ -3653,6 +4111,7 @@ export class Supervisor {
           owner: "self",
           processId: process.id,
           permissionMode: process.permissionMode,
+          appliedPermissionMode: process.appliedPermissionMode,
           modeVersion: process.modeVersion,
           recapAfterSeconds: process.recapAfterSeconds,
         };
@@ -3711,6 +4170,7 @@ export class Supervisor {
         }
         if (event.state.type === "idle") {
           this.flushPendingForkedRecapRequest(process);
+          void this.maybeCompactAfterIdle(process);
         }
         // Parent started a new turn: cancel any in-flight/deferred forked recap
         // so a returning user's live turn is not shadowed by a stale recap.
@@ -3772,6 +4232,7 @@ export class Supervisor {
       owner: "self",
       processId: process.id,
       permissionMode: process.permissionMode,
+      appliedPermissionMode: process.appliedPermissionMode,
       modeVersion: process.modeVersion,
       recapAfterSeconds: process.recapAfterSeconds,
     };
@@ -3813,8 +4274,67 @@ export class Supervisor {
     this.emitWorkerActivity();
   }
 
+  private async persistProcessSandboxOrAbort(process: Process): Promise<void> {
+    if (process.sandboxEnforcement?.effective !== "project-write") {
+      return;
+    }
+    if (!process.sandboxStateKey || !this.sessionMetadataService) {
+      await process.abort();
+      throw new Error(
+        "Sandboxed sessions require durable session metadata before provider work begins.",
+      );
+    }
+    try {
+      await this.sessionMetadataService.setSessionSandbox(process.sessionId, {
+        provider: process.provider,
+        level: "project-write",
+        stateKey: process.sandboxStateKey,
+        projectPath: process.sandboxProjectPath ?? process.projectPath,
+        projectId: process.projectId,
+      });
+    } catch (error) {
+      await process.abort();
+      throw new Error(
+        `Failed to persist session sandbox metadata: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+  }
+
+  private assertSessionSandboxSettings(
+    modelSettings: ModelSettings | undefined,
+  ): void {
+    const error = getSessionSandboxSettingsError(
+      modelSettings?.sandboxLevel,
+      modelSettings?.recapMode,
+    );
+    if (error) {
+      throw new Error(error);
+    }
+  }
+
+  private assertProcessSandboxMatches(
+    process: Process,
+    modelSettings: ModelSettings | undefined,
+  ): void {
+    const requested = modelSettings?.sandboxLevel ?? "none";
+    const effective = process.sandboxEnforcement?.effective ?? "none";
+    const stateKeyChanged =
+      requested === "project-write" &&
+      modelSettings?.sandboxStateKey !== undefined &&
+      modelSettings.sandboxStateKey !== process.sandboxStateKey;
+    if (requested !== effective || stateKeyChanged) {
+      throw new Error(
+        "The live process does not match this session's settled sandbox configuration.",
+      );
+    }
+  }
+
   private unregisterProcess(process: Process): void {
     this.observedProcessIds.delete(process.id);
+    this.compactThresholdCheckedAssistantVersion.delete(process.id);
     this.cacheMissBillingMonitor.forgetProcess(process.id);
     this.pendingForkedRecapRequests.delete(process.id);
     this.forkedRecapInFlight.get(process.id)?.abort();
@@ -4106,6 +4626,9 @@ export class Supervisor {
         process.projectId,
         process.isRetainingProviderWork() ? "in-turn" : "idle",
       );
+      if (!process.isRetainingProviderWork()) {
+        void this.maybeCompactAfterIdle(process);
+      }
     }
   }
 
@@ -4408,6 +4931,7 @@ export class Supervisor {
       message,
       resumeSessionId,
       permissionMode,
+      modelSettings,
     );
   }
 

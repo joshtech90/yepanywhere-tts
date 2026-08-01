@@ -9,6 +9,7 @@ import type {
   ProviderRuntimeStatus,
   RecapMode,
   SessionLivenessSnapshot,
+  SessionSandboxEnforcement,
   SessionWakeReason,
   SessionWakeReasonSnapshot,
   SlashCommand,
@@ -22,6 +23,8 @@ import {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   clampPatientPatienceSeconds,
+  hasInvocationCandidate,
+  isClaudeProviderName,
   normalizeRecapAfterSeconds,
   stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
@@ -34,6 +37,8 @@ import {
 } from "../augments/index.js";
 import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { getLogger } from "../logging/logger.js";
+import type { ToolResultMediaMessageMaterializer } from "../media/ToolResultMediaMessageMaterializer.js";
+import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import { getProjectName } from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
 import type { MessageQueue } from "../sdk/messageQueue.js";
@@ -52,7 +57,6 @@ import type {
 } from "../sdk/providers/types.js";
 import {
   expandSlashCommandEmulation,
-  isSlashCommandSubmission,
 } from "../sdk/slashCommandEmulation.js";
 import type {
   PermissionMode,
@@ -215,7 +219,6 @@ function patientPatienceMsForEntry(entry: DeferredQueueEntry): number {
   return patienceSeconds * 1000;
 }
 
-const CODEX_NATIVE_SLASH_COMMAND_NAMES = new Set(["compact", "goal"]);
 const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 const PROMPT_CACHE_KEEPALIVE_RECHECK_MS = 30_000;
 const PROMPT_CACHE_KEEPALIVE_MIN_DELAY_MS = 1_000;
@@ -248,18 +251,6 @@ function buildAskUserQuestionPrompt(input: unknown): string {
   return questions.length === 1
     ? trimmed
     : `${trimmed} (+${questions.length - 1} more)`;
-}
-
-function getCodexSkillCommandPrefix(
-  provider: ProviderName,
-): string | undefined {
-  return provider === "codex" || provider === "codex-oss" ? "@" : undefined;
-}
-
-function getKnownNativeSlashCommands(
-  provider: ProviderName,
-): ReadonlySet<string> | undefined {
-  return provider === "codex" ? CODEX_NATIVE_SLASH_COMMAND_NAMES : undefined;
 }
 
 function parseIsoMs(value: string | null | undefined): number | null {
@@ -303,7 +294,7 @@ export function isHiddenInjectedMessage(message: UserMessage): boolean {
 }
 
 function isClaudeSdkProvider(provider: ProviderName): boolean {
-  return provider === "claude" || provider === "claude-ollama";
+  return isClaudeProviderName(provider);
 }
 
 function isClaudeSdkApiErrorMessage(
@@ -752,6 +743,8 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   deferredDelivery?: DeferredDeliveryOptions;
   /** Durable store for long-lived patient queued messages. */
   sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  /** Materializes image-bearing tool results before replay or emission. */
+  toolResultMediaStore?: ToolResultMediaStore;
 }
 
 export class Process {
@@ -765,12 +758,18 @@ export class Process {
   readonly serviceTier: string | undefined;
   /** SSH host for remote execution (undefined = local) */
   readonly executor: string | undefined;
+  readonly sandboxEnforcement: SessionSandboxEnforcement | undefined;
+  readonly sandboxStateKey: string | undefined;
+  readonly sandboxProjectPath: string | undefined;
 
   private legacyQueue: UserMessage[] = [];
   private messageQueue: MessageQueue | null;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
   private sessionQueuePersistenceService:
     | SessionQueuePersistenceService
+    | undefined;
+  private toolResultMediaMaterializer:
+    | ToolResultMediaMessageMaterializer
     | undefined;
   private patientQueuePersistenceTail: Promise<void> = Promise.resolve();
   private abortFn: (() => void | Promise<void>) | null;
@@ -844,6 +843,9 @@ export class Process {
 
   /** Current permission mode for tool approvals */
   private _permissionMode: PermissionMode = "default";
+
+  /** Codex mode applied at the latest successful thread or turn boundary. */
+  private _appliedPermissionMode: PermissionMode | undefined;
 
   /** Permission rules for tool filtering (deny/allow patterns from API caller) */
   private _permissions: PermissionRules | undefined;
@@ -945,6 +947,15 @@ export class Process {
   private _requestedModel: string | undefined;
   /** Context window size reported by SDK in result messages' modelUsage */
   private _contextWindow: number | undefined;
+  /** Monotonic marker for assistant output observed by this process. */
+  private _assistantActivityVersion = 0;
+  /** Monotonic marker for delivery intent received before any async priming. */
+  private _inputIntentVersion = 0;
+  private _compactAtContextPercent: number | undefined;
+  private _compactAtContextWindow: number | undefined;
+  private _forceYaOrchestratedCompaction: boolean;
+  readonly compactAtContextTokenLimit: number | undefined;
+  readonly launchCompactPercentOverride: number | undefined;
 
   /** Deferred message queue — messages queued while agent is in-turn, auto-sent when turn ends */
   private deferredQueue: DeferredQueueEntry[] = [];
@@ -964,6 +975,10 @@ export class Process {
     this.projectPath = options.projectPath;
     this.projectId = options.projectId;
     this.startedAt = new Date();
+    this._state =
+      options.initialState === "idle"
+        ? { type: "idle", since: this.startedAt }
+        : { type: "in-turn" };
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 
     // Real SDK provides these, mock SDK doesn't
@@ -975,10 +990,27 @@ export class Process {
     this._permissionMode = options.permissionMode ?? "default";
     this._permissions = options.permissions;
     this.provider = options.provider;
+    this.toolResultMediaMaterializer =
+      options.toolResultMediaStore?.createMaterializer({
+        provider: this.provider,
+        projectId: this.projectId,
+        projectPath: this.projectPath,
+        getSessionId: () => this._sessionId,
+      });
     this.model = options.model;
     this._requestedModel = options.model;
+    this._compactAtContextPercent = options.compactAtContextPercent;
+    this._compactAtContextWindow = options.compactAtContextWindow;
+    this._forceYaOrchestratedCompaction =
+      options.forceYaOrchestratedCompaction === true;
+    this.compactAtContextTokenLimit = options.compactAtContextTokenLimit;
+    this.launchCompactPercentOverride =
+      options.launchCompactPercentOverride;
     this.serviceTier = options.serviceTier;
     this.executor = options.executor;
+    this.sandboxEnforcement = options.sandboxEnforcement;
+    this.sandboxStateKey = options.sandboxStateKey;
+    this.sandboxProjectPath = options.sandboxProjectPath;
     this._thinking = options.thinking;
     this._effort = options.effort;
     this.setMaxThinkingTokensFn = options.setMaxThinkingTokensFn ?? null;
@@ -1009,7 +1041,7 @@ export class Process {
       options.helperSideModel ?? HELPER_SIDE_MODEL_CHEAPEST;
     this._lastMessageTime = new Date();
     this._lastProviderMessageTime = null;
-    this._lastStateChangeTime = new Date();
+    this._lastStateChangeTime = this.startedAt;
 
     // Exit promise resolves when the CLI process fully terminates
     this._exitPromise = new Promise((resolve) => {
@@ -1018,6 +1050,13 @@ export class Process {
 
     // Start bucket swap timer for bounded message history
     this.startBucketSwapTimer();
+
+    // A process created without a user turn is genuinely idle from birth. It
+    // must share the ordinary idle lifecycle so Activate/recovery cannot pin a
+    // provider child forever merely because no result event will ever arrive.
+    if (this._state.type === "idle") {
+      this.startIdleTimer();
+    }
 
     // Start processing messages from the SDK
     this.processMessages();
@@ -1067,6 +1106,18 @@ export class Process {
   /** Context window size reported by SDK (from result message modelUsage) */
   get contextWindow(): number | undefined {
     return this._contextWindow;
+  }
+
+  get assistantActivityVersion(): number {
+    return this._assistantActivityVersion;
+  }
+
+  get inputIntentVersion(): number {
+    return this._inputIntentVersion;
+  }
+
+  noteInputIntent(): void {
+    this._inputIntentVersion += 1;
   }
 
   get state(): ProcessState {
@@ -1575,6 +1626,10 @@ export class Process {
     return this._permissionMode;
   }
 
+  get appliedPermissionMode(): PermissionMode | undefined {
+    return this._appliedPermissionMode;
+  }
+
   get permissions(): PermissionRules | undefined {
     return this._permissions;
   }
@@ -1849,6 +1904,29 @@ export class Process {
     return this.supportedCommandsFn !== null;
   }
 
+  get compactAtContextPercent(): number | undefined {
+    return this._compactAtContextPercent;
+  }
+
+  get compactAtContextWindow(): number | undefined {
+    return this._compactAtContextWindow;
+  }
+
+  get forceYaOrchestratedCompaction(): boolean {
+    return this._forceYaOrchestratedCompaction;
+  }
+
+  updateCompactThresholdSettings(options: {
+    percent?: number;
+    contextWindow?: number;
+    forceYaOrchestratedCompaction?: boolean;
+  }): void {
+    this._compactAtContextPercent = options.percent;
+    this._compactAtContextWindow = options.contextWindow;
+    this._forceYaOrchestratedCompaction =
+      options.forceYaOrchestratedCompaction === true;
+  }
+
   /**
    * Dispatch a provider-native slash command out-of-band (e.g. Codex `/compact`
    * → `thread/compact/start`) instead of delivering it as a user turn. Returns
@@ -1923,7 +2001,7 @@ export class Process {
   }
 
   async primeSupportedCommandsForMessage(message: UserMessage): Promise<void> {
-    if (!isSlashCommandSubmission(message.text)) {
+    if (!hasInvocationCandidate(message.text)) {
       return;
     }
     await this.primeSupportedCommands();
@@ -2017,6 +2095,18 @@ export class Process {
     this._permissionMode = mode;
     this._modeVersion++;
     this.emit({ type: "mode-change", mode, version: this._modeVersion });
+  }
+
+  /**
+   * Record the permission mode accepted at a provider turn boundary.
+   * This intentionally remains separate from the standing selector value.
+   */
+  setAppliedPermissionMode(mode: PermissionMode): void {
+    if (this._appliedPermissionMode === mode) {
+      return;
+    }
+    this._appliedPermissionMode = mode;
+    this.emit({ type: "mode-applied", mode });
   }
 
   /**
@@ -2137,6 +2227,7 @@ export class Process {
       recapAfterSeconds: this._recapAfterSeconds,
       promptSuggestionMode: this._promptSuggestionMode,
       helperSideModel: this._helperSideModel,
+      sandboxEnforcement: this.sandboxEnforcement,
     };
 
     // Add idleSince if idle
@@ -2671,10 +2762,7 @@ export class Process {
   }
 
   private expandEmulatedSlashCommand(message: UserMessage): UserMessage {
-    return expandSlashCommandEmulation(message, this.supportedCommandsCache, {
-      unknownCommandPrefix: getCodexSkillCommandPrefix(this.provider),
-      nativeCommandNames: getKnownNativeSlashCommands(this.provider),
-    });
+    return expandSlashCommandEmulation(message, this.supportedCommandsCache);
   }
 
   /**
@@ -2696,16 +2784,20 @@ export class Process {
     message: UserMessage,
     composeAnchor?: string | null,
   ): UserMessage {
-    return this.withProviderDeliveryPriority(
+    const prepared = this.withProviderDeliveryPriority(
       this.applyComposeAnchor(
         this.expandEmulatedSlashCommand(message),
         composeAnchor,
       ),
     );
+    return {
+      ...prepared,
+      mode: prepared.mode ?? this._permissionMode,
+    };
   }
 
   private withProviderDeliveryPriority(message: UserMessage): UserMessage {
-    if (this.provider !== "claude" && this.provider !== "claude-ollama") {
+    if (!isClaudeProviderName(this.provider)) {
       return message;
     }
 
@@ -3378,10 +3470,15 @@ export class Process {
   async handleToolApproval(
     toolName: string,
     input: unknown,
-    options: { signal: AbortSignal },
+    options: {
+      signal: AbortSignal;
+      permissionMode?: PermissionMode;
+    },
   ): Promise<ToolApprovalResult> {
+    const effectivePermissionMode =
+      options.permissionMode ?? this._permissionMode;
     console.log(
-      `[handleToolApproval] toolName=${toolName}, permissionMode=${this._permissionMode}`,
+      `[handleToolApproval] toolName=${toolName}, permissionMode=${effectivePermissionMode}`,
     );
 
     // Check if aborted
@@ -3406,7 +3503,7 @@ export class Process {
     }
 
     // Handle based on permission mode
-    switch (this._permissionMode) {
+    switch (effectivePermissionMode) {
       case "bypassPermissions": {
         // Always prompt for user questions and plan approval, even in bypass mode
         // These are inherently interactive and shouldn't be auto-answered
@@ -3843,12 +3940,20 @@ export class Process {
           break;
         }
 
-        const message = this.withTimestamp(result.value);
+        let message = this.withTimestamp(result.value);
+        if (this.toolResultMediaMaterializer) {
+          message =
+            await this.toolResultMediaMaterializer.materializeMessage(message);
+        }
         const receivedAt = new Date();
         this._lastMessageTime = receivedAt;
         this._lastProviderMessageTime = receivedAt;
         this.recordNativeRecap(message, receivedAt);
         this.observeProviderRuntimeStatus(message, receivedAt);
+        if (Array.isArray(message.slash_command_inventory)) {
+          this.supportedCommandsCache =
+            message.slash_command_inventory as SlashCommand[];
+        }
 
         // Store message in history for replay to late-joining clients.
         // Exclude stream_event messages - they're transient streaming deltas that
@@ -3873,6 +3978,7 @@ export class Process {
         // Stream_event partials are skipped — we only want completed assistant
         // turns so the recap input is coherent.
         if (message.type === "assistant") {
+          this._assistantActivityVersion += 1;
           const text = extractMessageText(message);
           if (text) {
             this.pushRecentAssistantText(text, receivedAt.getTime());
@@ -4230,8 +4336,8 @@ export class Process {
   /**
    * Leading run of entries whose consecutive compose times are within the
    * join window. With the default window of 0 the group is always a single
-   * entry, so queued turns deliver one per boundary; a large window
-   * approximates "always join".
+   * entry, so queued turns deliver one per boundary. A mode change always
+   * starts a new group; otherwise a large window approximates "always join".
    */
   private leadingJoinGroup(
     entries: DeferredQueueEntry[],
@@ -4242,6 +4348,7 @@ export class Process {
     // 0 means never join, even for sends composed in the same millisecond.
     if (windowMs <= 0) return group;
     for (let i = 1; i < entries.length; i++) {
+      if (entries[i]!.message.mode !== entries[0]!.message.mode) break;
       const gapMs =
         this.composedAtMsForEntry(entries[i]!) -
         this.composedAtMsForEntry(entries[i - 1]!);
