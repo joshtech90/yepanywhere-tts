@@ -3,6 +3,7 @@
  */
 
 import {
+  DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
@@ -10,6 +11,7 @@ import {
   clampProjectQueueQuietSeconds,
   isHostAwakeBatteryFloorPercent,
   isHostAwakeMode,
+  normalizeAutoSessionTitleSettings,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
   parseClaudeAdditionalModelSelections,
@@ -252,6 +254,29 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           {
             error: `projectQueueQuietSeconds must be a number of seconds from 0 to ${MAX_PROJECT_QUEUE_QUIET_SECONDS}`,
           },
+          400,
+        );
+      }
+    }
+
+    if ("autoSessionTitle" in body) {
+      if (body.autoSessionTitle === undefined || body.autoSessionTitle === null) {
+        updates.autoSessionTitle = DEFAULT_AUTO_SESSION_TITLE_SETTINGS;
+      } else if (
+        typeof body.autoSessionTitle === "object" &&
+        !Array.isArray(body.autoSessionTitle)
+      ) {
+        // Merge onto the stored value so a partial patch (just `enabled`, say)
+        // keeps the other fields instead of resetting them to defaults.
+        updates.autoSessionTitle = normalizeAutoSessionTitleSettings(
+          body.autoSessionTitle,
+          normalizeAutoSessionTitleSettings(
+            serverSettingsService.getSettings().autoSessionTitle,
+          ),
+        );
+      } else {
+        return c.json(
+          { error: "autoSessionTitle must be an object" },
           400,
         );
       }

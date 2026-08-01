@@ -12,6 +12,8 @@ import {
 import type { SummaryGenerationRequest } from "./types.js";
 
 export const CODEX_RECAP_TIMEOUT_MS = 20_000;
+/** Auto-title helper turn budget. See topics/auto-session-title.md. */
+export const CODEX_TITLE_TIMEOUT_MS = 30_000;
 export const CODEX_SUMMARY_TIMEOUT_MS = 60_000;
 
 const CODEX_RECAP_MAX_TOTAL_CHARS = 6000;

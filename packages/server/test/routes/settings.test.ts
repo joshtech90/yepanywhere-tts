@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_PROJECT_QUEUE_QUIET_SECONDS } from "@yep-anywhere/shared";
+import {
+  AUTO_SESSION_TITLE_MAX_LENGTH,
+  DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+  MAX_PROJECT_QUEUE_QUIET_SECONDS,
+} from "@yep-anywhere/shared";
 import { createSettingsRoutes } from "../../src/routes/settings.js";
 import type { PublicShareService } from "../../src/services/PublicShareService.js";
 import type { HostAwakeService } from "../../src/services/host-awake/HostAwakeService.js";
@@ -509,6 +513,91 @@ describe("Settings Routes", () => {
         body: JSON.stringify({
           projectQueueQuietSeconds: MAX_PROJECT_QUEUE_QUIET_SECONDS + 1,
         }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("merges a partial autoSessionTitle patch onto the stored value", async () => {
+      settings.autoSessionTitle = {
+        enabled: false,
+        triggerMessageCount: 3,
+        delaySeconds: 5,
+        maxLength: 60,
+        language: "de",
+        backfillExisting: true,
+      };
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoSessionTitle: { enabled: true } }),
+      });
+
+      expect(response.status).toBe(200);
+      // Toggling `enabled` must not reset the other fields to defaults.
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        autoSessionTitle: {
+          enabled: true,
+          triggerMessageCount: 3,
+          delaySeconds: 5,
+          maxLength: 60,
+          language: "de",
+          backfillExisting: true,
+        },
+      });
+    });
+
+    it("clamps out-of-range autoSessionTitle values", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          autoSessionTitle: { enabled: true, maxLength: 5000 },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(
+        (mockServerSettingsService.updateSettings as ReturnType<typeof vi.fn>)
+          .mock.calls[0]?.[0]?.autoSessionTitle?.maxLength,
+      ).toBe(AUTO_SESSION_TITLE_MAX_LENGTH);
+    });
+
+    it("resets autoSessionTitle to defaults when nulled", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoSessionTitle: null }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        autoSessionTitle: DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+      });
+    });
+
+    it("rejects a non-object autoSessionTitle", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoSessionTitle: "on" }),
       });
 
       expect(response.status).toBe(400);

@@ -9,9 +9,11 @@ import type {
 import {
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  DEFAULT_PROVIDER,
   buildEffectiveAgentContext,
   clampProjectQueueQuietSeconds,
   isClaudeProviderName,
+  normalizeAutoSessionTitleSettings,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
@@ -147,6 +149,7 @@ import type { ConnectedBrowsersService } from "./services/ConnectedBrowsersServi
 import type { HostAwakeService } from "./services/host-awake/HostAwakeService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
+import { AutoSessionTitleService } from "./services/AutoSessionTitleService.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
 import type { ProjectQueueService } from "./services/ProjectQueueService.js";
 import type { RelayClientService } from "./services/RelayClientService.js";
@@ -1055,6 +1058,48 @@ export function createApp(options: AppOptions): AppResult {
         getSessionListSummary,
       })
     : undefined;
+
+  // Name new sessions with the cheap helper model so the session list shows a
+  // topic instead of a truncated first message. Off unless enabled in
+  // settings. See topics/auto-session-title.md.
+  let autoSessionTitleService: AutoSessionTitleService | undefined;
+  if (options.eventBus && options.sessionMetadataService) {
+    const metadataService = options.sessionMetadataService;
+    autoSessionTitleService = new AutoSessionTitleService({
+      eventBus: options.eventBus,
+      getSettings: () =>
+        normalizeAutoSessionTitleSettings(
+          options.serverSettingsService?.getSetting("autoSessionTitle"),
+        ),
+      getCustomTitle: (sessionId) =>
+        metadataService.getMetadata?.(sessionId)?.customTitle,
+      setTitle: async (sessionId, title) => {
+        await metadataService.setTitle(sessionId, title);
+      },
+      loadContext: async (sessionId, projectId) => {
+        const summary = await getSessionSummary(sessionId, projectId);
+        if (!summary) return null;
+        return {
+          provider: summary.provider ?? DEFAULT_PROVIDER,
+          fullTitle: summary.fullTitle ?? summary.title ?? null,
+          lastAgentText: summary.lastAgentText,
+          messageCount: summary.messageCount,
+        };
+      },
+      generateTitle: async (provider, request) =>
+        supervisor.generateSummary(provider, {
+          purpose: "session-retitle",
+          strategy: "side-session",
+          transcriptExcerpt: request.transcriptExcerpt,
+          currentTitle: request.currentTitle,
+          lengthTarget: request.lengthTarget,
+          language: request.language,
+          model: request.model,
+          signal: request.signal,
+        }),
+    });
+    autoSessionTitleService.start();
+  }
 
   let projectQueueScheduler: ProjectQueueScheduler | undefined;
   if (options.eventBus && options.projectQueueService) {

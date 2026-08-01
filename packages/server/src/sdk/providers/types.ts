@@ -418,6 +418,29 @@ export type SummaryGenerationRequest =
       sessionSandbox?: SessionSandboxRuntime;
     }
   | {
+      /**
+       * Name a session from its opening turns with the cheap helper model.
+       * Unlike the fork strategy this reads no provider state and starts no
+       * fork: the caller passes the excerpt, so an idle or stopped session is
+       * never reactivated just to be titled.
+       * See topics/auto-session-title.md.
+       */
+      purpose: "session-retitle";
+      strategy: "side-session";
+      /** Opening user/assistant turns, already bounded by the caller. */
+      transcriptExcerpt: string;
+      /** Current displayed title, if any, to avoid repeating a bad title. */
+      currentTitle?: string;
+      /** Target maximum title length in characters. */
+      lengthTarget?: number;
+      /** Language instruction for the generated title. */
+      language?: "auto" | "de" | "en";
+      /** Helper model token; `cheapest` maps to Haiku / a mini model. */
+      model?: string;
+      /** Cancels the helper query when the caller gives up. */
+      signal?: AbortSignal;
+    }
+  | {
       purpose: "session-retitle";
       strategy: "fork";
       /** Archived helper fork whose whole context should be titled. */

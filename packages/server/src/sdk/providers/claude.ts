@@ -40,6 +40,10 @@ import {
   getModelContextWindow,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
+import {
+  boundAutoTitleExcerpt,
+  createAutoTitlePrompt,
+} from "./auto-title-prompt.js";
 import { detectClaudeCli } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
@@ -93,6 +97,9 @@ const USE_SPAWN_WRAPPER = true;
 const CLAUDE_LIVENESS_PROBE_TIMEOUT_MS = 5000;
 const CLAUDE_LIVENESS_PROBE_SOURCE = "claude:control/mcp_status";
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_TIMEOUT_MS = 60_000;
+/** One-shot helper query budgets. Both are non-persisted, single-turn calls. */
+const SIDE_SESSION_RECAP_TIMEOUT_MS = 20_000;
+const SIDE_SESSION_TITLE_TIMEOUT_MS = 30_000;
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD = 0.02;
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
 const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE =
@@ -1255,6 +1262,9 @@ export class ClaudeProvider implements AgentProvider {
   ): Promise<SummaryGenerationResult> {
     switch (request.strategy) {
       case "side-session":
+        if (request.purpose === "session-retitle") {
+          return { text: await this.generateSideSessionTitle(request) };
+        }
         return {
           text: await this.generateSideSessionRecap(
             request.recentAssistantText,
@@ -1263,6 +1273,123 @@ export class ClaudeProvider implements AgentProvider {
         };
       case "fork":
         return await this.generateForkBackedSummary(request);
+    }
+  }
+
+  /**
+   * Name a session from its opening turns. Runs the same non-persisted helper
+   * query as the recap path — nothing lands in the source session's JSONL and
+   * no fork is created, so a stopped session stays stopped.
+   * See topics/auto-session-title.md.
+   */
+  private async generateSideSessionTitle(
+    request: Extract<
+      SummaryGenerationRequest,
+      { purpose: "session-retitle"; strategy: "side-session" }
+    >,
+  ): Promise<string> {
+    const excerpt = boundAutoTitleExcerpt(request.transcriptExcerpt);
+    if (!excerpt) {
+      throw new Error("No transcript excerpt to title");
+    }
+
+    const text = await this.runSideSessionHelper({
+      userPrompt: createAutoTitlePrompt({
+        transcriptExcerpt: excerpt,
+        currentTitle: request.currentTitle,
+        lengthTarget: request.lengthTarget,
+        language: request.language,
+      }),
+      systemPrompt:
+        "You name conversations. Reply with the title only, no preamble.",
+      model: request.model,
+      timeoutMs: SIDE_SESSION_TITLE_TIMEOUT_MS,
+      signal: request.signal,
+    });
+
+    const cleaned = text.trim();
+    if (!cleaned) {
+      throw new Error("Title generation returned empty text");
+    }
+    return cleaned;
+  }
+
+  /**
+   * Run a one-shot, non-persisted helper query and return its assistant text.
+   *
+   * `persistSession: false` keeps the helper turn out of every transcript, and
+   * `maxTurns: 1` keeps it to a single reply. The `cheapest` helper token maps
+   * to Haiku for Claude.
+   */
+  private async runSideSessionHelper(args: {
+    userPrompt: string;
+    systemPrompt: string;
+    model?: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const abortController = new AbortController();
+    const abortFromCaller = () => abortController.abort();
+    if (args.signal?.aborted) {
+      abortController.abort();
+    } else {
+      args.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
+    const timeout = setTimeout(() => abortController.abort(), args.timeoutMs);
+    timeout.unref?.();
+
+    const userPrompt = args.userPrompt;
+    async function* singlePrompt(): AsyncGenerator<{
+      type: "user";
+      message: { role: "user"; content: string };
+      parent_tool_use_id: null;
+      session_id: string;
+    }> {
+      yield {
+        type: "user",
+        message: { role: "user", content: userPrompt },
+        parent_tool_use_id: null,
+        session_id: "",
+      };
+    }
+
+    const helperModel =
+      args.model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : args.model;
+
+    try {
+      const sdkQuery = query({
+        prompt: singlePrompt(),
+        options: {
+          cwd: homedir(),
+          abortController,
+          permissionMode: "default",
+          persistSession: false,
+          pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
+          env: this.getEnv(helperModel),
+          settings: this.getSettings(helperModel),
+          model: helperModel,
+          maxTurns: 1,
+          systemPrompt: args.systemPrompt,
+        },
+      });
+
+      let text = "";
+      for await (const message of sdkQuery as AsyncIterable<AgentSDKMessage>) {
+        if (
+          message.type === "assistant" &&
+          typeof message.message?.content !== "undefined"
+        ) {
+          text += extractClaudeAssistantText(message.message.content);
+        }
+        if (message.type === "result") {
+          break;
+        }
+      }
+      return text;
+    } finally {
+      clearTimeout(timeout);
+      abortController.abort();
+      args.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
 
@@ -1310,68 +1437,21 @@ export class ClaudeProvider implements AgentProvider {
       transcript,
     ].join("\n");
 
-    const abortController = new AbortController();
-    const RECAP_TIMEOUT_MS = 20_000;
-    const timeout = setTimeout(() => abortController.abort(), RECAP_TIMEOUT_MS);
-    timeout.unref?.();
+    const text = await this.runSideSessionHelper({
+      userPrompt,
+      systemPrompt:
+        "You are a recap helper. Reply with the recap text only, no preamble.",
+      model,
+      timeoutMs: SIDE_SESSION_RECAP_TIMEOUT_MS,
+    });
 
-    async function* singlePrompt(): AsyncGenerator<{
-      type: "user";
-      message: { role: "user"; content: string };
-      parent_tool_use_id: null;
-      session_id: string;
-    }> {
-      yield {
-        type: "user",
-        message: { role: "user", content: userPrompt },
-        parent_tool_use_id: null,
-        session_id: "",
-      };
+    const cleaned = text
+      .replace(/\s*\(disable recaps in \/config\)\s*$/u, "")
+      .trim();
+    if (!cleaned) {
+      throw new Error("Recap generation returned empty text");
     }
-
-    const helperModel = model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : model;
-
-    try {
-      const sdkQuery = query({
-        prompt: singlePrompt(),
-        options: {
-          cwd: homedir(),
-          abortController,
-          permissionMode: "default",
-          persistSession: false,
-          pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
-          env: this.getEnv(helperModel),
-          settings: this.getSettings(helperModel),
-          model: helperModel,
-          maxTurns: 1,
-          systemPrompt:
-            "You are a recap helper. Reply with the recap text only, no preamble.",
-        },
-      });
-
-      let text = "";
-      for await (const message of sdkQuery as AsyncIterable<AgentSDKMessage>) {
-        if (
-          message.type === "assistant" &&
-          typeof message.message?.content !== "undefined"
-        ) {
-          text += extractClaudeAssistantText(message.message.content);
-        }
-        if (message.type === "result") {
-          break;
-        }
-      }
-      const cleaned = text
-        .replace(/\s*\(disable recaps in \/config\)\s*$/u, "")
-        .trim();
-      if (!cleaned) {
-        throw new Error("Recap generation returned empty text");
-      }
-      return cleaned;
-    } finally {
-      clearTimeout(timeout);
-      abortController.abort();
-    }
+    return cleaned;
   }
 
   private async generateForkBackedSummary(

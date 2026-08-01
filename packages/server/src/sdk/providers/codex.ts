@@ -115,12 +115,17 @@ import {
   cleanCodexSummaryText,
   CODEX_RECAP_TIMEOUT_MS,
   CODEX_SUMMARY_TIMEOUT_MS,
+  CODEX_TITLE_TIMEOUT_MS,
   createCodexForkSummaryPrompt,
   createCodexForkSummaryThreadResumeParams,
   createCodexRecapPrompt,
   joinCodexSummaryText,
   resolveCodexRecapHelperModel,
 } from "./codex-summary-helpers.js";
+import {
+  boundAutoTitleExcerpt,
+  createAutoTitlePrompt,
+} from "./auto-title-prompt.js";
 import { CODEX_BUILTIN_COMMANDS } from "./staticSlashCommands.js";
 import type {
   AgentProvider,
@@ -2593,6 +2598,9 @@ export class CodexProvider implements AgentProvider {
   ): Promise<SummaryGenerationResult> {
     switch (request.strategy) {
       case "side-session": {
+        if (request.purpose === "session-retitle") {
+          return { text: await this.generateSideSessionTitle(request) };
+        }
         const text = await this.generateSideSessionRecap(
           request.recentAssistantText,
           request.model,
@@ -2608,17 +2616,90 @@ export class CodexProvider implements AgentProvider {
     recentAssistantText: string[],
     requestedModel?: string,
   ): Promise<string> {
-    const userPrompt = createCodexRecapPrompt(recentAssistantText);
-    const model = await resolveCodexRecapHelperModel(requestedModel, () =>
+    const cleaned = cleanCodexRecapText(
+      await this.runSideSessionHelper({
+        userPrompt: createCodexRecapPrompt(recentAssistantText),
+        developerInstructions:
+          "You are a recap helper. Reply with the recap text only, no preamble. Do not call tools.",
+        requestedModel,
+        timeoutMs: CODEX_RECAP_TIMEOUT_MS,
+        label: "recap",
+      }),
+    );
+    if (!cleaned) {
+      throw new Error("Recap generation returned empty text");
+    }
+    return cleaned;
+  }
+
+  /**
+   * Name a session from its opening turns through an ephemeral Codex thread.
+   * Like the recap helper this never mutates the source session transcript.
+   * See topics/auto-session-title.md.
+   */
+  private async generateSideSessionTitle(
+    request: Extract<
+      SummaryGenerationRequest,
+      { purpose: "session-retitle"; strategy: "side-session" }
+    >,
+  ): Promise<string> {
+    const excerpt = boundAutoTitleExcerpt(request.transcriptExcerpt);
+    if (!excerpt) {
+      throw new Error("No transcript excerpt to title");
+    }
+
+    const cleaned = (
+      await this.runSideSessionHelper({
+        userPrompt: createAutoTitlePrompt({
+          transcriptExcerpt: excerpt,
+          currentTitle: request.currentTitle,
+          lengthTarget: request.lengthTarget,
+          language: request.language,
+        }),
+        developerInstructions:
+          "You name conversations. Reply with the title only, no preamble. Do not call tools.",
+        requestedModel: request.model,
+        timeoutMs: CODEX_TITLE_TIMEOUT_MS,
+        label: "title",
+        signal: request.signal,
+      })
+    ).trim();
+    if (!cleaned) {
+      throw new Error("Title generation returned empty text");
+    }
+    return cleaned;
+  }
+
+  /**
+   * Run a one-shot helper turn in an ephemeral, read-only Codex thread and
+   * return its joined assistant text.
+   */
+  private async runSideSessionHelper(args: {
+    userPrompt: string;
+    developerInstructions: string;
+    requestedModel?: string;
+    timeoutMs: number;
+    /** Used in error messages, e.g. "Timed out generating Codex recap". */
+    label: string;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const userPrompt = args.userPrompt;
+    const model = await resolveCodexRecapHelperModel(args.requestedModel, () =>
       this.getAvailableModels(),
     );
     const codexCommand = await this.resolveCodexCommand();
     const abortController = new AbortController();
+    const abortFromCaller = () => abortController.abort();
+    if (args.signal?.aborted) {
+      abortController.abort();
+    } else {
+      args.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
       abortController.abort();
-    }, CODEX_RECAP_TIMEOUT_MS);
+    }, args.timeoutMs);
     timeout.unref?.();
 
     const appServer = new CodexAppServerClient(
@@ -2644,8 +2725,7 @@ export class CodexProvider implements AgentProvider {
           sandbox: "read-only",
           ephemeral: true,
           experimentalRawEvents: false,
-          developerInstructions:
-            "You are a recap helper. Reply with the recap text only, no preamble. Do not call tools.",
+          developerInstructions: args.developerInstructions,
         } satisfies ThreadStartParams,
       );
 
@@ -2670,7 +2750,8 @@ export class CodexProvider implements AgentProvider {
 
       if (turnResult.turn.status === "failed") {
         throw new Error(
-          turnResult.turn.error?.message ?? "Codex recap generation failed",
+          turnResult.turn.error?.message ??
+            `Codex ${args.label} generation failed`,
         );
       }
 
@@ -2691,28 +2772,26 @@ export class CodexProvider implements AgentProvider {
         const completed = asCodexTurnCompletedNotification(notification.params);
         if (completed?.turn.status === "failed") {
           throw new Error(
-            completed.turn.error?.message ?? "Codex recap generation failed",
+            completed.turn.error?.message ??
+              `Codex ${args.label} generation failed`,
           );
         }
         turnComplete = true;
       }
       if (abortController.signal.aborted) {
-        throw new Error("Timed out generating Codex recap");
+        throw new Error(`Timed out generating Codex ${args.label}`);
       }
 
-      const cleaned = cleanCodexRecapText(joinCodexSummaryText(textByItemId));
-      if (!cleaned) {
-        throw new Error("Recap generation returned empty text");
-      }
-      return cleaned;
+      return joinCodexSummaryText(textByItemId);
     } catch (error) {
       if (timedOut) {
-        throw new Error("Timed out generating Codex recap");
+        throw new Error(`Timed out generating Codex ${args.label}`);
       }
       throw error;
     } finally {
       clearTimeout(timeout);
       abortController.abort();
+      args.signal?.removeEventListener("abort", abortFromCaller);
       await appServer.close();
     }
   }

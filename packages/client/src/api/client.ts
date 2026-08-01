@@ -1,6 +1,7 @@
 import type {
   AgentActivity,
   AgentContextHints,
+  AutoSessionTitleSettings,
   CacheMissBillingRecord,
   CacheMissBillingSettings,
   BrowserSettingsBackupResponse,
@@ -1755,6 +1756,12 @@ export interface ServerSettings {
   composeAnchorsEnabled?: boolean;
   /** Seconds Project Queue waits after whole-project idle before promotion. */
   projectQueueQuietSeconds?: number;
+  /**
+   * Name new sessions with the cheap helper model instead of leaving the
+   * truncated first user message as the list title.
+   * See topics/auto-session-title.md.
+   */
+  autoSessionTitle?: AutoSessionTitleSettings;
 }
 
 export type RelayClientStatus =

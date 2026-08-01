@@ -1254,5 +1254,13 @@
   "remoteSetupErrorCustomYaRequired": "Benutzerdefinierte YA-URL ist erforderlich",
   "remoteSetupErrorSaveFailed": "Speichern fehlgeschlagen",
   "remoteSetupErrorUpdateFailed": "Aktualisierung fehlgeschlagen",
-  "publicShareRetrying": "Verbindung zur Freigabe wird wiederhergestellt..."
+  "publicShareRetrying": "Verbindung zur Freigabe wird wiederhergestellt...",
+  "autoSessionTitleTitle": "Automatische Session-Titel",
+  "autoSessionTitleDescription": "Neue Sessions vom günstigen Helfer-Modell benennen lassen (Haiku bei Claude), statt die abgeschnittene erste Nachricht zu zeigen. Ein selbst vergebener Name hat immer Vorrang.",
+  "autoSessionTitleEnabledLabel": "Neue Sessions automatisch benennen",
+  "autoSessionTitleLanguageLabel": "Sprache des Titels",
+  "autoSessionTitleLanguageAuto": "Meine Sprache übernehmen",
+  "autoSessionTitleMaxLengthLabel": "Maximale Titellänge",
+  "autoSessionTitleBackfillLabel": "Auch ältere Sessions benennen",
+  "autoSessionTitleBackfillDescription": "Standardmäßig aus: Es werden nur Sessions der letzten 24 Stunden benannt, damit das Einschalten nicht über den ganzen Verlauf läuft."
 }

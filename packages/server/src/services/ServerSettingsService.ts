@@ -19,11 +19,14 @@ import type {
   PromptCacheKeepaliveSettings,
   SessionToolbarPresenceClientDefaults,
   ToolbarControlPresence,
+  AutoSessionTitleSettings,
 } from "@yep-anywhere/shared";
 import {
+  DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  normalizeAutoSessionTitleSettings,
   clampProjectQueueQuietSeconds,
   normalizeYaClientBaseUrlFromShareViewerUrl,
   isHostAwakeBatteryFloorPercent,
@@ -169,6 +172,12 @@ export interface ServerSettings {
    * Queue promotes one item. Range 0-300, default 30.
    */
   projectQueueQuietSeconds?: number;
+  /**
+   * Name new sessions with the cheap helper model instead of leaving the
+   * truncated first user message as the list title.
+   * See topics/auto-session-title.md.
+   */
+  autoSessionTitle?: AutoSessionTitleSettings;
 }
 
 export const CODEX_UPDATE_POLICIES = ["auto", "notify", "off"] as const;
@@ -199,6 +208,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   clientDefaults: DEFAULT_CLIENT_DEFAULTS,
   cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
+  autoSessionTitle: DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
 };
 
 const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
@@ -313,6 +323,9 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     : DEFAULT_SERVER_SETTINGS.hostAwakeBatteryFloorPercent;
   normalized.clientDefaults = mergeLoadedClientDefaults(
     settings.clientDefaults,
+  );
+  normalized.autoSessionTitle = normalizeAutoSessionTitleSettings(
+    settings.autoSessionTitle,
   );
   normalized.claudeAdditionalModels =
     parseClaudeAdditionalModelSelections(settings.claudeAdditionalModels) ??

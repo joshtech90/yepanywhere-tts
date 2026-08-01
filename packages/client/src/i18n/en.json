@@ -2428,5 +2428,13 @@
   "desktopProviderNoticeGetClaude": "Get Claude",
   "desktopProviderNoticeGetCodex": "Get Codex",
   "desktopProviderNoticeRetry": "Check again",
-  "desktopProviderNoticeDismiss": "Dismiss provider setup notice"
+  "desktopProviderNoticeDismiss": "Dismiss provider setup notice",
+  "autoSessionTitleTitle": "Automatic session titles",
+  "autoSessionTitleDescription": "Name new sessions with the cheap helper model (Haiku for Claude) instead of showing the truncated first message. Renaming a session yourself always wins.",
+  "autoSessionTitleEnabledLabel": "Name new sessions automatically",
+  "autoSessionTitleLanguageLabel": "Title language",
+  "autoSessionTitleLanguageAuto": "Match my language",
+  "autoSessionTitleMaxLengthLabel": "Maximum title length",
+  "autoSessionTitleBackfillLabel": "Also title older sessions",
+  "autoSessionTitleBackfillDescription": "Off by default: only sessions active in the last 24 hours are named, so turning the feature on does not run over your whole history."
 }

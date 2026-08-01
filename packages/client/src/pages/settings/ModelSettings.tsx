@@ -1,4 +1,6 @@
 import {
+  AUTO_SESSION_TITLE_MAX_LENGTH,
+  AUTO_SESSION_TITLE_MIN_LENGTH,
   DEFAULT_RECAP_AFTER_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   HELPER_SIDE_MODEL_CHEAPEST,
@@ -18,6 +20,8 @@ import {
   type ProviderSessionDefaults,
   type RecapMode,
   type ThinkingMode,
+  type AutoSessionTitleSettings,
+  normalizeAutoSessionTitleSettings,
   normalizeRecapAfterSeconds,
 } from "@yep-anywhere/shared";
 import {
@@ -220,6 +224,23 @@ export function ModelSettings() {
 
   const availableProviders = getAvailableProviders(providers);
   const savedDefaults = settings?.newSessionDefaults;
+  // Normalize before render so the controls always have in-range values, even
+  // for a settings file written by an older build.
+  const autoSessionTitle = normalizeAutoSessionTitleSettings(
+    settings?.autoSessionTitle,
+  );
+  const updateAutoSessionTitle = useCallback(
+    async (patch: Partial<AutoSessionTitleSettings>) => {
+      await updateSetting(
+        "autoSessionTitle",
+        normalizeAutoSessionTitleSettings(
+          patch,
+          normalizeAutoSessionTitleSettings(settings?.autoSessionTitle),
+        ),
+      );
+    },
+    [settings?.autoSessionTitle, updateSetting],
+  );
 
   // Header undo across both state sources: the client-scoped model prefs
   // (useModelSettings setters) and the server-side new-session defaults.
@@ -1045,6 +1066,91 @@ export function ModelSettings() {
           </div>
         </div>
       </HideInSettingsSearch>
+
+      <div className="settings-group">
+        <div className="new-session-helper-section">
+          <h3>{t("autoSessionTitleTitle")}</h3>
+          <p className="session-default-section-description">
+            {t("autoSessionTitleDescription")}
+          </p>
+          <label className="settings-item">
+            <div className="settings-item-info">
+              <strong>{t("autoSessionTitleEnabledLabel")}</strong>
+            </div>
+            <input
+              type="checkbox"
+              checked={autoSessionTitle.enabled}
+              disabled={settingsLoading}
+              onChange={(e) =>
+                void updateAutoSessionTitle({ enabled: e.target.checked })
+              }
+              aria-label={t("autoSessionTitleEnabledLabel")}
+            />
+          </label>
+          {autoSessionTitle.enabled && (
+            <>
+              <label className="settings-item">
+                <div className="settings-item-info">
+                  <strong>{t("autoSessionTitleLanguageLabel")}</strong>
+                </div>
+                <select
+                  value={autoSessionTitle.language}
+                  disabled={settingsLoading}
+                  onChange={(e) =>
+                    void updateAutoSessionTitle({
+                      language: e.target
+                        .value as AutoSessionTitleSettings["language"],
+                    })
+                  }
+                  aria-label={t("autoSessionTitleLanguageLabel")}
+                >
+                  <option value="auto">
+                    {t("autoSessionTitleLanguageAuto")}
+                  </option>
+                  <option value="de">Deutsch</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label className="settings-item">
+                <div className="settings-item-info">
+                  <strong>{t("autoSessionTitleMaxLengthLabel")}</strong>
+                </div>
+                <input
+                  type="number"
+                  className="settings-input-small"
+                  min={AUTO_SESSION_TITLE_MIN_LENGTH}
+                  max={AUTO_SESSION_TITLE_MAX_LENGTH}
+                  value={autoSessionTitle.maxLength}
+                  disabled={settingsLoading}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    if (!Number.isFinite(parsed)) return;
+                    void updateAutoSessionTitle({ maxLength: parsed });
+                  }}
+                  aria-label={t("autoSessionTitleMaxLengthLabel")}
+                />
+              </label>
+              <label className="settings-item">
+                <div className="settings-item-info">
+                  <strong>{t("autoSessionTitleBackfillLabel")}</strong>
+                  <p>{t("autoSessionTitleBackfillDescription")}</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={autoSessionTitle.backfillExisting}
+                  disabled={settingsLoading}
+                  onChange={(e) =>
+                    void updateAutoSessionTitle({
+                      backfillExisting: e.target.checked,
+                    })
+                  }
+                  aria-label={t("autoSessionTitleBackfillLabel")}
+                />
+              </label>
+            </>
+          )}
+        </div>
+      </div>
 
       {selectedProvider?.name === "claude" && (
         <div className="settings-group">
