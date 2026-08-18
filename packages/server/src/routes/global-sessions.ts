@@ -5,7 +5,12 @@
  * this returns a flat list suitable for navigation/sidebar use.
  */
 
-import type { ProviderName, WorkstreamId } from "@yep-anywhere/shared";
+import {
+  isUrlProjectId,
+  type ProviderChildSessionSummary,
+  type ProviderName,
+  type WorkstreamId,
+} from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionIndexListOptions } from "../indexes/types.js";
@@ -17,12 +22,15 @@ import { isDetachedProjectPath } from "../projects/paths.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { CodexSessionReader } from "../sessions/codex-reader.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
+import { attachProviderChildSessions } from "../sessions/provider-child-sessions.js";
 import { listSessionsAcrossProviders } from "../sessions/provider-resolution.js";
+import { providerResolutionDeps } from "./session-provider-resolution.js";
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader } from "../sessions/types.js";
 import {
   applyRecapOverlayToSummary,
+  getEffectiveProviderUpdatedAt,
   hasUnreadProviderContent,
 } from "../sessions/recap-overlays.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
@@ -35,6 +43,8 @@ import type {
   SessionSummary,
 } from "../supervisor/types.js";
 import type { BusEvent, EventBus } from "../watcher/index.js";
+import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
+import { SessionCollectionGeneration } from "../sessions/sessionCollectionGeneration.js";
 import { buildProviderProjectCatalog } from "./provider-catalog.js";
 import {
   getActiveSessionIndexOptions,
@@ -95,6 +105,8 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  /** True when an explicit manual termination disabled automatic resume. */
+  autoResumeDisabled?: boolean;
   /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
   parentSessionKind?: "btw-aside";
@@ -108,6 +120,8 @@ export interface GlobalSessionItem {
   executor?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  /** Provider-launched child work nested under this parent. Absent when none. */
+  providerChildren?: ProviderChildSessionSummary[];
 }
 
 /** Stats about all sessions (computed during full scan) */
@@ -135,6 +149,21 @@ export interface GlobalSessionsResponse {
   stats: GlobalSessionStats;
   /** All projects for filter dropdown */
   projects: ProjectOption[];
+  /**
+   * The collection revision this response reflects. A client may send it back
+   * as `knownGeneration` to get {@link GlobalSessionsUnchangedResponse} instead
+   * of another full walk. Gated by `progressive-session-catalog`.
+   */
+  generation?: number;
+}
+
+/**
+ * The answer to a conditional read whose `knownGeneration` still holds. It
+ * carries no rows: the client keeps the ones it has.
+ */
+export interface GlobalSessionsUnchangedResponse {
+  unchanged: true;
+  generation: number;
 }
 
 /** Default limit for sessions per page */
@@ -144,6 +173,25 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 /** Stats cache TTL in milliseconds */
 const STATS_CACHE_TTL_MS = 5000;
+
+/**
+ * How much enriched collection state to retain across requests. Rows are
+ * compact summaries, not transcripts; this bounds an unusually large install
+ * rather than sizing an expected one.
+ */
+const COLLECTION_RETENTION_BYTES = 16 * 1024 * 1024;
+
+interface CollectionRequest {
+  filterProjectId?: string;
+  searchQuery?: string;
+  afterCursor?: string;
+  includeArchived: boolean;
+  starredOnly: boolean;
+  includeStats: boolean;
+  limit: number;
+  /** The generation observed before the walk; stamped on the response. */
+  generation: number;
+}
 
 function createEmptyStats(): GlobalSessionStats {
   return {
@@ -162,6 +210,18 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     null;
   let statsDirty = true;
   let inFlightStats: Promise<GlobalSessionStats> | null = null;
+
+  const collectionGeneration = new SessionCollectionGeneration(deps.eventBus);
+  const collectionWalks = new SourceVersionedSingleFlight<
+    string,
+    GlobalSessionsResponse
+  >({
+    maxRetainedBytes: COLLECTION_RETENTION_BYTES,
+    estimateBytes: (value) =>
+      // Row count is the term that actually varies; the constant is a rough
+      // per-row summary size, not a measurement of any particular install.
+      value.sessions.length * 512 + value.projects.length * 64,
+  });
 
   const shouldInvalidateStats = (event: BusEvent): boolean => {
     switch (event.type) {
@@ -248,12 +308,17 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           isSessionAutoArchived(overlaidSession, statsAutoArchiveAfterMs);
         const isStarred = metadata?.isStarred ?? session.isStarred ?? false;
         const executor = metadata?.executor;
+        const process = deps.supervisor?.getProcessForSession(session.id);
+        const effectiveProviderUpdatedAt = getEffectiveProviderUpdatedAt(
+          session.updatedAt,
+          process,
+        );
 
         const hasUnread =
           hasUnreadProviderContent(
             deps.notificationService,
             session.id,
-            session.updatedAt,
+            effectiveProviderUpdatedAt,
           ) ?? false;
 
         if (isArchived) {
@@ -332,6 +397,97 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       MAX_LIMIT,
     );
 
+    // Read before the walk, never after: a change landing mid-walk must leave
+    // the client's token behind the current generation, so its next
+    // conditional read is answered `changed`. Stamping the response with the
+    // post-walk value would certify rows the response does not contain.
+    const generation = collectionGeneration.current;
+    // A cursor page is not a whole-collection read, so it never short-circuits;
+    // the token only means "the collection behind an identical query is
+    // unchanged", which is why the client must replay it against the same
+    // parameters it received it from.
+    const knownGeneration = Number.parseInt(
+      c.req.query("knownGeneration") ?? "",
+      10,
+    );
+    if (!afterCursor && collectionGeneration.matches(knownGeneration)) {
+      const unchanged: GlobalSessionsUnchangedResponse = {
+        unchanged: true,
+        generation,
+      };
+      return c.json(unchanged);
+    }
+
+    return c.json(
+      await readCollection({
+        filterProjectId,
+        searchQuery,
+        afterCursor,
+        includeArchived,
+        starredOnly,
+        includeStats,
+        limit,
+        generation,
+      }),
+    );
+  });
+
+  /**
+   * One walk per (query, generation), however many tabs ask for it.
+   *
+   * Twenty clients reconnecting at once used to run twenty independent walks of
+   * every project, and a client without `progressive-session-catalog` — which
+   * cannot send a known generation — repeats its walk on every revalidation
+   * forever. Retention is what keeps that ungated client's fallback a
+   * performance floor rather than a penalty.
+   *
+   * `isCurrent` is deliberately vacuous. A generation advancing mid-walk does
+   * not invalidate the answer, because the response is stamped with the
+   * generation read *before* the walk: the rows are a correct snapshot for that
+   * generation, and the client's next conditional read is told `changed`.
+   * Discarding the completion instead would leave a busy server unable to
+   * answer at all, and the retained entry is unreachable afterwards anyway
+   * since the generation only moves forward.
+   */
+  async function readCollection(
+    request: CollectionRequest,
+  ): Promise<GlobalSessionsResponse> {
+    const result = await collectionWalks.run({
+      key: JSON.stringify([
+        request.filterProjectId ?? null,
+        request.searchQuery ?? null,
+        request.afterCursor ?? null,
+        request.includeArchived,
+        request.starredOnly,
+        request.includeStats,
+        request.limit,
+      ]),
+      sourceVersion: String(request.generation),
+      compute: () => walkCollection(request),
+      isCurrent: () => true,
+    });
+    if (result.status === "stale") {
+      // Unreachable while `isCurrent` is vacuous; walking again is the only
+      // answer that cannot be wrong if that ever changes.
+      return walkCollection(request);
+    }
+    return result.value;
+  }
+
+  async function walkCollection(
+    request: CollectionRequest,
+  ): Promise<GlobalSessionsResponse> {
+    const {
+      filterProjectId,
+      searchQuery,
+      afterCursor,
+      includeArchived,
+      starredOnly,
+      includeStats,
+      limit,
+      generation,
+    } = request;
+
     // Get all projects
     const allProjects = await deps.scanner.listProjects();
 
@@ -375,11 +531,13 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
               deps.sessionMetadataService.getRecapMessages(session.id),
             )
           : session;
-        const effectiveProjectId = metadata?.workingProjectId ?? session.projectId;
+        const effectiveProjectId =
+          metadata?.workingProjectId ?? session.projectId;
         if (filterProjectId && effectiveProjectId !== filterProjectId) {
           continue;
         }
-        const effectiveProject = projectsById.get(effectiveProjectId) ?? project;
+        const effectiveProject =
+          projectsById.get(effectiveProjectId) ?? project;
 
         const isArchived =
           metadata?.isArchived ??
@@ -394,17 +552,10 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         const parentSessionKind =
           metadata?.parentSessionKind ?? overlaidSession.parentSessionKind;
         const forkedFromSessionId =
-          metadata?.forkedFromSessionId ??
-          overlaidSession.forkedFromSessionId;
+          metadata?.forkedFromSessionId ?? overlaidSession.forkedFromSessionId;
         const initialPrompt =
           metadata?.initialPrompt ?? overlaidSession.fullTitle;
         const executor = metadata?.executor;
-
-        const hasUnread = hasUnreadProviderContent(
-          deps.notificationService,
-          session.id,
-          session.updatedAt,
-        );
 
         // Skip archived sessions unless explicitly requested
         if (isArchived && !includeArchived) continue;
@@ -414,6 +565,19 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
 
         // Compute status
         const process = deps.supervisor?.getProcessForSession(session.id);
+        const effectiveProviderUpdatedAt = getEffectiveProviderUpdatedAt(
+          session.updatedAt,
+          process,
+        );
+        const effectiveUpdatedAt = getEffectiveProviderUpdatedAt(
+          overlaidSession.updatedAt,
+          process,
+        );
+        const hasUnread = hasUnreadProviderContent(
+          deps.notificationService,
+          session.id,
+          effectiveProviderUpdatedAt,
+        );
         const isExternal =
           deps.externalTracker?.isExternal(session.id) ?? false;
 
@@ -481,7 +645,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           title: overlaidSession.title,
           fullTitle: overlaidSession.fullTitle,
           createdAt: overlaidSession.createdAt,
-          updatedAt: overlaidSession.updatedAt,
+          updatedAt: effectiveUpdatedAt,
           messageCount: overlaidSession.messageCount,
           provider: overlaidSession.provider,
           model: overlaidSession.model,
@@ -494,6 +658,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           customTitle,
           isArchived,
           isStarred,
+          autoResumeDisabled: metadata?.autoResumeDisabled === true,
           parentSessionId,
           parentSessionKind,
           forkedFromSessionId,
@@ -504,6 +669,38 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         });
       }
     }
+
+    const resolutionDeps = providerResolutionDeps(deps);
+    const sessionsByProject = new Map<string, GlobalSessionItem[]>();
+    for (const session of allSessions) {
+      const existing = sessionsByProject.get(session.projectId);
+      if (existing) {
+        existing.push(session);
+      } else {
+        sessionsByProject.set(session.projectId, [session]);
+      }
+    }
+    const sessionsWithChildren: GlobalSessionItem[] = [];
+    for (const [projectId, projectSessions] of sessionsByProject) {
+      const sessionProject = isUrlProjectId(projectId)
+        ? projectsById.get(projectId)
+        : undefined;
+      if (!sessionProject) {
+        sessionsWithChildren.push(...projectSessions);
+        continue;
+      }
+      sessionsWithChildren.push(
+        ...(await attachProviderChildSessions(
+          projectSessions,
+          sessionProject,
+          resolutionDeps,
+          "accepted-or-cheap",
+          providerCatalog,
+        )),
+      );
+    }
+    allSessions.length = 0;
+    allSessions.push(...sessionsWithChildren);
 
     // Sort by updatedAt descending (most recent first)
     allSessions.sort(
@@ -534,10 +731,11 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       hasMore,
       stats,
       projects: projectOptions,
+      generation,
     };
 
-    return c.json(response);
-  });
+    return response;
+  }
 
   return routes;
 }

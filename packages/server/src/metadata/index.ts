@@ -1,5 +1,7 @@
 export {
   SessionMetadataService,
+  type EffectiveSessionLaunchSettings,
+  type EffectiveSessionLaunchSettingsValue,
   type SessionMetadata,
   type SessionMetadataServiceOptions,
   type SessionMetadataState,
@@ -10,4 +12,5 @@ export {
   type ProjectMetadata,
   type ProjectMetadataServiceOptions,
   type ProjectMetadataState,
+  type ProjectSessionDefaultsMetadata,
 } from "./ProjectMetadataService.js";

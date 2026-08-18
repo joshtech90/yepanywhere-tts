@@ -27,12 +27,17 @@ limits when the provider exposes them.
 - **Persistent, interoperable sessions** — View and resume compatible work from
   CLIs, VS Code, and first-party desktop apps. Client disconnects do not stop
   server-owned processes.
+- **Separately usable provider layer** — On Linux source checkouts, run the
+  provider host with the non-watch development wrapper or by itself in a
+  foreground terminal, then submit bounded turns through its stable
+  [headless local protocol](topics/provider-host-api.md).
 - **Mobile supervision** — Approve tools, answer questions, upload files and
   photos, use voice input, and receive attention notifications.
 - **Multi-agent coordination** — Use the tiered inbox, global activity view,
   mid-turn steering, follow-up queues, search, recaps, forks, and clones.
-- **Review and source control** — Inspect files, diffs, Git status, and
-  read-only session shares without returning to the host machine.
+- **Review and source control** — Browse working-tree and commit diffs, tracked
+  files, and blame; bundle line comments into agent sessions; check remotes,
+  fast-forward pull, push, or share a session read-only.
 - **Remote device control** — Stream Android devices and Apple Simulators over
   peer-to-peer WebRTC with touch controls and adaptive quality.
 - **Flexible remote access** — Connect directly or enable the end-to-end

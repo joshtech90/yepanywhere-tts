@@ -2,6 +2,7 @@ import {
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   type ProjectQueueItemSummary,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -21,15 +22,14 @@ import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSidebarDuplicateHiding } from "../hooks/useSidebarDuplicateHiding";
-import {
-  SIDEBAR_SESSION_FEED_LIMIT,
-  useSidebarSessionFeeds,
-} from "../hooks/useSidebarSessionFeeds";
+import { useSidebarSessionFeeds } from "../hooks/useSidebarSessionFeeds";
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../hooks/useSidebarWidth";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
-import { toBrowserAppHref } from "../lib/appHref";
+import { useToastContext } from "../contexts/ToastContext";
 import { bangHistoryViewEnabled } from "../lib/bangCommandAvailability";
+import { buildFrontendReloadUrl } from "../lib/frontendReload";
+import { markSwitchHostReload } from "../lib/switchHostReload";
 import { isNearScrollEnd } from "../lib/predictiveScroll";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import { sessionCollectionRecordToGlobalSessionItem } from "../lib/sessionCollectionRecords";
@@ -50,7 +50,10 @@ import {
 import { UI_KEYS } from "../lib/storageKeys";
 import { getSessionDisplayTitle } from "../utils";
 import { AgentsNavItem } from "./AgentsNavItem";
+import { CompactResumeButton } from "./CompactResumeButton";
 import { SessionListItem } from "./SessionListItem";
+import sidebarStyles from "./Sidebar.module.css";
+import { SidebarLauncher } from "./SidebarLauncher";
 import {
   SidebarIcons,
   SidebarNavButton,
@@ -59,27 +62,10 @@ import {
 } from "./SidebarNavItem";
 import { YepAnywhereLogo } from "./YepAnywhereLogo";
 
+export { SidebarToggleIcon } from "./SidebarLauncher";
+
 const SWIPE_THRESHOLD = 50; // Minimum distance to trigger close
 const SWIPE_ENGAGE_THRESHOLD = 15; // Minimum horizontal distance before swipe engages
-
-export function SidebarToggleIcon() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="9" y1="3" x2="9" y2="21" />
-    </svg>
-  );
-}
 
 const DEFAULT_SECTION_EXPANSION = {
   projectQueue: true,
@@ -365,6 +351,7 @@ export function Sidebar({
   onResizeEnd,
 }: SidebarProps) {
   const { t } = useI18n();
+  const { showToast } = useToastContext();
   // Get base path for relay mode (e.g., "/remote/my-server")
   const basePath = useRemoteBasePath();
   const { sidebarDuplicateHidingEnabled } = useSidebarDuplicateHiding();
@@ -376,7 +363,7 @@ export function Sidebar({
   const { status: publicShareStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
   });
-  const publicShareControlsVisible = publicShareStatus?.canCreate ?? false;
+  const publicShareCreationReady = publicShareStatus?.canCreate ?? false;
   const { processes, terminatedProcesses } = useProcesses();
   const providerChildrenBySessionId = useMemo(
     () =>
@@ -395,7 +382,7 @@ export function Sidebar({
     loadMoreGlobalSessions,
     hasMoreStarredSessions,
     loadMoreStarredSessions,
-  } = useSidebarSessionFeeds(SIDEBAR_SESSION_FEED_LIMIT);
+  } = useSidebarSessionFeeds();
 
   const globalQueryRecords = useSessionCollectionQueryRecords(globalQuery);
   const starredSessionRecords = useStarredSessionRecords();
@@ -421,6 +408,10 @@ export function Sidebar({
     versionInfo,
     GIT_STATUS_ENHANCED_CAPABILITY,
   );
+  const publicShareManagementAvailable = serverHasCapability(
+    versionInfo,
+    PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  );
   const supportsDeviceBridgeNav =
     serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY) ||
     serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY);
@@ -442,9 +433,6 @@ export function Sidebar({
   );
   const newSessionPath = "/new-session";
   const newSessionHref = `${basePath}${newSessionPath}`;
-  const expandedSidebarNewSessionHref = toBrowserAppHref(
-    `${newSessionHref}${newSessionHref.includes("?") ? "&" : "?"}sidebar=expanded`,
-  );
 
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarSessionsRef = useRef<HTMLDivElement | null>(null);
@@ -617,45 +605,15 @@ export function Sidebar({
     };
   }, [isResizing, onResize, onResizeEnd]);
 
-  // Handle switching hosts - disconnect and go to host picker
+  // Disconnect, cache-bust this document, then open the host picker after
+  // reload. Reloading /login can leave a session-pinned installed window.
   const handleSwitchHost = () => {
     remoteConnection?.disconnect();
-    navigate("/login");
-    onNavigate();
+    markSwitchHostReload();
+    window.location.replace(
+      buildFrontendReloadUrl(window.location.href, String(Date.now())),
+    );
   };
-
-  const handleCollapsedToggleClick = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      if (e.button === 1 || e.metaKey || e.ctrlKey || e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        window.open(expandedSidebarNewSessionHref, "_blank", "noopener");
-        return;
-      }
-
-      onToggleExpanded?.();
-    },
-    [expandedSidebarNewSessionHref, onToggleExpanded],
-  );
-
-  const handleCollapsedToggleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      if (e.button === 1) {
-        e.preventDefault();
-      }
-    },
-    [],
-  );
-
-  const handleCollapsedToggleAuxClick = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      if (e.button !== 1) return;
-      e.preventDefault();
-      e.stopPropagation();
-      window.open(expandedSidebarNewSessionHref, "_blank", "noopener");
-    },
-    [expandedSidebarNewSessionHref],
-  );
 
   const filteredStarredSessions = useMemo(
     () => sessionCollectionRecordsToSidebarSessionItems(starredSessionRecords),
@@ -757,6 +715,33 @@ export function Sidebar({
       onNavigate();
     },
     [basePath, navigate, onNavigate, projectQueues.promoteNow],
+  );
+  const [resumingPendingQueueItemIds, setResumingPendingQueueItemIds] =
+    useState<Set<string>>(() => new Set());
+  const handleResumePendingQueueItem = useCallback(
+    async (item: SidebarPendingProjectQueueItem) => {
+      if (resumingPendingQueueItemIds.has(item.id)) return;
+      setResumingPendingQueueItemIds((current) =>
+        new Set(current).add(item.id),
+      );
+      try {
+        await projectQueues.moveItemToTop(item.projectId, item.id);
+      } catch (error) {
+        showToast(
+          t("sidebarPendingSessionResumeFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+          "error",
+        );
+      } finally {
+        setResumingPendingQueueItemIds((current) => {
+          const next = new Set(current);
+          next.delete(item.id);
+          return next;
+        });
+      }
+    },
+    [projectQueues.moveItemToTop, resumingPendingQueueItemIds, showToast, t],
   );
 
   // Client-side duplicate-title hiding is deliberately fail-open. It only
@@ -899,7 +884,10 @@ export function Sidebar({
         updatedAt={session.updatedAt}
         parentSessionId={session.parentSessionId}
         parentSessionKind={session.parentSessionKind}
-        providerChildren={providerChildrenBySessionId.get(session.id)}
+        providerChildren={
+          providerChildrenBySessionId.get(session.id) ??
+          session.providerChildren
+        }
         status={session.ownership}
         pendingInputType={session.pendingInputType}
         hasUnread={session.hasUnread}
@@ -915,7 +903,8 @@ export function Sidebar({
         messageCount={session.messageCount}
         hasDraft={drafts.has(session.id)}
         hasProjectQueue={hasProjectQueue}
-        publicShareControlsVisible={publicShareControlsVisible}
+        publicShareCreationReady={publicShareCreationReady}
+        publicShareManagementAvailable={publicShareManagementAvailable}
       />
     );
   };
@@ -952,17 +941,13 @@ export function Sidebar({
           {isDesktop && isCollapsed ? (
             /* Desktop collapsed mode: expand from the main icon or minimize the rail. */
             <>
-              <button
-                type="button"
-                className="sidebar-toggle"
-                onClick={handleCollapsedToggleClick}
-                onMouseDown={handleCollapsedToggleMouseDown}
-                onAuxClick={handleCollapsedToggleAuxClick}
-                title={t("actionExpandSidebar")}
-                aria-label={t("actionExpandSidebar")}
-              >
-                <SidebarToggleIcon />
-              </button>
+              {onToggleExpanded && (
+                <SidebarLauncher
+                  label={t("actionExpandSidebar")}
+                  newSessionLabel={t("sidebarNewSession")}
+                  onActivate={onToggleExpanded}
+                />
+              )}
               {onMinimize && (
                 <button
                   type="button"
@@ -1164,12 +1149,15 @@ export function Sidebar({
                       projectNameById.get(item.projectId) ??
                       t("projectQueueUnknownProject");
                     return (
-                      <li key={item.id}>
+                      <li
+                        key={item.id}
+                        className={sidebarStyles.pendingQueueRow}
+                      >
                         <Link
                           to={`${basePath}/projects?queueItem=${encodeURIComponent(
                             item.id,
                           )}`}
-                          className={`sidebar-project-queue-item sidebar-project-queue-item--${item.status}`}
+                          className={`sidebar-project-queue-item sidebar-project-queue-item--${item.status} ${sidebarStyles.pendingQueueLink}`}
                           onClick={(event) =>
                             void handlePendingProjectQueueClick(event, item)
                           }
@@ -1189,6 +1177,17 @@ export function Sidebar({
                               : t("projectQueueStatusQueued")}
                           </span>
                         </Link>
+                        {item.status === "queued" &&
+                          projectQueues.dispatchState.status === "paused" && (
+                            <CompactResumeButton
+                              label={t("sidebarSessionResume")}
+                              title={t("sidebarPendingSessionResumeTitle")}
+                              pending={resumingPendingQueueItemIds.has(item.id)}
+                              onResume={() =>
+                                handleResumePendingQueueItem(item)
+                              }
+                            />
+                          )}
                       </li>
                     );
                   })}

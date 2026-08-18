@@ -42,6 +42,19 @@ find it. The rename is reversible and the content untouched; see
 `topics/heartbeat.md` § Unowned Resume Exemptions and
 `packages/server/src/sessions/resume-exemption.ts`.
 
+## Process-Scoped Subagent Depth
+
+The server-wide **Subagent nesting limit** is snapshotted for each newly started
+or resumed Codex provider process. Numeric values `0` through `4` are sent as
+`agents.max_depth` in the app-server config for `thread/start`, `thread/resume`,
+and `thread/fork`; **Provider default** stores `null` and omits that key. YA
+defaults the setting to `1` and never writes `~/.codex/config.toml`.
+
+Pinned Codex core source describes `agents.max_depth` as a V1 multi-agent-thread
+limit and explicitly says V2 ignores it. The Providers caption must retain that
+limitation; YA must not imply that the setting constrains Codex V2 or Codex OSS
+without a separately verified control.
+
 ## Read Surfaces
 
 There are two main YA surfaces over the same rollout tree:
@@ -121,6 +134,15 @@ current shape has important scale and representation gaps:
 - The session id visible in YA must remain explicit. Provider-native resume
   handles, filename ids, and `session_meta.id` mappings must not silently swap
   the user-facing YA session id without a documented provider contract.
+- Provider-child discovery is an unbounded read surface today.
+  `CodexSessionReader.listProviderChildSessions` bypasses the streaming
+  `readAgentMappings` projection and calls full `readEntries` with caching
+  disabled. Because the process-list route invokes it for every active and
+  recently terminated row, client `session-updated` revalidation repeatedly
+  parses unchanged parent rollouts. This is the demonstrated owner of the
+  2026-08-04 sustained server CPU incident, not a speculative scanner cost;
+  see [provider-child-sessions](provider-child-sessions.md) for the correction
+  contract.
 
 ## Near-Term Direction
 
@@ -138,6 +160,9 @@ index without letting it diverge from provider-owned history:
    validation pass marks the cache suspect.
 4. Extend scanner instrumentation before broadening scope: dirty scopes and
    skipped date buckets once date-bucket probing exists.
+5. Replace full-entry provider-child discovery with one shared, versioned
+   child-summary projection. Coalesce identical in-flight versions, retain only
+   child lifecycle facts, and inspect ordinary appends incrementally.
 
 Invariant: the discovery index is derived and non-authoritative. YA must first
 observe a provider file and only then reuse indexed metadata for that file. A

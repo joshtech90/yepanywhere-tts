@@ -17,9 +17,11 @@ export const UI_KEYS = {
   locale: "yep-anywhere-locale",
   theme: "yep-anywhere-theme",
   fontSize: "yep-anywhere-font-size",
+  sidebarSpacing: "yep-anywhere-sidebar-spacing",
   diffViewMode: "yep-anywhere-diff-view-mode",
   outputProseFont: "yep-anywhere-output-prose-font",
   outputUiFont: "yep-anywhere-output-ui-font",
+  userTurnFontSizeOffset: "yep-anywhere-user-turn-font-size-offset",
   outputProseFontSize: "yep-anywhere-output-prose-font-size",
   outputFixedFont: "yep-anywhere-output-fixed-font",
   outputFixedFontSizeOffset: "yep-anywhere-output-fixed-font-size-offset",
@@ -36,6 +38,7 @@ export const UI_KEYS = {
   tabSize: "yep-anywhere-tab-size",
   contentMaxWidth: "yep-anywhere-content-max-width",
   commitReadWatermarks: "yep-anywhere-commit-read-watermarks",
+  sourceControlCleanLanding: "yep-anywhere-source-control-clean-landing",
   sidebarWidth: "yep-anywhere-sidebar-width",
   sidebarExpanded: "yep-anywhere-sidebar-expanded",
   sidebarMinimized: "yep-anywhere-sidebar-minimized",
@@ -45,6 +48,12 @@ export const UI_KEYS = {
   funPhrases: "yep-anywhere-fun-phrases-enabled",
   streamingEnabled: "yep-anywhere-streaming-enabled",
   speechKeepMicWarm: "yep-anywhere-speech-keep-mic-warm",
+  speechReducePlayback: "yep-anywhere-speech-reduce-playback",
+  speechUnspokenPunctuation: "yep-anywhere-speech-unspoken-punctuation",
+  speechFollowUpListenMs: "yep-anywhere-speech-follow-up-listen-ms",
+  speechAsrAttributionMs: "yep-anywhere-speech-asr-attribution-ms",
+  speechMessagePrefixMode: "yep-anywhere-speech-message-prefix-mode",
+  speechMessageCustomPrefix: "yep-anywhere-speech-message-custom-prefix",
   speechMicDeviceId: "yep-anywhere-speech-mic-device-id",
   floatingActionButtonEnabled: "yep-anywhere-floating-action-button-enabled",
   developerMode: "yep-anywhere-developer-mode",
@@ -52,7 +61,10 @@ export const UI_KEYS = {
   conversationViewTurnLimit: "yep-anywhere-conversation-view-turn-limit",
   widerConversationActivityPreviews:
     "yep-anywhere-wider-conversation-activity-previews-enabled",
+  glossaryHints: "yep-anywhere-glossary-hints-enabled",
   sessionToolbarPresence: "yep-anywhere-session-toolbar-presence",
+  waveformButtonBackgroundOpacityPercent:
+    "yep-anywhere-waveform-button-background-opacity-percent",
   // Legacy pre-presence keys, read once for migration then removed.
   sessionToolbarVisibility: "yep-anywhere-session-toolbar-visibility",
   sessionToolbarPriority: "yep-anywhere-session-toolbar-priority",
@@ -64,6 +76,15 @@ export const UI_KEYS = {
   sessionGeneratedTitleEnabled: "yep-anywhere-session-generated-title-enabled",
   sessionGeneratedTitleLength: "yep-anywhere-session-generated-title-length",
   quoteReplyButtonMode: "yep-anywhere-quote-reply-button-mode",
+  selectionQuoteActionEnabled: "yep-anywhere-selection-quote-action-enabled",
+  selectionTextCopyActionEnabled:
+    "yep-anywhere-selection-text-copy-action-enabled",
+  selectionSourceCopyActionEnabled:
+    "yep-anywhere-selection-source-copy-action-enabled",
+  selectionRichCopyActionEnabled:
+    "yep-anywhere-selection-rich-copy-action-enabled",
+  selectionNewSessionActionEnabled:
+    "yep-anywhere-selection-new-session-action-enabled",
   sessionThinkingVisible: "yep-anywhere-session-thinking-visible",
   settingsSearchMatchValues: "yep-anywhere-settings-search-match-values",
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",

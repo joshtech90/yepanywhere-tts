@@ -17,6 +17,26 @@ desktop accelerator for Fork: every real user prompt owns an inline
 2026-08-01 discoverability repair is recorded in
 [`docs/tactical/075-session-fork-clone-unification.md`](../docs/tactical/075-session-fork-clone-unification.md).
 
+## Keyboard turn navigation
+
+The same real-user-turn anchors provide viewport-relative keyboard navigation.
+When focus is outside an editable field, Home jumps upward and End jumps
+downward. Alt+ArrowUp and Alt+ArrowDown provide the same directions even while
+the composer is focused, preserving Home/End's text-editing behavior there.
+Held-key repeat is intentional: every delivered keydown advances again.
+
+A jump skips all user prompts already fully visible in the transcript
+scrollport and selects the nearest prompt outside full visibility in its
+direction. This makes densely spaced prompts one viewport-aware step rather
+than forcing a stop at every already-readable marker. The selected prompt is
+aligned near the top of the scrollport and uses the same motion cue as rail and
+search jumps. PageUp and PageDown remain native viewport-scrolling keys.
+Dragging the transcript's native scrollbar makes that scrollport the focus
+owner (without adding it to sequential Tab navigation), so native PageUp and
+PageDown keep targeting the transcript instead of a previously focused composer
+or a browser-dependent document fallback. Editable controls retain their page
+keys until the user makes that explicit scrollbar gesture.
+
 ## The bug (root cause)
 
 Each marker's hit/hover target was a **fixed 22px box** (`height:22px;
@@ -124,9 +144,13 @@ must not recenter or page the preview window, because moving the label stack
 under the pointer causes the same hover/collapse loop. The right-side rail
 markers may still recenter/page the preview window on hover, since their hit
 targets stay fixed while the text labels move. A click on either a marker or a
-preview label is a committed jump target; closing search after that jump should
-leave the full transcript centered on the clicked row rather than restoring the
-pre-search scroll position.
+preview label is an immediate committed jump with the same centered navigation
+through the session as Enter, while search stays active. Moving focus from the
+search box to ordinary visible transcript content must neither close search nor
+consume the content click; the clicked control's usual behavior and resulting
+scroll position win. Explicitly closing search after a committed jump must not
+restore the pre-search scroll position or issue a delayed recenter to a stale
+search target.
 
 Marker-hover paging is sticky within a horizontal band. Once a hashmark owns the
 preview window, entering another marker at the same pointer Y must not page the

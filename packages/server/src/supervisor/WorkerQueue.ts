@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { UrlProjectId, WorkstreamId } from "@yep-anywhere/shared";
+import { getLogger } from "../logging/logger.js";
 import type { PermissionMode, UserMessage } from "../sdk/types.js";
 import type { EventBus } from "../watcher/EventBus.js";
 import type { ModelSettings } from "./Supervisor.js";
@@ -24,6 +25,16 @@ export interface QueuedRequest {
   permissionMode?: PermissionMode;
   modelSettings?: ModelSettings;
   queuedAt: Date;
+  /** One-shot association hook after a queued launch receives its YA id. */
+  onStarted?: (sessionId: string) => void | Promise<void>;
+  /** One-shot failure hook when deferred launch work cannot start. */
+  onFailed?: (reason: string) => void | Promise<void>;
+  /** One-shot hook when a transient provider startup failure should retry. */
+  onRetryableFailure?: (reason: string) => void | Promise<void>;
+  /** Classify provider startup rejection as retryable for a durable caller. */
+  retryProviderStartupFailure?: boolean;
+  /** Wait for the provider's canonical id before accepting this launch. */
+  requireProviderSessionId?: boolean;
   /** Resolver to call when request is processed or cancelled */
   resolve: (result: QueuedRequestResult) => void;
 }
@@ -95,6 +106,11 @@ export class WorkerQueue {
     message: UserMessage;
     permissionMode?: PermissionMode;
     modelSettings?: ModelSettings;
+    onStarted?: (sessionId: string) => void | Promise<void>;
+    onFailed?: (reason: string) => void | Promise<void>;
+    onRetryableFailure?: (reason: string) => void | Promise<void>;
+    retryProviderStartupFailure?: boolean;
+    requireProviderSessionId?: boolean;
   }): EnqueueResult {
     // Check queue size limit
     if (this.maxQueueSize > 0 && this.queue.length >= this.maxQueueSize) {
@@ -119,6 +135,11 @@ export class WorkerQueue {
       message: params.message,
       permissionMode: params.permissionMode,
       modelSettings: params.modelSettings,
+      onStarted: params.onStarted,
+      onFailed: params.onFailed,
+      onRetryableFailure: params.onRetryableFailure,
+      retryProviderStartupFailure: params.retryProviderStartupFailure,
+      requireProviderSessionId: params.requireProviderSessionId,
       queuedAt: new Date(),
       resolve: resolvePromise,
     };
@@ -156,7 +177,21 @@ export class WorkerQueue {
     const removed = this.queue.splice(index, 1)[0];
     if (!removed) return false;
 
-    removed.resolve({ status: "cancelled", reason: "User cancelled" });
+    const reason = "User cancelled";
+    removed.resolve({ status: "cancelled", reason });
+    void Promise.resolve()
+      .then(() => removed.onFailed?.(reason))
+      .catch((error) => {
+        getLogger().warn(
+          {
+            event: "queued_session_failed_callback_failed",
+            queueId: removed.id,
+            projectId: removed.projectId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Cancelled queued session but its failure callback failed",
+        );
+      });
 
     this.emitQueueRemoved(removed, "cancelled");
     this.emitPositionUpdates();

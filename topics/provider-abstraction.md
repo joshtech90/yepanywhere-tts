@@ -32,6 +32,58 @@ migrate them when they next hit a trigger below.
   the latter lets distinct aliases that resolve to the same model *share*
   settings, but "default" is subscription-dependent and resolvable only at
   runtime).
+
+### Provider-wide session and process discovery
+
+Accepted 2026-08-05; the successful-use eligibility boundary and gated watcher
+owner are implemented, while provider catalog/process adapters and the retained
+coordinator remain pending. The implementation handoff is
+[`docs/tactical/093-provider-session-reconciliation.md`](../docs/tactical/093-provider-session-reconciliation.md).
+Generic collection and boot code knows too much about provider storage. Host
+process command recognition is now its own module,
+`services/providerProcessClassifier.ts`, reusable without the host process
+inventory, but it is still a fixed table of names and package paths rather than
+a provider capability, and it recognizes no native session id.
+
+These are two separate provider-owned projections:
+
+- **Native session catalog.** Enumerate a provider's storage once in complete or
+  recent-window mode and return native session ids, canonical project identity,
+  and a bounded activity summary. Full transcript detail remains an explicit
+  per-session read. The generic coordinator groups catalog rows into projects;
+  it never calls a provider-global reader once per project.
+- **Native process discovery.** Recognize the provider's exact harness command
+  or generic-runtime entrypoint from a minimized same-user process snapshot.
+  When argv, a pid/lock record, or a provider protocol exposes a native session
+  id, return that exact correlation before discarding raw process text. A
+  recognized but uncorrelated root remains a provider process, not a guessed
+  session.
+
+The projections join through native session id and exact YA Supervisor/runtime
+ownership. They do not join through cwd, transcript mtime proximity, CPU, or a
+single-candidate heuristic. The provider adapter owns command-name evolution,
+native id syntax, storage layout, and the cheapest faithful activity read; the
+generic coordinator owns scheduling, install-history eligibility, bounded
+concurrency, retained snapshots, and project grouping.
+
+Provider-store discovery is opt-in through observed YA use. The install keeps a
+durable, alias-normalized set of native catalog families for which it has
+successfully started a session. Boot does not ask an unused provider whether it
+may have sessions and does not scan or watch its native store. Migration seeds
+this set from existing YA-owned launch/session metadata, never by probing native
+provider stores. A first successful YA launch durably records its actual
+provider and family before registration and queues eligible watcher activation;
+failure aborts the unregistered process. The separate host
+process snapshot may still classify an active external harness from any known
+provider without opening that provider's store. A durable completion marker
+makes the legacy metadata seed pass one-time rather than recurring at every
+restart.
+
+The existing `mayHave*Sessions(project)` predicates are only coarse storage
+eligibility. They do not inspect `ps`. Returning `true` for every project and
+then filtering a provider-global store by cwd is not an acceptable
+implementation of the catalog at 10,000-project scale.
+
 ## When to promote to a provider surface
 
 Promote an inline provider/model conditional to an **optional**

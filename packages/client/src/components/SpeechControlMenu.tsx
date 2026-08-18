@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import type { FilterOption } from "./FilterDropdown";
+import { SpeechMessagePrefixControls } from "./SpeechMessagePrefixControls";
 import { SpeechSmartTurnControls } from "./SpeechSmartTurnControls";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
@@ -32,7 +33,7 @@ interface SpeechControlMenuProps {
   trigger: ReactNode;
   showMethodSelector: boolean;
   methodOptions: FilterOption<SpeechMethodId>[];
-  selectedMethod: SpeechMethodId;
+  selectedMethod: SpeechMethodId | null;
   onMethodChange: (selected: string[]) => void;
   smartTurnSettings?: SpeechSmartTurnSettings;
   onSmartTurnSettingsChange?: (settings: SpeechSmartTurnSettings) => void;
@@ -71,7 +72,8 @@ export function SpeechControlMenu({
   const parakeetModelPresetId = useId();
   const parakeetModelInputId = useId();
   const methodDescriptionIdPrefix = useId();
-  const { micDeviceId, setMicDeviceId } = useSpeechCaptureSettings();
+  const { micDeviceId, setMicDeviceId, reducePlayback, setReducePlayback } =
+    useSpeechCaptureSettings();
   const { parakeetSpeechModel, setParakeetSpeechModel } = useModelSettings();
   const [open, setOpen] = useState(false);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
@@ -84,13 +86,16 @@ export function SpeechControlMenu({
   const selectedMethodLabel = useMemo(
     () =>
       methodOptions.find((option) => option.value === selectedMethod)?.label ??
-      selectedMethod,
-    [methodOptions, selectedMethod],
+      selectedMethod ??
+      t("speechSettingsBackendUnavailable"),
+    [methodOptions, selectedMethod, t],
   );
   const showSmartTurnControls =
     !!smartTurnSettings && !!onSmartTurnSettingsChange;
-  const showMicDeviceControls = selectedMethod !== "browser-native";
-  const showParakeetModelControls = isParakeetModelBackend(selectedMethod);
+  const showMicDeviceControls =
+    selectedMethod !== null && selectedMethod !== "browser-native";
+  const showParakeetModelControls =
+    selectedMethod !== null && isParakeetModelBackend(selectedMethod);
   const enabledParakeetBackends = useMemo(() => {
     const backends: ParakeetModelBackendId[] = [];
     const addBackend = (backendId: string) => {
@@ -98,7 +103,7 @@ export function SpeechControlMenu({
         backends.push(backendId);
       }
     };
-    addBackend(selectedMethod);
+    if (selectedMethod !== null) addBackend(selectedMethod);
     for (const option of methodOptions) {
       addBackend(option.value);
     }
@@ -111,7 +116,7 @@ export function SpeechControlMenu({
   // model (see prepareParakeetBackend) and the mic reconciles as a safety net.
   const parakeetPresetOptions = useMemo(
     () =>
-      isParakeetModelBackend(selectedMethod)
+      selectedMethod !== null && isParakeetModelBackend(selectedMethod)
         ? PARAKEET_SPEECH_MODEL_PRESETS.filter((preset) =>
             preset.supportedBackends.includes(selectedMethod),
           )
@@ -125,20 +130,18 @@ export function SpeechControlMenu({
   )
     ? storedParakeetPreset
     : "";
-  const hasOptions =
-    showMethodSelector ||
-    showMicDeviceControls ||
-    showParakeetModelControls ||
-    showSmartTurnControls;
   const selectedMicDeviceUnavailable =
     !!micDeviceId &&
     !micDevices.some((device) => device.deviceId === micDeviceId);
 
   const prewarmParakeetModel = useCallback(
-    (modelValue: string, backendId: SpeechMethodId = selectedMethod) => {
-      if (!isParakeetModelBackend(backendId)) return;
+    (modelValue: string, backendId?: SpeechMethodId) => {
+      const targetBackend = backendId ?? selectedMethod;
+      if (targetBackend === null || !isParakeetModelBackend(targetBackend)) {
+        return;
+      }
       const model = cleanParakeetSpeechModel(modelValue);
-      void prewarmYaServerSpeechBackend(backendId, model).catch(
+      void prewarmYaServerSpeechBackend(targetBackend, model).catch(
         (err: unknown) => {
           console.warn(
             "[YaSTT] Speech model prewarm failed",
@@ -160,6 +163,7 @@ export function SpeechControlMenu({
   );
   const selectParakeetPreset = useCallback(
     (modelValue: string) => {
+      if (selectedMethod === null) return;
       const model = cleanParakeetSpeechModel(modelValue);
       const backendId = resolveParakeetModelBackend(
         model,
@@ -207,12 +211,6 @@ export function SpeechControlMenu({
     onBeforeOpen?.();
     setOpen(true);
   }, [onBeforeOpen]);
-
-  useEffect(() => {
-    if (!hasOptions) {
-      setOpen(false);
-    }
-  }, [hasOptions]);
 
   const refreshMicDevices = useCallback(async () => {
     const mediaDevices = getMediaDevices();
@@ -299,7 +297,7 @@ export function SpeechControlMenu({
   }, [open]);
 
   const handleContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!hasOptions || panelRef.current?.contains(event.target as Node)) {
+    if (panelRef.current?.contains(event.target as Node)) {
       return;
     }
 
@@ -314,7 +312,7 @@ export function SpeechControlMenu({
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!hasOptions || event.button !== 0) {
+    if (event.button !== 0) {
       return;
     }
 
@@ -328,7 +326,7 @@ export function SpeechControlMenu({
   };
 
   const handleClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!hasOptions || panelRef.current?.contains(event.target as Node)) {
+    if (panelRef.current?.contains(event.target as Node)) {
       return;
     }
 
@@ -360,7 +358,7 @@ export function SpeechControlMenu({
       onPointerLeave={clearLongPress}
     >
       {trigger}
-      {open && hasOptions && (
+      {open && (
         <div
           ref={panelRef}
           className="speech-options-panel"
@@ -393,6 +391,12 @@ export function SpeechControlMenu({
               />
             </section>
           )}
+          <section className="speech-options-section">
+            <div className="speech-options-section-title">
+              {t("speechSettingsMessagePrefixTitle")}
+            </div>
+            <SpeechMessagePrefixControls disabled={smartTurnDisabled} />
+          </section>
           {showParakeetModelControls && (
             <section className="speech-options-section">
               <label
@@ -465,6 +469,7 @@ export function SpeechControlMenu({
                       aria-checked={selected}
                       aria-label={option.label}
                       aria-describedby={descriptionId}
+                      disabled={option.disabled}
                       onClick={() => {
                         if (option.value !== selectedMethod) {
                           onBeforeCaptureChange?.();
@@ -533,6 +538,26 @@ export function SpeechControlMenu({
               )}
             </section>
           )}
+          <section className="speech-options-section">
+            <div className="speech-options-section-title">
+              {t("speechSettingsReducePlaybackSection")}
+            </div>
+            <label className="speech-method-option">
+              <input
+                type="checkbox"
+                checked={reducePlayback}
+                onChange={(event) => {
+                  onBeforeCaptureChange?.();
+                  setReducePlayback(event.currentTarget.checked);
+                }}
+              />
+              <span className="speech-method-copy">
+                <span className="speech-method-label">
+                  {t("speechSettingsReducePlaybackTitle")}
+                </span>
+              </span>
+            </label>
+          </section>
         </div>
       )}
     </div>

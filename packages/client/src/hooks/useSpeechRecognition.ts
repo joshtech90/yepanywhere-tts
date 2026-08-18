@@ -4,6 +4,7 @@ import { BrowserNativeProvider } from "../lib/speechProviders/BrowserNativeProvi
 import { DirectXaiSpeechProvider } from "../lib/speechProviders/DirectXaiSpeechProvider";
 import { DirectXaiStreamingSpeechProvider } from "../lib/speechProviders/DirectXaiStreamingSpeechProvider";
 import { YaServerProvider } from "../lib/speechProviders/YaServerProvider";
+import { UnavailableSpeechProvider } from "../lib/speechProviders/UnavailableSpeechProvider";
 import {
   XAI_DIRECT_BATCH_SPEECH_METHOD,
   XAI_DIRECT_STREAMING_SPEECH_METHOD,
@@ -24,7 +25,7 @@ export interface UseSpeechRecognitionOptions {
   /** Language for recognition (default: browser default). */
   lang?: string;
   /** Selected speech method id (default: "browser-native"). */
-  speechMethod?: string;
+  speechMethod?: string | null;
   /** Base path for relay/remote connections (used by YaServerProvider). */
   basePath?: string;
   /** Context attached to YA-server transcription requests. */
@@ -35,8 +36,14 @@ export interface UseSpeechRecognitionOptions {
   smartTurn?: SpeechSmartTurnSettings;
   /** Keep the mic device warm between dictations (skips getUserMedia cold-open). */
   keepMicWarm?: boolean;
+  /** Dynamic transaction-owned warm policy, such as an armed follow-up. */
+  temporarilyKeepMicWarm?: () => boolean;
   /** Browser-local microphone device id for YA-server capture. */
   micDeviceId?: string | null;
+  /** Ask the browser to reduce speaker leakage into YA-controlled capture. */
+  reducePlayback?: boolean;
+  /** Let browser-native recognition infer punctuation from pauses and prosody. */
+  unspokenPunctuation?: boolean;
   /** Receive real microphone samples for local waveform rendering. */
   onAudioSamples?: (samples: Float32Array) => void;
   /** Browser-selected local Parakeet model id for the YA Parakeet backend. */
@@ -72,11 +79,12 @@ export interface UseSpeechRecognitionReturn {
   /** Abandon an in-flight post-capture transcription; late result is discarded. */
   cancelProcessing: () => void;
   prewarm: () => void;
+  beginInsertionBoundary: () => void;
   error: string | null;
 }
 
 function createProvider(
-  speechMethod: string | undefined,
+  speechMethod: string | null | undefined,
   basePath: string,
   events: {
     lang?: string;
@@ -84,7 +92,10 @@ function createProvider(
     serverStreaming?: boolean;
     smartTurn?: SpeechSmartTurnSettings;
     keepMicWarm?: boolean;
+    temporarilyKeepMicWarm?: () => boolean;
     micDeviceId?: string | null;
+    reducePlayback?: boolean;
+    unspokenPunctuation?: boolean;
     onAudioSamples?: (samples: Float32Array) => void;
     parakeetModel?: string;
     openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
@@ -100,6 +111,9 @@ function createProvider(
     ) => void;
   },
 ): SpeechProvider {
+  if (speechMethod === null) {
+    return new UnavailableSpeechProvider();
+  }
   if (speechMethod === XAI_DIRECT_STREAMING_SPEECH_METHOD) {
     return new DirectXaiStreamingSpeechProvider(events);
   }
@@ -119,8 +133,8 @@ function createProvider(
 /**
  * Hook for using a pluggable speech-recognition provider.
  *
- * Selects BrowserNativeProvider or YaServerProvider based on
- * `speechMethod`. The provider owns all status/error/auto-restart
+ * Selects the browser-native, direct xAI, YA-server, or explicit unavailable
+ * provider for `speechMethod`. The provider owns all status/error/auto-restart
  * machinery; this hook is a thin subscription layer.
  */
 export function useSpeechRecognition(
@@ -134,7 +148,10 @@ export function useSpeechRecognition(
     serverStreaming,
     smartTurn,
     keepMicWarm,
+    temporarilyKeepMicWarm,
     micDeviceId,
+    reducePlayback,
+    unspokenPunctuation,
     onAudioSamples,
     parakeetModel,
     openRelayedSpeechSocket,
@@ -153,6 +170,7 @@ export function useSpeechRecognition(
   const onAudioSamplesRef = useRef(onAudioSamples);
   const onAudioSamplesEnabledRef = useRef(Boolean(onAudioSamples));
   const getTranscriptionContextRef = useRef(getTranscriptionContext);
+  const temporarilyKeepMicWarmRef = useRef(temporarilyKeepMicWarm);
   useEffect(() => {
     onResultRef.current = onResult;
     onInterimResultRef.current = onInterimResult;
@@ -161,6 +179,7 @@ export function useSpeechRecognition(
     onTranscriptionSettledRef.current = onTranscriptionSettled;
     onAudioSamplesRef.current = onAudioSamples;
     getTranscriptionContextRef.current = getTranscriptionContext;
+    temporarilyKeepMicWarmRef.current = temporarilyKeepMicWarm;
   }, [
     onResult,
     onInterimResult,
@@ -169,6 +188,7 @@ export function useSpeechRecognition(
     onTranscriptionSettled,
     onAudioSamples,
     getTranscriptionContext,
+    temporarilyKeepMicWarm,
   ]);
 
   const speechMethodRef = useRef(speechMethod);
@@ -177,6 +197,8 @@ export function useSpeechRecognition(
   const smartTurnRef = useRef(smartTurn);
   const keepMicWarmRef = useRef(keepMicWarm);
   const micDeviceIdRef = useRef(micDeviceId);
+  const reducePlaybackRef = useRef(reducePlayback);
+  const unspokenPunctuationRef = useRef(unspokenPunctuation);
   const parakeetModelRef = useRef(parakeetModel);
   const openRelayedSpeechSocketRef = useRef(openRelayedSpeechSocket);
 
@@ -191,7 +213,11 @@ export function useSpeechRecognition(
         serverStreaming: serverStreamingRef.current,
         smartTurn: smartTurnRef.current,
         keepMicWarm: keepMicWarmRef.current,
+        temporarilyKeepMicWarm: () =>
+          temporarilyKeepMicWarmRef.current?.() === true,
         micDeviceId: micDeviceIdRef.current,
+        reducePlayback: reducePlaybackRef.current,
+        unspokenPunctuation: unspokenPunctuationRef.current,
         onAudioSamples: onAudioSamples
           ? (samples) => onAudioSamplesRef.current?.(samples)
           : undefined,
@@ -225,6 +251,8 @@ export function useSpeechRecognition(
       smartTurn === smartTurnRef.current &&
       keepMicWarm === keepMicWarmRef.current &&
       micDeviceId === micDeviceIdRef.current &&
+      reducePlayback === reducePlaybackRef.current &&
+      unspokenPunctuation === unspokenPunctuationRef.current &&
       Boolean(onAudioSamples) === onAudioSamplesEnabledRef.current &&
       parakeetModel === parakeetModelRef.current &&
       openRelayedSpeechSocket === openRelayedSpeechSocketRef.current
@@ -237,6 +265,8 @@ export function useSpeechRecognition(
     smartTurnRef.current = smartTurn;
     keepMicWarmRef.current = keepMicWarm;
     micDeviceIdRef.current = micDeviceId;
+    reducePlaybackRef.current = reducePlayback;
+    unspokenPunctuationRef.current = unspokenPunctuation;
     onAudioSamplesRef.current = onAudioSamples;
     onAudioSamplesEnabledRef.current = Boolean(onAudioSamples);
     parakeetModelRef.current = parakeetModel;
@@ -251,7 +281,11 @@ export function useSpeechRecognition(
       serverStreaming,
       smartTurn,
       keepMicWarm,
+      temporarilyKeepMicWarm: () =>
+        temporarilyKeepMicWarmRef.current?.() === true,
       micDeviceId,
+      reducePlayback,
+      unspokenPunctuation,
       onAudioSamples: onAudioSamples
         ? (samples) => onAudioSamplesRef.current?.(samples)
         : undefined,
@@ -275,6 +309,8 @@ export function useSpeechRecognition(
     smartTurn,
     keepMicWarm,
     micDeviceId,
+    reducePlayback,
+    unspokenPunctuation,
     onAudioSamples,
     parakeetModel,
     openRelayedSpeechSocket,
@@ -319,6 +355,10 @@ export function useSpeechRecognition(
     providerRef.current?.prewarm?.();
   }, []);
 
+  const beginInsertionBoundary = useCallback(() => {
+    providerRef.current?.beginInsertionBoundary?.();
+  }, []);
+
   return {
     isSupported: providerRef.current?.isSupported ?? false,
     isListening: state.isListening,
@@ -329,6 +369,7 @@ export function useSpeechRecognition(
     toggleListening,
     cancelProcessing,
     prewarm,
+    beginInsertionBoundary,
     error: state.error,
   };
 }

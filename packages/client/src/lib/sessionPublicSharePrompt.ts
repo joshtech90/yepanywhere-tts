@@ -1,7 +1,8 @@
+import { PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH } from "@yep-anywhere/shared";
 import { messageContentToPlainText } from "./sessionMessageText";
 import { isLegacyCodexSetupText } from "./codexLegacySetup";
 
-export const PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH = 700;
+export { PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH } from "@yep-anywhere/shared";
 
 export function normalizePublicShareInitialPrompt(
   value: string,
@@ -23,7 +24,9 @@ export function normalizePublicShareInitialPrompt(
     : normalized;
 }
 
-export function getPublicShareInitialPrompt(messages: unknown[]): string | null {
+export function getPublicShareInitialPrompt(
+  messages: unknown[],
+): string | null {
   for (const message of messages) {
     if (!message || typeof message !== "object") {
       continue;

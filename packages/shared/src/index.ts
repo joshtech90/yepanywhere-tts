@@ -6,11 +6,85 @@ export {
   getFilename,
 } from "./ideMetadata.js";
 
+export {
+  AndroidSecurityClientDescriptorSchema,
+  CheckInSecurityClientRequestSchema,
+  DesktopSecurityClientDescriptorSchema,
+  IosSecurityClientDescriptorSchema,
+  NATIVE_PUSH_SUBSCRIPTIONS_CAPABILITY,
+  PatchSecurityClientRequestSchema,
+  PutNativePushSubscriptionRequestSchema,
+  RegisterSecurityClientRequestSchema,
+  SECURITY_CLIENT_AUDIT_CAPABILITY,
+  SECURITY_CLIENT_DESCRIPTOR_VERSION,
+  SECURITY_CLIENT_EVENTS_ROUTE,
+  SECURITY_CLIENT_KEY_PROTOCOL,
+  SECURITY_CLIENT_MAX_BODY_BYTES,
+  SECURITY_CLIENT_MAX_OBSERVATIONS,
+  SECURITY_CLIENT_PROOF_DOMAIN,
+  SECURITY_CLIENT_REGISTER_ROUTE,
+  SECURITY_EVENT_ALERT_SUPPRESSION_MS,
+  SECURITY_EVENT_ANCHOR_RETENTION_MS,
+  SECURITY_EVENT_MAX_ENTRIES,
+  SECURITY_EVENT_MAX_FAILURE_ENTRIES,
+  SecurityClientAssuranceSchema,
+  SecurityClientDescriptorSchema,
+  SecurityClientDeviceClassSchema,
+  SecurityClientKeyRegistrationSchema,
+  SecurityClientKindSchema,
+  SecurityClientSupportedProofSchema,
+  WebSecurityClientDescriptorSchema,
+  buildSecurityClientProofTranscript,
+  canonicalizeSecurityClientProofBody,
+  p256P1363SignatureToDer,
+  securityClientCheckInRoute,
+  securityClientCheckInProofBody,
+  securityClientRegisterProofBody,
+  type CheckInSecurityClientRequest,
+  type LegacyWebSecurityClientDescriptor,
+  type NativePushVersionInfo,
+  type PatchSecurityClientRequest,
+  type PutNativePushSubscriptionRequest,
+  type RegisterSecurityClientRequest,
+  type SecurityClientAssurance,
+  type SecurityClientAuditEvent,
+  type SecurityClientAuditEventType,
+  type SecurityClientAuthenticationMethod,
+  type SecurityClientDescriptor,
+  type SecurityClientDeviceClass,
+  type SecurityClientErrorCode,
+  type SecurityClientEventsResponse,
+  type SecurityClientKind,
+  type SecurityClientProofOperation,
+  type SecurityClientProofSummary,
+  type SecurityClientProofTranscriptInput,
+  type SecurityClientProofType,
+  type SecurityClientPublicPushState,
+  type SecurityClientResponse,
+  type SecurityClientSessionSummary,
+  type SecurityClientSupportedProof,
+  type SecurityClientsResponse,
+  type SecurityClientSummary,
+  type SecurityClientTransport,
+  type SecurityEvent,
+  type SecurityEventClientSnapshot,
+  type SecurityEventsResponse,
+  type SecurityEventType,
+} from "./security-clients.js";
+
 export type { AgentContextHints } from "./agent-context.js";
 export {
   buildEffectiveAgentContext,
   LATEX_MATH_RENDERING_CLIENT_CAPABILITY,
 } from "./agent-context.js";
+
+export {
+  DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
+  MAX_CLAUDE_STEER_BACKGROUND_BASH_REGEX_LENGTH,
+  createClaudeSteerBackgroundBashMatcher,
+  parseClaudeSteerBackgroundBashSettings,
+  type ClaudeSteerBackgroundBashSettings,
+} from "./claude-steering.js";
 
 export {
   MAX_CLAUDE_ADDITIONAL_MODELS,
@@ -49,21 +123,59 @@ export {
   MAX_REVIEW_COMMENTS,
   MAX_REVIEW_PATH_LENGTH,
   MAX_REVIEW_SNIPPET_LENGTH,
+  MAX_REVIEW_SUBMISSION_ID_LENGTH,
+  MAX_REVIEW_SUBMISSION_NAME_LENGTH,
+  MAX_REVIEW_RESPONSE_FILE_BYTES,
   REVIEW_COMMENTS_FILE_VERSION,
+  REVIEW_STORE_FILE_VERSION,
+  REVIEW_SUBMISSION_REQUEST_VERSION,
+  REVIEW_SUBMISSION_RESPONSE_VERSION,
   anchorFromPatch,
   emptyReviewCommentsFile,
+  emptyReviewStoreFile,
+  deriveReviewSubmissionName,
+  isReviewSubmissionId,
+  migrateLegacyReviewCommentsFile,
   parseReviewCommentAnchor,
   parseReviewCommentsFile,
+  parseReviewSourceProjection,
+  parseReviewStoreFile,
+  parseReviewSubmissionRequest,
+  parseReviewSubmissionResponse,
   patchLineCount,
+  projectLegacyReviewComments,
   type PatchLineLocation,
   type ReviewBatch,
+  type ReviewCapture,
+  type ReviewCapturedSource,
   type ReviewComment,
   type ReviewCommentAnchor,
   type ReviewCommentRevision,
   type ReviewCommentSide,
   type ReviewCommentStatus,
   type ReviewCommentsFile,
+  type ReviewDraft,
+  type ReviewEntryRef,
+  type ReviewEntryCapturedSource,
+  type ReviewInboxItem,
+  type ReviewInboxOutcome,
   type ReviewNewSessionOptions,
+  type ReviewOutcome,
+  type ReviewOutcomeDisposition,
+  type ReviewReviewerEntry,
+  type ReviewSite,
+  type ReviewSiteStateSummary,
+  type ReviewSourceChangeStatus,
+  type ReviewSourceProjection,
+  type ReviewStoreFile,
+  type ReviewSubmissionStatus,
+  type ReviewSubmissionSummary,
+  type ReviewSubmissionDetail,
+  type ReviewSubmissionRelocation,
+  type ReviewSubmissionRequest,
+  type ReviewSubmissionRequestEntry,
+  type ReviewSubmissionResponse,
+  type ReviewSubmissionResponseOutcome,
 } from "./review-comments.js";
 
 export type { HostIdentity } from "./host-identity.js";
@@ -86,6 +198,12 @@ export {
   splitTextWithFilePaths,
   transformFilePathsToHtml,
 } from "./filePathDetection.js";
+
+export {
+  isMarkdownLikeFile,
+  isQuartoMarkdownFile,
+  MARKDOWN_LIKE_FILE_EXTENSIONS,
+} from "./markdown-files.js";
 
 export type {
   LocalResourceAttributes,
@@ -124,6 +242,7 @@ export {
 
 export type {
   ClaudeProviderName,
+  CodexReasoningSummary,
   ProviderName,
   ProviderInfo,
   ProviderImageSizing,
@@ -187,17 +306,27 @@ export {
   getCanonicalInvocationToken,
   getInvocationCompletionQuery,
   getInvocationNames,
+  getLeadingSlashCommandName,
   hasInvocationCandidate,
   normalizeInvocationName,
+  startsWithSlashCommand,
   type InvocationCompletionQuery,
   type InvocationCandidate,
   type SkillInvocationMatch,
 } from "./skill-invocations.js";
 export {
+  detectNestedHarnessLaunch,
+  type NestedHarnessLaunch,
+  type NestedHarnessName,
+} from "./nested-harness-launch.js";
+export {
   ALL_PROVIDERS,
   ALL_PERMISSION_MODES,
+  CODEX_REASONING_SUMMARIES,
+  DEFAULT_CODEX_REASONING_SUMMARY,
   SESSION_SANDBOX_LEVELS,
   isClaudeProviderName,
+  isCodexReasoningSummary,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   HELPER_SIDE_MODEL_TARGET_PREFIX,
@@ -216,9 +345,11 @@ export {
   DEFAULT_PROVIDER,
   DEFAULT_CACHE_MISS_BILLING_FRESH_WINDOW_MINUTES,
   DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES,
-  DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS,
+  DEFAULT_CACHE_MISS_BILLING_MINIMUM_WASTED_TOKENS,
+  DEFAULT_CACHE_MISS_BILLING_RECENT_ACTIVITY_MINUTES,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
+  DEFAULT_STEER_NOW_ENABLED,
 } from "./types.js";
 
 export type {
@@ -234,7 +365,10 @@ export type {
   GitDiffPreviewSkipped,
   GitDiffPreviewSkippedReason,
   GitDiffResult,
+  GitFileEditor,
   GitFileChange,
+  GitFileDiffMode,
+  GitFileProjectionManifest,
   GitIntegrationOptionReason,
   GitIntegrationOptionsResult,
   GitIntegrationOptionsStatus,
@@ -260,8 +394,10 @@ export type {
   SafeRestartStatus,
 } from "./safe-restart.js";
 export {
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
@@ -362,6 +498,15 @@ export {
   clampProjectQueueQuietSeconds,
 } from "./project-queue.js";
 export {
+  DEFAULT_HEARTBEAT_TURN_TEXT,
+  DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
+  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
+  MAX_PROJECT_HEARTBEAT_RECENT_TEXTS,
+  type ProjectSessionDefaultOverrides,
+  type ProjectSessionDefaultsResponse,
+  type UpdateProjectSessionDefaultsRequest,
+} from "./heartbeat.js";
+export {
   getApplicableSubscriptionUsageWindows,
   getMostUsedSubscriptionUsageWindow,
   type ProviderSubscriptionUsage,
@@ -374,29 +519,89 @@ export {
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
+  GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
+  GLOSSARY_TOOLTIPS_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
+  PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  SIDEBAR_SESSION_RESUME_CAPABILITY,
+  SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
+  PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_FREEZE_CAPABILITY,
   PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY,
+  PROVIDER_HOST_CONTROL_CAPABILITY,
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SERVER_CAPABILITIES,
+  OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS,
+  TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
+  encodeCompactServerCapabilities,
+  encodeOptionalServerCapabilityBits,
+  encodeVersionedServerCapabilities,
+  hasServerCapabilityAdvertisement,
+  negotiateServerCapabilityEncoding,
   serverHasCapability,
+  type CompactServerCapabilityAdvertisement,
+  type OptionalServerCapabilityBitset,
+  type ServerCapabilityAdvertisement,
   type ServerCapabilityDefinition,
   type ServerCapabilityKey,
   type ServerCapabilityKind,
   type ServerCapabilityName,
   type ServerCapabilitySource,
+  type VersionedServerCapabilityAdvertisement,
 } from "./server-capabilities.js";
+
+export {
+  CAPABILITY_ID_ALLOCATIONS,
+  CAPABILITY_ID_ENCODING_INTRODUCED_IN,
+  CAPABILITY_ID_ENCODING_VERSION,
+  capabilityBitIsSet,
+  encodeCapabilityIds,
+  isCapabilityBitset,
+  type CapabilityBitset,
+  type CapabilityDirection,
+  type CapabilityIdAllocation,
+} from "./capability-ids.js";
+
+export {
+  DEFAULT_SUBAGENT_MAX_DEPTH,
+  MAX_SUBAGENT_MAX_DEPTH,
+  MIN_SUBAGENT_MAX_DEPTH,
+  isSubagentMaxDepth,
+  type SubagentMaxDepth,
+} from "./subagent-depth.js";
+
+export {
+  DEFAULT_IDLE_REAP_HOURS,
+  MAX_IDLE_REAP_HOURS,
+  NEVER_IDLE_REAP_HOURS,
+  idleReapHoursToMs,
+  idleReapMsToHours,
+  isIdleReapHours,
+  normalizeIdleReapHours,
+} from "./idle-reap.js";
 
 export {
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
@@ -483,6 +688,8 @@ export {
   isCompactBoundary,
   getLogicalParentUuid,
   isConversationEntry,
+  isInjectedContinuationPrompt,
+  isSyntheticNoResponseTurn,
   getMessageContent,
 } from "./claude-sdk-schema/guards.js";
 
@@ -508,6 +715,8 @@ export type {
   SessionOwnership,
   SessionSandboxPolicy,
   DurableRecapMessage,
+  DurableSyntheticDoneMessage,
+  SyntheticSessionBoundaryCommand,
   BangCommandTranscriptDisplayObject,
   ForkSummaryTranscriptDisplayObject,
   TranscriptDisplayObject,
@@ -518,6 +727,7 @@ export type {
   SessionQueuedMessageKind,
   SessionQueuedMessageStatus,
   SessionQueuedMessageSummary,
+  SessionQueuedYaCommand,
   // Agent session types
   AgentStatus,
   AgentSession,
@@ -543,6 +753,11 @@ export type {
   ToolDisplayReadAction,
   ToolDisplaySearchAction,
 } from "./tool-display-actions.js";
+export {
+  findProjectPathTokens,
+  type ProjectPathLinkTarget,
+  type ProjectPathToken,
+} from "./project-path-links.js";
 export type {
   CodexWebRunLine,
   CodexWebRunPage,
@@ -564,6 +779,8 @@ export {
   isSystemMessage,
   isSummaryMessage,
   isConversationMessage,
+  isAppMessage,
+  isAppSession,
   // Context window utilities
   DEFAULT_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
@@ -586,17 +803,44 @@ export type {
   CodexSessionContent,
 } from "./session/index.js";
 
+export {
+  PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION,
+  PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
+  PUBLIC_SHARE_TITLE_MAX_LENGTH,
+  PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH,
+  PUBLIC_SHARE_LEGACY_RELAY_BODY_MAX_BYTES,
+  PUBLIC_SHARE_LEGACY_RELAY_FRAME_MAX_BYTES,
+  PUBLIC_SHARE_SESSION_CHUNK_MAX_BYTES,
+  PUBLIC_SHARE_SESSION_COMPRESSED_MAX_BYTES,
+  PUBLIC_SHARE_SESSION_DECOMPRESSED_MAX_BYTES,
+  PUBLIC_SHARE_SESSION_MAX_CHUNK_COUNT,
+  isPublicShareSessionChunksMetadata,
+  isPublicShareSessionTransferSizeWithinLimits,
+  isPublicSessionShareMetadata,
+  isPublicSessionSharePublicMetadata,
+  isPublicSessionShareResponse,
+} from "./public-shares.js";
+
 export type {
   CreatePublicSessionShareRequest,
   CreatePublicSessionShareResponse,
+  FreezePublicSharesResponse,
   FreezePublicSessionLiveSharesResponse,
   PublicSessionShareMetadata,
+  PublicShareLinkedFileMode,
+  PublicShareSessionChunksMetadata,
+  PublicShareManagementItem,
+  PublicShareManagementListResponse,
+  PublicShareStorageState,
+  PublicSessionSharePublicMetadata,
   PublicSessionShareMode,
   PublicSessionShareSessionStatusResponse,
   PublicSessionShareViewerActionResponse,
   PublicSessionShareViewerSummary,
   PublicSessionShareResponse,
   RevokePublicSessionSharesResponse,
+  RevokeAllPublicSharesResponse,
+  RevokePublicShareResponse,
 } from "./public-shares.js";
 
 // Tool result schemas (for runtime validation)
@@ -810,6 +1054,7 @@ export {
   BinaryFormat,
   type BinaryFormatValue,
   BinaryFrameError,
+  encodeJsonBytesFrame,
   encodeJsonFrame,
   decodeBinaryFrame,
   decodeJsonFrame,
@@ -843,6 +1088,16 @@ export {
   // Phase 3: Compressed JSON
   encodeCompressedJsonFrame,
   decodeCompressedJsonFrame,
+  // Phase 4: Bounded transport chunks
+  TRANSPORT_CHUNK_HEADER_SIZE,
+  TRANSPORT_CHUNK_PAYLOAD_MAX_BYTES,
+  TRANSPORT_REASSEMBLY_MAX_BYTES,
+  TransportChunkError,
+  type TransportChunkData,
+  encodeTransportChunkFrame,
+  decodeTransportChunkFrame,
+  encodeTransportChunkFrames,
+  TransportChunkReassembler,
 } from "./binary-framing.js";
 
 // Compression utilities (Phase 3)
@@ -925,3 +1180,5 @@ export {
   encodeRelayMuxDataFrame,
   decodeRelayMuxDataFrame,
 } from "./relay-mux.js";
+
+export * from "./glossary/index.js";

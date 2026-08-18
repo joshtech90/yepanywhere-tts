@@ -65,6 +65,7 @@ export const CONFIG_ENV_VARS = [
   "XAI_API_KEY",
   "YEP_COMPOSE_ANCHORS",
   "YEP_DEFERRED_JOIN_WINDOW_S",
+  "YEP_TURN_TIMESTAMPS",
   "YEP_STT_DEEPGRAM_API_KEY",
   "YEP_STT_SHARE_XAI_KEY_WITH_CLIENTS",
   "YEP_STT_XAI_API_KEY",
@@ -73,6 +74,9 @@ export const CONFIG_ENV_VARS = [
   "YEP_CODEX_DISABLE_LIVE_DELTAS",
   "YEP_DATA_DIR",
   "YEP_PROFILE",
+  "YEP_SESSION_WAKE_BASE_URL",
+  "YEP_SESSION_WAKE_TOKEN",
+  "YEP_SESSION_WAKE_URL",
   // Legacy names are also cleared so tests can opt into compatibility
   // explicitly without inheriting a developer shell value.
   "YA_COMPOSE_ANCHORS",

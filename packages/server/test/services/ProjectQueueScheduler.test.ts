@@ -1,4 +1,5 @@
 import {
+  type PermissionMode,
   type StagedAttachmentRef,
   toUrlProjectId,
   type UrlProjectId,
@@ -8,7 +9,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLogger } from "../../src/logging/logger.js";
+import { ProjectStoragePolicy } from "../../src/projects/projectStoragePolicy.js";
 import type { UserMessage } from "../../src/sdk/types.js";
+import {
+  RetryableSessionLaunchError,
+  type ModelSettings,
+  type SessionLaunchOptions,
+} from "../../src/supervisor/Supervisor.js";
 import {
   ProjectQueueScheduler,
   type ProjectQueueDispatchResult,
@@ -77,6 +84,7 @@ function createProcess(
     isRetainingProviderWork: () => false,
     getPendingInputRequest: () => null,
     getDeferredQueueSummary: () => [],
+    hasPendingYaCommand: () => false,
     getLivenessSnapshot: () => ({
       derivedStatus:
         process.state.type === "idle" ? "verified-idle" : "recently-active",
@@ -100,6 +108,10 @@ class FakeSupervisor implements ProjectQueueSupervisor {
   startError: Error | null = null;
   createError: Error | null = null;
   resumeBlocker: Promise<void> | null = null;
+  queueNextStart = false;
+  startLaunchOptions: SessionLaunchOptions | undefined;
+  createLaunchOptions: SessionLaunchOptions | undefined;
+  resumeLaunchOptions: SessionLaunchOptions | undefined;
 
   constructor(private projectId: UrlProjectId) {}
 
@@ -114,9 +126,16 @@ class FakeSupervisor implements ProjectQueueSupervisor {
   async startSession(
     projectPath: string,
     message: UserMessage,
+    _permissionMode?: PermissionMode,
+    _modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult> {
     this.startCalls.push({ projectPath, message });
+    this.startLaunchOptions = launchOptions;
     if (this.startError) throw this.startError;
+    if (this.queueNextStart) {
+      return { queued: true, queueId: "worker-queue-1", position: 1 };
+    }
     const process = createProcess(this.projectId, {
       id: `started-${this.startCalls.length}`,
       sessionId: `new-session-${this.startCalls.length}`,
@@ -127,8 +146,12 @@ class FakeSupervisor implements ProjectQueueSupervisor {
 
   async createSession(
     projectPath: string,
+    _permissionMode?: PermissionMode,
+    _modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult> {
     this.createCalls.push({ projectPath });
+    this.createLaunchOptions = launchOptions;
     if (this.createError) throw this.createError;
     const process = createProcess(this.projectId, {
       id: `created-${this.createCalls.length}`,
@@ -142,8 +165,12 @@ class FakeSupervisor implements ProjectQueueSupervisor {
     sessionId: string,
     projectPath: string,
     message: UserMessage,
+    _permissionMode?: PermissionMode,
+    _modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult> {
     this.resumeCalls.push({ sessionId, projectPath, message });
+    this.resumeLaunchOptions = launchOptions;
     await this.resumeBlocker;
     if (this.resumeError) throw this.resumeError;
     const process = createProcess(this.projectId, { sessionId });
@@ -214,9 +241,41 @@ describe("ProjectQueueScheduler", () => {
     expect(supervisor.resumeCalls[0]).toMatchObject({
       sessionId: "session-1",
       projectPath: PROJECT_PATH,
-      message: { text: "run after idle  " },
+      message: {
+        text: "run after idle  ",
+        automaticSource: "project-queue",
+      },
     });
     expect(service.listProject(projectId).items).toEqual([]);
+  });
+
+  it("holds automatic existing-session work behind a done boundary", async () => {
+    await scheduler.dispose();
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 1,
+      blockedRetryMs: 10,
+      isSessionAutomationPaused: (sessionId) => sessionId === "session-1",
+    });
+
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "wait for a real user turn" },
+      },
+    });
+
+    await wait(25);
+    await expect(scheduler.getProjectStatus(projectId)).resolves.toMatchObject({
+      state: "blocked",
+      blockers: ["session-1:automation-paused"],
+      itemCount: 1,
+    });
+    expect(supervisor.resumeCalls).toHaveLength(0);
   });
 
   it("waits for the configured project quiet window before promoting", async () => {
@@ -240,6 +299,39 @@ describe("ProjectQueueScheduler", () => {
     await wait(30);
     expect(supervisor.resumeCalls).toHaveLength(0);
 
+    await waitFor(() => expect(supervisor.resumeCalls).toHaveLength(1), 400);
+  });
+
+  it("blocks promotion while an admitted user session start is unresolved", async () => {
+    await scheduler.dispose();
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 25,
+    });
+
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "queued-session" },
+        message: { text: "wait for the user start" },
+      },
+    });
+    const release = scheduler.reserveUserSessionStart(
+      projectId,
+      "user-session",
+    );
+
+    await wait(50);
+    expect(supervisor.resumeCalls).toHaveLength(0);
+    await expect(scheduler.getProjectIdleStatus(projectId)).resolves.toEqual({
+      idle: false,
+      blockers: ["user-session:user-starting"],
+    });
+
+    release();
     await waitFor(() => expect(supervisor.resumeCalls).toHaveLength(1), 400);
   });
 
@@ -306,11 +398,149 @@ describe("ProjectQueueScheduler", () => {
     await waitFor(() => expect(supervisor.resumeCalls).toHaveLength(1), 400);
   });
 
+  it("keeps a deferred new-session item until worker launch settles", async () => {
+    supervisor.queueNextStart = true;
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "new-session", provider: "claude-gateway" },
+        message: { text: "start when a worker is free" },
+      },
+    });
+
+    await waitFor(() => expect(supervisor.startCalls).toHaveLength(1));
+    expect(service.listProject(projectId).items).toEqual([
+      expect.objectContaining({ status: "dispatching" }),
+    ]);
+    expect(supervisor.startLaunchOptions?.onFailed).toBeTypeOf("function");
+
+    await supervisor.startLaunchOptions?.onFailed?.(
+      'Claude Gateway no longer advertises model "old-model"',
+    );
+
+    await waitFor(() =>
+      expect(service.listProject(projectId).items).toEqual([
+        expect.objectContaining({
+          status: "failed",
+          lastError: 'Claude Gateway no longer advertises model "old-model"',
+        }),
+      ]),
+    );
+  });
+
+  it("requeues a deferred new session after transient provider startup failure", async () => {
+    supervisor.queueNextStart = true;
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "new-session", provider: "codex" },
+        message: { text: "retry after Codex starts" },
+      },
+    });
+
+    await waitFor(() => expect(supervisor.startCalls).toHaveLength(1));
+    expect(supervisor.startLaunchOptions).toMatchObject({
+      retryProviderStartupFailure: true,
+      requireProviderSessionId: true,
+    });
+    await scheduler.dispose();
+
+    await supervisor.startLaunchOptions?.onRetryableFailure?.(
+      "Codex app-server socket timed out",
+    );
+
+    expect(service.listProject(projectId).items).toEqual([
+      expect.objectContaining({
+        status: "queued",
+        messagePreview: "retry after Codex starts",
+      }),
+    ]);
+  });
+
+  it("requeues immediate startup failures and pauses the third attempt", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+    await scheduler.dispose();
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 10_000,
+      blockedRetryMs: 10_000,
+    });
+    supervisor.startError = new RetryableSessionLaunchError(
+      new Error("Codex app-server socket timed out"),
+    );
+    const item = await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "new-session", provider: "codex" },
+        message: { text: "keep this prompt durable" },
+      },
+    });
+
+    const firstResult = await scheduler.promoteNow(projectId, {
+      itemId: item.id,
+      force: true,
+    });
+
+    expect(firstResult).toMatchObject({
+      promoted: false,
+      reason: "blocked",
+      itemId: item.id,
+    });
+    expect(supervisor.startLaunchOptions).toMatchObject({
+      retryProviderStartupFailure: true,
+      requireProviderSessionId: true,
+    });
+    expect(service.listProject(projectId).items).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        status: "queued",
+        messagePreview: "keep this prompt durable",
+      }),
+    ]);
+
+    await expect(
+      scheduler.promoteNow(projectId, { itemId: item.id, force: true }),
+    ).resolves.toMatchObject({ promoted: false, reason: "blocked" });
+    await expect(
+      scheduler.promoteNow(projectId, { itemId: item.id, force: true }),
+    ).resolves.toMatchObject({ promoted: false, reason: "failed" });
+    expect(service.listProject(projectId).items).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        status: "failed",
+        lastError: expect.stringContaining("Codex app-server socket timed out"),
+      }),
+    ]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      {
+        event: "project_queue_dispatch_retry_exhausted",
+        projectId,
+        error:
+          "Provider session startup did not settle: Codex app-server socket timed out",
+      },
+      "Project queue item paused after repeated provider startup failures",
+    );
+  });
+
   it("materializes staged attachments before promoting a queued new session", async () => {
     await scheduler.dispose();
     const projectPath = path.join(testDir, "project");
+    await fs.mkdir(projectPath, { recursive: true });
+    const storagePolicy = new ProjectStoragePolicy({
+      dataDir: path.join(testDir, "data"),
+      getMode: () => "project",
+    });
     const stagingService = new AttachmentStagingService({
       stagingRoot: path.join(testDir, "staging"),
+      storagePolicy,
     });
     service.setAttachmentStagingService(stagingService);
     scheduler = new ProjectQueueScheduler({
@@ -345,6 +575,12 @@ describe("ProjectQueueScheduler", () => {
 
     expect(supervisor.startCalls).toHaveLength(0);
     expect(supervisor.createCalls).toEqual([{ projectPath }]);
+    expect(supervisor.createLaunchOptions).toMatchObject({
+      retryProviderStartupFailure: true,
+    });
+    expect(supervisor.resumeLaunchOptions).toMatchObject({
+      requireProviderSessionId: true,
+    });
     expect(supervisor.resumeCalls[0]).toMatchObject({
       sessionId: "created-session-1",
       projectPath,
@@ -356,7 +592,8 @@ describe("ProjectQueueScheduler", () => {
             originalName: "queued.txt",
             path: path.join(
               projectPath,
-              ".attachments",
+              ".yep",
+              "attachments",
               "created-session-1",
               ref.name,
             ),
@@ -366,7 +603,13 @@ describe("ProjectQueueScheduler", () => {
     });
     await expect(
       fs.readFile(
-        path.join(projectPath, ".attachments", "created-session-1", ref.name),
+        path.join(
+          projectPath,
+          ".yep",
+          "attachments",
+          "created-session-1",
+          ref.name,
+        ),
         "utf-8",
       ),
     ).resolves.toBe("queued attachment");
@@ -443,7 +686,9 @@ describe("ProjectQueueScheduler", () => {
       message: { text: "blocked then retry" },
     });
     await waitFor(async () => {
-      await expect(scheduler.getProjectStatus(projectId)).resolves.toMatchObject({
+      await expect(
+        scheduler.getProjectStatus(projectId),
+      ).resolves.toMatchObject({
         state: "empty",
         itemCount: 0,
         inFlight: false,
@@ -625,6 +870,49 @@ describe("ProjectQueueScheduler", () => {
       projectPath: PROJECT_PATH,
       message: { text: "project work waits" },
     });
+  });
+
+  it("dispatches past a session whose user already queued /done", async () => {
+    // The agent is still finishing some final action, but the user has
+    // declared the session done, so it is no longer project backlog.
+    const process = createProcess(projectId, {
+      state: { type: "in-turn" },
+      isRetainingProviderWork: () => true,
+      getDeferredQueueSummary: () => [{ kind: "ya-command" }],
+      hasPendingYaCommand: (command?: "done") => command === "done",
+    });
+    supervisor.processes = [process];
+
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "runs while /done settles" },
+      },
+    });
+
+    await waitFor(() => expect(supervisor.resumeCalls).toHaveLength(1));
+  });
+
+  it("still blocks on an in-turn session with no queued /done", async () => {
+    const process = createProcess(projectId, {
+      state: { type: "in-turn" },
+      isRetainingProviderWork: () => true,
+    });
+    supervisor.processes = [process];
+
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "waits for the turn" },
+      },
+    });
+
+    await wait(25);
+    expect(supervisor.resumeCalls).toHaveLength(0);
   });
 
   it("waits for per-session deferred queues to drain", async () => {

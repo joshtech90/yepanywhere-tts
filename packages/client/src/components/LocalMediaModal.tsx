@@ -8,28 +8,47 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
 import { api } from "../api/client";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../hooks/useInlineMedia";
+import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
+import { downloadBlob, writeClipboardImageLater } from "../lib/imageActions";
+import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
 import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
 import {
+  getAbsoluteFilePath,
   getPathBasename,
   getProjectRelativePath,
+  isAbsoluteLikePath,
   makeDisplayPath,
 } from "../lib/text";
 import type { SourceTransport } from "../lib/transport";
 import {
+  describeImageSizing,
+  type ImageSizing,
+  isVectorImage,
+} from "../lib/vectorImageSizing";
+import {
   FilePathContextMenu,
+  type FileViewPresentation,
+  supportsSourceAndPreview,
   useStartNewSessionFromFileAction,
 } from "./FileResourceActions";
+import {
+  getImagePathCoordinates,
+  getProjectImageViewerLink,
+  useImageResourceActions,
+} from "./ImageResourceActions";
 import {
   ImageViewer,
   type ImageViewerNavigation,
@@ -49,6 +68,8 @@ export interface LocalMediaSource {
 
 interface LocalMediaModalProps {
   path: string;
+  /** Semantic source path. Null means the image has no filesystem identity. */
+  filePath?: string | null;
   mediaType: LocalResourceMediaType;
   mediaSource?: LocalMediaSource;
   imageNavigation?: ImageViewerNavigation;
@@ -56,16 +77,25 @@ interface LocalMediaModalProps {
 }
 
 interface DisplayedLocalMedia {
+  blob: Blob;
   fileName: string;
+  filePath: string | null;
   imageNavigation?: Pick<ImageViewerNavigation, "count" | "current">;
   mediaType: LocalResourceMediaType;
   path: string;
   url: string;
+  vector: boolean;
 }
 
 interface LocalFileModalProps {
   resource: LocalResourceRef;
+  initialPresentation?: FileViewPresentation;
   onClose: () => void;
+}
+
+export interface LocalFileModalTarget {
+  resource: LocalResourceRef;
+  initialPresentation?: FileViewPresentation;
 }
 
 export interface ProjectFileModalTarget {
@@ -73,6 +103,7 @@ export interface ProjectFileModalTarget {
   filePath: string;
   lineNumber?: number;
   lineEnd?: number;
+  initialPresentation?: FileViewPresentation;
 }
 
 interface ProjectContext {
@@ -89,7 +120,7 @@ interface UseLocalResourceClickResult {
     path: string;
     mediaType: LocalResourceMediaType;
   } | null;
-  localFileModal: LocalResourceRef | null;
+  localFileModal: LocalFileModalTarget | null;
   projectFileModal: ProjectFileModalTarget | null;
   closeModal: () => void;
   closeLocalFileModal: () => void;
@@ -124,6 +155,7 @@ function getFileName(path: string): string {
 function normalizeResourceForProjectContext(
   resource: LocalResourceRef,
   projectContext: ProjectContext | null | undefined,
+  allowExternalLocalFiles = false,
 ): ProjectFileModalTarget | null {
   if (resource.kind === "project-file" && resource.projectId) {
     return {
@@ -142,12 +174,18 @@ function normalizeResourceForProjectContext(
     resource.path,
     projectContext.projectPath,
   );
-  if (!relativePath || relativePath === ".") {
+  const viewerPath =
+    relativePath && relativePath !== "."
+      ? relativePath
+      : allowExternalLocalFiles && isAbsoluteLikePath(resource.path)
+        ? resource.path
+        : null;
+  if (!viewerPath) {
     return null;
   }
 
   return {
-    filePath: relativePath,
+    filePath: viewerPath,
     lineEnd: resource.lineEnd,
     lineNumber: resource.lineNumber,
     projectId: projectContext.projectId,
@@ -160,7 +198,7 @@ function localMediaApiPath(path: string): string {
 
 function localResourceApiPath(
   resource: LocalResourceRef,
-  sameOriginUrls: boolean,
+  renderMarkdown: boolean,
 ): string {
   if (resource.kind === "project-raw-file") {
     const params = new URLSearchParams({ path: resource.path });
@@ -173,7 +211,7 @@ function localResourceApiPath(
   }
 
   const params = new URLSearchParams({ path: resource.path });
-  if (resource.renderMarkdown && sameOriginUrls) {
+  if (resource.renderMarkdown && renderMarkdown) {
     params.set("render", "1");
   }
   if (resource.download) {
@@ -192,54 +230,6 @@ function isLocalMediaType(
   value: string | null,
 ): value is LocalResourceMediaType {
   return value === "image" || value === "video";
-}
-
-async function copyImageBlobToClipboard(blob: Blob): Promise<void> {
-  const ClipboardItemCtor = globalThis.ClipboardItem;
-  if (!navigator.clipboard?.write || !ClipboardItemCtor) {
-    throw new Error("Image clipboard is not available");
-  }
-  const clipboardBlob =
-    blob.type === "image/png" ? blob : await toPngBlob(blob);
-  await navigator.clipboard.write([
-    new ClipboardItemCtor({
-      [clipboardBlob.type || "image/png"]: clipboardBlob,
-    }),
-  ]);
-}
-
-async function toPngBlob(blob: Blob): Promise<Blob> {
-  const sourceUrl = URL.createObjectURL(blob);
-  try {
-    const image = new Image();
-    const loaded = new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("Failed to decode image"));
-    });
-    image.src = sourceUrl;
-    await loaded;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Canvas is not available");
-    }
-    context.drawImage(image, 0, 0);
-
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((pngBlob) => {
-        if (pngBlob) {
-          resolve(pngBlob);
-        } else {
-          reject(new Error("Failed to encode PNG"));
-        }
-      }, "image/png");
-    });
-  } finally {
-    URL.revokeObjectURL(sourceUrl);
-  }
 }
 
 export async function fetchMediaBlob(
@@ -345,9 +335,9 @@ function isTextContentType(contentType: string): boolean {
  * resolved once into a finite map instead of being looked up by computed key.
  */
 const inlinePreviewClass = {
-  copied: styles.inlineCopied ?? "",
   error: styles.inlineError ?? "",
   frame: styles.inlineFrame ?? "",
+  frameVector: styles.inlineFrameVector ?? "",
   image: styles.inlineImage ?? "",
   imageButton: styles.inlineImageButton ?? "",
   loading: styles.inlineLoading ?? "",
@@ -358,11 +348,14 @@ function renderInlinePreview(
   target: HTMLElement,
   path: string,
   mediaType: LocalResourceMediaType,
-  blob: Blob,
   objectUrl: string,
+  sizing: ImageSizing,
 ) {
   const frame = document.createElement("span");
-  frame.className = inlinePreviewClass.frame;
+  frame.className =
+    sizing === "vector-unsized"
+      ? `${inlinePreviewClass.frame} ${inlinePreviewClass.frameVector}`
+      : inlinePreviewClass.frame;
 
   if (mediaType === "video") {
     const video = document.createElement("video");
@@ -375,36 +368,15 @@ function renderInlinePreview(
     const button = document.createElement("button");
     button.type = "button";
     button.className = inlinePreviewClass.imageButton;
-    button.title = "Copy image";
-    button.setAttribute("aria-label", `Copy ${getFileName(path)}`);
+    button.title = `Open ${getFileName(path)}`;
+    button.setAttribute("aria-label", `Open ${getFileName(path)}`);
+    button.dataset.localMediaPreviewTrigger = "true";
 
     const image = document.createElement("img");
     image.className = inlinePreviewClass.image;
     image.src = objectUrl;
     image.alt = getFileName(path);
     button.append(image);
-
-    button.addEventListener("click", async () => {
-      try {
-        await copyImageBlobToClipboard(blob);
-        button.classList.add("copied");
-        button.title = "Copied";
-        button.setAttribute("aria-label", "Copied image");
-
-        const copied = document.createElement("span");
-        copied.className = inlinePreviewClass.copied;
-        copied.textContent = "Copied";
-        frame.append(copied);
-        setTimeout(() => {
-          button.classList.remove("copied");
-          button.title = "Copy image";
-          button.setAttribute("aria-label", `Copy ${getFileName(path)}`);
-          copied.remove();
-        }, 1500);
-      } catch (err) {
-        console.error("[LocalMediaInlinePreview] Failed to copy image:", err);
-      }
-    });
 
     frame.append(button);
   }
@@ -418,6 +390,7 @@ function renderInlinePreview(
  */
 export function LocalMediaModal({
   path,
+  filePath,
   mediaType,
   mediaSource,
   imageNavigation,
@@ -441,6 +414,7 @@ export function LocalMediaModal({
   const requestedImageCount = imageNavigation?.count;
   const requestedImageCurrent = imageNavigation?.current;
   const requestedFileName = getFileName(path);
+  const semanticFilePath = filePath === undefined ? path : filePath;
   const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
 
   useEffect(() => {
@@ -459,18 +433,21 @@ export function LocalMediaModal({
         }
         if (cancelled) return;
         setDisplayedMedia({
+          blob,
           fileName: requestedFileName,
+          filePath: semanticFilePath,
           imageNavigation:
             requestedImageCount !== undefined &&
             requestedImageCurrent !== undefined
-            ? {
-                count: requestedImageCount,
-                current: requestedImageCurrent,
-              }
-            : undefined,
+              ? {
+                  count: requestedImageCount,
+                  current: requestedImageCurrent,
+                }
+              : undefined,
           mediaType,
           path,
           url: pendingObjectUrl,
+          vector: isVectorImage(blob.type, path),
         });
         transferredObjectUrl = true;
         setLoading(false);
@@ -494,6 +471,7 @@ export function LocalMediaModal({
     requestedFileName,
     requestedImageCount,
     requestedImageCurrent,
+    semanticFilePath,
     transport,
   ]);
 
@@ -545,79 +523,104 @@ export function LocalMediaModal({
       : undefined;
   const imageModalActive =
     mediaType === "image" || displayedMedia?.mediaType === "image";
+  const openDisplayedImage = useCallback(() => {
+    if (displayedMediaRef.current?.mediaType === "image") {
+      window.open(displayedMediaRef.current.url, "_blank", "noopener");
+    }
+  }, []);
+  const displayedImageBlob = displayedImage?.blob;
+  const imageActions = useImageResourceActions({
+    fileName: displayedImage?.fileName ?? requestedFileName,
+    filePath: displayedImage?.filePath ?? semanticFilePath,
+    loadBlob: displayedImageBlob
+      ? () => Promise.resolve(displayedImageBlob)
+      : undefined,
+    onOpen: openDisplayedImage,
+  });
 
   return (
-    <Modal
-      title={
-        displayedImage ? (
-          <a
-            className={styles.titleLink}
-            href={displayedImage.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={openImageInNewTabLabel}
-          >
-            {displayedImage.fileName}
-          </a>
-        ) : (
-          (displayedMedia?.fileName ?? requestedFileName)
-        )
-      }
-      onClose={onClose}
-      variant={imageModalActive ? "image-viewer" : undefined}
-    >
-      {displayedImage ? (
-        <div className={styles.imageFrame} aria-busy={loading}>
-          <ImageViewer
-            key={`${displayedImage.path}\0${displayedImage.url}`}
-            fileName={displayedImage.fileName}
-            initialNavigationChrome={
-              imageNavigationInputRef.current === "keyboard"
-                ? "position"
-                : "all"
-            }
-            keyboardNavigationSequence={keyboardNavigationSequence}
-            navigation={displayedNavigation}
-            onNavigationInput={(input) => {
-              imageNavigationInputRef.current = input;
-            }}
-            onClose={onClose}
-            url={displayedImage.url}
-          />
-          {error ? (
-            <div className={styles.imageLoadError} role="alert">
-              {error}
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <div
-          className={`${styles.modalContent}${
-            imageModalActive ? ` ${styles.imagePlaceholder}` : ""
-          }`}
-        >
-          {loading && <div className={styles.loading}>Loading...</div>}
-          {error && <div className={styles.error}>{error}</div>}
-          {displayedMedia?.mediaType === "video" ? (
-            // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
-            <video
-              controls
-              autoPlay
-              className={styles.player}
-              src={displayedMedia.url}
+    <>
+      <Modal
+        title={
+          displayedImage ? (
+            <a
+              className={styles.titleLink}
+              href={displayedImage.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={openImageInNewTabLabel}
+              onContextMenu={imageActions.handleContextMenu}
+            >
+              {displayedImage.fileName}
+            </a>
+          ) : (
+            (displayedMedia?.fileName ?? requestedFileName)
+          )
+        }
+        onClose={onClose}
+        variant={imageModalActive ? "image-viewer" : undefined}
+      >
+        {displayedImage ? (
+          <div className={styles.imageFrame} aria-busy={loading}>
+            <ImageViewer
+              key={`${displayedImage.path}\0${displayedImage.url}`}
+              fileName={displayedImage.fileName}
+              initialNavigationChrome={
+                imageNavigationInputRef.current === "keyboard"
+                  ? "position"
+                  : "all"
+              }
+              keyboardNavigationSequence={keyboardNavigationSequence}
+              navigation={displayedNavigation}
+              onContextMenu={imageActions.handleContextMenu}
+              onNavigationInput={(input) => {
+                imageNavigationInputRef.current = input;
+              }}
+              onClose={onClose}
+              url={displayedImage.url}
+              vector={displayedImage.vector}
             />
-          ) : null}
-        </div>
-      )}
-    </Modal>
+            {error ? (
+              <div className={styles.imageLoadError} role="alert">
+                {error}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div
+            className={`${styles.modalContent}${
+              imageModalActive ? ` ${styles.imagePlaceholder}` : ""
+            }`}
+          >
+            {loading && <div className={styles.loading}>Loading...</div>}
+            {error && <div className={styles.error}>{error}</div>}
+            {displayedMedia?.mediaType === "video" ? (
+              // biome-ignore lint/a11y/useMediaCaption: user-generated local files, no captions available
+              <video
+                controls
+                autoPlay
+                className={styles.player}
+                src={displayedMedia.url}
+              />
+            ) : null}
+          </div>
+        )}
+      </Modal>
+      {displayedImage ? imageActions.contextMenuElement : null}
+    </>
   );
 }
 
-export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
+export function LocalFileModal({
+  resource,
+  initialPresentation,
+  onClose,
+}: LocalFileModalProps) {
   const sessionMetadata = useOptionalSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
-  const sameOriginUrls = transport.capabilities.sameOriginUrls;
-  const apiPath = localResourceApiPath(resource, sameOriginUrls);
+  const presentation =
+    initialPresentation ?? (resource.renderMarkdown ? "preview" : "source");
+  const apiPath = localResourceApiPath(resource, presentation === "preview");
   const fileName = getFileName(resource.path);
   const locationSuffix = `${resource.lineNumber !== undefined ? `:${resource.lineNumber}` : ""}${
     resource.columnNumber !== undefined ? `:${resource.columnNumber}` : ""
@@ -644,7 +647,7 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
           const html = await readBlobText(blob);
           if (!cancelled) {
             setState(
-              sameOriginUrls
+              presentation === "preview"
                 ? { status: "html", html }
                 : { status: "text", contentType, text: html },
             );
@@ -679,7 +682,7 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [apiPath, sameOriginUrls, transport]);
+  }, [apiPath, presentation, transport]);
 
   return (
     <Modal title={fileName} onClose={onClose}>
@@ -707,9 +710,12 @@ export function LocalFileModal({ resource, onClose }: LocalFileModalProps) {
         )}
         {state.status === "html" && (
           <iframe
+            aria-label={fileName}
             className={styles.fileHtmlFrame}
+            data-tooltip=""
             sandbox=""
-            srcDoc={state.html}
+            referrerPolicy="no-referrer"
+            srcDoc={createScriptlessHtmlPreviewDocument(state.html)}
             title={fileName}
           />
         )}
@@ -758,7 +764,14 @@ function getClickedAnchor(
   if (!(target instanceof Element)) {
     return null;
   }
-  return target.closest("a[href]");
+  const directAnchor = target.closest<HTMLAnchorElement>("a[href]");
+  if (directAnchor) {
+    return directAnchor;
+  }
+
+  const preview = target.closest(".local-media-inline-preview");
+  const group = preview?.previousElementSibling;
+  return group?.querySelector<HTMLAnchorElement>("a[href]") ?? null;
 }
 
 function getCurrentHref(): string | undefined {
@@ -796,7 +809,6 @@ function getLocalMediaType(
 function LocalResourceContextMenu({
   contextMenu,
   projectContext,
-  sameOriginUrls,
   transport,
   onClose,
   onOpenResource,
@@ -809,30 +821,109 @@ function LocalResourceContextMenu({
     url: string | null;
   };
   projectContext: ProjectContext | null | undefined;
-  sameOriginUrls: boolean;
   transport: SourceTransport;
   onClose: () => void;
   onOpenResource: (
     resource: LocalResourceRef,
     target: HTMLAnchorElement,
+    presentation?: FileViewPresentation,
   ) => void;
 }) {
+  const { t } = useI18n();
+  const publicShare = usePublicShareContext();
+  const basePath = useRemoteBasePath();
   const startNewSessionFromFile = useStartNewSessionFromFileAction();
-  const copyUrl = contextMenu.url;
+  const isMedia = contextMenu.resource.kind === "local-media";
+  const mediaCoordinates = isMedia
+    ? getImagePathCoordinates({
+        exposeAbsolutePath: publicShare === null,
+        filePath: contextMenu.resource.path,
+        projectPath: projectContext?.projectPath,
+      })
+    : null;
+  const projectRelativePath =
+    contextMenu.projectFileTarget?.filePath ??
+    mediaCoordinates?.projectRelativePath ??
+    null;
+  const absolutePath = isMedia
+    ? (mediaCoordinates?.absolutePath ?? null)
+    : publicShare === null
+      ? isAbsoluteLikePath(contextMenu.resource.path)
+        ? contextMenu.resource.path
+        : projectRelativePath && projectContext?.projectPath
+          ? getAbsoluteFilePath(projectRelativePath, projectContext.projectPath)
+          : null
+      : null;
+  const viewerLink =
+    contextMenu.resource.kind === "project-file"
+      ? contextMenu.url
+      : publicShare === null
+        ? getProjectImageViewerLink({
+            basePath,
+            projectId: projectContext?.projectId,
+            projectRelativePath: mediaCoordinates?.projectRelativePath,
+          })
+        : null;
+  const hasPresentationChoice = supportsSourceAndPreview(
+    contextMenu.resource.path,
+    Boolean(contextMenu.resource.renderMarkdown),
+  );
+  const openResource = (presentation?: FileViewPresentation) => {
+    const anchor = document.createElement("a");
+    anchor.href = "#";
+    onOpenResource(contextMenu.resource, anchor, presentation);
+  };
 
   return (
     <FilePathContextMenu
       x={contextMenu.x}
       y={contextMenu.y}
-      canStartNewSession={Boolean(projectContext?.projectId)}
+      canStartNewSession={
+        publicShare === null && !isMedia && Boolean(projectContext?.projectId)
+      }
+      dismissLabel={
+        isMedia ? t("imageResourceDismissMenu" as never) : undefined
+      }
       onClose={onClose}
-      onView={() => {
-        const anchor = document.createElement("a");
-        anchor.href = "#";
-        onOpenResource(contextMenu.resource, anchor);
-      }}
+      onOpen={() => openResource()}
+      onDownload={
+        isMedia
+          ? () => {
+              void fetchLocalMediaBlob(
+                contextMenu.resource.path,
+                undefined,
+                "modal",
+                transport,
+              )
+                .then((blob) =>
+                  downloadBlob(blob, getFileName(contextMenu.resource.path)),
+                )
+                .catch(() => {});
+            }
+          : undefined
+      }
+      onCopyImage={
+        isMedia
+          ? () => {
+              void writeClipboardImageLater(
+                fetchLocalMediaBlob(
+                  contextMenu.resource.path,
+                  undefined,
+                  "modal",
+                  transport,
+                ),
+              );
+            }
+          : undefined
+      }
+      onOpenSource={
+        hasPresentationChoice ? () => openResource("source") : undefined
+      }
+      onOpenPreview={
+        hasPresentationChoice ? () => openResource("preview") : undefined
+      }
       onStartNewSession={
-        projectContext?.projectId
+        publicShare === null && !isMedia && projectContext?.projectId
           ? () =>
               startNewSessionFromFile(
                 projectContext.projectId,
@@ -841,31 +932,53 @@ function LocalResourceContextMenu({
               )
           : undefined
       }
-      onCopyPath={() =>
-        void writeClipboardText(
-          contextMenu.projectFileTarget?.filePath ?? contextMenu.resource.path,
-        )
+      onCopyProjectRelativePath={
+        projectRelativePath
+          ? () => void writeClipboardText(projectRelativePath)
+          : undefined
       }
-      onCopyUrl={
-        copyUrl ? () => void writeClipboardText(copyUrl) : undefined
+      onCopyAbsolutePath={
+        absolutePath ? () => void writeClipboardText(absolutePath) : undefined
       }
-      onCopyContents={() => {
-        const { projectFileTarget, resource } = contextMenu;
-        if (projectFileTarget) {
-          void writeClipboardTextLater(
-            api
-              .getFile(projectFileTarget.projectId, projectFileTarget.filePath)
-              .then((file) => file.content ?? ""),
-          );
-          return;
-        }
-        void writeClipboardTextLater(
-          fetchLocalResourceBlob(
-            localResourceApiPath(resource, sameOriginUrls),
-            transport,
-          ).then(readBlobText),
-        );
-      }}
+      onCopyFilePath={
+        isMedia
+          ? mediaCoordinates?.filePath
+            ? () => void writeClipboardText(mediaCoordinates.filePath ?? "")
+            : undefined
+          : !projectRelativePath &&
+              !absolutePath &&
+              (publicShare === null ||
+                !isAbsoluteLikePath(contextMenu.resource.path))
+            ? () => void writeClipboardText(contextMenu.resource.path)
+            : undefined
+      }
+      onCopyViewerLink={
+        viewerLink ? () => void writeClipboardText(viewerLink) : undefined
+      }
+      onCopyContents={
+        isMedia
+          ? undefined
+          : () => {
+              const { projectFileTarget, resource } = contextMenu;
+              if (projectFileTarget) {
+                void writeClipboardTextLater(
+                  api
+                    .getFile(
+                      projectFileTarget.projectId,
+                      projectFileTarget.filePath,
+                    )
+                    .then((file) => file.content ?? ""),
+                );
+                return;
+              }
+              void writeClipboardTextLater(
+                fetchLocalResourceBlob(
+                  localResourceApiPath(resource, false),
+                  transport,
+                ).then(readBlobText),
+              );
+            }
+      }
     />
   );
 }
@@ -878,6 +991,7 @@ function LocalResourceContextMenu({
 export function useLocalResourceClick(
   options: UseLocalResourceClickOptions = {},
 ): UseLocalResourceClickResult {
+  const publicShare = usePublicShareContext();
   const sessionMetadata = useOptionalSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
   const sameOriginUrls = transport.capabilities.sameOriginUrls;
@@ -886,9 +1000,8 @@ export function useLocalResourceClick(
     path: string;
     mediaType: LocalResourceMediaType;
   } | null>(null);
-  const [localFileModal, setLocalFileModal] = useState<LocalResourceRef | null>(
-    null,
-  );
+  const [localFileModal, setLocalFileModal] =
+    useState<LocalFileModalTarget | null>(null);
   const [projectFileModal, setProjectFileModal] =
     useState<ProjectFileModalTarget | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -902,13 +1015,18 @@ export function useLocalResourceClick(
   const openResource = (
     resource: LocalResourceRef,
     target: HTMLAnchorElement,
+    presentation?: FileViewPresentation,
   ) => {
     const projectFileTarget = normalizeResourceForProjectContext(
       resource,
       projectContext,
+      publicShare === null,
     );
     if (projectFileTarget) {
-      setProjectFileModal(projectFileTarget);
+      setProjectFileModal({
+        ...projectFileTarget,
+        ...(presentation ? { initialPresentation: presentation } : {}),
+      });
       setLocalFileModal(null);
       setModal(null);
       return true;
@@ -925,7 +1043,10 @@ export function useLocalResourceClick(
     }
 
     if (isLocalFileResource(resource)) {
-      setLocalFileModal(resource);
+      setLocalFileModal({
+        resource,
+        ...(presentation ? { initialPresentation: presentation } : {}),
+      });
       setModal(null);
       setProjectFileModal(null);
       return true;
@@ -992,6 +1113,7 @@ export function useLocalResourceClick(
     const projectFileTarget = normalizeResourceForProjectContext(
       resource,
       projectContext,
+      publicShare === null,
     );
     if (projectFileTarget) {
       if (shouldPreserveDirectBrowserGesture(e, sameOriginUrls)) {
@@ -1032,7 +1154,7 @@ export function useLocalResourceClick(
       },
       { currentHref: getCurrentHref() },
     );
-    if (!resource || resource.kind === "local-media") return;
+    if (!resource) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -1043,8 +1165,9 @@ export function useLocalResourceClick(
       projectFileTarget: normalizeResourceForProjectContext(
         resource,
         projectContext,
+        publicShare === null,
       ),
-      url: sameOriginUrls ? target.href : null,
+      url: resource.kind === "project-file" ? target.href : null,
     });
   };
 
@@ -1056,7 +1179,6 @@ export function useLocalResourceClick(
     <LocalResourceContextMenu
       contextMenu={contextMenu}
       projectContext={projectContext}
-      sameOriginUrls={sameOriginUrls}
       transport={transport}
       onClose={closeContextMenu}
       onOpenResource={openResource}
@@ -1177,10 +1299,11 @@ export function useLocalMediaInlinePreviews(
         element.append(loading);
 
         fetchLocalMediaBlob(path, mediaSource, "inline", transport)
-          .then((blob) => {
+          .then(async (blob) => {
             const objectUrl = URL.createObjectURL(blob);
             objectUrls.add(objectUrl);
-            renderInlinePreview(element, path, mediaType, blob, objectUrl);
+            const sizing = await describeImageSizing(blob, path);
+            renderInlinePreview(element, path, mediaType, objectUrl, sizing);
           })
           .catch((err) => {
             const error = document.createElement("span");

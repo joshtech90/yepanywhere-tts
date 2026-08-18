@@ -2,9 +2,16 @@
 
 import { Profiler } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
+import { SessionMetadataProvider } from "../../contexts/SessionMetadataContext";
+import { SourceRuntimeProvider } from "../../contexts/SourceRuntimeContext";
+import { asClientSummarySourceKey } from "../../lib/clientSummaryStore";
 import { buildCorrectionText } from "../../lib/correctionText";
+import type { YaSourceRuntime } from "../../lib/sourceRuntime";
 import { UI_KEYS } from "../../lib/storageKeys";
+import { FakeSourceTransport } from "../../lib/transport";
 import { setConversationViewPreference } from "../../hooks/useConversationView";
 import {
   assistantMessage,
@@ -15,6 +22,7 @@ import {
 } from "./MessageList.test-support";
 import { createComposerDraftSignal } from "../../lib/composerDraftSignal";
 import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
+import type { Message } from "../../types";
 import { MessageList } from "../MessageList";
 import galleryStyles from "../TurnImageGallery.module.css";
 
@@ -115,8 +123,7 @@ describe("MessageList rendering", () => {
     const galleryItems = container.querySelectorAll(`.${galleryStyles.item}`);
     fireEvent.pointerEnter(galleryItems[1] as HTMLElement);
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Phone result");
 
     galleryItems[0]!.getBoundingClientRect = vi.fn(
@@ -153,13 +160,11 @@ describe("MessageList rendering", () => {
     };
     movePointer(110, 500);
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Desktop result");
     movePointer(210, 500);
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Phone result");
 
     const phoneLink = Array.from(
@@ -172,8 +177,7 @@ describe("MessageList rendering", () => {
     ).toBe("phone.png");
     expect(container.querySelector(`.${galleryStyles.gallery}`)).toBeTruthy();
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Phone result");
     fireEvent.keyDown(document, { key: "ArrowRight" });
     expect(
@@ -183,12 +187,12 @@ describe("MessageList rendering", () => {
     expect(
       screen.getByRole("dialog").querySelector(".modal-title")?.textContent,
     ).toBe("phone.png");
-    fireEvent.click(document.querySelector(".modal-close") as HTMLButtonElement);
+    fireEvent.click(
+      document.querySelector(".modal-close") as HTMLButtonElement,
+    );
 
     fireEvent.click(
-      container.querySelector(
-        `.${galleryStyles.caption}`,
-      ) as HTMLButtonElement,
+      container.querySelector(`.${galleryStyles.caption}`) as HTMLButtonElement,
     );
     expect(document.activeElement).toBe(phoneLink);
 
@@ -204,20 +208,16 @@ describe("MessageList rendering", () => {
     fireEvent.click(galleryAction as HTMLButtonElement);
     expect(container.querySelector(`.${galleryStyles.gallery}`)).toBeTruthy();
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
-      ).toBe("Phone result");
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
+    ).toBe("Phone result");
 
     fireEvent.click(
-      container.querySelector(
-        `.${galleryStyles.dismiss}`,
-      ) as HTMLButtonElement,
+      container.querySelector(`.${galleryStyles.dismiss}`) as HTMLButtonElement,
     );
     fireEvent.click(sourceToggles[1] as HTMLButtonElement);
     expect(container.querySelector(`.${galleryStyles.gallery}`)).toBeTruthy();
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Phone result");
   });
 
@@ -274,15 +274,13 @@ describe("MessageList rendering", () => {
       )[0] as HTMLButtonElement,
     );
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("One");
 
     fireEvent.click(galleryAction as HTMLButtonElement);
     fireEvent.click(galleryAction as HTMLButtonElement);
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("One");
   });
 
@@ -326,7 +324,9 @@ describe("MessageList rendering", () => {
       screen.getByRole("dialog").querySelector(".modal-title")?.textContent,
     ).toBe("two.png");
 
-    fireEvent.click(document.querySelector(".modal-close") as HTMLButtonElement);
+    fireEvent.click(
+      document.querySelector(".modal-close") as HTMLButtonElement,
+    );
     expect(container.querySelector(`.${galleryStyles.gallery}`)).toBeNull();
   });
 
@@ -427,8 +427,7 @@ describe("MessageList rendering", () => {
     act(() => scrollFrame?.(0));
 
     expect(
-      container.querySelector(`.${galleryStyles.caption} > span`)
-        ?.textContent,
+      container.querySelector(`.${galleryStyles.caption} > span`)?.textContent,
     ).toBe("Two");
   });
 
@@ -475,6 +474,51 @@ describe("MessageList rendering", () => {
     });
 
     expect(onRender).toHaveBeenCalledTimes(initialCommitCount);
+  });
+
+  it("defers tail updates but commits prefix changes synchronously", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const current = userMessage("user-current", "Current request");
+
+    act(() => {
+      root.render(<MessageList messages={[current]} />);
+    });
+
+    act(() => {
+      flushSync(() => {
+        root.render(
+          <MessageList
+            messages={[
+              current,
+              assistantMessage("assistant-live", "Live tail update"),
+            ]}
+          />,
+        );
+      });
+      expect(screen.queryByText("Live tail update")).toBeNull();
+    });
+    expect(screen.getByText("Live tail update")).toBeTruthy();
+
+    act(() => {
+      flushSync(() => {
+        root.render(
+          <MessageList
+            messages={[
+              userMessage("user-older", "Older request"),
+              current,
+              assistantMessage("assistant-live", "Live tail update"),
+            ]}
+            olderMessagesCursor="user-older"
+          />,
+        );
+      });
+      expect(screen.getByText("Older request")).toBeTruthy();
+    });
+
+    act(() => root.unmount());
+    host.remove();
   });
 
   it("condenses and restores routine activity in Conversation view", () => {
@@ -538,6 +582,196 @@ describe("MessageList rendering", () => {
         .querySelector(".conversation-activity-summary")
         ?.getAttribute("aria-expanded"),
     ).toBe("true");
+  });
+
+  it("remembers tool-media disclosure across Conversation view toggles", () => {
+    const transport = new FakeSourceTransport({
+      fetchBlob: vi.fn(() => new Promise<Blob>(() => {})),
+    });
+    const runtime: YaSourceRuntime = {
+      sourceKey: asClientSummarySourceKey("test:remembered-disclosure"),
+      transport,
+      api: {} as YaSourceRuntime["api"],
+      summary: {} as YaSourceRuntime["summary"],
+      sessionDetails: {} as YaSourceRuntime["sessionDetails"],
+    };
+    const messages: Message[] = [
+      userMessage("user-media", "inspect these"),
+      codexThinkingMessage("thinking-media", "checking images"),
+      assistantToolUseMessage("assistant-media", [
+        {
+          type: "tool_use",
+          id: "tool-media",
+          name: "ViewImage",
+          input: { path: "/repo/first.png" },
+        },
+      ]),
+      {
+        type: "user",
+        uuid: "tool-result-media",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-media",
+              content: "",
+            },
+          ],
+        },
+        toolResultMedia: [
+          {
+            state: "stored",
+            toolCallId: "tool-media",
+            id: "media-a",
+            mimeType: "image/png",
+            byteLength: 128,
+            filename: "first.png",
+          },
+        ],
+      },
+      assistantMessage("assistant-media-answer", "Done"),
+    ];
+    const view = (conversationViewEnabled: boolean) => (
+      <SourceRuntimeProvider runtime={runtime}>
+        <SessionMetadataProvider
+          projectId="project-1"
+          projectPath="/repo"
+          sessionId="session-1"
+        >
+          <MessageList
+            conversationViewEnabledOverride={conversationViewEnabled}
+            conversationViewStateKey="session-1"
+            messages={messages}
+          />
+        </SessionMetadataProvider>
+      </SourceRuntimeProvider>
+    );
+    const { rerender } = render(view(false));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolResultMediaExpand" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "toolResultMediaCollapse" }),
+    ).toBeTruthy();
+
+    rerender(view(true));
+    expect(
+      screen.getByRole("button", { name: "toolResultMediaCollapse" }),
+    ).toBeTruthy();
+
+    rerender(view(false));
+    expect(
+      screen.getByRole("button", { name: "toolResultMediaCollapse" }),
+    ).toBeTruthy();
+  });
+
+  it("remembers ordinary tool-row disclosure across Conversation view toggles", () => {
+    const messages: Message[] = [
+      userMessage("user-tool", "run the custom tool"),
+      assistantToolUseMessage("assistant-tool", [
+        {
+          type: "tool_use",
+          id: "tool-custom",
+          name: "CustomTool",
+          input: { query: "status" },
+        },
+      ]),
+      {
+        type: "user",
+        uuid: "tool-result-custom",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-custom",
+              content: "custom result",
+            },
+          ],
+        },
+      },
+      assistantMessage("assistant-tool-answer", "Done"),
+    ];
+    const view = (
+      conversationViewEnabled: boolean,
+      visibleMessages = messages,
+      activeWindowTrimRevision = 0,
+    ) => (
+      <MessageList
+        activeWindowTrimRevision={activeWindowTrimRevision}
+        conversationViewEnabledOverride={conversationViewEnabled}
+        conversationViewStateKey="session-tool"
+        messages={visibleMessages}
+      />
+    );
+    const { container, rerender } = render(view(false));
+    const toolRow = () =>
+      container.querySelector<HTMLElement>(
+        '[data-render-id="tool-custom"] .tool-row',
+      );
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>(
+        '[data-render-id="tool-custom"] .tool-row-header',
+      ) as HTMLElement,
+    );
+    expect(toolRow()?.classList.contains("expanded")).toBe(true);
+
+    rerender(view(true));
+    expect(toolRow()).toBeNull();
+
+    rerender(view(false));
+    expect(toolRow()?.classList.contains("expanded")).toBe(true);
+
+    rerender(view(false, [], 1));
+    rerender(view(false, messages, 1));
+    expect(toolRow()?.classList.contains("expanded")).toBe(false);
+  });
+
+  it("prunes explored disclosure only after its semantic owner leaves the loaded window", () => {
+    const toolUse = (id: string, name: string, input: unknown) => ({
+      type: "tool_use" as const,
+      id,
+      name,
+      input,
+    });
+    const read = toolUse("read-owner", "Read", { file_path: "README.md" });
+    const grep = toolUse("grep-adjacent", "Grep", { pattern: "needle" });
+    const list = toolUse("list-appended", "list_dir", { path: "src" });
+    const messagesFor = (tools: Array<typeof read>) => [
+      userMessage("user-exploration", "inspect the project"),
+      assistantToolUseMessage("assistant-exploration", tools),
+    ];
+    const view = (tools: Array<typeof read>, activeWindowTrimRevision = 0) => (
+      <MessageList
+        activeWindowTrimRevision={activeWindowTrimRevision}
+        conversationViewEnabledOverride={false}
+        conversationViewStateKey="session-exploration"
+        messages={messagesFor(tools)}
+      />
+    );
+
+    const { rerender } = render(view([read, grep]));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse explored tools" }),
+    );
+
+    rerender(view([read, grep, list]));
+    expect(
+      screen.getByRole("button", { name: "Expand explored tools" }),
+    ).toBeTruthy();
+
+    rerender(view([grep, list], 1));
+    expect(
+      screen.getByRole("button", { name: "Collapse explored tools" }),
+    ).toBeTruthy();
+
+    rerender(view([read, grep, list], 1));
+    expect(
+      screen.getByRole("button", { name: "Collapse explored tools" }),
+    ).toBeTruthy();
   });
 
   it("shows compact conversation activity durations", () => {
@@ -631,9 +865,9 @@ describe("MessageList rendering", () => {
     expect(screen.getByText("Edit")).toBeTruthy();
     expect(screen.getByText("pnpm test")).toBeTruthy();
     expect(screen.getByText("app.ts")).toBeTruthy();
-    expect(screen.getByText("Run").closest("li")?.getAttribute("title")).toBe(
-      "Run: pnpm test",
-    );
+    expect(
+      screen.getByText("Run").closest("li")?.getAttribute("data-tooltip"),
+    ).toBe("Run: pnpm test");
 
     for (const collapse of screen.getAllByRole("button", {
       name: "Collapse thinking preview",
@@ -826,7 +1060,32 @@ describe("MessageList rendering", () => {
     fireEvent.click(summary as HTMLElement);
     expect(compactDetails?.open).toBe(true);
     expect(screen.getByText(/hidden detail/)).toBeTruthy();
-    expect(screen.getByText(/compactMetadata/)).toBeTruthy();
+  });
+
+  it("keeps bare compact boundaries outline-expandable without a summary body", () => {
+    const { container } = render(
+      <MessageList
+        messages={[
+          {
+            type: "system",
+            uuid: "compact-bare",
+            subtype: "compact_boundary",
+            content: "Context compacted",
+          },
+        ]}
+      />,
+    );
+
+    const compactDetails = container.querySelector(
+      "details.system-message-compact-boundary",
+    ) as HTMLDetailsElement | null;
+    expect(compactDetails).toBeTruthy();
+    expect(compactDetails?.open).toBe(false);
+    fireEvent.click(compactDetails!.querySelector("summary") as HTMLElement);
+    expect(compactDetails?.open).toBe(true);
+    expect(
+      screen.getByText("No provider summary was retained for this compaction."),
+    ).toBeTruthy();
   });
 
   it("does not restart progressive loading after the session is revealed", async () => {

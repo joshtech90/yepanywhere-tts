@@ -12,6 +12,8 @@ import {
   createActivitySubscription,
   createSessionSubscription,
 } from "../src/subscriptions.js";
+import type { StreamAugmenter } from "../src/augments/index.js";
+import type { SessionQueuePersistenceService } from "../src/services/SessionQueuePersistenceService.js";
 import type { Process } from "../src/supervisor/Process.js";
 import type { ProcessEvent, ProcessState } from "../src/supervisor/types.js";
 import type { BusEvent, EventBus } from "../src/watcher/index.js";
@@ -83,6 +85,8 @@ function createMockProcess(overrides?: Partial<Record<string, unknown>>): {
     clearStreamingText: vi.fn(),
     hasLiveDeltaSubscribers: vi.fn(() => false),
     registerLiveDeltaSubscriber: vi.fn(() => vi.fn()),
+    hasViewers: vi.fn(() => false),
+    registerViewer: vi.fn(() => vi.fn()),
     getDeferredQueueSummary: vi.fn(() => []),
     getLivenessSnapshot: vi.fn(() => MOCK_LIVENESS),
     getProviderRuntimeStatus: vi.fn(() => null),
@@ -128,6 +132,24 @@ function collectEmit(): { emit: Emit; events: Array<[string, unknown]> } {
   return { emit, events };
 }
 
+function stubAugmenter(
+  processMessage: StreamAugmenter["processMessage"],
+): StreamAugmenter {
+  return {
+    processMessage,
+    processFinalizedMessage: async (message) => {
+      await processMessage(message);
+      return null;
+    },
+    processStreamingMessage: async () => {},
+    processTextChunk: async () => {},
+    flush: async () => {},
+    reset: () => {},
+    getCurrentMessageId: () => null,
+    processCatchUp: async () => {},
+  };
+}
+
 // ── Session Subscription ─────────────────────────────────────────────
 
 describe("createSessionSubscription", () => {
@@ -167,6 +189,25 @@ describe("createSessionSubscription", () => {
     expect(unregister).toHaveBeenCalledOnce();
   });
 
+  it("registers viewer presence independently of live delta demand", () => {
+    const unregisterViewer = vi.fn();
+    const { process } = createMockProcess({
+      registerViewer: vi.fn(() => unregisterViewer),
+    });
+    const { emit } = collectEmit();
+
+    const subscription = createSessionSubscription(process, emit, {
+      wantsLiveDeltas: false,
+    });
+
+    expect(process.registerViewer).toHaveBeenCalledOnce();
+    expect(process.registerLiveDeltaSubscriber).not.toHaveBeenCalled();
+
+    subscription.cleanup();
+
+    expect(unregisterViewer).toHaveBeenCalledOnce();
+  });
+
   it("skips live delta messages for subscribers that opt out", async () => {
     const { process, fireEvent } = createMockProcess();
     const { emit, events } = collectEmit();
@@ -204,8 +245,13 @@ describe("createSessionSubscription", () => {
     } as ProcessEvent);
 
     const messageEvents = events.filter(([type]) => type === "message");
-    expect(messageEvents).toHaveLength(1);
+    expect(messageEvents).toHaveLength(2);
     expect(messageEvents[0]?.[1]).toMatchObject({
+      type: "assistant",
+      uuid: "codex-live-1",
+      message: { content: "complete" },
+    });
+    expect(messageEvents[1]?.[1]).toMatchObject({
       type: "assistant",
       uuid: "codex-live-1",
       message: { content: "complete" },
@@ -235,6 +281,86 @@ describe("createSessionSubscription", () => {
       liveness: MOCK_LIVENESS,
       providerRuntimeStatus: MOCK_PROVIDER_RUNTIME_STATUS,
       request: { prompt: "Continue?" },
+    });
+  });
+
+  it("keeps recovered queue entries in connected and change snapshots", async () => {
+    let liveMessages: ReturnType<Process["getDeferredQueueSummary"]> = [];
+    const { process, fireEvent } = createMockProcess({
+      getDeferredQueueSummary: vi.fn(() => liveMessages),
+    });
+    const sessionQueuePersistenceService = {
+      listSession: vi.fn(() => [
+        {
+          id: "queue-1",
+          sessionId: "sess-1",
+          projectId: "proj-1",
+          projectPath: "/tmp/project",
+          provider: "claude",
+          kind: "patient",
+          message: {
+            text: "resume after restart",
+            tempId: "temp-recovered",
+            metadata: { deliveryIntent: "patient" },
+          },
+          createdAt: "2026-06-30T09:00:00.000Z",
+          updatedAt: "2026-06-30T09:01:00.000Z",
+          queuedAt: "2026-06-30T09:00:00.000Z",
+          status: "paused-after-restart",
+        },
+      ]),
+    } as unknown as SessionQueuePersistenceService;
+    const { emit, events } = collectEmit();
+
+    createSessionSubscription(process, emit, {
+      sessionQueuePersistenceService,
+    });
+
+    expect(events.find(([type]) => type === "connected")?.[1]).toMatchObject({
+      deferredMessages: [
+        {
+          id: "queue-1",
+          tempId: "temp-recovered",
+          content: "resume after restart",
+          status: "paused-after-restart",
+        },
+      ],
+    });
+
+    liveMessages = [
+      {
+        id: "queue-1",
+        tempId: "temp-recovered",
+        content: "resume after restart",
+        timestamp: "2026-06-30T09:00:00.000Z",
+        kind: "patient",
+        status: "queued",
+      },
+      {
+        tempId: "temp-live",
+        content: "new live work",
+        timestamp: "2026-06-30T09:05:00.000Z",
+      },
+    ];
+    await fireEvent({
+      type: "deferred-queue",
+      reason: "queued",
+      tempId: "temp-live",
+    });
+
+    expect(
+      events.filter(([type]) => type === "deferred-queue").at(-1)?.[1],
+    ).toMatchObject({
+      messages: [
+        {
+          id: "queue-1",
+          content: "resume after restart",
+          status: "queued",
+        },
+        { tempId: "temp-live", content: "new live work" },
+      ],
+      reason: "queued",
+      tempId: "temp-live",
     });
   });
 
@@ -283,6 +409,45 @@ describe("createSessionSubscription", () => {
     ).toBe(true);
   });
 
+  it("enriches replay clones without mutating process history", async () => {
+    const historyMessage = {
+      type: "assistant",
+      uuid: "replay-assistant-1",
+      message: { role: "assistant", content: "replayed" },
+    };
+    const { process } = createMockProcess({
+      getMessageHistory: vi.fn(() => [historyMessage]),
+    });
+    const { emit, events } = collectEmit();
+    const augmenter = stubAugmenter(async () => {});
+    augmenter.processFinalizedMessage = async (message) => {
+      message.enriched = true;
+      return null;
+    };
+
+    const subscription = createSessionSubscription(process, emit, {
+      createAugmenter: async () => augmenter,
+    });
+
+    await vi.waitFor(() =>
+      expect(events.filter(([type]) => type === "message")).toHaveLength(2),
+    );
+    const messageEvents = events.filter(([type]) => type === "message");
+    expect(messageEvents[0]?.[1]).toMatchObject({
+      uuid: "replay-assistant-1",
+      isReplay: true,
+    });
+    expect(messageEvents[0]?.[1]).not.toHaveProperty("enriched");
+    expect(messageEvents[1]?.[1]).toMatchObject({
+      uuid: "replay-assistant-1",
+      isReplay: true,
+      enriched: true,
+    });
+    expect(historyMessage).not.toHaveProperty("enriched");
+    expect(historyMessage).not.toHaveProperty("isReplay");
+    subscription.cleanup();
+  });
+
   it("emits plain user echoes synchronously before augmentation", async () => {
     const { process, fireEvent } = createMockProcess();
     const { emit, events } = collectEmit();
@@ -303,6 +468,265 @@ describe("createSessionSubscription", () => {
 
     expect(events.some(([type]) => type === "message")).toBe(true);
     await delivered;
+  });
+
+  it("does not let slow Claude Gateway enrichment block another finalized item", async () => {
+    const { process, fireEvent } = createMockProcess({
+      provider: "claude-gateway",
+    });
+    const { emit, events } = collectEmit();
+    let releaseFirst: (() => void) | undefined;
+    const processMessage = vi.fn(
+      (message: Record<string, unknown>): Promise<void> => {
+        if (message.uuid !== "gateway-assistant-1") {
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+          releaseFirst = resolve;
+        });
+      },
+    );
+
+    createSessionSubscription(process, emit, {
+      createAugmenter: async () => stubAugmenter(processMessage),
+    });
+
+    const first = fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "gateway-assistant-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Visible before enrichment." }],
+        },
+      },
+    } as ProcessEvent);
+    const second = fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "gateway-assistant-2",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Still in provider order." }],
+        },
+      },
+    } as ProcessEvent);
+
+    const immediateMessageIds = events
+      .filter(([type]) => type === "message")
+      .map(([, data]) => (data as { uuid?: string }).uuid);
+    expect(immediateMessageIds).toEqual([
+      "gateway-assistant-1",
+      "gateway-assistant-2",
+    ]);
+
+    await vi.waitFor(() => expect(releaseFirst).toBeTypeOf("function"));
+    await vi.waitFor(() => expect(processMessage).toHaveBeenCalledTimes(2));
+    expect(
+      events
+        .filter(([type]) => type === "message")
+        .map(([, data]) => (data as { uuid?: string }).uuid),
+    ).toEqual([
+      "gateway-assistant-1",
+      "gateway-assistant-2",
+      "gateway-assistant-2",
+    ]);
+
+    releaseFirst?.();
+    await Promise.all([first, second]);
+
+    expect(processMessage.mock.calls.map(([message]) => message.uuid)).toEqual([
+      "gateway-assistant-1",
+      "gateway-assistant-2",
+    ]);
+    const allMessageIds = events
+      .filter(([type]) => type === "message")
+      .map(([, data]) => (data as { uuid?: string }).uuid);
+    expect(allMessageIds).toEqual([
+      "gateway-assistant-1",
+      "gateway-assistant-2",
+      "gateway-assistant-2",
+      "gateway-assistant-1",
+    ]);
+  });
+
+  it("publishes only the latest enrichment generation for a stable message id", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+    let releaseFirst: (() => void) | undefined;
+    const processMessage = vi.fn(
+      async (message: Record<string, unknown>): Promise<void> => {
+        const content = (message.message as { content?: string } | undefined)
+          ?.content;
+        if (content === "first") {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        message.enrichedContent = content;
+      },
+    );
+
+    createSessionSubscription(process, emit, {
+      createAugmenter: async () => stubAugmenter(processMessage),
+    });
+
+    const firstMessage = {
+      type: "assistant",
+      uuid: "assistant-revision",
+      message: { role: "assistant", content: "first" },
+    };
+    const secondMessage = {
+      type: "assistant",
+      uuid: "assistant-revision",
+      message: { role: "assistant", content: "second" },
+    };
+    const first = fireEvent({
+      type: "message",
+      message: firstMessage,
+    } as ProcessEvent);
+    const second = fireEvent({
+      type: "message",
+      message: secondMessage,
+    } as ProcessEvent);
+
+    await vi.waitFor(() => expect(processMessage).toHaveBeenCalledTimes(2));
+    await second;
+    const beforeFirstFinishes = events.filter(
+      ([type, payload]) =>
+        type === "message" &&
+        (payload as { uuid?: string }).uuid === "assistant-revision",
+    );
+    expect(beforeFirstFinishes).toHaveLength(3);
+    expect(beforeFirstFinishes.at(-1)?.[1]).toMatchObject({
+      enrichedContent: "second",
+    });
+    expect(firstMessage).not.toHaveProperty("enrichedContent");
+    expect(secondMessage).not.toHaveProperty("enrichedContent");
+
+    releaseFirst?.();
+    await first;
+    expect(
+      events.filter(
+        ([type, payload]) =>
+          type === "message" &&
+          (payload as { uuid?: string }).uuid === "assistant-revision",
+      ),
+    ).toHaveLength(3);
+  });
+
+  it("publishes the atomic message replacement before its compatibility augment", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+    const augmenter = stubAugmenter(async () => {});
+    augmenter.processFinalizedMessage = async (message) => {
+      message.enriched = true;
+      return {
+        messageId: message.uuid as string,
+        html: "<p>rendered</p>",
+      };
+    };
+
+    createSessionSubscription(process, emit, {
+      createAugmenter: async () => augmenter,
+    });
+
+    await fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "assistant-atomic",
+        message: { role: "assistant", content: "rendered" },
+      },
+    } as ProcessEvent);
+
+    expect(
+      events
+        .filter(([type]) => type === "message" || type === "markdown-augment")
+        .map(([type]) => type),
+    ).toEqual(["message", "message", "markdown-augment"]);
+    expect(
+      events.filter(([type]) => type === "message").at(-1)?.[1],
+    ).toMatchObject({ enriched: true });
+  });
+
+  it("does not duplicate an enriched message without a stable provider id", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+
+    createSessionSubscription(process, emit, {
+      createAugmenter: async () => stubAugmenter(async () => {}),
+    });
+
+    await fireEvent({
+      type: "message",
+      message: {
+        type: "system",
+        subtype: "status",
+      },
+    } as ProcessEvent);
+
+    expect(events.filter(([type]) => type === "message")).toHaveLength(1);
+  });
+
+  it("attaches ordered task state before raw tool-result delivery", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+
+    createSessionSubscription(process, emit, {
+      createAugmenter: async () => stubAugmenter(async () => {}),
+    });
+
+    const create = fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "assistant-task-create",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "task-create-1",
+              name: "TaskCreate",
+              input: { subject: "Preserve provider order" },
+            },
+          ],
+        },
+      },
+    } as ProcessEvent);
+    const result = fireEvent({
+      type: "message",
+      message: {
+        type: "user",
+        uuid: "user-task-create",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "task-create-1",
+              content: "Task #11 created successfully: Preserve provider order",
+            },
+          ],
+        },
+      },
+    } as ProcessEvent);
+
+    const rawResult = events.find(
+      ([type, data]) =>
+        type === "message" &&
+        (data as { uuid?: string }).uuid === "user-task-create",
+    )?.[1] as {
+      toolUseResult?: { _taskSnapshot?: { tasks?: unknown[] } };
+    };
+    expect(rawResult.toolUseResult?._taskSnapshot?.tasks).toMatchObject([
+      { id: "11", subject: "Preserve provider order", status: "pending" },
+    ]);
+
+    await Promise.all([create, result]);
   });
 
   it("forwards state-change events", async () => {
@@ -450,8 +874,9 @@ describe("createSessionSubscription", () => {
       },
     } as ProcessEvent);
 
-    const messageEvent = events.find(([type]) => type === "message");
-    expect(messageEvent).toBeDefined();
+    const messageEvents = events.filter(([type]) => type === "message");
+    expect(messageEvents).toHaveLength(2);
+    const messageEvent = messageEvents.at(-1);
 
     const payload = messageEvent?.[1] as {
       message?: {
@@ -512,14 +937,20 @@ describe("createSessionSubscription", () => {
       },
     } as ProcessEvent);
 
-    const messageEvent = events.find(
+    const messageEvents = events.filter(
       ([type, payload]) =>
         type === "message" &&
         (payload as { uuid?: string })?.uuid === "msg-file-change-1",
     );
-    expect(messageEvent).toBeDefined();
+    expect(messageEvents).toHaveLength(2);
+    const rawPayload = messageEvents[0]?.[1] as
+      | {
+          message?: { content?: Array<{ input?: { _rawPatch?: string } }> };
+        }
+      | undefined;
+    expect(rawPayload?.message?.content?.[0]?.input?._rawPatch).toBeUndefined();
 
-    const payload = messageEvent?.[1] as {
+    const payload = messageEvents.at(-1)?.[1] as {
       message?: {
         content?: Array<{
           type?: string;
@@ -539,6 +970,29 @@ describe("createSessionSubscription", () => {
     expect(input?._structuredPatch?.length).toBeGreaterThan(0);
   });
 
+  it("does not let unresolved optional enrichment delay completion", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+    const never = new Promise<void>(() => {});
+
+    const { cleanup } = createSessionSubscription(process, emit, {
+      createAugmenter: async () => stubAugmenter(async () => never),
+    });
+
+    void fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "blocked-enrichment",
+        message: { role: "assistant", content: "raw remains visible" },
+      },
+    } as ProcessEvent);
+    await fireEvent({ type: "complete" } as ProcessEvent);
+
+    expect(events.some(([type]) => type === "complete")).toBe(true);
+    cleanup();
+  });
+
   it("emits complete and stops further events", async () => {
     const { process, fireEvent } = createMockProcess({
       getProviderRuntimeStatus: vi.fn(() => MOCK_PROVIDER_RUNTIME_STATUS),
@@ -554,9 +1008,7 @@ describe("createSessionSubscription", () => {
     if (!complete) {
       throw new Error("expected complete event");
     }
-    expect((complete[1] as Record<string, unknown>).sessionId).toBe(
-      "sess-1",
-    );
+    expect((complete[1] as Record<string, unknown>).sessionId).toBe("sess-1");
     expect((complete[1] as Record<string, unknown>).timestamp).toBeDefined();
     expect(
       (complete[1] as Record<string, unknown>).providerRuntimeStatus,

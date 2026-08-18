@@ -33,6 +33,7 @@ export function BlameBrowser({
   isWideScreen,
   initialPath,
   onOpenCommit,
+  captureReviewProjections = false,
   t,
 }: {
   projectId: string;
@@ -41,6 +42,7 @@ export function BlameBrowser({
   initialPath?: string;
   /** Open a populated blame hash in the commit browser. */
   onOpenCommit?: (sha: string) => void;
+  captureReviewProjections?: boolean;
   t: TranslationFn;
 }) {
   const [files, setFiles] = useState<string[]>([]);
@@ -173,7 +175,10 @@ export function BlameBrowser({
                 const count = pathCommentCount.get(file) ?? 0;
                 const menuActions = fileMenuActions(file);
                 return (
-                  <li key={file} className={`commit-file-row ${sourceRowMenuSurface}`}>
+                  <li
+                    key={file}
+                    className={`commit-file-row ${sourceRowMenuSurface}`}
+                  >
                     <SourceFileRowButton
                       path={file}
                       type="button"
@@ -188,7 +193,7 @@ export function BlameBrowser({
                         setSelectedPath(file);
                       })}
                     >
-                      <SourceFilePath>{file}</SourceFilePath>
+                      <SourceFilePath query={query}>{file}</SourceFilePath>
                       {count > 0 && (
                         <span
                           className="source-comment-badge"
@@ -215,6 +220,7 @@ export function BlameBrowser({
             projectId={projectId}
             path={selectedPath}
             onOpenCommit={onOpenCommit}
+            captureReviewProjections={captureReviewProjections}
             onContentWidthChange={handleContentWidthChange}
             t={t}
           />
@@ -232,6 +238,7 @@ export function BlameBrowser({
             projectId={projectId}
             path={selectedPath}
             onOpenCommit={onOpenCommit}
+            captureReviewProjections={captureReviewProjections}
             t={t}
           />
         </Modal>

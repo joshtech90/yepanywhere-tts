@@ -24,6 +24,16 @@ type CancellableMessageIterator = AsyncIterator<SDKUserMessage> &
     return(): Promise<IteratorResult<SDKUserMessage>>;
   };
 
+/** Queue surface consumed by Process; remote runtime proxies implement it too. */
+export interface AgentMessageQueue {
+  push(message: UserMessage): number;
+  drain(): UserMessage[];
+  /** Remote queues use this to return the worker's authoritative drain. */
+  drainAsync?(): Promise<UserMessage[]>;
+  removeByTempId(tempId: string): UserMessage[];
+  readonly depth: number;
+}
+
 /**
  * Concatenate multiple UserMessages into one, joined by separator lines.
  * Shared by MessageQueue and Process to avoid duplicating the merge logic.
@@ -67,6 +77,15 @@ export function concatUserMessages(
   if (tempIds.length) combined.tempIds = tempIds;
   const priority = mostUrgentPriority(messages);
   if (priority) combined.priority = priority;
+  if (
+    messages.every(
+      (message) =>
+        message.recapResumeHandled === true ||
+        message.automaticSource !== undefined,
+    )
+  ) {
+    combined.recapResumeHandled = true;
+  }
   if (allImages.length) combined.images = allImages;
   if (allDocs.length) combined.documents = allDocs;
   if (allAttachments.length) combined.attachments = allAttachments;
@@ -159,9 +178,14 @@ function detectImageMediaType(base64Data: string): string {
  * 2. concatDrain() — synchronous drain for stop/interrupt paths. Consumed
  *    by Process to deliver queued messages with an interruption preamble.
  */
-export class MessageQueue implements AsyncIterable<SDKUserMessage> {
+export class MessageQueue
+  implements AsyncIterable<SDKUserMessage>, AgentMessageQueue
+{
   private queue: UserMessage[] = [];
   private waiting: (() => void) | null = null;
+  private depthListeners = new Set<(depth: number) => void>();
+  private removalListeners = new Set<(messages: UserMessage[]) => void>();
+  private yieldedListeners = new Set<(messages: UserMessage[]) => void>();
   /** Set when concatDrain() is called to prevent generator from yielding stale data */
   private drainedByExternal = false;
 
@@ -178,9 +202,11 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
       this.waiting = null;
       this.queue.push(message);
       resolve();
+      this.emitDepth();
       return 0;
     }
     this.queue.push(message);
+    this.emitDepth();
     return this.queue.length;
   }
 
@@ -193,6 +219,8 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
   concatDrain(options?: { interrupted?: boolean }): UserMessage | null {
     this.drainedByExternal = true;
     const drained = this.queue.splice(0);
+    this.emitRemoved(drained);
+    this.emitDepth();
     if (drained.length === 0) return null;
 
     return concatUserMessages(
@@ -205,7 +233,10 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
    * Remove and return messages that have been queued but not yet yielded.
    */
   drain(): UserMessage[] {
-    return this.queue.splice(0);
+    const drained = this.queue.splice(0);
+    this.emitRemoved(drained);
+    this.emitDepth();
+    return drained;
   }
 
   /**
@@ -226,6 +257,8 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
     }
     if (removed.length > 0) {
       this.queue = kept;
+      this.emitRemoved(removed);
+      this.emitDepth();
     }
     return removed;
   }
@@ -301,6 +334,9 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
     }
     const drained = this.queue.splice(0, end);
     if (drained.length === 0) return null;
+    this.emitYielded(drained);
+    this.emitRemoved(drained);
+    this.emitDepth();
 
     return concatUserMessages(drained);
   }
@@ -324,7 +360,7 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
       const lines = msg.attachments.map((f) =>
         formatUploadedFileReference(f, this.formatSize.bind(this)),
       );
-      text += `\n\nUser uploaded files in .attachments:\n${lines.join("\n")}`;
+      text += `\n\nUser uploaded files:\n${lines.join("\n")}`;
     }
 
     if (msg.images?.length || msg.documents?.length) {
@@ -388,6 +424,37 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
   /** Whether the iterator is currently waiting for a message. */
   get isWaiting(): boolean {
     return this.waiting !== null;
+  }
+
+  subscribeDepth(listener: (depth: number) => void): () => void {
+    this.depthListeners.add(listener);
+    listener(this.queue.length);
+    return () => this.depthListeners.delete(listener);
+  }
+
+  subscribeRemoved(listener: (messages: UserMessage[]) => void): () => void {
+    this.removalListeners.add(listener);
+    return () => this.removalListeners.delete(listener);
+  }
+
+  /** Observe only messages yielded to the SDK input stream, not external drains. */
+  subscribeYielded(listener: (messages: UserMessage[]) => void): () => void {
+    this.yieldedListeners.add(listener);
+    return () => this.yieldedListeners.delete(listener);
+  }
+
+  private emitDepth(): void {
+    for (const listener of this.depthListeners) listener(this.queue.length);
+  }
+
+  private emitRemoved(messages: UserMessage[]): void {
+    if (messages.length === 0) return;
+    for (const listener of this.removalListeners) listener(messages);
+  }
+
+  private emitYielded(messages: UserMessage[]): void {
+    if (messages.length === 0) return;
+    for (const listener of this.yieldedListeners) listener(messages);
   }
 
   /** Backward-compatible alias for the async iterator (used by existing callers). */

@@ -8,9 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Outlet, useLocation, useOutletContext } from "react-router-dom";
+import { Link, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
+import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
+import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import {
@@ -18,7 +20,7 @@ import {
   MIN_CONTENT_WIDTH,
   useSidebarWidth,
 } from "../hooks/useSidebarWidth";
-import { useRetainSidebarSessionFeeds } from "../hooks/useSidebarSessionFeeds";
+import { SidebarSessionFeedsProvider } from "../hooks/useSidebarSessionFeeds";
 import { useI18n } from "../i18n";
 
 export interface NavigationLayoutContext {
@@ -34,6 +36,18 @@ export interface NavigationLayoutContext {
 
 const NOOP = () => {};
 const SESSION_DOM_LINGER_TTL_MS = 60_000;
+const NON_TEXT_INPUT_TYPES = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "file",
+  "hidden",
+  "image",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+]);
 const NavigationLayoutReactContext =
   createContext<NavigationLayoutContext | null>(null);
 
@@ -67,6 +81,44 @@ interface ResponsiveLayoutState {
 
 function getViewportWidth(): number {
   return typeof window === "undefined" ? 1200 : window.innerWidth;
+}
+
+function isKeyboardTextEntry(
+  target: EventTarget | null,
+): target is HTMLElement {
+  if (target instanceof HTMLTextAreaElement) {
+    return !target.disabled && !target.readOnly;
+  }
+  if (target instanceof HTMLInputElement) {
+    return (
+      !target.disabled &&
+      !target.readOnly &&
+      !NON_TEXT_INPUT_TYPES.has(target.type)
+    );
+  }
+  return target instanceof HTMLElement && target.isContentEditable;
+}
+
+function getMobileVisualViewportBottomInset(
+  isWideScreen: boolean,
+  activeElement: EventTarget | null = document.activeElement,
+): number {
+  const visualViewport = window.visualViewport;
+  const layoutViewportHeight = window.innerHeight;
+  if (
+    isWideScreen ||
+    !visualViewport ||
+    !isKeyboardTextEntry(activeElement) ||
+    layoutViewportHeight <= 0 ||
+    visualViewport.height >=
+      layoutViewportHeight * MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO
+  ) {
+    return 0;
+  }
+
+  const visualViewportBottom =
+    Math.max(0, visualViewport.offsetTop) + Math.max(0, visualViewport.height);
+  return Math.ceil(Math.max(0, layoutViewportHeight - visualViewportBottom));
 }
 
 function getResponsiveLayoutState(
@@ -118,6 +170,24 @@ function readSessionRouteFromPathname(
   };
 }
 
+function readSidebarSessionRouteFromPathname(
+  pathname: string,
+): { projectId: string; sessionId: string } | null {
+  const match = pathname.match(/(?:^|\/)projects\/([^/]+)\/sessions\/([^/]+)/);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  return {
+    projectId: decodeURIComponent(match[1]),
+    sessionId: decodeURIComponent(match[2]),
+  };
+}
+
+function readProjectIdFromPathname(pathname: string): string | null {
+  const match = pathname.match(/(?:^|\/)projects\/([^/]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
 function isContentFrameRoutePathname(pathname: string): boolean {
   return /(?:^|\/)projects\/[^/]+\/file\/?$/.test(pathname);
 }
@@ -130,14 +200,31 @@ export function SessionDomLingerRouteMarker() {
  * Shared layout for all pages that need a sidebar.
  * Renders the Sidebar once so it persists across route changes.
  */
-export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
-  useRetainSidebarSessionFeeds();
+export function NavigationLayout(props: NavigationLayoutProps) {
+  // The provider, not the layout, mounts the sidebar feeds: a feed update then
+  // re-renders `Sidebar` alone instead of the route stack and session layer.
+  return (
+    <SidebarSessionFeedsProvider>
+      <NavigationLayoutFrame {...props} />
+    </SidebarSessionFeedsProvider>
+  );
+}
+
+function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
   const { sessionDomLingerEnabled } = useSessionPerformanceSettings();
   const { t } = useI18n();
 
   const location = useLocation();
   const currentSessionMatch = useMemo(
     () => readSessionRouteFromPathname(location.pathname),
+    [location.pathname],
+  );
+  const sidebarSessionMatch = useMemo(
+    () => readSidebarSessionRouteFromPathname(location.pathname),
+    [location.pathname],
+  );
+  const currentProjectId = useMemo(
+    () => readProjectIdFromPathname(location.pathname),
     [location.pathname],
   );
   const isContentFrameRoute = useMemo(
@@ -164,6 +251,7 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
   const [responsiveLayout, setResponsiveLayout] = useState(() =>
     getResponsiveLayoutState(sidebarWidth),
   );
+  const layoutFrameRef = useRef<HTMLDivElement | null>(null);
   const updateResponsiveLayout = useCallback(() => {
     const next = getResponsiveLayoutState(sidebarWidth);
     setResponsiveLayout((previous) =>
@@ -195,6 +283,44 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
   }, [updateResponsiveLayout]);
 
   const { isWideScreen, canShowExpandedSidebar } = responsiveLayout;
+
+  useEffect(() => {
+    const frame = layoutFrameRef.current;
+    if (!frame) {
+      return;
+    }
+
+    const applyInset = (activeElement: EventTarget | null) => {
+      const inset = getMobileVisualViewportBottomInset(
+        isWideScreen,
+        activeElement,
+      );
+      if (inset > 0) {
+        frame.style.paddingBottom = `calc(env(safe-area-inset-bottom, 0px) + ${inset}px)`;
+      } else {
+        frame.style.removeProperty("padding-bottom");
+      }
+    };
+    const updateInset = () => applyInset(document.activeElement);
+    const handleFocusIn = (event: FocusEvent) => applyInset(event.target);
+    const handleFocusOut = (event: FocusEvent) =>
+      applyInset(event.relatedTarget);
+
+    updateInset();
+    window.addEventListener("resize", updateInset);
+    window.visualViewport?.addEventListener("resize", updateInset);
+    window.visualViewport?.addEventListener("scroll", updateInset);
+    document.addEventListener("focusin", handleFocusIn);
+    document.addEventListener("focusout", handleFocusOut);
+    return () => {
+      window.removeEventListener("resize", updateInset);
+      window.visualViewport?.removeEventListener("resize", updateInset);
+      window.visualViewport?.removeEventListener("scroll", updateInset);
+      document.removeEventListener("focusin", handleFocusIn);
+      document.removeEventListener("focusout", handleFocusOut);
+    };
+  }, [isWideScreen]);
+
   // Auto-collapse if viewport too narrow for expanded sidebar, or if user prefers collapsed
   const effectivelyCollapsed = !isExpanded || !canShowExpandedSidebar;
 
@@ -351,6 +477,7 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
 
   return (
     <div
+      ref={layoutFrameRef}
       className={`session-page ${isWideScreen ? "desktop-layout" : ""} ${
         isContentFrameRoute ? "content-frame-layout" : ""
       } ${isResizing ? "resizing" : ""}`}
@@ -361,15 +488,39 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
       {isWideScreen &&
         !isContentFrameRoute &&
         (isMinimized ? (
-          <button
-            type="button"
+          <Link
+            to={{
+              pathname: location.pathname,
+              search: location.search,
+              hash: location.hash,
+            }}
             className="sidebar-toggle sidebar-floating-restore"
-            onClick={restoreCollapsedSidebar}
+            role="button"
+            onClick={(event) => {
+              if (
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              ) {
+                return;
+              }
+              event.preventDefault();
+              restoreCollapsedSidebar();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== " ") {
+                return;
+              }
+              event.preventDefault();
+              restoreCollapsedSidebar();
+            }}
             title={t("actionRestoreSidebar")}
             aria-label={t("actionRestoreSidebar")}
           >
             <SidebarToggleIcon />
-          </button>
+          </Link>
         ) : (
           <aside
             className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
@@ -379,7 +530,7 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
               isOpen={true}
               onClose={NOOP}
               onNavigate={NOOP}
-              currentSessionId={currentSessionMatch?.sessionId}
+              currentSessionId={sidebarSessionMatch?.sessionId}
               isDesktop={true}
               isCollapsed={effectivelyCollapsed}
               onToggleExpanded={handleToggleExpanded}
@@ -398,39 +549,44 @@ export function NavigationLayout({ sessionElement }: NavigationLayoutProps) {
           isOpen={sidebarOpen}
           onClose={closeSidebar}
           onNavigate={closeSidebar}
-          currentSessionId={currentSessionMatch?.sessionId}
+          currentSessionId={sidebarSessionMatch?.sessionId}
         />
       )}
 
-      <NavigationLayoutReactContext.Provider value={context}>
-        <div className="navigation-route-stack">
-          {renderedSessionRoute && sessionElement && (
+      <GlossaryProjectProvider
+        projectId={currentProjectId ?? ""}
+        enabled={currentProjectId !== null}
+      >
+        <NavigationLayoutReactContext.Provider value={context}>
+          <div className="navigation-route-stack">
+            {renderedSessionRoute && sessionElement && (
+              <div
+                key={renderedSessionRoute.key}
+                ref={sessionLayerRef}
+                className={`navigation-route-layer session-dom-linger-layer ${
+                  sessionLayerVisible ? "is-active" : "is-parked"
+                }`}
+                aria-hidden={sessionLayerParked ? true : undefined}
+                data-session-dom-linger={
+                  sessionLayerVisible ? "active" : "parked"
+                }
+              >
+                {sessionElement(renderedSessionRoute, {
+                  parked: sessionLayerParked,
+                })}
+              </div>
+            )}
             <div
-              key={renderedSessionRoute.key}
-              ref={sessionLayerRef}
-              className={`navigation-route-layer session-dom-linger-layer ${
-                sessionLayerVisible ? "is-active" : "is-parked"
+              className={`navigation-route-layer navigation-route-foreground ${
+                sessionLayerVisible ? "is-hidden" : "is-active"
               }`}
-              aria-hidden={sessionLayerParked ? true : undefined}
-              data-session-dom-linger={
-                sessionLayerVisible ? "active" : "parked"
-              }
+              aria-hidden={sessionLayerVisible ? true : undefined}
             >
-              {sessionElement(renderedSessionRoute, {
-                parked: sessionLayerParked,
-              })}
+              <Outlet context={context} />
             </div>
-          )}
-          <div
-            className={`navigation-route-layer navigation-route-foreground ${
-              sessionLayerVisible ? "is-hidden" : "is-active"
-            }`}
-            aria-hidden={sessionLayerVisible ? true : undefined}
-          >
-            <Outlet context={context} />
           </div>
-        </div>
-      </NavigationLayoutReactContext.Provider>
+        </NavigationLayoutReactContext.Provider>
+      </GlossaryProjectProvider>
     </div>
   );
 }

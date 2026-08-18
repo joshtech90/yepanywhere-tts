@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useRememberedDisclosureState } from "../../contexts/RememberedDisclosureStateContext";
 import { useOptionalSessionMetadata } from "../../contexts/SessionMetadataContext";
 import {
   OUTPUT_APPEARANCE_CHANGE_EVENT,
@@ -23,6 +24,7 @@ import {
 } from "../../hooks/useTooltipAppearance";
 import { useQuoteableTextSource } from "../../hooks/useQuoteableTextSource";
 import { getDisplayBashCommandFromInput } from "../../lib/bashCommand";
+import { readProjectPathLinkTargets } from "../../lib/projectPathLinks";
 import { PREDICTIVE_SCROLL_ROOT_MARGIN } from "../../lib/predictiveScroll";
 import {
   formatCommandDuration,
@@ -34,7 +36,11 @@ import {
   isElementFullyScrollVisible,
 } from "../../lib/tooltipVisibility";
 import type { ToolCallItem, ToolResultData } from "../../types/renderItems";
-import { ToolResultMediaRows } from "./ToolResultMediaRows";
+import { ProjectPathLinkedText } from "../ProjectPathLinkedText";
+import {
+  getToolResultImageSourcePath,
+  ToolResultMediaRows,
+} from "./ToolResultMediaRows";
 import { toolRegistry } from "../renderers/tools";
 import { getOutputTailTooltip } from "../renderers/tools/outputPreview";
 import type { RenderContext } from "../renderers/types";
@@ -287,7 +293,10 @@ export function estimateDeferredPreviewHeightPx(params: {
     return null;
   }
 
-  const output = getBashResultOutputForRichPreview(params.result).trimEnd();
+  const output = getBashResultOutputForRichPreview(
+    params.result,
+    params.status === "error",
+  ).trimEnd();
   if (params.result === undefined && !output) {
     return null;
   }
@@ -528,15 +537,20 @@ export const ToolCallRow = memo(function ToolCallRow({
   startTimestampMs,
   resultTimestampMs,
 }: Props) {
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const [bashCommandExpanded, setBashCommandExpanded] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useRememberedDisclosureState(
+    id,
+    "interactive-summary",
+    false,
+  );
+  const [bashCommandExpanded, setBashCommandExpanded] =
+    useRememberedDisclosureState(id, "bash-command", false);
   const sessionMetadata = useOptionalSessionMetadata();
   const outputToolPreviewLineCount = useOutputToolPreviewLineCount();
   const deferredPreviewTypography = useDeferredPreviewTypographyMetrics();
   const tooltipMode = useTooltipMode();
   const toggleSummaryExpanded = useCallback(() => {
     setSummaryExpanded((current) => !current);
-  }, []);
+  }, [setSummaryExpanded]);
 
   // Create a minimal render context for tool renderers
   const renderContext: RenderContext = useMemo(
@@ -546,8 +560,15 @@ export const ToolCallRow = memo(function ToolCallRow({
       toolUseId: id,
       provider: sessionProvider,
       projectPath: sessionMetadata?.projectPath ?? null,
+      projectPathLinks: toolResult?.projectPathLinks,
     }),
-    [status, id, sessionProvider, sessionMetadata?.projectPath],
+    [
+      status,
+      id,
+      sessionProvider,
+      sessionMetadata?.projectPath,
+      toolResult?.projectPathLinks,
+    ],
   );
   const interactiveSummaryContext: RenderContext = useMemo(
     () => ({
@@ -589,6 +610,10 @@ export const ToolCallRow = memo(function ToolCallRow({
   const isEditTool = rendererToolName === "Edit";
   const isReadTool = rendererToolName === "Read";
   const isBashTool = rendererToolName === "Bash";
+  const bashExitCode = isBashTool
+    ? getBashExitCode(structuredResult, toolResult?.content, status === "error")
+    : undefined;
+  const showBashExitCode = bashExitCode !== undefined && bashExitCode !== 0;
   const isGrepTool = rendererToolName === "Grep";
   const handleToolNamePointerEnter = useCallback(
     (event: React.PointerEvent<HTMLSpanElement>) => {
@@ -706,7 +731,11 @@ export const ToolCallRow = memo(function ToolCallRow({
   const hasDeferredInteractiveShell =
     !shouldHydrateRichContent &&
     (mayHaveCollapsedPreview || mayHaveInteractiveSummary);
-  const [previewExpanded, setPreviewExpanded] = useState(true);
+  const [previewExpanded, setPreviewExpanded] = useRememberedDisclosureState(
+    id,
+    "rich-preview",
+    true,
+  );
   // Tools with collapsed preview or interactive summary don't expand
   const isNonExpandable =
     hasInteractiveSummary || hasCollapsedPreview || hasDeferredInteractiveShell;
@@ -745,23 +774,26 @@ export const ToolCallRow = memo(function ToolCallRow({
   ]);
 
   // Edit and TodoWrite tools are expanded by default
-  const [expanded, setExpanded] = useState(
+  const defaultExpanded =
     !isNonExpandable &&
-      (toolName === "Edit" ||
-        toolName === "TodoWrite" ||
-        shellOutputFitsPreview),
-  );
+    (toolName === "Edit" || toolName === "TodoWrite" || shellOutputFitsPreview);
+  const [expanded, setExpanded, expandedInitiallyOverridden] =
+    useRememberedDisclosureState(id, "tool-result", defaultExpanded);
   // A live poll completes after mount; expand it then, unless the user
   // has toggled the row themselves.
-  const userToggledExpandRef = useRef(false);
+  const userToggledExpandRef = useRef(expandedInitiallyOverridden);
   useEffect(() => {
     if (shellOutputFitsPreview && !userToggledExpandRef.current) {
       setExpanded(true);
     }
-  }, [shellOutputFitsPreview]);
+  }, [setExpanded, shellOutputFitsPreview]);
 
   // Dot-expanded: inline full result for preview-first rows (starts collapsed).
-  const [dotExpanded, setDotExpanded] = useState(false);
+  const [dotExpanded, setDotExpanded] = useRememberedDisclosureState(
+    id,
+    "inline-tool-result",
+    false,
+  );
   const shouldFocusExpandedTopRef = useRef(false);
   const canInlineExpandToolResult =
     isNonExpandable &&
@@ -794,6 +826,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     } else if (hasSummaryDotToggle) {
       setSummaryExpanded((current) => !current);
     } else if (!isNonExpandable) {
+      userToggledExpandRef.current = true;
       setExpanded((v) => {
         if (!v) {
           shouldFocusExpandedTopRef.current = true;
@@ -818,6 +851,9 @@ export const ToolCallRow = memo(function ToolCallRow({
   const headerCommand = isBashTool
     ? getDisplayBashCommandFromInput(toolInput)
     : "";
+  const commandProjectPathLinks = readProjectPathLinkTargets(
+    isRecord(toolInput) ? toolInput._projectPathLinks : undefined,
+  );
   const hasBashDescription =
     isBashTool &&
     isRecord(toolInput) &&
@@ -841,10 +877,12 @@ export const ToolCallRow = memo(function ToolCallRow({
       : "",
   );
 
+  const previousHeaderCommandRef = useRef(headerCommand);
   useEffect(() => {
-    void headerCommand;
+    if (previousHeaderCommandRef.current === headerCommand) return;
+    previousHeaderCommandRef.current = headerCommand;
     setBashCommandExpanded(false);
-  }, [headerCommand]);
+  }, [headerCommand, setBashCommandExpanded]);
 
   // The command tooltip leads with the elapsed (so-far) time — "[12.5s] cmd"
   // — refreshed on hover so a running command's elapsed stays current.
@@ -896,8 +934,10 @@ export const ToolCallRow = memo(function ToolCallRow({
       if (!isBashTool) {
         return;
       }
-      const output =
-        getBashResultOutputForRichPreview(structuredResult).trimEnd();
+      const output = getBashResultOutputForRichPreview(
+        structuredResult,
+        status === "error",
+      ).trimEnd();
       const elapsed = computeCommandElapsed({
         toolInput,
         structuredResult,
@@ -997,6 +1037,11 @@ export const ToolCallRow = memo(function ToolCallRow({
       <ToolResultMediaRows
         displayName={toolRegistry.getDisplayName(toolName, status, toolInput)}
         media={toolResult.media}
+        sourcePath={getToolResultImageSourcePath(
+          toolName,
+          toolInput,
+          toolResult.media.length,
+        )}
         status={status}
       />
     );
@@ -1040,7 +1085,7 @@ export const ToolCallRow = memo(function ToolCallRow({
           "tool-row-header",
           isNonExpandable ? "non-expandable" : "",
           showBashCommandTarget ? "has-command-preview" : "",
-          noOutputBashResult ? "has-result-suffix" : "",
+          noOutputBashResult || showBashExitCode ? "has-result-suffix" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -1156,12 +1201,16 @@ export const ToolCallRow = memo(function ToolCallRow({
               ref={bashCommandQuoteRef}
               className="tool-summary-command-text"
             >
-              {bashCommandPreview.text}
+              <ProjectPathLinkedText
+                text={bashCommandPreview.text}
+                links={commandProjectPathLinks}
+              />
             </span>
           </span>
         ) : showBashCommandTarget ? (
-          <button
-            type="button"
+          // A native button cannot contain the file anchors that may appear in
+          // the command. This delegated target preserves both interactions.
+          <span
             className={[
               "tool-summary",
               "tool-summary-command",
@@ -1179,18 +1228,38 @@ export const ToolCallRow = memo(function ToolCallRow({
             }
             aria-expanded={bashCommandExpanded}
             onClick={(event) => {
+              if ((event.target as Element | null)?.closest?.("a,button")) {
+                return;
+              }
               event.preventDefault();
               event.stopPropagation();
               setBashCommandExpanded((current) => !current);
             }}
+            onKeyDown={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                (event.key === "Enter" || event.key === " ")
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                setBashCommandExpanded((current) => !current);
+              }
+            }}
+            role="button"
+            tabIndex={0}
           >
             <span
               ref={bashCommandQuoteRef}
               className="tool-summary-command-text"
             >
-              {bashCommandExpanded ? headerCommand : bashCommandPreview.text}
+              <ProjectPathLinkedText
+                text={
+                  bashCommandExpanded ? headerCommand : bashCommandPreview.text
+                }
+                links={commandProjectPathLinks}
+              />
             </span>
-          </button>
+          </span>
         ) : (
           <span className="tool-summary">
             {summary}
@@ -1207,15 +1276,12 @@ export const ToolCallRow = memo(function ToolCallRow({
         )}
 
         {noOutputBashResult && (
-          <>
-            <span className="tool-result-suffix">(no output)</span>
-            {noOutputBashResult.exitCode !== undefined &&
-              noOutputBashResult.exitCode !== 0 && (
-                <span className="tool-result-suffix tool-result-suffix-rc">
-                  rc={noOutputBashResult.exitCode}
-                </span>
-              )}
-          </>
+          <span className="tool-result-suffix">(no output)</span>
+        )}
+        {showBashExitCode && (
+          <span className="tool-result-suffix tool-result-suffix-rc">
+            rc={bashExitCode}
+          </span>
         )}
 
         {headerCommand && (
@@ -1286,7 +1352,12 @@ export const ToolCallRow = memo(function ToolCallRow({
 
       {expanded && !isNonExpandable && (
         <div className="tool-row-content">
-          <ToolRowCollapseStrip onCollapse={() => setExpanded(false)} />
+          <ToolRowCollapseStrip
+            onCollapse={() => {
+              userToggledExpandRef.current = true;
+              setExpanded(false);
+            }}
+          />
           {noOutputBashResult && isBashTool ? (
             <BashNoOutputExpanded command={headerCommand} />
           ) : status === "pending" ||
@@ -1365,24 +1436,37 @@ function getNoOutputBashResult(
   if (result === undefined) {
     return null;
   }
-  if (getBashResultOutputForRichPreview(result).trim().length > 0) {
+  const bareExitCodeIsEnvelope = status === "error";
+  if (
+    getBashResultOutputForRichPreview(result, bareExitCodeIsEnvelope).trim()
+      .length > 0
+  ) {
     return null;
   }
   if (!isRecord(result)) {
-    return { exitCode: getBashExitCode(result, fallbackContent) };
+    return {
+      exitCode: getBashExitCode(
+        result,
+        fallbackContent,
+        bareExitCodeIsEnvelope,
+      ),
+    };
   }
   if (result.interrupted === true || result.backgroundTaskId !== undefined) {
     return null;
   }
-  return { exitCode: getBashExitCode(result, fallbackContent) };
+  return {
+    exitCode: getBashExitCode(result, fallbackContent, bareExitCodeIsEnvelope),
+  };
 }
 
 function getBashExitCode(
   result: unknown,
   fallbackContent?: string,
+  bareExitCodeIsEnvelope = false,
 ): number | undefined {
   if (typeof result === "string") {
-    return parseShellToolOutput(result).exitCode;
+    return parseShellToolOutput(result, { bareExitCodeIsEnvelope }).exitCode;
   }
 
   if (isRecord(result)) {
@@ -1397,7 +1481,9 @@ function getBashExitCode(
       return direct;
     }
     if (typeof result.content === "string") {
-      const parsed = parseShellToolOutput(result.content).exitCode;
+      const parsed = parseShellToolOutput(result.content, {
+        bareExitCodeIsEnvelope,
+      }).exitCode;
       if (parsed !== undefined) {
         return parsed;
       }
@@ -1405,7 +1491,7 @@ function getBashExitCode(
   }
 
   return fallbackContent
-    ? parseShellToolOutput(fallbackContent).exitCode
+    ? parseShellToolOutput(fallbackContent, { bareExitCodeIsEnvelope }).exitCode
     : undefined;
 }
 
@@ -1433,9 +1519,12 @@ function hasBashPreviewResult(input: unknown): boolean {
   return isRecord(input) && input._previewResult !== undefined;
 }
 
-function getBashResultOutputForRichPreview(result: unknown): string {
+function getBashResultOutputForRichPreview(
+  result: unknown,
+  bareExitCodeIsEnvelope = false,
+): string {
   if (typeof result === "string") {
-    const parsed = parseShellToolOutput(result);
+    const parsed = parseShellToolOutput(result, { bareExitCodeIsEnvelope });
     return parsed.hasEnvelope ? parsed.output : result;
   }
 
@@ -1450,7 +1539,9 @@ function getBashResultOutputForRichPreview(result: unknown): string {
   }
 
   if (typeof result.content === "string") {
-    const parsed = parseShellToolOutput(result.content);
+    const parsed = parseShellToolOutput(result.content, {
+      bareExitCodeIsEnvelope,
+    });
     return parsed.hasEnvelope ? parsed.output : result.content;
   }
 

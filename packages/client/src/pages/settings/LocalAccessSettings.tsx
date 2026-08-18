@@ -339,7 +339,9 @@ export function LocalAccessSettings() {
         aria-describedby="file-access-settings-description"
       >
         <div className="file-access-settings-header">
-          <strong id="file-access-settings-title">{t("fileAccessTitle")}</strong>
+          <strong id="file-access-settings-title">
+            {t("fileAccessTitle")}
+          </strong>
           <p id="file-access-settings-description">
             {t("fileAccessDescription")}
           </p>
@@ -368,6 +370,7 @@ export function LocalAccessSettings() {
               <div className="file-access-setting-row">
                 <div className="settings-item-info">
                   <strong>{t("fileAccessProjects")}</strong>
+                  <p>{t("fileAccessProjectsDescription")}</p>
                 </div>
                 <label className="toggle-switch">
                   <input

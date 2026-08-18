@@ -9,7 +9,10 @@ import type {
   ProviderRuntimeStatus,
   RecapMode,
   SessionLivenessSnapshot,
+  SessionQueuedMessageSummary,
+  SessionQueuedYaCommand,
   SessionSandboxEnforcement,
+  SyntheticSessionBoundaryCommand,
   SessionWakeReason,
   SessionWakeReasonSnapshot,
   SlashCommand,
@@ -41,23 +44,25 @@ import type { ToolResultMediaMessageMaterializer } from "../media/ToolResultMedi
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import { getProjectName } from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
-import type { MessageQueue } from "../sdk/messageQueue.js";
+import type { AgentMessageQueue } from "../sdk/messageQueue.js";
 import type {
   PersistedSessionQueuedMessage,
   SessionQueuePersistenceService,
 } from "../services/SessionQueuePersistenceService.js";
-import { composeTimeAnchors } from "./composeTimeAnchor.js";
+import { composeSeenNeedle, composeTimeAnchors } from "./composeTimeAnchor.js";
 import {
   type DeferredDeliverySettings,
   resolveDeferredDeliverySettings,
 } from "./deferredDeliverySettings.js";
+import {
+  ProcessViewerLifecycle,
+  type ProcessViewerLifecycleOptions,
+} from "./ProcessViewerLifecycle.js";
 import type {
   AgentProvider,
   PromptCacheRefreshResult,
 } from "../sdk/providers/types.js";
-import {
-  expandSlashCommandEmulation,
-} from "../sdk/slashCommandEmulation.js";
+import { expandSlashCommandEmulation } from "../sdk/slashCommandEmulation.js";
 import type {
   PermissionMode,
   ProviderActivitySnapshot,
@@ -96,7 +101,22 @@ type ClaudeSessionState = "idle" | "running" | "requires_action";
 type DeferredQueueEntry = {
   message: UserMessage;
   timestamp: string;
+  /**
+   * Needle of the assistant output the composer had last seen, captured
+   * at enqueue (composition context is a queue-time fact, unlike elapsed
+   * staleness which only exists at delivery). Quoted in the delivered
+   * `(Ns ago, had seen: "…")` anchor when compose anchors are on.
+   */
+  lastSeenHead?: string;
   persistedQueueId?: string;
+};
+export type PendingYaCommand = {
+  command: SessionQueuedYaCommand;
+  content: SyntheticSessionBoundaryCommand;
+  tempId: string;
+  timestamp: string;
+  userTurnVersion: number;
+  completionStarted: boolean;
 };
 type RecentAssistantRecapEntry = {
   completedAtMs: number;
@@ -114,7 +134,6 @@ type PendingRecapRequest = {
 type PromptCacheKeepaliveLease = {
   getInactivityMs: () => number | null;
 };
-
 export const NATIVE_RECAP_FALLBACK_GRACE_MS = 2_000;
 
 export interface RecapRequestResult {
@@ -220,11 +239,57 @@ function patientPatienceMsForEntry(entry: DeferredQueueEntry): number {
 }
 
 const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
+const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+const READ_ONLY_TOOLS = new Set([
+  "Read",
+  "Glob",
+  "Grep",
+  "LSP",
+  "WebFetch",
+  "WebSearch",
+  "Task", // Subagent exploration (legacy)
+  "Agent", // Subagent exploration (SDK 0.2.76+)
+  "TaskOutput", // Reading subagent results
+]);
 const PROMPT_CACHE_KEEPALIVE_RECHECK_MS = 30_000;
 const PROMPT_CACHE_KEEPALIVE_MIN_DELAY_MS = 1_000;
 
 function isAskUserQuestionTool(toolName: string): boolean {
   return toolName === ASK_USER_QUESTION_TOOL_NAME;
+}
+
+function getModeBasedToolApproval(
+  mode: PermissionMode,
+  toolName: string,
+  input: unknown,
+  requiresUserResponse: boolean,
+): ToolApprovalResult | undefined {
+  if (requiresUserResponse) {
+    return undefined;
+  }
+
+  switch (mode) {
+    case "bypassPermissions":
+      return { behavior: "allow" };
+    case "plan": {
+      if (READ_ONLY_TOOLS.has(toolName)) {
+        return { behavior: "allow" };
+      }
+      if (toolName === "Write") {
+        const filePath = (input as { file_path?: string })?.file_path ?? "";
+        if (filePath.includes(".claude/plans/")) {
+          return { behavior: "allow" };
+        }
+      }
+      return undefined;
+    }
+    case "acceptEdits":
+      return EDIT_TOOLS.has(toolName) || READ_ONLY_TOOLS.has(toolName)
+        ? { behavior: "allow" }
+        : undefined;
+    default:
+      return READ_ONLY_TOOLS.has(toolName) ? { behavior: "allow" } : undefined;
+  }
 }
 
 function buildAskUserQuestionPrompt(input: unknown): string {
@@ -675,13 +740,17 @@ export interface DeferredDeliveryOptions {
   joinWindowSeconds?: number;
   /** Prepend `(Ns ago)` / `(Ms later)` compose-time staleness anchors. */
   composeAnchors?: boolean;
+  /** Absolute `[sent <ISO>]` markers on provider-bound user turns. */
+  turnTimestamps?: "off" | "before" | "after";
 }
 
 export interface ProcessConstructorOptions extends ProcessOptions {
-  /** MessageQueue for real SDK, undefined for mock SDK */
-  queue?: MessageQueue;
+  /** Provider message queue, undefined for mock SDK */
+  queue?: AgentMessageQueue;
   /** Abort function from real SDK */
   abortFn?: () => void | Promise<void>;
+  /** Release a reload-safe proxy without terminating its provider session. */
+  detachForServerReloadFn?: () => void | Promise<void>;
   /** Check if underlying CLI process is still alive (for stale detection) */
   isProcessAlive?: () => boolean;
   /** Return true when an idle process should stay owned for an explicit feature. */
@@ -694,10 +763,16 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   getProviderActivityFn?: () => ProviderActivitySnapshot;
   /** Provider-owned work that should retain an otherwise idle process. */
   getProviderRetentionFn?: () => ProviderRetentionSnapshot;
+  /** No-viewer period retained by a reload-safe runtime owner. */
+  getRuntimeUnviewedSinceFn?: () => Date | undefined;
+  /** Publish first/last viewer transitions to a reload-safe runtime owner. */
+  setRuntimeViewerPresenceFn?: (hasViewers: boolean) => void | Promise<void>;
   /** Provider no-context-pollution prompt-cache refresh action. */
   refreshPromptCacheFn?: (options: {
     sessionId: string;
   }) => Promise<PromptCacheRefreshResult>;
+  /** Durable YA automation pause owned by session metadata. */
+  isAutomationPaused?: () => boolean;
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
   /** Function to change effort without restarting the provider process. */
@@ -763,7 +838,7 @@ export class Process {
   readonly sandboxProjectPath: string | undefined;
 
   private legacyQueue: UserMessage[] = [];
-  private messageQueue: MessageQueue | null;
+  private messageQueue: AgentMessageQueue | null;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
   private sessionQueuePersistenceService:
     | SessionQueuePersistenceService
@@ -773,11 +848,11 @@ export class Process {
     | undefined;
   private patientQueuePersistenceTail: Promise<void> = Promise.resolve();
   private abortFn: (() => void | Promise<void>) | null;
+  private detachForServerReloadFn: (() => void | Promise<void>) | null;
   private _state: ProcessState = { type: "in-turn" };
   private listeners: Set<Listener> = new Set();
   private liveDeltaSubscriberCount = 0;
-  private idleTimer: NodeJS.Timeout | null = null;
-  private idleTimeoutMs: number;
+  private readonly viewerLifecycle: ProcessViewerLifecycle;
   private iteratorDone = false;
 
   /** Set synchronously when transport/spawn fails to prevent race with queueMessage */
@@ -828,6 +903,7 @@ export class Process {
    */
   private recapInFlight = false;
   private pendingRecapRequest: PendingRecapRequest | null = null;
+  private recapPausedUntilUserTurn = false;
   private lastNativeRecap: NativeRecapRecord | null = null;
   private nativeRecapWaiters = new Set<() => void>();
   private providerRuntimeStatus: ProviderRuntimeStatus = null;
@@ -911,7 +987,6 @@ export class Process {
 
   /** Check if underlying CLI process is still alive (undefined = not available). */
   private _isProcessAlive: (() => boolean) | null;
-  private shouldRetainIdleProcess: ((sessionId: string) => boolean) | null;
   /** Provider-specific active liveness probe, when available. */
   private probeLivenessFn: (() => Promise<ProviderLivenessProbeResult>) | null;
   private getProviderActivityFn: (() => ProviderActivitySnapshot) | null;
@@ -920,6 +995,7 @@ export class Process {
   private refreshPromptCacheFn:
     | ((options: { sessionId: string }) => Promise<PromptCacheRefreshResult>)
     | null = null;
+  private isAutomationPausedFn: () => boolean;
   private promptCacheKeepaliveLeases = new Map<
     string,
     PromptCacheKeepaliveLease
@@ -938,19 +1014,21 @@ export class Process {
   private _lastKnownPid: number | undefined;
 
   /** Resolved model name from the first assistant message (e.g., "claude-sonnet-4-5-20250929") */
-  private _resolvedModel: string | undefined;
+  private _resolvedModel: string | null | undefined;
   /**
    * Current requested YA model id (launch alias, e.g. "opus"). Starts at the
-   * launch `model` and follows mid-session model switches (which leave the
+   * exact launch request and follows mid-session model switches (which leave the
    * readonly `model` at its original value). Keys per-model settings.
    */
-  private _requestedModel: string | undefined;
+  private _requestedModel: string | null | undefined;
   /** Context window size reported by SDK in result messages' modelUsage */
   private _contextWindow: number | undefined;
   /** Monotonic marker for assistant output observed by this process. */
   private _assistantActivityVersion = 0;
   /** Monotonic marker for delivery intent received before any async priming. */
   private _inputIntentVersion = 0;
+  /** Monotonic marker for accepted real user turns. */
+  private _userTurnVersion = 0;
   private _compactAtContextPercent: number | undefined;
   private _compactAtContextWindow: number | undefined;
   private _forceYaOrchestratedCompaction: boolean;
@@ -959,12 +1037,15 @@ export class Process {
 
   /** Deferred message queue — messages queued while agent is in-turn, auto-sent when turn ends */
   private deferredQueue: DeferredQueueEntry[] = [];
+  /** YA-local commands awaiting a provider turn boundary, never provider input. */
+  private pendingYaCommands: PendingYaCommand[] = [];
 
   /** Promise that resolves when the process fully terminates (CLI exits) */
   private _exitPromise: Promise<void>;
   private _exitResolve: (() => void) | null = null;
-  /** True while idle timeout intentionally tears down the provider process. */
-  private idleReapInProgress = false;
+  private abortInFlight: Promise<ProcessAbortResult> | null = null;
+  /** Registry release is one event, regardless of which terminal path finishes. */
+  private completionEmitted = false;
 
   constructor(
     private sdkIterator: AsyncIterator<SDKMessage>,
@@ -979,7 +1060,6 @@ export class Process {
       options.initialState === "idle"
         ? { type: "idle", since: this.startedAt }
         : { type: "in-turn" };
-    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 
     // Real SDK provides these, mock SDK doesn't
     this.messageQueue = options.queue ?? null;
@@ -987,25 +1067,28 @@ export class Process {
     this.sessionQueuePersistenceService =
       options.sessionQueuePersistenceService;
     this.abortFn = options.abortFn ?? null;
+    this.detachForServerReloadFn = options.detachForServerReloadFn ?? null;
     this._permissionMode = options.permissionMode ?? "default";
     this._permissions = options.permissions;
     this.provider = options.provider;
     this.toolResultMediaMaterializer =
-      options.toolResultMediaStore?.createMaterializer({
-        provider: this.provider,
-        projectId: this.projectId,
-        projectPath: this.projectPath,
-        getSessionId: () => this._sessionId,
-      });
+      options.toolResultMediaStore?.createMaterializer(
+        {
+          provider: this.provider,
+          projectId: this.projectId,
+          projectPath: this.projectPath,
+          getSessionId: () => this._sessionId,
+        },
+        { live: true },
+      );
     this.model = options.model;
-    this._requestedModel = options.model;
+    this._requestedModel = options.requestedModel ?? options.model;
     this._compactAtContextPercent = options.compactAtContextPercent;
     this._compactAtContextWindow = options.compactAtContextWindow;
     this._forceYaOrchestratedCompaction =
       options.forceYaOrchestratedCompaction === true;
     this.compactAtContextTokenLimit = options.compactAtContextTokenLimit;
-    this.launchCompactPercentOverride =
-      options.launchCompactPercentOverride;
+    this.launchCompactPercentOverride = options.launchCompactPercentOverride;
     this.serviceTier = options.serviceTier;
     this.executor = options.executor;
     this.sandboxEnforcement = options.sandboxEnforcement;
@@ -1025,11 +1108,11 @@ export class Process {
     this.publishAgentctlSessionIdFn =
       options.publishAgentctlSessionIdFn ?? null;
     this._isProcessAlive = options.isProcessAlive ?? null;
-    this.shouldRetainIdleProcess = options.shouldRetainIdleProcess ?? null;
     this.probeLivenessFn = options.probeLivenessFn ?? null;
     this.getProviderActivityFn = options.getProviderActivityFn ?? null;
     this.getProviderRetentionFn = options.getProviderRetentionFn ?? null;
     this.refreshPromptCacheFn = options.refreshPromptCacheFn ?? null;
+    this.isAutomationPausedFn = options.isAutomationPaused ?? (() => false);
     this.providerRuntimeStatus = options.initialProviderRuntimeStatus ?? null;
     this._recapMode =
       options.recapMode ?? (options.recapsEnabled ? "side-session" : "off");
@@ -1048,15 +1131,27 @@ export class Process {
       this._exitResolve = resolve;
     });
 
+    const viewerLifecycleOptions: ProcessViewerLifecycleOptions = {
+      processId: this.id,
+      projectId: this.projectId,
+      getSessionId: () => this._sessionId,
+      startedAt: this.startedAt,
+      initialState: this._state,
+      idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+      shouldRetainIdleProcess: options.shouldRetainIdleProcess,
+      hasPromptCacheKeepaliveLease: () =>
+        this.hasPromptCacheKeepaliveLease() && !this.isAutomationPausedFn(),
+      getProviderRetention: () => this.getProviderRetentionSnapshot(),
+      getLivenessSnapshot: () => this.getLivenessSnapshot(),
+      getLiveDeltaSubscriberCount: () => this.liveDeltaSubscriberCount,
+      getRuntimeUnviewedSince: options.getRuntimeUnviewedSinceFn,
+      setRuntimeViewerPresence: options.setRuntimeViewerPresenceFn,
+      onIdleReap: () => this.handleIdleReap(),
+    };
+    this.viewerLifecycle = new ProcessViewerLifecycle(viewerLifecycleOptions);
+
     // Start bucket swap timer for bounded message history
     this.startBucketSwapTimer();
-
-    // A process created without a user turn is genuinely idle from birth. It
-    // must share the ordinary idle lifecycle so Activate/recovery cannot pin a
-    // provider child forever merely because no result event will ever arrive.
-    if (this._state.type === "idle") {
-      this.startIdleTimer();
-    }
 
     // Start processing messages from the SDK
     this.processMessages();
@@ -1092,6 +1187,9 @@ export class Process {
    * Falls back to the requested model if no assistant message has been received yet.
    */
   get resolvedModel(): string | undefined {
+    if (this._resolvedModel === null) {
+      return undefined;
+    }
     return this._resolvedModel ?? this.model;
   }
 
@@ -1100,6 +1198,9 @@ export class Process {
    * the key for per-model settings. Distinct from `resolvedModel` (reported).
    */
   get requestedModel(): string | undefined {
+    if (this._requestedModel === null) {
+      return undefined;
+    }
     return this._requestedModel ?? this.model;
   }
 
@@ -1120,6 +1221,10 @@ export class Process {
     this._inputIntentVersion += 1;
   }
 
+  get userTurnVersion(): number {
+    return this._userTurnVersion;
+  }
+
   get state(): ProcessState {
     return this._state;
   }
@@ -1127,6 +1232,11 @@ export class Process {
   /** When the last SDK message was received (for staleness detection) */
   get lastMessageTime(): Date {
     return this._lastMessageTime;
+  }
+
+  /** Last real provider message, or null before this Process observes one. */
+  get lastProviderMessageTime(): Date | null {
+    return this._lastProviderMessageTime;
   }
 
   get lastPromptCacheRefreshTime(): Date | null {
@@ -1163,6 +1273,15 @@ export class Process {
 
   get recapAfterSeconds(): number {
     return this._recapAfterSeconds;
+  }
+
+  get isRecapPausedUntilUserTurn(): boolean {
+    return this.recapPausedUntilUserTurn;
+  }
+
+  pauseRecapsUntilUserTurn(): void {
+    this.recapPausedUntilUserTurn = true;
+    this.pendingRecapRequest = null;
   }
 
   get helperSideModel(): string {
@@ -1212,7 +1331,7 @@ export class Process {
   }
 
   private get deferredQueueDepth(): number {
-    return this.deferredQueue.length;
+    return this.deferredQueue.length + this.pendingYaCommands.length;
   }
 
   hasPatientDeferredMessages(): boolean {
@@ -1276,9 +1395,7 @@ export class Process {
 
   handleProviderRetentionChanged(): void {
     this.emit({ type: "liveness-update" });
-    if (this._state.type === "idle") {
-      this.rescheduleIdleTimerForCurrentIdlePeriod();
-    }
+    this.viewerLifecycle.retentionChanged();
   }
 
   supportsPromptCacheKeepalive(): boolean {
@@ -1298,6 +1415,7 @@ export class Process {
       this.promptCacheKeepaliveLeases.delete(leaseId);
       if (this.promptCacheKeepaliveLeases.size === 0) {
         this.clearPromptCacheKeepaliveTimer();
+        this.viewerLifecycle.retentionChanged();
       } else {
         this.schedulePromptCacheKeepalive();
       }
@@ -1325,6 +1443,7 @@ export class Process {
     if (
       !this.refreshPromptCacheFn ||
       this.promptCacheKeepaliveLeases.size === 0 ||
+      this.isAutomationPausedFn() ||
       this._state.type === "terminated"
     ) {
       return;
@@ -1378,6 +1497,10 @@ export class Process {
   }
 
   private async runPromptCacheKeepalive(): Promise<void> {
+    if (this.isAutomationPausedFn()) {
+      this.clearPromptCacheKeepaliveTimer();
+      return;
+    }
     if (this.promptCacheKeepaliveInFlight) {
       this.schedulePromptCacheKeepalive();
       return;
@@ -1450,6 +1573,14 @@ export class Process {
     }
   }
 
+  handleAutomationPauseChanged(): void {
+    this.clearPromptCacheKeepaliveTimer();
+    this.viewerLifecycle.retentionChanged();
+    if (!this.isAutomationPausedFn()) {
+      this.schedulePromptCacheKeepalive();
+    }
+  }
+
   private recordWakeReason(
     reason: SessionWakeReason,
     message?: SDKMessage,
@@ -1475,7 +1606,6 @@ export class Process {
       return;
     }
     this.recordWakeReason(reason, message, at);
-    this.clearIdleTimer();
     this.setState({ type: "in-turn" });
   }
 
@@ -1655,12 +1785,18 @@ export class Process {
     return this.pendingEffortUpdate?.effort ?? this._effort;
   }
 
+  /** Effort already accepted by the provider, excluding a queued next turn. */
+  get appliedEffort(): EffortLevel | undefined {
+    return this._effort;
+  }
+
   /**
    * Update thinking config and effort after a dynamic change.
    */
   updateThinkingConfig(thinking?: ThinkingConfig, effort?: EffortLevel): void {
     this._thinking = thinking;
     this._effort = effort;
+    this.emit({ type: "configuration-applied", setting: "thinking" });
   }
 
   /**
@@ -1694,6 +1830,7 @@ export class Process {
   async interrupt(options?: {
     extraMessages?: UserMessage[];
     preamble?: string;
+    beforeQueueDrain?: () => Promise<void>;
   }): Promise<boolean> {
     if (!this.interruptFn) {
       return false;
@@ -1714,6 +1851,7 @@ export class Process {
     const interrupted = await this.interruptFn();
 
     if (interrupted !== false) {
+      await options?.beforeQueueDrain?.();
       this.resolvePendingToolApprovals({
         message: "Operation interrupted",
         interrupt: true,
@@ -1727,7 +1865,9 @@ export class Process {
     // as a single concatenated batch with the interrupt preamble so the agent
     // knows to treat prior work as resumable.
     if (interrupted !== false && this.messageQueue) {
-      const directDrained = this.messageQueue.drain();
+      const directDrained = this.messageQueue.drainAsync
+        ? await this.messageQueue.drainAsync()
+        : this.messageQueue.drain();
       const deferredEntries = this.deferredQueue;
       const deferredDrained = deferredEntries.map((e) => e.message);
       this.deferredQueue = [];
@@ -1835,6 +1975,7 @@ export class Process {
     );
     await this.setEffortFn(effort);
     this._effort = effort;
+    this.emit({ type: "configuration-applied", setting: "effort" });
   }
 
   private async applyPendingEffort(): Promise<void> {
@@ -1928,11 +2069,12 @@ export class Process {
   }
 
   /**
-   * Dispatch a provider-native slash command out-of-band (e.g. Codex `/compact`
-   * → `thread/compact/start`) instead of delivering it as a user turn. Returns
-   * `{ handled: false }` when the provider does not own the command — including
-   * every provider that does not implement native dispatch (Claude, etc.) — so
-   * the caller can fall back to normal message delivery.
+   * Dispatch a provider-native slash command out-of-band instead of delivering
+   * it as a user turn. A provider may return local output (Codex `/status` and
+   * `/usage`) or start native work (Codex `/compact`). Returns `{ handled:
+   * false }` when the provider does not own the command — including every
+   * provider that does not implement native dispatch (Claude, etc.) — so the
+   * caller can fall back to normal message delivery.
    */
   async runProviderCommand(
     command: string,
@@ -1941,7 +2083,22 @@ export class Process {
     if (!this.runProviderCommandFn) {
       return { handled: false };
     }
-    return this.runProviderCommandFn(command, argument);
+    const result = await this.runProviderCommandFn(command, argument);
+    if (result.handled && result.output) {
+      const synthetic = this.withTimestamp({
+        type: "system",
+        subtype: "local_command",
+        content: result.output.summary,
+        ...(result.output.details ? { details: result.output.details } : {}),
+        session_id: this._sessionId,
+        uuid: randomUUID(),
+        isMeta: false,
+        isSynthetic: true,
+      } as unknown as SDKMessage);
+      this.currentBucket.push(synthetic);
+      this.emit({ type: "message", message: synthetic });
+    }
+    return result;
   }
 
   /**
@@ -2012,10 +2169,15 @@ export class Process {
    * Only supported by Claude SDK 0.2.7+.
    *
    * @param model - New model to use, or undefined to use default
+   * @param requestedModel - Exact YA selection token retained for restoration
    * @returns true if the change was applied, false if not supported
    */
-  async setModel(model?: string): Promise<boolean> {
-    if (!this.setModelFn) {
+  async setModel(
+    model?: string,
+    requestedModel: string | null = model ?? null,
+  ): Promise<boolean> {
+    const setModel = this.setModelFn;
+    if (!setModel) {
       return false;
     }
 
@@ -2038,14 +2200,10 @@ export class Process {
       `Changing model: ${this.model} → ${model}`,
     );
 
-    await this.setModelFn(model);
-    if (
-      interruptsRetryingTurn &&
-      this._state.type === "in-turn" &&
-      this.providerRuntimeStatus?.kind === "retrying"
-    ) {
+    if (interruptsRetryingTurn) {
       const interrupted = await this.interrupt({
         preamble: MODEL_SWITCH_RETRY_INTERRUPT_PREAMBLE,
+        beforeQueueDrain: () => setModel(model),
       });
       if (
         !interrupted &&
@@ -2053,19 +2211,19 @@ export class Process {
         this.providerRuntimeStatus?.kind === "retrying"
       ) {
         throw new Error(
-          "Provider retry could not be interrupted after changing models",
+          "Provider retry could not be interrupted before changing models",
         );
       }
       this.clearRetryingProviderRuntimeStatus();
+    } else {
+      await setModel(model);
     }
 
-    // Update resolved model so subsequent API responses reflect the switch
-    if (model) {
-      this._resolvedModel = model;
-      // Follow the switch for per-model-settings keying (readonly `model` stays
-      // at the original launch alias). See topics/provider-abstraction.md.
-      this._requestedModel = model;
-    }
+    // Follow switches, including an explicit return to provider default.
+    // The readonly `model` remains the original launch value.
+    this._resolvedModel = model ?? null;
+    this._requestedModel = requestedModel;
+    this.emit({ type: "configuration-applied", setting: "model" });
     return true;
   }
 
@@ -2075,6 +2233,11 @@ export class Process {
    */
   get isTerminated(): boolean {
     return this._state.type === "terminated";
+  }
+
+  /** A prior provider may still be running, so no replacement may claim this session. */
+  get hasUnverifiedProviderOwnership(): boolean {
+    return this.viewerLifecycle.hasUnverifiedProviderOwnership;
   }
 
   /**
@@ -2088,13 +2251,15 @@ export class Process {
   }
 
   /**
-   * Update the permission mode for this process.
-   * Increments modeVersion and emits a mode-change event for multi-tab sync.
+   * Update the standing permission mode for this process.
+   * Increments modeVersion, emits for multi-tab sync, and applies the selected
+   * approval policy to requests already waiting for user input.
    */
   setPermissionMode(mode: PermissionMode): void {
     this._permissionMode = mode;
     this._modeVersion++;
     this.emit({ type: "mode-change", mode, version: this._modeVersion });
+    this.applySelectedModeToPendingApprovals();
   }
 
   /**
@@ -2107,6 +2272,12 @@ export class Process {
     }
     this._appliedPermissionMode = mode;
     this.emit({ type: "mode-applied", mode });
+  }
+
+  private emitCompletion(): void {
+    if (this.completionEmitted) return;
+    this.completionEmitted = true;
+    this.emit({ type: "complete" });
   }
 
   /**
@@ -2138,7 +2309,7 @@ export class Process {
       `Process terminated: ${this._sessionId} - ${reason}`,
     );
 
-    this.clearIdleTimer();
+    this.viewerLifecycle.stop();
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.iteratorDone = true;
@@ -2151,13 +2322,34 @@ export class Process {
 
     this.setState({ type: "terminated", reason, error });
     this.emit({ type: "terminated", reason, error });
-    this.emit({ type: "complete" });
+    if (this.viewerLifecycle.hasUnverifiedProviderOwnership) return;
+
+    this.emitCompletion();
 
     // Resolve exit promise so abort() callers can wait for full termination
     if (this._exitResolve) {
       this._exitResolve();
       this._exitResolve = null;
     }
+  }
+
+  private retainLifecycleTeardownFailure(reason: string, error: unknown): void {
+    if (this.completionEmitted) return;
+    const failure = error instanceof Error ? error : new Error(String(error));
+    getLogger().error(
+      {
+        event: "lifecycle_teardown_failed",
+        sessionId: this._sessionId,
+        processId: this.id,
+        projectId: this.projectId,
+        reason,
+        errorMessage: failure.message,
+        errorStack: failure.stack,
+      },
+      `Provider teardown remains unverified: ${this._sessionId}`,
+    );
+    this.setState({ type: "terminated", reason, error: failure });
+    this.emit({ type: "terminated", reason, error: failure });
   }
 
   /**
@@ -2180,6 +2372,82 @@ export class Process {
           resolve(this._sessionId);
         }
       }, timeoutMs);
+    });
+  }
+
+  /**
+   * Wait for the provider's canonical session id, rejecting startup failures
+   * instead of accepting the temporary YA id used by interactive launches.
+   */
+  waitForProviderSessionId(timeoutMs = 60_000): Promise<string> {
+    if (this.sessionIdResolved) {
+      return Promise.resolve(this._sessionId);
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe: (() => void) | undefined;
+
+      const finish = (result: { id: string } | { error: Error }) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        unsubscribe?.();
+        if ("id" in result) {
+          resolve(result.id);
+        } else {
+          reject(result.error);
+        }
+      };
+
+      unsubscribe = this.subscribe((event) => {
+        if (event.type === "session-id-changed") {
+          finish({ id: event.newSessionId });
+          return;
+        }
+        if (
+          event.type === "message" &&
+          event.message.type === "system" &&
+          event.message.subtype === "init" &&
+          event.message.session_id
+        ) {
+          finish({ id: event.message.session_id });
+          return;
+        }
+        if (event.type === "error") {
+          finish({ error: event.error });
+          return;
+        }
+        if (event.type === "terminated") {
+          finish({
+            error:
+              event.error ??
+              new Error(
+                `Provider session terminated during startup: ${event.reason}`,
+              ),
+          });
+          return;
+        }
+        if (event.type === "complete") {
+          finish({
+            error: new Error(
+              "Provider session completed before reporting a session id",
+            ),
+          });
+        }
+      });
+
+      timeout = setTimeout(
+        () =>
+          finish({
+            error: new Error(
+              `Timed out waiting ${timeoutMs}ms for provider session id`,
+            ),
+          }),
+        timeoutMs,
+      );
+      timeout.unref?.();
     });
   }
 
@@ -2211,14 +2479,14 @@ export class Process {
       startedAt: this.startedAt.toISOString(),
       queueDepth: this.queueDepth,
       provider: this.provider,
-      model: this._resolvedModel ?? this.model,
+      model: this.resolvedModel,
       // The requested YA launch alias (e.g. "opus"), distinct from the reported
       // model above. Keys per-model settings; the route enrichment fills the
       // persisted/helper fallback when this is absent (non-YA-started sessions).
       requestedModel: this.requestedModel,
       serviceTier: this.serviceTier,
       thinking: this._thinking,
-      effort: this._effort,
+      effort: this.effort,
       executor: this.executor,
       pid: this.pid,
       liveness: this.getLivenessSnapshot(),
@@ -2364,6 +2632,24 @@ export class Process {
       .map((entry) => entry.text);
   }
 
+  /**
+   * Needle of the latest assistant output a watching client had seen:
+   * the in-flight streaming text when a turn is underway, else the tail
+   * of the last completed assistant turn. Visible text only — providers
+   * strip prior-turn thinking from real context, so a thinking quote
+   * could anchor nothing (topics/compose-time-context-anchors.md).
+   */
+  private lastSeenAssistantHead(): string | undefined {
+    if (this._streamingText.trim()) {
+      return composeSeenNeedle(this._streamingText) ?? undefined;
+    }
+    const lastCompleted = this.recentAssistantRecapEntries
+      .at(-1)
+      ?.text.replace(/ …\[truncated\]$/, "");
+    if (!lastCompleted) return undefined;
+    return composeSeenNeedle(lastCompleted) ?? undefined;
+  }
+
   private recordNativeRecap(message: SDKMessage, receivedAt: Date): void {
     if (!isAwaySummaryMessage(message) || message.isSynthetic === true) {
       return;
@@ -2477,6 +2763,13 @@ export class Process {
     provider: AgentProvider,
     options?: { sinceMs?: number | null },
   ): Promise<RecapRequestResult> {
+    if (this.recapPausedUntilUserTurn) {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      };
+    }
     if (this._recapMode === "off") {
       return {
         supported: true,
@@ -2536,6 +2829,13 @@ export class Process {
     provider: AgentProvider,
     options?: { sinceMs?: number | null },
   ): Promise<RecapRequestResult> {
+    if (this.recapPausedUntilUserTurn) {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      };
+    }
     if (!provider.supportsRecaps || !provider.generateSummary) {
       return {
         supported: false,
@@ -2581,6 +2881,13 @@ export class Process {
       sinceMs,
       provider.supportsNativeRecaps ? NATIVE_RECAP_FALLBACK_GRACE_MS : 0,
     );
+    if (this.recapPausedUntilUserTurn) {
+      return {
+        supported: true,
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      };
+    }
     if (nativeRecap) {
       return {
         supported: true,
@@ -2609,6 +2916,13 @@ export class Process {
           model: this.resolveHelperSideModel(),
         })
       ).text.trim();
+      if (this.recapPausedUntilUserTurn) {
+        return {
+          supported: true,
+          emitted: false,
+          reason: "recaps paused until next user turn",
+        };
+      }
       if (!text) {
         return {
           supported: true,
@@ -2654,7 +2968,7 @@ export class Process {
       return HELPER_SIDE_MODEL_CHEAPEST;
     }
     if (this._helperSideModel === HELPER_SIDE_MODEL_SAME_AS_MAIN) {
-      return this._resolvedModel ?? this.model;
+      return this.resolvedModel;
     }
     return this._helperSideModel || undefined;
   }
@@ -2740,7 +3054,7 @@ export class Process {
       const lines = message.attachments.map((file) =>
         this.formatUploadedFileReference(file),
       );
-      text += `\n\nUser uploaded files in .attachments:\n${lines.join("\n")}`;
+      text += `\n\nUser uploaded files:\n${lines.join("\n")}`;
     }
 
     return text;
@@ -2780,13 +3094,37 @@ export class Process {
     return { ...message, text: `${anchor}\n\n${message.text}` };
   }
 
+  /**
+   * Absolute compose-time marker on provider-bound user turns
+   * (YEP_TURN_TIMESTAMPS=before|after; default off). Experimental: the
+   * model gets a wall-clock anchor in the same ISO-8601 format as the
+   * provider session jsonl; the client hides `[sent …]` in presentation.
+   * Applied after slash-command expansion (same placement invariant as
+   * applyComposeAnchor); "before" placement stays inside the compose
+   * anchor so a leading `(Ns ago)` still opens the delivered text.
+   */
+  private applyTurnTimestamp(message: UserMessage): UserMessage {
+    const placement = this.resolveDeferredDelivery().turnTimestamps;
+    if (placement === "off") return message;
+    const composedAt =
+      message.metadata?.serverReceivedAt ?? new Date().toISOString();
+    const marker = `[sent ${composedAt}]`;
+    return {
+      ...message,
+      text:
+        placement === "before"
+          ? `${marker}\n\n${message.text}`
+          : `${message.text}\n\n${marker}`,
+    };
+  }
+
   private prepareProviderMessage(
     message: UserMessage,
     composeAnchor?: string | null,
   ): UserMessage {
     const prepared = this.withProviderDeliveryPriority(
       this.applyComposeAnchor(
-        this.expandEmulatedSlashCommand(message),
+        this.applyTurnTimestamp(this.expandEmulatedSlashCommand(message)),
         composeAnchor,
       ),
     );
@@ -2814,6 +3152,43 @@ export class Process {
     return message;
   }
 
+  private inputRejectionError(): string | null {
+    if (this.viewerLifecycle.isDetachingForServerReload) {
+      return "Process is detaching for server reload";
+    }
+    if (this.viewerLifecycle.hasUnverifiedProviderOwnership) {
+      return "Process provider teardown is in progress or unverified";
+    }
+    if (this._state.type === "terminated") {
+      return `Process terminated: ${this._state.reason}`;
+    }
+    if (this.transportFailed) {
+      return "Process transport failed";
+    }
+    return null;
+  }
+
+  private acceptRecapResumeSignal(message: UserMessage): UserMessage {
+    if (message.recapResumeHandled === true) {
+      return message;
+    }
+
+    if (
+      !isHiddenInjectedMessage(message) &&
+      message.automaticSource === undefined &&
+      message.metadata?.serverReceivedAt !== undefined
+    ) {
+      this._userTurnVersion += 1;
+      this.resumeRecapsAfterUserTurn();
+      this.emit({ type: "user-turn-accepted" });
+    }
+    return { ...message, recapResumeHandled: true };
+  }
+
+  resumeRecapsAfterUserTurn(): void {
+    this.recapPausedUntilUserTurn = false;
+  }
+
   /**
    * Queue already-expanded provider text. The emitted user echo and the SDK
    * queue entry must be the same logical turn so live SSE and later transcript
@@ -2827,21 +3202,9 @@ export class Process {
     position?: number;
     error?: string;
   } {
-    // Check if process is terminated or transport failed
-    if (this._state.type === "terminated") {
-      return {
-        success: false,
-        error: `Process terminated: ${this._state.reason}`,
-      };
-    }
-
-    // Check if transport failed (spawn error, etc.) - this flag is set synchronously
-    // to prevent race conditions where queueMessage is called before markTerminated completes
-    if (this.transportFailed) {
-      return {
-        success: false,
-        error: "Process transport failed",
-      };
+    const inputError = this.inputRejectionError();
+    if (inputError) {
+      return { success: false, error: inputError };
     }
 
     // Create user message with UUID - this UUID will be used by both SSE and SDK
@@ -2967,8 +3330,9 @@ export class Process {
     position?: number;
     error?: string;
   } {
+    const acceptedMessage = this.acceptRecapResumeSignal(message);
     return this.queuePreparedMessage(
-      this.prepareProviderMessage(message, options?.composeAnchor),
+      this.prepareProviderMessage(acceptedMessage, options?.composeAnchor),
       { allowSteer: options?.allowSteer },
     );
   }
@@ -3154,6 +3518,11 @@ export class Process {
     position?: number;
     error?: string;
   } {
+    const inputError = this.inputRejectionError();
+    if (inputError) {
+      return { success: false, deferred: false, error: inputError };
+    }
+    const acceptedMessage = this.acceptRecapResumeSignal(message);
     const canPromoteIfReady = !!(
       options?.promoteIfReady &&
       this.messageQueue &&
@@ -3161,13 +3530,13 @@ export class Process {
       // elsewhere durable patient intent uses ordinary deferred timing and
       // promotes immediately like any other deferred turn.
       !usesPatientDeliveryPath(
-        { message, timestamp: new Date().toISOString() },
+        { message: acceptedMessage, timestamp: new Date().toISOString() },
         this.provider,
       ) &&
       this._state.type === "idle"
     );
     if (canPromoteIfReady) {
-      const result = this.queueMessage(message);
+      const result = this.queueMessage(acceptedMessage);
       if (!result.success) {
         return {
           deferred: false,
@@ -3192,7 +3561,7 @@ export class Process {
           },
         );
       }
-      this.emitDeferredQueueChange("promoted", message.tempId);
+      this.emitDeferredQueueChange("promoted", acceptedMessage.tempId);
       return {
         success: true,
         deferred: false,
@@ -3201,17 +3570,115 @@ export class Process {
       };
     }
 
+    const lastSeenHead = this.lastSeenAssistantHead();
     const entry: DeferredQueueEntry = {
-      message,
+      message: acceptedMessage,
       timestamp: options?.timestamp ?? new Date().toISOString(),
+      ...(lastSeenHead ? { lastSeenHead } : {}),
       ...(options?.persistedQueueId
         ? { persistedQueueId: options.persistedQueueId }
         : {}),
     };
     this.deferredQueue.push(entry);
     this.persistPatientDeferredEntry(entry);
-    this.emitDeferredQueueChange("queued", message.tempId);
+    this.emitDeferredQueueChange("queued", acceptedMessage.tempId);
     return { success: true, deferred: true };
+  }
+
+  /**
+   * Project a YA-local command through the queued-message UI. The command is
+   * deliberately separate from both deferred and patient provider input.
+   */
+  queueYaCommand(
+    command: SessionQueuedYaCommand,
+    options?: {
+      content?: SyntheticSessionBoundaryCommand;
+      tempId?: string;
+      timestamp?: string;
+    },
+  ): PendingYaCommand {
+    const content: SyntheticSessionBoundaryCommand =
+      options?.content ?? `/${command}`;
+    const existing = this.pendingYaCommands.find(
+      (entry) => entry.command === command,
+    );
+    if (existing) {
+      if (existing.content !== content) {
+        existing.content = content;
+        this.emitDeferredQueueChange(
+          "queued",
+          existing.tempId,
+          existing.command,
+        );
+      }
+      return existing;
+    }
+
+    const entry: PendingYaCommand = {
+      command,
+      content,
+      tempId: options?.tempId ?? `ya-${command}-${randomUUID()}`,
+      timestamp: options?.timestamp ?? new Date().toISOString(),
+      userTurnVersion: this._userTurnVersion,
+      completionStarted: false,
+    };
+    this.pendingYaCommands.push(entry);
+    this.emitDeferredQueueChange("queued", entry.tempId, entry.command);
+    return entry;
+  }
+
+  hasPendingYaCommand(command?: SessionQueuedYaCommand): boolean {
+    return command
+      ? this.pendingYaCommands.some((entry) => entry.command === command)
+      : this.pendingYaCommands.length > 0;
+  }
+
+  getPendingYaCommand(
+    command: SessionQueuedYaCommand,
+  ): PendingYaCommand | undefined {
+    return this.pendingYaCommands.find((entry) => entry.command === command);
+  }
+
+  beginPendingYaCommandCompletion(
+    command: SessionQueuedYaCommand,
+  ): PendingYaCommand | undefined {
+    const entry = this.getPendingYaCommand(command);
+    if (!entry || entry.completionStarted) {
+      return undefined;
+    }
+    entry.completionStarted = true;
+    return entry;
+  }
+
+  releasePendingYaCommandCompletion(tempId: string): void {
+    const entry = this.pendingYaCommands.find(
+      (candidate) => candidate.tempId === tempId,
+    );
+    if (entry) {
+      entry.completionStarted = false;
+    }
+  }
+
+  completePendingYaCommand(tempId: string): boolean {
+    const index = this.pendingYaCommands.findIndex(
+      (entry) => entry.tempId === tempId && entry.completionStarted,
+    );
+    if (index === -1) {
+      return false;
+    }
+    const [entry] = this.pendingYaCommands.splice(index, 1);
+    if (!entry) {
+      return false;
+    }
+    this.emitDeferredQueueChange("promoted", tempId, entry.command);
+    if (
+      this.pendingYaCommands.length === 0 &&
+      this._state.type === "idle" &&
+      !this.isRetainingProviderWork()
+    ) {
+      this.continueAfterTurnBoundary();
+    }
+    return true;
   }
 
   /**
@@ -3302,23 +3769,23 @@ export class Process {
   }
 
   /**
-   * Get a summary of the deferred queue for SSE events and client sync.
+   * Get a summary of the live deferred queue for canonical server projection.
    */
-  getDeferredQueueSummary(): {
-    tempId?: string;
-    content: string;
-    timestamp: string;
-    attachments?: UserMessage["attachments"];
-    attachmentCount?: number;
-    metadata?: UserMessage["metadata"];
-  }[] {
-    return this.deferredQueue.map((entry) => {
+  getDeferredQueueSummary(): SessionQueuedMessageSummary[] {
+    const deferred = this.deferredQueue.map((entry) => {
       const attachmentCount =
         (entry.message.attachments?.length ?? 0) +
         (entry.message.images?.length ?? 0) +
         (entry.message.documents?.length ?? 0);
 
       return {
+        ...(entry.persistedQueueId
+          ? {
+              id: entry.persistedQueueId,
+              kind: "patient" as const,
+              status: "queued" as const,
+            }
+          : {}),
         tempId: entry.message.tempId,
         content: entry.message.text,
         timestamp: entry.timestamp,
@@ -3329,6 +3796,15 @@ export class Process {
         ...(attachmentCount > 0 ? { attachmentCount } : {}),
       };
     });
+    const yaCommands = this.pendingYaCommands.map((entry) => ({
+      tempId: entry.tempId,
+      content: entry.content,
+      timestamp: entry.timestamp,
+      kind: "ya-command" as const,
+      yaCommand: entry.command,
+      status: "queued" as const,
+    }));
+    return [...deferred, ...yaCommands];
   }
 
   /**
@@ -3356,25 +3832,30 @@ export class Process {
    * This includes messages in the direct provider queue as well as editable
    * deferred messages.
    */
-  drainPendingUserMessages(
+  async drainPendingUserMessages(
     reason: "cancelled" | "promoted" = "promoted",
-  ): UserMessage[] {
-    const queuedMessages = this.messageQueue?.drain() ?? [];
+  ): Promise<UserMessage[]> {
+    const queuedMessages = this.messageQueue
+      ? this.messageQueue.drainAsync
+        ? await this.messageQueue.drainAsync()
+        : this.messageQueue.drain()
+      : [];
     return [...queuedMessages, ...this.drainDeferredMessages(reason)];
   }
 
   /**
-   * Emit a deferred-queue event with the current queue state.
+   * Signal that subscribers should publish the canonical deferred queue state.
    */
   private emitDeferredQueueChange(
     reason?: "queued" | "cancelled" | "promoted",
     tempId?: string,
+    yaCommand?: SessionQueuedYaCommand,
   ): void {
     this.emit({
       type: "deferred-queue",
-      messages: this.getDeferredQueueSummary(),
       reason,
       tempId,
+      yaCommand,
     });
   }
 
@@ -3465,7 +3946,7 @@ export class Process {
    * - default: Ask user for approval
    * - acceptEdits: Auto-approve Edit/Write tools, ask for others
    * - plan: Auto-approve read-only tools (Read, Glob, Grep, etc.), prompt for others
-   * - bypassPermissions: Auto-approve all tools except AskUserQuestion and ExitPlanMode
+   * - bypassPermissions: Auto-approve all tools except AskUserQuestion
    */
   async handleToolApproval(
     toolName: string,
@@ -3475,10 +3956,8 @@ export class Process {
       permissionMode?: PermissionMode;
     },
   ): Promise<ToolApprovalResult> {
-    const effectivePermissionMode =
-      options.permissionMode ?? this._permissionMode;
     console.log(
-      `[handleToolApproval] toolName=${toolName}, permissionMode=${effectivePermissionMode}`,
+      `[handleToolApproval] toolName=${toolName}, permissionMode=${this._permissionMode}, providerPermissionMode=${options.permissionMode ?? this._permissionMode}`,
     );
 
     // Check if aborted
@@ -3502,102 +3981,16 @@ export class Process {
       }
     }
 
-    // Handle based on permission mode
-    switch (effectivePermissionMode) {
-      case "bypassPermissions": {
-        // Always prompt for user questions and plan approval, even in bypass mode
-        // These are inherently interactive and shouldn't be auto-answered
-        if (toolName === "ExitPlanMode" || isUserQuestion) {
-          break; // Fall through to ask user
-        }
-        // Auto-approve all other tools
-        return { behavior: "allow" };
-      }
-
-      case "plan": {
-        // Read-only tools are auto-allowed - essential for creating good plans
-        const readOnlyTools = [
-          "Read",
-          "Glob",
-          "Grep",
-          "LSP",
-          "WebFetch",
-          "WebSearch",
-          "Task", // Subagent exploration (legacy)
-          "Agent", // Subagent exploration (SDK 0.2.76+)
-          "TaskOutput", // Reading subagent results
-        ];
-        if (readOnlyTools.includes(toolName)) {
-          return { behavior: "allow" };
-        }
-
-        // Allow Write to .claude/plans/ directory for saving plans
-        if (toolName === "Write") {
-          const filePath = (input as { file_path?: string })?.file_path ?? "";
-          if (filePath.includes(".claude/plans/")) {
-            return { behavior: "allow" };
-          }
-        }
-
-        // ExitPlanMode and AskUserQuestion should prompt the user
-        // ExitPlanMode: user must approve the plan before exiting plan mode
-        // AskUserQuestion: clarifying questions are valid during planning
-        if (toolName === "ExitPlanMode" || isUserQuestion) {
-          break; // Fall through to ask user for approval
-        }
-
-        // Other tools (Bash, Edit, Write to non-plan files, etc.) - prompt user
-        // Agent typically won't use these in plan mode, but if they have a good
-        // reason (e.g., checking git log, verifying dependencies), let them ask
-        break; // Fall through to ask user for approval
-      }
-
-      case "acceptEdits": {
-        // Auto-approve file editing tools AND read-only tools
-        // acceptEdits should be strictly more permissive than default mode
-        const editTools = ["Edit", "Write", "NotebookEdit"];
-        if (editTools.includes(toolName)) {
-          return { behavior: "allow" };
-        }
-        // Read-only tools are also auto-allowed (same as default mode)
-        const readOnlyTools = [
-          "Read",
-          "Glob",
-          "Grep",
-          "LSP",
-          "WebFetch",
-          "WebSearch",
-          "Task", // Subagent exploration (legacy)
-          "Agent", // Subagent exploration (SDK 0.2.76+)
-          "TaskOutput", // Reading subagent results
-        ];
-        if (readOnlyTools.includes(toolName)) {
-          return { behavior: "allow" };
-        }
-        // Fall through to ask user for other tools (Bash, etc.)
-        break;
-      }
-
-      default: {
-        // Read-only tools are auto-allowed - no need to prompt for reads
-        // "Ask before edits" means ask before WRITES, not reads
-        const readOnlyTools = [
-          "Read",
-          "Glob",
-          "Grep",
-          "LSP",
-          "WebFetch",
-          "WebSearch",
-          "Task", // Subagent exploration (legacy)
-          "Agent", // Subagent exploration (SDK 0.2.76+)
-          "TaskOutput", // Reading subagent results
-        ];
-        if (readOnlyTools.includes(toolName)) {
-          return { behavior: "allow" };
-        }
-        // Fall through to ask user for mutating tools
-        break;
-      }
+    // The provider may keep its sandbox/policy fixed for the active turn, but
+    // YA's approval bridge follows the selected standing mode immediately.
+    const modeApproval = getModeBasedToolApproval(
+      this._permissionMode,
+      toolName,
+      input,
+      isUserQuestion,
+    );
+    if (modeApproval) {
+      return modeApproval;
     }
 
     // Default behavior: ask user for approval or an interview answer.
@@ -3665,6 +4058,53 @@ export class Process {
     }
     // No more pending approvals
     this.transitionToInTurnForWake("tool-approval-resolved");
+  }
+
+  /** Apply a newly selected standing mode to approvals already awaiting input. */
+  private applySelectedModeToPendingApprovals(): void {
+    let resolvedAny = false;
+    for (const requestId of this.pendingToolApprovalQueue) {
+      const pending = this.pendingToolApprovals.get(requestId);
+      if (!pending) {
+        continue;
+      }
+      const request = pending.request;
+      const result = getModeBasedToolApproval(
+        this._permissionMode,
+        request.toolName ?? "",
+        request.toolInput,
+        request.type !== "tool-approval",
+      );
+      if (!result) {
+        continue;
+      }
+      pending.resolve(result);
+      this.pendingToolApprovals.delete(requestId);
+      resolvedAny = true;
+    }
+
+    if (resolvedAny) {
+      this.pendingToolApprovalQueue = this.pendingToolApprovalQueue.filter(
+        (requestId) => this.pendingToolApprovals.has(requestId),
+      );
+      this.emitNextPendingApproval();
+      return;
+    }
+
+    // Legacy mock harness requests do not install a callback promise. They
+    // still obey Bypass, and obey Accept edits when the mock names its tool.
+    if (
+      this.pendingToolApprovals.size === 0 &&
+      this._state.type === "waiting-input" &&
+      getModeBasedToolApproval(
+        this._permissionMode,
+        this._state.request.toolName ?? "",
+        this._state.request.toolInput,
+        this._state.request.type !== "tool-approval",
+      )
+    ) {
+      this.transitionToInTurnForWake("tool-approval-resolved");
+    }
   }
 
   /**
@@ -3813,6 +4253,23 @@ export class Process {
     };
   }
 
+  hasViewers(): boolean {
+    return this.viewerLifecycle.hasViewers();
+  }
+
+  registerViewer(): () => void {
+    return this.viewerLifecycle.registerViewer();
+  }
+
+  /** True when reload can detach without losing YA-owned queued input. */
+  canDetachForServerReload(): boolean {
+    return (
+      this.detachForServerReloadFn !== null &&
+      this.queueDepth === 0 &&
+      !this.hasVolatileDeferredMessages()
+    );
+  }
+
   /**
    * Terminate the process with a reason (e.g., staleness detection).
    * Unlike abort(), this records the reason for logging/debugging.
@@ -3820,10 +4277,30 @@ export class Process {
    * orphaned processes that continue running after Yep stops tracking them.
    */
   terminate(reason: string): void {
-    // Kill the underlying CLI process first (if available), so it doesn't
-    // continue running as an orphan after we unregister from the Supervisor.
-    this.requestProviderAbortWithoutWaiting(reason);
+    if (!this.viewerLifecycle.hasUnverifiedProviderOwnership) {
+      // Kill the underlying CLI process first (if available), so it doesn't
+      // continue running as an orphan after we unregister from the Supervisor.
+      this.requestProviderAbortWithoutWaiting(reason);
+    }
     this.markTerminated(reason);
+  }
+
+  /**
+   * Mark this process terminated, then wait until its provider runtime is
+   * verified gone. Replacement ownership must not begin before this resolves.
+   */
+  async terminateAndWait(reason: string): Promise<ProcessAbortResult> {
+    this.viewerLifecycle.beginTeardownVerification();
+    this.markTerminated(reason);
+    try {
+      return await this.abort();
+    } catch (error) {
+      this.retainLifecycleTeardownFailure(
+        `${reason} provider teardown failed`,
+        error,
+      );
+      throw error;
+    }
   }
 
   private async requestProviderAbort(): Promise<void> {
@@ -3847,7 +4324,22 @@ export class Process {
   }
 
   async abort(): Promise<ProcessAbortResult> {
-    this.clearIdleTimer();
+    const activeAbort = this.abortInFlight;
+    if (activeAbort) return activeAbort;
+
+    const attempt = this.abortAndVerify();
+    this.abortInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (this.abortInFlight === attempt) {
+        this.abortInFlight = null;
+      }
+    }
+  }
+
+  private async abortAndVerify(): Promise<ProcessAbortResult> {
+    this.viewerLifecycle.stop();
     this.clearPromptCacheKeepaliveTimer();
     this.stopBucketSwapTimer();
     this.clearRetryingProviderRuntimeStatus();
@@ -3910,11 +4402,8 @@ export class Process {
       verification = "iterator";
     }
 
-    // Signal completion to subscribers (skip if already terminated —
-    // markTerminated() already emitted "complete")
-    if (this._state.type !== "terminated") {
-      this.emit({ type: "complete" });
-    }
+    this.viewerLifecycle.completeTeardownVerification();
+    this.emitCompletion();
     this.listeners.clear();
 
     return {
@@ -3926,10 +4415,45 @@ export class Process {
     };
   }
 
+  /**
+   * End this server generation's provider client without requiring the
+   * provider runtime itself to exit. Used only for reload-safe runtimes whose
+   * next owner is the replacement server generation.
+   */
+  async detachForServerReload(): Promise<void> {
+    // Set this before the first await. The shutdown caller checks volatile
+    // queue blockers immediately before entering here, so no client turn can
+    // slip into YA-owned memory after that decision.
+    const viewerPresencePublication =
+      this.viewerLifecycle.prepareForServerReload();
+    this.clearPromptCacheKeepaliveTimer();
+    this.stopBucketSwapTimer();
+    this.clearRetryingProviderRuntimeStatus();
+    await viewerPresencePublication;
+    const deadline = Date.now() + PROCESS_ABORT_TIMEOUT_MS;
+    await waitUntilAbortDeadline(
+      this.detachForServerReloadFn
+        ? Promise.resolve(this.detachForServerReloadFn())
+        : this.requestProviderAbort(),
+      deadline,
+      "Timed out detaching provider client for server reload",
+    );
+    await waitUntilAbortDeadline(
+      this._exitPromise,
+      deadline,
+      "Timed out waiting for provider iterator to detach",
+    );
+    if (this._state.type !== "terminated") {
+      this.emitCompletion();
+    }
+    this.listeners.clear();
+  }
+
   private async processMessages(): Promise<void> {
     try {
       while (!this.iteratorDone) {
         const result = await this.sdkIterator.next();
+        if (this.iteratorDone) break;
 
         if (result.done) {
           this.iteratorDone = true;
@@ -4116,7 +4640,10 @@ export class Process {
     } catch (error) {
       const err = error as Error;
 
-      if (this.idleReapInProgress && this.isProcessTerminationError(err)) {
+      if (
+        this.viewerLifecycle.hasUnverifiedProviderOwnership &&
+        this.isProcessTerminationError(err)
+      ) {
         return;
       }
 
@@ -4194,8 +4721,21 @@ export class Process {
       type: message.input_request.type as InputRequest["type"],
       prompt: message.input_request.prompt,
       options: message.input_request.options,
+      toolName: message.input_request.toolName,
+      toolInput: message.input_request.toolInput,
       timestamp: new Date().toISOString(),
     };
+
+    if (
+      getModeBasedToolApproval(
+        this._permissionMode,
+        request.toolName ?? "",
+        request.toolInput,
+        request.type !== "tool-approval",
+      )
+    ) {
+      return;
+    }
 
     this.setState({ type: "waiting-input", request });
   }
@@ -4215,13 +4755,13 @@ export class Process {
           this._state.type === "waiting-input" &&
           this.pendingToolApprovals.size > 0
         ) {
-          this.clearIdleTimer();
+          this.viewerLifecycle.suspendIdleDeadline();
           return;
         }
         if (this._state.type !== "in-turn") {
           this.transitionToInTurnForWake("session-state-running");
         } else {
-          this.clearIdleTimer();
+          this.viewerLifecycle.suspendIdleDeadline();
         }
         break;
 
@@ -4229,7 +4769,7 @@ export class Process {
         if (this._state.type === "idle") {
           this.transitionToInTurnForWake("session-state-requires-action");
         } else {
-          this.clearIdleTimer();
+          this.viewerLifecycle.suspendIdleDeadline();
         }
         break;
     }
@@ -4238,7 +4778,7 @@ export class Process {
   private transitionToIdle(options?: {
     applyPendingEffort?: boolean;
   }): Promise<void> | void {
-    this.clearIdleTimer();
+    this.viewerLifecycle.suspendIdleDeadline();
     this.clearRetryingProviderRuntimeStatus();
 
     // A provider turn boundary ends the special steering-retention window.
@@ -4280,6 +4820,15 @@ export class Process {
   }
 
   private finishTransitionToIdle(): void {
+    if (this.pendingYaCommands.length > 0) {
+      this.setState({ type: "idle", since: new Date() });
+      return;
+    }
+
+    this.continueAfterTurnBoundary(true);
+  }
+
+  private continueAfterTurnBoundary(refreshIdleState = false): void {
     // Promote deferred messages as the same stitched user turn the provider
     // receives, so the live echo and later transcript catch-up agree.
     if (this.promoteEligibleDeferredAfterTurn()) {
@@ -4287,8 +4836,9 @@ export class Process {
       return;
     }
 
-    this.setState({ type: "idle", since: new Date() });
-    this.startIdleTimer();
+    if (refreshIdleState || this._state.type !== "idle") {
+      this.setState({ type: "idle", since: new Date() });
+    }
     this.flushPendingRecapRequest();
     this.processNextInQueue();
   }
@@ -4318,11 +4868,13 @@ export class Process {
     const overrides = this.deferredDeliveryOverrides;
     if (
       overrides?.joinWindowSeconds !== undefined &&
-      overrides?.composeAnchors !== undefined
+      overrides?.composeAnchors !== undefined &&
+      overrides?.turnTimestamps !== undefined
     ) {
       return {
         joinWindowSeconds: overrides.joinWindowSeconds,
         composeAnchors: overrides.composeAnchors,
+        turnTimestamps: overrides.turnTimestamps,
       };
     }
     const resolved = resolveDeferredDeliverySettings();
@@ -4330,6 +4882,7 @@ export class Process {
       joinWindowSeconds:
         overrides?.joinWindowSeconds ?? resolved.joinWindowSeconds,
       composeAnchors: overrides?.composeAnchors ?? resolved.composeAnchors,
+      turnTimestamps: overrides?.turnTimestamps ?? resolved.turnTimestamps,
     };
   }
 
@@ -4385,9 +4938,15 @@ export class Process {
     if (!this.resolveDeferredDelivery().composeAnchors) {
       return entries.map(() => null);
     }
+    // With absolute [sent …] stamps on every chunk, relative elapsed text
+    // is derivable and suppressed; only the had-seen needle survives.
+    const elapsedVisible =
+      this.resolveDeferredDelivery().turnTimestamps === "off";
     return composeTimeAnchors(
       entries.map((entry) => this.composedAtMsForEntry(entry)),
       Date.now(),
+      entries.map((entry) => entry.lastSeenHead ?? null),
+      elapsedVisible,
     );
   }
 
@@ -4663,91 +5222,19 @@ export class Process {
     );
   }
 
-  private startIdleTimer(delayMs = this.idleTimeoutMs): void {
-    this.clearIdleTimer();
-    this.idleTimer = setTimeout(
-      () => {
-        this.idleTimer = null;
-
-        // State may have changed while the timer was pending.
-        if (this._state.type !== "idle") {
-          return;
-        }
-
-        const retainedByFeature =
-          this.shouldRetainIdleProcess?.(this._sessionId) ?? false;
-        const retainedByPromptCacheKeepalive =
-          this.hasPromptCacheKeepaliveLease();
-        const providerRetention = this.getProviderRetentionSnapshot();
-        if (
-          this.hasLiveDeltaSubscribers() ||
-          retainedByFeature ||
-          retainedByPromptCacheKeepalive ||
-          providerRetention.retained
-        ) {
-          getLogger().debug(
-            {
-              event: "idle_cleanup_deferred",
-              sessionId: this._sessionId,
-              processId: this.id,
-              projectId: this.projectId,
-              idleTimeoutMs: this.idleTimeoutMs,
-              liveDeltaSubscriberCount: this.liveDeltaSubscriberCount,
-              retainedByFeature,
-              retainedByPromptCacheKeepalive,
-              retainedByProvider: providerRetention.retained,
-              providerRetentionReasons: providerRetention.reasons,
-              providerBackgroundTaskCount:
-                providerRetention.backgroundTaskCount,
-              providerSessionCronCount: providerRetention.sessionCronCount,
-              providerLiveTaskCount: providerRetention.liveTaskCount,
-            },
-            `Idle cleanup deferred: ${this._sessionId} is explicitly retained`,
-          );
-          this.startIdleTimer();
-          return;
-        }
-
-        this.reapIdleProcess();
-      },
-      Math.max(0, delayMs),
-    );
-    this.idleTimer.unref?.();
+  updateIdleTimeoutMs(idleTimeoutMs: number): void {
+    this.viewerLifecycle.updateIdleTimeoutMs(idleTimeoutMs);
   }
 
-  private rescheduleIdleTimerForCurrentIdlePeriod(): void {
-    if (this._state.type !== "idle") {
-      return;
-    }
-    const elapsedMs = Date.now() - this._state.since.getTime();
-    this.startIdleTimer(Math.max(0, this.idleTimeoutMs - elapsedMs));
-  }
-
-  private reapIdleProcess(): void {
-    this.idleReapInProgress = true;
-    this.clearPromptCacheKeepaliveTimer();
-    this.stopBucketSwapTimer();
+  private handleIdleReap(): void {
     this.iteratorDone = true;
-    this.clearRetryingProviderRuntimeStatus();
-
     this.emit({ type: "idle-reap" });
-
-    this.requestProviderAbortWithoutWaiting("idle reap");
-
-    this.emit({ type: "complete" });
-    this.listeners.clear();
-
-    if (this._exitResolve) {
-      this._exitResolve();
-      this._exitResolve = null;
-    }
-  }
-
-  private clearIdleTimer(): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
+    void this.abort().catch((error) => {
+      this.retainLifecycleTeardownFailure(
+        "idle reap provider teardown failed",
+        error,
+      );
+    });
   }
 
   private clearPromptCacheKeepaliveTimer(): void {
@@ -4760,6 +5247,7 @@ export class Process {
   private setState(state: ProcessState): void {
     this._state = state;
     this._lastStateChangeTime = new Date();
+    this.viewerLifecycle.observeProcessState(state);
     this.emit({ type: "state-change", state });
     this.schedulePromptCacheKeepalive();
   }

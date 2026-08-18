@@ -15,13 +15,13 @@
       "!**/*.d.ts",
       "!**/.artifacts",
       "!**/.tmp",
+      "!**/.git-blame-ignore-revs",
       "!**/.handoff-recap.md",
       "!**/*.running.md",
       "!**/tasks",
       "!**/docs/tasks",
       "!**/branding",
       "!**/packages/desktop",
-      "!**/packages/mobile",
       "!**/packages/server/generated/codex-app-server",
       "!**/packages/server/src/sdk/providers/codex-protocol/generated"
     ]

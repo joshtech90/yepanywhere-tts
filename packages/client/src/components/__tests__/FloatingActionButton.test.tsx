@@ -21,26 +21,46 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const {
   mockVoiceCancelProcessing,
   mockVoicePrewarm,
+  mockVoiceStopAndFinalize,
   mockVoiceToggle,
+  mockNavigate,
+  mockSetNewSessionPrefill,
+  voiceButtonState,
   voicePropsState,
 } = vi.hoisted(() => ({
   mockVoiceCancelProcessing: vi.fn(),
   mockVoicePrewarm: vi.fn(),
+  mockVoiceStopAndFinalize: vi.fn(() => ""),
   mockVoiceToggle: vi.fn(),
+  mockNavigate: vi.fn(),
+  mockSetNewSessionPrefill: vi.fn(),
+  voiceButtonState: { isListening: false },
   voicePropsState: {
     current: null as null | {
       onPendingSpeechChange?: (
-        kind: "listening" | "transcribing" | "finalizing" | null,
+        kind: "starting" | "listening" | "transcribing" | "finalizing" | null,
+        settlement?: "completed" | "failed",
       ) => void;
       onInterimTranscript?: (text: string) => void;
-      onListeningStop?: () => void;
+      onListeningStart?: () => void;
+      onListeningStop?: () => boolean | undefined;
     },
   },
 }));
 
+const coarsePointerState = vi.hoisted(() => ({ current: false }));
+
+vi.mock("../../lib/deviceDetection", () => ({
+  hasCoarsePointer: () => coarsePointerState.current,
+}));
+
 vi.mock("react-router-dom", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useLocation: () => ({ pathname: "/" }),
+}));
+
+vi.mock("../../lib/newSessionPrefill", () => ({
+  setNewSessionPrefill: mockSetNewSessionPrefill,
 }));
 
 vi.mock("../../hooks/useDraftPersistence", () => ({
@@ -82,7 +102,8 @@ vi.mock("../../hooks/useFloatingActionButtonEnabled", () => ({
   useFloatingActionButtonEnabled: () => ({ floatingActionButtonEnabled: true }),
 }));
 
-vi.mock("../../hooks/useRecentProject", () => ({
+vi.mock("../../hooks/useRecentProject", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useRecentProject")>()),
   setRecentProjectId: vi.fn(),
 }));
 
@@ -100,11 +121,12 @@ vi.mock("../VoiceInputButton", () => ({
     useImperativeHandle(
       ref,
       () => ({
-        stopAndFinalize: () => "",
+        stopAndFinalize: mockVoiceStopAndFinalize,
         toggle: mockVoiceToggle,
         cancelProcessing: mockVoiceCancelProcessing,
         prewarm: mockVoicePrewarm,
-        isListening: false,
+        beginInsertionBoundary: vi.fn(),
+        isListening: voiceButtonState.isListening,
         isAvailable: true,
       }),
       [],
@@ -119,8 +141,14 @@ afterEach(() => {
   cleanup();
   mockVoiceCancelProcessing.mockReset();
   mockVoicePrewarm.mockReset();
+  mockVoiceStopAndFinalize.mockReset();
+  mockVoiceStopAndFinalize.mockReturnValue("");
   mockVoiceToggle.mockReset();
+  mockNavigate.mockReset();
+  mockSetNewSessionPrefill.mockReset();
+  voiceButtonState.isListening = false;
   voicePropsState.current = null;
+  coarsePointerState.current = false;
 });
 
 describe("FloatingActionButton speech", () => {
@@ -135,6 +163,37 @@ describe("FloatingActionButton speech", () => {
     fireEvent.click(screen.getByLabelText("fabClose"));
     fireEvent.click(screen.getByLabelText("fabNewSession"));
     await waitFor(() => expect(mockVoicePrewarm).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps mic focus through coarse-pointer speech transitions", async () => {
+    coarsePointerState.current = true;
+    render(<FloatingActionButton />);
+    fireEvent.click(screen.getByLabelText("fabNewSession"));
+    const textarea = await screen.findByPlaceholderText("fabPlaceholder");
+    const voice = screen.getByRole("button", { name: "voice" });
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStart?.());
+    expect(document.activeElement).toBe(voice);
+
+    act(() => voicePropsState.current?.onListeningStop?.());
+    expect(document.activeElement).toBe(voice);
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("returns keyboard mic focus to the fine-pointer composer", async () => {
+    render(<FloatingActionButton />);
+    fireEvent.click(screen.getByLabelText("fabNewSession"));
+    const textarea = await screen.findByPlaceholderText("fabPlaceholder");
+    const voice = screen.getByRole("button", { name: "voice" });
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStart?.());
+    expect(document.activeElement).toBe(textarea);
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStop?.());
+    expect(document.activeElement).toBe(textarea);
   });
 
   it("keeps the real quick-composer textarea editable while transcribing", async () => {
@@ -170,6 +229,30 @@ describe("FloatingActionButton speech", () => {
     expect(textarea.value).toBe("typed while transcribing");
   });
 
+  it("commits the visible interim when the quick-composer mic stops", async () => {
+    render(<FloatingActionButton />);
+    fireEvent.click(screen.getByLabelText("fabNewSession"));
+    const textarea = (await screen.findByPlaceholderText(
+      "fabPlaceholder",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "alpha omega" } });
+    textarea.setSelectionRange("alpha".length, "alpha".length);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onInterimTranscript?.("visible words");
+    });
+    let committed = false;
+    act(() => {
+      committed = voicePropsState.current?.onListeningStop?.() === true;
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("alpha visible words omega");
+    });
+    expect(committed).toBe(true);
+  });
+
   it("keeps Listening out of the draft and places the caret after provisional speech", async () => {
     render(<FloatingActionButton />);
 
@@ -194,5 +277,36 @@ describe("FloatingActionButton speech", () => {
     expect(interim.nextElementSibling?.classList).toContain(
       "speech-interim-caret",
     );
+  });
+
+  it("submits the visible interim snapshot after capture settles", async () => {
+    voiceButtonState.isListening = true;
+    render(<FloatingActionButton />);
+
+    fireEvent.click(screen.getByLabelText("fabNewSession"));
+    const textarea = (await screen.findByPlaceholderText(
+      "fabPlaceholder",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "alpha omega" } });
+    textarea.setSelectionRange("alpha".length, "alpha".length);
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+      voicePropsState.current?.onInterimTranscript?.("provisional words");
+    });
+
+    fireEvent.click(screen.getByLabelText("fabGoToNewSession"));
+    expect(mockVoiceStopAndFinalize).toHaveBeenCalledOnce();
+    expect(mockSetNewSessionPrefill).not.toHaveBeenCalled();
+
+    act(() => {
+      voiceButtonState.isListening = false;
+      voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
+    });
+    expect(mockSetNewSessionPrefill).toHaveBeenCalledWith(
+      expect.any(String),
+      "alpha provisional words omega",
+    );
+    expect(mockNavigate).toHaveBeenCalledWith("/new-session");
   });
 });

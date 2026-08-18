@@ -7,13 +7,11 @@ import type {
   ProjectQueueProjectStatus,
   ProjectQueueRecoveredSessionQueueSummary,
   ProjectQueueResponse,
+  ProviderChildSessionSummary,
   ProviderName,
   ProviderRuntimeStatus,
 } from "@yep-anywhere/shared";
-import type {
-  GlobalSessionItem,
-  InboxResponse,
-} from "../api/client";
+import type { GlobalSessionItem, InboxResponse } from "../api/client";
 import type { Project, SessionStatus } from "../types";
 import type { InboxTier } from "./inboxTiers";
 
@@ -51,6 +49,7 @@ export interface SessionCollectionRecord {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  autoResumeDisabled?: boolean;
   activeStartedAt?: number;
   parentSessionId?: string;
   parentSessionKind?: "btw-aside";
@@ -58,6 +57,7 @@ export interface SessionCollectionRecord {
   initialPrompt?: string;
   executor?: string;
   lastAgentText?: string;
+  providerChildren?: ProviderChildSessionSummary[];
   observedAt: number;
   snapshotObservedAt?: number;
   contentObservedAt?: number;

@@ -7,7 +7,9 @@ import type {
   BrowserSettingsBackupResponse,
   BrowserSettingsBackupValues,
   ClaudeAdditionalModelSelection,
+  ClaudeSteerBackgroundBashSettings,
   ClientDefaults,
+  CodexReasoningSummary,
   ConnectionsResponse,
   CreateProjectWorkstreamRequest,
   CreateProjectWorkstreamResponse,
@@ -15,6 +17,8 @@ import type {
   CreatePublicSessionShareRequest,
   CreatePublicSessionShareResponse,
   DeviceInfo,
+  DurableSyntheticDoneMessage,
+  FreezePublicSharesResponse,
   FreezePublicSessionLiveSharesResponse,
   HelperTargetConfig,
   HostAwakeMode,
@@ -28,11 +32,15 @@ import type {
   ProjectQueuePromoteNowRequest,
   ProjectQueuePromoteNowResponse,
   ProjectQueueResponse,
+  ProjectSessionDefaultsResponse,
   ProjectWorkstreamsResponse,
+  PublicShareManagementListResponse,
+  PublicShareStorageState,
   WorkstreamCheckoutPreviewResponse,
   PromptSuggestionMode,
   PromptCacheKeepaliveSettings,
   ProviderInfo,
+  ProviderChildSessionSummary,
   ProviderName,
   ProviderSubscriptionUsage,
   ProviderRuntimeStatus,
@@ -40,6 +48,8 @@ import type {
   PublicSessionShareSessionStatusResponse,
   PublicSessionShareViewerActionResponse,
   RevokePublicSessionSharesResponse,
+  RevokeAllPublicSharesResponse,
+  RevokePublicShareResponse,
   SessionMetadataResponse,
   SessionQueuedMessageSummary,
   SessionLivenessSnapshot,
@@ -50,12 +60,14 @@ import type {
   ThinkingOption,
   TranscriptDisplayObject,
   UpdateProjectQueueItemRequest,
+  UpdateProjectSessionDefaultsRequest,
   UploadedFile,
   UrlProjectId,
   UserQuestionAnswers,
   UserMessageMetadata,
   WorkstreamId,
 } from "@yep-anywhere/shared";
+import { PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION } from "@yep-anywhere/shared";
 import type {
   AgentSession,
   InputRequest,
@@ -138,6 +150,8 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  /** True when an explicit manual termination disabled resume. */
+  autoResumeDisabled?: boolean;
   /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
   parentSessionKind?: "btw-aside";
@@ -149,6 +163,8 @@ export interface GlobalSessionItem {
   executor?: string;
   /** Capped excerpt of the most recent regular agent turn (hover card). */
   lastAgentText?: string;
+  /** Provider-launched child work nested under this parent. Absent on older servers. */
+  providerChildren?: ProviderChildSessionSummary[];
 }
 
 /** Stats about all sessions (computed during full scan on server) */
@@ -181,6 +197,49 @@ export interface GlobalSessionsResponse {
   stats: GlobalSessionStats;
   /** All projects for filter dropdown */
   projects: ProjectOption[];
+  /**
+   * The collection revision these rows reflect, present only on a server with
+   * `progressive-session-catalog`. Replaying it as `knownGeneration` against
+   * the same query is what earns {@link GlobalSessionsUnchangedResponse}.
+   */
+  generation?: number;
+}
+
+/**
+ * The answer to a conditional read whose `knownGeneration` still holds: the
+ * collection did not change, so the response carries no rows and the client
+ * keeps the ones it has.
+ */
+export interface GlobalSessionsUnchangedResponse {
+  unchanged: true;
+  generation: number;
+}
+
+export interface GlobalSessionsRequest {
+  project?: string;
+  q?: string;
+  after?: string;
+  limit?: number;
+  includeArchived?: boolean;
+  starred?: boolean;
+  includeStats?: boolean;
+}
+
+/**
+ * A read that offers a generation this client already holds rows for, from a
+ * prior response to this same query. Only send it behind
+ * `progressive-session-catalog`; an older server ignores the parameter and
+ * walks anyway, which is correct but pointless.
+ */
+export interface ConditionalGlobalSessionsRequest
+  extends GlobalSessionsRequest {
+  knownGeneration: number;
+}
+
+export function isUnchangedGlobalSessionsResponse(
+  response: GlobalSessionsResponse | GlobalSessionsUnchangedResponse,
+): response is GlobalSessionsUnchangedResponse {
+  return (response as GlobalSessionsUnchangedResponse).unchanged === true;
 }
 
 export interface SessionOptions {
@@ -280,6 +339,36 @@ export interface UpdateBindingResponse {
   redirectUrl?: string;
 }
 
+/**
+ * Overloaded so only a caller that sends `knownGeneration` has to narrow: the
+ * server answers `unchanged` exactly when it was asked to.
+ */
+function getGlobalSessionsRequest(
+  params?: GlobalSessionsRequest,
+): Promise<GlobalSessionsResponse>;
+function getGlobalSessionsRequest(
+  params: ConditionalGlobalSessionsRequest,
+): Promise<GlobalSessionsResponse | GlobalSessionsUnchangedResponse>;
+function getGlobalSessionsRequest(
+  params?: Partial<ConditionalGlobalSessionsRequest>,
+): Promise<GlobalSessionsResponse | GlobalSessionsUnchangedResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.project) searchParams.set("project", params.project);
+  if (params?.q) searchParams.set("q", params.q);
+  if (params?.after) searchParams.set("after", params.after);
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.includeArchived) searchParams.set("includeArchived", "true");
+  if (params?.starred) searchParams.set("starred", "true");
+  if (params?.includeStats) searchParams.set("includeStats", "true");
+  if (params?.knownGeneration !== undefined) {
+    searchParams.set("knownGeneration", String(params.knownGeneration));
+  }
+  const query = searchParams.toString();
+  return fetchJSON<GlobalSessionsResponse | GlobalSessionsUnchangedResponse>(
+    query ? `/sessions?${query}` : "/sessions",
+  );
+}
+
 export const api = {
   // Text-to-speech (read aloud). Audio is returned as base64 so it travels
   // through the same (possibly encrypted relay) JSON channel as everything else.
@@ -322,6 +411,24 @@ export const api = {
         : undefined,
     ),
 
+  /**
+   * Fetch one provider's status and model catalog.
+   *
+   * The aggregate `/providers` request waits for every exposed provider, so a
+   * slow unselected provider delays the selected one. This route resolves the
+   * selected provider on its own; the server coalesces it with any aggregate
+   * request already probing that provider.
+   */
+  getProvider: (provider: ProviderName, options?: { refresh?: boolean }) =>
+    fetchJSON<{ provider: ProviderInfo }>(
+      `/providers/${encodeURIComponent(provider)}${
+        options?.refresh ? "?refresh=1" : ""
+      }`,
+      options?.refresh
+        ? { headers: { "Cache-Control": "no-cache" } }
+        : undefined,
+    ),
+
   getProviderSubscriptionUsage: (
     provider: ProviderName,
     options?: { refresh?: boolean },
@@ -350,6 +457,23 @@ export const api = {
 
   getProject: (projectId: string) =>
     fetchJSON<{ project: Project }>(`/projects/${projectId}`),
+
+  getProjectSessionDefaults: (projectId: string) =>
+    fetchJSON<ProjectSessionDefaultsResponse>(
+      `/projects/${projectId}/session-defaults`,
+    ),
+
+  updateProjectSessionDefaults: (
+    projectId: string,
+    updates: UpdateProjectSessionDefaultsRequest,
+  ) =>
+    fetchJSON<ProjectSessionDefaultsResponse>(
+      `/projects/${projectId}/session-defaults`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(updates),
+      },
+    ),
 
   deleteProject: (projectId: string) =>
     fetchJSON<{ removed: boolean; projectId: string; path: string }>(
@@ -1267,10 +1391,10 @@ export const api = {
       permissionMode: PermissionMode;
       appliedPermissionMode?: PermissionMode;
       modeVersion: number;
-    }>(
-      `/sessions/${sessionId}/mode`,
-      { method: "PUT", body: JSON.stringify({ mode }) },
-    ),
+    }>(`/sessions/${sessionId}/mode`, {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
 
   getProcessInfo: (sessionId: string) =>
     fetchJSON<{
@@ -1315,6 +1439,26 @@ export const api = {
   markSessionUnread: (sessionId: string) =>
     fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
       method: "DELETE",
+    }),
+
+  markSessionDone: (sessionId: string) =>
+    fetchJSON<{
+      message: DurableSyntheticDoneMessage;
+      paused: true;
+      queued?: boolean;
+      deferredMessages?: SessionQueuedMessageSummary[];
+    }>(`/sessions/${sessionId}/done`, {
+      method: "POST",
+    }),
+
+  archiveSession: (sessionId: string) =>
+    fetchJSON<{
+      message: DurableSyntheticDoneMessage;
+      paused: true;
+      queued?: boolean;
+      deferredMessages?: SessionQueuedMessageSummary[];
+    }>(`/sessions/${sessionId}/archive`, {
+      method: "POST",
     }),
 
   getLastSeen: () =>
@@ -1388,28 +1532,7 @@ export const api = {
     ),
 
   // Global Sessions API
-  getGlobalSessions: (params?: {
-    project?: string;
-    q?: string;
-    after?: string;
-    limit?: number;
-    includeArchived?: boolean;
-    starred?: boolean;
-    includeStats?: boolean;
-  }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.project) searchParams.set("project", params.project);
-    if (params?.q) searchParams.set("q", params.q);
-    if (params?.after) searchParams.set("after", params.after);
-    if (params?.limit) searchParams.set("limit", String(params.limit));
-    if (params?.includeArchived) searchParams.set("includeArchived", "true");
-    if (params?.starred) searchParams.set("starred", "true");
-    if (params?.includeStats) searchParams.set("includeStats", "true");
-    const query = searchParams.toString();
-    return fetchJSON<GlobalSessionsResponse>(
-      query ? `/sessions?${query}` : "/sessions",
-    );
-  },
+  getGlobalSessions: getGlobalSessionsRequest,
   getGlobalSessionStats: () =>
     fetchJSON<{
       stats: GlobalSessionStats;
@@ -1523,6 +1646,48 @@ export const api = {
     fetchJSON<PublicSessionShareSessionStatusResponse>(
       `/public-shares/sessions/${encodeURIComponent(projectId)}/${encodeURIComponent(sessionId)}`,
     ),
+
+  getPublicShares: (
+    options: {
+      cursor?: string;
+      limit?: number;
+      projectId?: string;
+      sessionId?: string;
+      mode?: "frozen" | "live";
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.projectId) params.set("projectId", options.projectId);
+    if (options.sessionId) params.set("sessionId", options.sessionId);
+    if (options.mode) params.set("mode", options.mode);
+    const query = params.toString();
+    return fetchJSON<PublicShareManagementListResponse>(
+      `/public-shares${query ? `?${query}` : ""}`,
+    );
+  },
+
+  revokePublicShare: (shareId: string) =>
+    fetchJSON<RevokePublicShareResponse>(
+      `/public-shares/${encodeURIComponent(shareId)}`,
+      { method: "DELETE" },
+    ),
+
+  revokeAllPublicShares: () =>
+    fetchJSON<RevokeAllPublicSharesResponse>("/public-shares/revoke-all", {
+      method: "POST",
+      body: JSON.stringify({ confirmation: "revoke-all-public-shares" }),
+    }),
+
+  freezePublicShares: (shareIds: readonly string[]) =>
+    fetchJSON<FreezePublicSharesResponse>("/public-shares/freeze-live", {
+      method: "POST",
+      body: JSON.stringify({
+        shareIds,
+        confirmation: PUBLIC_SHARE_MANAGEMENT_FREEZE_CONFIRMATION,
+      }),
+    }),
 
   createPublicSessionShare: (body: CreatePublicSessionShareRequest) =>
     fetchJSON<CreatePublicSessionShareResponse>("/public-shares", {
@@ -1663,6 +1828,10 @@ export const DEFAULT_FILE_ACCESS: FileAccessSettings = {
 
 /** Server-wide settings that persist across restarts */
 export interface ServerSettings {
+  /** Where new YA-owned project state is written. */
+  projectDirectoryStorage?: "app-data" | "project";
+  /** Whether new live tool-result images receive durable copies. */
+  toolResultMediaPreservation?: "on-demand" | "preserve";
   /** Whether clients should register the service worker */
   serviceWorkerEnabled: boolean;
   /** Whether remote SRP resume sessions should be persisted to disk */
@@ -1675,6 +1844,10 @@ export interface ServerSettings {
   publicSharesEnabled?: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether captured source-review submissions and outcomes are enabled */
+  sourceReviewSubmissionsEnabled?: boolean;
+  /** Completed assistant turns that may ingest one submission response */
+  sourceReviewResponseTurns?: number;
   /** Whether Agents may sample same-user provider processes on this host. */
   hostProcessObservabilityEnabled?: boolean;
   /** Base URL for the hosted YA client */
@@ -1707,6 +1880,12 @@ export interface ServerSettings {
   claudeGatewayUrl?: string;
   /** Optional shell line that starts a loopback Claude Gateway on demand */
   claudeGatewayStartCommand?: string;
+  /** Whether Claude Gateway launches deny Claude Code's Agent tool */
+  claudeGatewayDisableAgent?: boolean;
+  /** Whether Claude Gateway launches remove Claude Code's plan-mode tools */
+  claudeGatewayDisablePlanMode?: boolean;
+  /** YA launch override for supported providers' subagent nesting depth. */
+  subagentMaxDepth?: number | null;
   /** Ollama server URL for claude-ollama provider */
   ollamaUrl?: string;
   /** Custom system prompt for Ollama provider */
@@ -1722,6 +1901,8 @@ export interface ServerSettings {
    * window. Absent leaves Claude's environment/default unchanged.
    */
   claudeAutoCompactPercentOverride?: number;
+  /** Foreground Bash commands Claude may make resumable when a steer arrives. */
+  claudeSteerBackgroundBash?: ClaudeSteerBackgroundBashSettings;
   /** Whether the device bridge (emulator/device streaming) feature is enabled */
   deviceBridgeEnabled?: boolean;
   /** Defaults applied when opening the new session form */
@@ -1748,12 +1929,20 @@ export interface ServerSettings {
   lifecycleWebhookToken?: string;
   /** When true, include dryRun=true in lifecycle webhook payloads */
   lifecycleWebhookDryRun?: boolean;
+  /** Reasoning-summary mode applied when Codex app-server sessions start. */
+  codexReasoningSummary?: CodexReasoningSummary;
   /** How the server handles Codex CLI updates */
   codexUpdatePolicy?: "auto" | "notify" | "off";
+  /** Keep eligible local Linux Codex runtimes across YA server reloads. */
+  codexReloadSafeSessions?: boolean;
+  /** Best-effort idle provider reap grace in hours; negative disables it. */
+  idleReapHours?: number;
   /** Max seconds between consecutive queued turns to join at delivery. */
   deferredJoinWindowSeconds?: number;
   /** Whether delivered queued turns receive compose-time staleness anchors. */
   composeAnchorsEnabled?: boolean;
+  /** Absolute [sent <ISO>] compose-time markers on delivered user turns. */
+  turnTimestamps?: "off" | "before" | "after";
   /** Seconds Project Queue waits after whole-project idle before promotion. */
   projectQueueQuietSeconds?: number;
   /**
@@ -1780,6 +1969,9 @@ export interface PublicShareStatusResponse {
   relayUrl?: string | null;
   relayUsername?: string | null;
   canCreate: boolean;
+  storageState?: PublicShareStorageState;
+  storageError?: string | null;
+  totalValidLinks?: number | null;
   yaClientBaseUrl: string | null;
   defaultYaClientBaseUrl: string;
   yaClientBaseUrlError?: string;

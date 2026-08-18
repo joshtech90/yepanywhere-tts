@@ -1,10 +1,19 @@
+import { DEFAULT_RECAP_AFTER_SECONDS } from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageQueue } from "../src/sdk/messageQueue.js";
+import type {
+  EffectiveSessionLaunchSettings,
+  EffectiveSessionLaunchSettingsValue,
+  SessionMetadataService,
+} from "../src/metadata/index.js";
+import { getLogger } from "../src/logging/logger.js";
+import type { NotificationService } from "../src/notifications/index.js";
 import { MockClaudeSDK, createMockScenario } from "../src/sdk/mock.js";
 import type { AgentProvider } from "../src/sdk/providers/types.js";
 import type { RealClaudeSDKInterface } from "../src/sdk/types.js";
 import { createControllableIterator, waitFor } from "./process.test-support.js";
 import {
+  RetryableSessionLaunchError,
   type ResumeCompactionError,
   Supervisor,
 } from "../src/supervisor/Supervisor.js";
@@ -13,6 +22,85 @@ import {
   encodeProjectId,
 } from "../src/supervisor/types.js";
 import { type BusEvent, EventBus } from "../src/watcher/EventBus.js";
+
+function createLaunchSettingsMetadata(
+  initial?: EffectiveSessionLaunchSettings,
+  legacyRequestedModel?: string,
+) {
+  let current = initial;
+  const writes = {
+    setProvider: vi.fn<SessionMetadataService["setProvider"]>(
+      async () => undefined,
+    ),
+    setExecutor: vi.fn<SessionMetadataService["setExecutor"]>(
+      async () => undefined,
+    ),
+    updateMetadata: vi.fn<SessionMetadataService["updateMetadata"]>(
+      async () => undefined,
+    ),
+    setSessionSandbox: vi.fn<SessionMetadataService["setSessionSandbox"]>(
+      async () => undefined,
+    ),
+    remapSessionId: vi.fn<SessionMetadataService["remapSessionId"]>(
+      async () => undefined,
+    ),
+    flushPendingWrites: vi.fn<SessionMetadataService["flushPendingWrites"]>(
+      async () => undefined,
+    ),
+    recordSyntheticDone: vi.fn<SessionMetadataService["recordSyntheticDone"]>(
+      async () => undefined,
+    ),
+  };
+  const service = {
+    getMetadata: () => undefined,
+    getEffectiveLaunchSettings: () => current,
+    getRequestedModel: () =>
+      current ? (current.requestedModel ?? undefined) : legacyRequestedModel,
+    recordEffectiveLaunchSettings: async (
+      _sessionId: string,
+      value: EffectiveSessionLaunchSettingsValue,
+    ) => {
+      const unchanged =
+        current?.permissionMode === value.permissionMode &&
+        current.requestedModel === value.requestedModel &&
+        current.serviceTier === value.serviceTier &&
+        JSON.stringify(current.thinking) === JSON.stringify(value.thinking) &&
+        current.effort === value.effort;
+      if (!unchanged) {
+        current = {
+          schemaVersion: 1,
+          revision: (current?.revision ?? 0) + 1,
+          ...value,
+        };
+      }
+      return current as EffectiveSessionLaunchSettings;
+    },
+    ...writes,
+  } as unknown as SessionMetadataService;
+  return { service, current: () => current, writes };
+}
+
+function testProvider(
+  startSession: AgentProvider["startSession"],
+): AgentProvider {
+  return {
+    name: "claude",
+    displayName: "Claude",
+    supportsPermissionMode: true,
+    supportsThinkingToggle: true,
+    supportsSlashCommands: true,
+    supportsSteering: false,
+    isInstalled: async () => true,
+    isAuthenticated: async () => true,
+    getAuthStatus: async () => ({
+      installed: true,
+      authenticated: true,
+      enabled: true,
+    }),
+    getAvailableModels: async () => [],
+    startSession,
+  };
+}
 
 describe("Supervisor", () => {
   let mockSdk: MockClaudeSDK;
@@ -35,12 +123,214 @@ describe("Supervisor", () => {
       expect(process.projectPath).toBe("/tmp/test");
     });
 
+    it("keeps an isolated mock SDK out of provider discovery", async () => {
+      const isolatedSdk = new MockClaudeSDK();
+      isolatedSdk.addScenario(createMockScenario("isolated-session", "Hello!"));
+      const isolatedSupervisor = new Supervisor({
+        provider: null,
+        sdk: isolatedSdk,
+        idleTimeoutMs: 100,
+      });
+
+      const process = await isolatedSupervisor.startSession(
+        "/tmp/test",
+        { text: "hi" },
+        undefined,
+        { providerName: "claude" },
+      );
+
+      await vi.waitFor(() => {
+        expect(process.sessionId).toBe("isolated-session");
+      });
+      await expect(
+        isolatedSupervisor.requestRecap(process.id),
+      ).resolves.toMatchObject({
+        supported: false,
+        emitted: false,
+        reason: "provider not found",
+      });
+    });
+
     it("tracks process in getAllProcesses", async () => {
       mockSdk.addScenario(createMockScenario("sess-123", "Hello!"));
 
       await supervisor.startSession("/tmp/test", { text: "hi" });
 
       expect(supervisor.getAllProcesses()).toHaveLength(1);
+    });
+
+    it("revalidates Gateway models at the actual new-session launch", async () => {
+      let advertisedModels = [{ id: "gateway-model", name: "Gateway Model" }];
+      let sessionNumber = 0;
+      const getAvailableModels = vi.fn(async () => advertisedModels);
+      const startSession = vi.fn(
+        async (_options: Parameters<AgentProvider["startSession"]>[0]) => {
+          sessionNumber += 1;
+          const sessionId = `gateway-session-${sessionNumber}`;
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: sessionId,
+            };
+            for await (const message of queue) {
+              void message;
+              yield { type: "result" as const, session_id: sessionId };
+              return;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {},
+          };
+        },
+      );
+      const provider = {
+        ...testProvider(startSession),
+        name: "claude-gateway" as const,
+        displayName: "Claude Gateway",
+        getAvailableModels,
+      };
+      const gatewaySupervisor = new Supervisor({ provider });
+
+      await expect(
+        gatewaySupervisor.startSession(
+          "/tmp/test",
+          { text: "start after validation" },
+          undefined,
+          { model: "gateway-model", providerName: "claude-gateway" },
+        ),
+      ).resolves.toMatchObject({ provider: "claude-gateway" });
+
+      advertisedModels = [];
+      await expect(
+        gatewaySupervisor.startSession(
+          "/tmp/test",
+          { text: "start after catalog changed" },
+          undefined,
+          { model: "gateway-model", providerName: "claude-gateway" },
+        ),
+      ).rejects.toThrow(
+        'Claude Gateway no longer advertises model "gateway-model"',
+      );
+      await expect(
+        gatewaySupervisor.createSession("/tmp/test", undefined, {
+          model: "gateway-model",
+          providerName: "claude-gateway",
+        }),
+      ).rejects.toThrow(
+        'Claude Gateway no longer advertises model "gateway-model"',
+      );
+      expect(getAvailableModels).toHaveBeenCalledTimes(3);
+      expect(startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects retryably when required provider startup fails before init", async () => {
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      const abort = vi.fn();
+      const consumedMessages: unknown[] = [];
+      const provider = testProvider(async () => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          for await (const message of queue) {
+            consumedMessages.push(message);
+            yield await Promise.reject(
+              new Error("Codex app-server socket timed out"),
+            );
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort,
+        };
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      await expect(
+        providerSupervisor.startSession(
+          "/tmp/test",
+          { text: "keep this queued" },
+          undefined,
+          undefined,
+          { requireProviderSessionId: true },
+        ),
+      ).rejects.toEqual(
+        expect.objectContaining({
+          name: RetryableSessionLaunchError.name,
+          message: expect.stringContaining("Codex app-server socket timed out"),
+        }),
+      );
+
+      expect(consumedMessages).toHaveLength(1);
+      expect(abort).toHaveBeenCalledOnce();
+      expect(providerSupervisor.getAllProcesses()).toEqual([]);
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "process_error",
+          errorMessage: "Codex app-server socket timed out",
+        }),
+        expect.stringContaining("Codex app-server socket timed out"),
+      );
+      errorLog.mockRestore();
+    });
+
+    it("settles a required launch on provider identity after queuing input", async () => {
+      const abort = vi.fn();
+      const consumedMessages: unknown[] = [];
+      const provider = testProvider(async () => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          for await (const message of queue) {
+            consumedMessages.push(message);
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: "provider-session-id",
+            };
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort,
+        };
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      const process = await providerSupervisor.startSession(
+        "/tmp/test",
+        { text: "launch after input" },
+        undefined,
+        undefined,
+        { requireProviderSessionId: true },
+      );
+
+      expect(process).toMatchObject({ sessionId: "provider-session-id" });
+      expect(consumedMessages).toHaveLength(1);
+      expect(providerSupervisor.getAllProcesses()).toEqual([process]);
+    });
+
+    it("classifies create-only provider startup rejection as retryable", async () => {
+      const provider = testProvider(async () => {
+        throw new Error("Provider rejected this launch");
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      await expect(
+        providerSupervisor.createSession("/tmp/test", undefined, undefined, {
+          retryProviderStartupFailure: true,
+        }),
+      ).rejects.toEqual(
+        expect.objectContaining({
+          name: RetryableSessionLaunchError.name,
+          message: expect.stringContaining("Provider rejected this launch"),
+        }),
+      );
     });
 
     it("encodes projectId correctly", async () => {
@@ -66,6 +356,57 @@ describe("Supervisor", () => {
       // The message was queued
       expect(process.queueDepth).toBeGreaterThanOrEqual(0);
     });
+
+    it("persists provider use before registering a live process", async () => {
+      mockSdk.addScenario(createMockScenario("sess-eligible", "Hello!"));
+      const onSuccessfulProviderSession = vi.fn(async () => {});
+      const providerMetadata = {
+        getMetadata: vi.fn(() => undefined),
+        recordEffectiveLaunchSettings: vi.fn(async () => undefined),
+        remapSessionId: vi.fn(async () => {}),
+        setProvider: vi.fn(async () => {}),
+      };
+      const supervisorWithEligibility = new Supervisor({
+        sdk: mockSdk,
+        idleTimeoutMs: 100,
+        sessionMetadataService:
+          providerMetadata as unknown as SessionMetadataService,
+        onSuccessfulProviderSession,
+      });
+
+      const process = await supervisorWithEligibility.startSession(
+        "/tmp/test",
+        { text: "hi" },
+      );
+
+      expect(providerMetadata.setProvider).toHaveBeenCalledWith(
+        process.sessionId,
+        "claude",
+      );
+      expect(onSuccessfulProviderSession).toHaveBeenCalledWith(
+        process.sessionId,
+        "claude",
+      );
+      expect(supervisorWithEligibility.getAllProcesses()).toEqual([process]);
+    });
+
+    it("aborts instead of reporting success when eligibility is not durable", async () => {
+      mockSdk.addScenario(createMockScenario("sess-failed-eligibility", ""));
+      const supervisorWithEligibility = new Supervisor({
+        sdk: mockSdk,
+        idleTimeoutMs: 100,
+        onSuccessfulProviderSession: async () => {
+          throw new Error("disk full");
+        },
+      });
+
+      await expect(
+        supervisorWithEligibility.startSession("/tmp/test", { text: "hi" }),
+      ).rejects.toThrow(
+        "Failed to persist successful claude session boundary: disk full",
+      );
+      expect(supervisorWithEligibility.getAllProcesses()).toEqual([]);
+    });
   });
 
   describe("resumeSession", () => {
@@ -77,6 +418,190 @@ describe("Supervisor", () => {
       });
 
       expect(process.sessionId).toBe("sess-123");
+    });
+
+    it("inherits durable settings on a cold direct-message resume", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              void message;
+              yield {
+                type: "result" as const,
+                session_id: options.resumeSessionId ?? "new-session",
+              };
+              return;
+            }
+          }
+          return { iterator: iterator(), queue, abort: () => {} };
+        },
+      );
+      const provider = testProvider(startSession);
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 7,
+        permissionMode: "bypassPermissions",
+        requestedModel: "opus",
+        serviceTier: "priority",
+        thinking: { type: "adaptive" },
+        effort: "max",
+      });
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: metadata.service,
+      });
+
+      const process = await supervisorWithMetadata.resumeSession(
+        "cold-resume",
+        "/tmp/test",
+        { text: "continue" },
+      );
+
+      expect("id" in process).toBe(true);
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resumeSessionId: "cold-resume",
+          permissionMode: "bypassPermissions",
+          model: "opus",
+          serviceTier: "priority",
+          thinking: { type: "adaptive" },
+          effort: "max",
+        }),
+      );
+      expect(metadata.current()?.revision).toBe(7);
+    });
+
+    it("does not persist a model change rejected by the provider", async () => {
+      const setModel = vi.fn(async () => {
+        throw new Error("unsupported model");
+      });
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            setModel,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const provider = testProvider(startSession);
+      const initial: EffectiveSessionLaunchSettings = {
+        schemaVersion: 1,
+        revision: 2,
+        permissionMode: "default",
+        requestedModel: "sonnet",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      };
+      const metadata = createLaunchSettingsMetadata(initial);
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: metadata.service,
+      });
+      const process = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "rejected-model",
+      );
+
+      await expect(
+        supervisorWithMetadata.reconfigureProcess(process.id, {
+          model: "missing-model",
+        }),
+      ).rejects.toThrow("unsupported model");
+      expect(metadata.current()).toEqual(initial);
+
+      await expect(
+        supervisorWithMetadata.abortProcess(process.id),
+      ).resolves.toBe(true);
+    });
+
+    it("persists an exact default token after a successful live model switch", async () => {
+      const setModel = vi.fn(async () => {});
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            setModel,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 2,
+        permissionMode: "default",
+        requestedModel: "sonnet",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      });
+      const supervisorWithMetadata = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+      });
+      const process = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "default-model",
+      );
+
+      const updated = await supervisorWithMetadata.reconfigureProcess(
+        process.id,
+        { model: undefined, requestedModel: "default" },
+      );
+
+      expect(updated).toBe(process);
+      expect(setModel).toHaveBeenCalledWith(undefined);
+      expect(process.requestedModel).toBe("default");
+      expect(process.resolvedModel).toBeUndefined();
+      expect(metadata.current()).toEqual({
+        schemaVersion: 1,
+        revision: 3,
+        permissionMode: "default",
+        requestedModel: "default",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      });
+
+      await expect(
+        supervisorWithMetadata.abortProcess(process.id),
+      ).resolves.toBe(true);
     });
 
     it("reuses existing process for same session", async () => {
@@ -226,7 +751,6 @@ describe("Supervisor", () => {
         session_id: "compact-threshold-session",
       });
       await waitFor(() => expect(started.state.type).toBe("idle"));
-
       const result = await supervisorWithProvider.queueMessageToSession(
         "compact-threshold-session",
         "/tmp/test",
@@ -242,12 +766,12 @@ describe("Supervisor", () => {
 
       expect(result).toMatchObject({ success: true, restarted: true });
       expect(startSession).toHaveBeenCalledTimes(2);
-      expect(
-        startSession.mock.calls[0]?.[0].compactAtContextTokenLimit,
-      ).toBe(68_000);
-      expect(
-        startSession.mock.calls[1]?.[0].compactAtContextTokenLimit,
-      ).toBe(136_000);
+      expect(startSession.mock.calls[0]?.[0].compactAtContextTokenLimit).toBe(
+        68_000,
+      );
+      expect(startSession.mock.calls[1]?.[0].compactAtContextTokenLimit).toBe(
+        136_000,
+      );
 
       if (result.success) {
         await supervisorWithProvider.abortProcess(result.process.id);
@@ -285,9 +809,14 @@ describe("Supervisor", () => {
         getAvailableModels: async () => [],
         startSession,
       };
+      let steerBackgroundPolicy = {
+        allowRegex: ".*",
+        denyRegex: ".*exclusive.*",
+      };
       const supervisorWithProvider = new Supervisor({
         provider,
         idleTimeoutMs: 100,
+        getClaudeSteerBackgroundBashSettings: () => steerBackgroundPolicy,
       });
 
       const started = await supervisorWithProvider.resumeSession(
@@ -310,6 +839,10 @@ describe("Supervisor", () => {
         session_id: "claude-compact-override-session",
       });
       await waitFor(() => expect(started.state.type).toBe("idle"));
+      steerBackgroundPolicy = {
+        allowRegex: ".*agentctl watch.*",
+        denyRegex: "",
+      };
 
       const result = await supervisorWithProvider.queueMessageToSession(
         "claude-compact-override-session",
@@ -321,12 +854,24 @@ describe("Supervisor", () => {
 
       expect(result).toMatchObject({ success: true, restarted: true });
       expect(startSession).toHaveBeenCalledTimes(2);
-      expect(
-        startSession.mock.calls[0]?.[0].launchCompactPercentOverride,
-      ).toBe(60);
-      expect(
-        startSession.mock.calls[1]?.[0].launchCompactPercentOverride,
-      ).toBe(50);
+      expect(startSession.mock.calls[0]?.[0].launchCompactPercentOverride).toBe(
+        60,
+      );
+      expect(startSession.mock.calls[1]?.[0].launchCompactPercentOverride).toBe(
+        50,
+      );
+      expect(startSession.mock.calls[0]?.[0].claudeSteerBackgroundBash).toEqual(
+        {
+          allowRegex: ".*",
+          denyRegex: ".*exclusive.*",
+        },
+      );
+      expect(startSession.mock.calls[1]?.[0].claudeSteerBackgroundBash).toEqual(
+        {
+          allowRegex: ".*agentctl watch.*",
+          denyRegex: "",
+        },
+      );
 
       if (result.success) {
         await supervisorWithProvider.abortProcess(result.process.id);
@@ -377,8 +922,7 @@ describe("Supervisor", () => {
               };
               yield {
                 type: "result" as const,
-                session_id:
-                  options.resumeSessionId ?? "compact-force-session",
+                session_id: options.resumeSessionId ?? "compact-force-session",
               };
             }
           }
@@ -503,8 +1047,7 @@ describe("Supervisor", () => {
               };
               yield {
                 type: "result" as const,
-                session_id:
-                  options.resumeSessionId ?? "input-wins-session",
+                session_id: options.resumeSessionId ?? "input-wins-session",
               };
             }
           }
@@ -744,7 +1287,7 @@ describe("Supervisor", () => {
       await supervisorWithProvider.abortProcess(started.id);
     });
 
-    it("applies an effort change without interrupting an active turn", async () => {
+    it("queues an effort change until the active turn completes", async () => {
       let aborted = false;
       let completeTurn = () => {};
       const turnCompleted = new Promise<void>((resolve) => {
@@ -817,19 +1360,18 @@ describe("Supervisor", () => {
         expect(process.state.type).toBe("in-turn");
       });
 
-      const updated = await supervisorWithProvider.reconfigureProcess(
-        process.id,
-        {
-          thinking: { type: "adaptive", display: "summarized" },
-          effort: "medium",
-        },
-      );
-
       try {
-        expect(updated).toBe(process);
+        await expect(
+          supervisorWithProvider.reconfigureProcess(process.id, {
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "medium",
+          }),
+        ).resolves.toBe(process);
         expect(startSession).toHaveBeenCalledTimes(1);
         expect(aborted).toBe(false);
         expect(process.effort).toBe("medium");
+        expect(process.appliedEffort).toBe("low");
+        expect(process.getInfo().effort).toBe("medium");
         expect(setEffort).not.toHaveBeenCalled();
 
         completeTurn();
@@ -837,8 +1379,9 @@ describe("Supervisor", () => {
           expect(process.state.type).toBe("idle");
         });
         expect(setEffort).toHaveBeenCalledWith("medium");
+        expect(process.appliedEffort).toBe("medium");
       } finally {
-        await supervisorWithProvider.abortProcess(updated?.id ?? process.id);
+        await supervisorWithProvider.abortProcess(process.id);
       }
     });
 
@@ -1195,9 +1738,7 @@ describe("Supervisor", () => {
       // Now owned by this live process.
       expect(supervisor.getProcessForSession("claude-old")).toBe(process);
       expect(process.state.type).toBe("idle");
-      expect(process.getLivenessSnapshot().derivedStatus).toBe(
-        "verified-idle",
-      );
+      expect(process.getLivenessSnapshot().derivedStatus).toBe("verified-idle");
 
       // Idempotent: a second call returns the existing process, no re-spawn.
       const again = await supervisor.reactivateSession(
@@ -1214,6 +1755,450 @@ describe("Supervisor", () => {
       expect(process.state.type).toBe("in-turn");
 
       await expect(supervisor.abortProcess(process.id)).resolves.toBe(true);
+    });
+
+    it.each(["default", "plan", "bypassPermissions"] as const)(
+      "restores %s and model settings after the owned process dies",
+      async (permissionMode) => {
+        const startSession = vi.fn(
+          async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+            const queue = new MessageQueue();
+            let aborted = false;
+            async function* iterator() {
+              yield {
+                type: "system" as const,
+                subtype: "init" as const,
+                session_id: options.resumeSessionId ?? "new-session",
+              };
+              for await (const message of queue) {
+                if (aborted) return;
+                void message;
+              }
+            }
+            return {
+              iterator: iterator(),
+              queue,
+              abort: () => {
+                aborted = true;
+                queue.push({ text: "__abort__" });
+              },
+            };
+          },
+        );
+        const provider = testProvider(startSession);
+        const metadata = createLaunchSettingsMetadata();
+        const supervisorWithMetadata = new Supervisor({
+          provider,
+          idleTimeoutMs: 60_000,
+          sessionMetadataService: metadata.service,
+        });
+
+        const first = await supervisorWithMetadata.reactivateSession(
+          "/tmp/test",
+          "durable-session",
+          permissionMode,
+          {
+            providerName: "claude",
+            model: "opus",
+            requestedModel: "opus",
+            serviceTier: "priority",
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "high",
+          },
+        );
+        expect(metadata.current()?.revision).toBe(1);
+        await expect(
+          supervisorWithMetadata.abortProcess(first.id),
+        ).resolves.toBe(true);
+
+        const restored = await supervisorWithMetadata.reactivateSession(
+          "/tmp/test",
+          "durable-session",
+          undefined,
+          { providerName: "claude" },
+        );
+
+        expect(startSession.mock.calls[1]?.[0]).toEqual(
+          expect.objectContaining({
+            resumeSessionId: "durable-session",
+            permissionMode,
+            model: "opus",
+            serviceTier: "priority",
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "high",
+          }),
+        );
+        expect(restored.permissionMode).toBe(permissionMode);
+        expect(restored.requestedModel).toBe("opus");
+        expect(restored.thinking).toEqual({
+          type: "adaptive",
+          display: "summarized",
+        });
+        expect(restored.effort).toBe("high");
+        // Reattaching an identical effective snapshot is not a metadata write.
+        expect(metadata.current()?.revision).toBe(1);
+
+        await expect(
+          supervisorWithMetadata.abortProcess(restored.id),
+        ).resolves.toBe(true);
+      },
+    );
+
+    it("lets an explicit cold override replace the durable snapshot", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const provider = testProvider(startSession);
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 4,
+        permissionMode: "plan",
+        requestedModel: "opus",
+        serviceTier: "priority",
+        thinking: { type: "adaptive" },
+        effort: "high",
+      });
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: metadata.service,
+      });
+
+      const process = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "override-session",
+        "bypassPermissions",
+        {
+          providerName: "claude",
+          requestedModel: "default",
+          thinking: { type: "disabled" },
+        },
+      );
+
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "bypassPermissions",
+          model: undefined,
+          serviceTier: "priority",
+          thinking: { type: "disabled" },
+          effort: undefined,
+        }),
+      );
+      expect(metadata.current()).toEqual({
+        schemaVersion: 1,
+        revision: 5,
+        permissionMode: "bypassPermissions",
+        requestedModel: "default",
+        serviceTier: "priority",
+        thinking: { type: "disabled" },
+        effort: null,
+      });
+      await expect(
+        supervisorWithMetadata.abortProcess(process.id),
+      ).resolves.toBe(true);
+    });
+
+    it("persists recovered settings after a successful cold launch", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const provider = {
+        ...testProvider(startSession),
+        name: "codex" as const,
+        displayName: "Codex",
+      };
+      const metadata = createLaunchSettingsMetadata();
+      const recoverSessionLaunchSettings = vi.fn(async () => ({
+        permissionMode: "bypassPermissions" as const,
+        requestedModel: "gpt-5.6-sol",
+        thinking: {
+          type: "adaptive" as const,
+          display: "summarized" as const,
+        },
+        effort: "xhigh" as const,
+      }));
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        idleTimeoutMs: 60_000,
+        sessionMetadataService: metadata.service,
+        recoverSessionLaunchSettings,
+      });
+
+      const first = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "recovered-session",
+        undefined,
+        { providerName: "codex" },
+      );
+
+      expect(recoverSessionLaunchSettings).toHaveBeenCalledWith(
+        "recovered-session",
+        encodeProjectId("/tmp/test"),
+        "codex",
+      );
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resumeSessionId: "recovered-session",
+          permissionMode: "bypassPermissions",
+          model: "gpt-5.6-sol",
+          thinking: { type: "adaptive", display: "summarized" },
+          effort: "xhigh",
+        }),
+      );
+      expect(metadata.current()).toEqual({
+        schemaVersion: 1,
+        revision: 1,
+        permissionMode: "bypassPermissions",
+        requestedModel: "gpt-5.6-sol",
+        serviceTier: null,
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "xhigh",
+      });
+
+      await expect(supervisorWithMetadata.abortProcess(first.id)).resolves.toBe(
+        true,
+      );
+      const second = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "recovered-session",
+        undefined,
+        { providerName: "codex" },
+      );
+      expect(recoverSessionLaunchSettings).toHaveBeenCalledTimes(1);
+      expect(startSession).toHaveBeenCalledTimes(2);
+      await expect(
+        supervisorWithMetadata.abortProcess(second.id),
+      ).resolves.toBe(true);
+    });
+
+    it("treats a complete durable snapshot as authoritative", async () => {
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const provider = {
+        ...testProvider(startSession),
+        name: "codex" as const,
+        displayName: "Codex",
+      };
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 3,
+        permissionMode: "plan",
+        requestedModel: null,
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      });
+      const recoverSessionLaunchSettings = vi.fn(async () => ({
+        permissionMode: "bypassPermissions" as const,
+        requestedModel: "gpt-5.6-sol",
+        thinking: { type: "adaptive" as const },
+        effort: "xhigh" as const,
+      }));
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: metadata.service,
+        recoverSessionLaunchSettings,
+      });
+
+      const process = await supervisorWithMetadata.reactivateSession(
+        "/tmp/test",
+        "durable-default-session",
+        undefined,
+        { providerName: "codex" },
+      );
+
+      expect(recoverSessionLaunchSettings).not.toHaveBeenCalled();
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "plan",
+          model: undefined,
+          thinking: undefined,
+          effort: undefined,
+        }),
+      );
+      expect(metadata.current()?.revision).toBe(3);
+      await expect(
+        supervisorWithMetadata.abortProcess(process.id),
+      ).resolves.toBe(true);
+    });
+
+    it("lets explicit cold settings override transcript recovery", async () => {
+      const startSession = vi.fn(async () => {
+        throw new Error("stop after resolution");
+      });
+      const provider = {
+        ...testProvider(startSession),
+        name: "codex" as const,
+        displayName: "Codex",
+      };
+      const metadata = createLaunchSettingsMetadata();
+      const recoverSessionLaunchSettings = vi.fn(async () => ({
+        permissionMode: "bypassPermissions" as const,
+        requestedModel: "recovered-model",
+        thinking: { type: "adaptive" as const },
+        effort: "xhigh" as const,
+      }));
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: metadata.service,
+        recoverSessionLaunchSettings,
+      });
+
+      await expect(
+        supervisorWithMetadata.reactivateSession(
+          "/tmp/test",
+          "explicit-recovery-session",
+          "default",
+          {
+            providerName: "codex",
+            requestedModel: "explicit-model",
+            thinking: { type: "disabled" },
+          },
+        ),
+      ).rejects.toThrow("stop after resolution");
+
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "default",
+          model: "explicit-model",
+          thinking: { type: "disabled" },
+          effort: undefined,
+        }),
+      );
+      expect(recoverSessionLaunchSettings).not.toHaveBeenCalled();
+      expect(metadata.current()).toBeUndefined();
+    });
+
+    it("keeps YA model metadata and does not save failed recovered launches", async () => {
+      const legacy = createLaunchSettingsMetadata(undefined, "sonnet");
+      const startSession = vi.fn(async () => {
+        throw new Error("provider rejected launch");
+      });
+      const provider = testProvider(startSession);
+      const recoverSessionLaunchSettings = vi.fn(async () => ({
+        permissionMode: "bypassPermissions" as const,
+        requestedModel: "gpt-5.6-sol",
+        thinking: { type: "adaptive" as const },
+        effort: "xhigh" as const,
+      }));
+      const supervisorWithMetadata = new Supervisor({
+        provider,
+        sessionMetadataService: legacy.service,
+        defaultPermissionMode: "default",
+        recoverSessionLaunchSettings,
+      });
+
+      await expect(
+        supervisorWithMetadata.reactivateSession("/tmp/test", "legacy-session"),
+      ).rejects.toThrow("provider rejected launch");
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "bypassPermissions",
+          model: "sonnet",
+          thinking: { type: "adaptive" },
+          effort: "xhigh",
+        }),
+      );
+      expect(recoverSessionLaunchSettings).toHaveBeenCalledOnce();
+      expect(legacy.current()).toBeUndefined();
+    });
+
+    it("falls back conservatively when transcript recovery fails", async () => {
+      const legacy = createLaunchSettingsMetadata(undefined, "sonnet");
+      const startSession = vi.fn(async () => {
+        throw new Error("provider rejected launch");
+      });
+      const recoverSessionLaunchSettings = vi.fn(async () => {
+        throw new Error("transcript unavailable");
+      });
+      const supervisorWithMetadata = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: legacy.service,
+        defaultPermissionMode: "default",
+        recoverSessionLaunchSettings,
+      });
+
+      await expect(
+        supervisorWithMetadata.reactivateSession(
+          "/tmp/test",
+          "unreadable-legacy-session",
+        ),
+      ).rejects.toThrow("provider rejected launch");
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "default",
+          model: "sonnet",
+          thinking: undefined,
+          effort: undefined,
+        }),
+      );
+      expect(legacy.current()).toBeUndefined();
     });
 
     it("reaps a message-less reactivation that receives no turn", async () => {
@@ -1467,6 +2452,498 @@ describe("Supervisor", () => {
       await supervisor.abortProcess(process.id);
     });
 
+    it("applies a later override after an in-flight activation settles", async () => {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const setModel = vi.fn(async () => undefined);
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          await startGate;
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            setModel,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata();
+      const serialized = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+        idleTimeoutMs: 60_000,
+      });
+
+      const first = serialized.reactivateSession(
+        "/tmp/test",
+        "serialized-reactivation",
+        "default",
+        {
+          providerName: "claude",
+          model: "sonnet",
+          requestedModel: "sonnet",
+        },
+      );
+      await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
+      const second = serialized.reactivateSession(
+        "/tmp/test",
+        "serialized-reactivation",
+        "plan",
+        {
+          providerName: "claude",
+          model: "opus",
+          requestedModel: "opus",
+          recapAfterSeconds: 45,
+        },
+        {
+          requestedOverrides: {
+            permissionMode: "plan",
+            modelSettings: {
+              model: "opus",
+              requestedModel: "opus",
+              providerName: "claude",
+              executor: undefined,
+              recapMode: "fork",
+              recapAfterSeconds: 45,
+              promptSuggestionMode: "off",
+              sandboxLevel: "none",
+            },
+          },
+        },
+      );
+      releaseStart();
+
+      const [activated, reconciled] = await Promise.all([first, second]);
+      expect(reconciled).toBe(activated);
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(setModel).toHaveBeenCalledWith("opus");
+      expect(reconciled.permissionMode).toBe("plan");
+      expect(reconciled.recapMode).toBe("fork");
+      expect(reconciled.recapAfterSeconds).toBe(45);
+      expect(reconciled.promptSuggestionMode).toBe("off");
+      expect(metadata.current()).toMatchObject({
+        revision: 2,
+        permissionMode: "plan",
+        requestedModel: "opus",
+      });
+      expect(metadata.writes.setProvider).toHaveBeenLastCalledWith(
+        "serialized-reactivation",
+        "claude",
+      );
+      expect(metadata.writes.setExecutor).toHaveBeenCalledWith(
+        "serialized-reactivation",
+        undefined,
+      );
+      expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+        "serialized-reactivation",
+        {
+          recapMode: "fork",
+          recapAfterSeconds: 45,
+          promptSuggestionMode: "off",
+        },
+      );
+      expect(metadata.writes.setSessionSandbox).toHaveBeenCalledWith(
+        "serialized-reactivation",
+        expect.objectContaining({
+          level: "none",
+          projectPath: "/tmp/test",
+          provider: "claude",
+        }),
+      );
+      expect(metadata.writes.flushPendingWrites).toHaveBeenCalled();
+
+      const clearOverrides = () =>
+        serialized.reactivateSession(
+          "/tmp/test",
+          "serialized-reactivation",
+          undefined,
+          { providerName: "claude" },
+          {
+            requestedOverrides: {
+              modelSettings: {
+                recapMode: undefined,
+                recapAfterSeconds: undefined,
+                promptSuggestionMode: undefined,
+              },
+            },
+          },
+        );
+      metadata.writes.flushPendingWrites.mockRejectedValueOnce(
+        new Error("metadata unavailable"),
+      );
+      await expect(clearOverrides()).rejects.toThrow("metadata unavailable");
+      expect(reconciled.recapMode).toBe("off");
+      expect(setModel).toHaveBeenCalledTimes(1);
+
+      const cleared = await clearOverrides();
+      expect(cleared).toBe(reconciled);
+      expect(cleared.recapMode).toBe("off");
+      expect(cleared.recapAfterSeconds).toBe(DEFAULT_RECAP_AFTER_SECONDS);
+      expect(cleared.promptSuggestionMode).toBe("off");
+      expect(metadata.writes.updateMetadata).toHaveBeenLastCalledWith(
+        "serialized-reactivation",
+        {
+          recapMode: "off",
+          recapAfterSeconds: DEFAULT_RECAP_AFTER_SECONDS,
+          promptSuggestionMode: "off",
+        },
+      );
+
+      await serialized.abortProcess(reconciled.id);
+    });
+
+    it("serializes distinct reactivation overrides in request order", async () => {
+      let releaseOpus!: () => void;
+      const opusGate = new Promise<void>((resolve) => {
+        releaseOpus = resolve;
+      });
+      let releasePersistence!: () => void;
+      const persistenceGate = new Promise<void>((resolve) => {
+        releasePersistence = resolve;
+      });
+      const setModel = vi.fn(async (model?: string) => {
+        if (model === "opus") {
+          await opusGate;
+        }
+      });
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            setModel,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata();
+      let pendingRecapAfterSeconds: number | null | undefined;
+      metadata.writes.updateMetadata.mockImplementation(
+        async (_sessionId, updates) => {
+          pendingRecapAfterSeconds = updates.recapAfterSeconds;
+        },
+      );
+      metadata.writes.flushPendingWrites.mockImplementation(async () => {
+        if (pendingRecapAfterSeconds === 10) {
+          await persistenceGate;
+        }
+      });
+      const serialized = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+        idleTimeoutMs: 60_000,
+      });
+      const process = await serialized.reactivateSession(
+        "/tmp/test",
+        "ordered-reactivation",
+        undefined,
+        {
+          providerName: "claude",
+          model: "sonnet",
+          requestedModel: "sonnet",
+        },
+      );
+      metadata.writes.updateMetadata.mockClear();
+      metadata.writes.flushPendingWrites.mockClear();
+
+      const opus = serialized.reactivateSession(
+        "/tmp/test",
+        "ordered-reactivation",
+        undefined,
+        {
+          providerName: "claude",
+          model: "opus",
+          requestedModel: "opus",
+          recapAfterSeconds: 10,
+        },
+        {
+          requestedOverrides: {
+            modelSettings: {
+              model: "opus",
+              requestedModel: "opus",
+              recapAfterSeconds: 10,
+            },
+          },
+        },
+      );
+      await vi.waitFor(() => expect(setModel).toHaveBeenCalledWith("opus"));
+      const haiku = serialized.reactivateSession(
+        "/tmp/test",
+        "ordered-reactivation",
+        undefined,
+        {
+          providerName: "claude",
+          model: "haiku",
+          requestedModel: "haiku",
+          recapAfterSeconds: 20,
+        },
+        {
+          requestedOverrides: {
+            modelSettings: {
+              model: "haiku",
+              requestedModel: "haiku",
+              recapAfterSeconds: 20,
+            },
+          },
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(setModel).toHaveBeenCalledTimes(1);
+      releaseOpus();
+      await vi.waitFor(() =>
+        expect(metadata.writes.flushPendingWrites).toHaveBeenCalledTimes(1),
+      );
+      expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+        "ordered-reactivation",
+        { recapAfterSeconds: 10 },
+      );
+      expect(setModel).toHaveBeenCalledTimes(1);
+      releasePersistence();
+
+      await Promise.all([opus, haiku]);
+      expect(setModel.mock.calls.map(([model]) => model)).toEqual([
+        "opus",
+        "haiku",
+      ]);
+      expect(
+        metadata.writes.updateMetadata.mock.calls.map(
+          ([, updates]) => updates.recapAfterSeconds,
+        ),
+      ).toEqual([10, 20]);
+      expect(process.requestedModel).toBe("haiku");
+      expect(process.recapAfterSeconds).toBe(20);
+
+      await serialized.abortProcess(process.id);
+    });
+
+    it("applies supported active overrides and rejects restart requirements", async () => {
+      const setModel = vi.fn(async () => undefined);
+      let aborted = false;
+      let activeQueue: MessageQueue | undefined;
+      const abort = vi.fn(() => {
+        aborted = true;
+        activeQueue?.push({ text: "__abort__" });
+      });
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          activeQueue = queue;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return { iterator: iterator(), queue, setModel, abort };
+        },
+      );
+      const serialized = new Supervisor({
+        provider: testProvider(startSession),
+        idleTimeoutMs: 60_000,
+      });
+      const process = await serialized.reactivateSession(
+        "/tmp/test",
+        "active-reactivation",
+        undefined,
+        {
+          providerName: "claude",
+          model: "sonnet",
+          requestedModel: "sonnet",
+        },
+      );
+      expect(process.queueMessage({ text: "active turn" }).success).toBe(true);
+      expect(process.state.type).toBe("in-turn");
+
+      await expect(
+        serialized.reactivateSession(
+          "/tmp/test",
+          "active-reactivation",
+          undefined,
+          { providerName: "claude", model: "opus", requestedModel: "opus" },
+          {
+            requestedOverrides: {
+              modelSettings: { model: "opus", requestedModel: "opus" },
+            },
+          },
+        ),
+      ).resolves.toBe(process);
+      expect(setModel).toHaveBeenCalledWith("opus");
+
+      await expect(
+        serialized.reactivateSession(
+          "/tmp/test",
+          "active-reactivation",
+          undefined,
+          { providerName: "claude", serviceTier: "priority" },
+          {
+            requestedOverrides: {
+              modelSettings: { serviceTier: "priority" },
+            },
+          },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        changes: ["service tier"],
+      });
+      expect(abort).not.toHaveBeenCalled();
+      expect(serialized.getProcessForSession("active-reactivation")).toBe(
+        process,
+      );
+
+      await serialized.abortProcess(process.id);
+    });
+
+    it("reports persistence failure and later reconciles the applied state", async () => {
+      const setModel = vi.fn(async () => undefined);
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              if (aborted) return;
+              void message;
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            setModel,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      let durable: EffectiveSessionLaunchSettings | undefined;
+      let persistenceAvailable = true;
+      const recordEffectiveLaunchSettings = vi.fn(
+        async (
+          _sessionId: string,
+          value: EffectiveSessionLaunchSettingsValue,
+        ) => {
+          if (!persistenceAvailable) {
+            throw new Error("metadata unavailable");
+          }
+          durable = {
+            schemaVersion: 1,
+            revision: (durable?.revision ?? 0) + 1,
+            ...value,
+          };
+          return durable;
+        },
+      );
+      const metadata = {
+        getMetadata: () => undefined,
+        getEffectiveLaunchSettings: () => durable,
+        getRequestedModel: () => durable?.requestedModel ?? undefined,
+        recordEffectiveLaunchSettings,
+      } as unknown as SessionMetadataService;
+      const serialized = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata,
+        idleTimeoutMs: 60_000,
+      });
+      const process = await serialized.reactivateSession(
+        "/tmp/test",
+        "durability-reactivation",
+        undefined,
+        {
+          providerName: "claude",
+          model: "sonnet",
+          requestedModel: "sonnet",
+        },
+        { requestedOverrides: {} },
+      );
+      persistenceAvailable = false;
+
+      await expect(
+        serialized.reconfigureProcess(process.id, {
+          model: "opus",
+          requestedModel: "opus",
+        }),
+      ).rejects.toThrow("metadata unavailable");
+      expect(process.requestedModel).toBe("opus");
+      expect(durable?.requestedModel).toBe("sonnet");
+      expect(setModel).toHaveBeenCalledTimes(1);
+
+      persistenceAvailable = true;
+      await expect(
+        serialized.reconfigureProcess(process.id, {
+          model: "opus",
+          requestedModel: "opus",
+        }),
+      ).resolves.toBe(process);
+      expect(durable?.requestedModel).toBe("opus");
+      expect(setModel).toHaveBeenCalledTimes(1);
+      expect(recordEffectiveLaunchSettings.mock.calls.length).toBeGreaterThan(
+        2,
+      );
+
+      persistenceAvailable = false;
+      await expect(
+        serialized.reconfigureProcess(process.id, {
+          model: "haiku",
+          requestedModel: "haiku",
+        }),
+      ).rejects.toThrow("metadata unavailable");
+      const callsAfterFailedSave =
+        recordEffectiveLaunchSettings.mock.calls.length;
+
+      await serialized.abortProcess(process.id);
+
+      process.setPermissionMode("plan");
+      await Promise.resolve();
+      expect(recordEffectiveLaunchSettings).toHaveBeenCalledTimes(
+        callsAfterFailedSave,
+      );
+    });
+
     it("refuses to preempt a live worker when preempt:false", async () => {
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -1677,28 +3154,28 @@ describe("Supervisor", () => {
 
     it("passes the global Claude compaction override through the SDK wrapper", async () => {
       let aborted = false;
-      const startSession = vi.fn<
-        RealClaudeSDKInterface["startSession"]
-      >(async () => {
-        async function* iterator() {
-          yield {
-            type: "system",
-            subtype: "init",
-            session_id: "real-sdk-compact-override",
-          };
-          while (!aborted) {
-            await new Promise((resolve) => setTimeout(resolve, 10));
+      const startSession = vi.fn<RealClaudeSDKInterface["startSession"]>(
+        async () => {
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "real-sdk-compact-override",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
           }
-        }
 
-        return {
-          iterator: iterator(),
-          queue: new MessageQueue(),
-          abort: () => {
-            aborted = true;
-          },
-        };
-      });
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
       const supervisorWithRealSdk = new Supervisor({
         realSdk: { startSession },
         idleTimeoutMs: 100,
@@ -1745,6 +3222,9 @@ describe("Supervisor", () => {
 
   describe("interruptProcess", () => {
     it("hard-aborts and unregisters when interrupt reports incomplete", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       let aborted = false;
       const interrupt = vi.fn(async () => false);
 
@@ -1797,9 +3277,21 @@ describe("Supervisor", () => {
           "interrupt-fallback-session",
         ),
       ).toBeUndefined();
+      expect(
+        supervisorWithRealSdk.isRecapPausedUntilUserTurn(
+          "interrupt-fallback-session",
+        ),
+      ).toBe(true);
+      expect(
+        warn.mock.calls.map(([fields]) => (fields as { event?: string }).event),
+      ).toEqual(["session_interrupt_incomplete", "process_terminated"]);
+      warn.mockRestore();
     });
 
     it("times out a stalled interrupt before hard-aborting", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       let aborted = false;
       const interrupt = vi.fn(() => new Promise<boolean>(() => {}));
 
@@ -1855,9 +3347,20 @@ describe("Supervisor", () => {
       expect(
         supervisorWithRealSdk.getProcessForSession("interrupt-timeout-session"),
       ).toBeUndefined();
+      expect(
+        warn.mock.calls.map(([fields]) => (fields as { event?: string }).event),
+      ).toEqual([
+        "session_interrupt_timeout",
+        "session_interrupt_incomplete",
+        "process_terminated",
+      ]);
+      warn.mockRestore();
     });
 
     it("recovers deferred messages onto a replacement after hard abort", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       let startCount = 0;
       const aborts: Array<() => void> = [];
       const interrupt = vi.fn(async () => false);
@@ -1935,9 +3438,16 @@ describe("Supervisor", () => {
       expect(aborts).toHaveLength(2);
 
       await replacement?.abort();
+      expect(
+        warn.mock.calls.map(([fields]) => (fields as { event?: string }).event),
+      ).toEqual(["session_interrupt_incomplete", "process_terminated"]);
+      warn.mockRestore();
     });
 
     it("recovers queued provider messages onto a replacement after hard abort", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       let startCount = 0;
       const aborts: Array<() => void> = [];
       const interrupt = vi.fn(async () => false);
@@ -2013,10 +3523,610 @@ describe("Supervisor", () => {
       expect(replacement?.id).not.toBe(process.id);
 
       await replacement?.abort();
+      expect(
+        warn.mock.calls.map(([fields]) => (fields as { event?: string }).event),
+      ).toEqual(["session_interrupt_incomplete", "process_terminated"]);
+      warn.mockRestore();
+    });
+
+    it("waits for provider teardown before starting hard-abort recovery", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
+      let startCount = 0;
+      let releaseFirstAbort: (() => void) | undefined;
+      const firstAbortGate = new Promise<void>((resolve) => {
+        releaseFirstAbort = resolve;
+      });
+      const lifecycle: string[] = [];
+      const interrupt = vi.fn(async () => false);
+
+      const realSdk: RealClaudeSDKInterface = {
+        startSession: async (options) => {
+          startCount++;
+          const runNumber = startCount;
+          lifecycle.push(`start-${runNumber}`);
+          const run = { aborted: false };
+          const queue = new MessageQueue();
+
+          async function* iterator() {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id:
+                options.resumeSessionId ??
+                `interrupt-ordered-recovery-${runNumber}`,
+            };
+            await queue[Symbol.asyncIterator]().next();
+            while (!run.aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: async () => {
+              lifecycle.push(`abort-start-${runNumber}`);
+              if (runNumber === 1) await firstAbortGate;
+              run.aborted = true;
+              lifecycle.push(`abort-finish-${runNumber}`);
+            },
+            interrupt,
+          };
+        },
+      };
+
+      const supervisorWithRealSdk = new Supervisor({
+        realSdk,
+        idleTimeoutMs: 100,
+      });
+
+      const process = await supervisorWithRealSdk.resumeSession(
+        "interrupt-ordered-recovery-session",
+        "/tmp/test",
+        { text: "hi" },
+      );
+      process.queueMessage({ text: "ping", tempId: "temp-ping" });
+
+      const interrupted = supervisorWithRealSdk.interruptProcess(process.id);
+      await vi.waitFor(() => {
+        expect(lifecycle).toContain("abort-start-1");
+      });
+      expect(startCount).toBe(1);
+      expect(process.hasUnverifiedProviderOwnership).toBe(true);
+      await expect(
+        supervisorWithRealSdk.resumeSession(
+          "interrupt-ordered-recovery-session",
+          "/tmp/test",
+          { text: "must not race provider teardown" },
+        ),
+      ).rejects.toThrow(/prior provider teardown is in progress or unverified/);
+
+      releaseFirstAbort?.();
+      await expect(interrupted).resolves.toMatchObject({
+        success: false,
+        supported: true,
+        hardAborted: true,
+      });
+      await vi.waitFor(() => {
+        expect(startCount).toBe(2);
+      });
+      expect(lifecycle.indexOf("abort-finish-1")).toBeLessThan(
+        lifecycle.indexOf("start-2"),
+      );
+
+      await supervisorWithRealSdk
+        .getProcessForSession("interrupt-ordered-recovery-session")
+        ?.abort();
+      expect(
+        warn.mock.calls.map(([fields]) => (fields as { event?: string }).event),
+      ).toEqual(["session_interrupt_incomplete", "process_terminated"]);
+      warn.mockRestore();
     });
   });
 
   describe("recaps", () => {
+    it("persists a recap pause and clears only it on a fresh user turn", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      let aborted = false;
+      const provider = testProvider(async (options) => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: options.resumeSessionId ?? "recap-pause-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            void message;
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+        };
+      });
+      const recapSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        sessionMetadataService: metadata.service,
+      });
+      const process = await recapSupervisor.reactivateSession(
+        "/tmp/test",
+        "recap-pause-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      metadata.writes.updateMetadata.mockClear();
+
+      await recapSupervisor.pauseRecapsUntilUserTurn(process.id);
+
+      expect(
+        recapSupervisor.isRecapPausedUntilUserTurn("recap-pause-session"),
+      ).toBe(true);
+      expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+        "recap-pause-session",
+        { recapPausedUntilUserTurn: true },
+      );
+
+      process.queueMessage({
+        text: "continue intentionally",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+
+      await vi.waitFor(() => {
+        expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+          "recap-pause-session",
+          { recapPausedUntilUserTurn: false },
+        );
+      });
+      expect(
+        recapSupervisor.isRecapPausedUntilUserTurn("recap-pause-session"),
+      ).toBe(false);
+      expect(metadata.writes.updateMetadata.mock.calls).toEqual([
+        ["recap-pause-session", { recapPausedUntilUserTurn: true }],
+        ["recap-pause-session", { recapPausedUntilUserTurn: false }],
+      ]);
+
+      await process.abort();
+    });
+
+    it("clears a durable automation pause only on a fresh user turn", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      let automationPaused = true;
+      metadata.service.getMetadata = (() =>
+        automationPaused
+          ? { automationPausedUntilUserTurn: true }
+          : undefined) as SessionMetadataService["getMetadata"];
+      metadata.writes.updateMetadata.mockImplementation(
+        async (_sessionId, updates) => {
+          if (updates.automationPausedUntilUserTurn !== undefined) {
+            automationPaused = updates.automationPausedUntilUserTurn;
+          }
+        },
+      );
+      let aborted = false;
+      const provider = testProvider(async (options) => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: options.resumeSessionId ?? "done-pause-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            void message;
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+        };
+      });
+      const doneSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        sessionMetadataService: metadata.service,
+      });
+      const process = await doneSupervisor.reactivateSession(
+        "/tmp/test",
+        "done-pause-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      metadata.writes.updateMetadata.mockClear();
+      await doneSupervisor.pauseSessionAutomation("done-pause-session");
+
+      process.queueMessage({
+        text: "automatic project work",
+        automaticSource: "project-queue",
+      });
+      process.queueMessage({ text: "automatic wake", automaticSource: "wake" });
+      expect(automationPaused).toBe(true);
+      expect(metadata.writes.updateMetadata).not.toHaveBeenCalled();
+
+      process.queueMessage({
+        text: "continue intentionally",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+
+      await vi.waitFor(() => {
+        expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+          "done-pause-session",
+          { automationPausedUntilUserTurn: false },
+        );
+      });
+      expect(automationPaused).toBe(false);
+      expect(
+        doneSupervisor.isAutomationPausedUntilUserTurn("done-pause-session"),
+      ).toBe(false);
+
+      await process.abort();
+    });
+
+    it("commits /done immediately when no provider turn is active", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      const markSeen = vi.fn(async () => undefined);
+      const doneSupervisor = new Supervisor({
+        provider: testProvider(async () => {
+          throw new Error("provider should not start");
+        }),
+        sessionMetadataService: metadata.service,
+        notificationService: { markSeen } as unknown as NotificationService,
+      });
+
+      const result = await doneSupervisor.requestSessionDone("idle-session");
+
+      expect(result).toMatchObject({ queued: false, paused: true });
+      expect(metadata.writes.recordSyntheticDone).toHaveBeenCalledWith(
+        "idle-session",
+        result.message,
+      );
+      expect(markSeen).toHaveBeenCalledWith(
+        "idle-session",
+        result.message.timestamp,
+        result.message.uuid,
+      );
+    });
+
+    it("queues /done locally during a turn and commits it at the boundary", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      let automationPaused = false;
+      metadata.service.getMetadata = (() =>
+        automationPaused
+          ? { automationPausedUntilUserTurn: true }
+          : undefined) as SessionMetadataService["getMetadata"];
+      metadata.writes.recordSyntheticDone.mockImplementation(async () => {
+        automationPaused = true;
+      });
+      metadata.writes.updateMetadata.mockImplementation(
+        async (_sessionId, updates) => {
+          if (updates.automationPausedUntilUserTurn !== undefined) {
+            automationPaused = updates.automationPausedUntilUserTurn;
+          }
+        },
+      );
+      const markSeen = vi.fn(async () => undefined);
+      let finishTurn: (() => void) | undefined;
+      const turnBoundary = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      const providerMessages: string[] = [];
+      let aborted = false;
+      const provider = testProvider(async (options) => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: options.resumeSessionId ?? "queued-done-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            providerMessages.push(
+              typeof message.message.content === "string"
+                ? message.message.content
+                : "non-text provider message",
+            );
+            yield {
+              type: "assistant" as const,
+              message: { content: "working" },
+            };
+            await turnBoundary;
+            yield {
+              type: "result" as const,
+              session_id: "queued-done-session",
+            };
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+        };
+      });
+      const doneSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 10_000,
+        sessionMetadataService: metadata.service,
+        notificationService: { markSeen } as unknown as NotificationService,
+      });
+      const process = await doneSupervisor.reactivateSession(
+        "/tmp/test",
+        "queued-done-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+
+      process.queueMessage({
+        text: "work already in progress",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+      await vi.waitFor(() => {
+        expect(providerMessages).toEqual(["work already in progress"]);
+      });
+
+      const result = await doneSupervisor.requestSessionDone(
+        "queued-done-session",
+      );
+      expect(result).toMatchObject({ queued: true, paused: true });
+      expect(process.getDeferredQueueSummary()).toEqual([
+        expect.objectContaining({
+          content: "/done",
+          kind: "ya-command",
+          yaCommand: "done",
+        }),
+      ]);
+      expect(metadata.writes.updateMetadata).toHaveBeenCalledWith(
+        "queued-done-session",
+        { automationPausedUntilUserTurn: true },
+      );
+      expect(
+        doneSupervisor.isAutomationPausedUntilUserTurn("queued-done-session"),
+      ).toBe(true);
+      expect(metadata.writes.recordSyntheticDone).not.toHaveBeenCalled();
+      expect(providerMessages).toEqual(["work already in progress"]);
+
+      process.deferMessage({
+        text: "real user follow-up after done",
+        tempId: "follow-up-after-done",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+
+      finishTurn?.();
+      await vi.waitFor(() => {
+        expect(metadata.writes.recordSyntheticDone).toHaveBeenCalledOnce();
+      });
+      await vi.waitFor(() => {
+        expect(process.getDeferredQueueSummary()).toEqual([]);
+      });
+      const [recordedSessionId, recordedMessage] =
+        metadata.writes.recordSyntheticDone.mock.calls[0] ?? [];
+      expect(recordedSessionId).toBe("queued-done-session");
+      expect(recordedMessage).toMatchObject({
+        content: "/done",
+        uuid: result.message.uuid,
+        yaSyntheticSource: "done",
+      });
+      await vi.waitFor(() => {
+        expect(providerMessages).toEqual([
+          "work already in progress",
+          "real user follow-up after done",
+        ]);
+      });
+      expect(providerMessages).not.toContain("/done");
+      expect(
+        doneSupervisor.isAutomationPausedUntilUserTurn("queued-done-session"),
+      ).toBe(false);
+      expect(markSeen).toHaveBeenCalledWith(
+        "queued-done-session",
+        recordedMessage?.timestamp,
+        result.message.uuid,
+      );
+
+      await process.abort();
+    });
+
+    it("keeps a queued /done pause after the live process dies", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      let automationPaused = false;
+      metadata.service.getMetadata = (() =>
+        automationPaused
+          ? { automationPausedUntilUserTurn: true }
+          : undefined) as SessionMetadataService["getMetadata"];
+      metadata.writes.updateMetadata.mockImplementation(
+        async (_sessionId, updates) => {
+          if (updates.automationPausedUntilUserTurn !== undefined) {
+            automationPaused = updates.automationPausedUntilUserTurn;
+          }
+        },
+      );
+      const providerMessages: string[] = [];
+      let finishTurn: (() => void) | undefined;
+      const turnBoundary = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      let aborted = false;
+      const provider = testProvider(async (options) => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: options.resumeSessionId ?? "done-restart-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            providerMessages.push(
+              typeof message.message.content === "string"
+                ? message.message.content
+                : "non-text provider message",
+            );
+            yield {
+              type: "assistant" as const,
+              message: { content: "working" },
+            };
+            await turnBoundary;
+            if (aborted) return;
+            yield {
+              type: "result" as const,
+              session_id: "done-restart-session",
+            };
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+        };
+      });
+      const doneSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 10_000,
+        sessionMetadataService: metadata.service,
+      });
+      const process = await doneSupervisor.reactivateSession(
+        "/tmp/test",
+        "done-restart-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      process.queueMessage({
+        text: "work already in progress",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+      await vi.waitFor(() => {
+        expect(providerMessages).toEqual(["work already in progress"]);
+      });
+
+      const result = await doneSupervisor.requestSessionDone(
+        "done-restart-session",
+      );
+      expect(result.queued).toBe(true);
+      expect(automationPaused).toBe(true);
+
+      const coldSupervisor = new Supervisor({
+        provider: testProvider(async () => {
+          throw new Error("cold supervisor should not start a provider");
+        }),
+        sessionMetadataService: metadata.service,
+      });
+      expect(
+        coldSupervisor.isAutomationPausedUntilUserTurn("done-restart-session"),
+      ).toBe(true);
+      expect(metadata.writes.recordSyntheticDone).not.toHaveBeenCalled();
+
+      aborted = true;
+      finishTurn?.();
+      await process.abort();
+    });
+
+    it("leaves automation paused after an idle /done commit with no later user turn", async () => {
+      const metadata = createLaunchSettingsMetadata();
+      let automationPaused = false;
+      metadata.service.getMetadata = (() =>
+        automationPaused
+          ? { automationPausedUntilUserTurn: true }
+          : undefined) as SessionMetadataService["getMetadata"];
+      metadata.writes.recordSyntheticDone.mockImplementation(async () => {
+        automationPaused = true;
+      });
+      metadata.writes.updateMetadata.mockImplementation(
+        async (_sessionId, updates) => {
+          if (updates.automationPausedUntilUserTurn !== undefined) {
+            automationPaused = updates.automationPausedUntilUserTurn;
+          }
+        },
+      );
+      const providerMessages: string[] = [];
+      let finishTurn: (() => void) | undefined;
+      const turnBoundary = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      let aborted = false;
+      const provider = testProvider(async (options) => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: options.resumeSessionId ?? "done-hold-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            providerMessages.push(
+              typeof message.message.content === "string"
+                ? message.message.content
+                : "non-text provider message",
+            );
+            yield {
+              type: "assistant" as const,
+              message: { content: "working" },
+            };
+            await turnBoundary;
+            yield {
+              type: "result" as const,
+              session_id: "done-hold-session",
+            };
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+        };
+      });
+      const doneSupervisor = new Supervisor({
+        provider,
+        idleTimeoutMs: 10_000,
+        sessionMetadataService: metadata.service,
+      });
+      const process = await doneSupervisor.reactivateSession(
+        "/tmp/test",
+        "done-hold-session",
+        undefined,
+        { providerName: "claude", recapMode: "fork" },
+      );
+      process.queueMessage({
+        text: "work already in progress",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+      await vi.waitFor(() => {
+        expect(providerMessages).toEqual(["work already in progress"]);
+      });
+
+      await doneSupervisor.requestSessionDone("done-hold-session");
+      finishTurn?.();
+      await vi.waitFor(() => {
+        expect(metadata.writes.recordSyntheticDone).toHaveBeenCalledOnce();
+      });
+      expect(
+        doneSupervisor.isAutomationPausedUntilUserTurn("done-hold-session"),
+      ).toBe(true);
+
+      await process.abort();
+    });
+
     it("falls back to tailed recap generation when forked recap cannot fork", async () => {
       const generateSummary = vi.fn(async (request) => ({
         text:
@@ -2183,7 +4293,12 @@ describe("Supervisor", () => {
         "/tmp/test",
         "revived-session",
         undefined,
-        { providerName: "claude", recapMode: "fork" },
+        {
+          model: "gpt-5.6-sol",
+          requestedModel: "gpt-5.6-sol",
+          providerName: "claude",
+          recapMode: "fork",
+        },
       );
       await vi.waitFor(() => expect(process.state.type).toBe("idle"));
       // The in-memory recap buffer is empty for a freshly revived process.
@@ -2221,6 +4336,9 @@ describe("Supervisor", () => {
         text: "forked summary",
       });
       expect(forkSession).toHaveBeenCalled();
+      expect(generateSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "gpt-5.6-sol" }),
+      );
 
       await process.abort();
     });
@@ -2287,7 +4405,18 @@ describe("Supervisor", () => {
       // service here; back the stub with a swappable recap row list.
       let persistedRecaps: unknown[] = [];
       const metadataStub = {
+        getMetadata: () => undefined,
+        recordEffectiveLaunchSettings: async () => ({
+          schemaVersion: 1,
+          revision: 1,
+          permissionMode: "default",
+          requestedModel: null,
+          serviceTier: null,
+          thinking: null,
+          effort: null,
+        }),
         getRecapMessages: () => [...persistedRecaps],
+        remapSessionId: async () => {},
         updateMetadata: async () => {},
         setProvider: async () => {},
         setExecutor: async () => {},
@@ -2296,10 +4425,14 @@ describe("Supervisor", () => {
       } as unknown as ConstructorParameters<
         typeof Supervisor
       >[0]["sessionMetadataService"];
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
       const supervisorWithMetadata = new Supervisor({
         provider,
         idleTimeoutMs: 100,
         sessionMetadataService: metadataStub,
+        eventBus,
       });
 
       const process = await supervisorWithMetadata.startSession(
@@ -2366,13 +4499,22 @@ describe("Supervisor", () => {
         text: "forked summary",
       });
       expect(forkSession).toHaveBeenCalled();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session-metadata-changed",
+          sessionId: "since-last-recap-fork",
+          title: "Recap generator",
+          archived: true,
+          forkedFromSessionId: "since-last-recap",
+        }),
+      );
 
       await process.abort();
     });
   });
 
   describe("prompt suggestion options", () => {
-    it("passes native prompt suggestions only for supporting providers", async () => {
+    it("keeps native selection as an observation mode", async () => {
       const startedOptions: Array<
         Parameters<AgentProvider["startSession"]>[0]
       > = [];
@@ -2455,9 +4597,11 @@ describe("Supervisor", () => {
         throw new Error("expected process");
       }
 
-      expect(
-        startedOptions.map((options) => options.promptSuggestions),
-      ).toEqual([true, false, false]);
+      expect(startedOptions.map((options) => options.sessionOptions)).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
       expect(nativeProcess.promptSuggestionMode).toBe("native");
       expect(explicitOffProcess.promptSuggestionMode).toBe("off");
       expect(unsupportedProcess.promptSuggestionMode).toBe("off");
@@ -2639,6 +4783,174 @@ describe("Supervisor", () => {
       expect(startSession.mock.calls[1]?.[0].initialMessage).toBeUndefined();
       const secondMessage = await queues[1]?.[Symbol.asyncIterator]().next();
       expect(secondMessage?.value?.message.content).toBe("second");
+    });
+
+    it("revalidates a queued Gateway model before starting its process", async () => {
+      let advertisedModels = [{ id: "gateway-model", name: "Gateway Model" }];
+      let aborted = false;
+      const getAvailableModels = vi.fn(async () => advertisedModels);
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "gateway-occupier",
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        ...testProvider(startSession),
+        name: "claude-gateway",
+        displayName: "Claude Gateway",
+        getAvailableModels,
+      };
+      const gatewaySupervisor = new Supervisor({
+        provider,
+        maxWorkers: 1,
+        idlePreemptThresholdMs: 60_000,
+      });
+
+      const occupying = await gatewaySupervisor.startSession(
+        "/tmp/test",
+        { text: "occupy the worker" },
+        undefined,
+        { model: "gateway-model", providerName: "claude-gateway" },
+      );
+      if (!("id" in occupying)) {
+        throw new Error("expected occupying process");
+      }
+      const direct = await gatewaySupervisor.startSession(
+        "/tmp/test",
+        { text: "direct launch cannot observe a deferred failure" },
+        undefined,
+        { model: "gateway-model", providerName: "claude-gateway" },
+      );
+      expect(direct).toEqual({ error: "queue_full", maxQueueSize: 1 });
+      expect(gatewaySupervisor.getQueueInfo()).toEqual([]);
+
+      const onFailed = vi.fn();
+      const queued = await gatewaySupervisor.startSession(
+        "/tmp/test",
+        { text: "start after the worker is free" },
+        undefined,
+        { model: "gateway-model", providerName: "claude-gateway" },
+        { onFailed },
+      );
+      expect("queued" in queued && queued.queued).toBe(true);
+      expect(getAvailableModels).toHaveBeenCalledTimes(1);
+
+      advertisedModels = [];
+      await gatewaySupervisor.abortProcess(occupying.id);
+
+      await vi.waitFor(() => {
+        expect(getAvailableModels).toHaveBeenCalledTimes(2);
+        expect(onFailed).toHaveBeenCalledWith(
+          'Claude Gateway no longer advertises model "gateway-model"',
+        );
+      });
+      expect(startSession).toHaveBeenCalledTimes(1);
+      expect(gatewaySupervisor.getAllProcesses()).toEqual([]);
+    });
+
+    it("inherits durable settings when a cold resume waits in the worker queue", async () => {
+      let callNumber = 0;
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          callNumber += 1;
+          let aborted = false;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id:
+                options.resumeSessionId ?? `queue-occupier-${callNumber}`,
+            };
+            while (!aborted) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue: new MessageQueue(),
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata({
+        schemaVersion: 1,
+        revision: 9,
+        permissionMode: "bypassPermissions",
+        requestedModel: "opus",
+        serviceTier: "priority",
+        thinking: { type: "adaptive" },
+        effort: "max",
+      });
+      const supervisorWithQueue = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+        idleTimeoutMs: 100,
+        maxWorkers: 1,
+        idlePreemptThresholdMs: 60_000,
+      });
+
+      const first = await supervisorWithQueue.startSession(
+        "/tmp/test",
+        { text: "occupy worker" },
+        "bypassPermissions",
+        {
+          model: "opus",
+          requestedModel: "opus",
+          serviceTier: "priority",
+          thinking: { type: "adaptive" },
+          effort: "max",
+        },
+      );
+      if (!("id" in first)) {
+        throw new Error("expected occupying process");
+      }
+
+      const queued = await supervisorWithQueue.resumeSession(
+        "queued-cold-resume",
+        "/tmp/test",
+        { text: "continue" },
+      );
+      expect("queued" in queued && queued.queued).toBe(true);
+
+      await supervisorWithQueue.abortProcess(first.id);
+      await vi.waitFor(() => {
+        expect(startSession).toHaveBeenCalledTimes(2);
+      });
+
+      expect(startSession.mock.calls[1]?.[0]).toEqual(
+        expect.objectContaining({
+          resumeSessionId: "queued-cold-resume",
+          permissionMode: "bypassPermissions",
+          model: "opus",
+          serviceTier: "priority",
+          thinking: { type: "adaptive" },
+          effort: "max",
+        }),
+      );
+      expect(metadata.current()?.revision).toBe(9);
+
+      const resumed =
+        supervisorWithQueue.getProcessForSession("queued-cold-resume");
+      await resumed?.abort();
     });
 
     it("steers active turns without restarting for composer thinking drift", async () => {
@@ -3103,10 +5415,150 @@ describe("Supervisor", () => {
       }
     });
 
+    it("visits an opted-in idle session at its deadline, not on an interval", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
+      let aborted = false;
+      let resolveAbort!: () => void;
+      const abortSignal = new Promise<void>((resolve) => {
+        resolveAbort = resolve;
+      });
+
+      try {
+        const realSdk: RealClaudeSDKInterface = {
+          startSession: async () => {
+            const queue = new MessageQueue();
+            async function* iterator() {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "heartbeat-deadline-session",
+              };
+              await queue[Symbol.asyncIterator]().next();
+              yield {
+                type: "result",
+                session_id: "heartbeat-deadline-session",
+              };
+
+              await abortSignal;
+            }
+
+            return {
+              iterator: iterator(),
+              queue,
+              abort: () => {
+                aborted = true;
+                resolveAbort();
+              },
+              isProcessAlive: () => !aborted,
+            };
+          },
+        };
+
+        const supervisorWithHeartbeat = new Supervisor({
+          realSdk,
+          idleTimeoutMs: 100,
+          getHeartbeatTurnSettings: () => ({
+            enabled: true,
+            afterMinutes: 10,
+            text: "heartbeat check",
+          }),
+        });
+
+        const started = await supervisorWithHeartbeat.startSession(
+          "/tmp/test",
+          {
+            text: "start",
+          },
+        );
+        if (!("id" in started)) {
+          throw new Error("expected process");
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        expect(started.state.type).toBe("idle");
+
+        // Five minutes of an idle, opted-in session. The fixed tick this
+        // replaced would have swept ten times over the same span.
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        expect(started.queueDepth).toBe(0);
+        expect(
+          supervisorWithHeartbeat.getHeartbeatScheduleMetrics().sweeps,
+        ).toBeLessThanOrEqual(2);
+
+        // The deadline itself still fires.
+        await vi.advanceTimersByTimeAsync(5 * 60_000 + 1_000);
+        expect(started.queueDepth).toBe(1);
+
+        const abortPromise = supervisorWithHeartbeat.abortProcess(started.id);
+        await vi.advanceTimersByTimeAsync(5000);
+        await expect(abortPromise).resolves.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("arms no timer at all while nothing is opted in", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
+
+      try {
+        const supervisorWithoutHeartbeat = new Supervisor({
+          realSdk: { startSession: async () => ({}) as never },
+          getHeartbeatTurnSettings: () => ({
+            enabled: false,
+            afterMinutes: 5,
+            text: "heartbeat check",
+          }),
+        });
+
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        const metrics =
+          supervisorWithoutHeartbeat.getHeartbeatScheduleMetrics();
+        expect(metrics.sweeps).toBe(1);
+        expect(metrics.armedAtMs).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rechecks a settled unowned candidate once per idle threshold", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
+      const getCandidates = vi.fn(() => []);
+
+      try {
+        new Supervisor({
+          realSdk: { startSession: async () => ({}) as never },
+          getHeartbeatTurnSettings: () => ({
+            enabled: true,
+            afterMinutes: 5,
+            text: "heartbeat check",
+          }),
+          getHeartbeatTurnCandidates: getCandidates,
+          // Eligible, unowned, and currently settled: an external append can
+          // still make it due, but never sooner than one idle threshold.
+          getHeartbeatWaitingSessionIds: () => ["settled-session"],
+        });
+
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        // Twenty fixed ticks would have reached storage twenty times.
+        expect(getCandidates.mock.calls.length).toBeLessThanOrEqual(3);
+        expect(getCandidates.mock.calls.length).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("resets the heartbeat timeout on real liveness signals", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-06T00:00:00.000Z"));
       let aborted = false;
+      let resolveAbort!: () => void;
+      const abortSignal = new Promise<void>((resolve) => {
+        resolveAbort = resolve;
+      });
 
       try {
         const realSdk: RealClaudeSDKInterface = {
@@ -3121,9 +5573,7 @@ describe("Supervisor", () => {
               await queue[Symbol.asyncIterator]().next();
               yield { type: "result", session_id: "heartbeat-session-2" };
 
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
+              await abortSignal;
             }
 
             return {
@@ -3131,6 +5581,7 @@ describe("Supervisor", () => {
               queue,
               abort: () => {
                 aborted = true;
+                resolveAbort();
               },
               isProcessAlive: () => !aborted,
             };
@@ -3582,6 +6033,16 @@ describe("Supervisor", () => {
         eventBus.subscribe((event) => events.push(event));
         const remapSessionId = vi.fn(async () => {});
         const sessionMetadataService = {
+          getMetadata: () => undefined,
+          recordEffectiveLaunchSettings: async () => ({
+            schemaVersion: 1,
+            revision: 1,
+            permissionMode: "default",
+            requestedModel: null,
+            serviceTier: null,
+            thinking: null,
+            effort: null,
+          }),
           remapSessionId,
         } as unknown as ConstructorParameters<
           typeof Supervisor
@@ -3724,6 +6185,12 @@ describe("Supervisor", () => {
     });
 
     it("emits process-terminated when the underlying process exits unexpectedly", async () => {
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       const eventBus = new EventBus();
       const events: BusEvent[] = [];
       eventBus.subscribe((event) => events.push(event));
@@ -3774,67 +6241,113 @@ describe("Supervisor", () => {
         sessionId: "terminated-session-1",
         reason: "underlying process terminated",
       });
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "process_error",
+          sessionId: "terminated-session-1",
+          errorMessage: "process exited",
+        }),
+        "Process error: terminated-session-1 - process exited",
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "process_terminated",
+          sessionId: "terminated-session-1",
+          reason: "underlying process terminated",
+        }),
+        "Process terminated: terminated-session-1 - underlying process terminated",
+      );
+      errorLog.mockRestore();
+      warn.mockRestore();
     });
 
-    it("reaps idle sessions even when the underlying process is still alive", async () => {
+    it("keeps an idle owner registered until provider abort is verified", async () => {
       vi.useFakeTimers();
       try {
-        let aborted = false;
+        let providerAlive = true;
+        let releaseAbort: (() => void) | undefined;
+        const abortGate = new Promise<void>((resolve) => {
+          releaseAbort = resolve;
+        });
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: "idle-alive-session-1",
+          };
+          for await (const sdkMessage of queue) {
+            void sdkMessage;
+            if (!providerAlive) return;
+            yield {
+              type: "result" as const,
+              session_id: "idle-alive-session-1",
+            };
+          }
+        }
+        const startSession = vi.fn(async () => ({
+          iterator: iterator(),
+          queue,
+          abort: async () => {
+            await abortGate;
+            providerAlive = false;
+            queue.push({ text: "__abort__" });
+          },
+          isProcessAlive: () => providerAlive,
+        }));
         const eventBus = new EventBus();
         const events: BusEvent[] = [];
-        eventBus.subscribe((event) => events.push(event));
-
-        const realSdk: RealClaudeSDKInterface = {
-          startSession: async () => {
-            async function* iterator() {
-              yield {
-                type: "system",
-                subtype: "init",
-                session_id: "idle-alive-session-1",
-              };
-              yield { type: "result", session_id: "idle-alive-session-1" };
-
-              while (!aborted) {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-              }
-            }
-
-            return {
-              iterator: iterator(),
-              queue: new MessageQueue(),
-              abort: () => {
-                aborted = true;
-              },
-              isProcessAlive: () => !aborted,
-            };
-          },
-        };
-
+        eventBus.subscribe((event) => {
+          events.push(event);
+        });
         const supervisorWithAliveProcess = new Supervisor({
-          realSdk,
+          realSdk: { startSession },
           idleTimeoutMs: 100,
           eventBus,
         });
 
         const process = await supervisorWithAliveProcess.startSession(
           "/tmp/test",
-          {
-            text: "Keep this session alive",
-          },
+          { text: "Keep this session alive" },
         );
+        await vi.waitFor(() => {
+          expect(process.state.type).toBe("idle");
+        });
 
+        await vi.advanceTimersByTimeAsync(100);
+
+        expect(process.hasUnverifiedProviderOwnership).toBe(true);
+        expect(
+          supervisorWithAliveProcess.getProcessForSession(
+            "idle-alive-session-1",
+          ),
+        ).toBe(process);
+        expect(
+          events.some(
+            (event) =>
+              event.type === "session-status-changed" &&
+              event.sessionId === "idle-alive-session-1" &&
+              event.ownership.owner === "none",
+          ),
+        ).toBe(false);
+        await expect(
+          supervisorWithAliveProcess.reactivateSession(
+            "/tmp/test",
+            "idle-alive-session-1",
+          ),
+        ).rejects.toThrow(
+          /prior provider teardown is in progress or unverified/,
+        );
+        expect(startSession).toHaveBeenCalledOnce();
+
+        releaseAbort?.();
         await vi.advanceTimersByTimeAsync(0);
-        expect(process.state.type).toBe("idle");
-
-        await vi.advanceTimersByTimeAsync(150);
 
         expect(
           supervisorWithAliveProcess.getProcessForSession(
             "idle-alive-session-1",
           ),
         ).toBeUndefined();
-        expect(aborted).toBe(true);
-
         const abortedIndex = events.findIndex(
           (event) =>
             event.type === "session-aborted" &&
@@ -3849,6 +6362,129 @@ describe("Supervisor", () => {
         expect(abortedIndex).toBeGreaterThanOrEqual(0);
         expect(releasedIndex).toBeGreaterThan(abortedIndex);
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("retains a failed idle teardown until an explicit abort retry", async () => {
+      vi.useFakeTimers();
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      try {
+        let providerAlive = true;
+        const queue = new MessageQueue();
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: "idle-failed-abort-session",
+          };
+          for await (const sdkMessage of queue) {
+            void sdkMessage;
+            if (!providerAlive) return;
+            yield {
+              type: "result" as const,
+              session_id: "idle-failed-abort-session",
+            };
+          }
+        }
+        const abort = vi
+          .fn<() => Promise<void>>()
+          .mockRejectedValueOnce(new Error("provider refused shutdown"))
+          .mockImplementationOnce(async () => {
+            providerAlive = false;
+            queue.push({ text: "__abort__" });
+          });
+        const startSession = vi.fn(async () => ({
+          iterator: iterator(),
+          queue,
+          abort,
+          isProcessAlive: () => providerAlive,
+        }));
+        const eventBus = new EventBus();
+        const events: BusEvent[] = [];
+        eventBus.subscribe((event) => {
+          events.push(event);
+        });
+        const supervisorWithFailedAbort = new Supervisor({
+          realSdk: { startSession },
+          idleTimeoutMs: 100,
+          eventBus,
+        });
+
+        const process = await supervisorWithFailedAbort.startSession(
+          "/tmp/test",
+          { text: "Retain this failed owner" },
+        );
+        await vi.waitFor(() => {
+          expect(process.state.type).toBe("idle");
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(abort).toHaveBeenCalledOnce();
+        expect(process.hasUnverifiedProviderOwnership).toBe(true);
+        expect(process.state).toMatchObject({
+          type: "terminated",
+          reason: "idle reap provider teardown failed",
+        });
+        expect(
+          supervisorWithFailedAbort.getProcessForSession(
+            "idle-failed-abort-session",
+          ),
+        ).toBe(process);
+        expect(
+          events.some(
+            (event) =>
+              event.type === "session-status-changed" &&
+              event.sessionId === "idle-failed-abort-session" &&
+              event.ownership.owner === "none",
+          ),
+        ).toBe(false);
+        await expect(
+          supervisorWithFailedAbort.reactivateSession(
+            "/tmp/test",
+            "idle-failed-abort-session",
+          ),
+        ).rejects.toThrow(
+          /prior provider teardown is in progress or unverified/,
+        );
+        expect(startSession).toHaveBeenCalledOnce();
+
+        await expect(
+          supervisorWithFailedAbort.abortProcessWithVerification(process.id),
+        ).resolves.toMatchObject({
+          processId: process.id,
+          verifiedStopped: true,
+          verification: "provider",
+        });
+
+        expect(abort).toHaveBeenCalledTimes(2);
+        expect(
+          supervisorWithFailedAbort.getProcessForSession(
+            "idle-failed-abort-session",
+          ),
+        ).toBeUndefined();
+        expect(
+          events.filter(
+            (event) =>
+              event.type === "session-status-changed" &&
+              event.sessionId === "idle-failed-abort-session" &&
+              event.ownership.owner === "none",
+          ),
+        ).toHaveLength(1);
+        expect(errorLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "lifecycle_teardown_failed",
+            sessionId: "idle-failed-abort-session",
+            reason: "idle reap provider teardown failed",
+            errorMessage: "provider refused shutdown",
+          }),
+          "Provider teardown remains unverified: idle-failed-abort-session",
+        );
+      } finally {
+        errorLog.mockRestore();
         vi.useRealTimers();
       }
     });
@@ -4097,8 +6733,83 @@ describe("Supervisor", () => {
       }
     });
 
+    it("does not count active reload-safe sessions as interruptible", async () => {
+      vi.useFakeTimers();
+      try {
+        let aborted = false;
+        const queue = new MessageQueue();
+
+        const realSdk: RealClaudeSDKInterface = {
+          startSession: async () => {
+            async function* iterator() {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "active-reload-safe-session",
+              };
+
+              while (!aborted) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+            }
+
+            return {
+              iterator: iterator(),
+              queue,
+              abort: () => {
+                aborted = true;
+              },
+              detachForServerReload: async () => {},
+              isProcessAlive: () => !aborted,
+            };
+          },
+        };
+
+        const supervisorWithReloadSafeProcess = new Supervisor({ realSdk });
+        const process = await supervisorWithReloadSafeProcess.startSession(
+          "/tmp/test",
+          { text: "keep running across reload" },
+        );
+        if (!("id" in process)) {
+          throw new Error("expected process");
+        }
+
+        queue.drain();
+        expect(process.state.type).toBe("in-turn");
+        expect(
+          supervisorWithReloadSafeProcess.getWorkerActivity(),
+        ).toMatchObject({
+          activeWorkers: 1,
+          interruptibleSessionCount: 0,
+          hasActiveWork: false,
+        });
+
+        queue.push({ text: "queued input must block detach" });
+        expect(
+          supervisorWithReloadSafeProcess.getWorkerActivity(),
+        ).toMatchObject({
+          activeWorkers: 1,
+          interruptibleSessionCount: 1,
+          queuedSessionMessageCount: 1,
+          hasActiveWork: true,
+        });
+        queue.drain();
+
+        const abortPromise = supervisorWithReloadSafeProcess.abortProcess(
+          process.id,
+        );
+        await vi.advanceTimersByTimeAsync(5000);
+        await expect(abortPromise).resolves.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("does not terminate long-silent active sessions without liveness", async () => {
       vi.useFakeTimers();
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       try {
         let aborted = false;
 
@@ -4153,7 +6864,17 @@ describe("Supervisor", () => {
         );
         await vi.advanceTimersByTimeAsync(5000);
         await expect(abortPromise).resolves.toBe(true);
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(
+          warn.mock.calls.map(
+            ([fields]) => (fields as { event?: string }).event,
+          ),
+        ).toEqual([
+          "stale_process_liveness_unknown",
+          "stale_process_liveness_unknown",
+        ]);
       } finally {
+        warn.mockRestore();
         vi.useRealTimers();
       }
     });
@@ -4162,6 +6883,7 @@ describe("Supervisor", () => {
   describe("terminal provider status retention", () => {
     it("keeps terminal status after the provider process is reaped", async () => {
       const controller = createControllableIterator();
+      let providerAlive = true;
       const provider: AgentProvider = {
         name: "codex",
         displayName: "Codex",
@@ -4179,8 +6901,11 @@ describe("Supervisor", () => {
         startSession: async () => ({
           iterator: controller.iterator,
           queue: new MessageQueue(),
-          abort: () => controller.finish(),
-          isProcessAlive: () => true,
+          abort: () => {
+            providerAlive = false;
+            controller.finish();
+          },
+          isProcessAlive: () => providerAlive,
         }),
       };
       const runtimeSupervisor = new Supervisor({

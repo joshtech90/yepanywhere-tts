@@ -10,15 +10,21 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { createNodeWebSocket } from "@hono/node-ws";
 import {
   SPEECH_RELAY_CHANNEL,
+  idleReapHoursToMs,
   isClaudeProviderName,
 } from "@yep-anywhere/shared";
 import { createApp } from "./app.js";
+import { markdownAugmentCacheDiagnostics } from "./augments/markdown-augments.js";
 import { AuthService } from "./auth/AuthService.js";
 import {
   closeCodexCorrelationDebugLogger,
   initCodexCorrelationDebugLogger,
 } from "./codex/correlationDebugLogger.js";
 import { loadConfig } from "./config.js";
+import {
+  registerDevWrapperBackend,
+  reportDevWrapperListening,
+} from "./dev-wrapper-client.js";
 import { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import { detectAdb } from "./device/adb.js";
 import { DESKTOP_BOOTSTRAP_PROTOCOL_VERSION } from "./desktop/DesktopBootstrapService.js";
@@ -49,6 +55,9 @@ import { initFileAccess, updateFileAccess } from "./middleware/file-access.js";
 import { NotificationService } from "./notifications/index.js";
 import { CodexSessionScanner } from "./projects/codex-scanner.js";
 import { GeminiSessionScanner } from "./projects/gemini-scanner.js";
+import { ProjectGlossarySubscriptionManager } from "./projects/projectGlossarySubscriptionManager.js";
+import { projectPathCacheDiagnostics } from "./projects/projectPathIndex.js";
+import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
 import { PushService, getOrCreateVapidKeys } from "./push/index.js";
 import { RecentsService } from "./recents/index.js";
 import {
@@ -60,8 +69,18 @@ import { createUploadRoutes } from "./routes/upload.js";
 import { getServerCompatibilityInfo } from "./routes/version.js";
 import { createWsRelayRoutes } from "./routes/ws-relay.js";
 import { createAcceptRelayConnection } from "./routes/ws-relay.js";
+import { relayResponseSerializationDiagnostics } from "./routes/ws-relay-handlers.js";
 import { detectClaudeCli, detectCodexCli } from "./sdk/cli-detection.js";
 import { initMessageLogger } from "./sdk/messageLogger.js";
+import { MockServerClaudeProvider } from "./sdk/mock.js";
+import {
+  closeProviderRuntimeHostRegistration,
+  hasHostedProviderRuntime,
+  initializeProviderRuntimeHost,
+  isProviderRuntimeHostAvailable,
+  listHostedProviderRuntimes,
+  retainProviderRuntimeProcessGroup,
+} from "./sdk/providers/provider-runtime-host.js";
 import { ClaudeGatewayProvider } from "./sdk/providers/claude-gateway.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
@@ -70,6 +89,7 @@ import {
   BrowserProfileService,
   BrowserSettingsBackupService,
   ConnectedBrowsersService,
+  DirtyFileEditorService,
   HostAwakeService,
   InstallService,
   ModelInfoService,
@@ -77,25 +97,30 @@ import {
   ProjectQueueService,
   PublicShareService,
   RelayClientService,
+  SecurityClientService,
   ServerSettingsService,
+  loadOrCreateSessionWakeSecret,
   SessionQueuePersistenceService,
   SharingService,
   TtsService,
   WorkstreamService,
 } from "./services/index.js";
+import { configureInboundWebSocketMessageLimit } from "./websocketLimits.js";
 import {
   type SpeechRegistryInitOptions,
   SpeechBackendRegistry,
   getRequestedSpeechBackendIds,
   registerSpeechBackends,
 } from "./services/voice/registry.js";
+import { claudeTranscriptCache } from "./sessions/claude-transcript-cache.js";
+import { providerCatalogFamily } from "./sessions/provider-catalog-family.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
 import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import { UploadManager } from "./uploads/manager.js";
 import {
   EventBus,
-  FileWatcher,
   FocusedSessionWatchManager,
+  ProviderSessionWatcherRegistry,
   SourceWatcher,
 } from "./watcher/index.js";
 
@@ -134,6 +159,8 @@ process.on("unhandledRejection", (reason) => {
 const desktopBootstrapService = await readDesktopBootstrapServiceFromStdin();
 const config = loadConfig();
 const ATTACHMENT_STAGING_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const PROVIDER_WATCH_ACTIVATION_DELAY_MS = 1_000;
+const PROVIDER_WATCH_ACTIVATION_YIELD_MS = 100;
 
 // Track services for graceful shutdown (set after createApp)
 let supervisorForShutdown:
@@ -143,13 +170,21 @@ let disposeAppForShutdown:
   | Awaited<ReturnType<typeof createApp>>["disposeSessionReaders"]
   | null = null;
 let deviceBridgeForShutdown: DeviceBridgeService | null = null;
+let projectGlossarySubscriptionsForShutdown: ProjectGlossarySubscriptionManager | null =
+  null;
 let hostAwakeForShutdown: HostAwakeService | null = null;
+let securityClientForShutdown: SecurityClientService | null = null;
+let providerSessionWatchersForShutdown: ProviderSessionWatcherRegistry | null =
+  null;
 let attachmentStagingCleanupTimer: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
 
 /**
  * Graceful shutdown handler.
- * Aborts all running Claude processes before exiting to prevent orphaned child processes.
+ * Aborts all running provider processes before exiting to prevent orphans.
+ * SIGHUP is the wrapper-owned Hono replacement path: reload-safe provider
+ * clients release their socket claim while their wrapper-lifetime host keeps
+ * the runtime alive for the next generation.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
@@ -174,6 +209,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
     }
   }
 
+  if (securityClientForShutdown) {
+    try {
+      await securityClientForShutdown.shutdown();
+      console.log("[Shutdown] Security-client audit state flushed");
+    } catch (error) {
+      console.error("[Shutdown] Error flushing security-client audit:", error);
+    }
+  }
+
   if (supervisorForShutdown) {
     const processes = supervisorForShutdown.getAllProcesses();
     if (processes.length > 0) {
@@ -183,8 +227,20 @@ async function gracefulShutdown(signal: string): Promise<void> {
       await Promise.all(
         processes.map(async (p) => {
           try {
-            await p.abort();
-            console.log(`[Shutdown] Aborted session ${p.sessionId}`);
+            if (
+              signal === "SIGHUP" &&
+              hasHostedProviderRuntime(p.sessionId) &&
+              p.queueDepth === 0 &&
+              !p.hasVolatileDeferredMessages()
+            ) {
+              await p.detachForServerReload();
+              console.log(
+                `[Shutdown] Detached ${p.provider} session ${p.sessionId}`,
+              );
+            } else {
+              await p.abort();
+              console.log(`[Shutdown] Aborted session ${p.sessionId}`);
+            }
           } catch (error) {
             console.error(
               `[Shutdown] Error aborting session ${p.sessionId}:`,
@@ -196,12 +252,38 @@ async function gracefulShutdown(signal: string): Promise<void> {
     }
   }
 
-  try {
-    await ClaudeGatewayProvider.shutdownGateway();
-    console.log("[Shutdown] Managed Claude Gateway stopped");
-  } catch (error) {
-    console.error("[Shutdown] Error stopping managed Claude Gateway:", error);
+  let retainedGateway = false;
+  const gatewayProcessGroupId =
+    signal === "SIGHUP"
+      ? ClaudeGatewayProvider.getOwnedGatewayProcessGroupId()
+      : undefined;
+  if (gatewayProcessGroupId) {
+    try {
+      await retainProviderRuntimeProcessGroup(gatewayProcessGroupId);
+      retainedGateway =
+        ClaudeGatewayProvider.relinquishOwnedGatewayProcessGroup(
+          gatewayProcessGroupId,
+        );
+      if (retainedGateway) {
+        console.log("[Shutdown] Managed Claude Gateway retained by wrapper");
+      }
+    } catch (error) {
+      console.error(
+        "[Shutdown] Could not retain managed Claude Gateway:",
+        error,
+      );
+    }
   }
+  if (!retainedGateway) {
+    try {
+      await ClaudeGatewayProvider.shutdownGateway();
+      console.log("[Shutdown] Managed Claude Gateway stopped");
+    } catch (error) {
+      console.error("[Shutdown] Error stopping managed Claude Gateway:", error);
+    }
+  }
+
+  closeProviderRuntimeHostRegistration();
 
   if (disposeAppForShutdown) {
     try {
@@ -211,6 +293,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
       console.error("[Shutdown] Error disposing session readers:", error);
     }
   }
+  projectGlossarySubscriptionsForShutdown?.dispose();
+  projectGlossarySubscriptionsForShutdown = null;
+  providerSessionWatchersForShutdown?.stop();
+  providerSessionWatchersForShutdown = null;
 
   // Shut down device bridge sidecar
   if (deviceBridgeForShutdown) {
@@ -230,6 +316,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
 // Register shutdown handlers early
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+if (process.platform !== "win32") {
+  process.on("SIGHUP", () => {
+    void gracefulShutdown("SIGHUP");
+  });
+}
 
 // Initialize logging early to capture all output
 initLogger({
@@ -351,42 +442,46 @@ async function warnIfCodexVersionMismatch(): Promise<void> {
 
 await warnIfCodexVersionMismatch();
 
-// Create the real SDK
-const realSdk = new RealClaudeSDK();
+const mockProvider = config.useMockSdk
+  ? new MockServerClaudeProvider()
+  : undefined;
+const realSdk = config.useMockSdk ? undefined : new RealClaudeSDK();
 
-// Create EventBus and FileWatchers for all provider directories
+// Create the event bus and the eligibility-gated provider watcher owner.
 const eventBus = new EventBus();
-const fileWatchers: FileWatcher[] = [];
-
-// Helper to create watcher if directory exists
-function createWatcherIfExists(
-  watchDir: string,
-  provider: "claude" | "gemini" | "codex" | "pi",
-): void {
-  if (fs.existsSync(watchDir)) {
-    const periodicRescanMs =
-      provider === "codex" ? config.codexWatchPeriodicRescanMs : 0;
-
-    const watcher = new FileWatcher({
-      watchDir,
-      provider,
-      eventBus,
+const providerSessionWatchers = new ProviderSessionWatcherRegistry({
+  eventBus,
+  activationDelayMs: PROVIDER_WATCH_ACTIVATION_DELAY_MS,
+  activationYieldMs: PROVIDER_WATCH_ACTIVATION_YIELD_MS,
+  specs: [
+    {
+      family: "claude",
+      watchDir: config.claudeSessionsDir,
+      provider: "claude",
       debounceMs: 200,
-      periodicRescanMs,
-    });
-    watcher.start();
-    fileWatchers.push(watcher);
-  } else {
-    console.log(`[FileWatcher] Skipping ${provider} (${watchDir} not found)`);
-  }
-}
-
-// Create watchers for session directories only (not full provider dirs)
-// This reduces inotify pressure and memory usage
-createWatcherIfExists(config.claudeSessionsDir, "claude");
-createWatcherIfExists(config.geminiSessionsDir, "gemini");
-createWatcherIfExists(config.codexSessionsDir, "codex");
-createWatcherIfExists(config.piSessionsDir, "pi");
+    },
+    {
+      family: "gemini",
+      watchDir: config.geminiSessionsDir,
+      provider: "gemini",
+      debounceMs: 200,
+    },
+    {
+      family: "codex",
+      watchDir: config.codexSessionsDir,
+      provider: "codex",
+      debounceMs: 200,
+      periodicRescanMs: config.codexWatchPeriodicRescanMs,
+    },
+    {
+      family: "pi",
+      watchDir: config.piSessionsDir,
+      provider: "pi",
+      debounceMs: 200,
+    },
+  ],
+});
+providerSessionWatchersForShutdown = providerSessionWatchers;
 
 // When running without tsx watch (NO_BACKEND_RELOAD=true), start source watcher
 // to notify the UI when server code changes and needs manual reload
@@ -453,11 +548,23 @@ const networkBindingService = new NetworkBindingService({
   defaultPort: 3400,
 });
 const connectedBrowsersService = new ConnectedBrowsersService(eventBus);
+const securityClientService = new SecurityClientService({
+  dataDir: config.dataDir,
+  remoteSessionService,
+  browserProfileService,
+  connectedBrowsers: connectedBrowsersService,
+  pushService,
+});
 const serverSettingsService = new ServerSettingsService({
   dataDir: config.dataDir,
 });
 const ttsService = new TtsService({
   dataDir: config.dataDir,
+});
+const projectStoragePolicy = new ProjectStoragePolicy({
+  dataDir: config.dataDir,
+  getMode: () =>
+    serverSettingsService.getSetting("projectDirectoryStorage") ?? "app-data",
 });
 const hostAwakeService = new HostAwakeService();
 hostAwakeForShutdown = hostAwakeService;
@@ -478,6 +585,10 @@ const modelInfoService = new ModelInfoService({ dataDir: config.dataDir });
 const attachmentStagingService = new AttachmentStagingService({
   dataDir: config.dataDir,
   maxUploadSizeBytes: config.maxUploadSizeBytes,
+  storagePolicy: projectStoragePolicy,
+});
+const dirtyFileEditorService = new DirtyFileEditorService({
+  dataDir: config.dataDir,
 });
 
 function startAttachmentStagingCleanup(): void {
@@ -538,6 +649,7 @@ async function startServer() {
     );
   }
   const serverProtocol = tlsOptions ? "https" : "http";
+  const sessionWakeSecret = await loadOrCreateSessionWakeSecret(config.dataDir);
 
   // Initialize services (loads state from disk)
   // InstallService first since it generates the installation ID used by other services
@@ -547,12 +659,29 @@ async function startServer() {
   markStartup("notificationService initialized");
   await sessionMetadataService.initialize();
   markStartup("sessionMetadataService initialized");
+  const migratedCatalogFamilies = installService.needsCatalogMetadataMigration()
+    ? await installService.completeCatalogMetadataMigration(
+        sessionMetadataService.getRecordedProviders(),
+      )
+    : [];
+  getLogger().info(
+    {
+      event: "provider_session_watcher_state_loaded",
+      catalogFamilies: installService.getCatalogFamilies(),
+      migratedCatalogFamilies,
+      ...providerSessionWatchers.getMetrics(),
+    },
+    "FILE_WATCHER: eligible provider watcher state loaded",
+  );
+  markStartup("eligible provider watcher state loaded");
   await projectMetadataService.initialize();
   markStartup("projectMetadataService initialized");
   await projectQueueService.initialize();
   markStartup("projectQueueService initialized");
   await sessionQueuePersistenceService.initialize();
   markStartup("sessionQueuePersistenceService initialized");
+  await dirtyFileEditorService.initialize();
+  markStartup("dirtyFileEditorService initialized");
   await attachmentStagingService.initialize();
   startAttachmentStagingCleanup();
   markStartup("attachmentStagingService initialized");
@@ -574,6 +703,13 @@ async function startServer() {
   markStartup("serverSettingsService initialized");
   await ttsService.initialize();
   markStartup("ttsService initialized");
+  if (await registerDevWrapperBackend()) {
+    console.log("[DevWrapper] Registered backend process");
+  }
+  if (await initializeProviderRuntimeHost()) {
+    console.log("[ProviderRuntimeHost] Registered this server generation");
+  }
+  markStartup("Provider runtime host registration checked");
   await hostAwakeService.initialize({
     mode: serverSettingsService.getSetting("hostAwakeMode"),
     batteryFloorPercent: serverSettingsService.getSetting(
@@ -595,7 +731,7 @@ async function startServer() {
   // share routes default to EMPTY_STATE until it resolves (same tradeoff as the
   // deferred speech-backend init).
   void publicShareService
-    .initialize()
+    .initialize(serverSettingsService.getSetting("publicSharesEnabled"))
     .then(() => {
       console.log(
         `[public-shares] Loaded (deferred) at +${Date.now() - startupStart}ms`,
@@ -611,6 +747,9 @@ async function startServer() {
   markStartup("remoteSessionService persistence setting applied");
   await remoteSessionService.initialize();
   markStartup("remoteSessionService initialized");
+  await securityClientService.initialize();
+  securityClientForShutdown = securityClientService;
+  markStartup("securityClientService initialized");
   await networkBindingService.initialize();
   markStartup("networkBindingService initialized");
 
@@ -623,6 +762,7 @@ async function startServer() {
     homeDir: os.homedir(),
     tempPaths: config.fileAccessTempPaths,
     envPaths: config.fileAccessEnvPaths,
+    appDataProjectsDir: path.join(config.dataDir, "projects"),
   });
   updateFileAccess(serverSettingsService.getSetting("fileAccess"));
 
@@ -630,6 +770,10 @@ async function startServer() {
   await ClaudeGatewayProvider.configureGateway({
     url: serverSettingsService.getSetting("claudeGatewayUrl"),
     startCommand: serverSettingsService.getSetting("claudeGatewayStartCommand"),
+    disableAgent: serverSettingsService.getSetting("claudeGatewayDisableAgent"),
+    disablePlanMode: serverSettingsService.getSetting(
+      "claudeGatewayDisablePlanMode",
+    ),
   });
   const savedOllamaUrl = serverSettingsService.getSetting("ollamaUrl");
   const savedOllamaSystemPrompt =
@@ -758,20 +902,42 @@ async function startServer() {
     );
   }
 
+  const savedIdleReapHours = serverSettingsService.getSetting("idleReapHours");
+  const idleTimeoutMs =
+    savedIdleReapHours === undefined
+      ? config.idleTimeoutMs
+      : idleReapHoursToMs(savedIdleReapHours);
+
   // Create the app first (without WebSocket support initially)
   // We'll add WebSocket routes after setting up WebSocket support
-  const { app, supervisor, scanner, disposeSessionReaders } = createApp({
+  const {
+    app,
+    supervisor,
+    scanner,
+    disposeSessionReaders,
+    glossaryIndexService,
+    externalTracker,
+    resolveAbsoluteFilePaths,
+  } = createApp({
+    provider: mockProvider,
     realSdk,
     projectsDir: config.claudeProjectsDir,
-    idleTimeoutMs: config.idleTimeoutMs,
+    idleTimeoutMs,
     defaultPermissionMode: config.defaultPermissionMode,
     eventBus,
     // Note: uploadeWebSocket not passed yet - will be added below
     notificationService,
     sessionMetadataService,
+    onSuccessfulProviderSession: async (_sessionId, provider) => {
+      await installService.recordSuccessfulProviders([provider]);
+      providerSessionWatchers.requestActivation([
+        providerCatalogFamily(provider),
+      ]);
+    },
     projectMetadataService,
     projectQueueService,
     sessionQueuePersistenceService,
+    dirtyFileEditorService,
     sessionIndexService,
     projectScanCacheTtlMs: config.projectScanCacheTtlMs,
     sessionAutoArchiveDays: config.sessionAutoArchiveDays,
@@ -786,6 +952,7 @@ async function startServer() {
     desktopRuntime: config.desktopRuntime,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
     relayClientService,
     relayConfigCallbackHolder,
     // Note: frontendProxy not passed - will be added below
@@ -801,6 +968,25 @@ async function startServer() {
     browserSettingsBackupService,
     serverSettingsService,
     ttsService,
+    sessionWakeSecret,
+    getSessionWakeBaseUrl: (executor) =>
+      config.sessionWakeBaseUrl ??
+      (executor || tlsOptions
+        ? undefined
+        : `http://127.0.0.1:${networkBindingService.getLocalhostPort()}/`),
+    getBrowserDebugConnection: (executor) => {
+      if (config.sessionWakeBaseUrl) {
+        return { baseUrl: config.sessionWakeBaseUrl };
+      }
+      if (executor) return undefined;
+      return {
+        baseUrl: `${serverProtocol}://127.0.0.1:${networkBindingService.getLocalhostPort()}/`,
+        ...(tlsOptions
+          ? { caCertificate: tlsOptions.cert.toString("utf8") }
+          : {}),
+      };
+    },
+    projectStoragePolicy,
     hostAwakeService,
     workstreamService,
     sharingService,
@@ -830,10 +1016,56 @@ async function startServer() {
       sessionsDir: config.geminiSessionsDir,
     }),
   });
+  const projectGlossarySubscriptionManager =
+    new ProjectGlossarySubscriptionManager({
+      scanner,
+      glossaryIndexService,
+    });
+  projectGlossarySubscriptionsForShutdown = projectGlossarySubscriptionManager;
 
   // Set service references for graceful shutdown
   supervisorForShutdown = supervisor;
   deviceBridgeForShutdown = deviceBridgeService ?? null;
+
+  const hostedProviderRuntimes = await listHostedProviderRuntimes().catch(
+    (error) => {
+      console.error(
+        "[ProviderRuntimeHost] Failed to list retained runtimes:",
+        error,
+      );
+      return [];
+    },
+  );
+  for (const runtime of hostedProviderRuntimes) {
+    if (!runtime.sessionId) continue;
+    try {
+      await supervisor.reactivateSession(
+        runtime.projectPath,
+        runtime.sessionId,
+        runtime.reattach.permissionMode,
+        {
+          providerName: runtime.providerName,
+          model: runtime.reattach.model,
+          serviceTier: runtime.reattach.serviceTier,
+          thinking: runtime.reattach.thinking,
+          effort: runtime.reattach.effort,
+          clientName: runtime.reattach.clientName,
+          executor: runtime.reattach.executor,
+          sandboxLevel: runtime.reattach.sandboxLevel,
+          sandboxStateKey: runtime.reattach.sandboxStateKey,
+        },
+      );
+      console.log(
+        `[ProviderRuntimeHost] Reattached ${runtime.providerName} session ${runtime.sessionId}`,
+      );
+    } catch (error) {
+      console.error(
+        `[ProviderRuntimeHost] Failed to reattach session ${runtime.sessionId}:`,
+        error,
+      );
+    }
+  }
+  markStartup("retained provider runtimes reattached");
 
   // Set up debug context for maintenance server
   setDebugContext({
@@ -855,6 +1087,9 @@ async function startServer() {
   // This must use the same app instance that has the routes
   // We get wss for the unified upgrade handler (instead of using injectWebSocket)
   const { wss, upgradeWebSocket } = createNodeWebSocket({ app });
+  // Upload and speech payloads are already chunked; reject an oversized message
+  // in ws before the relay handlers buffer or parse it.
+  configureInboundWebSocketMessageLimit(wss);
 
   // Add upload routes with WebSocket support
   // These must be added BEFORE the frontend proxy catch-all
@@ -863,6 +1098,7 @@ async function startServer() {
     upgradeWebSocket,
     maxUploadSizeBytes: config.maxUploadSizeBytes,
     attachmentStagingService,
+    storagePolicy: projectStoragePolicy,
   });
   app.route("/api", uploadRoutes);
   markStartup("upload routes mounted");
@@ -885,6 +1121,7 @@ async function startServer() {
   const baseUrl = `${serverProtocol}://${config.host}:${config.port}`;
   const wsRelayUploadManager = new UploadManager({
     maxUploadSizeBytes: config.maxUploadSizeBytes,
+    storagePolicy: projectStoragePolicy,
   });
   const wsRelayHandler = createWsRelayRoutes({
     upgradeWebSocket,
@@ -896,13 +1133,17 @@ async function startServer() {
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir: config.dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   });
   app.get("/api/ws", wsRelayHandler);
 
@@ -917,13 +1158,17 @@ async function startServer() {
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir: config.dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   });
   markStartup("relay accept handler configured");
 
@@ -933,12 +1178,14 @@ async function startServer() {
     if (relayConfig?.url && relayConfig?.username) {
       const compatibility = await getServerCompatibilityInfo({
         browserSettingsBackupAvailable: true,
+        securityClientAuditAvailable: true,
         getDeviceBridgeState: () => {
           if (!deviceBridgeService) return "unavailable";
           return deviceBridgeService.hasBinary() ? "available" : "downloadable";
         },
         isDeviceBridgeEnabled: () =>
           serverSettingsService.getSetting("deviceBridgeEnabled") ?? false,
+        providerHostControlAvailable: isProviderRuntimeHostAvailable(),
       });
       relayClientService.start({
         relayUrl: relayConfig.url,
@@ -1304,6 +1551,18 @@ async function startServer() {
     "127.0.0.1",
     (info) => {
       markStartup("localhost server onReady");
+      providerSessionWatchers.requestActivation(
+        installService.getCatalogFamilies(),
+      );
+      void reportDevWrapperListening({
+        host: "127.0.0.1",
+        port: info.port,
+      }).catch((error) => {
+        console.error(
+          "[DevWrapper] Failed to report acquired localhost bind:",
+          error,
+        );
+      });
       // Write port to file if requested (for test harnesses)
       if (config.portFile) {
         fs.writeFileSync(config.portFile, String(info.port));
@@ -1405,6 +1664,19 @@ async function startServer() {
       portFile: config.maintenancePortFile,
       host: "127.0.0.1", // Maintenance always on localhost
       mainServerPort: effectivePort,
+      getDiagnostics: () => ({
+        caches: {
+          claudeTranscript: claudeTranscriptCache.getStats(),
+          markdownAugments: markdownAugmentCacheDiagnostics(),
+          projectPaths: projectPathCacheDiagnostics(),
+        },
+        relay: {
+          responseSerialization: relayResponseSerializationDiagnostics(),
+        },
+        background: {
+          externalSessionTracker: externalTracker?.getDiagnostics() ?? null,
+        },
+      }),
     });
     markStartup("maintenance server started");
   }

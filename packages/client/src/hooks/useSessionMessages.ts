@@ -9,12 +9,14 @@ import {
 import type { PaginationInfo } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { getMessageId } from "../lib/mergeMessages";
+import { createFinalMarkdownAugmentAction } from "../lib/sessionDetail/actionAdapters";
 import type { SessionDetailRevealSnapshotResult } from "../lib/sessionDetail/revealSnapshot";
 import {
   buildReturnedToolUseToAgent,
   canRevealReturnedSessionDetail,
   createStoreBackedSessionDetailSelector,
   getReturnedAgentContent,
+  getReturnedMarkdownAugments,
   getReturnedSessionMessages,
 } from "../lib/sessionDetail/returnedDetail";
 import type {
@@ -27,6 +29,9 @@ import {
   type SessionDetailLoadCompleteResult,
   type SessionDetailRevealSnapshotInput,
 } from "../lib/sessionDetail/sessionDetailCoordinator";
+import { isActiveWindowRealUserTurn } from "../lib/sessionDetail/activeWindowTrimPolicy";
+import { getSessionDetailRetentionDefaults } from "../lib/sessionDetail/sessionDetailRetention";
+import { isClientLogCollectionActive } from "../lib/diagnostics";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import {
   getSessionActiveWindowTrimEnabled,
@@ -56,6 +61,7 @@ import type {
   AgentContent,
   AgentContentMap,
   AgentContextUsage,
+  MarkdownAugmentMap,
   SessionDetailAction,
 } from "../lib/sessionDetail/types";
 import type {
@@ -68,6 +74,8 @@ export type SessionLoadResult = SessionDetailLoadCompleteResult;
 export type { AgentContent, AgentContentMap } from "../lib/sessionDetail/types";
 
 const DEFAULT_INITIAL_TAIL_TURNS = 20;
+const INCREMENTAL_REFRESH_DIAGNOSTIC_INTERVAL_MS = 30_000;
+const OLDER_USER_TURN_LOAD_PAGE_LIMIT = 8;
 
 export type SessionMetadataUpdate =
   | SessionMetadata
@@ -75,6 +83,8 @@ export type SessionMetadataUpdate =
   | ((previous: SessionMetadata | null) => SessionMetadata | null);
 
 export type { SessionLoadProgress, SessionLoadProgressStage };
+
+export type IncrementalFetchTrigger = Record<string, unknown>;
 
 /** Options for useSessionMessages */
 export interface UseSessionMessagesOptions {
@@ -98,6 +108,10 @@ export interface UseSessionMessagesResult {
   agentContent: AgentContentMap;
   /** Mapping from Task tool_use_id → agentId */
   toolUseToAgent: Map<string, string>;
+  /** Final server-rendered Markdown keyed by stable message ID. */
+  markdownAugments: MarkdownAugmentMap;
+  /** Store a final server-rendered Markdown replacement. */
+  applyFinalMarkdownAugment: (messageId: string, html: string) => void;
   /** Whether initial load is in progress */
   loading: boolean;
   /** Fine-grained initial load progress for opt-in display */
@@ -128,7 +142,7 @@ export interface UseSessionMessagesResult {
   /** Remove a local optimistic self-send that the server accepted cancelling */
   removeUnconfirmedSelfSend: (tempId: string) => void;
   /** Fetch new messages incrementally (for file change events) */
-  fetchNewMessages: () => Promise<void>;
+  fetchNewMessages: (trigger?: IncrementalFetchTrigger) => Promise<void>;
   /** Fetch session metadata only */
   fetchSessionMetadata: () => Promise<void>;
   /** Pagination info from compact-boundary-based loading */
@@ -137,7 +151,9 @@ export interface UseSessionMessagesResult {
   activeWindowTrimRevision: number;
   /** Whether older messages are being loaded */
   loadingOlder: boolean;
-  /** Load the next chunk of older messages */
+  /** Whether a safety boundary paused loading before reaching a real user turn */
+  olderLoadContinuationRequired: boolean;
+  /** Load through older chunks until reaching a real user turn or safety boundary */
   loadOlderMessages: () => Promise<void>;
   /** Retained scroll anchor from the last same-tab route visit */
   initialScrollSnapshot: SessionRouteScrollSnapshot | null;
@@ -153,7 +169,8 @@ function readSessionLoadCache(
   coordinator: SessionDetailCoordinator,
 ): SessionRouteSnapshot | undefined {
   return coordinator.readInitialRouteSnapshot({
-    enabled: getSessionTranscriptCacheEnabled() && typeof window !== "undefined",
+    enabled:
+      getSessionTranscriptCacheEnabled() && typeof window !== "undefined",
   });
 }
 
@@ -163,6 +180,51 @@ export function __resetSessionLoadCacheForTest(): void {
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+interface IncrementalRefreshDiagnosticState {
+  routeKey: string;
+  lastReportedAtMs: number;
+  suppressedCount: number;
+}
+
+function debugLogIncrementalRefreshDiagnostic(
+  state: IncrementalRefreshDiagnosticState,
+  input: {
+    projectId: string;
+    sessionId: string;
+    afterMessageId?: string;
+    incrementalError: Error;
+    reconciliationError?: Error;
+    outcome: "failed" | "recovered";
+  },
+): void {
+  if (!import.meta.env.DEV && !isClientLogCollectionActive()) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  if (
+    nowMs - state.lastReportedAtMs <
+    INCREMENTAL_REFRESH_DIAGNOSTIC_INTERVAL_MS
+  ) {
+    state.suppressedCount += 1;
+    return;
+  }
+
+  const suppressedCount = state.suppressedCount;
+  state.lastReportedAtMs = nowMs;
+  state.suppressedCount = 0;
+  console.info("[SessionIncrementalRefresh]", {
+    event: "incremental-refresh-reconciliation",
+    outcome: input.outcome,
+    projectId: input.projectId,
+    sessionId: input.sessionId,
+    afterMessageId: input.afterMessageId,
+    incrementalError: input.incrementalError.message,
+    reconciliationError: input.reconciliationError?.message,
+    ...(suppressedCount > 0 && { suppressedCount }),
+  });
 }
 
 function yieldForSessionLoadingProgressPaint(
@@ -227,6 +289,20 @@ export function useSessionMessages(
     coordinator: SessionDetailCoordinator;
     load: SessionRouteSnapshot | undefined;
   } | null>(null);
+  const incrementalFetchSequenceRef = useRef(0);
+  const incrementalRefreshDiagnosticRef =
+    useRef<IncrementalRefreshDiagnosticState>({
+      routeKey: snapshotKeyString,
+      lastReportedAtMs: Number.NEGATIVE_INFINITY,
+      suppressedCount: 0,
+    });
+  if (incrementalRefreshDiagnosticRef.current.routeKey !== snapshotKeyString) {
+    incrementalRefreshDiagnosticRef.current = {
+      routeKey: snapshotKeyString,
+      lastReportedAtMs: Number.NEGATIVE_INFINITY,
+      suppressedCount: 0,
+    };
+  }
   if (
     cachedLoadRef.current?.key !== snapshotKeyString ||
     cachedLoadRef.current.coordinator !== coordinator
@@ -247,6 +323,13 @@ export function useSessionMessages(
   const [sessionLoadProgress, setSessionLoadProgress] =
     useState<SessionLoadProgress>(() => coordinator.buildLoadProgress("idle"));
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderLoadContinuation, setOlderLoadContinuation] = useState(() => ({
+    routeKey: snapshotKeyString,
+    required: false,
+  }));
+  const olderLoadContinuationRequired =
+    olderLoadContinuation.routeKey === snapshotKeyString &&
+    olderLoadContinuation.required;
 
   // Store-authoritative fields come from reducer-owned state. The remaining ref
   // holds hook-only scroll bookkeeping, which is intentionally not reactive.
@@ -260,6 +343,14 @@ export function useSessionMessages(
       coordinator.dispatch(action);
     },
     [coordinator],
+  );
+  const applyFinalMarkdownAugment = useCallback(
+    (messageId: string, html: string) => {
+      dispatchSessionDetailAction(
+        createFinalMarkdownAugmentAction({ messageId, html }),
+      );
+    },
+    [dispatchSessionDetailAction],
   );
 
   const readStoreSession = useCallback(
@@ -301,10 +392,7 @@ export function useSessionMessages(
 
   // Hold the store entry for the mounted session: retention protects it from
   // TTL/LRU eviction, so incremental dispatches always land on real state.
-  useEffect(
-    () => coordinator.retain(),
-    [coordinator],
-  );
+  useEffect(() => coordinator.retain(), [coordinator]);
 
   const reportStoreDivergence = useCallback(
     (
@@ -314,7 +402,9 @@ export function useSessionMessages(
       if (!isSessionDetailShadowDiagnosticsEnabled()) {
         return;
       }
-      const store = coordinator.readSelected(selectSessionDetailRuntimeSnapshot);
+      const store = coordinator.readSelected(
+        selectSessionDetailRuntimeSnapshot,
+      );
       if (!store) {
         return;
       }
@@ -348,7 +438,10 @@ export function useSessionMessages(
       if (next === previous) {
         return;
       }
-      dispatchSessionDetailAction({ type: "setSessionMetadata", session: next });
+      dispatchSessionDetailAction({
+        type: "setSessionMetadata",
+        session: next,
+      });
       reportStoreDivergence("session-metadata", {
         session: next,
       });
@@ -399,6 +492,8 @@ export function useSessionMessages(
   );
   const returnedMessages = getReturnedSessionMessages(storeBackedDetail);
   const returnedAgentContent = getReturnedAgentContent(storeBackedDetail);
+  const returnedMarkdownAugments =
+    getReturnedMarkdownAugments(storeBackedDetail);
   const returnedToolUseToAgentEntries =
     storeBackedDetail?.revealed?.toolUseToAgentEntries;
   const returnedToolUseToAgent = useMemo(
@@ -421,10 +516,7 @@ export function useSessionMessages(
       recordCurrentEntryBytes();
       cleanupCurrentStoreRouteSnapshot();
     };
-  }, [
-    cleanupCurrentStoreRouteSnapshot,
-    recordCurrentEntryBytes,
-  ]);
+  }, [cleanupCurrentStoreRouteSnapshot, recordCurrentEntryBytes]);
 
   // Process a stream message event.
   const processStreamMessage = useCallback(
@@ -467,9 +559,7 @@ export function useSessionMessages(
       warmSnapshot: warmLoad,
     });
 
-    const notifyLoadComplete = (
-      data: GetSessionResult,
-    ) => {
+    const notifyLoadComplete = (data: GetSessionResult) => {
       sourceSummary.reportProviderRuntimeStatusSnapshot(
         coordinator.buildProviderRuntimeStatusSnapshot(data),
       );
@@ -570,9 +660,7 @@ export function useSessionMessages(
       return reveal;
     };
 
-    const applyWarmDataBeforeHydration = (
-      data: GetSessionResult,
-    ) => {
+    const applyWarmDataBeforeHydration = (data: GetSessionResult) => {
       if (!warmLoad) return;
       markReloadPerfPhase(
         "session_initial_load_data_ready",
@@ -598,9 +686,7 @@ export function useSessionMessages(
       notifyLoadComplete(data);
     };
 
-    const applyWarmDeltaAfterHydration = (
-      data: GetSessionResult,
-    ) => {
+    const applyWarmDeltaAfterHydration = (data: GetSessionResult) => {
       if (!warmLoad) return;
       markReloadPerfPhase(
         "session_initial_load_data_ready",
@@ -632,17 +718,14 @@ export function useSessionMessages(
       notifyLoadComplete(data);
     };
 
-    markReloadPerfPhase(
-      "session_initial_load_start",
-      {
-        projectId,
-        sessionId,
-        tailCompactions: 2,
-        tailTurns: effectiveTailTurns,
-        tailFrom,
-        restoredFromSnapshot: initialLoad.restoredFromSnapshot,
-      },
-    );
+    markReloadPerfPhase("session_initial_load_start", {
+      projectId,
+      sessionId,
+      tailCompactions: 2,
+      tailTurns: effectiveTailTurns,
+      tailFrom,
+      restoredFromSnapshot: initialLoad.restoredFromSnapshot,
+    });
     scrollSnapshotRef.current = shouldRetainSessionScrollMemory(
       getSessionScrollBehaviorMode(),
     )
@@ -714,15 +797,12 @@ export function useSessionMessages(
         if (cancelled) return;
 
         const applied = coordinator.applyInitialLoad(data);
-        const reveal = readRevealSnapshotAfterStoreUpdate(
-          "initial-load",
-          {
-            session: data.session,
-            pagination: applied.pagination,
-            lastMessageId: readStoreLastMessageId(),
-            scrollSnapshot: scrollSnapshotRef.current,
-          },
-        );
+        const reveal = readRevealSnapshotAfterStoreUpdate("initial-load", {
+          session: data.session,
+          pagination: applied.pagination,
+          lastMessageId: readStoreLastMessageId(),
+          scrollSnapshot: scrollSnapshotRef.current,
+        });
         const { snapshot } = reveal;
         completeInitialReveal({
           snapshot,
@@ -875,71 +955,234 @@ export function useSessionMessages(
   );
 
   // Fetch new messages incrementally (for file change events)
-  const fetchNewMessages = useCallback(() => {
-    return coordinator.runExclusiveFetchNewMessages(async () => {
-      try {
-        const afterMessageId = readStoreLastMessageId();
-        const data = await sourceApi.getSession(
-          afterMessageId
-            ? {
+  const fetchNewMessages = useCallback(
+    (trigger?: IncrementalFetchTrigger) => {
+      return coordinator.runExclusiveFetchNewMessages(async () => {
+        const requestId = ++incrementalFetchSequenceRef.current;
+        let afterMessageId: string | undefined;
+        const perfDetail = {
+          ...trigger,
+          projectId,
+          sessionId,
+          requestId,
+        };
+        markReloadPerfPhase(
+          "session_incremental_fetch_request_start",
+          perfDetail,
+        );
+        try {
+          afterMessageId = readStoreLastMessageId();
+          const data = await sourceApi.getSession(
+            afterMessageId
+              ? {
+                  projectId,
+                  sessionId,
+                  afterMessageId,
+                }
+              : {
+                  projectId,
+                  sessionId,
+                  tailCompactions: 2,
+                  tailTurns: effectiveTailTurns,
+                  tailFrom,
+                },
+          );
+          markReloadPerfPhase("session_incremental_fetch_data_ready", {
+            ...perfDetail,
+            afterMessageId,
+            sourceMessageCount: data.messages.length,
+          });
+          sourceSummary.reportProviderRuntimeStatusSnapshot(
+            coordinator.buildProviderRuntimeStatusSnapshot(data),
+          );
+          const applied = coordinator.applyIncrementalRefresh(data, {
+            afterMessageId,
+          });
+          if (applied.applied) {
+            reportStoreDivergence("catchup", { session: data.session });
+          }
+          // Update session metadata (including title, model, contextUsage) which may have changed
+          // For new sessions, prev may be null if JSONL didn't exist on initial load
+          updateSession((prev) =>
+            prev ? { ...prev, ...data.session } : data.session,
+          );
+          markReloadPerfPhase("session_incremental_fetch_state_queued", {
+            ...perfDetail,
+            afterMessageId,
+            applied: applied.applied,
+            messageCount: applied.messageCount,
+            sourceMessageCount: applied.sourceMessageCount,
+          });
+        } catch (error) {
+          const incrementalError = toError(error);
+          markReloadPerfPhase("session_incremental_fetch_error", {
+            ...perfDetail,
+            afterMessageId,
+            error: incrementalError.message,
+          });
+          if (!afterMessageId) {
+            debugLogIncrementalRefreshDiagnostic(
+              incrementalRefreshDiagnosticRef.current,
+              {
+                projectId,
+                sessionId,
+                incrementalError,
+                outcome: "failed",
+              },
+            );
+            return;
+          }
+
+          markReloadPerfPhase(
+            "session_incremental_reconciliation_request_start",
+            {
+              ...perfDetail,
+              afterMessageId,
+            },
+          );
+          try {
+            const data = await sourceApi.getSession({
+              projectId,
+              sessionId,
+              tailCompactions: 2,
+              tailTurns: effectiveTailTurns,
+              tailFrom,
+            });
+            markReloadPerfPhase(
+              "session_incremental_reconciliation_data_ready",
+              {
+                ...perfDetail,
+                afterMessageId,
+                sourceMessageCount: data.messages.length,
+              },
+            );
+            sourceSummary.reportProviderRuntimeStatusSnapshot(
+              coordinator.buildProviderRuntimeStatusSnapshot(data),
+            );
+            const applied = coordinator.applyFullTailReconciliation(data);
+            reportStoreDivergence("incremental-reconciliation", {
+              session: data.session,
+            });
+            updateSession((prev) =>
+              prev ? { ...prev, ...data.session } : data.session,
+            );
+            markReloadPerfPhase(
+              "session_incremental_reconciliation_state_queued",
+              {
+                ...perfDetail,
+                afterMessageId,
+                messageCount: applied.messageCount,
+                sourceMessageCount: applied.sourceMessageCount,
+              },
+            );
+            debugLogIncrementalRefreshDiagnostic(
+              incrementalRefreshDiagnosticRef.current,
+              {
                 projectId,
                 sessionId,
                 afterMessageId,
-              }
-            : {
+                incrementalError,
+                outcome: "recovered",
+              },
+            );
+          } catch (reconciliationFailure) {
+            const reconciliationError = toError(reconciliationFailure);
+            markReloadPerfPhase("session_incremental_reconciliation_error", {
+              ...perfDetail,
+              afterMessageId,
+              error: reconciliationError.message,
+            });
+            debugLogIncrementalRefreshDiagnostic(
+              incrementalRefreshDiagnosticRef.current,
+              {
                 projectId,
                 sessionId,
-                tailCompactions: 2,
-                tailTurns: effectiveTailTurns,
-                tailFrom,
+                afterMessageId,
+                incrementalError,
+                reconciliationError,
+                outcome: "failed",
               },
-        );
-        sourceSummary.reportProviderRuntimeStatusSnapshot(
-          coordinator.buildProviderRuntimeStatusSnapshot(data),
-        );
-        const applied = coordinator.applyIncrementalRefresh(data, {
-          afterMessageId,
-        });
-        if (applied.applied) {
-          reportStoreDivergence("catchup", { session: data.session });
+            );
+          }
         }
-        // Update session metadata (including title, model, contextUsage) which may have changed
-        // For new sessions, prev may be null if JSONL didn't exist on initial load
-        updateSession((prev) =>
-          prev ? { ...prev, ...data.session } : data.session,
-        );
-      } catch {
-        // Silent fail for incremental updates
-      }
-    });
-  }, [
-    coordinator,
-    effectiveTailTurns,
-    projectId,
-    sessionId,
-    tailFrom,
-    readStoreLastMessageId,
-    reportStoreDivergence,
-    sourceApi,
-    sourceSummary,
-    updateSession,
-  ]);
+      });
+    },
+    [
+      coordinator,
+      effectiveTailTurns,
+      projectId,
+      sessionId,
+      tailFrom,
+      readStoreLastMessageId,
+      reportStoreDivergence,
+      sourceApi,
+      sourceSummary,
+      updateSession,
+    ],
+  );
 
-  // Load older messages (previous chunk before the current truncation point)
+  // One reader demand advances through compact-boundary pages until it exposes
+  // a real user turn. Bound both pages and newly retained bytes so a pathologically
+  // large tool/assistant span requires an explicit continuation instead of
+  // monopolizing the client.
   const loadOlderMessages = useCallback(async () => {
-    const request = coordinator.buildOlderPageRequest();
-    if (!request.requested) {
+    if (!coordinator.buildOlderPageRequest().requested) {
       return;
     }
     coordinator.suppressActiveWindowTrimForHistoryExpansion();
+    setOlderLoadContinuation({ routeKey: snapshotKeyString, required: false });
     setLoadingOlder(true);
+    const initialBytes = coordinator.getEntryApproxBytes() ?? 0;
+    const additionalByteLimit = Math.max(
+      1,
+      getSessionDetailRetentionDefaults().maxBytes,
+    );
     try {
-      const data = await sourceApi.getSession(request.input);
-      sourceSummary.reportProviderRuntimeStatusSnapshot(
-        coordinator.buildProviderRuntimeStatusSnapshot(data),
-      );
-      coordinator.applyOlderPage(data);
-      reportStoreDivergence("older-page", { session: data.session });
+      const seenCursors = new Set<string>();
+      for (
+        let pageCount = 0;
+        pageCount < OLDER_USER_TURN_LOAD_PAGE_LIMIT;
+        pageCount += 1
+      ) {
+        const request = coordinator.buildOlderPageRequest();
+        if (!request.requested) {
+          break;
+        }
+        const cursor = request.input.beforeMessageId;
+        if (!cursor || seenCursors.has(cursor)) {
+          break;
+        }
+        seenCursors.add(cursor);
+
+        const data = await sourceApi.getSession(request.input);
+        sourceSummary.reportProviderRuntimeStatusSnapshot(
+          coordinator.buildProviderRuntimeStatusSnapshot(data),
+        );
+        coordinator.applyOlderPage(data);
+        reportStoreDivergence("older-page", { session: data.session });
+
+        if (data.messages.some(isActiveWindowRealUserTurn)) {
+          break;
+        }
+        const nextRequest = coordinator.buildOlderPageRequest();
+        if (!nextRequest.requested) {
+          break;
+        }
+        const retainedAdditionalBytes = Math.max(
+          0,
+          (coordinator.getEntryApproxBytes() ?? initialBytes) - initialBytes,
+        );
+        const reachedSafetyBoundary =
+          pageCount + 1 >= OLDER_USER_TURN_LOAD_PAGE_LIMIT ||
+          retainedAdditionalBytes >= additionalByteLimit;
+        if (reachedSafetyBoundary) {
+          setOlderLoadContinuation({
+            routeKey: snapshotKeyString,
+            required: true,
+          });
+          break;
+        }
+      }
     } catch {
       // Silent fail for loading older messages
     } finally {
@@ -948,6 +1191,7 @@ export function useSessionMessages(
   }, [
     coordinator,
     reportStoreDivergence,
+    snapshotKeyString,
     sourceApi,
     sourceSummary,
   ]);
@@ -955,9 +1199,7 @@ export function useSessionMessages(
   const updateRouteScrollSnapshot = useCallback(
     (snapshot: SessionRouteScrollSnapshot) => {
       coordinator.setActiveWindowFollowingBottom(snapshot.atBottom);
-      if (
-        !shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())
-      ) {
+      if (!shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())) {
         scrollSnapshotRef.current = undefined;
         return;
       }
@@ -1002,15 +1244,18 @@ export function useSessionMessages(
     sourceSummary,
     updateSession,
   ]);
-  const selectedInitialScrollSnapshot =
-    shouldRetainSessionScrollMemory(getSessionScrollBehaviorMode())
-      ? (coordinator.readScrollSnapshot() ?? cachedLoad?.scrollSnapshot ?? null)
-      : null;
+  const selectedInitialScrollSnapshot = shouldRetainSessionScrollMemory(
+    getSessionScrollBehaviorMode(),
+  )
+    ? (coordinator.readScrollSnapshot() ?? cachedLoad?.scrollSnapshot ?? null)
+    : null;
 
   return {
     messages: returnedMessages,
     agentContent: returnedAgentContent,
     toolUseToAgent: returnedToolUseToAgent,
+    markdownAugments: returnedMarkdownAugments,
+    applyFinalMarkdownAugment,
     loading,
     sessionLoadProgress,
     session: storeBackedDetail?.session ?? null,
@@ -1030,6 +1275,7 @@ export function useSessionMessages(
     activeWindowTrimRevision:
       storeBackedDetail?.revealed?.activeWindowTrimRevision ?? 0,
     loadingOlder,
+    olderLoadContinuationRequired,
     loadOlderMessages,
     initialScrollSnapshot: selectedInitialScrollSnapshot,
     updateRouteScrollSnapshot,

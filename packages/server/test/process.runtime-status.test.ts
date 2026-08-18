@@ -1,18 +1,10 @@
-import {
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Process,
   createControllableIterator,
   waitFor,
 } from "./process.test-support.js";
-import type {
-  ProcessEvent,
-  UrlProjectId,
-} from "./process.test-support.js";
+import type { ProcessEvent, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
   describe("provider runtime status", () => {
@@ -230,8 +222,7 @@ describe("Process", () => {
         kind: "terminal",
         provider: "codex",
         reason: "overloaded",
-        message:
-          "Selected model is at capacity. Please try a different model.",
+        message: "Selected model is at capacity. Please try a different model.",
         turnId: "turn-1",
         source: "codex.error",
       });
@@ -434,10 +425,18 @@ describe("Process", () => {
       controller.finish();
     });
 
-    it("interrupts a retrying turn when changing models", async () => {
+    it("interrupts a retrying turn before changing models", async () => {
       const controller = createControllableIterator();
-      const setModelFn = vi.fn(async () => {});
-      const interruptFn = vi.fn(async () => true);
+      let retryInterrupted = false;
+      const setModelFn = vi.fn(async () => {
+        if (!retryInterrupted) {
+          throw new Error("retry must be interrupted before model control");
+        }
+      });
+      const interruptFn = vi.fn(async () => {
+        retryInterrupted = true;
+        return true;
+      });
       const process = new Process(controller.iterator, {
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
@@ -465,8 +464,8 @@ describe("Process", () => {
 
       expect(setModelFn).toHaveBeenCalledWith("opus");
       expect(interruptFn).toHaveBeenCalledTimes(1);
-      expect(setModelFn.mock.invocationCallOrder[0]).toBeLessThan(
-        interruptFn.mock.invocationCallOrder[0] ?? 0,
+      expect(interruptFn.mock.invocationCallOrder[0]).toBeLessThan(
+        setModelFn.mock.invocationCallOrder[0] ?? 0,
       );
       expect(process.getInfo().providerRuntimeStatus).toBe(null);
       expect(process.resolvedModel).toBe("opus");
@@ -474,20 +473,11 @@ describe("Process", () => {
       controller.finish();
     });
 
-    it("does not interrupt if retry progress resumes during a model change", async () => {
+    it("does not change models when a retry cannot be interrupted", async () => {
       const controller = createControllableIterator();
-      let process: Process;
-      const setModelFn = vi.fn(async () => {
-        controller.push({
-          type: "assistant",
-          message: { role: "assistant", content: "Recovered" },
-        });
-        await waitFor(() => {
-          expect(process.getInfo().providerRuntimeStatus).toBe(null);
-        });
-      });
-      const interruptFn = vi.fn(async () => true);
-      process = new Process(controller.iterator, {
+      const setModelFn = vi.fn(async () => {});
+      const interruptFn = vi.fn(async () => false);
+      const process = new Process(controller.iterator, {
         projectPath: "/test",
         projectId: "proj-1" as UrlProjectId,
         sessionId: "sess-1",
@@ -509,10 +499,13 @@ describe("Process", () => {
         expect(process.getInfo().providerRuntimeStatus?.kind).toBe("retrying");
       });
 
-      await expect(process.setModel("opus")).resolves.toBe(true);
+      await expect(process.setModel("opus")).rejects.toThrow(
+        "Provider retry could not be interrupted before changing models",
+      );
 
-      expect(interruptFn).not.toHaveBeenCalled();
-      expect(process.resolvedModel).toBe("opus");
+      expect(setModelFn).not.toHaveBeenCalled();
+      expect(process.getInfo().providerRuntimeStatus?.kind).toBe("retrying");
+      expect(process.resolvedModel).toBeUndefined();
 
       controller.finish();
     });

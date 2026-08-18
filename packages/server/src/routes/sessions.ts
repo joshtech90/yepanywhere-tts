@@ -2,6 +2,7 @@ import {
   ALL_PERMISSION_MODES,
   type ContextUsage,
   type DurableRecapMessage,
+  type DurableSyntheticDoneMessage,
   type PermissionRules,
   type PromptSuggestionMode,
   type ProviderName,
@@ -29,15 +30,16 @@ import { mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { performance } from "node:perf_hooks";
 import { Hono } from "hono";
-import { augmentTextBlocks } from "../augments/markdown-augments.js";
 import type { ISessionIndexService } from "../indexes/types.js";
 import { getLogger } from "../logging/logger.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import type { SessionMetadataService } from "../metadata/index.js";
+import type { ProjectMetadataService } from "../metadata/index.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import { DETACHED_PROJECT_PATH, encodeProjectId } from "../projects/paths.js";
+import { tryClaimProjectPathIndex } from "../projects/projectPathIndex.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { resolveCanonicalProjectRedirect } from "./session-project-routing.js";
 import { ensureRemoteDirectory } from "../sdk/remote-spawn.js";
@@ -47,9 +49,11 @@ import type { PermissionMode, SDKMessage, UserMessage } from "../sdk/types.js";
 import { appendApprovalAuditLog } from "../security/approvalAuditLog.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
 import type { ModelInfoService } from "../services/ModelInfoService.js";
+import type { ProjectQueueScheduler } from "../services/ProjectQueueScheduler.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import type { WorkstreamService } from "../services/WorkstreamService.js";
+import { initializeSessionHeartbeatDefaults } from "../services/sessionHeartbeatDefaults.js";
 import { CodexSessionReader } from "../sessions/codex-reader.js";
 import { cloneClaudeSession, cloneCodexSession } from "../sessions/fork.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
@@ -57,17 +61,23 @@ import { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import { extractLastAgentExcerpt } from "../sessions/agent-excerpt.js";
 import {
+  readerForProviderChildren,
+  resolveProviderChildSessions,
+} from "../sessions/provider-child-sessions.js";
+import {
+  detachSessionMessageProjection,
   getCodexProviderForkTurnId,
   normalizeSession,
 } from "../sessions/normalization.js";
 import {
-  applyRecapOverlayToSession,
+  applySessionOverlaysToSession,
   applyRecapOverlayToSummary,
   hasEquivalentRecapMessage,
   hasUnreadProviderContent,
   latestRecapMessage,
-  mergeRecapMessages,
+  mergeSessionOverlayMessages,
 } from "../sessions/recap-overlays.js";
+import { isAutomaticSessionResumeAllowed } from "../sessions/resume-exemption.js";
 import {
   type PaginationInfo,
   sliceAfterMessageIdWithMatch,
@@ -77,6 +87,7 @@ import {
 } from "../sessions/pagination.js";
 import {
   augmentTaskListSnapshots,
+  projectTaskListSnapshots,
   pruneTaskListSnapshotsToLatest,
 } from "../augments/task-list-augments.js";
 import {
@@ -92,15 +103,22 @@ import type { ISessionReader, LoadedSession } from "../sessions/types.js";
 import { getProvider } from "../sdk/providers/index.js";
 import { getStaticSlashCommandsForProvider } from "../sdk/providers/staticSlashCommands.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
-import type { ProviderForkBoundary } from "../sdk/providers/types.js";
+import {
+  type ProviderForkBoundary,
+  resolveInheritedForkModel,
+} from "../sdk/providers/types.js";
 import type { Process } from "../supervisor/Process.js";
 import type {
   ModelSettings,
   QueueFullResponse,
   ResumeMode,
+  SessionReactivationOverrides,
   Supervisor,
 } from "../supervisor/Supervisor.js";
-import { ResumeCompactionError } from "../supervisor/Supervisor.js";
+import {
+  ResumeCompactionError,
+  SessionConfigurationConflictError,
+} from "../supervisor/Supervisor.js";
 import type { QueuedResponse } from "../supervisor/WorkerQueue.js";
 import type {
   ContentBlock,
@@ -129,10 +147,7 @@ import {
   providerResolutionDeps,
 } from "./session-provider-resolution.js";
 import { parseSessionMetadataPatch } from "./session-metadata-patch.js";
-import {
-  recoveredPatientQueueSummaries,
-  sessionQueueSummaries,
-} from "./session-queue-summaries.js";
+import { sessionQueueSummaries } from "./session-queue-summaries.js";
 import {
   reportableProcessState,
   resolveRecoveredGroupForDelivery,
@@ -144,6 +159,16 @@ import type { EventBus } from "../watcher/index.js";
 const SESSION_DETAIL_SLOW_LOG_MS = 250;
 const DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS = 2;
 const LARGE_FULL_HISTORY_MESSAGE_THRESHOLD = 1000;
+
+function permissionModeError(mode: unknown): string | undefined {
+  if (
+    mode !== undefined &&
+    !ALL_PERMISSION_MODES.includes(mode as PermissionMode)
+  ) {
+    return "Invalid permission mode";
+  }
+  return undefined;
+}
 
 async function getSessionSlashCommands(
   process: Process | undefined,
@@ -186,6 +211,11 @@ export interface SessionsDeps {
   notificationService?: NotificationService;
   sessionIndexService?: ISessionIndexService;
   sessionMetadataService?: SessionMetadataService;
+  projectMetadataService?: ProjectMetadataService;
+  projectQueueScheduler?: Pick<
+    ProjectQueueScheduler,
+    "reserveUserSessionStart"
+  >;
   eventBus?: EventBus;
   codexScanner?: CodexSessionScanner;
   codexSessionsDir?: string;
@@ -215,6 +245,10 @@ export interface SessionsDeps {
   toolResultMediaStore?: ToolResultMediaStore;
   /** Data directory for local security/audit logs */
   dataDir?: string;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 function resolveCompactModelSettings(
@@ -231,8 +265,7 @@ function resolveCompactModelSettings(
   | "forceYaOrchestratedCompaction"
   | "claudeAutoCompactPercentOverride"
 > {
-  const defaults =
-    deps.serverSettingsService?.getSetting("clientDefaults");
+  const defaults = deps.serverSettingsService?.getSetting("clientDefaults");
   const compactAtContextPercent = resolveCompactPercent(
     defaults?.compactAtContextPercent,
     options.yaModelId,
@@ -407,6 +440,141 @@ interface RestartSessionBody extends CreateSessionBody {
   handoffText?: string;
 }
 
+function parseOptionalJsonObjectBody(
+  rawBody: string,
+): { body: Record<string, unknown> } | { error: string } {
+  if (rawBody.trim().length === 0) return { body: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return { error: "Invalid JSON body" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "Invalid JSON body" };
+  }
+  return { body: parsed as Record<string, unknown> };
+}
+
+const REACTIVATE_THINKING_OPTIONS: ReadonlySet<unknown> = new Set([
+  "off",
+  "auto",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "on:low",
+  "on:medium",
+  "on:high",
+  "on:xhigh",
+  "on:max",
+]);
+const REACTIVATE_SHOW_THINKING_OPTIONS: ReadonlySet<unknown> = new Set([
+  "default",
+  "on",
+  "off",
+]);
+
+function isPermissionRules(value: unknown): value is PermissionRules {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const rules = value as Record<string, unknown>;
+  return ["allow", "deny"].every((field) => {
+    const patterns = rules[field];
+    return (
+      patterns === undefined ||
+      (Array.isArray(patterns) &&
+        patterns.every((pattern) => typeof pattern === "string"))
+    );
+  });
+}
+
+function parseOptionalReactivateSessionBody(
+  rawBody: string,
+): { body: CreateSessionBody } | { error: string } {
+  const parsed = parseOptionalJsonObjectBody(rawBody);
+  if ("error" in parsed) return parsed;
+  const body = parsed.body;
+
+  if (Object.hasOwn(body, "model") && typeof body.model !== "string") {
+    return { error: "model must be a string" };
+  }
+  if (
+    Object.hasOwn(body, "provider") &&
+    (typeof body.provider !== "string" ||
+      !getProvider(body.provider as ProviderName))
+  ) {
+    return { error: "Invalid provider" };
+  }
+  if (
+    Object.hasOwn(body, "serviceTier") &&
+    body.serviceTier !== undefined &&
+    body.serviceTier !== null &&
+    body.serviceTier !== "" &&
+    normalizeOptionalServiceTier(body.serviceTier) === undefined
+  ) {
+    return { error: "serviceTier must be a valid tier name" };
+  }
+  if (
+    Object.hasOwn(body, "thinking") &&
+    !REACTIVATE_THINKING_OPTIONS.has(body.thinking)
+  ) {
+    return { error: "Invalid thinking option" };
+  }
+  if (
+    Object.hasOwn(body, "showThinking") &&
+    !REACTIVATE_SHOW_THINKING_OPTIONS.has(body.showThinking)
+  ) {
+    return { error: "Invalid showThinking option" };
+  }
+  if (
+    Object.hasOwn(body, "permissions") &&
+    body.permissions !== undefined &&
+    body.permissions !== null &&
+    !isPermissionRules(body.permissions)
+  ) {
+    return { error: "permissions must contain string allow/deny arrays" };
+  }
+
+  return { body: body as unknown as CreateSessionBody };
+}
+
+function parseOptionalRestartSessionBody(
+  rawBody: string,
+): { body: RestartSessionBody } | { error: string } {
+  const parsed = parseOptionalJsonObjectBody(rawBody);
+  if ("error" in parsed) return parsed;
+  const body = parsed.body;
+  if (
+    body.restartMode !== undefined &&
+    body.restartMode !== "handoff" &&
+    body.restartMode !== "fork"
+  ) {
+    return { error: 'restartMode must be "handoff" or "fork"' };
+  }
+  for (const [field, label] of [
+    ["reason", "reason"],
+    ["forkUpToMessageId", "forkUpToMessageId"],
+    ["sourceUrl", "sourceUrl"],
+    ["model", "model"],
+  ] as const) {
+    if (body[field] !== undefined && typeof body[field] !== "string") {
+      return { error: `${label} must be a string` };
+    }
+  }
+  if (
+    body.provider !== undefined &&
+    (typeof body.provider !== "string" ||
+      !getProvider(body.provider as ProviderName))
+  ) {
+    return { error: "Invalid provider" };
+  }
+
+  return { body: body as RestartSessionBody };
+}
+
 const RESTART_HANDOFF_MAX_CHARS = 40_000;
 const RESTART_HANDOFF_JSON_MAX_CHARS = 2_000;
 const RESTART_HANDOFF_COMPACT_MAX_CHARS = 10_000;
@@ -418,6 +586,21 @@ const RESTART_HANDOFF_QUEUED_MAX_CHARS = 4_000;
 const RESTART_HANDOFF_RECENT_USER_TURNS = 10;
 const RESTART_HANDOFF_RECENT_ACTIVITY_ITEMS = 24;
 const RESTART_COMPACT_WAIT_MS = 12_000;
+
+function parseRestartHandoffText(
+  value: unknown,
+): { handoffText?: string } | { error: string } {
+  if (value === undefined) return { handoffText: undefined };
+  if (typeof value !== "string") {
+    return { error: "handoffText must be a string" };
+  }
+  if (value.length > RESTART_HANDOFF_MAX_CHARS) {
+    return {
+      error: `handoffText must be at most ${RESTART_HANDOFF_MAX_CHARS} characters`,
+    };
+  }
+  return { handoffText: value };
+}
 
 function truncateForRestart(text: string, maxChars: number): string {
   if (text.length <= maxChars) {
@@ -529,30 +712,36 @@ function messageId(message: Message | undefined): string | undefined {
   );
 }
 
-function findDurableRecapCursor(
+type DurableSessionOverlayMessage =
+  | DurableRecapMessage
+  | DurableSyntheticDoneMessage;
+
+function findDurableOverlayCursor(
   afterMessageId: string | undefined,
-  recaps: readonly DurableRecapMessage[],
-): DurableRecapMessage | undefined {
+  overlays: readonly DurableSessionOverlayMessage[],
+): DurableSessionOverlayMessage | undefined {
   if (!afterMessageId) {
     return undefined;
   }
-  return recaps.find(
-    (recap) => recap.uuid === afterMessageId || recap.id === afterMessageId,
+  return overlays.find(
+    (overlay) =>
+      overlay.uuid === afterMessageId || overlay.id === afterMessageId,
   );
 }
 
-function sliceAfterDurableRecapCursor(params: {
+function sliceAfterDurableOverlayCursor(params: {
   messages: Message[];
-  recap: DurableRecapMessage;
+  overlay: DurableSessionOverlayMessage;
   cursorId: string;
 }): { messages: Message[]; found: boolean } {
   const index = params.messages.findIndex((message) => {
     const id = messageId(message);
     return (
       id === params.cursorId ||
-      id === params.recap.uuid ||
-      id === params.recap.id ||
-      hasEquivalentRecapMessage([message], params.recap)
+      id === params.overlay.uuid ||
+      id === params.overlay.id ||
+      (params.overlay.type === "system" &&
+        hasEquivalentRecapMessage([message], params.overlay))
     );
   });
   if (index < 0) {
@@ -750,7 +939,7 @@ function formatRestartQueuedMessage(
 ): string {
   const attachmentLines =
     message.attachments?.length && message.attachments.length > 0
-      ? `\n\nUser uploaded files in .attachments:\n${message.attachments
+      ? `\n\nUser uploaded files:\n${message.attachments
           .map(
             (file) =>
               `- [${file.originalName.replaceAll("[", "\\[").replaceAll("]", "\\]")}](<${file.path}>) (${formatRestartBytes(file.size)}, ${file.mimeType}${file.width && file.height ? `, ${file.width}x${file.height}` : ""})`,
@@ -1031,6 +1220,53 @@ function isUserAuthoredRequest(message: Message): boolean {
     !isCompactSummaryUserMessage(message) &&
     !isSlashCommandSkillBodyUserMessage(message)
   );
+}
+
+function completedPublicShareMessageCount(options: {
+  messages: Message[];
+  process?: Process;
+  sourceIsExternal: boolean;
+  sourceUpdatedAt: string;
+  hasDurableHistory: boolean;
+}): number {
+  const { messages, process } = options;
+  const sourceIsBusy =
+    options.sourceIsExternal ||
+    process?.state.type === "in-turn" ||
+    process?.state.type === "waiting-input";
+  if (!sourceIsBusy) {
+    return messages.length;
+  }
+
+  // Replay-only messages are a live catch-up buffer, not a durable completed
+  // turn. Before the provider creates its transcript, the stable prefix is
+  // therefore empty.
+  if (!options.hasDurableHistory) {
+    return 0;
+  }
+
+  // A newly resumed process can be active before its first input reaches the
+  // existing transcript. In that window, every persisted row predates the
+  // active turn and is already safe to capture.
+  const sourceUpdatedAt = Date.parse(options.sourceUpdatedAt);
+  if (
+    process &&
+    !Number.isNaN(sourceUpdatedAt) &&
+    sourceUpdatedAt < process.startedAt.getTime()
+  ) {
+    return messages.length;
+  }
+
+  // Provider transcripts are append-only within a turn. While a source is
+  // busy, the latest user-authored request begins the only incomplete suffix;
+  // retaining everything before it captures every completed turn.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && isUserAuthoredRequest(message)) {
+      return index;
+    }
+  }
+  return 0;
 }
 
 type SessionForkKind =
@@ -1354,6 +1590,10 @@ function buildRestartHandoff(params: {
     host: sourceTranscriptHost,
     targetExecutor,
   });
+  const sessionTurnLine = formatRestartSessionTurnHint({
+    provider: sourceProvider ?? sourceSession.provider,
+    sessionId: sourceSession.id,
+  });
   const transcriptBlock = [
     omittedCount > 0
       ? `_${omittedCount} older rendered messages were omitted to keep this handoff bounded._`
@@ -1388,6 +1628,7 @@ function buildRestartHandoff(params: {
     `- Provider: ${sourceProvider ?? sourceSession.provider}`,
     `- Model: ${sourceModel ?? sourceSession.model ?? "unknown"}`,
     transcriptPathLine,
+    sessionTurnLine,
     "",
     transcriptBlock,
     queuedSection,
@@ -1422,6 +1663,26 @@ function formatRestartTranscriptPath(params: {
     trimmed,
     400,
   )}`;
+}
+
+// A claude/codex source session can answer one more turn in place through the
+// optional session-turn helper (YA provider-host protocol; the incumbent
+// worker keeps ownership, so no second writer or transcript fork). Offer that
+// alongside the transcript path; other providers have no helper harness.
+function formatRestartSessionTurnHint(params: {
+  provider: string | undefined;
+  sessionId: string;
+}): string | undefined {
+  const provider = params.provider ?? "";
+  const harness = provider.startsWith("claude")
+    ? "claude"
+    : provider.startsWith("codex")
+      ? "codex"
+      : undefined;
+  if (!harness) {
+    return undefined;
+  }
+  return `- Ask the source session itself (non-forking; needs the optional session-turn helper on PATH): echo '<question>' | session-turn ${harness} ${compactRestartLine(params.sessionId, 200)}`;
 }
 
 function isRestartReplacementActivity(message: SDKMessage): boolean {
@@ -1825,6 +2086,18 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       hints: deps.serverSettingsService?.getSetting("agentContextHints"),
     });
 
+  const initializeProjectHeartbeatDefaults = async (
+    sessionId: string,
+    projectId: UrlProjectId,
+  ): Promise<void> =>
+    initializeSessionHeartbeatDefaults({
+      sessionId,
+      projectId,
+      sessionMetadataService: deps.sessionMetadataService,
+      projectMetadataService: deps.projectMetadataService,
+      serverSettingsService: deps.serverSettingsService,
+    });
+
   const resolveLaunchWorkstreamTarget = (
     project: Project,
     rawWorkstreamId: string | undefined,
@@ -1896,9 +2169,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         initialPrompt,
       );
     }
-    // Persist the requested YA model id (the launch alias, incl. "default") so
-    // per-model settings still key by it after a server restart, instead of
-    // falling back to the reported model. See topics/provider-abstraction.md.
+    // Persist the launch model identity. Normal launches retain the selected YA
+    // alias (including "default"); forks replace "default" with the observed
+    // source model so a cold first resume cannot drift to a new default.
     if (requestedModel) {
       await deps.sessionMetadataService.setRequestedModel(
         sessionId,
@@ -2167,12 +2440,21 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
 
       // Add server-rendered HTML to text blocks for markdown display
-      await augmentTextBlocks(agentSession.messages, {
-        projectFileLinks: {
-          projectId: routing.workingProjectId,
-          projectPath: routing.workingProject.path,
-        },
-      });
+      const pathIndex = await tryClaimProjectPathIndex(
+        routing.workingProject.path,
+      );
+      try {
+        await augmentPersistedSessionMessages(agentSession.messages, {
+          projectFileLinks: {
+            projectId: routing.workingProjectId,
+            projectPath: routing.workingProject.path,
+            ...(pathIndex ? { index: pathIndex } : {}),
+            resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
+          },
+        });
+      } finally {
+        pathIndex?.release();
+      }
 
       return c.json(agentSession);
     },
@@ -2297,6 +2579,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         )
       : undefined;
 
+    const providerChildren = await resolveProviderChildSessions(
+      readerForProviderChildren(
+        transcriptProject,
+        providerResolutionDeps(deps),
+        metadataProvider ?? process?.provider ?? project.provider,
+      ),
+      sessionId,
+      "fresh",
+    );
+
     const response = {
       session: {
         id: sessionId,
@@ -2326,11 +2618,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         parentSessionKind:
           metadata?.parentSessionKind ?? sessionSummary?.parentSessionKind,
         forkedFromSessionId:
-          metadata?.forkedFromSessionId ??
-          sessionSummary?.forkedFromSessionId,
+          metadata?.forkedFromSessionId ?? sessionSummary?.forkedFromSessionId,
         initialPrompt:
           metadata?.initialPrompt ?? sessionSummary?.fullTitle ?? undefined,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
+        wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
         heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
         heartbeatTurnText: metadata?.heartbeatTurnText,
         heartbeatForceAfterMinutes:
@@ -2343,6 +2635,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         lastSeenAt,
         hasUnread,
+        ...(providerChildren ? { providerChildren } : {}),
       },
       ownership,
       processState: process?.state.type ?? null,
@@ -2627,8 +2920,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     ) as ProviderName | undefined;
     const recapMessages =
       deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
-    const recapCursor = findDurableRecapCursor(afterMessageId, recapMessages);
-    const providerAfterMessageId = recapCursor ? undefined : afterMessageId;
+    const syntheticDoneMessages =
+      deps.sessionMetadataService?.getSyntheticDoneMessages?.(sessionId) ?? [];
+    const overlayCursor = findDurableOverlayCursor(afterMessageId, [
+      ...recapMessages,
+      ...syntheticDoneMessages,
+    ]);
+    const providerAfterMessageId = overlayCursor ? undefined : afterMessageId;
     const primaryReaderAfterMessageId =
       isClaudeSdkProviderName(project.provider) ||
       isClaudeSdkProviderName(metadataProvider)
@@ -2660,7 +2958,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const normalizedMessageCount = session?.messages.length ?? 0;
     const normalizeEndMs = performance.now();
     if (session && isClaudeSdkProviderName(session.provider)) {
-      augmentTaskListSnapshots(session.messages);
+      session = {
+        ...session,
+        messages: projectTaskListSnapshots(session.messages),
+      };
     }
     let incrementalAnchorFound = false;
     if (session && providerAfterMessageId) {
@@ -2710,14 +3011,45 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         project.provider,
     );
     const deferredMessages = sessionQueueSummaries(deps, sessionId, process);
+    const providerChildren = await resolveProviderChildSessions(
+      readerForProviderChildren(
+        transcriptProject,
+        providerResolutionDeps(deps),
+        metadataProvider ?? process?.provider ?? project.provider,
+      ),
+      sessionId,
+      "fresh",
+    );
 
     if (!session) {
       // Session file doesn't exist yet - only valid if we own the process
       if (process) {
-        // Get raw messages from process memory
+        // Keep Process history as provider-owned replay state. Presentation fields
+        // are computed on a detached client projection, as on file-backed reads.
         const sdkMessages = process.getMessageHistory();
-        // Convert to client format
-        const processMessages = sdkMessagesToClientMessages(sdkMessages);
+        const processMessages = sdkMessagesToClientMessages(
+          structuredClone(sdkMessages),
+        );
+        if (isClaudeSdkProviderName(process.provider)) {
+          augmentTaskListSnapshots(processMessages);
+        }
+        if (publicShare) {
+          await augmentEditToolUses(processMessages);
+        } else {
+          const pathIndex = await tryClaimProjectPathIndex(project.path);
+          try {
+            await augmentPersistedSessionMessages(processMessages, {
+              projectFileLinks: {
+                projectId: effectiveProjectId,
+                projectPath: project.path,
+                ...(pathIndex ? { index: pathIndex } : {}),
+                resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
+              },
+            });
+          } finally {
+            pathIndex?.release();
+          }
+        }
         // Extract context usage from raw SDK messages (has usage field)
         // Use process.contextWindow (captured from result messages) as primary source
         const mis = deps.modelInfoService;
@@ -2738,15 +3070,29 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
         const recapMessages =
           deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
-        const visibleProcessMessages = mergeRecapMessages(
+        const syntheticDoneMessages =
+          deps.sessionMetadataService?.getSyntheticDoneMessages?.(sessionId) ??
+          [];
+        const visibleProcessMessages = mergeSessionOverlayMessages(
           processMessages,
           recapMessages,
+          syntheticDoneMessages,
         );
         // Get notification data for new sessions too
         const lastSeenEntry = deps.notificationService?.getLastSeen(sessionId);
         const latestRecap = latestRecapMessage(recapMessages);
         const newSessionUpdatedAt =
           latestRecap?.timestamp ?? new Date().toISOString();
+        const publicShareCompletedMessageCount =
+          publicShare && fullHistory
+            ? completedPublicShareMessageCount({
+                messages: visibleProcessMessages,
+                process,
+                sourceIsExternal: false,
+                sourceUpdatedAt: newSessionUpdatedAt,
+                hasDurableHistory: false,
+              })
+            : undefined;
         const hasUnread = deps.notificationService
           ? deps.notificationService.hasUnread(sessionId, newSessionUpdatedAt)
           : undefined;
@@ -2767,6 +3113,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             forkedFromSessionId: metadata?.forkedFromSessionId,
             initialPrompt: metadata?.initialPrompt,
             heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
+            wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
             heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
             heartbeatTurnText: metadata?.heartbeatTurnText,
             heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
@@ -2781,12 +3128,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             provider: process.provider,
             model: process.resolvedModel,
             contextUsage,
+            ...(providerChildren ? { providerChildren } : {}),
           },
           messages: visibleProcessMessages,
           ownership,
           providerRuntimeStatus,
           pendingInputRequest,
           slashCommands,
+          ...(publicShareCompletedMessageCount !== undefined
+            ? {
+                publicShareCapture: {
+                  completedMessageCount: publicShareCompletedMessageCount,
+                },
+              }
+            : {}),
           ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
         });
       }
@@ -2855,11 +3210,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
-    if (isClaudeSdkProviderName(session.provider)) {
-      pruneTaskListSnapshotsToLatest(session.messages);
-    }
-    const sliceEndMs = performance.now();
-
     // Codex normalized IDs can drift between stream and JSONL. If an
     // incremental request misses its anchor, never return the full historical
     // session into a compact-tail client; bound the fallback to the same tail
@@ -2869,6 +3219,19 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
+
+    // Normalized messages may be shared by the parsed-transcript cache, and
+    // several provider readers expose stable message objects directly.
+    // Route-specific HTML, tool, media, and pruning fields belong only to this
+    // response projection.
+    session = {
+      ...session,
+      messages: detachSessionMessageProjection(session.messages),
+    };
+    if (isClaudeSdkProviderName(session.provider)) {
+      pruneTaskListSnapshotsToLatest(session.messages);
+    }
+    const sliceEndMs = performance.now();
 
     if (!publicShare && deps.toolResultMediaStore) {
       session = {
@@ -2888,22 +3251,33 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (publicShare) {
       await augmentEditToolUses(session.messages);
     } else {
-      await augmentPersistedSessionMessages(session.messages, {
-        projectFileLinks: {
-          projectId: effectiveProjectId,
-          projectPath: project.path,
-        },
-      });
+      const pathIndex = await tryClaimProjectPathIndex(project.path);
+      try {
+        await augmentPersistedSessionMessages(session.messages, {
+          projectFileLinks: {
+            projectId: effectiveProjectId,
+            projectPath: project.path,
+            ...(pathIndex ? { index: pathIndex } : {}),
+            resolveAbsoluteFilePaths: deps.resolveAbsoluteFilePaths,
+          },
+        });
+      } finally {
+        pathIndex?.release();
+      }
     }
     // The overlay reassigns `session` below; hasUnreadProviderContent needs
     // the pre-overlay timestamp.
     const preRecapUpdatedAt = session.updatedAt;
     if (!beforeMessageId) {
-      session = applyRecapOverlayToSession(session, recapMessages);
-      if (recapCursor && afterMessageId) {
-        const sliced = sliceAfterDurableRecapCursor({
+      session = applySessionOverlaysToSession(
+        session,
+        recapMessages,
+        syntheticDoneMessages,
+      );
+      if (overlayCursor && afterMessageId) {
+        const sliced = sliceAfterDurableOverlayCursor({
           messages: session.messages,
-          recap: recapCursor,
+          overlay: overlayCursor,
           cursorId: afterMessageId,
         });
         session = { ...session, messages: sliced.messages };
@@ -2936,6 +3310,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const { messages: _messages, ...sessionMetadata } = session;
     const totalMs = performance.now() - requestStartMs;
+    const detailTimings = {
+      augment: roundedMs(augmentEndMs - sliceEndMs),
+      normalize: roundedMs(normalizeEndMs - readEndMs),
+      project: roundedMs(projectResolvedMs - requestStartMs),
+      read: roundedMs(readEndMs - projectResolvedMs),
+      route: roundedMs(sliceEndMs - normalizeEndMs),
+      total: roundedMs(totalMs),
+    };
+    c.header(
+      "Server-Timing",
+      Object.entries(detailTimings)
+        .map(([name, duration]) => `ya-${name};dur=${duration}`)
+        .join(", "),
+    );
     if (
       unboundedRequestDefaultedToCompactTail &&
       normalizedMessageCount >= LARGE_FULL_HISTORY_MESSAGE_THRESHOLD
@@ -3030,6 +3418,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
+    const publicShareCompletedMessageCount =
+      publicShare && fullHistory
+        ? completedPublicShareMessageCount({
+            messages: session.messages,
+            process,
+            sourceIsExternal: isExternal,
+            sourceUpdatedAt: session.updatedAt,
+            hasDurableHistory: true,
+          })
+        : undefined;
+
     return c.json({
       session: {
         ...sessionMetadata,
@@ -3046,6 +3445,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           metadata?.forkedFromSessionId ?? session.forkedFromSessionId,
         initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
+        wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
         heartbeatTurnsAfterMinutes: metadata?.heartbeatTurnsAfterMinutes,
         heartbeatTurnText: metadata?.heartbeatTurnText,
         heartbeatForceAfterMinutes: metadata?.heartbeatForceAfterMinutes,
@@ -3059,12 +3459,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         model: session.model,
         lastSeenAt,
         hasUnread,
+        ...(providerChildren ? { providerChildren } : {}),
       },
       messages: session.messages,
       ownership,
       providerRuntimeStatus,
       pendingInputRequest,
       slashCommands,
+      ...(publicShareCompletedMessageCount !== undefined
+        ? {
+            publicShareCapture: {
+              completedMessageCount: publicShareCompletedMessageCount,
+            },
+          }
+        : {}),
       ...(paginationInfo && { pagination: paginationInfo }),
       ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
     });
@@ -3090,6 +3498,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = await c.req.json<StartSessionBody>();
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
     }
 
     if (!body.message) {
@@ -3156,6 +3569,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.mode,
       {
         model,
+        requestedModel: body.model,
         serviceTier,
         thinking,
         effort,
@@ -3177,6 +3591,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         projectId: project.id,
         workstreamId: workstreamTarget.workstreamId,
+        onStarted: (sessionId) =>
+          initializeProjectHeartbeatDefaults(sessionId, project.id),
       },
     );
 
@@ -3246,6 +3662,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Body is optional for this endpoint
     }
 
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
+    }
+
     const { executor, error: executorError } = parseOptionalExecutor(
       body.executor,
     );
@@ -3287,6 +3708,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.mode,
       {
         model,
+        requestedModel: body.model,
         serviceTier,
         thinking,
         effort,
@@ -3308,6 +3730,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         projectId: project.id,
         workstreamId: workstreamTarget.workstreamId,
+        onStarted: (sessionId) =>
+          initializeProjectHeartbeatDefaults(sessionId, project.id),
       },
     );
 
@@ -3323,6 +3747,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (isQueuedResponse(result)) {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202); // 202 Accepted - queued for processing
     }
+
+    await initializeProjectHeartbeatDefaults(result.sessionId, project.id);
 
     await persistLaunchMetadata(
       result.sessionId,
@@ -3361,6 +3787,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = await c.req.json<StartSessionBody>();
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
     }
 
     if (!body.message) {
@@ -3411,6 +3842,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.mode,
       {
         model,
+        requestedModel: body.model,
         serviceTier,
         thinking,
         effort,
@@ -3476,6 +3908,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Body is optional for this endpoint
     }
 
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
+    }
+
     const { executor, error: executorError } = parseOptionalExecutor(
       body.executor,
     );
@@ -3506,6 +3943,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const result = await deps.supervisor.createSession(projectPath, body.mode, {
       model,
+      requestedModel: body.model,
       serviceTier,
       thinking,
       effort,
@@ -3582,6 +4020,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = await c.req.json<StartSessionBody>();
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
     }
 
     if (!body.message) {
@@ -3800,6 +4243,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         body.mode,
         {
           model,
+          requestedModel: body.model,
           serviceTier,
           thinking,
           effort,
@@ -3897,9 +4341,29 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   });
 
   // POST /api/projects/:projectId/sessions/:sessionId/reactivate
-  // Spawn a live harness process bound to the session WITHOUT delivering a turn,
-  // so the client can read live process state (model options) before messaging.
-  // Idempotent: returns the existing process if the session is already owned.
+  // Spawn or reconcile a live harness process without delivering a turn. Every
+  // request is validated and serialized, including when the session is already
+  // owned or another activation is still in flight.
+  routes.use(
+    "/projects/:projectId/sessions/:sessionId/reactivate",
+    async (c, next) => {
+      const projectId = c.req.param("projectId");
+      if (!isUrlProjectId(projectId) || !deps.projectQueueScheduler) {
+        await next();
+        return;
+      }
+
+      const release = deps.projectQueueScheduler.reserveUserSessionStart(
+        projectId,
+        c.req.param("sessionId"),
+      );
+      try {
+        await next();
+      } finally {
+        release();
+      }
+    },
+  );
   routes.post(
     "/projects/:projectId/sessions/:sessionId/reactivate",
     async (c) => {
@@ -3910,36 +4374,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         return c.json({ error: "Invalid project ID format" }, 400);
       }
 
-      const project = await deps.scanner.getOrCreateProject(projectId);
-      if (!project) {
-        return c.json(
-          { error: "Project not found or path does not exist" },
-          404,
-        );
+      const parsedBody = parseOptionalReactivateSessionBody(await c.req.text());
+      if ("error" in parsedBody) {
+        return c.json({ error: parsedBody.error }, 400);
       }
-
-      // Already owned by a live process - return it (idempotent).
-      const existing = deps.supervisor.getProcessForSession(sessionId);
-      if (existing) {
-        return c.json({
-          processId: existing.id,
-          permissionMode: existing.permissionMode,
-          appliedPermissionMode: existing.appliedPermissionMode,
-          modeVersion: existing.modeVersion,
-          recapAfterSeconds: existing.recapAfterSeconds,
-          sandboxEnforcement: existing.sandboxEnforcement,
-          serverTimestamp: Date.now(),
-        });
+      const body = parsedBody.body;
+      const modeError = permissionModeError(body.mode);
+      if (modeError) {
+        return c.json({ error: modeError }, 400);
       }
-
-      // Body is optional - allows overriding mode/model/executor.
-      let body: StartSessionBody = {} as StartSessionBody;
-      try {
-        body = await c.req.json<StartSessionBody>();
-      } catch {
-        // No body - resume with the session's saved settings.
-      }
-
       const parsedBodyExecutor = parseOptionalExecutor(body.executor);
       if (parsedBodyExecutor.error) {
         return c.json({ error: parsedBodyExecutor.error }, 400);
@@ -3948,33 +4391,133 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       if (helperSettings.error) {
         return c.json({ error: helperSettings.error }, 400);
       }
+      const parsedSandbox = parseSessionSandboxLevel(body.sandboxLevel);
+      if ("error" in parsedSandbox) {
+        return c.json({ error: parsedSandbox.error }, 400);
+      }
 
-      // Resolve provider/model/executor from the YA launch record (persisted on
-      // launch) so reactivation resumes with the correct backend and model.
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: "Project not found or path does not exist" },
+          404,
+        );
+      }
+
       const metadata = deps.sessionMetadataService?.getMetadata?.(sessionId);
+      const hasProvider = Object.hasOwn(body, "provider");
+      const hasExecutor = Object.hasOwn(body, "executor");
+      const hasModel = Object.hasOwn(body, "model");
+      const hasServiceTier = Object.hasOwn(body, "serviceTier");
+      const hasThinking = Object.hasOwn(body, "thinking");
+      const hasSandbox = Object.hasOwn(body, "sandboxLevel");
+      const hasPermissions = Object.hasOwn(body, "permissions");
+      const hasRecapMode = Object.hasOwn(body, "recapMode");
+      const hasRecapAfterSeconds = Object.hasOwn(body, "recapAfterSeconds");
+      const hasPromptSuggestionMode = Object.hasOwn(
+        body,
+        "promptSuggestionMode",
+      );
+      const hasHelperSideModel = Object.hasOwn(body, "helperSideModel");
+
+      const providerName = hasProvider
+        ? body.provider
+        : ((metadata?.provider as ProviderName | undefined) ??
+          project.provider);
+      const executor = hasExecutor
+        ? parsedBodyExecutor.executor
+        : metadata?.executor;
+      const requestedModel = hasModel ? body.model : metadata?.requestedModel;
+      const model =
+        requestedModel && requestedModel !== "default"
+          ? requestedModel
+          : undefined;
+      const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
+      const thinkingOptions = hasThinking
+        ? buildThinkingOptions(body)
+        : undefined;
+      const sandboxLevel = hasSandbox
+        ? parsedSandbox.sandboxLevel
+        : metadata?.sandboxLevel;
+      const recapMode = hasRecapMode
+        ? helperSettings.recapMode
+        : metadata?.recapMode;
+      const recapAfterSeconds = hasRecapAfterSeconds
+        ? helperSettings.recapAfterSeconds
+        : metadata?.recapAfterSeconds;
+      const promptSuggestionMode = hasPromptSuggestionMode
+        ? helperSettings.promptSuggestionMode
+        : metadata?.promptSuggestionMode;
       const sandboxSettingsError = getSessionSandboxSettingsError(
-        metadata?.sandboxLevel,
-        helperSettings.recapMode ?? metadata?.recapMode,
+        sandboxLevel,
+        recapMode,
       );
       if (sandboxSettingsError) {
         return c.json({ error: sandboxSettingsError }, 400);
       }
-      const providerName =
-        (metadata?.provider as ProviderName | undefined) ??
-        body.provider ??
-        project.provider;
-      const executor = parsedBodyExecutor.executor ?? metadata?.executor;
-      // Prefer an explicit override, else the YA id the session was launched
-      // with; "default" means let the backend pick (pass undefined).
-      const rawModel =
-        body.model && body.model !== "default"
-          ? body.model
-          : metadata?.requestedModel;
-      const model = rawModel && rawModel !== "default" ? rawModel : undefined;
-      const { thinking, effort } = buildThinkingOptions(body);
+
+      const coldSettings: ModelSettings = {
+        model,
+        requestedModel,
+        ...(hasServiceTier ? { serviceTier } : {}),
+        ...thinkingOptions,
+        providerName,
+        executor,
+        ...(hasPermissions
+          ? { permissions: body.permissions ?? undefined }
+          : {}),
+        sandboxLevel,
+        sandboxStateKey: metadata?.sandboxStateKey,
+        globalInstructions: getGlobalInstructions(),
+        recapAfterSeconds,
+        recapMode,
+        promptSuggestionMode,
+        ...(hasHelperSideModel
+          ? { helperSideModel: helperSettings.helperSideModel }
+          : {}),
+        ...resolveCompactModelSettings(deps, {
+          provider: providerName,
+          yaModelId: requestedModel,
+          modelCandidates: [requestedModel, model],
+        }),
+      };
+      const overrideModelSettings: ModelSettings = {
+        ...(hasModel ? { model, requestedModel: body.model } : {}),
+        ...(hasServiceTier ? { serviceTier } : {}),
+        ...thinkingOptions,
+        ...(hasProvider ? { providerName: body.provider } : {}),
+        ...(hasExecutor ? { executor: parsedBodyExecutor.executor } : {}),
+        ...(hasPermissions
+          ? { permissions: body.permissions ?? undefined }
+          : {}),
+        ...(hasSandbox
+          ? {
+              sandboxLevel: parsedSandbox.sandboxLevel,
+              sandboxStateKey: metadata?.sandboxStateKey,
+            }
+          : {}),
+        ...(hasRecapMode ? { recapMode: helperSettings.recapMode } : {}),
+        ...(hasRecapAfterSeconds
+          ? { recapAfterSeconds: helperSettings.recapAfterSeconds }
+          : {}),
+        ...(hasPromptSuggestionMode
+          ? { promptSuggestionMode: helperSettings.promptSuggestionMode }
+          : {}),
+        ...(hasHelperSideModel
+          ? { helperSideModel: helperSettings.helperSideModel }
+          : {}),
+      };
+      const requestedOverrides: SessionReactivationOverrides = {
+        ...(Object.hasOwn(body, "mode") && body.mode !== undefined
+          ? { permissionMode: body.mode }
+          : {}),
+        ...(Object.keys(overrideModelSettings).length > 0
+          ? { modelSettings: overrideModelSettings }
+          : {}),
+      };
       const reactivationProjectPath =
-        metadata?.sandboxLevel === "project-write"
-          ? (metadata.sandboxProjectPath ?? project.path)
+        sandboxLevel === "project-write"
+          ? (metadata?.sandboxProjectPath ?? project.path)
           : project.path;
 
       let process: Process;
@@ -3983,19 +4526,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           reactivationProjectPath,
           sessionId,
           body.mode,
-          {
-            model,
-            thinking,
-            effort,
-            providerName,
-            executor,
-            sandboxLevel: metadata?.sandboxLevel,
-            sandboxStateKey: metadata?.sandboxStateKey,
-            globalInstructions: getGlobalInstructions(),
-            recapAfterSeconds:
-              helperSettings.recapAfterSeconds ?? metadata?.recapAfterSeconds,
-            recapMode: helperSettings.recapMode ?? metadata?.recapMode,
-          },
+          coldSettings,
+          { requestedOverrides },
         );
       } catch (error) {
         return c.json(
@@ -4005,12 +4537,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
                 ? error.message
                 : "Failed to reactivate session",
           },
-          503,
+          error instanceof SessionConfigurationConflictError ? 409 : 503,
         );
       }
-
-      // Keep the launch record current (provider/executor) for this session.
-      await persistLaunchMetadata(sessionId, providerName, executor);
 
       return c.json({
         processId: process.id,
@@ -4061,6 +4590,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // side-session/native recaps need in-memory recent text a revived process
     // lacks. Other modes simply skip until the session is live again.
     const metadata = deps.sessionMetadataService?.getMetadata?.(sessionId);
+    if (deps.supervisor.isRecapPausedUntilUserTurn(sessionId)) {
+      return c.json({
+        supported: true,
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      });
+    }
+    if (!isAutomaticSessionResumeAllowed(metadata)) {
+      return c.json({
+        supported: true,
+        emitted: false,
+        reason: "recap skipped: automatic resume disabled",
+      });
+    }
     const recapMode =
       metadata?.recapMode ??
       deps.sessionMetadataService?.getRecapMode?.(sessionId);
@@ -4113,7 +4656,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           recapAfterSeconds: metadata?.recapAfterSeconds,
           recapMode: "fork",
         },
-        { preempt: false },
+        { preempt: false, requestedOverrides: {} },
       );
     } catch (error) {
       // At capacity with no idle worker to drop (background recaps never
@@ -4270,17 +4813,27 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
+    const parsedBody = parseOptionalRestartSessionBody(await c.req.text());
+    if ("error" in parsedBody) {
+      return c.json({ error: parsedBody.error }, 400);
+    }
+    const { body } = parsedBody;
+
     const project = await deps.scanner.getOrCreateProject(projectId);
     if (!project) {
       return c.json({ error: "Project not found or path does not exist" }, 404);
     }
 
-    let body: RestartSessionBody = {};
-    try {
-      body = await c.req.json<RestartSessionBody>();
-    } catch {
-      // Body is optional for this endpoint.
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
     }
+
+    const parsedHandoffText = parseRestartHandoffText(body.handoffText);
+    if ("error" in parsedHandoffText) {
+      return c.json({ error: parsedHandoffText.error }, 400);
+    }
+    const { handoffText } = parsedHandoffText;
 
     const parsedBodyExecutor = parseOptionalExecutor(body.executor);
     if (parsedBodyExecutor.error) {
@@ -4319,17 +4872,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       executor = parsedSavedExecutor.executor;
     }
 
-    if (
-      body.restartMode !== undefined &&
-      body.restartMode !== "handoff" &&
-      body.restartMode !== "fork"
-    ) {
-      return c.json({ error: 'restartMode must be "handoff" or "fork"' }, 400);
-    }
     const restartMode = body.restartMode ?? "handoff";
-    if (
-      restartSandboxLevel !== (originalMetadata?.sandboxLevel ?? "none")
-    ) {
+    if (restartSandboxLevel !== (originalMetadata?.sandboxLevel ?? "none")) {
       return c.json(
         {
           error:
@@ -4349,38 +4893,24 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     ) as ProviderName | undefined;
     const preferredSourceProvider =
       metadataProvider ?? oldProcess?.provider ?? project.provider;
-    // Fork copies the transcript as-is. Handoff first asks the provider to
-    // compact so the bounded transcript can include that boundary when one is
-    // available. A supplied draft was already built from a compacted
-    // transcript by the preview route, so compacting again would only spend
-    // tokens to produce a boundary this restart will not read.
-    if (restartMode !== "fork" && body.handoffText === undefined) {
-      await tryRestartCompact(oldProcess);
-    }
-    const oldProcessInterrupted =
-      await interruptOldProcessForHandoff(oldProcess);
-    const sourceSession = await loadRestartSourceSession(
-      project,
-      sessionId,
-      projectId,
-      preferredSourceProvider,
-      oldProcess,
-    );
+    let sourceSession: Session | null = null;
 
-    if (!sourceSession) {
-      return c.json({ error: "Session not found" }, 404);
-    }
-
-    const sourceProvider = sourceSession.provider ?? preferredSourceProvider;
-    const providerName = body.provider ?? sourceProvider;
-
-    const { thinking, effort } = buildThinkingOptions(body);
-    const model =
-      body.model && body.model !== "default" ? body.model : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
+    // Fork validation must use the source transcript, but it must not disturb
+    // the source process until every unsupported request has been rejected.
     if (restartMode === "fork") {
-      if (body.provider && body.provider !== sourceProvider) {
+      sourceSession = await loadRestartSourceSession(
+        project,
+        sessionId,
+        projectId,
+        preferredSourceProvider,
+        oldProcess,
+      );
+      if (!sourceSession) {
+        return c.json({ error: "Session not found" }, 404);
+      }
+      const forkSourceProvider =
+        sourceSession.provider ?? preferredSourceProvider;
+      if (body.provider && body.provider !== forkSourceProvider) {
         return c.json(
           {
             error:
@@ -4389,12 +4919,72 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           400,
         );
       }
-      if (!deps.supervisor.supportsForkSession(sourceProvider)) {
+      if (!deps.supervisor.supportsForkSession(forkSourceProvider)) {
         return c.json(
-          { error: `${sourceProvider} does not support transcript fork` },
+          { error: `${forkSourceProvider} does not support transcript fork` },
           400,
         );
       }
+    }
+
+    // Fork copies the transcript as-is. Handoff first asks the provider to
+    // compact so the bounded transcript can include that boundary when one is
+    // available. A supplied draft was already built from a compacted
+    // transcript by the preview route, so compacting again would only spend
+    // tokens to produce a boundary this restart will not read.
+    if (restartMode !== "fork" && handoffText === undefined) {
+      await tryRestartCompact(oldProcess);
+    }
+    const oldProcessInterrupted =
+      await interruptOldProcessForHandoff(oldProcess);
+    if (restartMode !== "fork") {
+      sourceSession = await loadRestartSourceSession(
+        project,
+        sessionId,
+        projectId,
+        preferredSourceProvider,
+        oldProcess,
+      );
+    }
+    if (!sourceSession) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+
+    const sourceProvider = sourceSession.provider ?? preferredSourceProvider;
+    const providerName = body.provider ?? sourceProvider;
+    const inheritsSourceProviderSettings = providerName === sourceProvider;
+
+    const sourceLaunchSettings = originalMetadata?.effectiveLaunchSettings;
+    const sourceProviderLaunchSettings = inheritsSourceProviderSettings
+      ? sourceLaunchSettings
+      : undefined;
+    const requestedModel =
+      body.model ??
+      sourceProviderLaunchSettings?.requestedModel ??
+      (inheritsSourceProviderSettings
+        ? deps.sessionMetadataService?.getRequestedModel(sessionId)
+        : undefined);
+    const parsedThinking = buildThinkingOptions(body);
+    const thinking =
+      body.thinking !== undefined
+        ? parsedThinking.thinking
+        : (sourceProviderLaunchSettings?.thinking ?? undefined);
+    const effort =
+      body.thinking !== undefined
+        ? parsedThinking.effort
+        : (sourceProviderLaunchSettings?.effort ?? undefined);
+    const model =
+      requestedModel && requestedModel !== "default"
+        ? requestedModel
+        : undefined;
+    const serviceTier =
+      body.serviceTier !== undefined
+        ? normalizeOptionalServiceTier(body.serviceTier)
+        : (sourceProviderLaunchSettings?.serviceTier ?? undefined);
+    const restartPermissionMode =
+      body.mode ?? sourceLaunchSettings?.permissionMode;
+
+    if (restartMode === "fork") {
       const forkTitle = deriveForkTitle({
         preferredTitle: originalMetadata?.customTitle,
         sourceSession,
@@ -4436,10 +5026,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const result = await deps.supervisor.resumeSession(
         fork.sessionId,
         restartProjectPath,
-        { text: forkMessage, mode: body.mode },
-        body.mode,
+        { text: forkMessage, mode: restartPermissionMode },
+        restartPermissionMode,
         {
           model,
+          requestedModel: requestedModel ?? undefined,
           serviceTier,
           thinking,
           effort,
@@ -4461,9 +5052,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           helperSideModel: helperSettings.helperSideModel,
           ...resolveCompactModelSettings(deps, {
             provider: sourceProvider,
-            yaModelId:
-              body.model ??
-              deps.sessionMetadataService?.getRequestedModel(sessionId),
+            yaModelId: requestedModel ?? undefined,
             modelCandidates: [
               body.model,
               model,
@@ -4496,7 +5085,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         sourceProvider,
         executor,
         undefined,
-        body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId),
+        requestedModel ?? undefined,
         result.promptSuggestionMode,
         result.recapAfterSeconds,
         originalMetadata?.workstreamId,
@@ -4553,7 +5142,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       sourceSession,
     });
     const handoff =
-      body.handoffText ??
+      handoffText ??
       (await buildHandoffText({
         project,
         projectId,
@@ -4571,11 +5160,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       restartProjectPath,
       {
         text: handoff,
-        mode: body.mode,
+        mode: restartPermissionMode,
       },
-      body.mode,
+      restartPermissionMode,
       {
         model,
+        requestedModel: requestedModel ?? undefined,
         serviceTier,
         thinking,
         effort,
@@ -4596,15 +5186,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         helperSideModel: helperSettings.helperSideModel,
         ...resolveCompactModelSettings(deps, {
           provider: providerName,
-          yaModelId:
-            body.model ??
-            deps.sessionMetadataService?.getRequestedModel(sessionId),
-          modelCandidates: [
-            body.model,
-            model,
-            oldProcess?.resolvedModel,
-            sourceSession.model,
-          ],
+          yaModelId: requestedModel ?? undefined,
+          modelCandidates: inheritsSourceProviderSettings
+            ? [
+                body.model,
+                model,
+                oldProcess?.resolvedModel,
+                sourceSession.model,
+              ]
+            : [body.model, model],
         }),
       },
     );
@@ -4632,7 +5222,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       providerName,
       executor,
       undefined,
-      body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId),
+      requestedModel ?? undefined,
       result.promptSuggestionMode,
       result.recapAfterSeconds,
       undefined,
@@ -4902,12 +5492,30 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const savedExecutor = parseOptionalExecutor(
       deps.sessionMetadataService?.getExecutor(sessionId),
     ).executor;
+    let inheritedModel = resolveInheritedForkModel(
+      deps.sessionMetadataService?.getRequestedModel(sessionId),
+      sourceProcess?.resolvedModel,
+      sourceProcess?.model,
+    );
+    if (!inheritedModel) {
+      const fullSummary = await findSessionSummaryAcrossProviders(
+        project,
+        sessionId,
+        projectId,
+        providerResolutionDeps(deps),
+        providerName,
+      );
+      inheritedModel = resolveInheritedForkModel(
+        deps.sessionMetadataService?.getRequestedModel(sessionId),
+        fullSummary?.summary.model,
+      );
+    }
     await persistLaunchMetadata(
       fork.sessionId,
       providerName,
       savedExecutor,
       undefined,
-      deps.sessionMetadataService?.getRequestedModel(sessionId),
+      inheritedModel,
       originalMetadata?.promptSuggestionMode,
       originalMetadata?.recapAfterSeconds,
       originalMetadata?.workstreamId,
@@ -5021,11 +5629,25 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const savedExecutor = parseOptionalExecutor(
       deps.sessionMetadataService.getExecutor(sessionId),
     ).executor;
-    let requestedModel =
-      deps.sessionMetadataService.getRequestedModel(sessionId) ??
-      liveSourceProcess?.model;
-    const sourceMetadata =
-      deps.sessionMetadataService.getMetadata?.(sessionId);
+    let requestedModel = resolveInheritedForkModel(
+      deps.sessionMetadataService.getRequestedModel(sessionId),
+      liveSourceProcess?.resolvedModel,
+      liveSourceProcess?.model,
+    );
+    if (!requestedModel) {
+      const fullSummary = await findSessionSummaryAcrossProviders(
+        project,
+        sessionId,
+        projectId,
+        providerResolutionDeps(deps),
+        providerName,
+      );
+      requestedModel = resolveInheritedForkModel(
+        deps.sessionMetadataService.getRequestedModel(sessionId),
+        fullSummary?.summary.model,
+      );
+    }
+    const sourceMetadata = deps.sessionMetadataService.getMetadata?.(sessionId);
     const sourceProjectPath =
       sourceMetadata?.sandboxLevel === "project-write"
         ? (sourceMetadata.sandboxProjectPath ?? project.path)
@@ -5062,8 +5684,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             promptSuggestionMode,
             recapAfterSeconds,
           },
+          { requestedOverrides: {} },
         );
-        requestedModel = requestedModel ?? sourceProcess.model;
+        requestedModel = resolveInheritedForkModel(
+          requestedModel,
+          sourceProcess.resolvedModel,
+          sourceProcess.model,
+        );
       }
 
       const generator = await deps.supervisor.forkSession({
@@ -5108,6 +5735,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         strategy: "fork",
         generatorSessionId: generator.sessionId,
         cwd: sourceProjectPath,
+        model: requestedModel,
         currentTitle,
         lengthTarget,
         signal: abortController.signal,
@@ -5287,9 +5915,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const savedExecutor = parseOptionalExecutor(
         deps.sessionMetadataService.getExecutor(sessionId),
       ).executor;
-      const requestedModel =
-        deps.sessionMetadataService.getRequestedModel(sessionId) ??
-        sourceProcess?.model;
+      const requestedModel = resolveInheritedForkModel(
+        deps.sessionMetadataService.getRequestedModel(sessionId),
+        sourceProcess?.resolvedModel,
+        sourceSession.model,
+        sourceProcess?.model,
+      );
 
       void (async () => {
         let generatorSessionId: string | undefined;
@@ -5343,6 +5974,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
               strategy: "fork",
               generatorSessionId: generator.sessionId,
               cwd: sourceProjectPath,
+              model: requestedModel,
               afterTurnMessageId: boundary.retainedThroughMessageId,
               afterTurnContext: boundary.retainedThroughContext,
               instructions,
@@ -5696,6 +6328,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
+    }
+
     if (!body.message) {
       return c.json({ error: "Message is required" }, 400);
     }
@@ -5785,7 +6422,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         deferred: deferredResult.deferred,
         promoted: deferredResult.promoted,
         position: deferredResult.position,
-        deferredMessages: process.getDeferredQueueSummary(),
+        deferredMessages: sessionQueueSummaries(deps, sessionId, process),
         serverTimestamp,
       });
     }
@@ -5899,7 +6536,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     await service.deleteItem(queueId);
     return c.json({
       deleted: true,
-      deferredMessages: recoveredPatientQueueSummaries(deps, sessionId),
+      deferredMessages: sessionQueueSummaries(
+        deps,
+        sessionId,
+        deps.supervisor.getProcessForSession(sessionId),
+      ),
     });
   });
 
@@ -6106,6 +6747,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (!body.mode) {
       return c.json({ error: "mode is required" }, 400);
     }
+    const modeError = permissionModeError(body.mode);
+    if (modeError) {
+      return c.json({ error: modeError }, 400);
+    }
 
     const process = deps.supervisor.getProcessForSession(sessionId);
     if (!process) {
@@ -6241,8 +6886,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Invalid request ID or no pending request" }, 400);
     }
 
-    // If approve_accept_edits, switch the permission mode
-    if (isApproveAcceptEdits) {
+    // Preserve a concurrently selected Bypass policy: this narrower legacy
+    // combined action must not overwrite the user's newer standing choice.
+    if (
+      isApproveAcceptEdits &&
+      process.permissionMode !== "bypassPermissions"
+    ) {
       process.setPermissionMode("acceptEdits");
     }
 
@@ -6377,6 +7026,29 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const { patch } = parsed;
 
     await deps.sessionMetadataService.updateMetadata(sessionId, patch);
+
+    if (patch.heartbeatTurnText) {
+      const savedProjectId =
+        deps.sessionMetadataService.getMetadata(sessionId)?.workingProjectId ??
+        deps.supervisor.getProcessForSession(sessionId)?.projectId;
+      if (savedProjectId) {
+        await deps.projectMetadataService?.recordRecentHeartbeatTurnText(
+          savedProjectId,
+          patch.heartbeatTurnText,
+        );
+      }
+    }
+
+    if (
+      patch.heartbeatTurnsEnabled !== undefined ||
+      patch.heartbeatTurnsAfterMinutes !== undefined ||
+      patch.heartbeatForceAfterMinutes !== undefined
+    ) {
+      // Heartbeat deadlines are scheduled, not polled, so a fresh opt-in has
+      // to announce itself; otherwise an already-quiet session would wait for
+      // some unrelated event to re-plan the timer.
+      deps.supervisor.notifyHeartbeatScheduleChanged();
+    }
 
     // Emit SSE event so sidebar and other clients can update
     if (deps.eventBus) {

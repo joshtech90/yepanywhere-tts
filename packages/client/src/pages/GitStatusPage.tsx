@@ -4,8 +4,10 @@ import type {
   GitStatusInfo,
 } from "@yep-anywhere/shared";
 import {
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
   GIT_STATUS_PULL_CAPABILITY,
@@ -26,6 +28,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ProjectSelector } from "../components/ProjectSelector";
+import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { SourceReviewDefaultSessionContext } from "../contexts/SourceReviewDefaultSessionContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import {
@@ -39,10 +42,13 @@ import { useProject, useProjects } from "../hooks/useProjects";
 import { useProjectReviewComments } from "../hooks/useProjectReviewComments";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useServerSettings } from "../hooks/useServerSettings";
+import { useSourceControlCleanLanding } from "../hooks/useSourceControlCleanLanding";
 import { BlameBrowser } from "./BlameBrowser";
 import { CommitBrowser } from "./CommitBrowser";
 import { RepoStatusBar } from "./RepoStatusBar";
 import { ReviewCommentsPanel } from "./ReviewCommentsPanel";
+import { ReviewSubmissionsPanel } from "./ReviewSubmissionsPanel";
 import styles from "./GitStatusPage.module.css";
 import { type SourceTab, SourceModeTabs } from "./SourceModeTabs";
 import { WorkingTreeBrowser } from "./WorkingTreeBrowser";
@@ -54,6 +60,7 @@ import {
 import { useVersion } from "../hooks/useVersion";
 import { type TranslationFn, useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
+import { toBrowserAppHref } from "../lib/appHref";
 import {
   type ClientSummarySourceKey,
   useClientSummarySourceKey,
@@ -73,18 +80,29 @@ interface SourceControlRouteState {
 const SOURCE_CONTROL_ROUTE_TTL_MS = 5 * 60 * 1000;
 
 /** Source-control modes with a built body (topic: source-review-to-session). */
-const SOURCE_TABS: readonly SourceTab[] = [
-  "changes",
-  "files",
-  "comments",
+const SOURCE_TABS: readonly SourceTab[] = ["changes", "files", "comments"];
+const SOURCE_TABS_WITH_REVIEWS: readonly SourceTab[] = [
+  ...SOURCE_TABS,
+  "reviews",
 ];
+
+/** URL keys that name a selection inside a mode, cleared when the mode changes. */
+const SOURCE_SELECTION_PARAMS = [
+  "tab",
+  "history",
+  "rev",
+  "commitFile",
+  "worktreeFile",
+  "bf",
+  "submission",
+] as const;
 
 /**
  * Source-mode tab state, derived from the `?tab=` URL param. Shared by the
  * title-row header actions (wide screens) and the status bar (mobile), so both
  * drive the same URL state.
  */
-function useSourceTab(): {
+function useSourceTab(reviewsEnabled = false): {
   tab: SourceTab;
   setTab: (next: SourceTab) => void;
 } {
@@ -96,7 +114,9 @@ function useSourceTab(): {
       ? "files"
       : tabParam === "comments"
         ? "comments"
-        : "changes";
+        : tabParam === "reviews" && reviewsEnabled
+          ? "reviews"
+          : "changes";
   const setTab = useCallback(
     (next: SourceTab) => {
       setSearchParams(
@@ -106,14 +126,54 @@ function useSourceTab(): {
           else params.set("tab", next);
           params.delete("history");
           params.delete("rev");
+          if (next !== "reviews") params.delete("submission");
           return params;
         },
-        { replace: true, state: location.state },
+        { state: location.state },
       );
     },
     [location.state, setSearchParams],
   );
   return { tab, setTab };
+}
+
+/**
+ * Navigation from the identity header's branch name to the commit that branch
+ * points at. The href is a real standalone URL so middle-click and "open in new
+ * tab" work; plain left-click stays in this tab through the router.
+ */
+function useHeadCommitLink(
+  projectId: string | undefined,
+  status: GitStatusInfo | null | undefined,
+  enabled: boolean,
+): { headCommitHref?: string; onOpenHeadCommit?: () => void } {
+  const basePath = useRemoteBasePath();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const headSha = status?.recentCommits?.[0]?.hash;
+  const active = enabled && headSha !== undefined && projectId !== undefined;
+  const headCommitHref = useMemo(() => {
+    if (!active) return undefined;
+    const params = new URLSearchParams(searchParams);
+    params.set("projectId", projectId);
+    for (const key of SOURCE_SELECTION_PARAMS) params.delete(key);
+    params.set("rev", headSha);
+    return toBrowserAppHref(`${basePath}/git-status?${params.toString()}`);
+  }, [active, basePath, headSha, projectId, searchParams]);
+  const onOpenHeadCommit = useCallback(() => {
+    if (!active) return;
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        for (const key of SOURCE_SELECTION_PARAMS) params.delete(key);
+        params.set("rev", headSha);
+        return params;
+      },
+      { state: location.state },
+    );
+  }, [active, headSha, location.state, setSearchParams]);
+  if (!active) return {};
+  return { headCommitHref, onOpenHeadCommit };
 }
 
 /**
@@ -124,18 +184,20 @@ function useSourceTab(): {
 function SourceHeaderTabs({
   status,
   pendingCount,
+  reviewsEnabled,
   t,
 }: {
   status: GitStatusInfo;
   pendingCount: number;
+  reviewsEnabled: boolean;
   t: TranslationFn;
 }) {
-  const { tab, setTab } = useSourceTab();
+  const { tab, setTab } = useSourceTab(reviewsEnabled);
   const changedFileCount = countChangedPaths(status);
   return (
     <SourceModeTabs
       tab={tab}
-      tabs={SOURCE_TABS}
+      tabs={reviewsEnabled ? SOURCE_TABS_WITH_REVIEWS : SOURCE_TABS}
       variant="stacked"
       counts={{ changes: changedFileCount, comments: pendingCount }}
       onSelect={setTab}
@@ -144,15 +206,141 @@ function SourceHeaderTabs({
   );
 }
 
+function SourceHeaderActions({
+  status,
+  pendingCount,
+  reviewsEnabled,
+  gitActions,
+  isWideScreen,
+  onComments,
+  t,
+}: {
+  status: GitStatusInfo;
+  pendingCount: number;
+  reviewsEnabled: boolean;
+  gitActions: GitActionState;
+  isWideScreen: boolean;
+  onComments: () => void;
+  t: TranslationFn;
+}) {
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [fitsTitleRow, setFitsTitleRow] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!isWideScreen) {
+      setFitsTitleRow(false);
+      return undefined;
+    }
+    const controls = controlsRef.current;
+    const tabs = tabsRef.current;
+    const header = controls?.closest<HTMLElement>(".session-header-inner");
+    const identity = header?.querySelector<HTMLElement>(".session-header-left");
+    const actionGroup = controls?.querySelector<HTMLElement>(
+      "[data-source-action-group]",
+    );
+    const tabList = tabs?.querySelector<HTMLElement>('[role="tablist"]');
+    if (
+      !controls ||
+      !tabs ||
+      !header ||
+      !identity ||
+      !actionGroup ||
+      !tabList
+    ) {
+      return undefined;
+    }
+
+    const update = () => {
+      const headerStyle = getComputedStyle(header);
+      const available =
+        header.clientWidth -
+        cssPixels(headerStyle.paddingLeft) -
+        cssPixels(headerStyle.paddingRight);
+      const gap = cssPixels(headerStyle.columnGap);
+      if (available <= 0) {
+        setFitsTitleRow(false);
+        return;
+      }
+      const demand =
+        horizontalContentWidth(identity) +
+        horizontalContentWidth(actionGroup) +
+        horizontalContentWidth(tabList) +
+        2 * gap;
+      setFitsTitleRow(demand <= available + 0.5);
+    };
+
+    update();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    observer.observe(identity);
+    observer.observe(actionGroup);
+    observer.observe(tabList);
+    return () => observer.disconnect();
+  }, [isWideScreen]);
+
+  return (
+    <>
+      <div
+        ref={controlsRef}
+        className={`${styles.headerControls} ${
+          fitsTitleRow ? styles.titleRow : styles.fallbackRow
+        }`}
+        data-source-actions-placement={fitsTitleRow ? "title" : "fallback"}
+      >
+        <SourceHeaderControls
+          gitActions={gitActions}
+          onComments={onComments}
+          t={t}
+        />
+      </div>
+      <div ref={tabsRef} className={styles.headerTabs}>
+        <SourceHeaderTabs
+          status={status}
+          pendingCount={pendingCount}
+          reviewsEnabled={reviewsEnabled}
+          t={t}
+        />
+      </div>
+    </>
+  );
+}
+
+function horizontalContentWidth(element: HTMLElement): number {
+  const style = getComputedStyle(element);
+  const children = Array.from(element.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement &&
+      getComputedStyle(child).display !== "none",
+  );
+  const childrenWidth = children.reduce(
+    (total, child) =>
+      total + Math.max(child.getBoundingClientRect().width, child.scrollWidth),
+    0,
+  );
+  return (
+    childrenWidth +
+    Math.max(0, children.length - 1) * cssPixels(style.columnGap) +
+    cssPixels(style.paddingLeft) +
+    cssPixels(style.paddingRight) +
+    cssPixels(style.borderLeftWidth) +
+    cssPixels(style.borderRightWidth)
+  );
+}
+
+function cssPixels(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function SourceHeaderControls({
   gitActions,
-  pendingCount,
-  onReview,
+  onComments,
   t,
 }: {
   gitActions: GitActionState;
-  pendingCount?: number;
-  onReview?: () => void;
+  onComments?: () => void;
   t: TranslationFn;
 }) {
   const nowMs = useRelativeNow();
@@ -160,7 +348,7 @@ function SourceHeaderControls({
     time: formatRemoteCheckTime(gitActions.checkedRemoteAt, nowMs, t),
   });
   return (
-    <div className="repo-status-action-group">
+    <div className={styles.actionGroup} data-source-action-group>
       {gitActions.supportsPull && (
         <SourceActionButton
           action="pull"
@@ -198,20 +386,18 @@ function SourceHeaderControls({
               ? `${gitActions.checkFeedback} · ${remoteTitle}`
               : remoteTitle
           }
-          className="git-status-check-remote"
+          className={styles.checkRemote}
           onClick={gitActions.handleCheckRemote}
           disabled={gitActions.isRunning}
         />
       )}
-      {onReview && pendingCount !== undefined && (
+      {onComments && (
         <button
           type="button"
           className="git-status-action-button review-tray-button"
-          onClick={onReview}
+          onClick={onComments}
         >
-          {pendingCount > 0
-            ? t("sourceReviewReview", { count: pendingCount })
-            : t("sourceReviewStart")}
+          {t("sourceCommentsAction")}
         </button>
       )}
     </div>
@@ -274,10 +460,7 @@ function SourceActionButton({
       onClick={onClick}
       disabled={disabled}
     >
-      <span
-        className="git-status-action-indicator"
-        aria-hidden="true"
-      >
+      <span className="git-status-action-indicator" aria-hidden="true">
         {running ? null : showOutcome ? (
           tone === "success" ? (
             "✓"
@@ -288,16 +471,12 @@ function SourceActionButton({
           <SourceActionGlyph action={action} />
         )}
       </span>
-      <span className="git-status-action-label">{label}</span>
+      <span className={styles.actionLabel}>{label}</span>
     </button>
   );
 }
 
-function SourceActionGlyph({
-  action,
-}: {
-  action: "pull" | "push" | "check";
-}) {
+function SourceActionGlyph({ action }: { action: "pull" | "push" | "check" }) {
   if (action === "check") {
     return (
       <svg
@@ -384,7 +563,6 @@ export function GitStatusPage() {
   const { t } = useI18n();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setTab: setHeaderTab } = useSourceTab();
   const projectId = searchParams.get("projectId");
   const sourceKey = useClientSummarySourceKey();
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
@@ -400,9 +578,18 @@ export function GitStatusPage() {
     loading: versionLoading,
     error: versionError,
   } = useVersion();
+  const { settings: serverSettings } = useServerSettings();
+  const reviewsEnabled =
+    serverHasCapability(version, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY) &&
+    (serverSettings?.sourceReviewSubmissionsEnabled ?? false);
+  const { setTab: setHeaderTab } = useSourceTab(reviewsEnabled);
   const supportsEnhancedGitStatus = serverHasCapability(
     version,
     GIT_STATUS_ENHANCED_CAPABILITY,
+  );
+  const supportsLastEditor = serverHasCapability(
+    version,
+    GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   );
   const supportsSourceReview = serverHasCapability(
     version,
@@ -427,6 +614,11 @@ export function GitStatusPage() {
   );
   const reviewComments = useProjectReviewComments(
     supportsSourceReview ? effectiveProjectId : undefined,
+  );
+  const headCommitLink = useHeadCommitLink(
+    effectiveProjectId,
+    gitStatus,
+    supportsSourceReview,
   );
   const { defaultSession: routeDefaultSession } = useMemo(
     () => parseSourceControlNavigationState(location.state),
@@ -522,6 +714,7 @@ export function GitStatusPage() {
                       ? () => setHeaderTab("changes")
                       : undefined
                   }
+                  {...headCommitLink}
                   t={t}
                 />
               )}
@@ -533,12 +726,14 @@ export function GitStatusPage() {
         isWideScreen={isWideScreen}
         isSidebarCollapsed={isSidebarCollapsed}
         actions={
-          supportsSourceReview &&
-          effectiveProjectId &&
-          gitStatus?.isGitRepo ? (
-            <SourceHeaderTabs
+          supportsSourceReview && effectiveProjectId && gitStatus?.isGitRepo ? (
+            <SourceHeaderActions
               status={gitStatus}
               pendingCount={reviewComments.pending.length}
+              reviewsEnabled={reviewsEnabled}
+              gitActions={gitActions}
+              isWideScreen={isWideScreen}
+              onComments={() => setHeaderTab("comments")}
               t={t}
             />
           ) : undefined
@@ -564,21 +759,27 @@ export function GitStatusPage() {
           ) : gitStatus && !gitStatus.isGitRepo ? (
             <div className="git-status-empty">{t("gitStatusNotRepo")}</div>
           ) : gitStatus && effectiveProjectId && supportsSourceReview ? (
-            <SourceReviewDefaultSessionContext.Provider value={defaultSession}>
-              <GitStatusContent
-                key={`${sourceKey}:${effectiveProjectId}`}
-                status={gitStatus}
-                projectId={effectiveProjectId}
-                isWideScreen={isWideScreen}
-                supportsProjections={supportsSourceReviewProjections}
-                gitActions={gitActions}
-                reviewComments={reviewComments}
-                showReviewModal={showReviewModal}
-                onOpenReview={() => setShowReviewModal(true)}
-                onCloseReview={() => setShowReviewModal(false)}
-                t={t}
-              />
-            </SourceReviewDefaultSessionContext.Provider>
+            <GlossaryProjectBoundary projectId={effectiveProjectId}>
+              <SourceReviewDefaultSessionContext.Provider
+                value={defaultSession}
+              >
+                <GitStatusContent
+                  key={`${sourceKey}:${effectiveProjectId}`}
+                  status={gitStatus}
+                  projectId={effectiveProjectId}
+                  isWideScreen={isWideScreen}
+                  supportsProjections={supportsSourceReviewProjections}
+                  supportsLastEditor={supportsLastEditor}
+                  gitActions={gitActions}
+                  reviewComments={reviewComments}
+                  reviewsEnabled={reviewsEnabled}
+                  showReviewModal={showReviewModal}
+                  onOpenReview={() => setShowReviewModal(true)}
+                  onCloseReview={() => setShowReviewModal(false)}
+                  t={t}
+                />
+              </SourceReviewDefaultSessionContext.Provider>
+            </GlossaryProjectBoundary>
           ) : gitStatus && effectiveProjectId ? (
             <GitStatusCompatibilityContent
               key={`${sourceKey}:${effectiveProjectId}:compatibility`}
@@ -610,7 +811,9 @@ function GitStatusCompatibilityContent({
 }) {
   return (
     <div className="git-status git-status-compatibility">
-      <div className="source-control-action-row">
+      <div
+        className={`source-control-action-row ${styles.compatibilityActions}`}
+      >
         <SourceHeaderControls gitActions={gitActions} t={t} />
       </div>
       <GitActionNotices gitActions={gitActions} t={t} />
@@ -627,8 +830,10 @@ function GitStatusContent({
   projectId,
   isWideScreen,
   supportsProjections,
+  supportsLastEditor,
   gitActions,
   reviewComments,
+  reviewsEnabled,
   showReviewModal,
   onOpenReview,
   onCloseReview,
@@ -638,8 +843,10 @@ function GitStatusContent({
   projectId: string;
   isWideScreen: boolean;
   supportsProjections: boolean;
+  supportsLastEditor: boolean;
   gitActions: GitActionState;
   reviewComments: ReturnType<typeof useProjectReviewComments>;
+  reviewsEnabled: boolean;
   showReviewModal: boolean;
   onOpenReview: () => void;
   onCloseReview: () => void;
@@ -649,20 +856,24 @@ function GitStatusContent({
   const location = useLocation();
   const basePath = useRemoteBasePath();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { tab, setTab } = useSourceTab();
+  const { tab } = useSourceTab(reviewsEnabled);
   const blameFile = searchParams.get("bf") ?? undefined;
   const commitSha = searchParams.get("rev") ?? undefined;
+  const commitFile = searchParams.get("commitFile") ?? undefined;
   const worktreeFile = searchParams.get("worktreeFile") ?? undefined;
+  const { sourceControlCleanLanding } = useSourceControlCleanLanding();
   const historyOpen =
     tab === "changes" &&
     (searchParams.get("history") === "1" ||
       searchParams.get("tab") === "commits" ||
-      commitSha !== undefined);
+      commitSha !== undefined ||
+      (status.isClean &&
+        worktreeFile === undefined &&
+        sourceControlCleanLanding === "latest-commit"));
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [showProjectionNotice, setShowProjectionNotice] = useState(false);
   const projectionNoticeNeedsPortal = useMediaQuery("(max-width: 600px)");
-  const activeIgnoreWhitespace =
-    supportsProjections && ignoreWhitespace;
+  const activeIgnoreWhitespace = supportsProjections && ignoreWhitespace;
   useEffect(() => {
     if (!supportsProjections) setIgnoreWhitespace(false);
   }, [supportsProjections]);
@@ -735,20 +946,6 @@ function GitStatusContent({
   }, [location.state, setSearchParams]);
   return (
     <div className="git-status">
-      <div className="source-control-toolbar">
-        <div className="source-control-action-row">
-          <SourceHeaderControls
-            gitActions={gitActions}
-            pendingCount={reviewComments.pending.length}
-            onReview={() => {
-              if (reviewComments.pending.length > 0) onOpenReview();
-              else setTab("comments");
-            }}
-            t={t}
-          />
-        </div>
-      </div>
-
       <GitActionNotices gitActions={gitActions} t={t} />
       {projectionNotice &&
         (projectionNoticeNeedsPortal
@@ -763,6 +960,8 @@ function GitStatusContent({
           initialWorkingTreePath={worktreeFile}
           onBrowseHistory={handleBrowseHistory}
           onBlameFile={handleBlameFile}
+          captureReviewProjections={reviewsEnabled}
+          supportsLastEditor={supportsLastEditor}
           ignoreWhitespace={activeIgnoreWhitespace}
           onToggleIgnoreWhitespace={handleToggleIgnoreWhitespace}
           onProjectionRequestFailure={handleProjectionUnavailable}
@@ -774,8 +973,11 @@ function GitStatusContent({
           status={status}
           isWideScreen={isWideScreen}
           initialSha={commitSha}
+          initialPath={commitFile}
           onBlameFile={handleBlameFile}
+          captureReviewProjections={reviewsEnabled}
           supportsProjections={supportsProjections}
+          supportsLastEditor={supportsLastEditor}
           ignoreWhitespace={activeIgnoreWhitespace}
           onToggleIgnoreWhitespace={handleToggleIgnoreWhitespace}
           onProjectionUnavailable={handleProjectionUnavailable}
@@ -789,12 +991,22 @@ function GitStatusContent({
           onSubmit={onOpenReview}
           t={t}
         />
+      ) : tab === "reviews" ? (
+        <ReviewSubmissionsPanel
+          projectId={projectId}
+          initialSubmissionId={searchParams.get("submission") ?? undefined}
+          sessionHref={(sessionId) =>
+            `${basePath}/projects/${projectId}/sessions/${sessionId}`
+          }
+          t={t}
+        />
       ) : tab === "files" ? (
         <BlameBrowser
           projectId={projectId}
           isWideScreen={isWideScreen}
           initialPath={blameFile}
           onOpenCommit={handleOpenCommit}
+          captureReviewProjections={reviewsEnabled}
           t={t}
         />
       ) : null}
@@ -803,6 +1015,7 @@ function GitStatusContent({
         <ReviewSubmitModal
           projectId={projectId}
           recentReviewSessionId={reviewComments.recentReviewSessionId}
+          submissionsEnabled={reviewsEnabled}
           onClose={onCloseReview}
           onNavigateSession={(sessionId) =>
             navigate(`${basePath}/projects/${projectId}/sessions/${sessionId}`)

@@ -19,7 +19,21 @@ instead of waiting for the whole project.
 - Project Queue items are persisted on the server. Clients must not mirror the
   queue in localStorage or hold invisible scheduled sends.
 - Queue targets are either an existing YA session id or a future new session in
-  a project.
+  a project. A provider with an authoritative catalog is revalidated at actual
+  new-session process creation; enqueue-time UI validation cannot remain launch
+  authority across an arbitrary queue delay. If promotion hands a new session
+  to the internal worker queue, the durable item stays `dispatching` until that
+  worker launch settles. Successful start removes it. Authoritative validation
+  or a non-retryable launch failure moves it to `failed` with the reason,
+  preserving the prompt for retry. A transient provider-startup failure before
+  the provider reports its canonical session id returns the same item to the
+  head of its project queue. The third consecutive startup failure pauses that
+  item as `failed`; Retry resets its startup-failure count. This item-local
+  pause does not set the global dispatch pause, although a failed head item
+  continues to block later work in that project by ordinary queue ordering.
+  A direct Gateway caller without this durable settlement channel receives the
+  existing `queue_full` response at worker capacity instead of an acceptance
+  whose deferred validation failure it cannot observe.
 - Delivery never rewrites user text with hidden prompt framing, elapsed-time
   markers, or automatic anchors.
 - A normal session queue is lower-level than Project Queue. Existing in-turn
@@ -28,6 +42,11 @@ instead of waiting for the whole project.
 - Project Queue promotion requires the project to remain idle for the configured
   project-quiet window, then re-checks project idleness immediately after
   claiming the item.
+- An admitted user request to start or reactivate a session reserves that
+  project as busy before provider startup begins. The reservation remains until
+  the provider harness has successfully started or the request reaches a
+  settled failure, closing the gap before the new process appears in the
+  ordinary idle predicate.
 - Promotion handles one Project Queue item per project-idle boundary. Do not
   drain the project backlog in one burst.
 - A global Project Queue dispatch pause gates automatic promotion above all
@@ -86,6 +105,21 @@ absolute blockers remain, the scheduler keeps a bounded retry armed while
 backlog remains so decaying liveness or external-ownership evidence cannot leave
 the Project Queue inert forever.
 
+Queue collection reads are retained projections, not provider discovery
+triggers. Existing-session titles come from the
+[`compact session catalog`](session-catalog-observation.md) plus immediate YA
+metadata; unresolved titles remain nullable while one exact background repair
+runs. Repeated queue reads with unchanged state perform no provider,
+session-index miss, transcript, or all-project work.
+
+Item, dispatch, blocker, quiet-window, external-ownership, and recovery
+transitions update one server-owned project-status projection and publish a
+versioned delta. Client components share one source/query revalidation owner.
+They render countdowns from server timestamps and may arm one exact
+source-level deadline or capability-gated legacy poll; they never each start a
+fixed interval. An event that lacks title fields must merge as a partial patch
+and cannot erase a known catalog-backed title.
+
 The configurable range is 0-300 seconds, default 30 seconds. A value of 0 means
 "promote as soon as the project idle predicate is true", while still performing
 the immediate post-claim idle re-check. The effective minimum is therefore the
@@ -104,8 +138,18 @@ A project is not idle while any owned session in that project has:
 - pending input;
 - liveness other than `verified-idle`.
 
+A session whose user has queued `/done` is exempt from all of the above for
+Project Queue promotion. The user has declared that session finished, so the
+final action the agent is still completing is not backlog the next queued
+request should wait behind, and the queued `/done` chip itself must not read as
+a deferred-queue blocker. The exemption is Project Queue's alone: the
+inactivity push notifier reports whether work is literally still running and
+therefore keeps counting that session.
+
 A project is also not idle while it has a worker/startup queue entry or known
-external session ownership. Project Queue promotion also treats persisted
+external session ownership. It is likewise not idle while an admitted
+user-initiated session start is still establishing its provider harness.
+Project Queue promotion also treats persisted
 `paused-after-restart` patient session-queue entries in the project as
 not-idle, even when no live process currently owns those entries. External
 ownership is best-effort and can decay; UI copy must not promise perfect
@@ -138,6 +182,12 @@ compatibility generation, because early Project Queue-capable source checkouts
 predate the compatibility marker and can expose partial Project Queue behavior
 to newer hosted clients.
 
+After restart-paused dispatch, each queued new-session row in the sidebar's
+Pending Sessions section exposes a compact Resume control. It atomically
+resumes global dispatch and moves that item to the head of its own project's
+queue. The ordinary scheduler still decides when it may launch; Resume is not
+Force start. Failed items retain their explicit Retry flow instead.
+
 When the button is visible by user preference, the UI should still suppress it
 when Project Queue adds no useful semantics:
 
@@ -156,6 +206,15 @@ The dedicated new-session form follows the same rule: hide its Project Queue
 action when the selected project is idle and has no Project Queue backlog; show
 it when the project has active work or existing Project Queue backlog. Its
 entry point remains governed by the ordinary Project Queue presence setting.
+Independently of that action preference, the form shows any existing items for
+the selected project directly below the project selector. The selector and
+queue are one responsive layout unit: they remain in the same side column on a
+wide form and move together ahead of provider controls on a narrow form. A
+project change replaces the displayed items in place. An empty queue remains
+hidden after a successful read, so users who have not invoked this default-off
+feature do not encounter a new empty-state concept. An initial read failure is
+still rendered even when no stale items exist; failure must not masquerade as a
+confirmed empty queue.
 An active session composer's additional "queue as new session" action has
 useful semantics even while the project is idle, but it is present only when
 the separate `projectQueueNewSessionShortcut` toolbar control is enabled and
@@ -189,6 +248,34 @@ Project Queue action. It does not activate the active-session composer's
 additional new-session action. Each binding is intentionally conditioned on
 the availability of the button it mirrors, so hiding or disabling Project
 Queue cannot silently steal Ctrl+Enter from regular queue/steer behavior.
+
+### Deferred startup-incident presentation
+
+The basic surface is deliberately small: a project card shows a separate
+warning badge in addition to its queue count whenever that project has a
+`failed` item, and the existing Project Queue row carries the error and Retry
+action. The badge is attention state, not another count. Automatic startup
+attempts do not produce repeated browser toasts.
+
+Field observation on 2026-08-09 confirmed this settled state after a real
+post-restart retry: the item retained its prompt and startup-timeout detail,
+rendered `Failed` with Retry/Edit/Delete actions, and kept only its own project
+blocked as `Blocked: first queue item failed`. A later full YA reload made the
+preceding dirty-server state unsuitable for exact reproduction; it is not
+evidence for expanding the incident UI.
+
+A richer state-apparent presentation is worthwhile only if field evidence says
+this intermittent edge case is common enough to justify it. A future design
+could keep the project card badge stable while expanding the queue row into a
+compact incident summary: `startup attempt 2 of 3`, last-attempt time, next
+automatic-attempt time, provider/runtime identity, and the last distinct error.
+On the third failure it would switch in place to `Paused after 3 startup
+failures` with Retry, Edit, Copy, and diagnostic-detail actions. The detail
+view could retain the three timestamped errors and whether each failure
+happened before provider session identity, making transient host trouble easy
+to distinguish from an item-specific launch configuration or provider
+rejection. It should remain item-local and avoid a modal, global banner, or
+global Project Queue pause.
 
 ## Inline Rendering
 
@@ -261,10 +348,13 @@ per-project in-flight protection; the UI must surface the blockers before
 making that override available.
 
 When recovered `paused-after-restart` patient session-queue entries exist, the
-projects page should show them above Project Queue items because they run first
-and block Project Queue promotion. This is a read-only overview grouped by
-session and linked back to the session page; resume/delete controls remain on
-the session surface until project-level queue management is intentionally added.
+projects page shows them above Project Queue items because they run first and
+block Project Queue promotion. Each recovered row offers Resume and Delete
+through the existing session-scoped routes. Resume keeps the established
+resume-through ordering, while Delete removes only the selected durable id; the
+row remains until a server-confirmed collection read removes it. The session
+link remains the surface for full context and Steer now. There is no
+project-wide Resume all action.
 
 ## Attachments
 

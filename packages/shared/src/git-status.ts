@@ -1,8 +1,15 @@
+import type {
+  ReviewCommentSide,
+  ReviewSourceProjection,
+} from "./review-comments.js";
 import type { PatchHunk } from "./types.js";
 
 export {
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+  GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
@@ -10,6 +17,13 @@ export {
   GIT_STATUS_PUSH_CAPABILITY,
   GIT_STATUS_REMOTE_CHECK_CAPABILITY,
 } from "./server-capabilities.js";
+
+/** Last YA session observed successfully mutating a still-dirty file. */
+export interface GitFileEditor {
+  sessionId: string;
+  /** Successful tool-result observation time, as ISO 8601. */
+  observedAt: string;
+}
 
 export interface GitFileChange {
   /** Relative path within the repo. May be a compact untracked directory. */
@@ -24,6 +38,8 @@ export interface GitFileChange {
   linesDeleted: number | null;
   /** Original path (for renames) */
   origPath?: string;
+  /** Last YA session observed successfully mutating this dirty path. */
+  lastEditor?: GitFileEditor;
 }
 
 export interface GitRecentCommit {
@@ -59,6 +75,20 @@ export interface GitRevisionComparison {
   headSha: string;
   /** Files whose content differs between the two revisions. */
   files: GitFileChange[];
+}
+
+export type GitFileDiffMode = "worktree" | "cumulative";
+
+/** Exact file-change corpora backing file-viewer diff selectors. */
+export interface GitFileProjectionManifest {
+  /** Resolved HEAD used as the ordinary worktree baseline. */
+  headSha: string | null;
+  /** Resolved first parent of HEAD used as the cumulative baseline. */
+  baseSha: string | null;
+  /** Net changes from HEAD through the current filesystem. */
+  worktreeFiles: GitFileChange[];
+  /** Net changes from HEAD^1 through the current filesystem. */
+  cumulativeFiles: GitFileChange[];
 }
 
 /** One page of commits for the commit browser. */
@@ -150,6 +180,8 @@ export interface GitUntrackedFolderInfo {
   path: string;
   /** Expanded untracked file paths within the directory */
   files: string[];
+  /** Last-editor attribution for expanded paths that have it. */
+  lastEditors?: Record<string, GitFileEditor>;
   /** Whether the list was capped by the server */
   truncated: boolean;
   /** Maximum number of files returned before truncation */
@@ -188,6 +220,10 @@ export interface GitDiffResult {
   markdownHtml?: string;
   /** Bounded omission metadata for previews that are unsafe to render. */
   previewSkipped?: GitDiffPreviewSkipped;
+  /** Exact source object rendered on each clickable diff side. */
+  reviewProjections?: Partial<
+    Record<ReviewCommentSide, ReviewSourceProjection>
+  >;
 }
 
 export interface GitStatusInfo {

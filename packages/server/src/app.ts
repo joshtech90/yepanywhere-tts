@@ -3,15 +3,21 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
   AppContentBlock,
   AppSession,
+  ProviderName,
   SafeRestartPreservedWork,
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
+  DEFAULT_HEARTBEAT_TURN_TEXT,
+  DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   DEFAULT_PROVIDER,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
   buildEffectiveAgentContext,
   clampProjectQueueQuietSeconds,
+  idleReapHoursToMs,
+  idleReapMsToHours,
   isClaudeProviderName,
   normalizeAutoSessionTitleSettings,
 } from "@yep-anywhere/shared";
@@ -55,7 +61,13 @@ import {
   GEMINI_TMP_DIR,
   GeminiSessionScanner,
 } from "./projects/gemini-scanner.js";
-import { GROK_SESSIONS_DIR, PI_SESSIONS_DIR } from "./projects/paths.js";
+import { GlossaryIndexService } from "./projects/glossaryIndexService.js";
+import {
+  GROK_SESSIONS_DIR,
+  PI_SESSIONS_DIR,
+  decodeProjectId,
+  grokSessionMediaRoots,
+} from "./projects/paths.js";
 import { ProjectScanner } from "./projects/scanner.js";
 import {
   InactivityPushNotifier,
@@ -63,6 +75,7 @@ import {
   type PushService,
 } from "./push/index.js";
 import { createPushRoutes } from "./push/routes.js";
+import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
 import type { RecentsService } from "./recents/index.js";
 import type {
   RemoteAccessService,
@@ -72,6 +85,10 @@ import { createRemoteAccessRoutes } from "./remote-access/index.js";
 import { createActivityRoutes } from "./routes/activity.js";
 import { createBrowserProfilesRoutes } from "./routes/browser-profiles.js";
 import { createBrowserSettingsBackupRoutes } from "./routes/browser-settings-backup.js";
+import {
+  createBrowserDebugAgentRoutes,
+  createBrowserDebugClientRoutes,
+} from "./routes/browser-debug.js";
 import { createClientLogsRoutes } from "./routes/client-logs.js";
 import { createConnectionsRoutes } from "./routes/connections.js";
 import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
@@ -79,13 +96,21 @@ import { createDevRoutes } from "./routes/dev.js";
 import { createDesktopBootstrapRoutes } from "./routes/desktop-bootstrap.js";
 import { createDeviceRoutes } from "./routes/devices.js";
 import { createFilesRoutes } from "./routes/files.js";
+import { canonicalizeManagedAttachmentPath } from "./uploads/attachmentAccess.js";
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
 import { createGitBrowseRoutes } from "./routes/git-browse.js";
+import { createGitFileProjectionRoutes } from "./routes/git-file-projections.js";
 import { createGitProjectionRoutes } from "./routes/git-projections.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
+import { createGlossaryArtifactRoutes } from "./routes/glossary-artifacts.js";
 import { createGlobalSessionsRoutes } from "./routes/global-sessions.js";
 import { createReviewCommentsRoutes } from "./routes/review-comments.js";
+import { createReviewInboxRoutes } from "./routes/review-inbox.js";
+import { createReviewSubmissionsRoutes } from "./routes/review-submissions.js";
+import { ReviewCaptureService } from "./review/ReviewCaptureService.js";
+import { ReviewCommentService } from "./review/ReviewCommentService.js";
+import { ReviewResponseObserver } from "./review/ReviewResponseObserver.js";
 import { createSupervisorReviewLauncher } from "./review/reviewSessionLauncher.js";
 import { health } from "./routes/health.js";
 import { createInboxRoutes } from "./routes/inbox.js";
@@ -98,12 +123,15 @@ import {
   createProjectQueueRoutes,
 } from "./routes/project-queue.js";
 import { createProjectsRoutes } from "./routes/projects.js";
+import { createProjectSessionDefaultsRoutes } from "./routes/project-session-defaults.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
 import {
   createPublicSharePublicRoutes,
   createPublicShareRoutes,
 } from "./routes/public-shares.js";
+import { createPublicShareManagementFreezeRoutes } from "./routes/public-share-management-freeze.js";
+import { createPublicShareManagementRoutes } from "./routes/public-share-management.js";
 import { createRecentsRoutes } from "./routes/recents.js";
 import {
   createServerAdminRoutes,
@@ -111,8 +139,11 @@ import {
 } from "./routes/server-admin.js";
 import { createEnvSettingsRoutes } from "./routes/env-settings.js";
 import { createServerInfoRoutes } from "./routes/server-info.js";
+import { createSessionArchiveRoutes } from "./routes/session-archive.js";
+import { createSessionDoneRoutes } from "./routes/session-done.js";
 import { createSessionIndexRoutes } from "./routes/session-index.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
+import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createSharingRoutes } from "./routes/sharing.js";
 import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
@@ -128,32 +159,52 @@ import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
 import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
+import { createSecurityClientRoutes } from "./routes/security-clients.js";
 import { createVersionRoutes } from "./routes/version.js";
+import { createProviderHostRoutes } from "./routes/provider-host.js";
 import { createWorkstreamRoutes } from "./routes/workstreams.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
 import {
   configureProviderRuntime,
   getProvider,
+  isProviderRuntimeHostAvailable,
 } from "./sdk/providers/index.js";
+import type { AgentProvider } from "./sdk/providers/types.js";
 import type {
   ClaudeSDK,
   PermissionMode,
   RealClaudeSDKInterface,
 } from "./sdk/types.js";
-import type { PublicShareService } from "./services/PublicShareService.js";
+import {
+  PublicShareCaptureError,
+  type PublicShareService,
+} from "./services/PublicShareService.js";
 import { AttachmentStagingService } from "./uploads/AttachmentStagingService.js";
 import type { BrowserProfileService } from "./services/BrowserProfileService.js";
 import type { BrowserSettingsBackupService } from "./services/BrowserSettingsBackupService.js";
+import {
+  BrowserDebugService,
+  createBrowserDebugCallerToken,
+} from "./services/BrowserDebugService.js";
 import { CodexUpdateChecker } from "./services/CodexUpdateChecker.js";
 import type { ConnectedBrowsersService } from "./services/ConnectedBrowsersService.js";
+import type { DirtyFileEditorService } from "./services/DirtyFileEditorService.js";
+import { HeartbeatCandidateRegistry } from "./services/HeartbeatCandidateRegistry.js";
 import type { HostAwakeService } from "./services/host-awake/HostAwakeService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
 import { AutoSessionTitleService } from "./services/AutoSessionTitleService.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
+import { initializeSessionHeartbeatDefaults } from "./services/sessionHeartbeatDefaults.js";
 import type { ProjectQueueService } from "./services/ProjectQueueService.js";
 import type { RelayClientService } from "./services/RelayClientService.js";
 import type { ServerSettingsService } from "./services/ServerSettingsService.js";
+import {
+  SessionWakeService,
+  type SessionWakeDeliveryResult,
+  type SessionWakeLogger,
+} from "./services/SessionWakeService.js";
+import type { SecurityClientService } from "./services/SecurityClientService.js";
 import type { WorkstreamService } from "./services/WorkstreamService.js";
 import type {
   PersistedSessionQueuedMessage,
@@ -177,6 +228,7 @@ import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
 import {
+  isAutomaticSessionResumeAllowed,
   isUnownedHeartbeatResumeEligible,
   type ResumeExemptionResult,
 } from "./sessions/resume-exemption.js";
@@ -195,12 +247,17 @@ import type { EventBus } from "./watcher/index.js";
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
 export interface AppOptions {
+  /** Explicit provider override; null suppresses ambient provider discovery. */
+  provider?: AgentProvider | null;
   /** Legacy SDK interface for mock SDK (for testing) */
   sdk?: ClaudeSDK;
   /** Real SDK interface with full features */
   realSdk?: RealClaudeSDKInterface;
   projectsDir?: string; // override for testing
   codexSessionsDir?: string; // override for testing
+  geminiSessionsDir?: string; // override for testing
+  grokSessionsDir?: string; // override for testing
+  piSessionsDir?: string; // override for testing
   idleTimeoutMs?: number;
   defaultPermissionMode?: PermissionMode;
   /** EventBus for file change events */
@@ -211,12 +268,19 @@ export interface AppOptions {
   notificationService?: NotificationService;
   /** SessionMetadataService for custom titles and archive status */
   sessionMetadataService?: SessionMetadataService;
+  /** Persist install-wide provider use before registering a live process. */
+  onSuccessfulProviderSession?: (
+    sessionId: string,
+    provider: ProviderName,
+  ) => Promise<void>;
   /** ProjectMetadataService for persisting added projects */
   projectMetadataService?: ProjectMetadataService;
   /** Durable project-scoped message queue service */
   projectQueueService?: ProjectQueueService;
   /** Durable store for long-lived patient queued messages */
   sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  /** Durable last-editor attribution for dirty Source Control files. */
+  dirtyFileEditorService?: DirtyFileEditorService;
   /** SessionIndexService for caching session summaries */
   sessionIndexService?: SessionIndexService;
   /** Claude summary parser child-process mode. Default off. */
@@ -257,6 +321,8 @@ export interface AppOptions {
   remoteAccessService?: RemoteAccessService;
   /** RemoteSessionService for session persistence (optional) */
   remoteSessionService?: RemoteSessionService;
+  /** Signed continuity-key registry and security audit service. */
+  securityClientService?: SecurityClientService;
   /** RelayClientService for relay connection status (optional) */
   relayClientService?: RelayClientService;
   /**
@@ -298,6 +364,21 @@ export interface AppOptions {
   browserSettingsBackupService?: BrowserSettingsBackupService;
   /** ServerSettingsService for server-wide settings */
   serverSettingsService?: ServerSettingsService;
+  /** Persistent server secret used to mint per-session wake credentials. */
+  sessionWakeSecret?: Uint8Array;
+  /** Session-wake diagnostics sink; injectable for warning-free tests. */
+  sessionWakeLogger?: SessionWakeLogger;
+  /** Reachable server base URL injected into local provider child shells. */
+  getSessionWakeBaseUrl?: (executor?: string) => string | undefined;
+  /** Agent-reachable diagnostics broker and optional private trust anchor. */
+  getBrowserDebugConnection?: (executor?: string) =>
+    | {
+        baseUrl: string;
+        caCertificate?: string;
+      }
+    | undefined;
+  /** Shared location resolver and transition owner for project-scoped state. */
+  projectStoragePolicy?: ProjectStoragePolicy;
   /** Process-global operating-system sleep assertion policy. */
   hostAwakeService?: HostAwakeService;
   /** WorkstreamService for experimental per-project checkout lanes */
@@ -338,6 +419,14 @@ export interface AppResult {
   readerFactory: (project: Project) => ISessionReader;
   /** Close cached session readers and their owned parser workers. */
   disposeSessionReaders: () => Promise<void>;
+  /** Shared resolver used by the artifact route and glossary subscriptions. */
+  glossaryIndexService: GlossaryIndexService;
+  /** Global external-session observer and its bounded background diagnostics. */
+  externalTracker?: ExternalSessionTracker;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 function getMessageContentBlocks(message: Message): AppContentBlock[] {
@@ -390,6 +479,11 @@ function getPreservedRestartWork(
 }
 
 export function createApp(options: AppOptions): AppResult {
+  const getConfiguredSubagentMaxDepth = () => {
+    const configured =
+      options.serverSettingsService?.getSetting("subagentMaxDepth");
+    return configured === undefined ? DEFAULT_SUBAGENT_MAX_DEPTH : configured;
+  };
   configureProviderRuntime({
     codexCliPath: options.codexCliPath,
     getClaudeAdditionalModels: () =>
@@ -405,8 +499,42 @@ export function createApp(options: AppOptions): AppResult {
       Object.values(
         options.sessionMetadataService?.getAllMetadata() ?? {},
       ).some((metadata) => metadata.provider === "claude-ollama"),
+    getProviderRuntimeSnapshot: () => ({
+      codexCliPath: options.codexCliPath,
+      codexReasoningSummary: options.serverSettingsService?.getSetting(
+        "codexReasoningSummary",
+      ),
+      claudeAdditionalModels: options.serverSettingsService?.getSetting(
+        "claudeAdditionalModels",
+      ),
+      claudeGatewayUrl:
+        options.serverSettingsService?.getSetting("claudeGatewayUrl"),
+      claudeGatewayStartCommand: options.serverSettingsService?.getSetting(
+        "claudeGatewayStartCommand",
+      ),
+      claudeGatewayDisableAgent: options.serverSettingsService?.getSetting(
+        "claudeGatewayDisableAgent",
+      ),
+      claudeGatewayDisablePlanMode: options.serverSettingsService?.getSetting(
+        "claudeGatewayDisablePlanMode",
+      ),
+      subagentMaxDepth: getConfiguredSubagentMaxDepth(),
+      ollamaUrl: options.serverSettingsService?.getSetting("ollamaUrl"),
+      ollamaSystemPrompt:
+        options.serverSettingsService?.getSetting("ollamaSystemPrompt"),
+      ollamaUseFullSystemPrompt: options.serverSettingsService?.getSetting(
+        "ollamaUseFullSystemPrompt",
+      ),
+      ambientXaiApiKey: process.env.XAI_API_KEY,
+      grokBuildUseXaiApiKey: options.serverSettingsService?.getSetting(
+        "grokBuildUseXaiApiKey",
+      ),
+    }),
   });
   const codexSessionsDir = options.codexSessionsDir ?? CODEX_SESSIONS_DIR;
+  const geminiSessionsDir = options.geminiSessionsDir ?? GEMINI_TMP_DIR;
+  const grokSessionsDir = options.grokSessionsDir ?? GROK_SESSIONS_DIR;
+  const piSessionsDir = options.piSessionsDir ?? PI_SESSIONS_DIR;
 
   const app = new Hono<{ Bindings: HttpBindings }>();
   if (options.desktopBootstrapService) {
@@ -419,11 +547,23 @@ export function createApp(options: AppOptions): AppResult {
   // errors Hono routes here rather than to the sub-app — return structured
   // JSON instead of an opaque empty 500.
   app.onError(structuredErrorHandler);
+  const effectiveDataDir =
+    options.dataDir ??
+    join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
+  const projectStoragePolicy =
+    options.projectStoragePolicy ??
+    new ProjectStoragePolicy({
+      dataDir: effectiveDataDir,
+      getMode: () =>
+        options.serverSettingsService?.getSetting("projectDirectoryStorage") ??
+        "app-data",
+    });
   const attachmentStagingService =
     options.attachmentStagingService ??
     new AttachmentStagingService({
       dataDir: options.dataDir,
       maxUploadSizeBytes: options.maxUploadSizeBytes,
+      storagePolicy: projectStoragePolicy,
     });
   options.projectQueueService?.setAttachmentStagingService(
     attachmentStagingService,
@@ -493,6 +633,10 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
 
+  if (options.securityClientService) {
+    app.route("/", createSecurityClientRoutes(options.securityClientService));
+  }
+
   // Create dependencies
   const codexDiscoveryIndexes = new Map<
     string,
@@ -516,7 +660,9 @@ export function createApp(options: AppOptions): AppResult {
       ? { sessionsDir: codexSessionsDir, discoveryIndex: codexDiscoveryIndex }
       : { sessionsDir: codexSessionsDir },
   );
-  const geminiScanner = new GeminiSessionScanner();
+  const geminiScanner = new GeminiSessionScanner({
+    sessionsDir: geminiSessionsDir,
+  });
   const projectScanCachePath = options.dataDir
     ? join(options.dataDir, "indexes", "project-scanner-cache.json")
     : undefined;
@@ -524,12 +670,14 @@ export function createApp(options: AppOptions): AppResult {
     projectsDir: options.projectsDir,
     codexScanner,
     geminiScanner,
+    geminiSessionsDir,
     projectScanCachePath,
     projectMetadataService: options.projectMetadataService,
     workstreamService: options.workstreamService,
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
+  const glossaryIndexService = new GlossaryIndexService();
   const localResourcePathPolicy = createLocalResourcePathPolicy({
     allowedPaths: getAllowedFilePaths,
     scanner,
@@ -537,6 +685,11 @@ export function createApp(options: AppOptions): AppResult {
   });
   const toolResultMediaStore = new ToolResultMediaStore({
     dataDir: options.dataDir,
+    storagePolicy: projectStoragePolicy,
+    shouldPreserveLiveMedia: () =>
+      options.serverSettingsService?.getSetting(
+        "toolResultMediaPreservation",
+      ) === "preserve",
     resolveSourcePath: async (absolutePath) => {
       const resolved =
         await localResourcePathPolicy.resolveAllowedFilePath(absolutePath);
@@ -544,19 +697,9 @@ export function createApp(options: AppOptions): AppResult {
     },
     providerSourceRoots: ({ provider, projectPath, sessionId }) =>
       provider === "grok"
-        ? [
-            join(
-              GROK_SESSIONS_DIR,
-              encodeURIComponent(projectPath),
-              sessionId,
-              "images",
-            ),
-          ]
+        ? grokSessionMediaRoots(grokSessionsDir, projectPath, sessionId)
         : [],
   });
-  const effectiveDataDir =
-    options.dataDir ??
-    join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
   const bangCommandService =
     options.sessionMetadataService && options.dataDir
       ? new BangCommandService({
@@ -697,10 +840,10 @@ export function createApp(options: AppOptions): AppResult {
       case "gemini":
       case "gemini-acp":
         return getOrCreateReader(
-          `gemini::${GEMINI_TMP_DIR}::${project.path}`,
+          `gemini::${geminiSessionsDir}::${project.path}`,
           () =>
             new GeminiSessionReader({
-              sessionsDir: GEMINI_TMP_DIR,
+              sessionsDir: geminiSessionsDir,
               projectPath: project.path,
               hashToCwd: geminiScanner.getHashToCwd(),
             }),
@@ -761,19 +904,19 @@ export function createApp(options: AppOptions): AppResult {
         );
       case "grok":
         return getOrCreateReader(
-          `grok::${GROK_SESSIONS_DIR}::${project.path}`,
+          `grok::${grokSessionsDir}::${project.path}`,
           () =>
             new GrokSessionReader({
-              sessionsDir: GROK_SESSIONS_DIR,
+              sessionsDir: grokSessionsDir,
               projectPath: project.path,
             }),
         );
       case "pi":
         return getOrCreateReader(
-          `pi::${PI_SESSIONS_DIR}::${project.path}`,
+          `pi::${piSessionsDir}::${project.path}`,
           () =>
             new PiSessionReader({
-              sessionsDir: PI_SESSIONS_DIR,
+              sessionsDir: piSessionsDir,
               projectPath: project.path,
             }),
         );
@@ -794,29 +937,29 @@ export function createApp(options: AppOptions): AppResult {
     );
   const geminiReaderFactory = (projectPath: string): GeminiSessionReader =>
     getOrCreateReader(
-      `gemini-extra::${GEMINI_TMP_DIR}::${projectPath}`,
+      `gemini-extra::${geminiSessionsDir}::${projectPath}`,
       () =>
         new GeminiSessionReader({
-          sessionsDir: GEMINI_TMP_DIR,
+          sessionsDir: geminiSessionsDir,
           projectPath,
           hashToCwd: geminiScanner.getHashToCwd(),
         }),
     );
   const grokReaderFactory = (projectPath: string): GrokSessionReader =>
     getOrCreateReader(
-      `grok-extra::${GROK_SESSIONS_DIR}::${projectPath}`,
+      `grok-extra::${grokSessionsDir}::${projectPath}`,
       () =>
         new GrokSessionReader({
-          sessionsDir: GROK_SESSIONS_DIR,
+          sessionsDir: grokSessionsDir,
           projectPath,
         }),
     );
   const piReaderFactory = (projectPath: string): PiSessionReader =>
     getOrCreateReader(
-      `pi-extra::${PI_SESSIONS_DIR}::${projectPath}`,
+      `pi-extra::${piSessionsDir}::${projectPath}`,
       () =>
         new PiSessionReader({
-          sessionsDir: PI_SESSIONS_DIR,
+          sessionsDir: piSessionsDir,
           projectPath,
         }),
     );
@@ -836,12 +979,12 @@ export function createApp(options: AppOptions): AppResult {
         codexSessionsDir,
         codexReaderFactory,
         codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
-        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiSessionsDir,
         geminiReaderFactory,
         geminiHashToCwd: geminiScanner.getHashToCwd(),
-        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokSessionsDir,
         grokReaderFactory,
-        piSessionsDir: PI_SESSIONS_DIR,
+        piSessionsDir,
         piReaderFactory,
         claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
       },
@@ -870,12 +1013,12 @@ export function createApp(options: AppOptions): AppResult {
         codexSessionsDir,
         codexReaderFactory,
         codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
-        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiSessionsDir,
         geminiReaderFactory,
         geminiHashToCwd: geminiScanner.getHashToCwd(),
-        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokSessionsDir,
         grokReaderFactory,
-        piSessionsDir: PI_SESSIONS_DIR,
+        piSessionsDir,
         piReaderFactory,
         claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
       },
@@ -884,96 +1027,182 @@ export function createApp(options: AppOptions): AppResult {
     return resolved?.summary ?? null;
   };
   let supervisor: Supervisor;
+  const browserDebugService = new BrowserDebugService(
+    Date.now,
+    undefined,
+    createBrowserDebugCallerToken(process.env.YEP_PROVIDER_RUNTIME_TOKEN),
+  );
+  const sessionWakeService = options.sessionWakeSecret
+    ? new SessionWakeService({
+        secret: options.sessionWakeSecret,
+        logger: options.sessionWakeLogger,
+        isEnabled: (sessionId) => {
+          const sessionOverride =
+            options.sessionMetadataService?.getMetadata(
+              sessionId,
+            )?.wakeTurnsEnabled;
+          return (
+            sessionOverride ??
+            options.serverSettingsService?.getSetting("wakeTurnsEnabled") ??
+            false
+          );
+        },
+        deliver: async ({
+          sessionId,
+          text,
+        }): Promise<SessionWakeDeliveryResult> => {
+          const metadata =
+            options.sessionMetadataService?.getMetadata(sessionId);
+          if (metadata?.automationPausedUntilUserTurn === true) {
+            return {
+              accepted: false,
+              status: 409,
+              error: "Session automation is paused until the next user turn",
+            };
+          }
+          const live = supervisor.getProcessForSession(sessionId);
+          let projectPath = live?.projectPath;
+          if (!projectPath) {
+            if (
+              metadata?.isArchived ||
+              !isAutomaticSessionResumeAllowed(metadata)
+            ) {
+              return {
+                accepted: false,
+                status: 409,
+                error: "Session is not eligible for automatic resume",
+              };
+            }
+            if (!metadata?.workingProjectId) {
+              return {
+                accepted: false,
+                status: 404,
+                error: "Session project could not be resolved",
+              };
+            }
+            const project = await scanner.getProject(metadata.workingProjectId);
+            if (!project) {
+              return {
+                accepted: false,
+                status: 404,
+                error: "Session project could not be resolved",
+              };
+            }
+            projectPath = project.path;
+          }
+
+          const resumed = await supervisor.resumeSession(
+            sessionId,
+            projectPath,
+            {
+              text,
+              automaticSource: "wake",
+            },
+          );
+          if ("error" in resumed) {
+            return {
+              accepted: false,
+              status: 503,
+              error: "Session queue is full",
+            };
+          }
+          return { accepted: true };
+        },
+      })
+    : undefined;
+  const heartbeatProviderResolutionDeps = () => ({
+    readerFactory,
+    codexSessionsDir,
+    codexReaderFactory,
+    codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
+    geminiSessionsDir,
+    geminiReaderFactory,
+    geminiHashToCwd: geminiScanner.getHashToCwd(),
+    grokSessionsDir,
+    grokReaderFactory,
+    piSessionsDir,
+    piReaderFactory,
+    claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
+  });
+  const heartbeatCandidates = new HeartbeatCandidateRegistry<Project>({
+    listEligible: () =>
+      Object.entries(options.sessionMetadataService?.getAllMetadata() ?? {})
+        .filter(([, metadata]) => isUnownedHeartbeatResumeEligible(metadata))
+        .map(([sessionId, metadata]) => [sessionId, metadata] as const),
+    isOwned: (sessionId) => Boolean(supervisor.getProcessForSession(sessionId)),
+    listProjects: () => scanner.listProjects(),
+    // Indexed lookup, so an already-located candidate never materializes the
+    // whole project fleet just to find its own project.
+    getProject: async (projectId) =>
+      (await scanner.getProject(projectId)) ?? undefined,
+    resolve: async (project, sessionId, provider) => {
+      const resolved = await findSessionListSummaryAcrossProviders(
+        project,
+        sessionId,
+        project.id,
+        heartbeatProviderResolutionDeps(),
+        provider,
+      );
+      if (!resolved) return null;
+      const reader = resolved.source.reader;
+      return {
+        projectId: project.id,
+        projectPath: project.path,
+        provider: resolved.summary.provider,
+        updatedAt: resolved.summary.updatedAt,
+        // The provider's activity timestamp is what an append moves, so it is
+        // the identity a retained pending-tool fact stays valid for.
+        sourceVersion: `${resolved.summary.provider}\0${resolved.summary.updatedAt}`,
+        readPendingToolCall: async () => {
+          const loaded = await reader.getSession(sessionId, project.id);
+          if (!loaded) return false;
+          return hasPendingToolCall(normalizeSession(loaded).messages);
+        },
+      };
+    },
+  });
   const getHeartbeatTurnCandidates = async (): Promise<
     HeartbeatTurnCandidate[]
   > => {
-    const metadataBySession = options.sessionMetadataService?.getAllMetadata();
-    if (!metadataBySession) {
-      return [];
+    if (!options.sessionMetadataService) return [];
+    const rows = await heartbeatCandidates.getCandidates();
+    return rows.map((row) => ({
+      ...row,
+      projectId: row.projectId as UrlProjectId,
+    }));
+  };
+  const resolveConfiguredProvider = (
+    providerName: ProviderName,
+  ): AgentProvider | undefined => {
+    const configuredProvider = options.provider;
+    if (configuredProvider?.name === providerName) {
+      return configuredProvider;
     }
-
-    const heartbeatSessionIds = Object.entries(metadataBySession).filter(
-      ([, metadata]) => isUnownedHeartbeatResumeEligible(metadata),
-    );
-    if (heartbeatSessionIds.length === 0) {
-      return [];
-    }
-
-    const projects = await scanner.listProjects();
-    const candidates: HeartbeatTurnCandidate[] = [];
-    const providerResolutionDeps = {
-      readerFactory,
-      codexSessionsDir,
-      codexReaderFactory,
-      codexSummaryParserWorkerMode: options.codexSummaryParserWorkerMode,
-      geminiSessionsDir: GEMINI_TMP_DIR,
-      geminiReaderFactory,
-      geminiHashToCwd: geminiScanner.getHashToCwd(),
-      grokSessionsDir: GROK_SESSIONS_DIR,
-      grokReaderFactory,
-      piSessionsDir: PI_SESSIONS_DIR,
-      piReaderFactory,
-      claudeSummaryParserWorkerMode: options.claudeSummaryParserWorkerMode,
-    };
-
-    for (const [sessionId, metadata] of heartbeatSessionIds) {
-      if (supervisor.getProcessForSession(sessionId)) {
-        continue;
-      }
-
-      for (const project of projects) {
-        const resolved = await findSessionListSummaryAcrossProviders(
-          project,
-          sessionId,
-          project.id,
-          providerResolutionDeps,
-          metadata.provider,
-        );
-        if (!resolved) {
-          continue;
-        }
-
-        const loaded = await resolved.source.reader.getSession(
-          sessionId,
-          project.id,
-        );
-        if (!loaded) {
-          break;
-        }
-        const session = normalizeSession(loaded);
-        if (!hasPendingToolCall(session.messages)) {
-          break;
-        }
-
-        candidates.push({
-          sessionId,
-          projectId: project.id,
-          projectPath: project.path,
-          provider: resolved.summary.provider,
-          model: metadata.requestedModel,
-          executor: metadata.executor,
-          updatedAt: resolved.summary.updatedAt,
-          hasPendingToolCall: true,
-        });
-        break;
-      }
-    }
-
-    return candidates;
+    return configuredProvider === null
+      ? undefined
+      : (getProvider(providerName) ?? undefined);
   };
 
   supervisor = new Supervisor({
     sdk: options.sdk,
     realSdk: options.realSdk,
+    provider:
+      options.provider !== undefined
+        ? options.provider
+        : isProviderRuntimeHostAvailable()
+          ? resolveConfiguredProvider("claude")
+          : undefined,
     idleTimeoutMs: options.idleTimeoutMs,
     defaultPermissionMode: options.defaultPermissionMode,
     eventBus: options.eventBus,
     sessionMetadataService: options.sessionMetadataService,
+    notificationService: options.notificationService,
     maxWorkers: options.maxWorkers,
     idlePreemptThresholdMs: options.idlePreemptThresholdMs,
     maxQueueSize: options.maxQueueSize,
     sessionQueuePersistenceService: options.sessionQueuePersistenceService,
     toolResultMediaStore,
+    dirtyFileEditorService: options.dirtyFileEditorService,
     sandboxStateRoot: join(effectiveDataDir, "session-sandboxes"),
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
@@ -981,6 +1210,29 @@ export function createApp(options: AppOptions): AppResult {
           options.sessionMetadataService?.setExecutor(sessionId, executor) ??
           Promise.resolve()
       : undefined,
+    onSuccessfulProviderSession: options.onSuccessfulProviderSession,
+    getSessionChildEnv:
+      options.getSessionWakeBaseUrl || options.getBrowserDebugConnection
+        ? (sessionId, executor) => {
+            const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
+            const browserDebugConnection =
+              options.getBrowserDebugConnection?.(executor);
+            return {
+              ...(browserDebugConnection
+                ? browserDebugService.getAgentEnvironment(
+                    browserDebugConnection.baseUrl,
+                    browserDebugConnection.caCertificate,
+                  )
+                : {}),
+              ...(wakeBaseUrl
+                ? sessionWakeService?.environmentForSession(
+                    sessionId,
+                    wakeBaseUrl,
+                  )
+                : {}),
+            };
+          }
+        : undefined,
     // Durably record a model's real context window the moment a process
     // observes it (in the result message), independent of any client fetch.
     onContextWindowObserved: options.modelInfoService
@@ -992,6 +1244,20 @@ export function createApp(options: AppOptions): AppResult {
           )
       : undefined,
     onSessionSummary: getSessionSummary,
+    recoverSessionLaunchSettings: async (sessionId, projectId, provider) => {
+      const project = await scanner.getProject(projectId);
+      if (!project) return undefined;
+      const recoveryProvider = provider ?? project.provider;
+      if (recoveryProvider !== "codex" && recoveryProvider !== "codex-oss") {
+        return undefined;
+      }
+      const reader = readerFactory({
+        ...project,
+        provider: recoveryProvider,
+        sessionDir: codexSessionsDir,
+      });
+      return reader.getRecoveredLaunchSettings?.(sessionId);
+    },
     getHeartbeatTurnSettings:
       options.serverSettingsService || options.sessionMetadataService
         ? (sessionId) => {
@@ -1004,7 +1270,7 @@ export function createApp(options: AppOptions): AppResult {
                 options.serverSettingsService?.getSetting(
                   "heartbeatTurnsAfterMinutes",
                 ) ??
-                5,
+                DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
               forceAfterMinutes:
                 sessionHeartbeat?.heartbeatForceAfterMinutes ?? null,
               text:
@@ -1012,15 +1278,19 @@ export function createApp(options: AppOptions): AppResult {
                 options.serverSettingsService?.getSetting(
                   "heartbeatTurnText",
                 ) ??
-                "continue",
+                DEFAULT_HEARTBEAT_TURN_TEXT,
             };
           }
         : undefined,
     getHeartbeatTurnCandidates: options.sessionMetadataService
       ? getHeartbeatTurnCandidates
       : undefined,
+    getHeartbeatWaitingSessionIds: options.sessionMetadataService
+      ? () => heartbeatCandidates.getWaitingSessionIds()
+      : undefined,
     getPromptCacheKeepaliveSettings: (providerName) => {
-      const capability = getProvider(providerName)?.promptCacheKeepalive;
+      const capability =
+        resolveConfiguredProvider(providerName)?.promptCacheKeepalive;
       if (!capability?.supportsNoContextPollutionNudge) {
         return {
           enabled: false,
@@ -1043,7 +1313,18 @@ export function createApp(options: AppOptions): AppResult {
     },
     getCacheMissBillingSettings: () =>
       options.serverSettingsService?.getSetting("cacheMissBilling"),
+    getClaudeSteerBackgroundBashSettings: () =>
+      options.serverSettingsService?.getSetting("claudeSteerBackgroundBash"),
   });
+  if (sessionWakeService) {
+    app.use("/session-wake/*", hostCheckMiddleware);
+    app.route("/session-wake", createSessionWakeRoutes(sessionWakeService));
+  }
+  app.use("/browser-debug/*", hostCheckMiddleware);
+  app.route(
+    "/browser-debug/v1",
+    createBrowserDebugAgentRoutes(browserDebugService),
+  );
 
   // Create external session tracker if eventBus is available
   const externalTracker = options.eventBus
@@ -1120,10 +1401,21 @@ export function createApp(options: AppOptions): AppResult {
             options.serverSettingsService?.getSetting("globalInstructions"),
           hints: options.serverSettingsService?.getSetting("agentContextHints"),
         }),
+      isSessionAutomationPaused: (sessionId) =>
+        options.sessionMetadataService?.getMetadata(sessionId)
+          ?.automationPausedUntilUserTurn === true,
       onSessionStarted: async ({ item, process }) => {
         if (item.target.type !== "new-session") return;
         const metadata = options.sessionMetadataService;
         if (!metadata) return;
+
+        await initializeSessionHeartbeatDefaults({
+          sessionId: process.sessionId,
+          projectId: item.projectId,
+          sessionMetadataService: metadata,
+          projectMetadataService: options.projectMetadataService,
+          serverSettingsService: options.serverSettingsService,
+        });
 
         const provider = item.target.provider ?? process.provider;
         if (provider) {
@@ -1231,6 +1523,7 @@ export function createApp(options: AppOptions): AppResult {
     "/api/version",
     createVersionRoutes({
       browserSettingsBackupAvailable: !!options.browserSettingsBackupService,
+      securityClientAuditAvailable: !!options.securityClientService,
       getDeviceBridgeState: () => {
         if (!options.deviceBridgeService) return "unavailable";
         return options.deviceBridgeService.hasBinary()
@@ -1257,6 +1550,7 @@ export function createApp(options: AppOptions): AppResult {
       getClientDefaults: () =>
         options.serverSettingsService?.getSetting("clientDefaults"),
       desktopRuntime: options.desktopRuntime,
+      providerHostControlAvailable: isProviderRuntimeHostAvailable(),
     }),
   );
 
@@ -1358,6 +1652,11 @@ export function createApp(options: AppOptions): AppResult {
 
   // Mount API routes
   app.route(
+    "/api/browser-debug",
+    createBrowserDebugClientRoutes(browserDebugService),
+  );
+  app.route("/api/provider-host", createProviderHostRoutes());
+  app.route(
     "/api/projects",
     createProjectsRoutes({
       scanner,
@@ -1373,15 +1672,25 @@ export function createApp(options: AppOptions): AppResult {
       codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
-      geminiSessionsDir: GEMINI_TMP_DIR,
+      geminiSessionsDir,
       geminiReaderFactory,
-      grokSessionsDir: GROK_SESSIONS_DIR,
+      grokSessionsDir,
       grokReaderFactory,
-      piSessionsDir: PI_SESSIONS_DIR,
+      piSessionsDir,
       piReaderFactory,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
+      storagePolicy: projectStoragePolicy,
     }),
   );
+  if (options.projectMetadataService) {
+    app.route(
+      "/api/projects",
+      createProjectSessionDefaultsRoutes({
+        scanner,
+        projectMetadataService: options.projectMetadataService,
+      }),
+    );
+  }
   if (options.projectQueueService) {
     app.route(
       "/api/project-queue",
@@ -1393,11 +1702,11 @@ export function createApp(options: AppOptions): AppResult {
         sessionIndexService: options.sessionIndexService,
         codexSessionsDir,
         codexReaderFactory,
-        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiSessionsDir,
         geminiReaderFactory,
-        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokSessionsDir,
         grokReaderFactory,
-        piSessionsDir: PI_SESSIONS_DIR,
+        piSessionsDir,
         piReaderFactory,
         sessionMetadataService: options.sessionMetadataService,
         sessionQueuePersistenceService: options.sessionQueuePersistenceService,
@@ -1413,11 +1722,11 @@ export function createApp(options: AppOptions): AppResult {
         sessionIndexService: options.sessionIndexService,
         codexSessionsDir,
         codexReaderFactory,
-        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiSessionsDir,
         geminiReaderFactory,
-        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokSessionsDir,
         grokReaderFactory,
-        piSessionsDir: PI_SESSIONS_DIR,
+        piSessionsDir,
         piReaderFactory,
         sessionMetadataService: options.sessionMetadataService,
       }),
@@ -1461,16 +1770,18 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      projectMetadataService: options.projectMetadataService,
+      projectQueueScheduler,
       eventBus: options.eventBus,
       codexScanner,
       codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
-      geminiSessionsDir: GEMINI_TMP_DIR,
+      geminiSessionsDir,
       geminiReaderFactory,
-      grokSessionsDir: GROK_SESSIONS_DIR,
+      grokSessionsDir,
       grokReaderFactory,
-      piSessionsDir: PI_SESSIONS_DIR,
+      piSessionsDir,
       piReaderFactory,
       serverSettingsService: options.serverSettingsService,
       workstreamService: options.workstreamService,
@@ -1478,6 +1789,24 @@ export function createApp(options: AppOptions): AppResult {
       sessionQueuePersistenceService: options.sessionQueuePersistenceService,
       toolResultMediaStore,
       dataDir: options.dataDir,
+      resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
+    }),
+  );
+  app.route(
+    "/api/sessions",
+    createSessionDoneRoutes({
+      supervisor,
+      sessionMetadataService: options.sessionMetadataService,
+      sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+    }),
+  );
+  app.route(
+    "/api/sessions",
+    createSessionArchiveRoutes({
+      supervisor,
+      sessionMetadataService: options.sessionMetadataService,
+      sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+      eventBus: options.eventBus,
     }),
   );
   app.route(
@@ -1510,12 +1839,12 @@ export function createApp(options: AppOptions): AppResult {
           case "gemini-acp":
             return {
               reader: geminiReaderFactory(project.path),
-              sessionDir: GEMINI_TMP_DIR,
+              sessionDir: geminiSessionsDir,
             };
           case "grok":
             return {
               reader: grokReaderFactory(project.path),
-              sessionDir: GROK_SESSIONS_DIR,
+              sessionDir: grokSessionsDir,
             };
           default:
             return {
@@ -1577,12 +1906,13 @@ export function createApp(options: AppOptions): AppResult {
       codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
-      geminiSessionsDir: GEMINI_TMP_DIR,
+      geminiSessionsDir,
       geminiReaderFactory,
-      grokSessionsDir: GROK_SESSIONS_DIR,
+      grokSessionsDir,
       grokReaderFactory,
-      piSessionsDir: PI_SESSIONS_DIR,
+      piSessionsDir,
       piReaderFactory,
+      eventBus: options.eventBus,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
     }),
   );
@@ -1602,11 +1932,11 @@ export function createApp(options: AppOptions): AppResult {
       codexSessionsDir,
       codexReaderFactory,
       geminiScanner,
-      geminiSessionsDir: GEMINI_TMP_DIR,
+      geminiSessionsDir,
       geminiReaderFactory,
-      grokSessionsDir: GROK_SESSIONS_DIR,
+      grokSessionsDir,
       grokReaderFactory,
-      piSessionsDir: PI_SESSIONS_DIR,
+      piSessionsDir,
       piReaderFactory,
       eventBus: options.eventBus,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
@@ -1624,21 +1954,141 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
 
+  app.route(
+    "/api/projects",
+    createGlossaryArtifactRoutes({ scanner, service: glossaryIndexService }),
+  );
+
   // Git status routes
-  app.route("/api/projects", createGitStatusRoutes({ scanner }));
+  app.route(
+    "/api/projects",
+    createGitStatusRoutes({
+      scanner,
+      dirtyFileEditorService: options.dirtyFileEditorService,
+    }),
+  );
 
   // Read-only git browse routes (commit list/diff, blame, search — stage 3)
-  app.route("/api/projects", createGitBrowseRoutes({ scanner }));
+  app.route(
+    "/api/projects",
+    createGitBrowseRoutes({ scanner, storagePolicy: projectStoragePolicy }),
+  );
 
   // Optional Source Control diff projections.
   app.route("/api/projects", createGitProjectionRoutes({ scanner }));
 
+  // Exact worktree projections shared by file links and file viewers.
+  app.route("/api/projects", createGitFileProjectionRoutes({ scanner }));
+
   // Source-review draft comments (topic: source-review-to-session)
+  const reviewCaptureService = new ReviewCaptureService({
+    storagePolicy: projectStoragePolicy,
+  });
+  const reviewCommentService = new ReviewCommentService({
+    captureWriter: reviewCaptureService,
+    storagePolicy: projectStoragePolicy,
+    listProjectPaths: async () =>
+      (await scanner.listProjects()).map((project) => project.path),
+  });
+  projectStoragePolicy.registerTransitionParticipant(reviewCommentService);
+  const sourceReviewSubmissionsEnabled = () =>
+    options.serverSettingsService?.getSetting(
+      "sourceReviewSubmissionsEnabled",
+    ) ?? false;
+  const reviewResponseObserver = new ReviewResponseObserver(
+    reviewCommentService,
+  );
+  options.eventBus?.subscribe((event) => {
+    if (event.type === "process-state-changed" && event.activity === "idle") {
+      if (!sourceReviewSubmissionsEnabled()) return;
+      const activeProcess = supervisor.getProcessForSession(event.sessionId);
+      if (activeProcess) {
+        void reviewResponseObserver
+          .observeIdle(activeProcess)
+          .then((results) => {
+            const submissionIds = (results ?? [])
+              .filter((result) => result.status === "ingested")
+              .map((result) => result.submissionId);
+            if (submissionIds.length > 0) {
+              options.eventBus?.emit({
+                type: "review-response-changed",
+                projectId: activeProcess.projectId,
+                submissionIds,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          })
+          .catch((error) => {
+            console.warn(
+              `[sourceReviewResponseTurns] Could not inspect review responses for ${event.sessionId}:`,
+              error,
+            );
+          });
+      }
+      return;
+    }
+    if (event.type === "process-terminated") {
+      reviewResponseObserver.forget(event.processId);
+      return;
+    }
+    if (event.type === "session-id-remapped") {
+      const activeProcess = supervisor.getProcessForSession(event.newSessionId);
+      if (activeProcess) {
+        void reviewCommentService
+          .remapSubmissionSession(
+            activeProcess.projectPath,
+            event.oldSessionId,
+            event.newSessionId,
+          )
+          .catch((error) => {
+            console.warn(
+              `[sourceReviewResponseTurns] Could not remap review submissions from ${event.oldSessionId}:`,
+              error,
+            );
+          });
+      }
+    }
+  });
   app.route(
     "/api/projects",
     createReviewCommentsRoutes({
       scanner,
-      launcher: createSupervisorReviewLauncher(supervisor),
+      service: reviewCommentService,
+      launcher: createSupervisorReviewLauncher(
+        supervisor,
+        async (projectPath, submissionId, acceptance) => {
+          await reviewCommentService.acceptSubmission(projectPath, {
+            submissionId,
+            ...acceptance,
+            responseTurnLimit:
+              options.serverSettingsService?.getSetting(
+                "sourceReviewResponseTurns",
+              ) ?? 8,
+          });
+        },
+      ),
+      isSubmissionsEnabled: sourceReviewSubmissionsEnabled,
+      getResponseTurnLimit: () =>
+        options.serverSettingsService?.getSetting(
+          "sourceReviewResponseTurns",
+        ) ?? 8,
+    }),
+  );
+  app.route(
+    "/api/projects",
+    createReviewSubmissionsRoutes({
+      scanner,
+      service: reviewCommentService,
+      captureReader: reviewCaptureService,
+      isEnabled: sourceReviewSubmissionsEnabled,
+    }),
+  );
+  app.route(
+    "/api",
+    createReviewInboxRoutes({
+      scanner,
+      service: reviewCommentService,
+      isEnabled: sourceReviewSubmissionsEnabled,
     }),
   );
 
@@ -1666,11 +2116,11 @@ export function createApp(options: AppOptions): AppResult {
         codexSessionsDir,
         codexReaderFactory,
         geminiScanner,
-        geminiSessionsDir: GEMINI_TMP_DIR,
+        geminiSessionsDir,
         geminiReaderFactory,
-        grokSessionsDir: GROK_SESSIONS_DIR,
+        grokSessionsDir,
         grokReaderFactory,
-        piSessionsDir: PI_SESSIONS_DIR,
+        piSessionsDir,
         piReaderFactory,
       }),
     );
@@ -1682,6 +2132,12 @@ export function createApp(options: AppOptions): AppResult {
     createProvidersRoutes({
       modelInfoService: options.modelInfoService,
       enabledProviders: options.enabledProviders,
+      providers:
+        options.provider === null
+          ? []
+          : options.provider
+            ? [options.provider]
+            : undefined,
       desktopRuntime: options.desktopRuntime,
     }),
   );
@@ -1692,6 +2148,7 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings",
       createSettingsRoutes({
         serverSettingsService: options.serverSettingsService,
+        projectStoragePolicy,
         hostAwakeService: options.hostAwakeService,
         sessionMetadataService: options.sessionMetadataService,
         onAllowedHostsChanged: updateAllowedHosts,
@@ -1705,6 +2162,9 @@ export function createApp(options: AppOptions): AppResult {
         onOllamaUrlChanged: (url) => {
           ClaudeOllamaProvider.setOllamaUrl(url);
         },
+        onHeartbeatSettingsChanged: () => {
+          supervisor.notifyHeartbeatScheduleChanged();
+        },
         onOllamaSystemPromptChanged: (prompt) => {
           ClaudeOllamaProvider.setSystemPrompt(prompt);
         },
@@ -1713,6 +2173,11 @@ export function createApp(options: AppOptions): AppResult {
         },
         onGrokBuildUseXaiApiKeyChanged: (enabled) => {
           grokACPProvider.setUseAmbientXaiApiKey(enabled);
+        },
+        getIdleReapHours: () =>
+          idleReapMsToHours(supervisor.getIdleTimeoutMs()),
+        onIdleReapHoursChanged: (hours) => {
+          supervisor.updateIdleTimeoutMs(idleReapHoursToMs(hours));
         },
         publicShareService: options.publicShareService,
       }),
@@ -1770,33 +2235,42 @@ export function createApp(options: AppOptions): AppResult {
   // Public read-only session shares. Creation is authenticated under /api;
   // public reads are secret-only and stay outside /api auth/mutation routes.
   if (options.publicShareService) {
-    const loadPublicShareSession = async (
-      projectId: UrlProjectId,
-      sessionId: string,
-      options?: { afterMessageId?: string },
-    ): Promise<AppSession | null> => {
-      const searchParams = new URLSearchParams();
-      if (options?.afterMessageId) {
-        searchParams.set("afterMessageId", options.afterMessageId);
-      }
-      searchParams.set("publicShare", "1");
-      const query = searchParams.toString();
-      const response = await app.fetch(
-        new Request(
-          `http://127.0.0.1/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}${query ? `?${query}` : ""}`,
-          { headers: { "X-Yep-Anywhere": "true" } },
-        ),
-        { [WS_INTERNAL_AUTHENTICATED]: true },
-      );
-      if (!response.ok) {
-        return null;
-      }
-      const body = (await response.json()) as {
-        messages?: AppSession["messages"];
-        session?: AppSession;
-      };
-      if (!body.session) {
-        return null;
+    type PublicShareSessionDetailEnvelope = {
+      messages?: AppSession["messages"];
+      pagination?: unknown;
+      publicShareCapture?: { completedMessageCount?: unknown };
+      session?: AppSession;
+    };
+
+    const parsePublicShareSessionDetail = (
+      body: PublicShareSessionDetailEnvelope,
+      requireCompleteHistory: boolean,
+    ): AppSession | null => {
+      if (!body.session || typeof body.session !== "object") return null;
+      if (requireCompleteHistory) {
+        const completedMessageCount =
+          body.publicShareCapture?.completedMessageCount;
+        if (
+          !Array.isArray(body.messages) ||
+          body.pagination !== undefined ||
+          body.session.messages !== undefined ||
+          !Number.isInteger(body.session.messageCount) ||
+          body.session.messageCount < 0 ||
+          body.session.messageCount > body.messages.length ||
+          !Number.isInteger(completedMessageCount) ||
+          (completedMessageCount as number) < 0 ||
+          (completedMessageCount as number) > body.messages.length
+        ) {
+          throw new PublicShareCaptureError(
+            "Session detail did not provide complete history; retry frozen capture",
+            "incomplete-history",
+          );
+        }
+        return {
+          ...body.session,
+          messageCount: completedMessageCount as number,
+          messages: body.messages.slice(0, completedMessageCount as number),
+        };
       }
       return {
         ...body.session,
@@ -1805,6 +2279,71 @@ export function createApp(options: AppOptions): AppResult {
           : (body.messages ?? []),
       };
     };
+
+    const fetchPublicShareSession = async (
+      projectId: UrlProjectId,
+      sessionId: string,
+      options: {
+        afterMessageId?: string;
+        requireCompleteHistory?: boolean;
+      } = {},
+    ): Promise<AppSession | null> => {
+      const searchParams = new URLSearchParams({ publicShare: "1" });
+      if (options.afterMessageId) {
+        searchParams.set("afterMessageId", options.afterMessageId);
+      }
+      if (options.requireCompleteHistory) {
+        searchParams.set("fullHistory", "1");
+        searchParams.set("fullHistoryReason", "public-share-capture");
+      }
+      const response = await app.fetch(
+        new Request(
+          `http://127.0.0.1/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}?${searchParams}`,
+          { headers: { "X-Yep-Anywhere": "true" } },
+        ),
+        { [WS_INTERNAL_AUTHENTICATED]: true },
+      );
+      if (!response.ok) {
+        if (options.requireCompleteHistory && response.status !== 404) {
+          throw new PublicShareCaptureError(
+            "Complete session history is temporarily unavailable; retry frozen capture",
+            "incomplete-history",
+          );
+        }
+        return null;
+      }
+      let body: PublicShareSessionDetailEnvelope;
+      try {
+        body = (await response.json()) as PublicShareSessionDetailEnvelope;
+      } catch (error) {
+        if (options.requireCompleteHistory) {
+          throw new PublicShareCaptureError(
+            "Complete session history response was invalid; retry frozen capture",
+            "incomplete-history",
+          );
+        }
+        throw error;
+      }
+      return parsePublicShareSessionDetail(
+        body,
+        options.requireCompleteHistory ?? false,
+      );
+    };
+
+    const loadPublicShareSession = (
+      projectId: UrlProjectId,
+      sessionId: string,
+      options?: { afterMessageId?: string },
+    ): Promise<AppSession | null> =>
+      fetchPublicShareSession(projectId, sessionId, options);
+
+    const loadCompletePublicShareSession = (
+      projectId: UrlProjectId,
+      sessionId: string,
+    ): Promise<AppSession | null> =>
+      fetchPublicShareSession(projectId, sessionId, {
+        requireCompleteHistory: true,
+      });
 
     const loadPublicShareSessionUpdatedAt = async (
       projectId: UrlProjectId,
@@ -1871,6 +2410,7 @@ export function createApp(options: AppOptions): AppResult {
         lineEnd?: number;
         lineNumber?: number;
         raw?: boolean;
+        projectRoot?: string;
         viewMode?: "full" | "range";
       },
     ): Promise<Response> => {
@@ -1891,21 +2431,36 @@ export function createApp(options: AppOptions): AppResult {
         searchParams.set("download", "true");
       }
       const route = fileOptions.raw ? "files/raw" : "files";
-      return await app.fetch(
-        new Request(
-          `http://127.0.0.1/api/projects/${projectId}/${route}?${searchParams}`,
-          { headers: { "X-Yep-Anywhere": "true" } },
-        ),
-        { [WS_INTERNAL_AUTHENTICATED]: true },
+      const projectRoot = fileOptions.projectRoot ?? decodeProjectId(projectId);
+      const attachmentPath = canonicalizeManagedAttachmentPath(
+        filePath,
+        effectiveDataDir,
       );
+      const shareFiles = createFilesRoutes({
+        scanner: {
+          getProject: async () => ({ path: projectRoot }),
+        } as unknown as ProjectScanner,
+        ...(attachmentPath
+          ? {
+              allowedPaths: () => [
+                join(effectiveDataDir, "projects"),
+                join(effectiveDataDir, "uploads"),
+              ],
+              includeProjects: () => false,
+            }
+          : { strictProjectFileAccess: true }),
+      });
+      return await shareFiles.request(`/${projectId}/${route}?${searchParams}`);
     };
 
     const publicShareDeps = {
       publicShareService: options.publicShareService,
       loadSession: loadPublicShareSession,
+      loadCompleteSession: loadCompletePublicShareSession,
       loadSessionUpdatedAt: loadPublicShareSessionUpdatedAt,
       loadSessionSummary: loadPublicShareSessionSummary,
       fetchProjectFile: fetchPublicShareProjectFile,
+      dataDir: effectiveDataDir,
       getRelayConfig: () =>
         options.remoteAccessService?.getRelayConfig() ?? null,
       getPublicSharesEnabled: () =>
@@ -1922,6 +2477,13 @@ export function createApp(options: AppOptions): AppResult {
     };
 
     app.route("/api/public-shares", createPublicShareRoutes(publicShareDeps));
+    app.route(
+      "/api",
+      createPublicShareManagementRoutes({
+        publicShareService: options.publicShareService,
+      }),
+    );
+    app.route("/api", createPublicShareManagementFreezeRoutes(publicShareDeps));
     app.route(
       "/public-api/shares",
       createPublicSharePublicRoutes(publicShareDeps),
@@ -1970,6 +2532,7 @@ export function createApp(options: AppOptions): AppResult {
         upgradeWebSocket: options.upgradeWebSocket,
         maxUploadSizeBytes: options.maxUploadSizeBytes,
         attachmentStagingService,
+        storagePolicy: projectStoragePolicy,
       }),
     );
   }
@@ -2065,7 +2628,16 @@ export function createApp(options: AppOptions): AppResult {
     });
   }
 
-  return { app, supervisor, scanner, readerFactory, disposeSessionReaders };
+  return {
+    app,
+    supervisor,
+    scanner,
+    readerFactory,
+    disposeSessionReaders,
+    glossaryIndexService,
+    externalTracker,
+    resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
+  };
 }
 
 // Default app for backwards compatibility (health check only)

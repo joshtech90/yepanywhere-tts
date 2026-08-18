@@ -1,18 +1,25 @@
 import type { UrlProjectId } from "@yep-anywhere/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionIndexService } from "../../src/indexes/index.js";
 import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
-import { createApp } from "../../src/app.js";
 import { createProcessesRoutes } from "../../src/routes/processes.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
-import type { Supervisor } from "../../src/supervisor/Supervisor.js";
+import {
+  SessionConfigurationConflictError,
+  type Supervisor,
+} from "../../src/supervisor/Supervisor.js";
 import type {
   ProcessInfo,
   Project,
   SessionSummary,
 } from "../../src/supervisor/types.js";
+import { createApp } from "../setup/create-app.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function createProject(): Project {
   return {
@@ -58,7 +65,64 @@ function createSummary(): SessionSummary {
 }
 
 describe("Processes Routes", () => {
+  it.each(["config", "model"])(
+    "returns conflict when %s cannot change an active process",
+    async (route) => {
+      const reconfigureProcess = vi.fn(async () => {
+        throw new SessionConfigurationConflictError(["service tier"]);
+      });
+      const routes = createProcessesRoutes({
+        supervisor: {
+          getProcess: vi.fn(() => ({})),
+          reconfigureProcess,
+        } as unknown as Supervisor,
+        scanner: {} as ProjectScanner,
+        readerFactory: vi.fn(),
+      });
+
+      const response = await routes.request(`/proc-1/${route}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "opus" }),
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error:
+          "Cannot apply launch-scoped configuration while the session is active: service tier",
+      });
+    },
+  );
+
+  it("does not acknowledge configuration whose persistence fails", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcess: vi.fn(() => ({})),
+        reconfigureProcess: vi.fn(async () => {
+          throw new Error("metadata unavailable");
+        }),
+      } as unknown as Supervisor,
+      scanner: {} as ProjectScanner,
+      readerFactory: vi.fn(),
+    });
+
+    const response = await routes.request("/proc-1/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "opus" }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "metadata unavailable" }),
+    );
+  });
+
   it("returns PID shutdown verification for an aborted process", async () => {
+    const pauseRecapsUntilUserTurn = vi.fn(async () => true);
     const abortProcessWithVerification = vi.fn(async () => ({
       processId: "proc-1",
       sessionId: "sess-1",
@@ -68,6 +132,7 @@ describe("Processes Routes", () => {
     }));
     const routes = createProcessesRoutes({
       supervisor: {
+        pauseRecapsUntilUserTurn,
         abortProcessWithVerification,
       } as unknown as Supervisor,
       scanner: {} as ProjectScanner,
@@ -79,6 +144,7 @@ describe("Processes Routes", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(pauseRecapsUntilUserTurn).toHaveBeenCalledWith("proc-1");
     await expect(response.json()).resolves.toEqual({
       aborted: true,
       processId: "proc-1",
@@ -90,6 +156,7 @@ describe("Processes Routes", () => {
   });
 
   it("exempts the session from auto-resume when the kill opts in", async () => {
+    const pauseRecapsUntilUserTurn = vi.fn(async () => true);
     const abortProcessWithVerification = vi.fn(async () => ({
       processId: "proc-1",
       sessionId: "sess-1",
@@ -103,6 +170,7 @@ describe("Processes Routes", () => {
     }));
     const routes = createProcessesRoutes({
       supervisor: {
+        pauseRecapsUntilUserTurn,
         abortProcessWithVerification,
         getProcess: vi.fn(() => ({
           sessionId: "sess-1",
@@ -121,6 +189,7 @@ describe("Processes Routes", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(pauseRecapsUntilUserTurn).toHaveBeenCalledWith("proc-1");
     expect(blockSessionResume).toHaveBeenCalledWith({
       sessionId: "sess-1",
     });
@@ -133,9 +202,49 @@ describe("Processes Routes", () => {
     });
   });
 
+  it("disables heartbeat turns through the app's terminate policy", async () => {
+    const updateMetadata = vi.fn(async () => undefined);
+    const { app, supervisor } = createApp({
+      sdk: new MockClaudeSDK(),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ heartbeatTurnsEnabled: true })),
+        getProvider: vi.fn(() => "codex"),
+        updateMetadata,
+      } as unknown as SessionMetadataService,
+    });
+    vi.spyOn(supervisor, "abortProcessWithVerification").mockResolvedValue({
+      processId: "proc-1",
+      sessionId: "sess-1",
+      verifiedStopped: true,
+      verification: "provider",
+    });
+
+    const response = await app.request("/api/processes/proc-1/abort", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Yep-Anywhere": "true",
+      },
+      body: JSON.stringify({ blockResume: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(updateMetadata).toHaveBeenCalledWith("sess-1", {
+      heartbeatTurnsEnabled: false,
+      autoResumeDisabled: true,
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      resumeExemption: {
+        heartbeatDisabled: true,
+        autoResumeDisabled: true,
+      },
+    });
+  });
+
   it("reports when shutdown succeeds but the resume exemption fails", async () => {
     const routes = createProcessesRoutes({
       supervisor: {
+        pauseRecapsUntilUserTurn: vi.fn(async () => true),
         abortProcessWithVerification: vi.fn(async () => ({
           processId: "proc-1",
           sessionId: "sess-1",
@@ -173,6 +282,7 @@ describe("Processes Routes", () => {
     const blockSessionResume = vi.fn();
     const routes = createProcessesRoutes({
       supervisor: {
+        pauseRecapsUntilUserTurn: vi.fn(async () => true),
         abortProcessWithVerification: vi.fn(async () => ({
           processId: "proc-1",
           sessionId: "sess-1",
@@ -202,6 +312,7 @@ describe("Processes Routes", () => {
   it("reports a failed shutdown verification instead of claiming success", async () => {
     const routes = createProcessesRoutes({
       supervisor: {
+        pauseRecapsUntilUserTurn: vi.fn(async () => true),
         abortProcessWithVerification: vi.fn(async () => {
           throw new Error("Provider PID 43210 is still running after abort");
         }),
@@ -318,6 +429,76 @@ describe("Processes Routes", () => {
       ],
     });
     expect(listProviderChildSessions).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("does not wait for decorative provider child refreshes", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const summary = createSummary();
+    const listAcceptedProviderChildSessions = vi.fn(() => []);
+    const listProviderChildSessions = vi.fn(async () => {
+      throw new Error("fresh child discovery must not block process rows");
+    });
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcessInfoList: vi.fn(() => [process]),
+      } as unknown as Supervisor,
+      scanner: {
+        getProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => summary),
+            listAcceptedProviderChildSessions,
+            listProviderChildSessions,
+          }) as unknown as ISessionReader,
+      ),
+    });
+
+    const response = await routes.request("/");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      processes: [{ sessionId: "sess-1" }],
+    });
+    expect(listAcceptedProviderChildSessions).toHaveBeenCalledWith("sess-1");
+    expect(listProviderChildSessions).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a Codex cold miss as permission to parse", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const summary = createSummary();
+    const listAcceptedProviderChildSessions = vi.fn(() => undefined);
+    const listProviderChildSessions = vi.fn(async () => {
+      throw new Error("fresh child discovery must not block process rows");
+    });
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcessInfoList: vi.fn(() => [process]),
+      } as unknown as Supervisor,
+      scanner: {
+        getProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => summary),
+            listAcceptedProviderChildSessions,
+            listProviderChildSessions,
+          }) as unknown as ISessionReader,
+      ),
+    });
+
+    const response = await routes.request("/");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      processes: [{ sessionId: "sess-1" }],
+    });
+    expect(listAcceptedProviderChildSessions).toHaveBeenCalledWith("sess-1");
+    expect(listProviderChildSessions).not.toHaveBeenCalled();
   });
 
   it("prefers persisted custom titles over generated session titles", async () => {
@@ -488,5 +669,52 @@ describe("Processes Routes", () => {
     expect(json.processes).toHaveLength(1);
     expect(json.processes[0]?.sessionTitle).toBe("Fix the agents page titles");
     expect(json.processes[0]?.provider).toBe("codex");
+  });
+
+  it("keeps the canonical Gateway provider over transcript inference", async () => {
+    const project = {
+      ...createProject(),
+      provider: "claude-gateway",
+    } satisfies Project;
+    const process = {
+      ...createProcessInfo(),
+      provider: "claude-gateway",
+    } satisfies ProcessInfo;
+    const summary = {
+      ...createSummary(),
+      provider: "claude-ollama",
+      model: "gpt-5.6-terra",
+    } satisfies SessionSummary;
+
+    const routes = createProcessesRoutes({
+      supervisor: {
+        getProcessInfoList: vi.fn(() => [process]),
+      } as unknown as Supervisor,
+      scanner: {
+        getProject: vi.fn(async () => project),
+      } as unknown as ProjectScanner,
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => summary),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+      } as unknown as SessionMetadataService,
+    });
+
+    const response = await routes.request("/");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      processes: [
+        {
+          sessionId: "sess-1",
+          provider: "claude-gateway",
+          model: "gpt-5.6-terra",
+        },
+      ],
+    });
   });
 });

@@ -3,6 +3,7 @@
 import type {
   PatchHunk,
   ReviewCommentRevision,
+  ReviewSourceProjection,
 } from "@yep-anywhere/shared";
 import {
   cleanup,
@@ -13,7 +14,7 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type SourceReviewDefaultSession,
   SourceReviewDefaultSessionContext,
@@ -33,15 +34,18 @@ vi.mock("../hooks/useRemoteBasePath", () => ({
 const listReviewComments = vi.fn();
 const addReviewComment = vi.fn();
 const submitReview = vi.fn();
+const getGlobalSessions = vi.fn();
 vi.mock("../api/client", () => ({
   api: {
     listReviewComments: (...args: unknown[]) => listReviewComments(...args),
     addReviewComment: (...args: unknown[]) => addReviewComment(...args),
     submitReview: (...args: unknown[]) => submitReview(...args),
+    getGlobalSessions: (...args: unknown[]) => getGlobalSessions(...args),
   },
 }));
 
-import { DiffCommentLayer } from "./DiffCommentLayer";
+import { DiffCommentController } from "./DiffCommentLayer";
+import { UnifiedDiff } from "./UnifiedDiff";
 
 // context " a" (old1/new1) · removed "-b" (old2) · added "+c" (new2)
 const PATCH: PatchHunk[] = [
@@ -66,29 +70,41 @@ const t = (key: string) => key;
 function Harness({
   patch = PATCH,
   revisions,
+  projections,
 }: {
   patch?: PatchHunk[];
   revisions?: {
     old?: ReviewCommentRevision;
     new?: ReviewCommentRevision;
   };
+  projections?: Partial<Record<"old" | "new", ReviewSourceProjection>>;
 }) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   return (
     <div className="diff-modal-content" ref={setContainer}>
-      <div
-        className="highlighted-diff"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: test fixture
-        dangerouslySetInnerHTML={{ __html: DIFF_HTML }}
-      />
-      {container && (
-        <DiffCommentLayer
+      {container ? (
+        <DiffCommentController
           projectId="proj1"
           filePath="src/a.ts"
           structuredPatch={patch}
           revisions={revisions}
+          projections={projections}
           container={container}
+          renderSource={({ openComment, editor }) => (
+            <UnifiedDiff
+              diffHtml={DIFF_HTML}
+              structuredPatch={patch}
+              splitAfterLine={openComment?.flatIndex}
+              editor={editor}
+            />
+          )}
           t={t}
+        />
+      ) : (
+        <div
+          className="highlighted-diff"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: test fixture
+          dangerouslySetInnerHTML={{ __html: DIFF_HTML }}
         />
       )}
     </div>
@@ -110,6 +126,10 @@ function renderHarness(
 }
 
 describe("DiffCommentLayer", () => {
+  beforeEach(() => {
+    getGlobalSessions.mockResolvedValue({ sessions: [], hasMore: false });
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -130,6 +150,12 @@ describe("DiffCommentLayer", () => {
     // Anchor label shows the current (new) line number.
     await screen.findByText("src/a.ts:2");
     expect(screen.getByRole("textbox")).toBeTruthy();
+    expect(document.querySelector("[data-review-comment-split]")).toBeTruthy();
+    expect(
+      document
+        .querySelector("[data-review-comment-before]")
+        ?.querySelector('[data-diff-line="2"]'),
+    ).toBeTruthy();
   });
 
   it("exposes one line-action menu through pointer and keyboard paths", async () => {
@@ -225,7 +251,10 @@ describe("DiffCommentLayer", () => {
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "removed why?" },
     });
-    fireEvent.click(screen.getByText("sourceReviewSubmitToNew"));
+    fireEvent.change(screen.getByLabelText("sourceReviewTargetLegend"), {
+      target: { value: "new" },
+    });
+    fireEvent.click(screen.getByText("sourceReviewSubmitComment"));
 
     await waitFor(() =>
       expect(submitReview).toHaveBeenCalledWith("proj1", ["c1"], "new", {
@@ -264,8 +293,12 @@ describe("DiffCommentLayer", () => {
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "follow up here" },
     });
+    const target = screen.getByLabelText(
+      "sourceReviewTargetLegend",
+    ) as HTMLSelectElement;
+    expect(target.value).toBe("sess-default");
     const submitToDefault = await screen.findByText(
-      "sourceReviewSubmitToDefault",
+      "sourceReviewSubmitComment",
     );
     expect(submitToDefault.getAttribute("title")).toBeNull();
     const hoverTarget = submitToDefault.parentElement;
@@ -293,6 +326,59 @@ describe("DiffCommentLayer", () => {
     );
   });
 
+  it("defaults immediate submit to the most recently active project session", async () => {
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+    getGlobalSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "sess-recent",
+          title: "Recent implementation",
+          customTitle: null,
+          provider: "codex",
+          model: "gpt-5.4",
+          projectId: "proj1",
+        },
+        {
+          id: "sess-older",
+          title: "Older implementation",
+          customTitle: null,
+          provider: "claude",
+          model: "sonnet",
+          projectId: "proj1",
+        },
+      ],
+      hasMore: false,
+    });
+    addReviewComment.mockResolvedValue({
+      comment: { id: "c3", status: "pending", anchor: {}, text: "x" },
+    });
+    submitReview.mockResolvedValue({
+      sessionId: "sess-recent",
+      consumed: ["c3"],
+    });
+    renderHarness();
+
+    fireEvent.click(document.querySelector('[data-diff-line="2"]')!);
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("sourceReviewTargetLegend") as HTMLSelectElement)
+          .value,
+      ).toBe("sess-recent"),
+    );
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "send to the recent session" },
+    });
+    fireEvent.click(screen.getByText("sourceReviewSubmitComment"));
+
+    await waitFor(() =>
+      expect(submitReview).toHaveBeenCalledWith("proj1", ["c3"], "sess-recent"),
+    );
+  });
+
   it("anchors a context click to the clicked column's side (side-by-side)", async () => {
     listReviewComments.mockResolvedValue({
       comments: [],
@@ -307,19 +393,30 @@ describe("DiffCommentLayer", () => {
       const [container, setContainer] = useState<HTMLDivElement | null>(null);
       return (
         <div ref={setContainer}>
-          <div data-diff-col="old">
-            <span className="line line-context" data-diff-line="0">
-              {" a"}
-            </span>
-          </div>
-          {container && (
-            <DiffCommentLayer
+          {container ? (
+            <DiffCommentController
               projectId="proj1"
               filePath="src/a.ts"
               structuredPatch={PATCH}
               container={container}
+              renderSource={({ editor }) => (
+                <>
+                  <div data-diff-col="old">
+                    <span className="line line-context" data-diff-line="0">
+                      {" a"}
+                    </span>
+                  </div>
+                  {editor}
+                </>
+              )}
               t={t}
             />
+          ) : (
+            <div data-diff-col="old">
+              <span className="line line-context" data-diff-line="0">
+                {" a"}
+              </span>
+            </div>
           )}
         </div>
       );
@@ -392,6 +489,51 @@ describe("DiffCommentLayer", () => {
     expect(addReviewComment.mock.calls[1]?.[1]).toMatchObject({
       side: "new",
       revision: { kind: "sha", sha: headSha },
+    });
+  });
+
+  it("keeps rendered capture identity distinct from anchor provenance", async () => {
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+    addReviewComment.mockResolvedValue({
+      comment: { id: "c1", status: "pending", anchor: {}, text: "x" },
+    });
+    render(
+      <MemoryRouter>
+        <Harness
+          revisions={{
+            old: { kind: "sha", sha: "a".repeat(40) },
+          }}
+          projections={{
+            old: {
+              kind: "revision",
+              revision: "b".repeat(40),
+              path: "src/original.ts",
+              side: "old",
+            },
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(document.querySelector('[data-diff-line="1"]')!);
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "capture this exact side" },
+    });
+    fireEvent.click(screen.getByText("sourceReviewAddToReview"));
+    await waitFor(() => expect(addReviewComment).toHaveBeenCalledTimes(1));
+
+    expect(addReviewComment.mock.calls[0]?.[1]).toMatchObject({
+      revision: { kind: "sha", sha: "a".repeat(40) },
+      projection: {
+        kind: "revision",
+        revision: "b".repeat(40),
+        path: "src/original.ts",
+        side: "old",
+      },
     });
   });
 

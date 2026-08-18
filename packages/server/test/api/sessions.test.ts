@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../../src/app.js";
+import { toUrlProjectId } from "@yep-anywhere/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createApp } from "../setup/create-app.js";
 import { MockClaudeSDK, createMockScenario } from "../../src/sdk/mock.js";
+import {
+  closeProviderRuntimeHostRegistration,
+  initializeProviderRuntimeHost,
+  isProviderRuntimeHostAvailable,
+} from "../../src/sdk/providers/provider-runtime-host.js";
+import type { ClaudeSDK } from "../../src/sdk/types.js";
+import { PublicShareService } from "../../src/services/PublicShareService.js";
 import type { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 
@@ -30,6 +38,17 @@ function createSettingsServiceForAuditLog(
   return {
     getSetting: (key: string) =>
       key === "approvalAuditLogEnabled" ? enabled : undefined,
+    getSettings: () => ({
+      hostProcessObservabilityEnabled: false,
+    }),
+    onSettingsChanged: () => () => {},
+  } as unknown as ServerSettingsService;
+}
+
+function createSettingsServiceForPublicShares(): ServerSettingsService {
+  return {
+    getSetting: (key: string) =>
+      key === "publicSharesEnabled" ? true : undefined,
     getSettings: () => ({
       hostProcessObservabilityEnabled: false,
     }),
@@ -375,29 +394,29 @@ describe("Sessions API", () => {
   describe("GET /api/projects/:projectId/sessions/:sessionId", () => {
     const projectPath = "/home/user/myproject";
 
-    async function writeCompactedSession(name: string) {
-      const encodedPath = projectPath.replace(/[/\\:]/g, "-");
+    async function writeCompactedSession(
+      name: string,
+      sessionProjectPath = projectPath,
+    ) {
+      const encodedPath = sessionProjectPath.replace(/[/\\:]/g, "-");
       const sessionDir = join(testDir, "localhost", encodedPath);
+      await mkdir(sessionDir, { recursive: true });
       const timestamp = (second: number) =>
         `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
       const user = (uuid: string, parentUuid: string | null, second: number) =>
         ({
           type: "user",
-          cwd: projectPath,
+          cwd: sessionProjectPath,
           sessionId: name,
           uuid,
           ...(parentUuid ? { parentUuid } : {}),
           timestamp: timestamp(second),
           message: { role: "user", content: uuid },
         }) satisfies Record<string, unknown>;
-      const assistant = (
-        uuid: string,
-        parentUuid: string,
-        second: number,
-      ) =>
+      const assistant = (uuid: string, parentUuid: string, second: number) =>
         ({
           type: "assistant",
-          cwd: projectPath,
+          cwd: sessionProjectPath,
           sessionId: name,
           uuid,
           parentUuid,
@@ -412,7 +431,7 @@ describe("Sessions API", () => {
         ({
           type: "system",
           subtype: "compact_boundary",
-          cwd: projectPath,
+          cwd: sessionProjectPath,
           sessionId: name,
           uuid,
           parentUuid: null,
@@ -435,10 +454,12 @@ describe("Sessions API", () => {
         user("u4", "cb3", 10),
       ];
 
+      const sessionFile = join(sessionDir, `${name}.jsonl`);
       await writeFile(
-        join(sessionDir, `${name}.jsonl`),
+        sessionFile,
         `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
       );
+      return sessionFile;
     }
 
     it("defaults no-query detail requests to a compact tail", async () => {
@@ -452,14 +473,50 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-        .toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
+      expect(
+        json.messages.map((message: { uuid?: string }) => message.uuid),
+      ).toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
       expect(json.pagination).toMatchObject({
         hasOlderMessages: true,
         returnedMessageCount: 5,
         totalCompactions: 3,
         truncatedBeforeMessageId: "cb2",
       });
+    });
+
+    it("reports additive detail phases through Server-Timing", async () => {
+      await writeCompactedSession("sess-timed");
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-timed`,
+        { headers: { "X-Yep-Anywhere": "true" } },
+      );
+
+      expect(res.status).toBe(200);
+      const entries = Object.fromEntries(
+        (res.headers.get("Server-Timing") ?? "").split(", ").map((entry) => {
+          const match = /^(ya-[a-z]+);dur=([0-9.]+)$/.exec(entry);
+          expect(match).not.toBeNull();
+          return [match?.[1], Number(match?.[2])];
+        }),
+      );
+      expect(Object.keys(entries)).toEqual([
+        "ya-augment",
+        "ya-normalize",
+        "ya-project",
+        "ya-read",
+        "ya-route",
+        "ya-total",
+      ]);
+      expect(entries["ya-total"]).toBeGreaterThanOrEqual(
+        entries["ya-project"] +
+          entries["ya-read"] +
+          entries["ya-normalize"] +
+          entries["ya-route"] +
+          entries["ya-augment"] -
+          0.5,
+      );
     });
 
     it("returns full transcript only when fullHistory=1 is explicit", async () => {
@@ -473,9 +530,312 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-        .toEqual(["u1", "a1", "cb1", "u2", "a2", "cb2", "u3", "a3", "cb3", "u4"]);
+      expect(
+        json.messages.map((message: { uuid?: string }) => message.uuid),
+      ).toEqual([
+        "u1",
+        "a1",
+        "cb1",
+        "u2",
+        "a2",
+        "cb2",
+        "u3",
+        "a3",
+        "cb3",
+        "u4",
+      ]);
       expect(json.pagination).toBeUndefined();
+    });
+
+    it("captures complete history for frozen public shares", async () => {
+      const shareProjectPath = join(testDir, "share-project");
+      const shareProjectId = encodeProjectId(shareProjectPath);
+      await mkdir(shareProjectPath);
+      await writeCompactedSession("sess-public-share-full", shareProjectPath);
+      const publicShareService = new PublicShareService({
+        dataDir: join(testDir, "share-data"),
+      });
+      await publicShareService.initialize();
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: testDir,
+        publicShareService,
+        serverSettingsService: createSettingsServiceForPublicShares(),
+        remoteAccessService: {
+          getRelayConfig: () => ({
+            url: "wss://relay.example/ws",
+            username: "host-one",
+          }),
+          isEnabled: () => true,
+        } as never,
+      });
+      const originalFetch = app.fetch.bind(app);
+      const detailRequests: URL[] = [];
+      vi.spyOn(app, "fetch").mockImplementation(async (...args) => {
+        const requestUrl = new URL(args[0].url);
+        if (
+          requestUrl.pathname ===
+          `/api/projects/${shareProjectId}/sessions/sess-public-share-full`
+        ) {
+          detailRequests.push(requestUrl);
+        }
+        return originalFetch(...args);
+      });
+
+      const response = await app.fetch(
+        new Request("http://127.0.0.1/api/public-shares", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            projectId: shareProjectId,
+            sessionId: "sess-public-share-full",
+            mode: "frozen",
+          }),
+        }),
+      );
+      const body = (await response.json()) as { url: string };
+
+      expect(response.status).toBe(200);
+      expect(detailRequests).toHaveLength(2);
+      for (const requestUrl of detailRequests) {
+        expect(requestUrl.searchParams.get("publicShare")).toBe("1");
+        expect(requestUrl.searchParams.get("fullHistory")).toBe("1");
+      }
+      const secret = new URL(body.url).pathname.split("/").at(-1)!;
+      const stored = await publicShareService.getFrozenShareBySecret(secret);
+      expect(stored?.session.messages?.map((message) => message.uuid)).toEqual([
+        "u1",
+        "a1",
+        "cb1",
+        "u2",
+        "a2",
+        "cb2",
+        "u3",
+        "a3",
+        "cb3",
+        "u4",
+      ]);
+    });
+
+    it("freezes the durable completed prefix while a later turn is active", async () => {
+      const activeProjectPath = join(testDir, "active-share-project");
+      const activeProjectId = encodeProjectId(activeProjectPath);
+      await mkdir(activeProjectPath);
+      const activeSessionFile = await writeCompactedSession(
+        "sess-existing",
+        activeProjectPath,
+      );
+      await appendFile(
+        activeSessionFile,
+        `${JSON.stringify({
+          type: "assistant",
+          cwd: activeProjectPath,
+          sessionId: "sess-existing",
+          uuid: "a4",
+          parentUuid: "u4",
+          timestamp: "2026-01-01T00:00:11Z",
+          message: { role: "assistant", content: "a4" },
+        })}\n`,
+      );
+      let releaseProcess!: () => void;
+      const processGate = new Promise<void>((resolve) => {
+        releaseProcess = resolve;
+      });
+      const heldSdk: ClaudeSDK = {
+        async *startSession() {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sess-existing",
+          };
+          yield {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: "replay-only active marker",
+            },
+          };
+          await processGate;
+          yield { type: "result", session_id: "sess-existing" };
+        },
+      };
+      await initializeProviderRuntimeHost();
+      closeProviderRuntimeHostRegistration();
+      expect(isProviderRuntimeHostAvailable()).toBe(false);
+      const publicShareService = new PublicShareService({
+        dataDir: join(testDir, "active-share-data"),
+      });
+      await publicShareService.initialize();
+      const { app, supervisor } = createApp({
+        sdk: heldSdk,
+        projectsDir: testDir,
+        publicShareService,
+        serverSettingsService: createSettingsServiceForPublicShares(),
+        remoteAccessService: {
+          getRelayConfig: () => ({
+            url: "wss://relay.example/ws",
+            username: "host-one",
+          }),
+          isEnabled: () => true,
+        } as never,
+      });
+      const resumed = await app.request(
+        `/api/projects/${activeProjectId}/sessions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({ message: "continue" }),
+        },
+      );
+      expect(resumed.status).toBe(200);
+      const { processId } = (await resumed.json()) as { processId: string };
+
+      try {
+        await vi.waitFor(
+          async () => {
+            const detail = await app.request(
+              `/api/projects/${activeProjectId}/sessions/sess-existing?fullHistory=1&fullHistoryReason=test`,
+              { headers: { "X-Yep-Anywhere": "true" } },
+            );
+            expect(detail.status).toBe(200);
+            const body = await detail.json();
+            expect(body.session.ownership).toMatchObject({ owner: "self" });
+          },
+          { timeout: 4_000, interval: 25 },
+        );
+        await appendFile(
+          activeSessionFile,
+          `${JSON.stringify({
+            type: "user",
+            cwd: activeProjectPath,
+            sessionId: "sess-existing",
+            uuid: "u5",
+            parentUuid: "a4",
+            timestamp: new Date().toISOString(),
+            message: { role: "user", content: "incomplete active turn" },
+          })}\n`,
+        );
+        await vi.waitFor(
+          async () => {
+            const detail = await app.request(
+              `/api/projects/${activeProjectId}/sessions/sess-existing?fullHistory=1&fullHistoryReason=test`,
+              { headers: { "X-Yep-Anywhere": "true" } },
+            );
+            expect(detail.status).toBe(200);
+            expect(JSON.stringify((await detail.json()).messages)).toContain(
+              "incomplete active turn",
+            );
+          },
+          { timeout: 4_000, interval: 25 },
+        );
+
+        const frozen = await app.request("/api/public-shares", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            projectId: activeProjectId,
+            sessionId: "sess-existing",
+            mode: "frozen",
+          }),
+        });
+
+        expect(frozen.status).toBe(200);
+        const frozenBody = (await frozen.json()) as { url: string };
+        const secret = new URL(frozenBody.url).pathname.split("/").at(-1)!;
+        const stored = await publicShareService.getFrozenShareBySecret(secret);
+        expect(stored?.session.messages?.at(-1)?.uuid).toBe("a4");
+        expect(JSON.stringify(stored?.session.messages)).not.toContain(
+          "replay-only active marker",
+        );
+        expect(JSON.stringify(stored?.session.messages)).not.toContain(
+          "incomplete active turn",
+        );
+        expect(
+          publicShareService.getSessionShareStatus(
+            toUrlProjectId(activeProjectPath),
+            "sess-existing",
+          ).activeCount,
+        ).toBe(1);
+      } finally {
+        releaseProcess();
+        await supervisor.abortProcess(processId);
+      }
+    }, 10_000);
+
+    it("rejects partial history returned to the frozen-share adapter", async () => {
+      const shareProjectPath = join(testDir, "partial-share-project");
+      const shareProjectId = encodeProjectId(shareProjectPath);
+      await mkdir(shareProjectPath);
+      await writeCompactedSession(
+        "sess-public-share-partial",
+        shareProjectPath,
+      );
+      const publicShareService = new PublicShareService({
+        dataDir: join(testDir, "partial-share-data"),
+      });
+      await publicShareService.initialize();
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: testDir,
+        publicShareService,
+        serverSettingsService: createSettingsServiceForPublicShares(),
+        remoteAccessService: {
+          getRelayConfig: () => ({
+            url: "wss://relay.example/ws",
+            username: "host-one",
+          }),
+          isEnabled: () => true,
+        } as never,
+      });
+      const originalFetch = app.fetch.bind(app);
+      vi.spyOn(app, "fetch").mockImplementation(async (...args) => {
+        const requestUrl = new URL(args[0].url);
+        const response = await originalFetch(...args);
+        if (
+          requestUrl.pathname !==
+          `/api/projects/${shareProjectId}/sessions/sess-public-share-partial`
+        ) {
+          return response;
+        }
+        const body = (await response.json()) as Record<string, unknown>;
+        return Response.json({
+          ...body,
+          pagination: { hasOlderMessages: true },
+        });
+      });
+
+      const response = await app.fetch(
+        new Request("http://127.0.0.1/api/public-shares", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            projectId: shareProjectId,
+            sessionId: "sess-public-share-partial",
+            mode: "frozen",
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ retryable: true });
+      expect(
+        publicShareService.getSessionShareStatus(
+          shareProjectId,
+          "sess-public-share-partial",
+        ).activeCount,
+      ).toBe(0);
     });
 
     it("preserves explicit compact-tail bounds", async () => {
@@ -489,8 +849,9 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-        .toEqual(["cb3", "u4"]);
+      expect(
+        json.messages.map((message: { uuid?: string }) => message.uuid),
+      ).toEqual(["cb3", "u4"]);
       expect(json.pagination).toMatchObject({
         hasOlderMessages: true,
         returnedMessageCount: 2,
@@ -510,8 +871,9 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-        .toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
+      expect(
+        json.messages.map((message: { uuid?: string }) => message.uuid),
+      ).toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
       expect(json.pagination).toMatchObject({
         hasOlderMessages: true,
         returnedMessageCount: 5,
@@ -533,8 +895,9 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-        .toEqual(["u3", "a3", "cb3", "u4"]);
+      expect(
+        json.messages.map((message: { uuid?: string }) => message.uuid),
+      ).toEqual(["u3", "a3", "cb3", "u4"]);
       expect(json.pagination).toMatchObject({
         hasOlderMessages: true,
         returnedMessageCount: 4,
@@ -785,8 +1148,6 @@ describe("Sessions API", () => {
               id: "req-audit-disabled",
               type: "tool-approval",
               prompt: "Allow Bash?",
-              toolName: "Bash",
-              toolInput: { command: "echo disabled" },
             },
           },
         ],
@@ -845,8 +1206,6 @@ describe("Sessions API", () => {
               id: "req-audit-enabled",
               type: "tool-approval",
               prompt: "Allow Bash?",
-              toolName: "Bash",
-              toolInput: { command: "echo enabled" },
             },
           },
         ],
@@ -1069,7 +1428,9 @@ describe("Sessions API", () => {
       const encodedPath = projectPath.replace(/[/\\:]/g, "-");
       const sessionDir = join(testDir, "localhost", encodedPath);
       // Comfortably exceeds the 1KB compress threshold so encoding kicks in.
-      const bigText = "the quick brown fox jumps over the lazy dog ".repeat(400);
+      const bigText = "the quick brown fox jumps over the lazy dog ".repeat(
+        400,
+      );
       const line = JSON.stringify({
         type: "user",
         cwd: projectPath,

@@ -6,23 +6,25 @@
  * needed by all users; push subscription is opt-in.
  */
 import { api } from "../api/client";
+import { toBrowserAssetHref } from "./appHref";
 import { isRemoteClient } from "./connection";
 
 /** Service Worker file path, compatible with Vite base URL (local "/" and remote "/remote/") */
-const SW_PATH = `${import.meta.env.BASE_URL}sw.js`;
+const SW_PATH = toBrowserAssetHref("sw.js");
 
 /** Whether the browser supports Service Worker */
 const hasBrowserSupport =
-  typeof window !== "undefined" &&
-  "serviceWorker" in navigator;
+  typeof window !== "undefined" && "serviceWorker" in navigator;
 
-/** Packaged Tauri assets use a local app origin, not a browser PWA origin. */
-export function isPackagedTauriOrigin(location: {
+/** Packaged app assets use a local trusted origin, not a browser PWA origin. */
+export function isPackagedAppOrigin(location: {
   hostname: string;
   protocol: string;
 }): boolean {
   return (
-    location.hostname === "tauri.localhost" || location.protocol === "tauri:"
+    location.hostname === "tauri.localhost" ||
+    location.protocol === "tauri:" ||
+    location.hostname === "appassets.androidplatform.net"
   );
 }
 
@@ -32,7 +34,7 @@ export function isPackagedTauriOrigin(location: {
  */
 export async function registerServiceWorkerAtStartup(): Promise<void> {
   if (!hasBrowserSupport) return;
-  if (isPackagedTauriOrigin(window.location)) return;
+  if (isPackagedAppOrigin(window.location)) return;
 
   // In dev mode, check server setting (allows runtime toggle via settings UI)
   if (import.meta.env.DEV) {

@@ -40,6 +40,8 @@ export interface SessionMenuProps {
   onReload?: () => void;
   /** Called to configure session heartbeat settings */
   onConfigureHeartbeat?: () => void;
+  /** Called to configure defaults for this session's project */
+  onConfigureProjectSettings?: () => void;
   /** Called to configure session recap settings */
   onConfigureRecaps?: () => void;
   /**
@@ -61,6 +63,8 @@ export interface SessionMenuProps {
   onShare?: () => void | Promise<void>;
   /** Additional class for the wrapper */
   className?: string;
+  /** Remove the trigger from layout so its caller can overlay it on a row. */
+  overlayTrigger?: boolean;
   /** Use fixed positioning for dropdown (escapes overflow clipping) */
   useFixedPositioning?: boolean;
   /** Notified when the menu opens/closes so callers can react to open state. */
@@ -87,6 +91,7 @@ export function SessionMenu({
   onTerminate,
   onReload,
   onConfigureHeartbeat,
+  onConfigureProjectSettings,
   onConfigureRecaps,
   promptSuggestionMode,
   onTogglePromptSuggestions,
@@ -95,6 +100,7 @@ export function SessionMenu({
   onShare,
   useEllipsisIcon = false,
   className = "",
+  overlayTrigger = false,
   useFixedPositioning = false,
   onOpenChange,
 }: SessionMenuProps) {
@@ -118,6 +124,7 @@ export function SessionMenu({
     (onClone ? 1 : 0) +
     (onGenerateTitle ? 1 : 0) +
     (onCopyPrompt ? 1 : 0) +
+    (onConfigureProjectSettings ? 1 : 0) +
     (onConfigureHeartbeat ? 1 : 0) +
     (onConfigureRecaps ? 1 : 0) +
     (onTogglePromptSuggestions ? 1 : 0) +
@@ -264,6 +271,7 @@ export function SessionMenu({
 
   const wrapperClasses = [
     styles.wrapper,
+    overlayTrigger && styles.overlayTrigger,
     "session-menu-wrapper",
     className,
     isOpen && "is-open",
@@ -284,11 +292,7 @@ export function SessionMenu({
     : undefined;
 
   const dropdownContent = (
-    <div
-      ref={dropdownRef}
-      className={styles.dropdown}
-      style={dropdownStyle}
-    >
+    <div ref={dropdownRef} className={styles.dropdown} style={dropdownStyle}>
       <button type="button" onClick={() => handleAction(onToggleStar)}>
         <svg
           width="14"
@@ -391,6 +395,26 @@ export function SessionMenu({
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
           </svg>
           {t("sessionMenuCopyPrompt")}
+        </button>
+      )}
+      {onConfigureProjectSettings && (
+        <button
+          type="button"
+          onClick={() => handleAction(onConfigureProjectSettings)}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.15.38.36.72.6 1 .3.35.7.55 1.1.6h.09v4h-.09a1.7 1.7 0 0 0-1.7.4Z" />
+          </svg>
+          {t("sessionMenuProjectSettings")}
         </button>
       )}
       {onConfigureHeartbeat && (

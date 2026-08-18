@@ -4,6 +4,7 @@ import type { WSEvents } from "hono/ws";
 import type { WebSocket as RawWebSocket } from "ws";
 import type { DeviceBridgeService } from "../device/DeviceBridgeService.js";
 import { isAllowedOrigin } from "../middleware/allowed-hosts.js";
+import type { ProjectGlossarySubscriptionManager } from "../projects/projectGlossarySubscriptionManager.js";
 import type {
   RemoteAccessService,
   RemoteSessionService,
@@ -13,6 +14,8 @@ import type {
   ConnectedBrowsersService,
 } from "../services/index.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
+import type { SecurityClientService } from "../services/SecurityClientService.js";
+import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import type { SpeechBackendRegistry } from "../services/voice/registry.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
@@ -57,12 +60,18 @@ export interface WsRelayDeps {
   remoteAccessService?: RemoteAccessService;
   /** Remote session service for session persistence (optional) */
   remoteSessionService?: RemoteSessionService;
+  /** Registered-client continuity and security audit service. */
+  securityClientService?: SecurityClientService;
+  /** Durable patient queue state included in session snapshots. */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
   /** Connected browsers service for tracking WS connections (optional) */
   connectedBrowsers?: ConnectedBrowsersService;
   /** Browser profile service for tracking connection origins (optional) */
   browserProfileService?: BrowserProfileService;
   /** Focused session watch manager for per-session targeted file watching (optional) */
   focusedSessionWatchManager?: FocusedSessionWatchManager;
+  /** Project glossary path subscriptions and reference-counted watchers. */
+  projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager;
   /** Emulator bridge service for Android emulator streaming (optional) */
   deviceBridgeService?: DeviceBridgeService;
   /** Speech backend registry for relayed streaming STT (optional) */
@@ -71,6 +80,10 @@ export interface WsRelayDeps {
   dataDir?: string;
   /** Server settings service for relayed speech retention settings (optional) */
   serverSettingsService?: ServerSettingsService;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -94,12 +107,18 @@ export interface AcceptRelayConnectionDeps {
   remoteAccessService: RemoteAccessService;
   /** Remote session service for session persistence */
   remoteSessionService: RemoteSessionService;
+  /** Registered-client continuity and security audit service. */
+  securityClientService?: SecurityClientService;
+  /** Durable patient queue state included in session snapshots. */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
   /** Connected browsers service for tracking WS connections (optional) */
   connectedBrowsers?: ConnectedBrowsersService;
   /** Browser profile service for tracking connection origins (optional) */
   browserProfileService?: BrowserProfileService;
   /** Focused session watch manager for per-session targeted file watching (optional) */
   focusedSessionWatchManager?: FocusedSessionWatchManager;
+  /** Project glossary path subscriptions and reference-counted watchers. */
+  projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager;
   /** Emulator bridge service for Android emulator streaming (optional) */
   deviceBridgeService?: DeviceBridgeService;
   /** Speech backend registry for relayed streaming STT (optional) */
@@ -108,12 +127,19 @@ export interface AcceptRelayConnectionDeps {
   dataDir?: string;
   /** Server settings service for relayed speech retention settings (optional) */
   serverSettingsService?: ServerSettingsService;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 /**
  * Create a WSAdapter from a raw ws.WebSocket.
  */
-function createWSAdapter(ws: RawWebSocket): WSAdapter {
+function createWSAdapter(
+  ws: RawWebSocket,
+  connState: ConnectionState,
+): WSAdapter {
   return {
     send(data: string | ArrayBuffer | Uint8Array<ArrayBuffer>): void {
       try {
@@ -125,6 +151,7 @@ function createWSAdapter(ws: RawWebSocket): WSAdapter {
       }
     },
     close(code?: number, reason?: string): void {
+      cleanupConnectionState(connState);
       try {
         ws.close(code, reason);
       } catch {
@@ -210,13 +237,17 @@ export function createWsRelayRoutes(
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   } = deps;
 
   // Build handler dependencies
@@ -229,13 +260,17 @@ export function createWsRelayRoutes(
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   };
 
   // Return the WebSocket handler with origin validation
@@ -264,7 +299,10 @@ export function createWsRelayRoutes(
     // Message queue to serialize async message handling
     let messageQueue: Promise<void> = Promise.resolve();
     // Connection state for SRP authentication
-    const connState: ConnectionState = createConnectionState();
+    const connState: ConnectionState = createConnectionState({
+      transport: "direct",
+      peerAddress: getPeerAddress(c),
+    });
     // Ping interval for dead connection detection (set in onOpen, cleared in onClose)
     let pingInterval: ReturnType<typeof setInterval> | null = null;
     // Encryption-aware send function (created on open, captures connState)
@@ -285,6 +323,7 @@ export function createWsRelayRoutes(
             }
           },
           close(code?: number, reason?: string): void {
+            cleanupConnectionState(connState);
             try {
               ws.close(code, reason);
             } catch {
@@ -352,6 +391,7 @@ export function createWsRelayRoutes(
 
       onClose(_evt, _ws) {
         if (pingInterval) clearInterval(pingInterval);
+        securityClientService?.disconnect(connState.connectionId);
         cleanupConnectionState(connState);
 
         // Clean up all uploads
@@ -373,6 +413,7 @@ export function createWsRelayRoutes(
 
       onError(evt, _ws) {
         console.error("[WS Relay] WebSocket error:", evt);
+        wsAdapter?.close(1011, "WebSocket error");
       },
     };
   });
@@ -406,13 +447,17 @@ export function createAcceptRelayConnection(
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   } = deps;
 
   // Build handler dependencies
@@ -425,13 +470,17 @@ export function createAcceptRelayConnection(
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
+    sessionQueuePersistenceService,
     connectedBrowsers,
     browserProfileService,
     focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir,
     serverSettingsService,
+    resolveAbsoluteFilePaths,
   };
 
   // Return the accept relay connection handler
@@ -455,11 +504,13 @@ export function createAcceptRelayConnection(
     let messageQueue: Promise<void> = Promise.resolve();
 
     // Connection state - requires authentication for relay connections
-    const connState: ConnectionState = createConnectionState();
+    const connState: ConnectionState = createConnectionState({
+      transport: "relay",
+    });
     connState.connectionPolicy = "srp_required";
 
     // Create WSAdapter for raw WebSocket
-    const wsAdapter = createWSAdapter(rawWs);
+    const wsAdapter = createWSAdapter(rawWs, connState);
     const send = createSendFn(wsAdapter, connState);
 
     // Wire up message handling
@@ -494,6 +545,7 @@ export function createAcceptRelayConnection(
     // Wire up close handling
     rawWs.on("close", () => {
       clearInterval(pingInterval);
+      securityClientService?.disconnect(connState.connectionId);
       cleanupConnectionState(connState);
 
       cleanupUploads(uploads, uploadManager, attachmentStagingService).catch(
@@ -514,6 +566,7 @@ export function createAcceptRelayConnection(
     // Wire up error handling
     rawWs.on("error", (err: Error) => {
       console.error("[WS Relay] WebSocket error:", err);
+      wsAdapter.close(1011, "WebSocket error");
     });
 
     // Process the first message (SRP init from phone client)

@@ -50,7 +50,8 @@ window the trim dot controls).
   of the right-side turn rail. The first loaded real turn offers **After this
   turn**; later turns offer **Before this turn** and **After this turn**.
   **After with summary…** is an explicit secondary action.
-- A stacked prompt-action rail reserves its complete action-count height and
+- The prompt-action grid chooses its one-column, two-column, or one-row shape
+  from rendered geometry and reserves that complete shape's block size. It
   remains pointer-addressable while hidden for hover. The following assistant
   turn must never cover or intercept a visible Fork control.
 - Before/After create cold, message-less targets. Before retains the completed
@@ -567,7 +568,16 @@ No-summary semantics:
 
 The alternate path must not run the generator fork, must not rewrite the typed
 text, and must not alter normal `Enter` / `Ctrl+Enter` behavior outside
-fork-after mode.
+fork-after mode. If speech capture or transcription is pending, both fork
+buttons preserve the exact visible click-time snapshot and wait for that speech
+transaction's terminal settlement. Both typed actions retain recovery ownership
+of the detached draft until settlement-time admission accepts the dispatch.
+Successful settlement dispatches once. A lifecycle failure or current-admission
+rejection restores the detached draft and creates no fork; a synchronously
+thrown typed action restores the draft before propagating its error. A spoken
+command-only generated-summary action may validly submit empty
+instructions, but it must invoke the typed generated-summary action rather than
+generic empty message submission.
 
 Wiring: `SessionPage` → `MessageList` (`onForkBeforeUserMessage`,
 `onForkAfterUserMessage`, `onCopyUserMessage`, `onTrimBeforeUserMessage`) →

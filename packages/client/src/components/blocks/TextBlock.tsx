@@ -46,6 +46,8 @@ import {
 import { renderFixedFontMath } from "../ui/FixedFontMathToggle";
 import { RenderModeGlyph } from "../ui/RenderModeGlyph";
 import { useTurnImageGalleryNavigation } from "../TurnImageGallery";
+import { useGlossaryArtifact } from "../../contexts/GlossaryContext";
+import { annotateGlossaryHtml } from "../../lib/glossary/annotateGlossaryHtml";
 import {
   findTurnInlineImageAnchor,
   getTurnInlineImageTargetForTarget,
@@ -84,17 +86,22 @@ function htmlToText(html: string): string {
 }
 
 const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
+  artifact,
   className,
   html,
 }: {
+  artifact?: import("@yep-anywhere/shared").GlossaryArtifact;
   className?: string;
   html: string;
 }) {
+  const renderedHtml = useMemo(() => {
+    return annotateGlossaryHtml(html, artifact).html;
+  }, [artifact, html]);
   return (
     <div
       className={className}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered or local trusted HTML
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: renderedHtml }}
     />
   );
 });
@@ -133,13 +140,24 @@ export const TextBlock = memo(function TextBlock({
     () => (isStreaming ? EMPTY_LOCAL_MATH_PREVIEW : renderFixedFontMath(text)),
     [isStreaming, text],
   );
+  const glossary = useGlossaryArtifact();
+  const glossaryArtifact =
+    glossary.state === "ready" && glossary.result?.status === "ready"
+      ? glossary.result.artifact
+      : undefined;
+  const transformGlossaryHtml = useCallback(
+    (html: string) => annotateGlossaryHtml(html, glossaryArtifact).html,
+    [glossaryArtifact],
+  );
   const serverMarkdownChanged = useMemo(() => {
     if (!augmentHtml) return false;
     return htmlToText(augmentHtml).trim() !== text.trim();
   }, [augmentHtml, text]);
 
   // Streaming markdown hook for server-rendered content
-  const streamingMarkdown = useStreamingMarkdown();
+  const streamingMarkdown = useStreamingMarkdown({
+    transformHtml: transformGlossaryHtml,
+  });
   const streamingContext = useStreamingMarkdownContext();
 
   // Track whether we're actively using streaming markdown (received at least one augment)
@@ -539,9 +557,13 @@ export const TextBlock = memo(function TextBlock({
         {/* Show fallback content when not actively streaming */}
         {!showStreamingContent &&
           (showRendered && augmentHtml ? (
-            <RenderedHtmlIsland html={augmentHtml} />
+            <RenderedHtmlIsland
+              artifact={glossaryArtifact}
+              html={augmentHtml}
+            />
           ) : showRendered && localMathPreview.changed ? (
             <RenderedHtmlIsland
+              artifact={glossaryArtifact}
               className="text-block-local-rendered"
               html={localMathPreview.html}
             />
@@ -594,7 +616,8 @@ export const TextBlock = memo(function TextBlock({
 
       {localFileModal && (
         <LocalFileModal
-          resource={localFileModal}
+          resource={localFileModal.resource}
+          initialPresentation={localFileModal.initialPresentation}
           onClose={closeLocalFileModal}
         />
       )}
@@ -605,6 +628,7 @@ export const TextBlock = memo(function TextBlock({
           filePath={projectFileModal.filePath}
           lineNumber={projectFileModal.lineNumber}
           lineEnd={projectFileModal.lineEnd}
+          initialPresentation={projectFileModal.initialPresentation}
           onClose={closeProjectFileModal}
         />
       )}

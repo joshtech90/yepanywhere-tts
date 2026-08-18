@@ -1,6 +1,7 @@
 import {
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
+  DEFAULT_STEER_NOW_ENABLED,
   type BusyComposerDefaultAction,
   clampPatientPatienceSeconds,
   commandMatchesInvocationQuery,
@@ -34,6 +35,8 @@ import {
   useDraftPersistence,
 } from "../hooks/useDraftPersistence";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
+import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
+import { useRecentSpeechAttribution } from "../hooks/useRecentSpeechAttribution";
 import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
@@ -47,6 +50,7 @@ import {
   clearTextareaContentsUndoably,
   countDraftLines,
   getInsertedTextForEdit,
+  isFullPaneComposerShortcut,
   replaceTextareaRangeUndoably,
   resizeComposerTextarea,
   scrollCollapsedTextareaToCursor,
@@ -56,6 +60,8 @@ import {
   filterComposerTurnRecall,
 } from "../lib/composerTurnRecall";
 import { hasCoarsePointer } from "../lib/deviceDetection";
+import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
+import { focusComposerForSpeechTransition } from "../lib/speechComposerFocus";
 import type {
   SpeechTranscriptionContext,
   SpeechTranscriptionResultMetadata,
@@ -68,16 +74,22 @@ import {
   getSpeechInterimDisplayTranscript,
   getSpeechTranscriptInsertionParts,
   getSpeechTranscriptReplacementParts,
+  getSpeechVisibleDraftText,
   mapSpeechInsertionRangeThroughEdit,
   mapSpeechInsertionRangeThroughReplacement,
-  retargetSpeechInsertionRangeReplacement,
+  retargetSpeechInsertionRange,
   type SpeechInsertionRange,
 } from "../lib/speechRecognition";
 import {
   commitSpeechTranscript,
   hasNonWhitespaceEdit,
+  type PendingSpeechRetarget,
   type PendingTextareaSelectionRestore,
 } from "../lib/speechDraftTransaction";
+import {
+  prependSpeechMessagePrefix,
+  resolveDeliverySpeechPrefix,
+} from "../lib/speechMessagePrefix";
 import {
   applyBangCompletion,
   getBangCompletionQuery,
@@ -97,15 +109,19 @@ import type {
   ProviderRuntimeStatus,
 } from "../types";
 import { AttachmentChip } from "./AttachmentChip";
+import { FullPaneComposerToggle } from "./FullPaneComposerToggle";
 import {
   MessageInputToolbar,
   type MessageInputToolbarProps,
 } from "./MessageInputToolbar";
+import { SpeechPrefixActionCue } from "./SpeechPrefixActionCue";
 import {
   VoiceInputButton,
+  type SpeechCycleSettlement,
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
+import styles from "./MessageInput.module.css";
 
 /** Progress info for an in-flight upload */
 export interface UploadProgress {
@@ -127,6 +143,10 @@ export interface MessageInputAttachment {
   previewUrl?: string;
 }
 
+export interface FullPaneComposerControls {
+  restore: () => void;
+}
+
 export interface MessageSubmissionMetadata {
   deliveryIntent: UserMessageDeliveryIntent;
   patienceSeconds?: number;
@@ -141,13 +161,51 @@ interface PendingSpeechFinal {
   metadata?: SpeechTranscriptionResultMetadata;
 }
 
+type PendingSpeechDeliveryIntent =
+  | {
+      kind: "submit";
+      actionOverride?: "send" | "steer" | "queue";
+      focusAfterSubmit: boolean;
+    }
+  | { kind: "queue" }
+  | { kind: "project-queue"; newSession: boolean }
+  | {
+      kind: "fork-summary";
+      focusAfterSubmit: boolean;
+      speechTriggered: boolean;
+    }
+  | { kind: "fork-without-summary"; focusAfterSubmit: boolean };
+
+interface SubmissionCompositionSnapshot {
+  typingStartedAt: string | null;
+  lastEditedAt: string | null;
+  speechTurnId: string | null;
+  speechTranscriptionIds: string[];
+}
+
+interface PendingSpeechDelivery {
+  intent: PendingSpeechDeliveryIntent;
+  visibleTextSnapshot: string;
+  draft: string;
+  composition: SubmissionCompositionSnapshot;
+  speechInsertionRangeRef: { current: SpeechInsertionRange | null };
+  activeSpeechTargetIdRef: { current: string | null };
+  speechInsertionRangesRef: {
+    current: Map<string, SpeechInsertionRange>;
+  };
+  pendingTextareaSelectionRef: {
+    current: PendingTextareaSelectionRestore | null;
+  };
+  pendingSpeechRetargetRef: {
+    current: PendingSpeechRetarget | null;
+  };
+}
+
 interface PendingDraftInputEdit {
   start: number;
   end: number;
   inputType?: string;
 }
-
-const MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO = 0.8;
 
 function getComposerViewportHeight(): number {
   const visualViewportHeight = window.visualViewport?.height;
@@ -187,6 +245,8 @@ interface Props {
   isRunning?: boolean;
   isThinking?: boolean;
   onStop?: () => void;
+  onDone?: () => void;
+  doneTitle?: string;
   draftKey: string; // localStorage key for draft persistence
   draftIndex?: {
     sourceKey: ClientSummarySourceKey;
@@ -194,6 +254,8 @@ interface Props {
   };
   /** Collapse to single-line but keep visible and focusable (for when approval panel is showing) */
   collapsed?: boolean;
+  /** Expose full-pane controls to a parent that coordinates adjacent UI. */
+  onFullPaneControlsReady?: (controls: FullPaneComposerControls | null) => void;
   /** Callback to receive draft controls for success/failure handling */
   onDraftControlsReady?: (controls: DraftControls) => void;
   /** Notify parent of draft edits for UI linked to the composer text. */
@@ -351,9 +413,12 @@ export function MessageInput({
   isRunning,
   isThinking,
   onStop,
+  onDone,
+  doneTitle,
   draftKey,
   draftIndex,
   collapsed: externalCollapsed,
+  onFullPaneControlsReady,
   onDraftControlsReady,
   onDraftTextChange,
   contextUsage,
@@ -414,6 +479,7 @@ export function MessageInput({
   const speechInsertionRangesRef = useRef<Map<string, SpeechInsertionRange>>(
     new Map(),
   );
+  const pendingSpeechRetargetRef = useRef<PendingSpeechRetarget | null>(null);
   const pendingSpeechFinalRef = useRef<PendingSpeechFinal | null>(null);
   const pendingDraftInputRef = useRef<PendingDraftInputEdit | null>(null);
   const draftTextChangeMetadataRef = useRef<DraftTextChangeMetadata | null>(
@@ -428,10 +494,27 @@ export function MessageInput({
   const keyboardViewportBaselineRef = useRef<number | null>(null);
   // User-controlled collapse state (independent of external collapse from approval panel)
   const [userCollapsed, setUserCollapsed] = useState(false);
+  const [fullPane, setFullPane] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
+  const interimTranscriptRef = useRef(interimTranscript);
+  interimTranscriptRef.current = interimTranscript;
   const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
     null,
   );
+  const speechPendingRef = useRef<SpeechPendingKind | null>(null);
+  const pendingSpeechDeliveryRef = useRef<PendingSpeechDelivery | null>(null);
+  const pendingSpeechDeliverySettledRef = useRef(false);
+  const speechTransactionHasTextRef = useRef(false);
+  const dispatchingSettledSpeechDeliveryRef = useRef(false);
+  const runPendingSpeechDeliveryRef = useRef<() => void>(() => {});
+  const { asrAttributionMs, speechMessagePrefix } = useSpeechCaptureSettings();
+  const {
+    active: speechAttributionActive,
+    noteSpeech: noteSpeechAttribution,
+    isRecent: isRecentSpeechAttribution,
+    consume: consumeSpeechAttribution,
+  } = useRecentSpeechAttribution(asrAttributionMs);
+  const [keyboardWaveformActive, setKeyboardWaveformActive] = useState(false);
   const [, setSpeechPreviewRevision] = useState(0);
   const [dismissedSlashQuery, setDismissedSlashQuery] = useState<string | null>(
     null,
@@ -576,7 +659,12 @@ export function MessageInput({
     ? !forkSummaryMode.submitting &&
       attachments.length === 0 &&
       uploadProgress.length === 0
-    : !!(text.trim() || attachments.length > 0);
+    : !!(
+        text.trim() ||
+        attachments.length > 0 ||
+        speechPending !== null ||
+        interimTranscript
+      );
   const speechInsertionRange = speechInsertionRangeRef.current;
   const interimDisplayTranscript = getSpeechInterimDisplayTranscript(
     text,
@@ -677,7 +765,8 @@ export function MessageInput({
   // Per-turn "now" steering toggle. The server-learned client default sets
   // its initial state (Message Delivery settings); the toggle stays per-turn
   // and a user click overrides the default for this composer.
-  const steerNowDefault = version?.clientDefaults?.steerNowDefault ?? false;
+  const steerNowDefault =
+    version?.clientDefaults?.steerNowDefault ?? DEFAULT_STEER_NOW_ENABLED;
   // Patient queue intent is a global preference (Message Delivery settings):
   // when on, a queued message waits for verified-idle before delivery instead
   // of promoting at the next end of turn.
@@ -797,17 +886,25 @@ export function MessageInput({
     }, [draftKey, ensureSpeechTurnId, projectId, sessionId]);
 
   const buildSubmissionMetadata = useCallback(
-    (deliveryIntent: UserMessageDeliveryIntent): MessageSubmissionMetadata => {
+    (
+      deliveryIntent: UserMessageDeliveryIntent,
+      snapshot?: SubmissionCompositionSnapshot,
+    ): MessageSubmissionMetadata => {
       const submittedAt = new Date().toISOString();
-      const typingStartedAt = typingStartedAtRef.current ?? submittedAt;
-      const lastEditedAt = lastEditedAtRef.current ?? typingStartedAt;
+      const typingStartedAt =
+        snapshot?.typingStartedAt ?? typingStartedAtRef.current ?? submittedAt;
+      const lastEditedAt =
+        snapshot?.lastEditedAt ?? lastEditedAtRef.current ?? typingStartedAt;
+      const speechTurnId = snapshot?.speechTurnId ?? speechTurnIdRef.current;
+      const speechTranscriptionIds =
+        snapshot?.speechTranscriptionIds ?? speechTranscriptionIdsRef.current;
       const speech: UserMessageSpeechMetadata | undefined =
-        speechTurnIdRef.current || speechTranscriptionIdsRef.current.length > 0
+        speechTurnId || speechTranscriptionIds.length > 0
           ? {
-              clientTurnId: speechTurnIdRef.current ?? undefined,
+              clientTurnId: speechTurnId ?? undefined,
               transcriptionIds:
-                speechTranscriptionIdsRef.current.length > 0
-                  ? [...speechTranscriptionIdsRef.current]
+                speechTranscriptionIds.length > 0
+                  ? [...speechTranscriptionIds]
                   : undefined,
             }
           : undefined;
@@ -1006,7 +1103,7 @@ export function MessageInput({
     if (!textarea) return;
     void text;
 
-    resizeComposerTextarea(textarea, collapsed);
+    resizeComposerTextarea(textarea, collapsed, fullPane);
 
     if (collapsed) {
       revealCollapsedTextareaCursor();
@@ -1014,7 +1111,7 @@ export function MessageInput({
     }
 
     const handleViewportResize = () => {
-      resizeComposerTextarea(textarea, false);
+      resizeComposerTextarea(textarea, false, fullPane);
     };
     window.addEventListener("resize", handleViewportResize);
     window.visualViewport?.addEventListener("resize", handleViewportResize);
@@ -1025,7 +1122,30 @@ export function MessageInput({
         handleViewportResize,
       );
     };
-  }, [collapsed, revealCollapsedTextareaCursor, text]);
+  }, [collapsed, fullPane, revealCollapsedTextareaCursor, text]);
+
+  useEffect(() => {
+    if (externalCollapsed) setFullPane(false);
+  }, [externalCollapsed]);
+
+  const restoreFullPane = useCallback(() => setFullPane(false), []);
+
+  const fullPaneControls = useMemo<FullPaneComposerControls>(
+    () => ({ restore: restoreFullPane }),
+    [restoreFullPane],
+  );
+
+  useEffect(() => {
+    onFullPaneControlsReady?.(fullPaneControls);
+    return () => onFullPaneControlsReady?.(null);
+  }, [fullPaneControls, onFullPaneControlsReady]);
+
+  const toggleFullPane = useCallback(() => {
+    if (externalCollapsed) return;
+    setUserCollapsed(false);
+    setFullPane((current) => !current);
+    textareaRef.current?.focus();
+  }, [externalCollapsed]);
 
   useEffect(() => {
     if (
@@ -1074,37 +1194,275 @@ export function MessageInput({
     }
   }, [canSubmit]);
 
+  const deferSpeechDelivery = useCallback(
+    (intent: PendingSpeechDeliveryIntent) => {
+      if (dispatchingSettledSpeechDeliveryRef.current) return false;
+      const voice = voiceButtonRef.current;
+      if (pendingSpeechDeliveryRef.current) {
+        if (voice?.isListening) voice.stopAndFinalize();
+        return true;
+      }
+      const speechWorkPending =
+        voice?.isListening === true ||
+        speechPendingRef.current !== null ||
+        pendingSpeechFinalRef.current !== null;
+      if (!speechWorkPending) {
+        pendingSpeechDeliveryRef.current = null;
+        pendingSpeechDeliverySettledRef.current = false;
+        return false;
+      }
+      // The delivery press owns the current draft and speech target. Detach
+      // both from the live composer so speech can settle without consuming
+      // text the user starts typing for the next turn. Keep the exact visible
+      // click-time projection immutable while late finals update the detached
+      // draft only for failure recovery and composition metadata.
+      const draft = controls.getDraft();
+      pendingSpeechDeliveryRef.current = {
+        intent,
+        visibleTextSnapshot: getSpeechVisibleDraftText(
+          draft,
+          interimTranscriptRef.current,
+          speechInsertionRangeRef.current,
+        ),
+        draft,
+        composition: {
+          typingStartedAt: typingStartedAtRef.current,
+          lastEditedAt: lastEditedAtRef.current,
+          speechTurnId: speechTurnIdRef.current,
+          speechTranscriptionIds: [...speechTranscriptionIdsRef.current],
+        },
+        speechInsertionRangeRef: {
+          current: speechInsertionRangeRef.current,
+        },
+        activeSpeechTargetIdRef: {
+          current: activeSpeechTargetIdRef.current,
+        },
+        speechInsertionRangesRef: {
+          current: new Map(speechInsertionRangesRef.current),
+        },
+        pendingTextareaSelectionRef: { current: null },
+        pendingSpeechRetargetRef: {
+          current: pendingSpeechRetargetRef.current,
+        },
+      };
+      pendingSpeechDeliverySettledRef.current = false;
+      speechInsertionRangeRef.current = null;
+      activeSpeechTargetIdRef.current = null;
+      speechInsertionRangesRef.current = new Map();
+      pendingSpeechRetargetRef.current = null;
+      controls.clearInput();
+      resetCompositionMetadata();
+      interimTranscriptRef.current = "";
+      setInterimTranscript("");
+      if (voice?.isListening) voice.stopAndFinalize();
+      return true;
+    },
+    [controls, resetCompositionMetadata],
+  );
+
+  const handleForkSummarySubmit = useCallback(
+    (
+      messageOverride?: unknown,
+      focusAfterSubmit = true,
+      speechTriggered = false,
+      preserveComposer = false,
+    ) => {
+      if (
+        !forkSummaryMode ||
+        disabled ||
+        attachments.length > 0 ||
+        uploadProgress.length > 0
+      ) {
+        return false;
+      }
+      const override =
+        typeof messageOverride === "string" ? messageOverride : undefined;
+      if (
+        override === undefined &&
+        deferSpeechDelivery({
+          kind: "fork-summary",
+          focusAfterSubmit,
+          speechTriggered,
+        })
+      ) {
+        return true;
+      }
+
+      const instructions = (override ?? controls.getDraft()).trim();
+      const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
+        configuredPrefix: speechMessagePrefix,
+        speechTriggered,
+        recentSpeech: isRecentSpeechAttribution(),
+      });
+      if (!preserveComposer) {
+        controls.clearInput();
+        resetCompositionMetadata();
+        setInterimTranscript("");
+      }
+      forkSummaryMode.onSubmit(
+        instructions
+          ? prependSpeechMessagePrefix(instructions, deliverySpeechPrefix)
+          : instructions,
+      );
+      consumeSpeechAttribution();
+      if (focusAfterSubmit) {
+        textareaRef.current?.focus();
+      } else {
+        textareaRef.current?.blur();
+      }
+      return true;
+    },
+    [
+      attachments.length,
+      consumeSpeechAttribution,
+      controls,
+      deferSpeechDelivery,
+      disabled,
+      forkSummaryMode,
+      isRecentSpeechAttribution,
+      resetCompositionMetadata,
+      speechMessagePrefix,
+      uploadProgress.length,
+    ],
+  );
+
+  const handleForkWithoutSummary = useCallback(
+    (
+      messageOverride?: unknown,
+      focusAfterSubmit = true,
+      preserveComposer = false,
+    ) => {
+      if (
+        !forkSummaryMode?.onSubmitWithoutSummary ||
+        disabled ||
+        attachments.length > 0 ||
+        uploadProgress.length > 0
+      ) {
+        return false;
+      }
+      const override =
+        typeof messageOverride === "string" ? messageOverride : undefined;
+      if (
+        override === undefined &&
+        deferSpeechDelivery({ kind: "fork-without-summary", focusAfterSubmit })
+      ) {
+        return true;
+      }
+
+      const finalText = override ?? controls.getDraft();
+      const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
+        configuredPrefix: speechMessagePrefix,
+        speechTriggered: false,
+        recentSpeech: isRecentSpeechAttribution(),
+      });
+      if (!preserveComposer) {
+        controls.clearInput();
+        resetCompositionMetadata();
+        setInterimTranscript("");
+      }
+      forkSummaryMode.onSubmitWithoutSummary(
+        deliverySpeechPrefix
+          ? prependSpeechMessagePrefix(finalText, deliverySpeechPrefix)
+          : finalText,
+      );
+      consumeSpeechAttribution();
+      if (focusAfterSubmit) {
+        textareaRef.current?.focus();
+      } else {
+        textareaRef.current?.blur();
+      }
+      return true;
+    },
+    [
+      attachments.length,
+      consumeSpeechAttribution,
+      controls,
+      deferSpeechDelivery,
+      disabled,
+      forkSummaryMode,
+      isRecentSpeechAttribution,
+      resetCompositionMetadata,
+      speechMessagePrefix,
+      uploadProgress.length,
+    ],
+  );
+
+  const handleSyntheticDoneSubmission = useCallback(
+    (
+      finalText: string,
+      preserveComposer = false,
+      focusAfterSubmit = true,
+    ): boolean => {
+      if (
+        !onDone ||
+        disabled ||
+        finalText.trim() !== "/done" ||
+        attachments.length > 0 ||
+        uploadProgress.length > 0
+      ) {
+        return false;
+      }
+      if (!preserveComposer) {
+        controls.clearInput();
+        resetCompositionMetadata();
+        setInterimTranscript("");
+      }
+      onDone();
+      if (focusAfterSubmit) {
+        textareaRef.current?.focus();
+      } else {
+        textareaRef.current?.blur();
+      }
+      return true;
+    },
+    [
+      attachments.length,
+      controls,
+      disabled,
+      onDone,
+      resetCompositionMetadata,
+      uploadProgress.length,
+    ],
+  );
+
   const handleSubmit = useCallback(
     async (
       messageOverride?: unknown,
       actionOverride?: "send" | "steer" | "queue",
+      focusAfterSubmit = true,
+      speechTriggered = false,
+      submissionSnapshot?: SubmissionCompositionSnapshot,
+      preserveComposer = false,
     ) => {
       const override =
         typeof messageOverride === "string" ? messageOverride : undefined;
-      // Stop voice recording and get any pending interim text
-      const pendingVoice =
-        override === undefined
-          ? (voiceButtonRef.current?.stopAndFinalize() ?? "")
-          : "";
-
-      // Combine committed text with any pending voice text
-      let finalText = (override ?? controls.getDraft()).trimEnd();
-      if (pendingVoice) {
-        finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
+      if (
+        override === undefined &&
+        deferSpeechDelivery({
+          kind: "submit",
+          actionOverride,
+          focusAfterSubmit,
+        })
+      ) {
+        return;
       }
 
-      if (forkSummaryMode) {
-        if (
-          !disabled &&
-          attachments.length === 0 &&
-          uploadProgress.length === 0
-        ) {
-          controls.clearInput();
-          resetCompositionMetadata();
-          setInterimTranscript("");
-          forkSummaryMode.onSubmit(finalText.trim());
-          textareaRef.current?.focus();
-        }
+      let finalText = (override ?? controls.getDraft()).trimEnd();
+      const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
+        configuredPrefix: speechMessagePrefix,
+        speechTriggered,
+        recentSpeech: isRecentSpeechAttribution(),
+      });
+
+      if (forkSummaryMode) return;
+
+      if (
+        handleSyntheticDoneSubmission(
+          finalText,
+          preserveComposer,
+          focusAfterSubmit,
+        )
+      ) {
         return;
       }
 
@@ -1116,9 +1474,11 @@ export function MessageInput({
         if (bangDraft.kind === "bang" && !disabled) {
           try {
             await bangSupport.onRun(bangDraft.command);
-            controls.clearInput();
-            resetCompositionMetadata();
-            setInterimTranscript("");
+            if (!preserveComposer) {
+              controls.clearInput();
+              resetCompositionMetadata();
+              setInterimTranscript("");
+            }
           } catch {
             // The owner surfaces the run failure; retain the draft for retry.
           }
@@ -1132,7 +1492,10 @@ export function MessageInput({
 
       const hasContent = finalText.trim() || attachments.length > 0;
       if (hasContent && !disabled) {
-        const message = finalText.trim();
+        const message = prependSpeechMessagePrefix(
+          finalText,
+          deliverySpeechPrefix,
+        );
         const actionKind = actionOverride ?? effectivePrimaryActionKind;
         const deliveryIntent =
           actionKind === "steer"
@@ -1140,14 +1503,25 @@ export function MessageInput({
             : actionKind === "queue"
               ? "deferred"
               : "direct";
-        const metadata = buildSubmissionMetadata(deliveryIntent);
-        // Clear input state but keep localStorage for failure recovery
-        controls.clearInput();
-        resetCompositionMetadata();
-        setInterimTranscript("");
+        const metadata = buildSubmissionMetadata(
+          deliveryIntent,
+          submissionSnapshot,
+        );
+        // A settled speech delivery owns its detached draft. The live composer
+        // may already contain the next turn and must remain untouched.
+        if (!preserveComposer) {
+          controls.clearInput();
+          resetCompositionMetadata();
+          setInterimTranscript("");
+        }
         onSend(message, metadata);
-        // Refocus the textarea so user can continue typing
-        textareaRef.current?.focus();
+        consumeSpeechAttribution();
+        if (focusAfterSubmit) {
+          // Refocus the textarea so user can continue typing.
+          textareaRef.current?.focus();
+        } else {
+          textareaRef.current?.blur();
+        }
       }
     },
     [
@@ -1155,12 +1529,16 @@ export function MessageInput({
       controls,
       onSend,
       attachments.length,
-      uploadProgress.length,
       effectivePrimaryActionKind,
       buildSubmissionMetadata,
       resetCompositionMetadata,
       forkSummaryMode,
+      handleSyntheticDoneSubmission,
       bangSupport,
+      consumeSpeechAttribution,
+      deferSpeechDelivery,
+      isRecentSpeechAttribution,
+      speechMessagePrefix,
     ],
   );
 
@@ -1168,95 +1546,106 @@ export function MessageInput({
     handleSubmit(undefined, "steer");
   }, [handleSubmit]);
 
-  const handleForkWithoutSummary = useCallback(() => {
-    if (
-      !forkSummaryMode?.onSubmitWithoutSummary ||
-      disabled ||
-      attachments.length > 0 ||
-      uploadProgress.length > 0
-    ) {
-      return;
-    }
-    const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
-    let finalText = controls.getDraft();
-    if (pendingVoice) {
-      const textBeforeVoice = finalText.trimEnd();
-      finalText = textBeforeVoice
-        ? `${textBeforeVoice} ${pendingVoice}`
-        : pendingVoice;
-    }
-    controls.clearInput();
-    resetCompositionMetadata();
-    setInterimTranscript("");
-    forkSummaryMode.onSubmitWithoutSummary(finalText);
-    textareaRef.current?.focus();
-  }, [
-    attachments.length,
-    controls,
-    disabled,
-    forkSummaryMode,
-    resetCompositionMetadata,
-    uploadProgress.length,
-  ]);
+  const handleQueue = useCallback(
+    (
+      messageOverride?: unknown,
+      submissionSnapshot?: SubmissionCompositionSnapshot,
+      preserveComposer = false,
+    ) => {
+      const override =
+        typeof messageOverride === "string" ? messageOverride : undefined;
+      const queueHandler =
+        onQueue ??
+        (effectivePrimaryActionKind === "queue" ? onSend : undefined);
+      if (override === undefined && deferSpeechDelivery({ kind: "queue" })) {
+        return;
+      }
 
-  const handleQueue = useCallback(() => {
-    const queueHandler =
-      onQueue ?? (effectivePrimaryActionKind === "queue" ? onSend : undefined);
+      const finalText = (override ?? controls.getDraft()).trimEnd();
 
-    // Stop voice recording and get any pending interim text
-    const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
+      if (handleSyntheticDoneSubmission(finalText, preserveComposer)) {
+        return;
+      }
 
-    let finalText = controls.getDraft().trimEnd();
-    if (pendingVoice) {
-      finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
-    }
-
-    const hasContent = finalText.trim() || attachments.length > 0;
-    if (hasContent && !disabled && queueHandler) {
-      const metadata = buildSubmissionMetadata(
-        patientQueueEnabled ? "patient" : "deferred",
-      );
-      controls.clearInput();
-      resetCompositionMetadata();
-      setInterimTranscript("");
-      queueHandler(finalText.trim(), metadata);
-      textareaRef.current?.focus();
-    }
-  }, [
-    disabled,
-    controls,
-    onQueue,
-    onSend,
-    effectivePrimaryActionKind,
-    patientQueueEnabled,
-    attachments.length,
-    buildSubmissionMetadata,
-    resetCompositionMetadata,
-  ]);
+      const hasContent = finalText.trim() || attachments.length > 0;
+      if (hasContent && !disabled && queueHandler) {
+        const metadata = buildSubmissionMetadata(
+          patientQueueEnabled ? "patient" : "deferred",
+          submissionSnapshot,
+        );
+        if (!preserveComposer) {
+          controls.clearInput();
+          resetCompositionMetadata();
+          setInterimTranscript("");
+        }
+        const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
+          configuredPrefix: speechMessagePrefix,
+          speechTriggered: false,
+          recentSpeech: isRecentSpeechAttribution(),
+        });
+        queueHandler(
+          prependSpeechMessagePrefix(finalText, deliverySpeechPrefix),
+          metadata,
+        );
+        consumeSpeechAttribution();
+        textareaRef.current?.focus();
+      }
+    },
+    [
+      disabled,
+      controls,
+      onQueue,
+      onSend,
+      effectivePrimaryActionKind,
+      handleSyntheticDoneSubmission,
+      patientQueueEnabled,
+      attachments.length,
+      buildSubmissionMetadata,
+      consumeSpeechAttribution,
+      deferSpeechDelivery,
+      isRecentSpeechAttribution,
+      resetCompositionMetadata,
+      speechMessagePrefix,
+    ],
+  );
 
   const submitToProjectQueue = useCallback(
     (
       submit:
         | ((text: string, metadata?: MessageSubmissionMetadata) => void)
         | undefined,
+      messageOverride?: string,
+      submissionSnapshot?: SubmissionCompositionSnapshot,
+      preserveComposer = false,
     ) => {
       if (!submit) return;
+      const finalText = (messageOverride ?? controls.getDraft()).trimEnd();
 
-      // Stop voice recording and get any pending interim text
-      const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
-
-      let finalText = controls.getDraft().trimEnd();
-      if (pendingVoice) {
-        finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
+      if (handleSyntheticDoneSubmission(finalText, preserveComposer)) {
+        return;
       }
 
       const hasContent = finalText.trim() || attachments.length > 0;
       if (hasContent && !disabled) {
-        const metadata = buildSubmissionMetadata("deferred");
-        controls.clearInput();
-        resetCompositionMetadata();
-        setInterimTranscript("");
-        submit(finalText.trim(), metadata);
+        const metadata = buildSubmissionMetadata(
+          "deferred",
+          submissionSnapshot,
+        );
+        const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
+          configuredPrefix: speechMessagePrefix,
+          speechTriggered: false,
+          recentSpeech: isRecentSpeechAttribution(),
+        });
+        if (!preserveComposer) {
+          controls.clearInput();
+          resetCompositionMetadata();
+          setInterimTranscript("");
+        }
+        submit(
+          prependSpeechMessagePrefix(finalText, deliverySpeechPrefix),
+          metadata,
+        );
+        consumeSpeechAttribution();
         textareaRef.current?.focus();
       }
     },
@@ -1264,27 +1653,136 @@ export function MessageInput({
       attachments.length,
       buildSubmissionMetadata,
       controls,
+      consumeSpeechAttribution,
       disabled,
+      handleSyntheticDoneSubmission,
+      isRecentSpeechAttribution,
       resetCompositionMetadata,
+      speechMessagePrefix,
     ],
   );
 
   const handleProjectQueue = useCallback(() => {
+    if (deferSpeechDelivery({ kind: "project-queue", newSession: false })) {
+      return;
+    }
     submitToProjectQueue(onProjectQueue);
-  }, [onProjectQueue, submitToProjectQueue]);
+  }, [deferSpeechDelivery, onProjectQueue, submitToProjectQueue]);
 
   const handleProjectQueueNewSession = useCallback(() => {
+    if (deferSpeechDelivery({ kind: "project-queue", newSession: true })) {
+      return;
+    }
     submitToProjectQueue(onProjectQueueNewSession);
-  }, [onProjectQueueNewSession, submitToProjectQueue]);
+  }, [deferSpeechDelivery, onProjectQueueNewSession, submitToProjectQueue]);
+
+  const restorePendingSpeechDeliveryDraft = useCallback(() => {
+    const pending = pendingSpeechDeliveryRef.current;
+    if (!pending) return false;
+    pendingSpeechDeliveryRef.current = null;
+    pendingSpeechDeliverySettledRef.current = false;
+    const pendingDraft = pending.draft;
+    const liveDraft = controls.getDraft();
+    if (pendingDraft) {
+      controls.setDraft(
+        liveDraft ? `${pendingDraft}\n\n${liveDraft}` : pendingDraft,
+      );
+    }
+    return true;
+  }, [controls]);
+
+  const runPendingSpeechDelivery = useCallback(() => {
+    if (
+      speechPendingRef.current !== null ||
+      pendingSpeechFinalRef.current !== null
+    ) {
+      return;
+    }
+    if (!pendingSpeechDeliverySettledRef.current) return;
+    const pending = pendingSpeechDeliveryRef.current;
+    if (!pending) return;
+    const typedForkPending =
+      pending.intent.kind === "fork-summary" ||
+      pending.intent.kind === "fork-without-summary";
+    const clearPendingOwner = () => {
+      pendingSpeechDeliveryRef.current = null;
+      pendingSpeechDeliverySettledRef.current = false;
+    };
+    if (!typedForkPending) clearPendingOwner();
+    dispatchingSettledSpeechDeliveryRef.current = true;
+    try {
+      if (pending.intent.kind === "queue") {
+        handleQueue(pending.visibleTextSnapshot, pending.composition, true);
+        return;
+      }
+      if (pending.intent.kind === "project-queue") {
+        submitToProjectQueue(
+          pending.intent.newSession ? onProjectQueueNewSession : onProjectQueue,
+          pending.visibleTextSnapshot,
+          pending.composition,
+          true,
+        );
+        return;
+      }
+      if (pending.intent.kind === "fork-summary") {
+        const accepted = handleForkSummarySubmit(
+          pending.visibleTextSnapshot,
+          pending.intent.focusAfterSubmit,
+          pending.intent.speechTriggered,
+          true,
+        );
+        if (accepted) clearPendingOwner();
+        else restorePendingSpeechDeliveryDraft();
+        return;
+      }
+      if (pending.intent.kind === "fork-without-summary") {
+        const accepted = handleForkWithoutSummary(
+          pending.visibleTextSnapshot,
+          pending.intent.focusAfterSubmit,
+          true,
+        );
+        if (accepted) clearPendingOwner();
+        else restorePendingSpeechDeliveryDraft();
+        return;
+      }
+      void handleSubmit(
+        pending.visibleTextSnapshot,
+        pending.intent.actionOverride,
+        pending.intent.focusAfterSubmit,
+        false,
+        pending.composition,
+        true,
+      );
+    } catch (error) {
+      if (typedForkPending) restorePendingSpeechDeliveryDraft();
+      throw error;
+    } finally {
+      dispatchingSettledSpeechDeliveryRef.current = false;
+    }
+  }, [
+    handleForkSummarySubmit,
+    handleForkWithoutSummary,
+    handleQueue,
+    handleSubmit,
+    onProjectQueue,
+    onProjectQueueNewSession,
+    restorePendingSpeechDeliveryDraft,
+    submitToProjectQueue,
+  ]);
+  runPendingSpeechDeliveryRef.current = runPendingSpeechDelivery;
+
+  const maybeRunPendingSpeechDelivery = useCallback(() => {
+    runPendingSpeechDeliveryRef.current();
+  }, []);
 
   const handleBtwClick = useCallback(() => {
     if (disabled || !onBtwShortcut) return;
     const pendingVoice = voiceButtonRef.current?.stopAndFinalize() ?? "";
-    let finalText = controls.getDraft().trimEnd();
-    if (pendingVoice) {
-      finalText = finalText ? `${finalText} ${pendingVoice}` : pendingVoice;
-    }
-    const message = finalText.trim();
+    const message = getSpeechVisibleDraftText(
+      controls.getDraft(),
+      pendingVoice,
+      speechInsertionRangeRef.current,
+    ).trim();
     if (onBtwShortcut(message) && message) {
       controls.clearInput();
       resetCompositionMetadata();
@@ -1294,10 +1792,50 @@ export function MessageInput({
   }, [controls, disabled, onBtwShortcut, resetCompositionMetadata]);
 
   const submitPrimaryAction = forkSummaryMode
-    ? handleSubmit
+    ? handleForkSummarySubmit
     : effectivePrimaryActionKind === "queue"
       ? handleQueue
       : handleSubmit;
+  const visibleDeliveryDraft = getSpeechVisibleDraftText(
+    controls.getDraft(),
+    interimTranscript,
+    speechInsertionRangeRef.current,
+  );
+  const primaryRunsLocalBang =
+    !!bangSupport &&
+    resolveComposerBangDraft(visibleDeliveryDraft).kind === "bang";
+  const manualDeliverySpeechPrefix =
+    speechMessagePrefix &&
+    asrAttributionMs > 0 &&
+    (speechAttributionActive ||
+      ((speechPending !== null || pendingSpeechDeliveryRef.current !== null) &&
+        (speechTransactionHasTextRef.current ||
+          interimTranscript.trim().length > 0)))
+      ? speechMessagePrefix
+      : null;
+  const primaryDeliverySpeechPrefix = primaryRunsLocalBang
+    ? null
+    : manualDeliverySpeechPrefix;
+  const describePrefixedDelivery = (
+    action: string,
+    prefix = manualDeliverySpeechPrefix,
+  ) =>
+    prefix
+      ? t("speechPrefixDeliveryLabel", {
+          action,
+          prefix,
+        })
+      : action;
+  const describePrefixedTooltip = (
+    tooltip: string,
+    prefix = manualDeliverySpeechPrefix,
+  ) =>
+    prefix
+      ? t("speechPrefixDeliveryTooltip", {
+          tooltip,
+          prefix,
+        })
+      : tooltip;
   const forkSummaryAlternateLabel =
     forkSummaryMode?.noSummarySubmitLabel ?? t("forkSummaryNoSummarySubmit");
   const mobileKeyboardAlternateAction = forkSummaryMode?.onSubmitWithoutSummary
@@ -1325,19 +1863,20 @@ export function MessageInput({
             onClick: handleQueue,
           }
       : null;
-  // Keep the keyboard-open primary action's hit area stable while live session
-  // and project state changes. These potential-action slots stay in the row
-  // even before their buttons become useful, so Queue or Project Queue can
-  // appear without taking space out from under Send/Steer.
-  const reserveMobileProjectQueueSlot =
-    !forkSummaryMode && projectQueueSupported && toolbarVisibility.projectQueue;
-  const reserveMobileProjectQueueNewSessionSlot =
+  // Render session actions only when they are useful, so a neighboring visible
+  // action can absorb their space while the session is inactive.
+  const showMobileProjectQueueAction =
+    !forkSummaryMode &&
+    projectQueueSupported &&
+    toolbarVisibility.projectQueue &&
+    !!onProjectQueue;
+  const showMobileProjectQueueNewSessionAction =
     !forkSummaryMode &&
     projectQueueSupported &&
     toolbarVisibility.projectQueueNewSessionShortcut &&
     !!onProjectQueueNewSession;
-  const reserveMobileSessionAlternateSlot =
-    !forkSummaryMode && supportsSteering;
+  const showMobileSessionAlternateAction =
+    !forkSummaryMode && supportsSteering && !!mobileKeyboardAlternateAction;
   const collapsedActionKind =
     collapsedComposerButton === "alternate" && hasActiveDualActions
       ? effectivePrimaryActionKind === "queue"
@@ -1577,6 +2116,26 @@ export function MessageInput({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (isFullPaneComposerShortcut(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFullPane();
+      return;
+    }
+
+    if (fullPane && e.key === "Enter") {
+      if (e.nativeEvent.isComposing) return;
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (forkSummaryMode) {
+          handleForkSummarySubmit();
+        } else {
+          void handleSubmit(undefined, "send");
+        }
+      }
+      return;
+    }
+
     // Ctrl+↑/↓: shell-style recall of prior bang commands.
     if (
       e.key === "ArrowUp" &&
@@ -1790,8 +2349,7 @@ export function MessageInput({
     ) {
       e.preventDefault();
       e.stopPropagation();
-      handleListeningStop();
-      voiceButtonRef.current.stopAndFinalize();
+      voiceButtonRef.current.toggle();
       return;
     }
 
@@ -2038,6 +2596,7 @@ export function MessageInput({
 
   // Voice input handlers
   const handleListeningStart = useCallback(() => {
+    speechTransactionHasTextRef.current = false;
     const textarea = textareaRef.current;
     const currentText = controls.getDraft();
     const selectionStart = Math.max(
@@ -2057,11 +2616,13 @@ export function MessageInput({
     speechInsertionRangeRef.current = range;
     speechInsertionRangesRef.current.set(targetId, range);
     pendingTextareaSelectionRef.current = null;
+    pendingSpeechRetargetRef.current = null;
     composerEditedDuringSpeechRef.current = false;
     if (textarea) {
-      textarea.focus();
+      focusComposerForSpeechTransition(textarea);
       textarea.setSelectionRange(selectionStart, selectionEnd);
     }
+    interimTranscriptRef.current = "";
     setInterimTranscript("");
   }, [controls]);
 
@@ -2074,15 +2635,57 @@ export function MessageInput({
 
   useEffect(() => clearPendingSpeechFinal, [clearPendingSpeechFinal]);
 
-  const handleSpeechSelectionTarget = useCallback(() => {
-    const textarea = textareaRef.current;
-    const range = speechInsertionRangeRef.current;
-    if (!textarea || !range) return;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-    if (selectionStart === selectionEnd) {
-      clearPendingSpeechFinal();
-      const nextRange = clearSpeechInsertionRangeReplacement(range);
+  const handleSpeechSelectionTarget = useCallback(
+    (manualInteraction = false, draftAtSelection?: string) => {
+      const textarea = textareaRef.current;
+      const range = speechInsertionRangeRef.current;
+      if (!textarea || !range) return;
+      const selectionStart = textarea.selectionStart;
+      const selectionEnd = textarea.selectionEnd;
+      const getNextRange = (
+        currentRange: SpeechInsertionRange,
+      ): SpeechInsertionRange => {
+        if (selectionStart === selectionEnd) {
+          return speechPendingRef.current === "listening"
+            ? retargetSpeechInsertionRange(
+                currentRange,
+                selectionStart,
+                selectionEnd,
+              )
+            : clearSpeechInsertionRangeReplacement(currentRange);
+        }
+        if (
+          currentRange.replaceSelectedAtMs === undefined &&
+          currentRange.end === selectionStart &&
+          currentRange.replaceEnd === selectionEnd
+        ) {
+          return currentRange;
+        }
+        return retargetSpeechInsertionRange(
+          currentRange,
+          selectionStart,
+          selectionEnd,
+        );
+      };
+
+      if (selectionStart === selectionEnd) clearPendingSpeechFinal();
+      const hasVisibleInterim = interimTranscriptRef.current.trim().length > 0;
+      if (
+        manualInteraction &&
+        (hasVisibleInterim || pendingSpeechRetargetRef.current !== null)
+      ) {
+        pendingSpeechRetargetRef.current = {
+          draft: draftAtSelection ?? controls.getDraft(),
+          start: selectionStart,
+          end: selectionEnd,
+        };
+        return;
+      }
+
+      const nextRange = getNextRange(range);
+      if (speechPendingRef.current === "listening" && nextRange !== range) {
+        voiceButtonRef.current?.beginInsertionBoundary();
+      }
       speechInsertionRangeRef.current = nextRange;
       if (activeSpeechTargetIdRef.current) {
         speechInsertionRangesRef.current.set(
@@ -2091,35 +2694,19 @@ export function MessageInput({
         );
       }
       setSpeechPreviewRevision((revision) => revision + 1);
-      return;
-    }
-    if (
-      range.replaceSelectedAtMs === undefined &&
-      range.end === selectionStart &&
-      range.replaceEnd === selectionEnd
-    ) {
-      return;
-    }
-    const nextRange = retargetSpeechInsertionRangeReplacement(
-      range,
-      selectionStart,
-      selectionEnd,
-    );
-    speechInsertionRangeRef.current = nextRange;
-    if (activeSpeechTargetIdRef.current) {
-      speechInsertionRangesRef.current.set(
-        activeSpeechTargetIdRef.current,
-        nextRange,
-      );
-    }
-    setSpeechPreviewRevision((revision) => revision + 1);
-  }, [clearPendingSpeechFinal]);
+    },
+    [clearPendingSpeechFinal, controls],
+  );
 
   const handleTextareaSelectionTarget = useCallback(() => {
-    handleSpeechSelectionTarget();
+    handleSpeechSelectionTarget(true);
     setComposerCursor(textareaRef.current?.selectionStart ?? text.length);
     revealCollapsedTextareaCursor();
   }, [handleSpeechSelectionTarget, revealCollapsedTextareaCursor, text.length]);
+
+  const handleTextareaClickTarget = useCallback(() => {
+    window.setTimeout(handleTextareaSelectionTarget, 0);
+  }, [handleTextareaSelectionTarget]);
 
   const clearSpeechSelectionTarget = useCallback(() => {
     clearPendingSpeechFinal();
@@ -2137,56 +2724,152 @@ export function MessageInput({
     setSpeechPreviewRevision((revision) => revision + 1);
   }, [clearPendingSpeechFinal]);
 
+  const handleSmartTurnSend = useCallback(
+    (text: string) => {
+      if (forkSummaryMode) {
+        if (!handleForkSummarySubmit(text, !hasCoarsePointer(), true)) {
+          return false;
+        }
+      } else {
+        if (disabled || (!text.trim() && attachments.length === 0))
+          return false;
+        void handleSubmit(text, undefined, !hasCoarsePointer(), true);
+      }
+      voiceButtonRef.current?.continueAfterSpeechSend();
+      return true;
+    },
+    [
+      attachments.length,
+      disabled,
+      forkSummaryMode,
+      handleForkSummarySubmit,
+      handleSubmit,
+    ],
+  );
+
   const commitVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      commitSpeechTranscript(
+      if (transcript.trim() && metadata?.smartTurnCommand !== "cancel") {
+        speechTransactionHasTextRef.current = true;
+        noteSpeechAttribution();
+      }
+      pendingSpeechDeliverySettledRef.current = true;
+      const pendingDelivery = pendingSpeechDeliveryRef.current;
+      const pendingTargetId = metadata?.speechTargetId;
+      const commitsPendingDelivery =
+        pendingDelivery !== null &&
+        (pendingTargetId
+          ? pendingDelivery.speechInsertionRangesRef.current.has(
+              pendingTargetId,
+            )
+          : pendingDelivery.activeSpeechTargetIdRef.current !== null);
+      const targetInsertionRangeRef = commitsPendingDelivery
+        ? pendingDelivery.speechInsertionRangeRef
+        : speechInsertionRangeRef;
+      const targetActiveSpeechTargetIdRef = commitsPendingDelivery
+        ? pendingDelivery.activeSpeechTargetIdRef
+        : activeSpeechTargetIdRef;
+      const targetInsertionRangesRef = commitsPendingDelivery
+        ? pendingDelivery.speechInsertionRangesRef
+        : speechInsertionRangesRef;
+      const targetPendingSelectionRef = commitsPendingDelivery
+        ? pendingDelivery.pendingTextareaSelectionRef
+        : pendingTextareaSelectionRef;
+      const targetPendingSpeechRetargetRef = commitsPendingDelivery
+        ? pendingDelivery.pendingSpeechRetargetRef
+        : pendingSpeechRetargetRef;
+      const outcome = commitSpeechTranscript(
         {
-          textareaRef,
-          getDraft: controls.getDraft,
-          setDraft: controls.setDraft,
-          setInterimTranscript,
-          speechInsertionRangeRef,
-          activeSpeechTargetIdRef,
-          speechInsertionRangesRef,
-          pendingTextareaSelectionRef,
-          onEdit: noteComposerEdit,
-          onTranscriptionId: (id) => {
-            speechTranscriptionIdsRef.current = [
-              ...speechTranscriptionIdsRef.current,
-              id,
-            ];
+          textareaRef: commitsPendingDelivery ? { current: null } : textareaRef,
+          getDraft: commitsPendingDelivery
+            ? () => pendingDelivery.draft
+            : controls.getDraft,
+          setDraft: commitsPendingDelivery
+            ? (next) => {
+                pendingDelivery.draft = next;
+              }
+            : controls.setDraft,
+          setInterimTranscript: (next) => {
+            if (commitsPendingDelivery) return;
+            interimTranscriptRef.current = next;
+            setInterimTranscript(next);
           },
-          onSmartTurnSend: handleSubmit,
-          composerEditedDuringSpeech: () =>
-            composerEditedDuringSpeechRef.current,
+          speechInsertionRangeRef: targetInsertionRangeRef,
+          activeSpeechTargetIdRef: targetActiveSpeechTargetIdRef,
+          speechInsertionRangesRef: targetInsertionRangesRef,
+          pendingTextareaSelectionRef: targetPendingSelectionRef,
+          pendingSpeechRetargetRef: targetPendingSpeechRetargetRef,
+          onInsertionBoundary: commitsPendingDelivery
+            ? () => {}
+            : () => voiceButtonRef.current?.beginInsertionBoundary(),
+          onSpeechTargetChanged: commitsPendingDelivery
+            ? () => {}
+            : () => setSpeechPreviewRevision((revision) => revision + 1),
+          onEdit: commitsPendingDelivery ? undefined : noteComposerEdit,
+          onTranscriptionId: (id) => {
+            if (commitsPendingDelivery) {
+              pendingDelivery.composition.speechTranscriptionIds = [
+                ...pendingDelivery.composition.speechTranscriptionIds,
+                id,
+              ];
+            } else {
+              speechTranscriptionIdsRef.current = [
+                ...speechTranscriptionIdsRef.current,
+                id,
+              ];
+            }
+          },
+          onSmartTurnSend: commitsPendingDelivery
+            ? undefined
+            : handleSmartTurnSend,
+          composerEditedDuringSpeech: commitsPendingDelivery
+            ? undefined
+            : () => composerEditedDuringSpeechRef.current,
         },
         transcript,
         metadata,
       );
+      maybeRunPendingSpeechDelivery();
       // An overlapping (non-active) target's batch result has now landed;
       // forget its range. The active target is forgotten on the pending->null
       // transition instead (it may still get more streaming finals).
       const committedTargetId = metadata?.speechTargetId;
       if (
         committedTargetId &&
-        committedTargetId !== activeSpeechTargetIdRef.current &&
-        speechInsertionRangesRef.current.delete(committedTargetId)
+        committedTargetId !== targetActiveSpeechTargetIdRef.current &&
+        targetInsertionRangesRef.current.delete(committedTargetId)
       ) {
         setSpeechPreviewRevision((revision) => revision + 1);
       }
+      return outcome;
     },
-    [controls, handleSubmit, noteComposerEdit],
+    [
+      controls,
+      handleSmartTurnSend,
+      maybeRunPendingSpeechDelivery,
+      noteComposerEdit,
+      noteSpeechAttribution,
+    ],
   );
-
   const handleVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      const speechRange = metadata?.speechTargetId
-        ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ??
-          null)
-        : speechInsertionRangeRef.current;
+      const pendingDelivery = pendingSpeechDeliveryRef.current;
+      const pendingRange = metadata?.speechTargetId
+        ? (pendingDelivery?.speechInsertionRangesRef.current.get(
+            metadata.speechTargetId,
+          ) ?? null)
+        : (pendingDelivery?.speechInsertionRangeRef.current ?? null);
+      const speechRange =
+        pendingRange ??
+        (metadata?.speechTargetId
+          ? (speechInsertionRangesRef.current.get(metadata.speechTargetId) ??
+            null)
+          : speechInsertionRangeRef.current);
       const delayMs = metadata?.smartTurnCommand
         ? 0
-        : getSpeechSelectionFinalDelayMs(speechRange);
+        : pendingSpeechRetargetRef.current
+          ? 0
+          : getSpeechSelectionFinalDelayMs(speechRange);
       if (delayMs > 0) {
         clearPendingSpeechFinal();
         const timer = setTimeout(() => {
@@ -2200,7 +2883,7 @@ export function MessageInput({
       }
 
       clearPendingSpeechFinal();
-      commitVoiceTranscript(transcript, metadata);
+      return commitVoiceTranscript(transcript, metadata);
     },
     [clearPendingSpeechFinal, commitVoiceTranscript],
   );
@@ -2214,17 +2897,40 @@ export function MessageInput({
   }, [commitVoiceTranscript]);
 
   const handleListeningStop = useCallback(() => {
+    const visibleInterim = getSpeechInterimDisplayTranscript(
+      controls.getDraft(),
+      interimTranscriptRef.current,
+      speechInsertionRangeRef.current,
+    );
     flushPendingSpeechFinal();
+    if (visibleInterim) commitVoiceTranscript(visibleInterim);
+    pendingSpeechRetargetRef.current = null;
+    interimTranscriptRef.current = "";
     setInterimTranscript("");
-    textareaRef.current?.focus();
-  }, [flushPendingSpeechFinal]);
+    focusComposerForSpeechTransition(textareaRef.current);
+    return Boolean(visibleInterim);
+  }, [commitVoiceTranscript, controls, flushPendingSpeechFinal]);
 
   const handleInterimTranscript = useCallback((transcript: string) => {
+    interimTranscriptRef.current = transcript;
     setInterimTranscript(transcript);
   }, []);
 
   const handlePendingSpeechChange = useCallback(
-    (kind: SpeechPendingKind | null) => {
+    (kind: SpeechPendingKind | null, settlement?: SpeechCycleSettlement) => {
+      if (settlement === "failed") {
+        restorePendingSpeechDeliveryDraft();
+      } else if (settlement === "completed") {
+        if (
+          pendingSpeechDeliveryRef.current &&
+          speechTransactionHasTextRef.current
+        ) {
+          noteSpeechAttribution();
+        }
+        pendingSpeechDeliverySettledRef.current = true;
+      }
+      speechPendingRef.current = kind;
+      if (kind === "listening") handleSpeechSelectionTarget();
       if (kind === null) {
         // The active recording finished (its result has already committed);
         // forget its insertion target so the range map does not accumulate
@@ -2235,10 +2941,17 @@ export function MessageInput({
         }
         speechInsertionRangeRef.current = null;
         activeSpeechTargetIdRef.current = null;
+        pendingSpeechRetargetRef.current = null;
       }
       setSpeechPending(kind);
+      if (kind === null) maybeRunPendingSpeechDelivery();
     },
-    [],
+    [
+      handleSpeechSelectionTarget,
+      maybeRunPendingSpeechDelivery,
+      noteSpeechAttribution,
+      restorePendingSpeechDeliveryDraft,
+    ],
   );
 
   const handleTranscriptionSettled = useCallback(
@@ -2246,19 +2959,34 @@ export function MessageInput({
       const targetId = settlement.speechTargetId;
       if (!targetId || settlement.status === "completed") return;
 
+      const pendingTargetFailed =
+        pendingSpeechDeliveryRef.current?.speechInsertionRangesRef.current.has(
+          targetId,
+        ) === true;
+      if (pendingTargetFailed) {
+        restorePendingSpeechDeliveryDraft();
+        setSpeechPending(null);
+        speechPendingRef.current = null;
+        setInterimTranscript("");
+      }
       const removed = speechInsertionRangesRef.current.delete(targetId);
-      if (targetId === activeSpeechTargetIdRef.current) {
+      const activeTargetFailed = targetId === activeSpeechTargetIdRef.current;
+      if (activeTargetFailed) {
         clearPendingSpeechFinal();
         speechInsertionRangeRef.current = null;
         activeSpeechTargetIdRef.current = null;
+        pendingSpeechRetargetRef.current = null;
         setSpeechPending(null);
+        speechPendingRef.current = null;
         setInterimTranscript("");
+        pendingSpeechDeliveryRef.current = null;
+        pendingSpeechDeliverySettledRef.current = false;
       }
       if (removed) {
         setSpeechPreviewRevision((revision) => revision + 1);
       }
     },
-    [clearPendingSpeechFinal],
+    [clearPendingSpeechFinal, restorePendingSpeechDeliveryDraft],
   );
 
   // Cancel a pending transcription/finalization. The provider discards the
@@ -2266,6 +2994,7 @@ export function MessageInput({
   // speech target so the composer forgets the reserved insertion point.
   const handleCancelTranscription = useCallback(() => {
     voiceButtonRef.current?.cancelProcessing();
+    restorePendingSpeechDeliveryDraft();
     clearPendingSpeechFinal();
     const targetId = activeSpeechTargetIdRef.current;
     if (targetId) {
@@ -2273,9 +3002,11 @@ export function MessageInput({
     }
     speechInsertionRangeRef.current = null;
     activeSpeechTargetIdRef.current = null;
+    pendingSpeechRetargetRef.current = null;
     setSpeechPending(null);
+    speechPendingRef.current = null;
     setInterimTranscript("");
-  }, [clearPendingSpeechFinal]);
+  }, [clearPendingSpeechFinal, restorePendingSpeechDeliveryDraft]);
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
@@ -2284,19 +3015,13 @@ export function MessageInput({
       event.stopPropagation();
       const voice = voiceButtonRef.current;
       if (!voice?.isAvailable) return;
-      const wasActive = voice.isListening;
-      if (wasActive) {
-        handleListeningStop();
-        voice.toggle();
-        return;
-      }
-      handleListeningStart();
       voice.toggle();
     },
-    [handleListeningStart, handleListeningStop],
+    [],
   );
 
   const toolbarProps: MessageInputToolbarProps = {
+    sessionId,
     mode,
     onModeChange,
     modeChangesApplyNextTurn,
@@ -2346,8 +3071,10 @@ export function MessageInput({
     isRunning,
     isThinking,
     onStop,
+    onDone,
+    doneTitle,
     onSend: forkSummaryMode
-      ? handleSubmit
+      ? handleForkSummarySubmit
       : effectivePrimaryActionKind === "queue"
         ? handleQueue
         : handleSubmit,
@@ -2381,13 +3108,16 @@ export function MessageInput({
       : undefined,
     canForkAfterSummary: !!onForkSummaryShortcut,
     canSend: canSubmit,
+    speechMessagePrefix: manualDeliverySpeechPrefix,
+    primarySpeechMessagePrefix: primaryDeliverySpeechPrefix,
     disabled,
   };
   const showMobileKeyboardCompact = mobileKeyboardOpen && canSubmit;
 
   return (
     <div
-      className="message-input-wrapper"
+      className={`message-input-wrapper${fullPane ? ` ${styles.fullPane}` : ""}`}
+      data-composer-full-pane={fullPane ? "true" : undefined}
       onKeyDownCapture={handleComposerKeyDown}
     >
       {/* Floating toggle button - only show when user can control collapse (not externally collapsed) */}
@@ -2417,13 +3147,30 @@ export function MessageInput({
           </svg>
         </button>
       )}
+      {!externalCollapsed && (
+        <FullPaneComposerToggle
+          expanded={fullPane}
+          onToggle={toggleFullPane}
+          className={styles.fullPaneToggle}
+        />
+      )}
       <div
         className={`message-input ${collapsed ? "message-input-collapsed" : ""} ${
           collapsed &&
           (showCollapsedLineCount || showCollapsedDesktopMicrophone)
             ? "has-collapsed-side-actions"
             : ""
+        }${
+          showCollapsedMicrophone
+            ? ` ${styles.collapsedWithLeadingMicrophone}`
+            : ""
+        }${
+          showCollapsedMicrophone && !showCollapsedSendAction
+            ? ` ${styles.collapsedWithLeadingMicrophoneOnly}`
+            : ""
         }`}
+        data-composer-shell="true"
+        data-collapsed-leading-microphone={showCollapsedMicrophone || undefined}
       >
         <div
           className={`speech-draft-field ${
@@ -2505,6 +3252,7 @@ export function MessageInput({
                 ) {
                   composerEditedDuringSpeechRef.current = true;
                 }
+                handleSpeechSelectionTarget(true, nextText);
                 noteComposerEdit(nextText);
                 setText(nextText);
                 const nextCursor = e.target.selectionStart;
@@ -2534,6 +3282,7 @@ export function MessageInput({
               onKeyDown={handleKeyDown}
               onSelect={handleTextareaSelectionTarget}
               onPointerUp={handleTextareaSelectionTarget}
+              onClick={handleTextareaClickTarget}
               onKeyUp={handleTextareaSelectionTarget}
               onCut={clearSpeechSelectionTarget}
               onCopy={clearSpeechSelectionTarget}
@@ -2640,13 +3389,18 @@ export function MessageInput({
                   role="menuitem"
                   aria-label={parts.label}
                 >
-                  {parts.shortcut && (
-                    <strong className="slash-command-shortcut">
-                      {parts.shortcut}
-                    </strong>
-                  )}
                   <span className="slash-command-copy">
-                    <span>{parts.rest}</span>
+                    {/* shortcut + rest is one command word split for
+                        highlighting; keep it a single inline run so no flex
+                        gap lands inside the word. */}
+                    <span>
+                      {parts.shortcut && (
+                        <strong className="slash-command-shortcut">
+                          {parts.shortcut}
+                        </strong>
+                      )}
+                      {parts.rest}
+                    </span>
                     {(command.description || command.argumentHint) && (
                       <span className="slash-command-detail">
                         {[command.description, command.argumentHint]
@@ -2758,7 +3512,13 @@ export function MessageInput({
           )}
 
         {collapsed && (
-          <div className="message-input-collapsed-actions">
+          <div
+            className={`message-input-collapsed-actions${
+              showCollapsedMicrophone
+                ? ` ${styles.collapsedActionsWithMicrophone}`
+                : ""
+            }`}
+          >
             {showCollapsedMicrophone && (
               <VoiceInputButton
                 ref={voiceButtonRef}
@@ -2842,6 +3602,7 @@ export function MessageInput({
                   imageWidth={file.width}
                   imageHeight={file.height}
                   previewUrl={file.previewUrl}
+                  projectId={projectId}
                   onRemove={
                     onRemoveAttachment
                       ? () => onRemoveAttachment(file.id)
@@ -2914,6 +3675,7 @@ export function MessageInput({
                   onProjectQueue={undefined}
                   onProjectQueueNewSession={undefined}
                   hidePrimaryDeliveryActions
+                  hideVoiceInput
                 />
               </div>
             )}
@@ -2932,28 +3694,67 @@ export function MessageInput({
               >
                 <span aria-hidden="true">...</span>
               </button>
-              {reserveMobileProjectQueueSlot && (
-                <div className="message-input-keyboard-secondary-slot message-input-keyboard-project-queue-slot">
-                  {onProjectQueue && (
-                    <button
-                      type="button"
-                      className="message-input-keyboard-action message-input-keyboard-secondary project-queue-mode"
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={handleProjectQueue}
-                      disabled={disabled}
-                      aria-label={t("toolbarProjectQueueLabel")}
-                      title={
-                        projectQueueShortcutAvailable
-                          ? t("toolbarProjectQueueTooltipWithShortcut")
-                          : t("toolbarProjectQueueTooltip")
-                      }
-                    >
-                      <span aria-hidden="true">⇥</span>
-                    </button>
-                  )}
+              {toolbarVisibility.microphone && (
+                <div
+                  className={`message-input-keyboard-secondary-slot ${styles.keyboardSpeechSlot}${
+                    toolbarVisibility.waveform
+                      ? ` ${styles.keyboardSpeechSlotWithWaveform}`
+                      : ""
+                  }`}
+                  data-waveform-reserved={
+                    toolbarVisibility.waveform || undefined
+                  }
+                  data-waveform-active={keyboardWaveformActive || undefined}
+                  onPointerDown={(event) => event.preventDefault()}
+                >
+                  <VoiceInputButton
+                    ref={voiceButtonRef}
+                    onTranscript={handleVoiceTranscript}
+                    onInterimTranscript={handleInterimTranscript}
+                    onListeningStart={handleListeningStart}
+                    onListeningStop={handleListeningStop}
+                    onPendingSpeechChange={handlePendingSpeechChange}
+                    onTranscriptionSettled={handleTranscriptionSettled}
+                    disabled={disabled}
+                    getTranscriptionContext={getTranscriptionContext}
+                    showWaveform={toolbarVisibility.waveform}
+                    inlineWaveform={toolbarVisibility.waveform}
+                    onWaveformActiveChange={
+                      toolbarVisibility.waveform
+                        ? setKeyboardWaveformActive
+                        : undefined
+                    }
+                    className="message-input-keyboard-action message-input-keyboard-secondary"
+                  />
                 </div>
               )}
-              {reserveMobileProjectQueueNewSessionSlot && (
+              {showMobileProjectQueueAction && (
+                <div className="message-input-keyboard-secondary-slot message-input-keyboard-project-queue-slot">
+                  <button
+                    type="button"
+                    className="message-input-keyboard-action message-input-keyboard-secondary project-queue-mode"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={handleProjectQueue}
+                    disabled={disabled}
+                    aria-label={describePrefixedDelivery(
+                      t("toolbarProjectQueueLabel"),
+                    )}
+                    title={describePrefixedTooltip(
+                      projectQueueShortcutAvailable
+                        ? t("toolbarProjectQueueTooltipWithShortcut")
+                        : t("toolbarProjectQueueTooltip"),
+                    )}
+                  >
+                    <span aria-hidden="true">⇥</span>
+                    {manualDeliverySpeechPrefix && (
+                      <SpeechPrefixActionCue
+                        prefix={manualDeliverySpeechPrefix}
+                      />
+                    )}
+                  </button>
+                </div>
+              )}
+              {showMobileProjectQueueNewSessionAction && (
                 <div className="message-input-keyboard-secondary-slot message-input-keyboard-project-queue-new-session-slot">
                   <button
                     type="button"
@@ -2961,8 +3762,12 @@ export function MessageInput({
                     onPointerDown={(event) => event.preventDefault()}
                     onClick={handleProjectQueueNewSession}
                     disabled={disabled}
-                    aria-label={t("toolbarProjectQueueNewSessionLabel")}
-                    title={t("toolbarProjectQueueNewSessionTooltip")}
+                    aria-label={describePrefixedDelivery(
+                      t("toolbarProjectQueueNewSessionLabel"),
+                    )}
+                    title={describePrefixedTooltip(
+                      t("toolbarProjectQueueNewSessionTooltip"),
+                    )}
                   >
                     <span aria-hidden="true">⇥</span>
                     <span
@@ -2971,26 +3776,38 @@ export function MessageInput({
                     >
                       +
                     </span>
+                    {manualDeliverySpeechPrefix && (
+                      <SpeechPrefixActionCue
+                        prefix={manualDeliverySpeechPrefix}
+                      />
+                    )}
                   </button>
                 </div>
               )}
-              {reserveMobileSessionAlternateSlot && (
+              {showMobileSessionAlternateAction && (
                 <div className="message-input-keyboard-secondary-slot message-input-keyboard-session-alternate-slot">
-                  {mobileKeyboardAlternateAction && (
-                    <button
-                      type="button"
-                      className={`message-input-keyboard-action message-input-keyboard-secondary ${mobileKeyboardAlternateAction.kind}-mode`}
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={mobileKeyboardAlternateAction.onClick}
-                      disabled={disabled}
-                      aria-label={mobileKeyboardAlternateAction.label}
-                      title={mobileKeyboardAlternateAction.label}
-                    >
-                      <span aria-hidden="true">
-                        {mobileKeyboardAlternateAction.icon}
-                      </span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className={`message-input-keyboard-action message-input-keyboard-secondary ${mobileKeyboardAlternateAction.kind}-mode`}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={mobileKeyboardAlternateAction.onClick}
+                    disabled={disabled}
+                    aria-label={describePrefixedDelivery(
+                      mobileKeyboardAlternateAction.label,
+                    )}
+                    title={describePrefixedTooltip(
+                      mobileKeyboardAlternateAction.label,
+                    )}
+                  >
+                    <span aria-hidden="true">
+                      {mobileKeyboardAlternateAction.icon}
+                    </span>
+                    {manualDeliverySpeechPrefix && (
+                      <SpeechPrefixActionCue
+                        prefix={manualDeliverySpeechPrefix}
+                      />
+                    )}
+                  </button>
                 </div>
               )}
               {forkSummaryMode?.onSubmitWithoutSummary &&
@@ -3001,12 +3818,22 @@ export function MessageInput({
                     onPointerDown={(event) => event.preventDefault()}
                     onClick={mobileKeyboardAlternateAction.onClick}
                     disabled={disabled}
-                    aria-label={mobileKeyboardAlternateAction.label}
+                    aria-label={describePrefixedDelivery(
+                      mobileKeyboardAlternateAction.label,
+                    )}
+                    title={describePrefixedTooltip(
+                      mobileKeyboardAlternateAction.label,
+                    )}
                   >
                     <span>{mobileKeyboardAlternateAction.displayLabel}</span>
                     <span aria-hidden="true">
                       {mobileKeyboardAlternateAction.icon}
                     </span>
+                    {manualDeliverySpeechPrefix && (
+                      <SpeechPrefixActionCue
+                        prefix={manualDeliverySpeechPrefix}
+                      />
+                    )}
                   </button>
                 )}
               {bangQuery !== null && (
@@ -3061,11 +3888,22 @@ export function MessageInput({
                 )}
               <button
                 type="button"
-                className={`message-input-keyboard-action message-input-keyboard-primary ${effectivePrimaryActionKind}-mode`}
+                className={`message-input-keyboard-action message-input-keyboard-primary ${effectivePrimaryActionKind}-mode${
+                  toolbarVisibility.waveform
+                    ? ` ${styles.keyboardPrimaryWithWaveform}`
+                    : ""
+                }`}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={submitPrimaryAction}
                 disabled={disabled}
-                aria-label={mobileKeyboardActionLabel}
+                aria-label={describePrefixedDelivery(
+                  mobileKeyboardActionLabel,
+                  primaryDeliverySpeechPrefix,
+                )}
+                title={describePrefixedTooltip(
+                  mobileKeyboardActionLabel,
+                  primaryDeliverySpeechPrefix,
+                )}
               >
                 {mobileKeyboardActionDisplayLabel && (
                   <span className="message-input-keyboard-primary-label">
@@ -3078,6 +3916,9 @@ export function MessageInput({
                 >
                   {mobileKeyboardActionIcon}
                 </span>
+                {primaryDeliverySpeechPrefix && (
+                  <SpeechPrefixActionCue prefix={primaryDeliverySpeechPrefix} />
+                )}
               </button>
             </div>
           </div>

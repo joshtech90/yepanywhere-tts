@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { describe, expect, it, vi } from "vitest";
+import { encodeTransportChunkFrames } from "@yep-anywhere/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecureConnection } from "../SecureConnection";
 import {
   decryptBinaryEnvelope,
@@ -9,6 +10,10 @@ import {
   encryptToBinaryEnvelope,
   generateRandomKey,
 } from "../nacl-wrapper";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function bytesBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -64,6 +69,47 @@ function srpVerifyServerInfoProof(params: {
 }
 
 describe("SecureConnection protocol compatibility", () => {
+  it("reassembles transport chunks before decrypting a server message", async () => {
+    const sessionKey = new Uint8Array(32).fill(9);
+    const routeMessage = vi.fn();
+    const close = vi.fn();
+    const conn = new SecureConnection(
+      "ws://localhost:3400/api/ws",
+      "test-user",
+      "test-password",
+    ) as unknown as {
+      sessionKey: Uint8Array;
+      ws: { close: ReturnType<typeof vi.fn> };
+      protocol: { routeMessage: ReturnType<typeof vi.fn> };
+      handleMessage: (data: ArrayBuffer) => Promise<void>;
+    };
+    conn.sessionKey = sessionKey;
+    conn.ws = { close };
+    conn.protocol = { routeMessage };
+
+    const message = {
+      type: "pong",
+      id: "chunked-secure-pong",
+      padding: "secure-transport-padding".repeat(30_000),
+    };
+    const envelope = encryptToBinaryEnvelope(
+      JSON.stringify({ seq: 0, msg: message }),
+      sessionKey,
+    );
+    const chunks = Array.from(encodeTransportChunkFrames(4, envelope));
+    expect(chunks.length).toBeGreaterThan(1);
+
+    for (const chunk of chunks.slice(0, -1)) {
+      await conn.handleMessage(chunk);
+      expect(routeMessage).not.toHaveBeenCalled();
+    }
+    await conn.handleMessage(chunks.at(-1) as ArrayBuffer);
+
+    expect(routeMessage).toHaveBeenCalledOnce();
+    expect(routeMessage).toHaveBeenCalledWith(message);
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("does not tear down an in-flight ensureConnected recovery", async () => {
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
@@ -207,6 +253,9 @@ describe("SecureConnection protocol compatibility", () => {
   });
 
   it("rejects full SRP when server omits the transport nonce", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const onAuthenticated = vi.fn();
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
@@ -260,6 +309,9 @@ describe("SecureConnection protocol compatibility", () => {
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
     expect(onAuthenticated).not.toHaveBeenCalled();
+    expect(errorLog).toHaveBeenCalledWith(
+      "[SecureConnection] SRP verify missing required protocol metadata",
+    );
   });
 
   it("accepts protocol 2 full SRP during the grace period", async () => {
@@ -456,6 +508,9 @@ describe("SecureConnection protocol compatibility", () => {
   });
 
   it("rejects protocol 2 full SRP when protocol 3 is already pinned", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
@@ -509,6 +564,9 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.connectionState).toBe("failed");
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[SecureConnection] SRP verify would downgrade authenticated protocol",
+    );
   });
 
   it("attempts grace-period resume for protocol 2 and unstamped sessions", () => {
@@ -547,6 +605,7 @@ describe("SecureConnection protocol compatibility", () => {
   });
 
   it("rejects unsequenced encrypted responses", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
@@ -569,6 +628,9 @@ describe("SecureConnection protocol compatibility", () => {
 
     expect(conn.protocol.routeMessage).not.toHaveBeenCalled();
     expect(conn.ws.close).toHaveBeenCalledWith(4004, "Invalid sequence");
+    expect(warn).toHaveBeenCalledWith(
+      "[SecureConnection] Missing/invalid encrypted sequence",
+    );
   });
 
   it("accepts protocol 3 resume with encrypted server proof", async () => {
@@ -764,9 +826,7 @@ describe("SecureConnection protocol compatibility", () => {
       };
       connectionState: string;
       sessionKey: Uint8Array | null;
-      startFullSrpHandshake: (
-        reject: (err: Error) => void,
-      ) => Promise<void>;
+      startFullSrpHandshake: (reject: (err: Error) => void) => Promise<void>;
       handleSrpResumeResponse: (
         data: string,
         resolve: () => void,
@@ -898,6 +958,9 @@ describe("SecureConnection protocol compatibility", () => {
   });
 
   it("rejects protocol 2 resume when the transport nonce is missing", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
@@ -958,9 +1021,15 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.connectionState).toBe("failed");
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[SecureConnection] Resume server proof failed",
+    );
   });
 
   it("rejects protocol 3 resume when the server proof is missing", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
@@ -1023,9 +1092,15 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.connectionState).toBe("failed");
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[SecureConnection] Resume would downgrade authenticated protocol",
+    );
   });
 
   it("rejects resume when server proof downgrades the pinned protocol", async () => {
+    const errorLog = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const conn = new SecureConnection(
       "ws://localhost:3400/api/ws",
       "test-user",
@@ -1099,5 +1174,8 @@ describe("SecureConnection protocol compatibility", () => {
     expect(conn.connectionState).toBe("failed");
     expect(send).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[SecureConnection] Resume server proof failed",
+    );
   });
 });

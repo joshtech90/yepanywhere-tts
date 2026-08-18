@@ -11,12 +11,29 @@ import {
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_REASONING_SUMMARIES,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+  DEFAULT_CODEX_REASONING_SUMMARY,
+  DEFAULT_IDLE_REAP_HOURS,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  MAX_IDLE_REAP_HOURS,
+  MAX_SUBAGENT_MAX_DEPTH,
+  MIN_SUBAGENT_MAX_DEPTH,
+  NEVER_IDLE_REAP_HOURS,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH,
+  isCodexReasoningSummary,
   isValidClaudeAdditionalModelId,
   isValidClaudeAdditionalModelLabel,
+  normalizeIdleReapHours,
   type ClaudeAdditionalModelSelection,
+  type CodexReasoningSummary,
   type HelperTargetConfig,
   type ModelInfo,
+  type ProviderInfo,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import { api, type ServerSettings } from "../../api/client";
@@ -28,10 +45,15 @@ import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import {
+  ClaudeAutoCompactPercentOverrideControl,
+  YaCompactContextEarlyControl,
+} from "./compactSettingsControls";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
+import { getProviderSessionDefaults } from "../../lib/newSessionDefaults";
 import {
   helperTargetDescription,
   helperTargetValue,
@@ -45,13 +67,13 @@ const CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY =
   "yep-anywhere:claude-ollama-deprecation-v1";
 // Re-enable with topics/openai-compatible-helper-sessions.md.
 const SHOW_HELPER_TARGETS_SETTINGS = false;
+const PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH = -1;
 
 function shouldShowClaudeOllamaDeprecation(): boolean {
   try {
     return (
-      window.localStorage.getItem(
-        CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY,
-      ) !== "dismissed"
+      window.localStorage.getItem(CLAUDE_OLLAMA_DEPRECATION_DISMISSAL_KEY) !==
+      "dismissed"
     );
   } catch {
     return true;
@@ -807,6 +829,57 @@ function CodexUpdatePanel() {
   );
 }
 
+function CodexReasoningSummarySetting({
+  value,
+  updateSetting,
+}: {
+  value: CodexReasoningSummary;
+  updateSetting: UpdateServerSetting;
+}) {
+  const { t } = useI18n();
+  const labels: Record<CodexReasoningSummary, string> = {
+    auto: t("providersCodexReasoningSummaryAutomatic"),
+    concise: t("providersCodexReasoningSummaryConcise"),
+    detailed: t("providersCodexReasoningSummaryDetailed"),
+    none: t("providersCodexReasoningSummaryOff"),
+  };
+
+  return (
+    <SettingsItem
+      id="provider-codex-reasoning-summary"
+      label={t("providersCodexReasoningSummaryTitle")}
+      description={t("providersCodexReasoningSummaryDescription")}
+      keywords={[
+        "model_reasoning_summary",
+        "reasoning summary",
+        "auto",
+        "concise",
+        "detailed",
+        "none",
+        "off",
+      ]}
+      valueText={labels[value]}
+    >
+      <select
+        className="settings-select"
+        aria-label={t("providersCodexReasoningSummaryAria")}
+        value={value}
+        onChange={(event) => {
+          if (isCodexReasoningSummary(event.target.value)) {
+            void updateSetting("codexReasoningSummary", event.target.value);
+          }
+        }}
+      >
+        {CODEX_REASONING_SUMMARIES.map((summary) => (
+          <option key={summary} value={summary}>
+            {labels[summary]}
+          </option>
+        ))}
+      </select>
+    </SettingsItem>
+  );
+}
+
 function OllamaSettings() {
   const { settings } = useServerSettings();
   const useFullPrompt = settings?.ollamaUseFullSystemPrompt ?? false;
@@ -874,16 +947,19 @@ function ClaudeGatewaySettings({
   ]);
 
   return (
-    <SettingsItem
+    <div
       id="provider-claude-gateway-configuration"
-      label={t("providersClaudeGatewayTitle")}
-      description={t("providersClaudeGatewayDescription")}
-      className="settings-item-inline-field"
-      valueText={
-        serverValue ? t("providersClaudeGatewayConfigured") : t("commonOff")
-      }
+      className="settings-subsection"
     >
-      <div className="claude-gateway-settings-control">
+      <h3>{t("providersClaudeGatewayTitle")}</h3>
+      <p className="settings-hint">{t("providersClaudeGatewayDescription")}</p>
+      <form
+        className="claude-gateway-settings-control"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (hasChanges && !isSaving) void handleSave();
+        }}
+      >
         <div className="claude-gateway-settings-row">
           <input
             type="url"
@@ -897,10 +973,9 @@ function ClaudeGatewaySettings({
             aria-label={t("providersClaudeGatewayUrlAria")}
           />
           <button
-            type="button"
+            type="submit"
             className="settings-button"
             disabled={!hasChanges || isSaving}
-            onClick={() => void handleSave()}
           >
             {isSaving ? t("providersSaving") : t("providersSave")}
           </button>
@@ -915,9 +990,7 @@ function ClaudeGatewaySettings({
                 value={startCommand}
                 maxLength={10_000}
                 onChange={(event) => setStartCommand(event.target.value)}
-                placeholder={t(
-                  "providersClaudeGatewayStartCommandPlaceholder",
-                )}
+                placeholder={t("providersClaudeGatewayStartCommandPlaceholder")}
                 aria-label={t("providersClaudeGatewayStartCommandAria")}
               />
             </label>
@@ -929,8 +1002,42 @@ function ClaudeGatewaySettings({
         <p className="settings-hint">
           {t("providersClaudeGatewayIsolationHint")}
         </p>
-      </div>
-    </SettingsItem>
+      </form>
+    </div>
+  );
+}
+
+type ClaudeGatewayToggleSettingProps = {
+  id: string;
+  setting: "claudeGatewayDisableAgent" | "claudeGatewayDisablePlanMode";
+  title: string;
+  description: string;
+};
+
+function ClaudeGatewayToggleSetting({
+  id,
+  setting,
+  title,
+  description,
+}: ClaudeGatewayToggleSettingProps) {
+  const { settings, updateSetting } = useServerSettings();
+  const enabled = settings?.[setting] ?? true;
+
+  return (
+    <div id={id} className="settings-subsection">
+      <label>
+        <input
+          type="checkbox"
+          checked={enabled}
+          aria-label={title}
+          onChange={(event) =>
+            void updateSetting(setting, event.target.checked)
+          }
+        />{" "}
+        <strong>{title}</strong>
+      </label>
+      <p className="settings-hint">{description}</p>
+    </div>
   );
 }
 
@@ -963,60 +1070,45 @@ function ClaudeLoginCommandPanel({
   );
 }
 
-function ClaudeAutoCompactPercentOverrideSettings({
-  value,
+function ClaudeYaCompactEarlyMirror({
+  serverProviders,
+  settings,
   updateSetting,
 }: {
-  value: number | undefined;
+  serverProviders: ProviderInfo[];
+  settings: ServerSettings | null;
   updateSetting: UpdateServerSetting;
 }) {
   const { t } = useI18n();
-  const { showToast } = useToastContext();
-
-  const save = useCallback(
-    async (percent: number) => {
-      try {
-        await updateSetting(
-          "claudeAutoCompactPercentOverride",
-          percent === 0 ? undefined : percent,
-        );
-        showToast(t("providersClaudeAutoCompactSaved"), "success");
-      } catch (error) {
-        showToast(
-          error instanceof Error
-            ? error.message
-            : t("providersClaudeAutoCompactSaveError"),
-          "error",
-        );
-      }
-    },
-    [showToast, t, updateSetting],
+  const claudeProvider = serverProviders.find((p) => p.name === "claude");
+  const claudeDefaults = getProviderSessionDefaults(
+    settings?.newSessionDefaults,
+    "claude",
   );
-
+  const claudeModelId =
+    typeof claudeDefaults.model === "string" &&
+    claudeDefaults.model !== "default"
+      ? claudeDefaults.model
+      : claudeProvider?.models?.[0]?.id;
+  if (!claudeModelId || claudeModelId === "default") {
+    return null;
+  }
+  const modelInfo = claudeProvider?.models?.find((m) => m.id === claudeModelId);
+  const stored =
+    settings?.clientDefaults?.compactAtContextPercent?.[claudeModelId] ?? 0;
   return (
-    <SettingsItem
-      id="provider-claude-auto-compact"
-      label={t("providersClaudeAutoCompactTitle")}
-      description={t("providersClaudeAutoCompactDescription")}
-      keywords={["compact", "context", "threshold", "percentage"]}
-      valueText={
-        value === undefined
-          ? t("providersClaudeAutoCompactOff")
-          : `${value}%`
-      }
-      className="settings-item--wide-control"
-    >
-      <CommittedRangeNumberInput
-        id="claude-auto-compact-percent"
-        min={0}
-        max={100}
-        step={1}
-        value={value ?? 0}
-        unit="%"
-        ariaLabel={t("providersClaudeAutoCompactTitle")}
-        onCommit={(percent) => void save(percent)}
-      />
-    </SettingsItem>
+    <YaCompactContextEarlyControl
+      id="provider-ya-compact-early"
+      modelId={claudeModelId}
+      contextWindow={modelInfo?.contextWindow}
+      storedPercent={stored}
+      map={settings?.clientDefaults?.compactAtContextPercent}
+      updateSetting={updateSetting}
+      description={t("providersYaCompactEarlyMirrorDescription", {
+        model: modelInfo?.name ?? claudeModelId,
+      })}
+      searchable={false}
+    />
   );
 }
 
@@ -1270,6 +1362,10 @@ export function ProvidersSettings() {
     version,
     CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   );
+  const supportsCodexReasoningSummary = serverHasCapability(
+    version,
+    CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+  );
   const supportsClaudeGateway = serverHasCapability(
     version,
     CLAUDE_GATEWAY_CAPABILITY,
@@ -1278,6 +1374,27 @@ export function ProvidersSettings() {
     version,
     CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   );
+  const supportsClaudeGatewayDisableAgent = serverHasCapability(
+    version,
+    CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  );
+  const supportsClaudeGatewayDisablePlanMode = serverHasCapability(
+    version,
+    CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  );
+  const supportsIdleReapHours = serverHasCapability(
+    version,
+    IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  );
+  const supportsSubagentMaxDepth = serverHasCapability(
+    version,
+    SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
+  );
+  const idleReapHours = settings?.idleReapHours ?? DEFAULT_IDLE_REAP_HOURS;
+  const subagentMaxDepth =
+    settings?.subagentMaxDepth === undefined
+      ? DEFAULT_SUBAGENT_MAX_DEPTH
+      : settings.subagentMaxDepth;
 
   const handleCopyClaudeLoginCommand = useCallback(
     async (command: string) => {
@@ -1302,10 +1419,13 @@ export function ProvidersSettings() {
     const serverInfo = serverProviders.find(
       (p) => p.name === clientProvider.id,
     );
+    if (clientProvider.id === "claude-ollama" && !serverInfo) {
+      return [];
+    }
     if (
-      (clientProvider.id === "claude-gateway" ||
-        clientProvider.id === "claude-ollama") &&
-      !serverInfo
+      clientProvider.id === "claude-gateway" &&
+      !serverInfo &&
+      !supportsClaudeGateway
     ) {
       return [];
     }
@@ -1333,19 +1453,125 @@ export function ProvidersSettings() {
         </div>
       )}
       <div className="settings-group">
+        {supportsSubagentMaxDepth && (
+          <SettingsItem
+            id="providers-subagent-max-depth"
+            label={t("providersSubagentMaxDepthLabel")}
+            description={t("providersSubagentMaxDepthDescription")}
+            className="settings-item--wide-control"
+            valueText={
+              subagentMaxDepth === null
+                ? t("providersSubagentMaxDepthProviderDefault")
+                : subagentMaxDepth === 0
+                  ? t("providersSubagentMaxDepthDisabled")
+                  : t("providersSubagentMaxDepthValue", {
+                      value: subagentMaxDepth,
+                    })
+            }
+          >
+            <div>
+              <CommittedRangeNumberInput
+                id="providers-subagent-max-depth-control"
+                min={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+                max={MAX_SUBAGENT_MAX_DEPTH}
+                numberMin={MIN_SUBAGENT_MAX_DEPTH}
+                numberMax={MAX_SUBAGENT_MAX_DEPTH}
+                step={1}
+                list="providers-subagent-max-depth-ticks"
+                value={subagentMaxDepth}
+                unsetSliderValue={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+                unit={t("providersSubagentMaxDepthUnit")}
+                ariaLabel={t("providersSubagentMaxDepthAria")}
+                onCommit={(value) => {
+                  void updateSetting("subagentMaxDepth", value);
+                }}
+              />
+              <datalist id="providers-subagent-max-depth-ticks">
+                <option
+                  value={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
+                  label={t("providersSubagentMaxDepthProviderDefault")}
+                />
+                <option value={MIN_SUBAGENT_MAX_DEPTH} />
+                <option value="1" />
+                <option value="2" />
+                <option value="3" />
+                <option value={MAX_SUBAGENT_MAX_DEPTH} />
+              </datalist>
+              <p className="settings-hint">
+                {t("providersSubagentMaxDepthCoverage")}
+              </p>
+            </div>
+          </SettingsItem>
+        )}
+        {supportsIdleReapHours && (
+          <SettingsItem
+            id="providers-idle-reap-hours"
+            label={t("providersIdleReapHoursLabel")}
+            description={t("providersIdleReapHoursDescription")}
+            className="settings-item--wide-control"
+            valueText={
+              idleReapHours < 0
+                ? t("providersIdleReapNever")
+                : t("providersIdleReapHoursValue", {
+                    value: idleReapHours,
+                  })
+            }
+          >
+            <div>
+              <CommittedRangeNumberInput
+                id="providers-idle-reap-hours-control"
+                min={NEVER_IDLE_REAP_HOURS}
+                max={MAX_IDLE_REAP_HOURS}
+                numberMin={NEVER_IDLE_REAP_HOURS}
+                numberMax={MAX_IDLE_REAP_HOURS}
+                step={1}
+                list="providers-idle-reap-hours-ticks"
+                value={idleReapHours}
+                unit={t("providersIdleReapHoursUnit")}
+                ariaLabel={t("providersIdleReapHoursAria")}
+                snapTextToStep={false}
+                onCommit={(value) => {
+                  void updateSetting(
+                    "idleReapHours",
+                    normalizeIdleReapHours(value),
+                  );
+                }}
+              />
+              <datalist id="providers-idle-reap-hours-ticks">
+                <option
+                  value={NEVER_IDLE_REAP_HOURS}
+                  label={t("providersIdleReapNever")}
+                />
+                <option value="0" />
+                <option value="24" />
+                <option value="48" />
+                <option value={MAX_IDLE_REAP_HOURS} />
+              </datalist>
+              <p className="settings-hint">{t("providersIdleReapNeverHint")}</p>
+            </div>
+          </SettingsItem>
+        )}
         {providerDisplayList.map((provider) => (
           <Fragment key={provider.id}>
             <SettingsItem
               id={`provider-${provider.id}`}
               label={provider.displayName}
               description={provider.metadata.description}
+              keywords={
+                provider.id === "claude-gateway"
+                  ? [
+                      "gateway URL",
+                      "start command",
+                      "autostart",
+                      "disable agent",
+                      "disable plan mode",
+                    ]
+                  : undefined
+              }
               after={
                 provider.id === "claude-ollama" &&
                 showClaudeOllamaDeprecation ? (
-                  <div
-                    className="provider-deprecation-notice"
-                    role="status"
-                  >
+                  <div className="provider-deprecation-notice" role="status">
                     <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
                     <button
                       type="button"
@@ -1402,6 +1628,37 @@ export function ProvidersSettings() {
                     )}
                   {provider.id === "claude-ollama" && <OllamaSettings />}
                   {provider.id === "grok" && <GrokBuildApiKeySettings />}
+                  {provider.id === "claude-gateway" &&
+                    supportsClaudeGateway && (
+                      <>
+                        <ClaudeGatewaySettings
+                          reloadProviders={reloadProviders}
+                          supportsAutostart={supportsClaudeGatewayAutostart}
+                        />
+                        {supportsClaudeGatewayDisableAgent && (
+                          <ClaudeGatewayToggleSetting
+                            id="provider-claude-gateway-disable-agent"
+                            setting="claudeGatewayDisableAgent"
+                            title={t("providersClaudeGatewayDisableAgentTitle")}
+                            description={t(
+                              "providersClaudeGatewayDisableAgentDescription",
+                            )}
+                          />
+                        )}
+                        {supportsClaudeGatewayDisablePlanMode && (
+                          <ClaudeGatewayToggleSetting
+                            id="provider-claude-gateway-disable-plan-mode"
+                            setting="claudeGatewayDisablePlanMode"
+                            title={t(
+                              "providersClaudeGatewayDisablePlanModeTitle",
+                            )}
+                            description={t(
+                              "providersClaudeGatewayDisablePlanModeDescription",
+                            )}
+                          />
+                        )}
+                      </>
+                    )}
                   {provider.id === "codex" && provider.installed && (
                     <CodexUpdatePanel />
                   )}
@@ -1419,17 +1676,28 @@ export function ProvidersSettings() {
                 </a>
               )}
             </SettingsItem>
+            {provider.id === "codex" && supportsCodexReasoningSummary && (
+              <CodexReasoningSummarySetting
+                value={
+                  settings?.codexReasoningSummary ??
+                  DEFAULT_CODEX_REASONING_SUMMARY
+                }
+                updateSetting={updateSetting}
+              />
+            )}
             {provider.id === "claude" &&
               provider.supportsLaunchCompactPercentOverride && (
-                <ClaudeAutoCompactPercentOverrideSettings
+                <ClaudeAutoCompactPercentOverrideControl
+                  id="provider-claude-auto-compact"
                   value={settings?.claudeAutoCompactPercentOverride}
                   updateSetting={updateSetting}
                 />
               )}
-            {provider.id === "claude" && supportsClaudeGateway && (
-              <ClaudeGatewaySettings
-                reloadProviders={reloadProviders}
-                supportsAutostart={supportsClaudeGatewayAutostart}
+            {provider.id === "claude" && (
+              <ClaudeYaCompactEarlyMirror
+                serverProviders={serverProviders}
+                settings={settings}
+                updateSetting={updateSetting}
               />
             )}
             {provider.id === "claude" && supportsAdditionalModels && (

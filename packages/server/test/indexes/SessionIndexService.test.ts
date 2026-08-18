@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { toUrlProjectId, type UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionIndexService } from "../../src/indexes/SessionIndexService.js";
+import { getLogger } from "../../src/logging/logger.js";
 import { GrokSessionReader } from "../../src/sessions/grok-reader.js";
 import { SessionReader } from "../../src/sessions/reader.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
@@ -45,6 +46,7 @@ describe("SessionIndexService", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -368,6 +370,9 @@ describe("SessionIndexService", () => {
 
   describe("corrupt index", () => {
     it("gracefully handles malformed index file", async () => {
+      const warn = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       await createSession("session-1", "Test content");
 
       // Write corrupt index
@@ -383,6 +388,10 @@ describe("SessionIndexService", () => {
       );
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.title).toBe("Test content");
+      expect(warn).toHaveBeenCalledWith(
+        { err: expect.any(SyntaxError) },
+        `[SessionIndexService] Failed to load index for ${sessionDir}, starting fresh`,
+      );
     });
 
     it("handles index with wrong version", async () => {
@@ -629,9 +638,10 @@ describe("SessionIndexService", () => {
     it("validates shared-container sessions via the reader, not file stats", async () => {
       // Models an OpenCode-style reader: every session anchors to one shared
       // database file, and change detection is a cheap row-level check.
-      const rows = new Map<string, { mtime: number; size: number; title: string }>([
-        ["ses-shared", { mtime: 1000, size: 2, title: "row v1" }],
-      ]);
+      const rows = new Map<
+        string,
+        { mtime: number; size: number; title: string }
+      >([["ses-shared", { mtime: 1000, size: 2, title: "row v1" }]]);
       const summaryFor = (
         id: string,
         row: { mtime: number; size: number; title: string },
@@ -659,7 +669,11 @@ describe("SessionIndexService", () => {
           if (row.mtime === cachedMtime && row.size === cachedSize) {
             return null;
           }
-          return { summary: summaryFor(id, row), mtime: row.mtime, size: row.size };
+          return {
+            summary: summaryFor(id, row),
+            mtime: row.mtime,
+            size: row.size,
+          };
         },
       );
       const sharedReader = {
@@ -773,7 +787,11 @@ describe("SessionIndexService", () => {
 
     it("serves stale summaries after the TTL and emits session-updated from the background walk", async () => {
       const eventBus = new EventBus();
-      const events: Array<{ type: string; sessionId?: string; title?: string | null }> = [];
+      const events: Array<{
+        type: string;
+        sessionId?: string;
+        title?: string | null;
+      }> = [];
       eventBus.subscribe((event) => {
         if (event.type === "session-updated") {
           events.push({
@@ -871,10 +889,7 @@ describe("SessionIndexService", () => {
         projectId,
         reader,
       );
-      expect(fresh.map((s) => s.id).sort()).toEqual([
-        "session-1",
-        "session-2",
-      ]);
+      expect(fresh.map((s) => s.id).sort()).toEqual(["session-1", "session-2"]);
     });
 
     it("does not emit for sessions the background walk found unchanged", async () => {

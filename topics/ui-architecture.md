@@ -136,6 +136,67 @@ Choosing any action consumes the current notice instead of morphing it into a
 status or confirmation panel. The requested reload or safe-restart schedule
 continues; after a reload, later source changes may produce a fresh notice.
 
+## Fatal Client Diagnostics
+
+The root client error boundary preserves enough context to diagnose an
+otherwise unrecoverable React render failure without reproducing it. Its
+fallback exposes a copyable diagnostic containing the error and component
+stacks, route, client/server versions, timestamp, user agent, bounded DOM
+counts, and the browser-local Conversation View/thinking settings relevant to
+session rendering. It never includes transcript or draft text.
+
+The Report Issue action targets the canonical repository and pre-fills the
+same diagnostic plus a prompt for the immediately preceding action. Optional
+remote client-log collection receives the diagnostic as one formatted error
+entry, so object serialization cannot discard React's component stack.
+
+## Selected-Route Module Ownership
+
+The initial client module graph contains the stable source/authentication,
+navigation, error, and layout shell plus the selected page. A page that is not
+selected must not be evaluated merely because its route exists. Local and
+remote entrypoints apply the same rule; login and public bearer-link entry do
+not reach the authenticated session-management page graph.
+
+A route-level loading boundary preserves the shell and final page geometry.
+It never flashes an unauthenticated surface, loses the URL, or substitutes a
+temporary 404. A module generation has one shared acquisition promise, and a
+failure becomes an actionable route error rather than an indefinite spinner.
+
+A selected session starts its remote app, connection gate, navigation layout,
+page, transcript, and composer acquisitions together from the initial URL. Its
+module and connection boundaries render the same full-viewport session shell;
+status changes stay in the transcript slot while header and composer geometry
+remain reserved. Once the real session header or composer is visible, a lazy
+descendant must not hide it or return the route to a generic page fallback.
+
+Session DOM linger belongs outside the module-acquisition boundary. Making
+`SessionPage` lazy must not create a second module instance, tear down a view
+that `NavigationLayout` is deliberately retaining, or convert an already-warm
+back/reselect into a remount.
+
+Settings is layered. Ordinary entry loads the layout and selected category;
+inactive panes are not evaluated. Settings search is the explicit consumer
+that may need every pane because results are operable instances of the same
+controls. It loads those panes progressively only after search starts, reports
+incomplete loading/failure honestly, and keeps already found results stable.
+
+Dynamic route assets remain part of one deployed entrypoint generation. Old
+loaded entrypoints must be able to acquire chunks they name after a deployment,
+or recover once through a state-preserving fresh entry. The delivery contract
+is in [`client-asset-delivery.md`](client-asset-delivery.md); the implementation
+handoff is
+[`docs/tactical/096-client-route-module-loading.md`](../docs/tactical/096-client-route-module-loading.md).
+
+Implementation status: both browser entries apply this boundary to their page,
+navigation-layout, service-worker, and elective floating-action modules. The
+remote entry also defers its connection gates and redirects, preloads only the
+current initial route, and shares cached loader promises with `React.lazy`.
+Session transcript/composer suspension is caught inside their owned slots. The
+boundary preserves the session DOM-linger owner outside `SessionPage` and
+routes load failures through the existing fatal error boundary. The
+per-Settings-pane split remains open in tactical 096.
+
 ## Settings Pane Conventions
 
 Settings panes apply changes immediately on interaction — the house style
@@ -152,6 +213,12 @@ location: panes register their open-time snapshot revert via
 the one Undo button top-right on the header row — never inside scrollable
 pane content. A pane that adopts immediate apply should register undo so
 accidental changes stay recoverable.
+
+Undo is intentionally one step at pane granularity, rather than a per-action
+history or redo chain. The header button and `Ctrl+Z` / `⌘Z` invoke the same
+active-pane registration. The button's hover and accessibility label names the
+pane and says that it undoes changes made since opening it. When focus is in a
+text-editable control, the shortcut remains native text undo.
 
 Undo semantics vary by pane kind, deliberately:
 - **Snapshot panes** (immediate-apply or simple Save forms) revert to the

@@ -24,15 +24,22 @@ Topic: selection-comment-ui
 Status: **Phase 1 shipped 2026-06-23; the two early contract gaps fixed
 2026-06-23; the dedicated assistant quote lane fixed 2026-06-25; initial
 Phase 2 scope widening shipped 2026-07-01; portaled modal/file scope shipped
-2026-07-27.**
+2026-07-27; pressed-pointer tooltip suppression landed 2026-08-10; stable
+selection actions and independent controls landed 2026-08-12; selected-text
+context actions and source-cited new-session transfer landed 2026-08-13;
+exact formatted-source selection and activity-overlay placement landed
+2026-08-14; mobile long-press selection ownership restored 2026-08-15.**
 Assistant text blocks can be quoted via selection typing, a floating selection
-`>` button, or per-paragraph `>` circles; the resulting `>` block is inserted
-into the composer and the selected source span is tinted until the quote is
-removed or sent. Thinking summaries, user turns, Ran/Bash command and output
-text, Grep preview/content text, recap rows, expanded Edit/Read file content,
-general file viewers, and session hovercard prompt/reply text now use the same
-selection pipeline. Right-mouse line-select and per-section quote lanes for
-non-assistant-prose surfaces remain design/follow-up work.
+`>` action, or per-paragraph `>` circles; the resulting `>` block is inserted
+into the composer and the selected source span is tinted until that quote is
+removed or sent. A selected range also exposes a full copy/quote/new-session
+context menu and independently configurable compact actions. Thinking
+summaries, user turns,
+Ran/Bash command and output text, Grep preview/content text, recap rows,
+expanded Edit/Read file content, general file viewers, and session hovercard
+prompt/reply text now use the same selection pipeline. Right-mouse line-select
+and per-section quote lanes for non-assistant-prose surfaces remain
+design/follow-up work.
 
 ## Resolved gaps (Phase 1)
 
@@ -66,11 +73,28 @@ The early Phase 1 gaps were fixed 2026-06-23, verified in the running app.
   transparent green `background-color` rather than a saturated wash. It must
   stay visible but quiet in both dark and light themes, and it must not depend
   on undefined theme tokens such as `--bg-primary`.
-- **Selection `>` button follows drag end — fixed 2026-06-25.** Mouse/touch
-  selection completion repositions the floating `>` from the `pointerup`
-  endpoint. Downward drags place the button below the pointer so the button does
-  not cover the selected text; range geometry remains the fallback for keyboard
-  selection and scroll/resize.
+- **Selection action placement avoids the range — fixed 2026-08-12.** On
+  desktop, the complete enabled action cluster uses range geometry to choose
+  after, before, below, or above the selection according to available space;
+  the drag endpoint is the fallback when the browser supplies no usable range
+  rectangle. Touch uses 44 px tap targets. Transcript selections dock the
+  cluster in a dedicated row above the composer, shrinking the transcript
+  viewport instead of covering its text; portaled modal selections use the
+  collision-aware local placement because the session composer sits behind the
+  modal.
+- **Activity-detail placement uses the selected range — fixed 2026-08-14.**
+  For a selection inside a tall expanded Bash/Edit/Read-style detail surface,
+  the below/above candidates and fallback-space ranking are anchored to the
+  selected range. The full registered source bounds remain the collision
+  inventory, never a surrogate selection anchor.
+- **Formatted source carries exact selection offsets — fixed 2026-08-14.**
+  Syntax-highlighted file viewers annotate every aligned Shiki line and token
+  with absolute source offsets. Forward, reverse, cross-token, cross-line, and
+  soft-wrapped selections therefore recover the exact authored span in reading
+  order for visible-text copy, source copy, quote reply, source-line citation,
+  and comment tint. While a quote anchor is live, a scoped mutation observer
+  re-resolves its CSS highlight if React replaces the highlighted descendants;
+  no observer runs without live anchors.
 - **Paragraph quote buttons tint the quoted paragraph — fixed 2026-06-25.**
   Paragraph and whole-block quote actions create text-node-backed highlight
   ranges and re-resolve them when a composer update replaces rendered markdown
@@ -90,24 +114,46 @@ The early Phase 1 gaps were fixed 2026-06-23, verified in the running app.
 - **Comment tint** — the subtle green paint on an anchored source span.
 - **Quote circle** — the circled `>` affordance that triggers quote-comment.
   Two placements: floating next to a live selection, and one per paragraph.
+- **Selection action cluster** — the non-obscuring row of enabled circles for a
+  live selection: neutral copy icon for visible text, blue `</>` source copy,
+  purple `Aa` rich copy, green `>` quote reply, and green `+` new session.
 
 The vernacular here is GitHub's "quote reply" (`>` blockquotes), which is the
 mental model the feature was requested under.
 
 ## What the user sees (contract)
 
-Three entry points, one action.
+Three quote entry points, one quote action. A live selection also owns one
+shared action snapshot consumed by its compact action cluster and full context
+menu.
 
 1. **Type over a selection.** With a non-collapsed selection inside agent
    output and focus *not* already in a text field, the first printable
    keystroke: appends the selection as a quote block to the composer, moves
    focus to the composer, and that same keystroke becomes the first character
    of the comment typed below the quote.
-2. **Quote circle near a selection.** A floating circled `>` appears next to a
-   live selection. This is the primary path on touch, where there is no "start
-   typing" trigger. Tapping it focuses the composer (raising the soft keyboard)
-   and runs the same quote-comment.
-3. **Per-paragraph quote circle.** Each agent paragraph/block carries a circled
+2. **Action cluster near a selection.** Enabled circles appear beside a live
+   selection without covering it. The green `>` focuses the composer (raising
+   the soft keyboard on touch) and runs the same quote-comment. Optional
+   copy, `</>`, `Aa`, and `+` actions copy visible text, copy source, copy
+   semantic rich text, or open a same-project new-session composer. A control
+   press preserves a snapshot of the selected source snippets and DOM ranges,
+   so the action remains valid when the native highlight collapses during the
+   press.
+3. **Context menu over selected text.** Right-clicking inside a non-empty,
+   registered selection opens direct **Copy text**, **Copy source**, **Quote
+   reply**, and **New session** rows, omitting actions whose destination is not
+   available. This full menu does not depend on which compact bubble actions
+   are enabled. A right-click outside the selected range retains its ordinary
+   browser or component-owned behavior; project-path menus remain authoritative
+   over their links. Touch and pen long-press remain browser-owned so native
+   text selection and its adjustment handles keep working. Purpose-specific
+   interactive targets such as project-file links may retain their own
+   documented long-press or context menu; the selected-text menu does not claim
+   those events. A device reporting a coarse primary pointer keeps every
+   selected-text context-menu event browser-owned, including legacy or
+   compatibility events with a missing or mouse-like pointer type.
+4. **Per-paragraph quote circle.** Each agent paragraph/block carries a circled
    `>` at its end. Default visibility is hover-revealed on desktop, like the
    existing copy and render-toggle buttons in `text-block-actions`
    (`components/blocks/TextBlock.tsx`). An **Appearance** option — "always show
@@ -118,6 +164,31 @@ Three entry points, one action.
    highlight text — or right-drag
    to select lines (see the line-select helper below) — to comment on a specific
    sub-range instead of the whole paragraph.
+
+The **Appearance** rows immediately after `> Reply Buttons` separately control
+selection quote, visible-text copy, source copy, rich copy, and new session.
+Each row shows the actual enabled circle in its final color and style next to
+its caption, description, and toggle. Selection quote remains on by default to
+preserve the established behavior; the four additional circles are
+default-off. Disabling selection quote also disables the type-over-selection
+trigger, but does not affect the paragraph reply-button mode. Hiding the source
+copy circle never changes the default source-aware `Ctrl/Cmd+C` behavior or the
+complete context menu.
+
+**Source means pre-render input, not Markdown specifically.** A registered
+renderer supplies the authored representation it transformed. For prose this
+is usually Markdown; for rendered math it includes the original delimiters and
+TeX expression; for fixed-font and tool content it may be plain source text.
+When YA cannot align a transformed sub-range confidently, copy/quote falls back
+to selected visible text and never invents source syntax.
+
+**New-session transfer.** Transcript selections prefill the same-project
+composer with the selected text as a `>` blockquote. A file-viewer selection
+prepends `project/relative/path:line` or `:start-end` when every selected source
+span maps unambiguously to one file. Repeated or structurally transformed text
+without a reliable source offset still transfers the quote but omits the line
+citation. A session-owned modal also keeps **Quote reply**; a standalone file
+viewer has copy and new-session actions but no current-session quote target.
 
 The quote block itself:
 
@@ -136,10 +207,13 @@ The quote block itself:
 - A registered selection may live in the transcript or in a portaled modal or
   session hovercard opened from that session. Reusable modals establish a
   quote-selection root, while their file/text renderers register the actual
-  source. The floating `>` renders inside the owning surface and sends the
-  quote to the session composer behind it; on touch it stays visibly pinned
-  inside that surface. Modal headers, buttons, labels, and other unregistered
-  chrome remain ineligible.
+  source. The floating actions render inside the owning surface and the `>`
+  sends the quote to the session composer behind it. Modal headers, buttons,
+  labels, and other unregistered chrome remain ineligible.
+- Hover tooltips never activate while any pointer button is held. In
+  particular, dragging a native text selection across a glossary term keeps
+  the glossary text selectable and cannot insert a passive tooltip into the
+  gesture; the definition remains available after the button is released.
 - If the composer already holds text, two blank-line-separated newlines come
   first — this is exactly the existing `appendComposerTransferDraft` rule, not
   a new one.
@@ -210,13 +284,25 @@ stable session-scoped draft signal and passes that unchanged object to
 `MessageList`; publishing a character does not set parent React state or change
 a transcript prop.
 
-The selection-quote controller owns comment anchors in refs because anchors
-drive the imperative CSS Custom Highlight registry rather than rendered
-transcript markup. It subscribes to the draft signal only while at least one
-anchor is live. Ordinary edits marked unable to affect quote-prefixed lines
-return before signature parsing. A relevant edit computes signatures once,
-drops missing anchors, and updates the highlight registry without rendering
-historical rows.
+The selection pipeline has three typed owners behind the stable
+`useSelectionActions` composition hook:
+
+- `useSelectionQuoteAnchors` owns quote insertion, comment anchors, draft
+  reconciliation, mutation observation, and CSS Custom Highlight updates. It
+  subscribes to the draft signal only while at least one anchor is live.
+  Ordinary edits marked unable to affect quote-prefixed lines return before
+  signature parsing. A relevant edit computes signatures once, drops missing
+  anchors, and updates the highlight registry without rendering historical
+  rows.
+- `useSelectionActionCapture` owns selection snapshots, geometry and placement,
+  global selection/pointer/resize/scroll listeners, native source-aware copy,
+  and coarse-pointer transcript shielding.
+- `useSelectionActionPresentation` owns preferences, action dispatch, the full
+  selected-text context menu, mobile docking, local-surface portals, and the
+  action-cluster React presentation.
+
+The owners exchange immutable typed snapshots and a boolean quote-application
+result. They do not share each other's mutable refs or listener lifecycles.
 
 The submit path still clears all anchors next to the existing
 `draftControls.clearDraft()` calls — that is the send seam.
@@ -237,12 +323,6 @@ contracts remain open:
   selection path. It is not yet implemented. The gesture should feed the same
   quote-comment action as ordinary text selection, producing a range that maps
   back to source markdown rather than a DOM-only scrape.
-- **Selection-local `>` button.** Any completed selection in agent output should
-  surface a `>` quote-comment button positioned relative to the mouse/touch end
-  point at selection-drag end. It must not depend on selecting a large span or
-  landing near a particular paragraph action rail. The current floating button
-  exists, but this contract is broader: every valid selection should get a
-  visible nearby action.
 - **System output quote lane when Phase 2 widens scope.** The assistant
   paragraph lane now exists; when quote buttons are added to system output,
   thinking summaries, or tool sections, they should use the same reserved-lane
@@ -261,7 +341,9 @@ streaming-markdown container swaps inside `TextBlock`.
 
 Robustness is **best-effort by design**: the tint is a reminder of what you
 quoted, not load-bearing. If a re-render or virtualization drops a range it
-re-resolves on the next render from the anchor descriptor. The source-mode
+re-resolves after the registered source DOM mutates from the anchor descriptor.
+Exact source-offset anchors resolve the original occurrence even when the same
+text appears elsewhere. The source-mode
 `<pre className="text-block-source">` case is trivial — wrap the offset range
 directly.
 
@@ -346,6 +428,12 @@ already covers whole-paragraph quoting on those platforms.
   session's copy, selection-typing, and floating-`>` controller follow that
   registered text across the portal without creating a second quote path.
 
+  Exact syntax-highlighted source alignment shipped 2026-08-14. The file
+  viewer carries source offsets through Shiki's block-per-line DOM and uses one
+  mapping for extraction, citation, and persistent tint recovery. This is the
+  source-code path; it does not claim alignment for structurally rendered
+  Markdown.
+
   **Exact rendered-Markdown alignment remains follow-up work.** File viewers
   and expanded Read/Edit Markdown currently register the original source, so
   the shared extractor best-effort matches a visible selection back to that
@@ -372,6 +460,11 @@ already covers whole-paragraph quoting on those platforms.
   context-menu timing.
 
 ## Decisions
+
+- 2026-08-15 — **Selection behavior has three lifecycle owners behind one
+  composition hook** (vs. one hook owning anchors, global capture, and React
+  presentation): each owner can be exercised independently while callers keep
+  the existing `useSelectionActions` contract.
 
 - 2026-06-23 — **Tint paint = selected-span CSS highlight.** V1 keeps a list of
   live anchor ranges and paints them with `::highlight(comment-tint)`; the tint

@@ -20,15 +20,14 @@ import {
   type RetainedClientQueryEvent,
   useRetainedClientQuery,
 } from "../hooks/useRetainedClientQuery";
+import { isBrowserAppRoutePath } from "../lib/appHref";
 import { authEvents } from "../lib/authEvents";
 import {
   createClientQueryKey,
   type ClientQueryRequestContext,
 } from "../lib/clientQueryController";
 import { isRemoteClient } from "../lib/connection";
-import {
-  useInboxResponseSnapshot,
-} from "../lib/clientSummaryStore";
+import { useInboxResponseSnapshot } from "../lib/clientSummaryStore";
 import { INBOX_TIERS, type InboxTier } from "../lib/inboxTiers";
 import { useOptionalRemoteConnection } from "./RemoteConnectionContext";
 import { useCurrentSourceRuntime } from "./SourceRuntimeContext";
@@ -143,7 +142,13 @@ function getLocallyPatchableSessionUpdatedIds(
   const sessionIds = new Set<string>();
   for (const tier of ["needsAttention", "active", "recentActivity"] as const) {
     for (const item of inbox[tier]) {
-      sessionIds.add(item.sessionId);
+      // A content event cannot make an already-unread row more unread, so its
+      // content fields are safe to patch locally. A read row must revalidate:
+      // only the server can compare its new updatedAt with the durable
+      // last-seen marker and recompute inbox tier membership.
+      if (item.hasUnread) {
+        sessionIds.add(item.sessionId);
+      }
     }
   }
   return sessionIds;
@@ -224,7 +229,7 @@ export function InboxProvider({
     (remoteConnection !== null && remoteConnection.connection !== null);
   const queryEnabled =
     enabled &&
-    window.location.pathname !== "/login" &&
+    !isBrowserAppRoutePath(window.location.pathname, "/login") &&
     !authEvents.loginRequired;
 
   // Track the order of session IDs per tier for stable rendering
@@ -303,6 +308,7 @@ export function InboxProvider({
   } = useRetainedClientQuery<InboxResponse>({
     sourceKey,
     key: INBOX_QUERY_KEY,
+    bootstrapTier: "navigation",
     enabled: queryEnabled,
     ready: isRemoteConnectionReady,
     hasData: hasInitialLoad,
@@ -316,15 +322,16 @@ export function InboxProvider({
   /**
    * Force a full refresh with server-provided sort order.
    */
-  const refresh = useCallback(() => {
-    return refetchInboxQuery({ meta: { forceFullSort: true } });
+  const refresh = useCallback(async () => {
+    await refetchInboxQuery({ meta: { forceFullSort: true } });
   }, [refetchInboxQuery]);
 
   const refetch = useCallback(
-    (forceFullSort = false) =>
-      refetchInboxQuery(
+    async (forceFullSort = false) => {
+      await refetchInboxQuery(
         forceFullSort ? { meta: { forceFullSort: true } } : undefined,
-      ),
+      );
+    },
     [refetchInboxQuery],
   );
 

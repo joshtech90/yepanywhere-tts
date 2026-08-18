@@ -11,6 +11,7 @@ See also:
 - [`ui-architecture.md`](ui-architecture.md)
 - [`project-queue.md`](project-queue.md)
 - [`sidebar-session-ordering.md`](sidebar-session-ordering.md)
+- [`session-catalog-observation.md`](session-catalog-observation.md)
 - [`session-summary-fidelity.md`](session-summary-fidelity.md)
 - [`../docs/tactical/025-zustand-client-summary-store.md`](../docs/tactical/025-zustand-client-summary-store.md)
 - [`../docs/tactical/026-client-summary-long-tail.md`](../docs/tactical/026-client-summary-long-tail.md)
@@ -119,16 +120,87 @@ replace it and does not make events durable. Activity events that reduce into
 summary state must carry or capture their backend source so a host switch cannot
 apply an old host event to the new host's cache.
 
+### Catalog generations
+
+Server collection snapshots and deltas carry the catalog lineage described in
+[`session-catalog-observation.md`](session-catalog-observation.md): a
+`catalogEpoch` plus monotonic `catalogGeneration`. The client keeps that pair
+per source/query coverage. It can conditionally reconcile an already accepted
+generation rather than asking the server to rebuild the same projection.
+
+Generation ordering does not flatten observation fidelity. A newer partial
+event can advance selected field groups without proving a full list membership
+or complete transcript summary. Source changes, catalog epoch changes, and
+schema changes make a persisted generation incomparable and require a new
+snapshot.
+
+Within one tab, one retained `(sourceKey, queryKey)` entry owns acquisition,
+event invalidation, debounce/deadline timers, and in-flight work. Component
+subscriptions express coverage and render state; mounting the same hook twice
+must not install two revalidation owners.
+
+**Landed instance: the session-collection generation.** `GET /api/sessions`
+carries one, and `useGlobalSessionsFeed` replays it as `knownGeneration` behind
+`progressive-session-catalog` to be told `unchanged` instead of re-reading rows
+it holds. That clock is the *list's*, not the catalog's — it advances on
+anything that can change a rendered row, including metadata, unread state, and
+ownership, which the catalog's row-oriented generation does not cover. Do not
+conflate the two or persist one under the other's key.
+
+Offering an accepted generation claims the client still holds those rows, which
+binds it to coverage and not only to content. A consumer widening its window
+past the rows it retains needs rows; `unchanged` would answer it truthfully and
+leave it short forever. The accepted generation is therefore stored per
+`(source, query)` at module level — like any other shared per-source snapshot,
+because `applySnapshot` runs in whichever consumer owns the request — and read
+only together with a coverage check.
+
+An optional browser-persistence adapter may store bounded, serializable compact
+summary snapshots in IndexedDB, keyed by source/auth scope, schema, and catalog
+epoch/generation. `BroadcastChannel` or a small `localStorage` notice can tell
+sibling tabs that a newer generation exists; supported cross-tab locking may
+elect one fetcher. This is only a cold-start optimization. Missing/evicted
+storage, another device, or failed election falls back to the server, whose own
+single-flight computation remains authoritative. Do not persist full
+transcripts or provider payloads in the summary adapter.
+
+### Recent-visit membership
+
+Recent visits are bounded source-scoped membership: ordered session id,
+project id, and visit timestamp records. They do not contain or require a
+transcript or provider-aware session summary. A surface that displays recent
+session rows composes membership with existing normalized session/project
+records; a surface that only chooses a recent project reads project ids
+directly.
+
+Fetching recent membership must not resolve every visited session. In
+particular, New Session project defaulting performs no provider, session-index,
+or transcript work and does not delay its composer/provider/model regions.
+Successful visit/clear/remove mutations update the captured source. A browser
+recent-project shortcut is source-scoped as well; the same encoded path on two
+hosts is not one preference.
+
+The implementation handoff is
+[`docs/tactical/095-new-session-recent-project-readiness.md`](../docs/tactical/095-new-session-recent-project-readiness.md).
+
 ## Fetch Model
 
-Feed hooks own fetch mechanics:
+The retained query controller owns shared fetch mechanics:
 
 - remote connection readiness;
-- current summary source key capture;
+- source/query key capture and compatible coverage;
+- one in-flight acquisition and revalidation owner;
+- event invalidation plus debounce/deadline timers;
+- accepted server catalog epoch/generation;
+- request start timestamps and loading/error state; and
+- snapshot reporting into the store action supplied by the feed.
+
+Feed hooks bind a component's need to that retained entry:
+
+- current summary source key;
 - pagination;
-- loading and error state;
-- request start timestamps;
-- reporting snapshots into the store.
+- required coverage; and
+- controls/selectors exposed to the surface.
 
 Store selectors own UI data:
 
@@ -145,6 +217,93 @@ Feed hooks that publish snapshots capture the current source key when starting a
 request and pass that key to report functions. A late response from
 `host:macbook` updates the MacBook cache, even if the visible current source has
 since changed to `host:winnative`.
+
+### Retained query invariants
+
+Five contracts hold the shared-fetch mechanics together. They are easy to
+"simplify" into something that looks equivalent and is not.
+
+**Coverage is a partial order, not a total one.** A request answers a need when
+its coverage satisfies that need — more rows, stats included, more pages. Two
+consumers of one key can therefore be mutually non-dominating, differing on
+unrelated dimensions. Anywhere the code picks "the widest" it must tolerate
+selecting several and fall back to running each; first-subscriber-wins silently
+narrows coverage for everyone else.
+
+**One revalidation owner per `(sourceKey, queryKey)`.** Retaining a query shares
+its result; the machinery deciding *when* to refetch is shared separately, in
+`lib/clientQueryRevalidation.ts`. Subscribers declare the events they care about
+and how to run a revalidation; the owner unions the events, subscribes once to
+each, keeps one debounce timer, and runs the widest subscribers. A feed hook
+must not install its own activity listener and debounce timer beside the owner —
+per-hook timers make one event cost one refetch per mounted consumer, and
+whether those refetches collapse into one request depends on response latency.
+
+**Deadline demand is per retainer; acquisition is source-owned.** Each Project
+Queue consumer contributes its own server deadline or active-fallback need. One
+source scheduler arms the earliest deadline and owns the pending acquisition and
+bounded failure retry. Updating or releasing one contribution cannot cancel
+another contribution's deadline, the shared request, or a still-needed retry;
+the last remaining demand releases that ownership.
+
+**A request's admission generation is immutable.** Each entry carries an
+invalidation generation; a request records the generation under which it was
+admitted and never changes it. Demand arriving after invalidation cannot join or
+relabel that older request. Within one generation, accepted coverage also owns
+publication: a narrower late success or failure cannot overwrite a broader
+accepted result, while incomparable coverage remains independently applicable.
+These rules keep a response from erasing the invalidation it raced or replacing
+newer shared state merely because it settled last.
+
+**A shared fetch needs a shared place to put the result.** `applySnapshot` runs
+in the retained owner's closure, so a hook that keeps the value in its own
+`useState` only ever sees the responses it happened to own — every other
+consumer stays empty and refetches to fill itself in, which is the duplication
+the retained query was meant to remove. Server-side facts therefore live in a
+module-level per-source snapshot that consumers read through
+`useSyncExternalStore`; the hook keeps only view state that genuinely differs
+per consumer. `lib/devReloadStatusStore.ts` is the worked example: reload mode,
+the persisted dirty flag, worker activity, and safe-restart state are shared,
+while which banners are pending and which the viewer dismissed stay in the hook.
+Moving a globally-mounted hook onto the controller without this step looks like
+it works and quietly fetches once per mount.
+
+**The app shell mounts each feed once.** Where a component both needs a feed and
+is unmounted by ordinary navigation, the feed belongs in a provider above it
+rather than mounted twice — once to retain coverage and once to read it. The
+sidebar's `SidebarSessionFeedsProvider` is the worked example; its hook throws
+when the provider is absent rather than falling back to mounting its own pair,
+because a silent fallback restores the duplication it exists to remove.
+
+### Startup ordering
+
+A fresh tab mounts every app-shell hook in one commit, so without an ordering
+the selected page's own facts compete with global feeds and diagnostics for
+connection slots and the server's first turn. `lib/clientQueryBootstrap.ts`
+gives each source one coordinator, and retained work declares a tier: `route`
+for what the selected page needs to paint, `navigation` for shell counts and
+coverage retained across routes, `supplementary` for diagnostics, enrichment,
+and usage telemetry. A tier starts only once every earlier tier's registered
+work has settled.
+
+Three properties are load-bearing and easy to lose:
+
+- **Only the first acquisition is gated.** Revalidation — reconnect, visibility
+  restore, explicit refetch — never waits, so a stalled bootstrap cannot also
+  stall recovery. Once the last tier opens the source is done and never gates
+  again.
+- **Opening is deferred by at least a microtask.** Everything in the mount
+  commit registers before any tier is evaluated. Advancing eagerly lets a
+  navigation hook that mounts first find no route work registered and open the
+  gate on itself, which silently restores the unordered shape.
+- **A blocked tier has a deadline.** Withholding decorative work is the goal;
+  losing the shell to a hung route request is not.
+
+A hook that owns its own acquisition rather than going through
+`useRetainedClientQuery` joins by acquiring a slot directly;
+`useGlobalSessionsFeed` is the worked example. Tiering is advisory ordering, not
+a dependency graph: it must never be used to make one query's *correctness*
+depend on another having run.
 
 ## Shape
 

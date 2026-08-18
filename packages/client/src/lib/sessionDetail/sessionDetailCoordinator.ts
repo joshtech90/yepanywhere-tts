@@ -123,8 +123,7 @@ export type SessionDetailOlderPageRequest =
 
 export type SessionDetailAppliedOlderPage = SessionDetailAppliedWarmRefresh;
 
-export type SessionDetailAppliedInitialLoad =
-  SessionDetailAppliedWarmRefresh;
+export type SessionDetailAppliedInitialLoad = SessionDetailAppliedWarmRefresh;
 
 export interface SessionDetailLoadProgressOptions {
   nowMs?: number;
@@ -642,12 +641,29 @@ export class SessionDetailCoordinator {
     };
   }
 
+  applyFullTailReconciliation(
+    data: GetSessionResult,
+  ): SessionDetailAppliedWarmRefresh {
+    const sourceMessageCount = data.messages.length;
+    this.dispatchTranscriptAction(
+      {
+        type: "replaceTailWindow",
+        messages: data.messages,
+        session: data.session,
+        pagination: data.pagination,
+      },
+      { invalidateStructure: true },
+    );
+    return {
+      messageCount: sourceMessageCount,
+      pagination: data.pagination,
+      sourceMessageCount,
+    };
+  }
+
   buildOlderPageRequest(): SessionDetailOlderPageRequest {
     const pagination = this.readSelected(selectSessionDetailPagination);
-    if (
-      !pagination?.hasOlderMessages ||
-      !pagination.truncatedBeforeMessageId
-    ) {
+    if (!pagination?.hasOlderMessages || !pagination.truncatedBeforeMessageId) {
       return { requested: false };
     }
     return {

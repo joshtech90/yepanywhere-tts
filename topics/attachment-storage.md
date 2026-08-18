@@ -1,167 +1,190 @@
-# Attachment storage
+# Attachment Storage
 
-> Where YA writes user-uploaded attachments: project-relative `.attachments/`
-> by default, kept uncommittable via `.git/info/exclude`, with a confined
-> data-dir fallback when that is unsafe — surfaced as a configurable
-> storage-location setting.
+> User-uploaded attachments are explicit agent context, but their storage
+> location is governed by the global project-directory policy. App-data
+> storage is the default; project-local storage requires prior opt-in.
 
 Topic: attachment-storage
 
-Naming note: this file is what an earlier discussion called
-"attachment-default-and-config"; `attachment-storage` is the shorter,
-greppable `Topic:` namespace for the same contract.
+Parent contract: [Project Directory Storage](project-directory-storage.md).
 
-## Motivation
+Settings surface: [Storage Settings](storage-settings.md).
 
-Two schemes, and why the default moved:
+Status: corrected in current source after `0.7.0`; no stable npm release
+contains the storage-location setting yet. The release history below explains
+the missing-capability warning for older servers.
 
-- **Old (data-dir):** `~/.yep-anywhere/uploads/<base64url(project)>/<session>/`.
-  Bytes live entirely inside YA's private data dir, never in the repo —
-  confined and trivially wipeable, but **undiscoverable**: a TUI, a peer agent,
-  or the running Claude process in the same project cannot find an uploaded
-  file. The base64 dir name is only filesystem-safe namespacing, not a security
-  feature.
-- **New (project-relative):** `<project>/.attachments/<session>/`
-  <!-- verified: uploads/manager.ts:10,121-126 -->. Discoverable — the agent
-  prompt literally lists `User uploaded files in .attachments:\n<path>`
-  <!-- verified: supervisor/Process.ts:1693; sdk/messageQueue.ts:299 --> so any
-  tool with the working tree can `cat`/Read the file. This discoverability is
-  the whole point.
+## Why Attachments Are Stored
 
-**The one genuine regression** the data-dir scheme structurally avoided: in-repo
-bytes can be swept into `git add -A` and pushed to a public remote, and pasted
-screenshots may carry secrets/PII. Some users routinely add-all-and-push.
-Everything below mitigates exactly this.
+An uploaded file must survive long enough for the provider to read it, for a
+queued message to deliver it, and for the transcript to display or download it.
+That is intentional attachment persistence initiated by the upload action. It
+does not imply consent to place the bytes inside the selected project.
 
-Path traversal / symlink escape are at parity between the schemes (UUID-prefixed
-filenames, `realpath` + prefix containment, media-extension allowlist) and are
-not the concern here; the write-into-the-repo leak is.
+Two locations have existed:
 
-Tool-result media is deliberately outside this contract. YA-managed output is
-materialized under `<project>/.yep/tool-results/<session>/` (with a data-dir
-fallback) and served by opaque session media handles. It must never be written
-under `.attachments/`, listed as `User uploaded files in .attachments:`, or
-automatically supplied to a later provider turn. See
-[[session-media-handles]].
+- **YA data directory:**
+  `<data-dir>/uploads/<base64url(project)>/<session>/`. This was the original
+  implementation. It is centrally confined and project-namespaced.
+- **Project directory:** `<project>/.attachments/<session>/`. This became the
+  runtime default in commit `46bb9929` and first shipped in npm `0.5.0`.
 
-## Default resolution (setting unset)
+Project-local storage made an attachment easy for a provider running in the
+working tree to discover. That convenience is real, especially under a
+provider sandbox, but it does not justify an ambient project write. A Git
+exclude only hides the symptom from `git status`; it does not address checkout
+growth, synchronization, backups, privacy, or ownership of the project
+namespace.
 
-Per project, at upload time:
+## Release History And Pre-Correction Behavior
 
-1. **Non-git project** → `<project>/.attachments/<session>/`. No commit risk.
-2. **Git repo, `.attachments` is tracked/committed** → data-dir fallback,
-   `~/.yep-anywhere/uploads/<base64url(project)>/<session>/`. The repo author
-   chose to version that dir; YA will not dump session uploads into a push-bound
-   tracked path, and `.git/info/exclude` has no effect on already-tracked paths.
-3. **Git repo, `.attachments` not tracked** → run the force-exclude step, then
-   `<project>/.attachments/<session>/`.
+Before this correction there was no implemented attachment storage setting.
+The earlier "Configuration — v1" prose in this topic described a design that
+never landed.
 
-**Force-exclude step.** Idempotently ensure `.attachments/` is listed in the
-repo's `.git/info/exclude` — never the tracked `.gitignore` (Kyle's constraint:
-YA does not edit the user's committed ignore file). `.git/info/exclude` is a
-per-clone, uncommitted, invisible ignore that keeps new attachments out of
-`git status` and `git add -A` without dirtying any tracked file. **Skip the
-write when `.attachments` is already ignored by any mechanism** — the committed
-`.gitignore`, a global `core.excludesFile`, or a pre-existing
-`.git/info/exclude` line — detected with `git check-ignore -q
-<project>/.attachments`; a redundant exclude entry buys nothing. (This repo is
-the live example: `.gitignore` already lists `.attachments/`, so YA uses it and
-adds no exclude entry.) This step gates every default-path `.attachments` write
-and is **mandatory whenever the storage path is not manually configured**; for
-an explicitly configured in-repo path it is applied best-effort but the user has
-taken ownership.
+Stable npm releases `0.5.0`, `0.5.1`, `0.5.2`, `0.6.0`, `0.6.1`, `0.6.2`, and
+`0.7.0` route uploads to `<project>/.attachments/<session>/` whenever the upload
+route resolves a project path. They retain the older data-directory location
+as a read fallback.
 
-**Two checks, distinct roles** — do not conflate them:
+Those stable releases predate the shared managed-directory helper and do not
+themselves guarantee a `.git/info/exclude` entry. Source between the `0.7.0`
+tag and this correction called `ensureManagedProjectDir`, which could create
+the top-level directory and append `.attachments/` to the clone-local exclude
+file automatically.
 
-- `git ls-files --error-unmatch <project>/.attachments` (exit 0 ⇒ tracked) is
-  the **location** gate. Tracked-ness — not ignore state — decides data-dir
-  fallback (case 2): with the exclude in place, the only thing that can make
-  `.attachments` unsafe is its already being committed.
-- `git check-ignore -q <project>/.attachments` decides only **whether the
-  exclude write is redundant** (above). It is not the location gate; an earlier
-  design wrongly used it for that.
+Pre-session staging was already central and temporary. Before this correction,
+materializing a staged file into a real session moved it into the same
+project-local final location, so staging did not avoid the policy issue.
 
-## Configuration — v1: a single global setting
+## Location Resolution
 
-First version is **global only**: one "Attachment storage location" value
-applied to every project. Recommended home: Settings → **Agent context**
-(attachments are agent context — files the agent reads and the prompt lists);
-runner-up is Message delivery, but that pane governs delivery *timing*, and
-`local-access` is network binding/auth, not file storage.
+The first implementation uses the one global
+`projectDirectoryStorage: "app-data" | "project"` setting from the parent
+contract. There is no per-project override.
 
-Value model:
+### App data only — default
 
-| Value | Behavior |
-|-------|----------|
-| *unset* / "Project `.attachments/` (default)" | the resolution above |
-| "`~/.yep-anywhere/uploads/…`" | **always** data-dir; appends `<base64url(project)>/<session>/` |
-| *custom path* | always that path; appends `<base64url(project)>/<session>/` so projects don't collide |
+Final attachments are written below:
 
-Explicit values are honored **verbatim** — no smart fallback — because the user
-asked for them. The data-dir option's label must state that the
-`<encoded-project>/<session>/` subdir is appended, so it is not mistaken for a
-flat shared dump. Selecting the top entry explicitly is identical to leaving it
-unset; it is the smart default made visible.
+```text
+<data-dir>/projects/<project-key>/attachments/<session-id>/
+```
 
-UI: an editable combobox (dropdown with the two suggested entries plus a
-"Custom path…" item that reveals a free-text field). Validate a custom path as
-absolute (`/…`) or project-relative (no leading `/`, no `..`).
+Uploading and sending an attachment must not create `.attachments`, `.yep`, or
+a Git exclusion. The provider prompt names the actual attachment path. If a
+provider's filesystem policy cannot read the central path, YA explains that
+limitation or requires the user to opt into project-local storage; it does not
+change modes silently.
 
-The attachment chip should show the in-repo `.attachments/<session>/` location
-so users are not surprised that bytes landed in their tree; it already
-special-cases the `.attachments` segment when building its serve URL
-<!-- verified: client/AttachmentChip.tsx:71 -->. See [[relative-filenames]].
+### Store YA assets with projects — explicit opt-in
 
-## Future: per-project override (motivation + possibility)
+Attachments may be written below the one documented YA project root. The
+preferred new-write shape is:
 
-Deliberately **not** in v1. Motivation: a global setting cannot express that
-*some* repos should never use in-repo storage even when `.attachments` is not
-tracked — e.g. repos with aggressive `git add -A` habits, shared/public repos,
-or trees synced to a cloud provider — while others want in-repo always-on. A
-per-project override would let a project pin data-dir (or a custom path)
-regardless of the global default, or opt back into `.attachments` where the
-global default is conservative.
+```text
+<project>/.yep/attachments/<session-id>/
+```
 
-Possibility when built: store the override in per-project settings
-(`session-metadata.json` or an equivalent project record) and resolve
-per-project override → global setting → built-in default. v1 ships the global
-setting alone because it is simpler and sufficient; this section records the
-intended extension so the global value's shape does not foreclose it.
+This avoids creating another top-level hidden namespace. The implementation
+may retain `.attachments/` as a compatibility read location, but must not keep
+using it as an independent automatic write root merely because older versions
+did.
 
-## Serve surface (read path)
+Before the first project-local write, validate containment, reject symlinked or
+already tracked managed roots, and apply the parent topic's opt-in Git-exclude
+policy. A failure does not fall back by writing somewhere else inside the
+project.
 
-Attachment **display** goes through the dedicated narrow route
-`/api/projects/:projectId/sessions/:sessionId/upload/:filename`
-<!-- verified: routes/upload.ts:301-337 -->, which requires a UUID-prefixed
-filename and checks the new `.attachments` dir then the legacy data-dir. That
-route is equally tight for both schemes.
+## Agent Delivery Contract
 
-The broad `/api/local-image` and `/api/local-file` routes allow-list **every
-scanned project root** <!-- verified: routes/local-resource-policy.ts:119-146 -->
-and exist for rendering local media referenced in agent output / Markdown — they
-are **not** caused by the `.attachments` move. The only new interaction: a
-project-relative attachment now also sits under an already-allow-listed project
-root, so it is additionally reachable via those routes (allowed extensions only,
-and behind YA auth either way). See [[security]] for the trust-boundary contract
-on those routes.
+The delivered message includes an explicit path and small safe metadata such
+as filename, MIME type, size, and image dimensions. The surrounding label must
+not hard-code "files in `.attachments`" when the actual location is central or
+under `.yep/attachments`.
 
-## Deferred: retention / cleanup
+Attachments remain provider input. They are distinct from tool-result media,
+which is viewer output and is never appended automatically to a later turn.
+See [Session Media Handles](session-media-handles.md).
 
-**Not built.** Old data-dir attachments were trivially bulk-wiped under one
-directory; in-repo attachments scatter across repos. Future **when-needed
-suggestion trigger**: when a project's `.attachments/` grows large or old,
-surface a cleanup affordance (per-session and per-project clear; age/size
-pruning) rather than building eager retention now. Record here so the trigger is
-not reinvented.
+## Read And Serve Compatibility
 
-Pre-session attachment staging is tracked separately in
-`docs/tactical/028-pre-session-attachment-staging.md`. That plan uses the YA
-data dir only as a temporary staging area before a real session exists; it does
-not change this topic's final attachment storage behavior.
+The narrow attachment route remains the browser-facing read boundary:
 
-## See also
+```text
+GET /api/projects/:projectId/sessions/:sessionId/upload/:filename
+```
 
-- [[security]] — local-file / local-image serve allowlist and the
-  local-vs-public trust boundary.
-- [[relative-filenames]] — chip display of the in-repo `.attachments/<session>/`
-  path.
+It may check, in policy-defined order:
+
+1. the current central app-data location;
+2. the opted-in current project-local location; and
+3. legacy `<project>/.attachments/<session>/` and legacy central paths.
+
+A file is materialized under the session id known at upload time, which
+can differ from the logical session the client is viewing. Confirmed
+sources of divergence: the YA-generated provisional startup id used for a
+brand-new session's first turn (the provider reports the canonical id
+only after launch — see [Session ID Remap Events](session-id-remap.md)),
+and an explicit session fork, whose new id inherits turns whose
+attachments live under the source id. A current-version plain resume does
+not rotate the id (verified 2026-08-07 against live session files:
+entries carry only the filename's own `sessionId` across many resumed
+turns).
+
+Files are never moved to follow an id change: the delivered prompt names
+the physical path, and a provider may re-read it at any later turn. The
+persisted turn therefore also tells the browser where the file lives, and
+the client derives the URL's `<session>` segment from the physical
+directory in the persisted path — never from the viewed logical session
+id. Persisted paths from both Windows and POSIX hosts retain this routing
+identity; client parsing accepts either platform's directory separator. Only
+the `<project>` segment uses logical identity, because an
+app-data project key is not reversible to a URL project id. The route
+performs exact lookups only; it does not search sibling session
+directories.
+
+Reading a legacy attachment never authorizes creating, refreshing, migrating,
+or excluding that directory. The public response does not expose a new broad
+filesystem read capability merely because physical storage moved.
+
+Authenticated file viewers treat
+`<data-dir>/projects/<project-key>/attachments/` as always readable, even
+when the uploads file-access toggle is off. That path is YA-managed
+attachment storage, not an arbitrary extra folder. A `Read` of an
+attachment therefore opens in the same file viewer as a project file
+instead of returning `400 Invalid file path`.
+
+Public shares, frozen or live, may open the same attachment only when that
+exact path appears in the share body. The viewer uses the existing
+share-scoped file route and bearer secret; the client keeps
+attachment-shaped `~/` or absolute paths as the share `path` instead of
+dropping them as outside-project. The share still does not grant
+`/etc/passwd` or other app-data files just because they were mentioned.
+
+## Retention And Cleanup
+
+Attachment retention and cleanup remain incomplete. Central storage makes a
+bounded age/size policy and global cleanup practical; project-local opt-in
+requires equally explicit per-project reporting and cleanup.
+
+Changing storage mode does not move or delete existing attachments. A future
+cleanup/migration action must show exact paths, sizes, and consequences before
+mutation. Legacy reads remain until a separately approved compatibility
+decision removes them.
+
+## Capability Gate
+
+The location control is part of the permanent
+`project-directory-storage-policy` capability. Without it, a new client sends
+no storage field and warns that the older server may write uploads into project
+directories. See the parent topic for the full release corpus and absent-gate
+behavior.
+
+## Related Topics
+
+- [Project Directory Storage](project-directory-storage.md)
+- [Storage Settings](storage-settings.md)
+- [Session Media Handles](session-media-handles.md)
+- [Security](security.md)
+- [Pre-session Attachment Staging](../docs/tactical/028-pre-session-attachment-staging.md)

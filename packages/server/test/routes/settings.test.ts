@@ -3,7 +3,9 @@ import {
   AUTO_SESSION_TITLE_MAX_LENGTH,
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
+  NEVER_IDLE_REAP_HOURS,
 } from "@yep-anywhere/shared";
+import type { ProjectStoragePolicy } from "../../src/projects/projectStoragePolicy.js";
 import { createSettingsRoutes } from "../../src/routes/settings.js";
 import type { PublicShareService } from "../../src/services/PublicShareService.js";
 import type { HostAwakeService } from "../../src/services/host-awake/HostAwakeService.js";
@@ -16,12 +18,23 @@ import {
   MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH,
 } from "../../src/services/ServerSettingsService.js";
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}
+
 describe("Settings Routes", () => {
   let settings: ServerSettings;
   let mockServerSettingsService: ServerSettingsService;
 
   beforeEach(() => {
     settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectDirectoryStorage: "app-data",
+      toolResultMediaPreservation: "on-demand",
       serviceWorkerEnabled: true,
       persistRemoteSessionsToDisk: false,
       clientLogCollectionRequested: false,
@@ -32,6 +45,11 @@ describe("Settings Routes", () => {
       hostProcessObservabilityEnabled: true,
       hostAwakeMode: "off",
       hostAwakeBatteryFloorPercent: 10,
+      codexReasoningSummary: "auto",
+      codexReloadSafeSessions: false,
+      claudeGatewayDisableAgent: true,
+      claudeGatewayDisablePlanMode: true,
+      subagentMaxDepth: 1,
     };
 
     mockServerSettingsService = {
@@ -94,6 +112,383 @@ describe("Settings Routes", () => {
   });
 
   describe("PUT /", () => {
+    it("persists the default-off session wake gate", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wakeTurnsEnabled: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        wakeTurnsEnabled: true,
+      });
+    });
+
+    it.each([null, 0, 1, 4])(
+      "persists valid subagent nesting depth %p",
+      async (subagentMaxDepth) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subagentMaxDepth }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+          subagentMaxDepth,
+        });
+      },
+    );
+
+    it.each([-1, 5, 1.5, "1"])(
+      "rejects invalid subagent nesting depth %p",
+      async (subagentMaxDepth) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subagentMaxDepth }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
+
+    it("returns the effective idle-reap grace before it is persisted", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        getIdleReapHours: () => 7.5,
+      });
+
+      const response = await routes.request("/");
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).settings.idleReapHours).toBe(7.5);
+    });
+
+    it("persists fractional idle-reap hours and applies them live", async () => {
+      const onIdleReapHoursChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        getIdleReapHours: () => settings.idleReapHours ?? 24,
+        onIdleReapHoursChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idleReapHours: 2.5 }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        idleReapHours: 2.5,
+      });
+      expect(onIdleReapHoursChanged).toHaveBeenCalledWith(2.5);
+      expect((await response.json()).settings.idleReapHours).toBe(2.5);
+    });
+
+    it("normalizes negative idle-reap input to the Never notch", async () => {
+      const onIdleReapHoursChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onIdleReapHoursChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idleReapHours: -12 }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        idleReapHours: NEVER_IDLE_REAP_HOURS,
+      });
+      expect(onIdleReapHoursChanged).toHaveBeenCalledWith(
+        NEVER_IDLE_REAP_HOURS,
+      );
+    });
+
+    it.each([73, "24", null])(
+      "rejects invalid idle-reap input %p",
+      async (idleReapHours) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idleReapHours }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
+
+    it("updates the two independent storage policies", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectDirectoryStorage: "project",
+          toolResultMediaPreservation: "preserve",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectDirectoryStorage: "project",
+          toolResultMediaPreservation: "preserve",
+        }),
+      );
+    });
+
+    it("prepares project storage before persisting its new mode", async () => {
+      const events: string[] = [];
+      mockServerSettingsService.updateSettings = vi.fn(
+        async (updates: Partial<ServerSettings>) => {
+          events.push(`persist:${updates.projectDirectoryStorage}`);
+          settings = { ...settings, ...updates };
+          return settings;
+        },
+      );
+      const projectStoragePolicy = {
+        transitionMode: vi.fn(
+          async <T>(targetMode: string, commit: () => Promise<T>) => {
+            events.push(`prepare:${targetMode}`);
+            const result = await commit();
+            events.push(`committed:${targetMode}`);
+            return result;
+          },
+        ),
+      } as unknown as ProjectStoragePolicy;
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        projectStoragePolicy,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectDirectoryStorage: "project" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(events).toEqual([
+        "prepare:project",
+        "persist:project",
+        "committed:project",
+      ]);
+    });
+
+    it("serializes an explicit switch back despite a stale pre-queue mode", async () => {
+      const firstTransitionStarted = deferred();
+      const releaseFirstTransition = deferred();
+      let transitionTail = Promise.resolve();
+      const projectStoragePolicy = {
+        transitionMode: vi.fn(
+          <T>(targetMode: string, commit: () => Promise<T>): Promise<T> => {
+            const operation = transitionTail.then(async () => {
+              if (targetMode === "project") {
+                firstTransitionStarted.resolve();
+                await releaseFirstTransition.promise;
+              }
+              return commit();
+            });
+            transitionTail = operation.then(
+              () => undefined,
+              () => undefined,
+            );
+            return operation;
+          },
+        ),
+      } as unknown as ProjectStoragePolicy;
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        projectStoragePolicy,
+      });
+
+      const switchToProject = routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectDirectoryStorage: "project" }),
+      });
+      await firstTransitionStarted.promise;
+      const switchBack = routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectDirectoryStorage: "app-data" }),
+      });
+      releaseFirstTransition.resolve();
+
+      const responses = await Promise.all([switchToProject, switchBack]);
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(projectStoragePolicy.transitionMode).toHaveBeenCalledTimes(2);
+      expect(projectStoragePolicy.transitionMode).toHaveBeenNthCalledWith(
+        1,
+        "project",
+        expect.any(Function),
+      );
+      expect(projectStoragePolicy.transitionMode).toHaveBeenNthCalledWith(
+        2,
+        "app-data",
+        expect.any(Function),
+      );
+      expect(settings.projectDirectoryStorage).toBe("app-data");
+    });
+
+    it.each([
+      { projectDirectoryStorage: "both" },
+      { toolResultMediaPreservation: "cache" },
+    ])("rejects invalid storage settings %j", async (body) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+    it.each(["auto", "concise", "detailed", "none"] as const)(
+      "persists the %s Codex reasoning-summary mode",
+      async (codexReasoningSummary) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codexReasoningSummary }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+          codexReasoningSummary,
+        });
+      },
+    );
+
+    it.each(["short", "off", "", null, true])(
+      "rejects invalid Codex reasoning-summary mode %j",
+      async (codexReasoningSummary) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codexReasoningSummary }),
+        });
+
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toContain(
+          "codexReasoningSummary",
+        );
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
+
+    it("persists the reload-safe Codex opt-in", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexReloadSafeSessions: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        codexReloadSafeSessions: true,
+      });
+    });
+
+    it("rejects a non-boolean reload-safe Codex setting", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexReloadSafeSessions: "yes" }),
+      });
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain(
+        "codexReloadSafeSessions",
+      );
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it.each(["off", "before", "after"] as const)(
+      "persists the %s turn-timestamp placement",
+      async (turnTimestamps) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ turnTimestamps }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+          turnTimestamps,
+        });
+      },
+    );
+
+    it.each(["sometimes", "", null, true, { placement: "before" }])(
+      "rejects invalid turn-timestamp placement %j",
+      async (turnTimestamps) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ turnTimestamps }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          error: "turnTimestamps must be one of: off, before, after",
+        });
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
+
     it("persists a host process observability opt-out", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -483,6 +878,45 @@ describe("Settings Routes", () => {
       });
     });
 
+    it("accepts the source-review opt-in and bounded response turns", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceReviewSubmissionsEnabled: true,
+          sourceReviewResponseTurns: 16,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        sourceReviewSubmissionsEnabled: true,
+        sourceReviewResponseTurns: 16,
+      });
+    });
+
+    it.each([
+      { sourceReviewSubmissionsEnabled: "yes" },
+      { sourceReviewResponseTurns: 0 },
+      { sourceReviewResponseTurns: 33 },
+      { sourceReviewResponseTurns: 1.5 },
+    ])("rejects invalid source-review settings %j", async (body) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("accepts Project Queue quiet-window settings", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -648,6 +1082,8 @@ describe("Settings Routes", () => {
       expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
         url: "http://localhost:4141",
         startCommand: undefined,
+        disableAgent: true,
+        disablePlanMode: true,
       });
     });
 
@@ -677,8 +1113,96 @@ describe("Settings Routes", () => {
       expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
         url: "http://localhost:4141",
         startCommand: "HOST=localhost gateway start",
+        disableAgent: true,
+        disablePlanMode: true,
       });
     });
+
+    it("persists and applies the Claude Gateway Agent denial live", async () => {
+      const onClaudeGatewaySettingsChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onClaudeGatewaySettingsChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeGatewayDisableAgent: false }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeGatewayDisableAgent: false,
+      });
+      expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
+        url: undefined,
+        startCommand: undefined,
+        disableAgent: false,
+        disablePlanMode: true,
+      });
+    });
+
+    it.each([null, "false", 0])(
+      "rejects invalid Claude Gateway Agent denial %p",
+      async (claudeGatewayDisableAgent) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claudeGatewayDisableAgent }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
+
+    it("persists and applies the Claude Gateway plan-mode exclusion live", async () => {
+      const onClaudeGatewaySettingsChanged = vi.fn();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onClaudeGatewaySettingsChanged,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeGatewayDisablePlanMode: false }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        claudeGatewayDisablePlanMode: false,
+      });
+      expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
+        url: undefined,
+        startCommand: undefined,
+        disableAgent: true,
+        disablePlanMode: false,
+      });
+    });
+
+    it.each([null, "false", 0])(
+      "rejects invalid Claude Gateway plan-mode exclusion %p",
+      async (claudeGatewayDisablePlanMode) => {
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+        });
+
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claudeGatewayDisablePlanMode }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([
       ["non-string", 42],
@@ -747,6 +1271,8 @@ describe("Settings Routes", () => {
       expect(onClaudeGatewaySettingsChanged).toHaveBeenCalledWith({
         url: undefined,
         startCommand: undefined,
+        disableAgent: true,
+        disablePlanMode: true,
       });
     });
 
@@ -1159,7 +1685,8 @@ describe("Settings Routes", () => {
               claude: 60,
               codex: 10,
             },
-            minimumInputTokens: 100_000,
+            minimumWastedTokens: 25_000,
+            recentActivityMinutes: 5,
           },
         }),
       });
@@ -1174,7 +1701,8 @@ describe("Settings Routes", () => {
             claude: 60,
             codex: 10,
           },
-          minimumInputTokens: 100_000,
+          minimumWastedTokens: 25_000,
+          recentActivityMinutes: 5,
         },
       });
     });
@@ -1383,11 +1911,55 @@ describe("Settings Routes", () => {
           error:
             "claudeAutoCompactPercentOverride must be an integer from 1 to 100, or 0/null to clear",
         });
-        expect(
-          mockServerSettingsService.updateSettings,
-        ).not.toHaveBeenCalled();
+        expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
       },
     );
+
+    it("accepts the Claude steer foreground-Bash policy", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const policy = {
+        allowRegex: ".*agentctl watch.*",
+        denyRegex: ".*--exclusive.*",
+      };
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeSteerBackgroundBash: policy }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenLastCalledWith(
+        { claudeSteerBackgroundBash: policy },
+      );
+    });
+
+    it.each([
+      { allowRegex: "[", denyRegex: "" },
+      { allowRegex: "(?=unsafe)", denyRegex: "" },
+      { allowRegex: "(unsafe)\\1", denyRegex: "" },
+      { allowRegex: ".*" },
+      { allowRegex: ".*", denyRegex: "", extra: true },
+    ])("rejects invalid Claude steer Bash policy %j", async (policy) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeSteerBackgroundBash: policy }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error:
+          "claudeSteerBackgroundBash must contain valid allowRegex and denyRegex strings",
+      });
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
 
     it("rejects invalid provider-scoped helper model defaults", async () => {
       const routes = createSettingsRoutes({
@@ -1558,11 +2130,11 @@ describe("Settings Routes", () => {
     });
 
     it("revokes stored public shares when disabling the feature", async () => {
-      const revokeAllShares = vi.fn(async () => 2);
+      const disableAndRevoke = vi.fn(async () => 2);
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
         publicShareService: {
-          revokeAllShares,
+          disableAndRevoke,
         } as unknown as PublicShareService,
       });
 
@@ -1578,7 +2150,207 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
         publicSharesEnabled: false,
       });
-      expect(revokeAllShares).toHaveBeenCalled();
+      expect(disableAndRevoke).toHaveBeenCalled();
+    });
+
+    it("disables public shares before a later compound effect fails", async () => {
+      settings = { ...settings, publicSharesEnabled: true };
+      const events: string[] = [];
+      let disableMarkerPresent = false;
+      let grantPresent = true;
+      mockServerSettingsService.updateSettings = vi.fn(
+        async (updates: Partial<ServerSettings>) => {
+          settings = { ...settings, ...updates };
+          events.push(`persist:${updates.publicSharesEnabled}`);
+          return settings;
+        },
+      );
+      const disableAndRevoke = vi.fn(async () => {
+        events.push("shares:disable");
+        disableMarkerPresent = true;
+        grantPresent = false;
+        return 1;
+      });
+      const enable = vi.fn(async () => {
+        events.push("shares:enable");
+        if (!disableMarkerPresent) {
+          grantPresent = true;
+        }
+        disableMarkerPresent = false;
+      });
+      const onRemoteSessionPersistenceChanged = vi.fn(async () => {
+        events.push("remote-persistence:fail");
+        throw new Error("remote persistence failed");
+      });
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onRemoteSessionPersistenceChanged,
+        publicShareService: {
+          disableAndRevoke,
+          enable,
+        } as unknown as PublicShareService,
+      });
+      routes.onError((error, c) => c.json({ error: error.message }, 500));
+
+      const disabling = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          publicSharesEnabled: false,
+          persistRemoteSessionsToDisk: true,
+        }),
+      });
+
+      expect(disabling.status).toBe(500);
+      expect(await disabling.json()).toEqual({
+        error: "remote persistence failed",
+      });
+      expect(settings.publicSharesEnabled).toBe(false);
+      expect(events).toEqual([
+        "persist:false",
+        "shares:disable",
+        "remote-persistence:fail",
+      ]);
+
+      const enabling = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publicSharesEnabled: true }),
+      });
+
+      expect(enabling.status).toBe(200);
+      expect(events).toEqual([
+        "persist:false",
+        "shares:disable",
+        "remote-persistence:fail",
+        "persist:true",
+        "shares:enable",
+      ]);
+      expect(grantPresent).toBe(false);
+    });
+
+    it.each([
+      [false, true],
+      [true, false],
+    ] as const)(
+      "serializes public-share persistence and effects for %s then %s",
+      async (firstEnabled, secondEnabled) => {
+        const gates = [deferred(), deferred()];
+        const events: string[] = [];
+        let _update = 0;
+        mockServerSettingsService.updateSettings = vi.fn(
+          async (updates: Partial<ServerSettings>) => {
+            const enabled = updates.publicSharesEnabled;
+            events.push(`persist:start:${enabled}`);
+            await gates[_update++]!.promise;
+            settings = { ...settings, ...updates };
+            events.push(`persist:done:${enabled}`);
+            return settings;
+          },
+        );
+        const disableAndRevoke = vi.fn(async () => {
+          events.push("effect:false");
+          return 0;
+        });
+        const enable = vi.fn(async () => {
+          events.push("effect:true");
+        });
+        const routes = createSettingsRoutes({
+          serverSettingsService: mockServerSettingsService,
+          publicShareService: {
+            disableAndRevoke,
+            enable,
+          } as unknown as PublicShareService,
+        });
+        const request = (enabled: boolean) =>
+          routes.request("/", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ publicSharesEnabled: enabled }),
+          });
+
+        const first = request(firstEnabled);
+        const second = request(secondEnabled);
+        await vi.waitFor(() => {
+          expect(events).toEqual([`persist:start:${firstEnabled}`]);
+        });
+
+        gates[0]!.resolve();
+        await expect(first).resolves.toMatchObject({ status: 200 });
+        await vi.waitFor(() => {
+          expect(events).toEqual([
+            `persist:start:${firstEnabled}`,
+            `persist:done:${firstEnabled}`,
+            `effect:${firstEnabled}`,
+            `persist:start:${secondEnabled}`,
+          ]);
+        });
+
+        gates[1]!.resolve();
+        await expect(second).resolves.toMatchObject({ status: 200 });
+        expect(events).toEqual([
+          `persist:start:${firstEnabled}`,
+          `persist:done:${firstEnabled}`,
+          `effect:${firstEnabled}`,
+          `persist:start:${secondEnabled}`,
+          `persist:done:${secondEnabled}`,
+          `effect:${secondEnabled}`,
+        ]);
+      },
+    );
+
+    it("keeps remote-executor persistence behind an in-flight share disable", async () => {
+      const disableGate = deferred();
+      const events: string[] = [];
+      mockServerSettingsService.updateSettings = vi.fn(
+        async (updates: Partial<ServerSettings>) => {
+          events.push(
+            "publicSharesEnabled" in updates
+              ? `persist:shares:${updates.publicSharesEnabled}`
+              : `persist:executors:${updates.remoteExecutors?.join(",")}`,
+          );
+          settings = { ...settings, ...updates };
+          return settings;
+        },
+      );
+      const disableAndRevoke = vi.fn(async () => {
+        events.push("disable:start");
+        await disableGate.promise;
+        events.push("disable:done");
+        return 0;
+      });
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        publicShareService: {
+          disableAndRevoke,
+        } as unknown as PublicShareService,
+      });
+
+      const disabling = routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publicSharesEnabled: false }),
+      });
+      await vi.waitFor(() => {
+        expect(events).toEqual(["persist:shares:false", "disable:start"]);
+      });
+      const updatingExecutors = routes.request("/remote-executors", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ executors: ["worker-one"] }),
+      });
+      await Promise.resolve();
+      expect(events).toEqual(["persist:shares:false", "disable:start"]);
+
+      disableGate.resolve();
+      await expect(disabling).resolves.toMatchObject({ status: 200 });
+      await expect(updatingExecutors).resolves.toMatchObject({ status: 200 });
+      expect(events).toEqual([
+        "persist:shares:false",
+        "disable:start",
+        "disable:done",
+        "persist:executors:worker-one",
+      ]);
     });
 
     it("accepts and normalizes helper target settings", async () => {

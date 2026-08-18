@@ -4,7 +4,18 @@
  * Re-exports all provider implementations and types.
  */
 
-import type { ClaudeAdditionalModelSelection } from "@yep-anywhere/shared";
+import {
+  DEFAULT_CODEX_REASONING_SUMMARY,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
+  type ClaudeAdditionalModelSelection,
+  type CodexReasoningSummary,
+  type SubagentMaxDepth,
+} from "@yep-anywhere/shared";
+import {
+  isProviderRuntimeHostAvailable,
+  retainProviderRuntimeProcessGroup,
+  startHostedProviderSession,
+} from "./provider-runtime-host.js";
 // Types
 import type { AgentProvider, ProviderName } from "./types.js";
 export type {
@@ -98,9 +109,29 @@ export interface ProviderRuntimeConfig {
     | undefined;
   /** Whether legacy ClaudeOllama has configured or persisted usage. */
   isClaudeOllamaVisible?: () => boolean;
+  /** Cloneable process-scoped settings supplied to a provider worker. */
+  getProviderRuntimeSnapshot?: () => ProviderRuntimeSnapshot;
+}
+
+export interface ProviderRuntimeSnapshot {
+  codexCliPath?: string;
+  codexReasoningSummary?: CodexReasoningSummary;
+  claudeAdditionalModels?: readonly ClaudeAdditionalModelSelection[];
+  claudeGatewayUrl?: string;
+  claudeGatewayStartCommand?: string;
+  claudeGatewayDisableAgent?: boolean;
+  claudeGatewayDisablePlanMode?: boolean;
+  subagentMaxDepth?: SubagentMaxDepth;
+  ollamaUrl?: string;
+  ollamaSystemPrompt?: string;
+  ollamaUseFullSystemPrompt?: boolean;
+  ambientXaiApiKey?: string;
+  grokBuildUseXaiApiKey?: boolean;
 }
 
 let isClaudeOllamaVisible = () => false;
+let getProviderRuntimeSnapshot = (): ProviderRuntimeSnapshot => ({});
+const hostedProviderProxies = new Map<ProviderName, AgentProvider>();
 
 export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
   claudeProvider.setAdditionalModelsGetter(
@@ -109,6 +140,72 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
   codexProvider.setCodexPath(config.codexCliPath);
   codexOSSProvider.setCodexPath(config.codexCliPath);
   isClaudeOllamaVisible = config.isClaudeOllamaVisible ?? (() => false);
+  getProviderRuntimeSnapshot =
+    config.getProviderRuntimeSnapshot ?? (() => ({}));
+  const getCodexReasoningSummary = (): CodexReasoningSummary =>
+    getProviderRuntimeSnapshot().codexReasoningSummary ??
+    DEFAULT_CODEX_REASONING_SUMMARY;
+  const getSubagentMaxDepth = (): SubagentMaxDepth => {
+    const configured = getProviderRuntimeSnapshot().subagentMaxDepth;
+    return configured === undefined ? DEFAULT_SUBAGENT_MAX_DEPTH : configured;
+  };
+  claudeProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+  claudeGatewayProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+  claudeOllamaProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+  grokACPProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+  codexProvider.setReasoningSummaryGetter(getCodexReasoningSummary);
+  codexProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
+}
+
+function hostedProvider(rawProvider: AgentProvider): AgentProvider {
+  const existing = hostedProviderProxies.get(rawProvider.name);
+  if (existing) return existing;
+  const proxy = new Proxy(rawProvider, {
+    get(target, property) {
+      if (
+        property === "getAvailableModels" &&
+        target.name === "claude-gateway"
+      ) {
+        return async () => {
+          const models = await target.getAvailableModels();
+          const processGroupId =
+            ClaudeGatewayProvider.getOwnedGatewayProcessGroupId();
+          if (processGroupId) {
+            await retainProviderRuntimeProcessGroup(processGroupId);
+            if (
+              !ClaudeGatewayProvider.relinquishOwnedGatewayProcessGroup(
+                processGroupId,
+              )
+            ) {
+              throw new Error(
+                "Claude Gateway ownership changed during host transfer",
+              );
+            }
+          }
+          return models;
+        };
+      }
+      if (property === "startSession") {
+        return (options: Parameters<AgentProvider["startSession"]>[0]) =>
+          startHostedProviderSession(
+            target.name,
+            options,
+            getProviderRuntimeSnapshot(),
+          );
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  hostedProviderProxies.set(rawProvider.name, proxy);
+  return proxy;
+}
+
+export { isProviderRuntimeHostAvailable };
+
+function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
+  if (!isProviderRuntimeHostAvailable()) return rawProvider;
+  return hostedProvider(rawProvider);
 }
 
 /**
@@ -127,7 +224,7 @@ export function getAllProviders(): AgentProvider[] {
     grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
     opencodeProvider,
     piProvider,
-  ];
+  ].map(runtimeProvider);
 }
 
 /**
@@ -140,7 +237,7 @@ export function getAllProviders(): AgentProvider[] {
  * "grok" added (additive, isolated). When ENABLED_PROVIDERS does not include "grok",
  * getProvider("grok") is never reached from normal flows.
  */
-export function getProvider(name: ProviderName): AgentProvider | null {
+export function getRawProvider(name: ProviderName): AgentProvider | null {
   switch (name) {
     case "claude":
       return claudeProvider;
@@ -165,4 +262,9 @@ export function getProvider(name: ProviderName): AgentProvider | null {
     default:
       return null;
   }
+}
+
+export function getProvider(name: ProviderName): AgentProvider | null {
+  const provider = getRawProvider(name);
+  return provider ? runtimeProvider(provider) : null;
 }

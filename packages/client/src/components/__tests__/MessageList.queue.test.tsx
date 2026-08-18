@@ -7,12 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import {
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   installMessageListTestEnvironment,
   assistantMessage,
@@ -49,10 +44,40 @@ describe("MessageList queue rows", () => {
     expect(onCancelDeferred).toHaveBeenCalledWith("temp-queued");
   });
 
+  it("renders queued /archive through the shared done lane without provider-queue actions", () => {
+    render(
+      <MessageList
+        messages={[]}
+        deferredMessages={[
+          {
+            tempId: "ya-done-queued",
+            content: "/archive",
+            timestamp: "2026-08-16T10:00:00.000Z",
+            kind: "ya-command",
+            yaCommand: "done",
+            status: "queued",
+          },
+        ]}
+        onCancelDeferred={vi.fn()}
+        onEditDeferred={vi.fn()}
+        onSteerDeferred={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("/archive")).toBeTruthy();
+    expect(screen.getByText("Queued (after current turn)")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit queued message" })).toBe(
+      null,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Cancel queued message" }),
+    ).toBe(null);
+    expect(screen.queryByText("Steer now")).toBe(null);
+  });
+
   it("offers take-to-composer editing only while the composer is blank", () => {
     const onEditDeferred = vi.fn();
-    const composerEditAvailabilityStore =
-      createComposerEditAvailabilityStore();
+    const composerEditAvailabilityStore = createComposerEditAvailabilityStore();
     composerEditAvailabilityStore.setDraftText("   ");
     const deferredMessages = [
       {

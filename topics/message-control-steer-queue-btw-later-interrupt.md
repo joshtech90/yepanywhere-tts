@@ -93,6 +93,14 @@ Rationale:
 - Observed on 2026-06-07: patient rows did deliver per contract after the quiet
   threshold, while a later regular queued row passed them as intended.
 
+### Composer acknowledgement safety
+
+Send, Steer, Queue, and Project Queue optimistically empty the composer so the
+next turn can be drafted while the request is in flight. A later successful
+acknowledgement confirms only that optimistic empty state. If the user has
+already begun the next draft, the acknowledgement must preserve both its live
+text and its recovery copy; it must never clear the newer turn.
+
 ### Patient countdown and promotion proposal
 
 Status: promotion landed 2026-07-03; countdown still a proposal.
@@ -229,6 +237,29 @@ the provider turn boundary, even when a long-running tool outlives the ordinary
 the provider writes the turn. Reload must therefore show the accepted steer,
 then reconcile it with the durable row rather than letting a live assistant
 response appear without the user turn it answers.
+Until that durable counterpart arrives or explicit cancellation succeeds, a
+persisted-tail replacement must retain the optimistic echo as a transient
+overlay. A tail snapshot may predate the provider write that confirms the send;
+it is authoritative for its persisted window, but its omission cannot revoke a
+server-accepted user turn. A later replacement containing the durable row must
+collapse the overlay into that row rather than render two user turns.
+Accepting a direct or steering send also rejoins the live viewport tail.
+Subsequent visible thinking growth continues that follow until an explicit
+wheel, touch, keyboard, or scrollbar gesture cancels it; confirming the
+optimistic row must not make the accepted turn appear to vanish above the
+viewport.
+
+`sent` is server acceptance, not proof that the provider consumed the message.
+If Codex rejects a steer because YA's cached active-turn ID is stale, the
+adapter adopts Codex's reported actual ID and retries once. Only a successful
+retry counts as provider steering; otherwise the already accepted message must
+remain queued for a later delivery boundary.
+
+Hard-abort recovery owns the same accepted-message obligation. YA may drain
+pending user messages from the failed process for transfer, but it must keep
+the prior provider ownership claimed until shutdown is verified. A replacement
+process may receive those messages only after that verification, preventing
+two app-server clients from claiming one retained Codex runtime and socket.
 
 A delivered steering turn renders at its delivery point, not its send
 point. In particular, when pending steers are delivered by an interrupt

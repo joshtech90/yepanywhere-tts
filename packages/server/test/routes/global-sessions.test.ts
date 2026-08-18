@@ -79,12 +79,18 @@ describe("Global Sessions Routes", () => {
       permissionMode: string;
       modeVersion: number;
       isRetainingProviderWork?: () => boolean;
+      lastProviderMessageTime?: Date | null;
     }
   >;
   let unreadMap: Map<string, boolean>;
   let metadataMap: Map<
     string,
-    { customTitle?: string; isArchived?: boolean; isStarred?: boolean }
+    {
+      customTitle?: string;
+      isArchived?: boolean;
+      isStarred?: boolean;
+      autoResumeDisabled?: boolean;
+    }
   >;
   let externalSessions: Set<string>;
 
@@ -215,6 +221,18 @@ describe("Global Sessions Routes", () => {
       expect(result.sessions[1].projectName).toBe("project-two");
     });
 
+    it("exposes manual resume exemptions in session summaries", async () => {
+      const project = createProject("proj1", "project-one", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(5));
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      metadataMap.set("sess1", { autoResumeDisabled: true });
+
+      const result = await makeRequest();
+
+      expect(result.sessions[0].autoResumeDisabled).toBe(true);
+    });
+
     it("only computes global stats when includeStats=true", async () => {
       const project = createProject("proj1", "project-one", "/sessions/proj1");
       const session = createSession("sess1", "proj1", minutesAgo(5));
@@ -290,6 +308,153 @@ describe("Global Sessions Routes", () => {
 
       expect(result.sessions[0].projectId).toBe("proj1");
       expect(result.sessions[0].projectName).toBe("my-project");
+    });
+  });
+
+  describe("conditional reads", () => {
+    async function readCollection(
+      routes: ReturnType<typeof createGlobalSessionsRoutes>,
+      queryString = "",
+    ): Promise<GlobalSessionsResponse & { unchanged?: true }> {
+      const response = await routes.request(`/${queryString}`);
+      expect(response.status).toBe(200);
+      return response.json();
+    }
+
+    function setUpOneSession(eventBus: EventBus) {
+      const project = createProject("proj1", "project-one", "/sessions/proj1");
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [
+        createSession("sess1", "proj1", minutesAgo(5)),
+      ]);
+      return createGlobalSessionsRoutes(getDeps({ eventBus }));
+    }
+
+    it("answers an unchanged collection without walking any project", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+
+      const first = await readCollection(routes);
+      expect(first.sessions).toHaveLength(1);
+      expect(first.generation).toBeGreaterThan(0);
+      const walks = vi.mocked(mockScanner.listProjects).mock.calls.length;
+
+      const second = await readCollection(
+        routes,
+        `?knownGeneration=${first.generation}`,
+      );
+      expect(second.unchanged).toBe(true);
+      expect(second.generation).toBe(first.generation);
+      expect(second.sessions).toBeUndefined();
+      expect(vi.mocked(mockScanner.listProjects).mock.calls).toHaveLength(
+        walks,
+      );
+    });
+
+    it("re-walks once an event could have changed a row", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+      const first = await readCollection(routes);
+
+      eventBus.emit({
+        type: "session-metadata-changed",
+        sessionId: "sess1",
+        starred: true,
+        timestamp: new Date().toISOString(),
+      });
+
+      const second = await readCollection(
+        routes,
+        `?knownGeneration=${first.generation}`,
+      );
+      expect(second.unchanged).toBeUndefined();
+      expect(second.sessions).toHaveLength(1);
+      expect(second.generation).toBeGreaterThan(first.generation as number);
+    });
+
+    it("leaves a connection-only event's generation alone", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+      const first = await readCollection(routes);
+
+      // Nothing a row renders, so a client holding rows is still current.
+      eventBus.emit({
+        type: "browser-tab-connected",
+        tabId: "tab-1",
+        timestamp: new Date().toISOString(),
+      } as never);
+
+      const second = await readCollection(
+        routes,
+        `?knownGeneration=${first.generation}`,
+      );
+      expect(second.unchanged).toBe(true);
+    });
+
+    it("walks once for a herd of identical concurrent reads", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+
+      // Twenty tabs reconnecting at the same instant. None of them can hold a
+      // generation yet, so this is the cold path the conditional read cannot
+      // help with.
+      const herd = await Promise.all(
+        Array.from({ length: 20 }, () => readCollection(routes)),
+      );
+
+      for (const result of herd) {
+        expect(result.sessions).toHaveLength(1);
+      }
+      expect(vi.mocked(mockScanner.listProjects).mock.calls).toHaveLength(1);
+    });
+
+    it("re-walks a herd that arrives after the collection changed", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+      await readCollection(routes);
+      const walks = vi.mocked(mockScanner.listProjects).mock.calls.length;
+
+      eventBus.emit({
+        type: "session-metadata-changed",
+        sessionId: "sess1",
+        starred: true,
+        timestamp: new Date().toISOString(),
+      });
+      await Promise.all(
+        Array.from({ length: 20 }, () => readCollection(routes)),
+      );
+
+      // One more walk for the new generation, not twenty, and not zero.
+      expect(vi.mocked(mockScanner.listProjects).mock.calls).toHaveLength(
+        walks + 1,
+      );
+    });
+
+    it("never short-circuits a cursor page", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+      const first = await readCollection(routes);
+
+      const paged = await readCollection(
+        routes,
+        `?after=${new Date().toISOString()}&knownGeneration=${first.generation}`,
+      );
+      expect(paged.unchanged).toBeUndefined();
+      expect(paged.sessions).toBeDefined();
+    });
+
+    it("rejects a token no generation ever had", async () => {
+      const eventBus = new EventBus();
+      const routes = setUpOneSession(eventBus);
+
+      for (const token of ["0", "-1", "not-a-number", "999999"]) {
+        const result = await readCollection(
+          routes,
+          `?knownGeneration=${token}`,
+        );
+        expect(result.unchanged).toBeUndefined();
+        expect(result.sessions).toBeDefined();
+      }
     });
   });
 
@@ -628,7 +793,8 @@ describe("Global Sessions Routes", () => {
 
       expect(codexScanner.listProjects).toHaveBeenCalledTimes(1);
       expect(codexScanner.getSessionsForProject).not.toHaveBeenCalled();
-      expect(codexReaderFactory).toHaveBeenCalledTimes(1);
+      // List walk plus one child-attach pass per project, not per session.
+      expect(codexReaderFactory).toHaveBeenCalledTimes(2);
       expect(codexReaderFactory).toHaveBeenCalledWith(project1.path);
       expect(result.sessions.some((s) => s.id === "codex-sess-1")).toBe(true);
     });
@@ -866,6 +1032,42 @@ describe("Global Sessions Routes", () => {
       const result = await makeRequest();
 
       expect(result.sessions[0].hasUnread).toBe(true);
+    });
+
+    it("uses owned-process activity for unread, recency, and sorting", async () => {
+      const project = createProject("proj1", "project", "/sessions/proj1");
+      const lastSeenAt = minutesAgo(20);
+      const processUpdatedAt = new Date(minutesAgo(2));
+      const activeSession = createSession("active", "proj1", hoursAgo(2), {
+        provider: "codex",
+      });
+      const otherSession = createSession("other", "proj1", minutesAgo(10));
+
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [activeSession, otherSession]);
+      processMap.set("active", {
+        id: "proc-active",
+        getPendingInputRequest: () => null,
+        state: { type: "in-turn" },
+        permissionMode: "default",
+        modeVersion: 1,
+        lastProviderMessageTime: processUpdatedAt,
+      });
+      vi.mocked(mockNotificationService.hasUnread).mockImplementation(
+        (_sessionId: string, updatedAt: string) => updatedAt > lastSeenAt,
+      );
+
+      const result = await makeRequest();
+
+      expect(mockNotificationService.hasUnread).toHaveBeenCalledWith(
+        "active",
+        processUpdatedAt.toISOString(),
+      );
+      expect(result.sessions[0]).toMatchObject({
+        id: "active",
+        updatedAt: processUpdatedAt.toISOString(),
+        hasUnread: true,
+      });
     });
 
     it("computes hasUnread from the pre-recap-overlay updatedAt", async () => {

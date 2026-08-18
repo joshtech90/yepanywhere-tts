@@ -34,15 +34,18 @@ describe("SlashCommandButton", () => {
 
     fireEvent.click(screen.getByLabelText("Show commands and skills"));
 
-    expect(
-      screen.getByRole("menuitem", { name: "/model" }).textContent,
-    ).toBe("/model");
+    expect(screen.getByRole("menuitem", { name: "/model" }).textContent).toBe(
+      "/model",
+    );
     expect(
       screen.getByRole("menuitem", { name: "/fast turn" }).textContent,
     ).toBe("/fast turn");
     expect(
       screen.getByRole("menuitem", { name: "/run exactly" }).textContent,
-    ).toBe("/run exactly");
+    ).toContain("/run exactly");
+    expect(
+      screen.getByRole("menuitem", { name: "/run exactly" }).textContent,
+    ).toContain("Direct local shell: !!cmd");
     expect(screen.getByRole("menuitem", { name: "/goal" }).textContent).toBe(
       "/goal",
     );

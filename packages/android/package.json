@@ -1,0 +1,17 @@
+{
+  "name": "@yep-anywhere/android",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare-frontend": "pnpm --filter @yep-anywhere/shared build && pnpm --filter @yep-anywhere/client build:remote && node ./scripts/prepare-web-assets.mjs",
+    "dev:android": "pnpm prepare-frontend && ./gradlew :app:assembleBundledDebug",
+    "build:android:debug": "pnpm prepare-frontend && ./gradlew :app:assembleBundledDebug",
+    "build:android": "pnpm prepare-frontend && ./gradlew :app:assembleBundledRelease",
+    "build:android:hosted-latest": "./gradlew :app:assembleHostedLatestRelease",
+    "inspect:apks": "./scripts/inspect-apks.sh",
+    "test": "./gradlew test",
+    "test:connected": "./gradlew connectedBundledDebugAndroidTest",
+    "lint": "./gradlew lint"
+  }
+}

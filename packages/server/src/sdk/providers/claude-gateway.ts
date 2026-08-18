@@ -30,6 +30,7 @@ interface GatewayModel {
     type?: unknown;
     limits?: {
       max_context_window_tokens?: unknown;
+      max_prompt_tokens?: unknown;
     };
     supports?: {
       reasoning_effort?: unknown;
@@ -44,15 +45,83 @@ interface GatewayModelsResponse {
   data?: GatewayModel[];
 }
 
+interface GatewayModelWindows {
+  contextWindow: number;
+  promptWindow: number;
+}
+
+interface GatewayModelLaunchMetadata {
+  windows?: GatewayModelWindows;
+}
+
+interface GatewayCatalogSnapshot {
+  configurationGeneration: number;
+  baseUrl: string;
+  isCopilotApi: boolean;
+  launchMetadata: Map<string, GatewayModelLaunchMetadata>;
+}
+
+/**
+ * Claude Code resolves a gateway model's effective context window separately
+ * from its automatic-compaction window. The total catalog window becomes the
+ * former; the prompt-only ceiling bounds the latter. Automatic windows below
+ * 100K cannot be expressed, so omit them rather than rounding above a model's
+ * advertised hard limit.
+ */
+const AUTO_COMPACT_WINDOW_MIN = 100_000;
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+const COPILOT_API_IDENTITY_HEADER = "x-copilot-api";
+const CLAUDE_GATEWAY_PLAN_MODE_TOOLS = ["EnterPlanMode", "ExitPlanMode"];
+
+export function gatewayAutoCompactWindow(
+  promptWindow: number | undefined,
+): number | undefined {
+  if (
+    typeof promptWindow !== "number" ||
+    !Number.isFinite(promptWindow) ||
+    promptWindow < AUTO_COMPACT_WINDOW_MIN
+  ) {
+    return undefined;
+  }
+  return Math.min(AUTO_COMPACT_WINDOW_MAX, Math.round(promptWindow));
+}
+
+function gatewayMaxContextTokens(
+  contextWindow: number | undefined,
+): number | undefined {
+  return typeof contextWindow === "number" &&
+    Number.isFinite(contextWindow) &&
+    contextWindow > 0
+    ? Math.round(contextWindow)
+    : undefined;
+}
+
 function gatewayEnvironment(
   baseUrl: string,
   model?: string,
+  metadata?: GatewayModelLaunchMetadata,
+  isCopilotApi = false,
 ): Record<string, string> {
+  const maxContextTokens = gatewayMaxContextTokens(
+    metadata?.windows?.contextWindow,
+  );
+  const autoCompactWindow = gatewayAutoCompactWindow(
+    metadata?.windows?.promptWindow,
+  );
   return {
+    YEP_CLAUDE_GATEWAY: "1",
+    ...(isCopilotApi ? { YEP_COPILOT_API: "1" } : {}),
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: "dummy",
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+    // DISABLE_NON_ESSENTIAL_MODEL_CALLS is no longer read by Claude Code
+    // (absent from 2.1.220's env registry); it is kept for older CLIs.
     DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
+    // This one is a privacy/traffic choice, not a token or quota saver, and it
+    // is not free: it puts the CLI in essential-traffic mode, which disables
+    // GrowthBook, so every feature flag falls back to its compiled default and
+    // the session loses flag-gated features — the Monitor tool and hosted push
+    // among them. Retained deliberately; see topics/claude.md.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     ...(model
       ? {
@@ -62,6 +131,15 @@ function gatewayEnvironment(
           ANTHROPIC_SMALL_FAST_MODEL: model,
           ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
         }
+      : {}),
+    ...(maxContextTokens !== undefined
+      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(maxContextTokens) }
+      : {}),
+    ...(autoCompactWindow !== undefined
+      ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(autoCompactWindow) }
+      : {}),
+    ...(metadata && !metadata.windows
+      ? { CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1" }
       : {}),
   };
 }
@@ -83,7 +161,8 @@ const CLAUDE_GATEWAY_EFFORT_LEVELS = new Set<EffortLevel>([
 function isGatewayModelVisible(item: GatewayModel, id: string): boolean {
   if (item.model_picker_enabled === false) return false;
   if (item.policy?.state && item.policy.state !== "enabled") return false;
-  if (item.capabilities?.type && item.capabilities.type !== "chat") return false;
+  if (item.capabilities?.type && item.capabilities.type !== "chat")
+    return false;
   if (id.startsWith("text-embedding-") || id === "trajectory-compaction") {
     return false;
   }
@@ -105,19 +184,41 @@ function modelEffortLevels(item: GatewayModel): EffortLevel[] {
   );
 }
 
-function modelContextWindow(item: GatewayModel): number | undefined {
-  const value = item.capabilities?.limits?.max_context_window_tokens;
+function positiveLimit(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : undefined;
 }
 
-export function parseClaudeGatewayModels(value: unknown): ModelInfo[] {
+function modelWindows(item: GatewayModel): GatewayModelWindows | undefined {
+  const limits = item.capabilities?.limits;
+  const contextWindow = positiveLimit(limits?.max_context_window_tokens);
+  if (contextWindow === undefined) return undefined;
+
+  const advertisedPromptWindow = positiveLimit(limits?.max_prompt_tokens);
+  return {
+    contextWindow,
+    promptWindow: Math.min(
+      advertisedPromptWindow ?? contextWindow,
+      contextWindow,
+    ),
+  };
+}
+
+interface ParsedGatewayCatalog {
+  models: ModelInfo[];
+  launchMetadata: Map<string, GatewayModelLaunchMetadata>;
+}
+
+function parseClaudeGatewayCatalog(value: unknown): ParsedGatewayCatalog {
   const data = (value as GatewayModelsResponse | null)?.data;
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) {
+    return { models: [], launchMetadata: new Map() };
+  }
 
   const seen = new Set<string>();
   const models: ModelInfo[] = [];
+  const launchMetadata = new Map<string, GatewayModelLaunchMetadata>();
   for (const item of data) {
     const id = typeof item.id === "string" ? item.id.trim() : "";
     if (!id || seen.has(id) || !isGatewayModelVisible(item, id)) continue;
@@ -129,11 +230,17 @@ export function parseClaudeGatewayModels(value: unknown): ModelInfo[] {
           ? item.name.trim()
           : "";
     const supportedEffortLevels = modelEffortLevels(item);
-    const contextWindow = modelContextWindow(item);
+    const advertisedWindows = modelWindows(item);
+    launchMetadata.set(
+      id,
+      advertisedWindows ? { windows: advertisedWindows } : {},
+    );
     models.push({
       id,
       name: displayName || id,
-      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(advertisedWindows
+        ? { contextWindow: advertisedWindows.contextWindow }
+        : {}),
       supportsEffort: supportedEffortLevels.length > 0,
       ...(supportedEffortLevels.length > 0
         ? {
@@ -146,7 +253,11 @@ export function parseClaudeGatewayModels(value: unknown): ModelInfo[] {
       supportsAdaptiveThinking: supportedEffortLevels.length > 0,
     });
   }
-  return models;
+  return { models, launchMetadata };
+}
+
+export function parseClaudeGatewayModels(value: unknown): ModelInfo[] {
+  return parseClaudeGatewayCatalog(value).models;
 }
 
 export class ClaudeGatewayProvider extends ClaudeProvider {
@@ -161,6 +272,14 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
 
   private static gatewayUrl: string | undefined;
   private static gatewayStartCommand: string | undefined;
+  private static gatewayDisableAgent = true;
+  private static gatewayDisablePlanMode = true;
+  private static configurationGeneration = 0;
+  /**
+   * The last successful catalog and the exact endpoint that supplied it.
+   * Configuration changes invalidate both facts as one generation.
+   */
+  private static catalogSnapshot: GatewayCatalogSnapshot | undefined;
 
   constructor(
     private readonly gatewayLauncher: Pick<
@@ -172,19 +291,44 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
   }
 
   static setGatewayUrl(url: string | undefined): void {
+    if (ClaudeGatewayProvider.gatewayUrl !== url) {
+      ClaudeGatewayProvider.forgetGatewayCatalog();
+    }
     ClaudeGatewayProvider.gatewayUrl = url;
   }
 
   static setGatewayStartCommand(command: string | undefined): void {
+    if (ClaudeGatewayProvider.gatewayStartCommand !== command) {
+      ClaudeGatewayProvider.forgetGatewayCatalog();
+    }
     ClaudeGatewayProvider.gatewayStartCommand = command;
+  }
+
+  static setGatewayDisableAgent(disableAgent: boolean): void {
+    ClaudeGatewayProvider.gatewayDisableAgent = disableAgent;
+  }
+
+  static setGatewayDisablePlanMode(disablePlanMode: boolean): void {
+    ClaudeGatewayProvider.gatewayDisablePlanMode = disablePlanMode;
   }
 
   static async configureGateway(options: {
     url?: string;
     startCommand?: string;
+    disableAgent?: boolean;
+    disablePlanMode?: boolean;
   }): Promise<void> {
+    if (
+      ClaudeGatewayProvider.gatewayUrl !== options.url ||
+      ClaudeGatewayProvider.gatewayStartCommand !== options.startCommand
+    ) {
+      ClaudeGatewayProvider.forgetGatewayCatalog();
+    }
     ClaudeGatewayProvider.gatewayUrl = options.url;
     ClaudeGatewayProvider.gatewayStartCommand = options.startCommand;
+    ClaudeGatewayProvider.gatewayDisableAgent = options.disableAgent ?? true;
+    ClaudeGatewayProvider.gatewayDisablePlanMode =
+      options.disablePlanMode ?? true;
     await claudeGatewayLauncher.configure(options);
   }
 
@@ -192,8 +336,41 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     await claudeGatewayLauncher.shutdown();
   }
 
+  static getOwnedGatewayProcessGroupId(): number | undefined {
+    return claudeGatewayLauncher.getOwnedProcessGroupId();
+  }
+
+  static relinquishOwnedGatewayProcessGroup(processGroupId: number): boolean {
+    return claudeGatewayLauncher.relinquishOwnedProcessGroup(processGroupId);
+  }
+
   static getGatewayUrl(): string | undefined {
     return ClaudeGatewayProvider.gatewayUrl;
+  }
+
+  private static rememberGatewayCatalog(
+    configurationGeneration: number,
+    baseUrl: string,
+    isCopilotApi: boolean,
+    launchMetadata: Map<string, GatewayModelLaunchMetadata>,
+  ): boolean {
+    if (
+      configurationGeneration !== ClaudeGatewayProvider.configurationGeneration
+    ) {
+      return false;
+    }
+    ClaudeGatewayProvider.catalogSnapshot = {
+      configurationGeneration,
+      baseUrl,
+      isCopilotApi,
+      launchMetadata,
+    };
+    return true;
+  }
+
+  static forgetGatewayCatalog(): void {
+    ClaudeGatewayProvider.configurationGeneration += 1;
+    ClaudeGatewayProvider.catalogSnapshot = undefined;
   }
 
   static isConfigured(): boolean {
@@ -230,18 +407,42 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
   override async getAvailableModels(): Promise<ModelInfo[]> {
     const gatewayUrl = ClaudeGatewayProvider.gatewayUrl;
     if (!gatewayUrl) return [];
+    const gatewayStartCommand = ClaudeGatewayProvider.gatewayStartCommand;
+    const configurationGeneration =
+      ClaudeGatewayProvider.configurationGeneration;
 
     try {
-      await this.gatewayLauncher.ensureReady({
+      // Read the catalog from the address readiness was proven against, not
+      // from a second resolution of the configured hostname: `localhost` can
+      // front one gateway on 127.0.0.1 and another on ::1.
+      const listeningUrl = await this.gatewayLauncher.ensureReady({
         url: gatewayUrl,
-        startCommand: ClaudeGatewayProvider.gatewayStartCommand,
+        startCommand: gatewayStartCommand,
       });
-      const response = await fetch(`${gatewayUrl}/v1/models`, {
+      if (
+        configurationGeneration !==
+        ClaudeGatewayProvider.configurationGeneration
+      ) {
+        return [];
+      }
+      const baseUrl = listeningUrl ?? gatewayUrl;
+      const response = await fetch(`${baseUrl}/v1/models`, {
         headers: { Authorization: "Bearer dummy" },
         signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) return [];
-      return parseClaudeGatewayModels(await response.json());
+      const catalog = parseClaudeGatewayCatalog(await response.json());
+      if (
+        !ClaudeGatewayProvider.rememberGatewayCatalog(
+          configurationGeneration,
+          baseUrl,
+          response.headers.get(COPILOT_API_IDENTITY_HEADER) === "1",
+          catalog.launchMetadata,
+        )
+      ) {
+        return [];
+      }
+      return catalog.models;
     } catch (error) {
       getLogger().debug(
         { error, gatewayUrl },
@@ -255,18 +456,67 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     return this.getAvailableModels();
   }
 
-  protected override getSettings(model?: string): Settings | undefined {
+  private static launchContext(model?: string):
+    | {
+        baseUrl: string;
+        isCopilotApi: boolean;
+        metadata: GatewayModelLaunchMetadata | undefined;
+      }
+    | undefined {
     const gatewayUrl = ClaudeGatewayProvider.gatewayUrl;
     if (!gatewayUrl) return undefined;
-    return { env: gatewayEnvironment(gatewayUrl, model) };
+    const snapshot = ClaudeGatewayProvider.catalogSnapshot;
+    const currentSnapshot =
+      snapshot?.configurationGeneration ===
+      ClaudeGatewayProvider.configurationGeneration
+        ? snapshot
+        : undefined;
+    return {
+      baseUrl: currentSnapshot?.baseUrl ?? gatewayUrl,
+      isCopilotApi: currentSnapshot?.isCopilotApi ?? false,
+      metadata: model ? currentSnapshot?.launchMetadata.get(model) : undefined,
+    };
+  }
+
+  protected override getDisallowedTools(_model?: string): string[] | undefined {
+    return ClaudeGatewayProvider.gatewayDisablePlanMode
+      ? [...CLAUDE_GATEWAY_PLAN_MODE_TOOLS]
+      : undefined;
+  }
+
+  protected override getSettings(model?: string): Settings | undefined {
+    const launch = ClaudeGatewayProvider.launchContext(model);
+    if (!launch) return undefined;
+    return {
+      env: {
+        ...this.getSubagentDepthEnvironment(),
+        ...gatewayEnvironment(
+          launch.baseUrl,
+          model,
+          launch.metadata,
+          launch.isCopilotApi,
+        ),
+      },
+      ...(ClaudeGatewayProvider.gatewayDisableAgent
+        ? { permissions: { deny: ["Agent"] } }
+        : {}),
+    };
   }
 
   protected override getEnv(
     model?: string,
   ): Record<string, string | undefined> {
-    const gatewayUrl = ClaudeGatewayProvider.gatewayUrl;
-    return gatewayUrl
-      ? { ...super.getEnv(model), ...gatewayEnvironment(gatewayUrl, model) }
+    const launch = ClaudeGatewayProvider.launchContext(model);
+    return launch
+      ? {
+          ...super.getEnv(model),
+          ...gatewayEnvironment(
+            launch.baseUrl,
+            model,
+            launch.metadata,
+            launch.isCopilotApi,
+          ),
+        }
       : super.getEnv(model);
   }
 }

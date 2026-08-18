@@ -9,9 +9,11 @@
  * allowing both entry points to share the same implementation.
  */
 
+import { randomUUID } from "node:crypto";
 import type { HttpBindings } from "@hono/node-server";
 import type {
   BinaryFormatValue,
+  CapabilityBitset,
   OriginMetadata,
   RelayRequest,
   RelayUploadError,
@@ -28,20 +30,29 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   BinaryFormat,
+  TRANSPORT_CHUNK_PAYLOAD_MAX_BYTES,
   UploadChunkError,
   decodeUploadChunkPayload,
+  encodeJsonBytesFrame,
   encodeJsonFrame,
+  encodeTransportChunkFrames,
+  isUrlProjectId,
   isSrpClientHello,
   isSrpClientProof,
   isSrpSessionResume,
   isSrpSessionResumeInit,
 } from "@yep-anywhere/shared";
 import type { Hono } from "hono";
-import { encryptToBinaryEnvelopeWithCompression } from "../crypto/index.js";
+import {
+  encryptBytesToBinaryEnvelopeWithCompression,
+  encryptToBinaryEnvelopeWithCompression,
+} from "../crypto/index.js";
 import type { SrpServerSession } from "../crypto/index.js";
 import type { DeviceBridgeService } from "../device/DeviceBridgeService.js";
 import { getLogger } from "../logging/logger.js";
+import { AUTHENTICATED_SRP_TRANSPORT } from "../middleware/authenticated-transport.js";
 import { WS_INTERNAL_AUTHENTICATED } from "../middleware/internal-auth.js";
+import type { ProjectGlossarySubscriptionManager } from "../projects/projectGlossarySubscriptionManager.js";
 import type {
   RemoteAccessService,
   RemoteSessionService,
@@ -50,7 +61,13 @@ import type {
   BrowserProfileService,
   ConnectedBrowsersService,
 } from "../services/index.js";
+import type { SecurityClientService } from "../services/SecurityClientService.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
+import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
+import {
+  LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES as PUBLIC_SHARE_RELAY_LIMIT_BYTES,
+  LEGACY_PUBLIC_SHARE_RESPONSE_CHUNK_MAX_BYTES,
+} from "../services/PublicShareService.js";
 import type { SpeechBackendRegistry } from "../services/voice/registry.js";
 import {
   createActivitySubscription,
@@ -60,10 +77,7 @@ import type { AttachmentStagingService } from "../uploads/AttachmentStagingServi
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { UploadManager } from "../uploads/manager.js";
 import type { EventBus, FocusedSessionWatchManager } from "../watcher/index.js";
-import {
-  type WsConnectionPolicy,
-  isPolicySrpRequired,
-} from "./ws-auth-policy.js";
+import { isPolicySrpRequired } from "./ws-auth-policy.js";
 import {
   type SpeechWebSocketSession,
   createSpeechWebSocketSession,
@@ -82,19 +96,39 @@ import {
   handleSrpResumeInit,
 } from "./ws-srp-handlers.js";
 import {
+  type WsTransportAuthState,
   hasEstablishedSrpTransport,
   shouldMarkInternalWsAuthenticated,
+  tryLockWsConnectionMode,
 } from "./ws-transport-auth.js";
 import { parseApplicationClientMessage } from "./ws-transport-message-auth.js";
 
 /** Progress report interval in bytes (64KB) */
 export const PROGRESS_INTERVAL = 64 * 1024;
+export const LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES =
+  PUBLIC_SHARE_RELAY_LIMIT_BYTES;
+export { LEGACY_PUBLIC_SHARE_RESPONSE_CHUNK_MAX_BYTES };
+
+function isJsonMediaType(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mediaType === "application/json" || mediaType.endsWith("+json");
+}
+
+const relayJsonDecoder = new TextDecoder("utf-8", { fatal: true });
+
+function parseRelayJsonBody(
+  bytes: Uint8Array,
+): { valid: true; text: string; value: unknown } | { valid: false } {
+  try {
+    const text = relayJsonDecoder.decode(bytes);
+    return { valid: true, text, value: JSON.parse(text) };
+  } catch {
+    return { valid: false };
+  }
+}
 
 /** Connection authentication state */
-export type ConnectionAuthState =
-  | "unauthenticated" // Waiting for SRP handshake to begin
-  | "srp_waiting_proof" // Sent challenge, waiting for proof
-  | "authenticated"; // Admitted by trusted policy or SRP complete
+export type ConnectionAuthState = WsTransportAuthState["authState"];
 
 interface SrpTokenBucket {
   capacity: number;
@@ -114,17 +148,13 @@ interface SrpConnectionLimiterState extends SrpLimiterState {
 }
 
 /** Per-connection state for secure connections */
-export interface ConnectionState {
+export interface ConnectionState extends WsTransportAuthState {
+  /** Process-unique id used to bind audit clients and active socket teardown. */
+  connectionId: string;
   /** SRP session during handshake */
   srpSession: SrpServerSession | null;
-  /** Derived secretbox key (32 bytes) for encryption */
-  sessionKey: Uint8Array | null;
   /** Long-lived base key derived from SRP/session key for resume proofs. */
   baseSessionKey: Uint8Array | null;
-  /** Authentication state */
-  authState: ConnectionAuthState;
-  /** Admission policy for this connection (distinct from SRP transport key state). */
-  connectionPolicy: WsConnectionPolicy;
   /**
    * Whether this authenticated connection must use encrypted envelopes.
    * Set for SRP-authenticated connections; false for trusted local cookie auth.
@@ -134,10 +164,22 @@ export interface ConnectionState {
   username: string | null;
   /** Persistent session ID for resumption (set after successful auth) */
   sessionId: string | null;
+  /** Transport nonce retained for the lifetime of an established SRP socket. */
+  transportNonce: string | null;
+  /** Whether this SRP socket used a full password proof or resume proof. */
+  authenticationMethod: "srp-full" | "srp-resume" | null;
+  /** Whether the client reached this YA server directly or through the relay. */
+  transport: "direct" | "relay";
+  /** Direct TCP peer address; absent for relay-mediated phone/browser peers. */
+  peerAddress: string | null;
   /** Whether client sent binary frames (respond with binary if true) - Phase 0 */
   useBinaryFrames: boolean;
   /** Client's supported binary formats (Phase 3 capabilities) - defaults to [0x01] */
   supportedFormats: Set<BinaryFormatValue>;
+  /** Client build version learned from the first application notification. */
+  clientVersion: string | null;
+  /** Explicit client capability IDs not implied by clientVersion. */
+  clientCapabilityBits: CapabilityBitset;
   /** Browser profile ID from SRP hello (for session tracking) */
   browserProfileId: string | null;
   /** Origin metadata from SRP hello (for session tracking) */
@@ -154,8 +196,23 @@ export interface ConnectionState {
   srpLimiter: SrpConnectionLimiterState;
   /** Next sequence number for encrypted messages sent to the peer */
   nextOutboundSeq: number;
+  /** Next identifier for a complete binary message split across transport chunks. */
+  nextOutboundChunkMessageId: number;
   /** Last accepted inbound encrypted sequence from the peer */
   lastInboundSeq: number | null;
+  /** One browser-tab registration shared by this socket's activity streams. */
+  browserTabConnection: {
+    browserProfileId: string;
+    connectionId: number;
+    activitySubscriptionCount: number;
+  } | null;
+  /** The sole unauthenticated public-share request allowed on this socket. */
+  preauthPublicShareRequest: {
+    requestId: string;
+    controller: AbortController;
+  } | null;
+  /** Whether connection teardown has already released owned resources. */
+  cleanupStarted: boolean;
 }
 
 /** Tracks an active upload over WebSocket relay */
@@ -190,7 +247,61 @@ export interface WSAdapter {
  * Encryption-aware send function type.
  * Created per-connection, captures connection state for automatic encryption.
  */
-export type SendFn = (msg: YepMessage) => void;
+export type RequestResponseFrameMode =
+  | { kind: "plaintext"; useBinaryFrames: boolean }
+  | { kind: "srp_encrypted" };
+
+export interface ValidatedJsonRelayResponse {
+  type: "response";
+  id: string;
+  status: number;
+  headers?: Record<string, string>;
+  bodyBytes: Uint8Array;
+  bodyText: string;
+}
+
+export interface SendFn {
+  (msg: YepMessage, frameMode?: RequestResponseFrameMode): void;
+  /** Internal fast path; the public relay message shape stays unchanged. */
+  sendValidatedJsonResponse?: (
+    response: ValidatedJsonRelayResponse,
+    frameMode?: RequestResponseFrameMode,
+  ) => void;
+}
+
+export interface RelayResponseSerializationStats {
+  eligibleJsonResponses: number;
+  rawFastPathHits: number;
+  rawBodyBytes: number;
+  fallbackResponses: number;
+  invalidJsonFallbacks: number;
+  unsupportedSenderFallbacks: number;
+  rawSendFailures: number;
+}
+
+const relayResponseSerializationStats: RelayResponseSerializationStats = {
+  eligibleJsonResponses: 0,
+  rawFastPathHits: 0,
+  rawBodyBytes: 0,
+  fallbackResponses: 0,
+  invalidJsonFallbacks: 0,
+  unsupportedSenderFallbacks: 0,
+  rawSendFailures: 0,
+};
+
+export function relayResponseSerializationDiagnostics(): RelayResponseSerializationStats {
+  return { ...relayResponseSerializationStats };
+}
+
+export const __relayResponseSerializationTest = {
+  reset(): void {
+    for (const key of Object.keys(relayResponseSerializationStats) as Array<
+      keyof RelayResponseSerializationStats
+    >) {
+      relayResponseSerializationStats[key] = 0;
+    }
+  },
+};
 
 function relayUploadErrorCode(error: unknown): string | undefined {
   if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOSPC") {
@@ -233,12 +344,18 @@ export interface RelayHandlerDeps {
   remoteAccessService?: RemoteAccessService;
   /** Remote session service for session persistence (optional for direct, required for relay) */
   remoteSessionService?: RemoteSessionService;
+  /** Registered-client continuity and security audit service. */
+  securityClientService?: SecurityClientService;
+  /** Durable patient queue state included in session snapshots. */
+  sessionQueuePersistenceService?: SessionQueuePersistenceService;
   /** Connected browsers service for tracking WS connections (optional) */
   connectedBrowsers?: ConnectedBrowsersService;
   /** Browser profile service for tracking connection origins (optional) */
   browserProfileService?: BrowserProfileService;
   /** Focused session watch manager for per-session targeted file watching (optional) */
   focusedSessionWatchManager?: FocusedSessionWatchManager;
+  /** Project glossary path subscriptions and their reference-counted watchers. */
+  projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager;
   /** Emulator bridge service for Android emulator streaming (optional) */
   deviceBridgeService?: DeviceBridgeService;
   /** Speech backend registry for relayed streaming STT (optional) */
@@ -247,34 +364,115 @@ export interface RelayHandlerDeps {
   dataDir?: string;
   /** Server settings service for relayed speech retention settings (optional) */
   serverSettingsService?: ServerSettingsService;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 /**
  * Create an initial connection state.
  */
-export function createConnectionState(): ConnectionState {
+export function createConnectionState(options?: {
+  transport?: "direct" | "relay";
+  peerAddress?: string | null;
+}): ConnectionState {
   return {
+    connectionId: randomUUID(),
     srpSession: null,
     sessionKey: null,
     baseSessionKey: null,
     authState: "unauthenticated",
     connectionPolicy: "srp_required",
+    connectionMode: "unselected",
     requiresEncryptedMessages: false,
     username: null,
     sessionId: null,
+    transportNonce: null,
+    authenticationMethod: null,
+    transport: options?.transport ?? "direct",
+    peerAddress: options?.peerAddress ?? null,
     useBinaryFrames: false,
     supportedFormats: new Set([BinaryFormat.JSON]),
+    clientVersion: null,
+    clientCapabilityBits: [],
     browserProfileId: null,
     originMetadata: null,
     pendingResumeChallenge: null,
     srpLimiter: createInitialSrpLimiterState(),
     nextOutboundSeq: 0,
+    nextOutboundChunkMessageId: 0,
     lastInboundSeq: null,
+    browserTabConnection: null,
+    preauthPublicShareRequest: null,
+    cleanupStarted: false,
   };
 }
 
 export function cleanupConnectionState(connState: ConnectionState): void {
+  if (connState.cleanupStarted) return;
+  connState.cleanupStarted = true;
+  const activeRequest = connState.preauthPublicShareRequest;
+  connState.preauthPublicShareRequest = null;
+  activeRequest?.controller.abort();
   cleanupSrpConnectionState(connState);
+}
+
+function sendBinaryMessage(
+  ws: WSAdapter,
+  connState: ConnectionState,
+  message: ArrayBuffer,
+): void {
+  if (
+    message.byteLength <= TRANSPORT_CHUNK_PAYLOAD_MAX_BYTES ||
+    !connState.supportedFormats.has(BinaryFormat.TRANSPORT_CHUNK)
+  ) {
+    ws.send(message);
+    return;
+  }
+
+  const messageId = connState.nextOutboundChunkMessageId;
+  connState.nextOutboundChunkMessageId = (messageId + 1) >>> 0;
+  for (const frame of encodeTransportChunkFrames(messageId, message)) {
+    ws.send(frame);
+  }
+}
+
+const relayJsonEncoder = new TextEncoder();
+
+function relayResponseJsonPrefix(response: ValidatedJsonRelayResponse): string {
+  const headers = response.headers
+    ? `,"headers":${JSON.stringify(response.headers)}`
+    : "";
+  return (
+    `{"type":"response","id":${JSON.stringify(response.id)},` +
+    `"status":${response.status}${headers},"body":`
+  );
+}
+
+function concatenateJsonBytes(
+  prefix: string,
+  body: Uint8Array,
+  suffix: string,
+): Uint8Array {
+  const prefixBytes = relayJsonEncoder.encode(prefix);
+  const suffixBytes = relayJsonEncoder.encode(suffix);
+  const result = new Uint8Array(
+    prefixBytes.byteLength + body.byteLength + suffixBytes.byteLength,
+  );
+  result.set(prefixBytes, 0);
+  result.set(body, prefixBytes.byteLength);
+  result.set(suffixBytes, prefixBytes.byteLength + body.byteLength);
+  return result;
+}
+
+function reportSendFailure(ws: WSAdapter, error: unknown): void {
+  console.warn("[WS Relay] Failed to send message, closing socket:", error);
+  try {
+    ws.close(1011, "Send failed");
+  } catch {
+    // Socket already closing/closed
+  }
 }
 
 /**
@@ -282,14 +480,25 @@ export function cleanupConnectionState(connState: ConnectionState): void {
  * Automatically encrypts messages when the connection is authenticated with a session key.
  * Uses binary frames when the client has sent binary frames (Phase 0/1 binary protocol).
  * Compresses large payloads when client supports format 0x03 (Phase 3).
+ * Splits large binary messages when client supports format 0x05 (Phase 4).
  */
 export function createSendFn(
   ws: WSAdapter,
   connState: ConnectionState,
 ): SendFn {
-  return (msg: YepMessage) => {
+  const send: SendFn = (
+    msg: YepMessage,
+    frameMode?: RequestResponseFrameMode,
+  ) => {
     try {
-      if (hasEstablishedSrpTransport(connState)) {
+      const encryptResponse =
+        frameMode?.kind === "srp_encrypted" ||
+        (frameMode === undefined && hasEstablishedSrpTransport(connState));
+      if (encryptResponse) {
+        if (!hasEstablishedSrpTransport(connState)) {
+          ws.close(1011, "SRP response key unavailable");
+          return;
+        }
         const seq = connState.nextOutboundSeq;
         connState.nextOutboundSeq += 1;
         const plaintext = JSON.stringify({ seq, msg });
@@ -302,23 +511,197 @@ export function createSendFn(
           connState.sessionKey,
           supportsCompression,
         );
-        ws.send(envelope);
-      } else if (connState.useBinaryFrames) {
+        sendBinaryMessage(ws, connState, envelope);
+        return;
+      }
+
+      const useBinaryFrames =
+        frameMode?.kind === "plaintext"
+          ? frameMode.useBinaryFrames
+          : connState.useBinaryFrames;
+      if (useBinaryFrames) {
         // Client sent binary frames, respond with binary
-        ws.send(encodeJsonFrame(msg));
+        sendBinaryMessage(ws, connState, encodeJsonFrame(msg));
       } else {
         // Text frame fallback (backwards compat)
         ws.send(JSON.stringify(msg));
       }
     } catch (err) {
-      console.warn("[WS Relay] Failed to send message, closing socket:", err);
-      try {
-        ws.close(1011, "Send failed");
-      } catch {
-        // Socket already closing/closed
-      }
+      reportSendFailure(ws, err);
     }
   };
+
+  send.sendValidatedJsonResponse = (
+    response: ValidatedJsonRelayResponse,
+    frameMode?: RequestResponseFrameMode,
+  ): void => {
+    try {
+      const encryptResponse =
+        frameMode?.kind === "srp_encrypted" ||
+        (frameMode === undefined && hasEstablishedSrpTransport(connState));
+      const responsePrefix = relayResponseJsonPrefix(response);
+      if (encryptResponse) {
+        if (!hasEstablishedSrpTransport(connState)) {
+          ws.close(1011, "SRP response key unavailable");
+          return;
+        }
+        const seq = connState.nextOutboundSeq;
+        connState.nextOutboundSeq += 1;
+        const plaintext = concatenateJsonBytes(
+          `{"seq":${seq},"msg":${responsePrefix}`,
+          response.bodyBytes,
+          "}}",
+        );
+        const supportsCompression = connState.supportedFormats.has(
+          BinaryFormat.COMPRESSED_JSON,
+        );
+        const envelope = encryptBytesToBinaryEnvelopeWithCompression(
+          plaintext,
+          connState.sessionKey,
+          supportsCompression,
+        );
+        sendBinaryMessage(ws, connState, envelope);
+        return;
+      }
+
+      const useBinaryFrames =
+        frameMode?.kind === "plaintext"
+          ? frameMode.useBinaryFrames
+          : connState.useBinaryFrames;
+      if (useBinaryFrames) {
+        const serialized = concatenateJsonBytes(
+          responsePrefix,
+          response.bodyBytes,
+          "}",
+        );
+        sendBinaryMessage(ws, connState, encodeJsonBytesFrame(serialized));
+      } else {
+        ws.send(`${responsePrefix}${response.bodyText}}`);
+      }
+    } catch (error) {
+      relayResponseSerializationStats.rawSendFailures += 1;
+      reportSendFailure(ws, error);
+    }
+  };
+
+  return send;
+}
+
+function isLegacyPublicShareSessionRequest(request: RelayRequest): boolean {
+  if (request.method !== "GET") return false;
+  try {
+    const pathname = new URL(request.path, "http://relay.internal").pathname;
+    return /^\/public-api\/shares\/[^/]+$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+class RelayResponseProducerInvariantError extends Error {
+  constructor() {
+    super("Relay response producer emitted an unbounded chunk");
+    this.name = "RelayResponseProducerInvariantError";
+  }
+}
+
+function responseReadAbortError(): Error {
+  const error = new Error("Relay response read aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+async function readResponseBody(
+  response: Response,
+  options: {
+    maxBytes?: number;
+    maxProducerChunkBytes?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<{ bytes: Uint8Array; overflow: boolean; observedBytes: number }> {
+  if (options.signal?.aborted) throw responseReadAbortError();
+  if (!response.body) {
+    return {
+      bytes: new Uint8Array(),
+      overflow: false,
+      observedBytes: 0,
+    };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let retainedBytes = 0;
+  let observedBytes = 0;
+  let overflow = false;
+  let cancelPromise: Promise<void> | null = null;
+  const cancelReader = (reason: string): Promise<void> => {
+    cancelPromise ??= reader.cancel(reason).catch(() => undefined);
+    return cancelPromise;
+  };
+  const onAbort = () => {
+    void cancelReader("Relay connection closed");
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (options.signal?.aborted) throw responseReadAbortError();
+      if (done) break;
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      observedBytes += bytes.byteLength;
+
+      if (
+        options.maxProducerChunkBytes !== undefined &&
+        bytes.byteLength > options.maxProducerChunkBytes
+      ) {
+        await cancelReader("Relay response producer chunk exceeded limit");
+        throw new RelayResponseProducerInvariantError();
+      }
+      if (
+        options.maxBytes !== undefined &&
+        retainedBytes + bytes.byteLength > options.maxBytes
+      ) {
+        overflow = true;
+        await cancelReader("Public share relay response exceeded limit");
+        break;
+      }
+
+      if (bytes.byteLength > 0) {
+        chunks.push(bytes);
+        retainedBytes += bytes.byteLength;
+      }
+    }
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
+
+  if (overflow) {
+    return { bytes: new Uint8Array(), overflow, observedBytes };
+  }
+
+  const bytes = new Uint8Array(retainedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, overflow, observedBytes };
+}
+
+function declaredResponseExceedsLimit(
+  response: Response,
+  maxBytes: number,
+): boolean {
+  const contentLength = response.headers.get("Content-Length");
+  if (!contentLength || !/^\d+$/.test(contentLength)) return false;
+  return Number(contentLength) > maxBytes;
+}
+
+async function cancelOversizedResponseBody(response: Response): Promise<void> {
+  await response.body
+    ?.cancel("Public share relay response exceeded declared limit")
+    .catch(() => undefined);
 }
 
 /**
@@ -327,22 +710,60 @@ export function createSendFn(
 export async function handleRequest(
   request: RelayRequest,
   send: SendFn,
+  ws: WSAdapter,
   app: Hono<{ Bindings: HttpBindings }>,
   baseUrl: string,
   connState: ConnectionState,
 ): Promise<void> {
+  const responseFrameMode: RequestResponseFrameMode =
+    hasEstablishedSrpTransport(connState)
+      ? { kind: "srp_encrypted" }
+      : { kind: "plaintext", useBinaryFrames: connState.useBinaryFrames };
+  const legacyPublicShareRequest = isLegacyPublicShareSessionRequest(request);
+  const publicShareRequest = request.path.startsWith("/public-api/shares/");
+  const preauthPublicShareCandidate =
+    publicShareRequest &&
+    isPolicySrpRequired(connState.connectionPolicy) &&
+    !hasEstablishedSrpTransport(connState);
+  const isPreauthPublicShareRequest =
+    preauthPublicShareCandidate &&
+    tryLockWsConnectionMode(connState, "public_read_only");
+  if (preauthPublicShareCandidate && !isPreauthPublicShareRequest) {
+    ws.close(1008, "Connection mode already selected");
+    return;
+  }
+
+  let preauthController: AbortController | null = null;
+  if (isPreauthPublicShareRequest) {
+    if (connState.cleanupStarted || connState.preauthPublicShareRequest) {
+      cleanupConnectionState(connState);
+      ws.close(1008, "Public-share requests must be sequential");
+      return;
+    }
+    preauthController = new AbortController();
+    connState.preauthPublicShareRequest = {
+      requestId: request.id,
+      controller: preauthController,
+    };
+  }
+
   try {
     const url = new URL(request.path, baseUrl);
-    const headers = new Headers(request.headers);
-    headers.set("X-Yep-Anywhere", "true");
-    headers.set("X-Ws-Relay", "true");
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.delete("Accept-Encoding");
+    requestHeaders.set("X-Yep-Anywhere", "true");
+    requestHeaders.set("X-Ws-Relay", "true");
+    if (connState.clientVersion) {
+      requestHeaders.set("X-Yep-Client-Version", connState.clientVersion);
+    }
     if (request.body !== undefined) {
-      headers.set("Content-Type", "application/json");
+      requestHeaders.set("Content-Type", "application/json");
     }
 
     const fetchInit: RequestInit = {
       method: request.method,
-      headers,
+      headers: requestHeaders,
+      ...(preauthController ? { signal: preauthController.signal } : {}),
     };
 
     if (
@@ -356,18 +777,113 @@ export async function handleRequest(
     const fetchRequest = new Request(url.toString(), fetchInit);
     // Mark requests from authenticated websocket transport as internal auth so
     // cookie middleware does not re-challenge routed API requests.
+    let closeAfterResponse = false;
+    const afterResponseTasks: Array<() => Promise<void> | void> = [];
+    const srpTransport =
+      hasEstablishedSrpTransport(connState) &&
+      connState.username &&
+      connState.sessionId &&
+      connState.transportNonce &&
+      connState.authenticationMethod
+        ? {
+            kind: "srp" as const,
+            username: connState.username,
+            sessionId: connState.sessionId,
+            transportNonce: connState.transportNonce,
+            authenticationMethod: connState.authenticationMethod,
+            transport: connState.transport,
+            connectionId: connState.connectionId,
+            ...(connState.peerAddress
+              ? { peerAddress: connState.peerAddress }
+              : {}),
+            closeConnection: () => ws.close(4004, "Security client revoked"),
+            closeAfterResponse: () => {
+              closeAfterResponse = true;
+            },
+            deferAfterResponse: (task: () => Promise<void> | void) => {
+              afterResponseTasks.push(task);
+            },
+          }
+        : null;
     const internalEnv = shouldMarkInternalWsAuthenticated(connState)
-      ? { [WS_INTERNAL_AUTHENTICATED]: true }
+      ? {
+          [WS_INTERNAL_AUTHENTICATED]: true,
+          ...(srpTransport
+            ? { [AUTHENTICATED_SRP_TRANSPORT]: srpTransport }
+            : {}),
+        }
       : {};
     const response = await app.fetch(fetchRequest, internalEnv);
 
+    let responseStatus = response.status;
     let body: unknown;
+    let validatedJsonBody: { bytes: Uint8Array; text: string } | undefined;
     const contentType = response.headers.get("Content-Type") ?? "";
-    if (contentType.includes("application/json")) {
-      try {
-        body = await response.json();
-      } catch {
+    const jsonResponse = isJsonMediaType(contentType);
+    const declaredOverflow =
+      isPreauthPublicShareRequest &&
+      declaredResponseExceedsLimit(
+        response,
+        LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES,
+      );
+    if (declaredOverflow) {
+      await cancelOversizedResponseBody(response);
+    }
+    const responseBody = declaredOverflow
+      ? {
+          bytes: new Uint8Array(),
+          overflow: true,
+          observedBytes: Number(response.headers.get("Content-Length")),
+        }
+      : await readResponseBody(response, {
+          ...(isPreauthPublicShareRequest
+            ? { maxBytes: LEGACY_PUBLIC_SHARE_RELAY_MAX_BYTES }
+            : {}),
+          ...(isPreauthPublicShareRequest && legacyPublicShareRequest
+            ? {
+                maxProducerChunkBytes:
+                  LEGACY_PUBLIC_SHARE_RESPONSE_CHUNK_MAX_BYTES,
+              }
+            : {}),
+          signal: preauthController?.signal,
+        });
+
+    if (responseBody.overflow) {
+      responseStatus = 413;
+      body = legacyPublicShareRequest
+        ? {
+            error:
+              "This public share is too large for the legacy relay response; update the public viewer and YA server",
+            retryable: false,
+            updateRequired: true,
+          }
+        : {
+            error:
+              "This public share resource is too large for relay access; use a direct connection or request a smaller file",
+            retryable: false,
+          };
+      getLogger().warn(
+        `[WS Relay] Public share response capped: method=${request.method}, kind=${legacyPublicShareRequest ? "legacy-session" : "public-resource"}, status=${response.status}, bytes=${responseBody.observedBytes}`,
+      );
+    } else if (legacyPublicShareRequest && !jsonResponse) {
+      const text = new TextDecoder().decode(responseBody.bytes);
+      body = text || null;
+    } else if (jsonResponse) {
+      relayResponseSerializationStats.eligibleJsonResponses += 1;
+      const parsed = parseRelayJsonBody(responseBody.bytes);
+      if (!parsed.valid) {
+        relayResponseSerializationStats.fallbackResponses += 1;
+        relayResponseSerializationStats.invalidJsonFallbacks += 1;
         body = null;
+      } else if (send.sendValidatedJsonResponse) {
+        validatedJsonBody = {
+          bytes: responseBody.bytes,
+          text: parsed.text,
+        };
+      } else {
+        relayResponseSerializationStats.fallbackResponses += 1;
+        relayResponseSerializationStats.unsupportedSenderFallbacks += 1;
+        body = parsed.value;
       }
     } else if (
       contentType.startsWith("image/") ||
@@ -376,44 +892,96 @@ export async function handleRequest(
       contentType === "application/pdf" ||
       contentType === "application/octet-stream"
     ) {
-      // Binary content: read as ArrayBuffer and encode as base64
-      const arrayBuffer = await response.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      const base64 = Buffer.from(bytes).toString("base64");
-      body = { _binary: true, data: base64 };
+      body = {
+        _binary: true,
+        data: Buffer.from(responseBody.bytes).toString("base64"),
+      };
     } else {
-      const text = await response.text();
+      const text = new TextDecoder().decode(responseBody.bytes);
       body = text || null;
     }
 
     const responseHeaders: Record<string, string> = {};
     for (const [key, value] of response.headers.entries()) {
+      const normalizedKey = key.toLowerCase();
       if (
-        key.toLowerCase().startsWith("x-") ||
-        key.toLowerCase() === "content-type" ||
-        key.toLowerCase() === "etag" ||
-        key.toLowerCase() === "location"
+        normalizedKey.startsWith("x-") ||
+        normalizedKey === "content-type" ||
+        normalizedKey === "etag" ||
+        normalizedKey === "location" ||
+        normalizedKey === "server-timing"
       ) {
         responseHeaders[key] = value;
       }
     }
+    if (responseBody.overflow) {
+      responseHeaders["content-type"] = "application/json; charset=UTF-8";
+    }
 
-    send({
-      type: "response",
-      id: request.id,
-      status: response.status,
-      headers:
-        Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
-      body,
-    });
+    const relayHeaders =
+      Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined;
+    if (validatedJsonBody && send.sendValidatedJsonResponse) {
+      relayResponseSerializationStats.rawFastPathHits += 1;
+      relayResponseSerializationStats.rawBodyBytes +=
+        validatedJsonBody.bytes.byteLength;
+      send.sendValidatedJsonResponse(
+        {
+          type: "response",
+          id: request.id,
+          status: responseStatus,
+          headers: relayHeaders,
+          bodyBytes: validatedJsonBody.bytes,
+          bodyText: validatedJsonBody.text,
+        },
+        responseFrameMode,
+      );
+    } else {
+      send(
+        {
+          type: "response",
+          id: request.id,
+          status: responseStatus,
+          headers: relayHeaders,
+          body,
+        },
+        responseFrameMode,
+      );
+    }
+    for (const task of afterResponseTasks) {
+      try {
+        await task();
+      } catch (error) {
+        console.error("[WS Relay] After-response task failed:", error);
+      }
+    }
+    if (closeAfterResponse) {
+      ws.close(4004, "Security client revoked");
+    }
   } catch (err) {
-    console.error("[WS Relay] Request error:", err);
-    send({
-      type: "response",
-      id: request.id,
-      status: 500,
-      body: { error: "Internal server error" },
-    });
+    if (preauthController?.signal.aborted) return;
+    if (publicShareRequest) {
+      getLogger().error(
+        `[WS Relay] Public share request failed: method=${request.method}`,
+      );
+    } else {
+      console.error("[WS Relay] Request error:", err);
+    }
+    send(
+      {
+        type: "response",
+        id: request.id,
+        status: 500,
+        body: { error: "Internal server error" },
+      },
+      responseFrameMode,
+    );
+  } finally {
+    if (
+      preauthController &&
+      connState.preauthPublicShareRequest?.controller === preauthController
+    ) {
+      connState.preauthPublicShareRequest = null;
+    }
   }
 }
 
@@ -426,6 +994,10 @@ export function handleSessionSubscribe(
   msg: RelaySubscribe,
   send: SendFn,
   supervisor: Supervisor,
+  sessionQueuePersistenceService?: SessionQueuePersistenceService,
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>,
 ): void {
   const { subscriptionId, sessionId } = msg;
   const wantsLiveDeltas = msg.wantsLiveDeltas !== false;
@@ -464,6 +1036,8 @@ export function handleSessionSubscribe(
 
   const { cleanup } = createSessionSubscription(process, sendEvent, {
     wantsLiveDeltas,
+    sessionQueuePersistenceService,
+    resolveAbsoluteFilePaths,
     onError: (err) => {
       console.error("[WS Relay] Error in session subscription:", err);
     },
@@ -490,16 +1064,19 @@ export function handleActivitySubscribe(
   msg: RelaySubscribe,
   send: SendFn,
   eventBus: EventBus,
+  connState: ConnectionState,
   connectedBrowsers?: ConnectedBrowsersService,
   browserProfileService?: BrowserProfileService,
+  closeConnection?: () => void,
 ): void {
   const { subscriptionId, browserProfileId, originMetadata } = msg;
 
-  // Track connection if we have the service and a browserProfileId
-  let connectionId: number | undefined;
-  if (connectedBrowsers && browserProfileId) {
-    connectionId = connectedBrowsers.connect(browserProfileId, "ws");
-  }
+  const releaseBrowserTabConnection = retainBrowserTabConnection(
+    connState,
+    browserProfileId,
+    connectedBrowsers,
+    closeConnection,
+  );
 
   // Record origin metadata if available
   if (browserProfileService && browserProfileId && originMetadata) {
@@ -533,12 +1110,53 @@ export function handleActivitySubscribe(
 
   subscriptions.set(subscriptionId, () => {
     cleanup();
-    if (connectionId !== undefined && connectedBrowsers) {
-      connectedBrowsers.disconnect(connectionId);
-    }
+    releaseBrowserTabConnection();
   });
 
   getLogger().debug(`[WS Relay] Subscribed to activity (${subscriptionId})`);
+}
+
+function retainBrowserTabConnection(
+  connState: ConnectionState,
+  browserProfileId: string | undefined,
+  connectedBrowsers: ConnectedBrowsersService | undefined,
+  closeConnection: (() => void) | undefined,
+): () => void {
+  if (!connectedBrowsers || !browserProfileId) return () => {};
+
+  let registration = connState.browserTabConnection;
+  if (!registration) {
+    registration = {
+      browserProfileId,
+      connectionId: connectedBrowsers.connect(
+        browserProfileId,
+        "ws",
+        closeConnection,
+      ),
+      activitySubscriptionCount: 0,
+    };
+    connState.browserTabConnection = registration;
+  } else if (registration.browserProfileId !== browserProfileId) {
+    console.warn(
+      "[WS Relay] Ignoring a second browser profile on one WebSocket connection",
+    );
+    return () => {};
+  }
+
+  registration.activitySubscriptionCount += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (connState.browserTabConnection !== registration) return;
+    registration.activitySubscriptionCount = Math.max(
+      0,
+      registration.activitySubscriptionCount - 1,
+    );
+    if (registration.activitySubscriptionCount > 0) return;
+    connectedBrowsers.disconnect(registration.connectionId);
+    connState.browserTabConnection = null;
+  };
 }
 
 /**
@@ -613,6 +1231,128 @@ export function handleSessionWatchSubscribe(
   );
 }
 
+/** Subscribe to the complete glossary-path set and later changes for a project. */
+export function handleGlossarySubscribe(
+  subscriptions: Map<string, () => void>,
+  msg: RelaySubscribe,
+  send: SendFn,
+  manager?: ProjectGlossarySubscriptionManager,
+): void {
+  const { subscriptionId, projectId } = msg;
+  if (!manager) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 503,
+      body: { error: "Glossary subscription service unavailable" },
+    });
+    return;
+  }
+  if (!projectId || !isUrlProjectId(projectId)) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 400,
+      body: { error: "Valid projectId required for glossary channel" },
+    });
+    return;
+  }
+
+  let eventId = 0;
+  let opened = false;
+  let cancelled = false;
+  let heartbeatInterval: NodeJS.Timeout | null = null;
+  let release: (() => void) | null = null;
+  const buffered: Array<{ eventType: string; data: unknown }> = [];
+  const sendEvent = (eventType: string, data: unknown) => {
+    if (!opened) {
+      buffered.push({ eventType, data });
+      return;
+    }
+    send({
+      type: "event",
+      subscriptionId,
+      eventType,
+      eventId: String(eventId++),
+      data,
+    });
+  };
+
+  const cleanup = () => {
+    cancelled = true;
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+    release?.();
+    release = null;
+  };
+  subscriptions.set(subscriptionId, cleanup);
+
+  const fail = (error: unknown) => {
+    const ownsSubscription = subscriptions.get(subscriptionId) === cleanup;
+    if (ownsSubscription) subscriptions.delete(subscriptionId);
+    const shouldReport = !cancelled && ownsSubscription;
+    cancelled = true;
+    release?.();
+    release = null;
+    if (!shouldReport) return;
+    try {
+      send({
+        type: "response",
+        id: subscriptionId,
+        status:
+          error instanceof Error && error.message === "Project not found"
+            ? 404
+            : 500,
+        body: {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Glossary subscription failed",
+        },
+      });
+    } catch (sendError) {
+      getLogger().warn(
+        { error: sendError, subscriptionId },
+        "[WS Relay] Failed to send glossary subscription error",
+      );
+    }
+  };
+  const open = () => {
+    if (cancelled || subscriptions.get(subscriptionId) !== cleanup) {
+      cancelled = true;
+      release?.();
+      release = null;
+      return;
+    }
+
+    opened = true;
+    send({
+      type: "event",
+      subscriptionId,
+      eventType: "connected",
+      eventId: String(eventId++),
+      data: { timestamp: new Date().toISOString() },
+    });
+    for (const event of buffered) sendEvent(event.eventType, event.data);
+    heartbeatInterval = setInterval(() => {
+      sendEvent("heartbeat", { timestamp: new Date().toISOString() });
+    }, 30_000);
+    getLogger().debug(
+      `[WS Relay] Subscribed to glossary project=${projectId} (${subscriptionId})`,
+    );
+  };
+
+  try {
+    const subscription = manager.subscribe(projectId, (event) => {
+      sendEvent(event.type, event);
+    });
+    release = subscription.release;
+    void subscription.ready.then(open).catch(fail);
+  } catch (error) {
+    fail(error);
+  }
+}
+
 /**
  * Handle a subscribe message.
  */
@@ -621,10 +1361,17 @@ export function handleSubscribe(
   msg: RelaySubscribe,
   send: SendFn,
   supervisor: Supervisor,
+  sessionQueuePersistenceService: SessionQueuePersistenceService | undefined,
   eventBus: EventBus,
+  connState: ConnectionState,
   focusedSessionWatchManager?: FocusedSessionWatchManager,
+  projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager,
   connectedBrowsers?: ConnectedBrowsersService,
   browserProfileService?: BrowserProfileService,
+  closeConnection?: () => void,
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>,
 ): void {
   const { subscriptionId, channel } = msg;
 
@@ -640,7 +1387,14 @@ export function handleSubscribe(
 
   switch (channel) {
     case "session":
-      handleSessionSubscribe(subscriptions, msg, send, supervisor);
+      handleSessionSubscribe(
+        subscriptions,
+        msg,
+        send,
+        supervisor,
+        sessionQueuePersistenceService,
+        resolveAbsoluteFilePaths,
+      );
       break;
 
     case "activity":
@@ -649,8 +1403,10 @@ export function handleSubscribe(
         msg,
         send,
         eventBus,
+        connState,
         connectedBrowsers,
         browserProfileService,
+        closeConnection,
       );
       break;
 
@@ -660,6 +1416,15 @@ export function handleSubscribe(
         msg,
         send,
         focusedSessionWatchManager,
+      );
+      break;
+
+    case "glossary":
+      handleGlossarySubscribe(
+        subscriptions,
+        msg,
+        send,
+        projectGlossarySubscriptionManager,
       );
       break;
 
@@ -1090,6 +1855,19 @@ export interface HandleMessageOptions {
   speechSessionRef?: { current: SpeechWebSocketSession | null };
 }
 
+function isSrpControlAttempt(parsed: unknown): parsed is {
+  type: "srp_resume_init" | "srp_resume" | "srp_hello" | "srp_proof";
+} {
+  if (!parsed || typeof parsed !== "object") return false;
+  const type = (parsed as { type?: unknown }).type;
+  return (
+    type === "srp_resume_init" ||
+    type === "srp_resume" ||
+    type === "srp_hello" ||
+    type === "srp_proof"
+  );
+}
+
 /**
  * Handle incoming WebSocket messages.
  * Supports both text frames (JSON) and binary frames (format byte + payload or encrypted envelope).
@@ -1114,6 +1892,7 @@ export async function handleMessage(
     attachmentStagingService,
     remoteAccessService,
     remoteSessionService,
+    securityClientService,
   } = deps;
   const srpRequiredPolicy = isPolicySrpRequired(connState.connectionPolicy);
   const getSpeechSession = (): SpeechWebSocketSession | null => {
@@ -1161,8 +1940,8 @@ export async function handleMessage(
     return options.speechSessionRef.current;
   };
 
-  // Debug: log incoming data type and preview
-  // Check Buffer BEFORE Uint8Array since Buffer extends Uint8Array
+  // Log only the frame shape. Plaintext previews can contain bearer paths.
+  // Check Buffer BEFORE Uint8Array since Buffer extends Uint8Array.
   const dataType =
     data === null
       ? "null"
@@ -1177,20 +1956,20 @@ export async function handleMessage(
               : data instanceof Uint8Array
                 ? `Uint8Array(${data.length})`
                 : `unknown(${typeof data})`;
-  const preview =
-    typeof data === "string"
-      ? data.slice(0, 100)
-      : data instanceof Uint8Array || Buffer.isBuffer(data)
-        ? `[${Array.from(data.slice(0, 20))
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join(" ")}...]`
-        : String(data).slice(0, 100);
   getLogger().debug(
-    `[WS Relay] handleMessage: type=${dataType}, isBinary=${options.isBinary}, preview=${preview}`,
+    `[WS Relay] handleMessage: type=${dataType}, isBinary=${options.isBinary}`,
   );
 
   const routeClientMessage = async (msg: RemoteClientMessage): Promise<void> =>
     routeClientMessageSafely(msg, send, {
+      onClientCapabilities: (capabilities) => {
+        connState.supportedFormats = new Set(capabilities.formats);
+        connState.clientVersion = capabilities.version ?? null;
+        connState.clientCapabilityBits = capabilities.capabilityBits ?? [];
+        console.log(
+          `[WS Relay] Client capabilities: version=${connState.clientVersion ?? "legacy"}, formats=${[...connState.supportedFormats].map((format) => `0x${format.toString(16).padStart(2, "0")}`).join(", ")}`,
+        );
+      },
       onRequest: async (requestMsg) => {
         // Tunneled HTTP requests are independent: each carries its own id and
         // handleRequest always answers (it never throws). Do not await here —
@@ -1198,18 +1977,23 @@ export async function handleMessage(
         // but a slow request (e.g. a session index revalidation behind
         // /api/sessions) must not head-of-line block later tunneled requests
         // the way it never would over plain HTTP.
-        void handleRequest(requestMsg, send, app, baseUrl, connState);
+        void handleRequest(requestMsg, send, ws, app, baseUrl, connState);
       },
-      onSubscribe: async (subscribeMsg) =>
+      onSubscribe: (subscribeMsg) =>
         handleSubscribe(
           subscriptions,
           subscribeMsg,
           send,
           supervisor,
+          deps.sessionQueuePersistenceService,
           eventBus,
+          connState,
           deps.focusedSessionWatchManager,
+          deps.projectGlossarySubscriptionManager,
           deps.connectedBrowsers,
           deps.browserProfileService,
+          () => ws.close(4004, "Legacy browser profile revoked"),
+          deps.resolveAbsoluteFilePaths,
         ),
       onUnsubscribe: async (unsubscribeMsg) =>
         handleUnsubscribe(subscriptions, unsubscribeMsg),
@@ -1293,6 +2077,14 @@ export async function handleMessage(
     return;
   }
 
+  if (
+    isSrpControlAttempt(parsed) &&
+    !tryLockWsConnectionMode(connState, "srp")
+  ) {
+    ws.close(1008, "Connection mode already selected");
+    return;
+  }
+
   // Handle SRP messages first (always plaintext)
   if (isSrpSessionResumeInit(parsed)) {
     await handleSrpResumeInit(ws, connState, parsed, remoteSessionService);
@@ -1310,7 +2102,14 @@ export async function handleMessage(
   }
 
   if (isSrpClientProof(parsed)) {
-    await handleSrpProof(ws, connState, parsed, parsed.A, remoteSessionService);
+    await handleSrpProof(
+      ws,
+      connState,
+      parsed,
+      parsed.A,
+      remoteSessionService,
+      securityClientService,
+    );
     return;
   }
 

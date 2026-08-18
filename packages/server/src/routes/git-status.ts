@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type GitDiffPreviewSkipped,
+  type GitDiffResult,
   type GitFileChange,
   type GitIntegrationOptionReason,
   type GitIntegrationOptionsResult,
@@ -12,10 +13,14 @@ import {
   type GitRecentCommit,
   type GitStatusInfo,
   type GitUntrackedFolderInfo,
+  type ReviewSourceProjection,
   isUrlProjectId,
 } from "@yep-anywhere/shared";
+import type { Context } from "hono";
 import { Hono } from "hono";
+import { getLogger } from "../logging/logger.js";
 import type { ProjectScanner } from "../projects/scanner.js";
+import type { DirtyFileEditorService } from "../services/DirtyFileEditorService.js";
 import {
   GIT_DIFF_PREVIEW_MAX_DIFF_CHARS,
   GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
@@ -26,12 +31,14 @@ import { gitDiffReportsBinary } from "../git/binaryDiff.js";
 import { buildGitDiffResultFromBytes } from "../git/diffResult.js";
 import {
   GIT_DECODE_PATHS_ARGS,
+  buildGitArgs,
   runGit,
   runGitBytes,
 } from "../git/gitExec.js";
 
 export interface GitStatusDeps {
   scanner: ProjectScanner;
+  dirtyFileEditorService?: DirtyFileEditorService;
 }
 
 const NOT_A_GIT_REPO: GitStatusInfo = {
@@ -50,8 +57,75 @@ const remoteCheckedAtByProjectPath = new Map<string, string>();
 const gitOperationsByProjectPath = new Set<string>();
 const UNTRACKED_FOLDER_FILE_LIMIT = 500;
 
+interface GitDiffRequestTimings {
+  project?: number;
+  preflight?: number;
+  versions?: number;
+  render?: number;
+  projections?: number;
+}
+
+interface GitStatusSnapshot {
+  status: GitStatusInfo;
+  authoritative: boolean;
+}
+
+function recordGitDiffRequestTiming(
+  c: Context,
+  input: {
+    startedAt: number;
+    projectId: string;
+    path: string;
+    timings: GitDiffRequestTimings;
+  },
+): void {
+  const total = performance.now() - input.startedAt;
+  const rounded = Object.fromEntries(
+    Object.entries(input.timings).map(([name, duration]) => [
+      name,
+      Math.round(duration * 100) / 100,
+    ]),
+  );
+  const totalRounded = Math.round(total * 100) / 100;
+  c.header(
+    "Server-Timing",
+    [
+      ...Object.entries(rounded).map(
+        ([name, duration]) => `${name};dur=${duration}`,
+      ),
+      `total;dur=${totalRounded}`,
+    ].join(", "),
+  );
+
+  const event = {
+    event: "git_diff_request",
+    projectId: input.projectId,
+    path: input.path,
+    ...rounded,
+    total: totalRounded,
+  };
+  getLogger().debug(event, "GIT_DIFF: request complete");
+}
+
 export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
   const routes = new Hono();
+  const enrichStatus = (
+    projectPath: string,
+    status: GitStatusInfo,
+    authoritative = true,
+  ) =>
+    deps.dirtyFileEditorService?.reconcileGitStatus(projectPath, status, {
+      authoritative,
+    }) ?? status;
+  const getGitStatusWithRemoteCheckTime = async (projectPath: string) =>
+    enrichStatus(
+      projectPath,
+      await readGitStatusWithRemoteCheckTime(projectPath),
+    );
+  const getGitStatusSnapshot = async (projectPath: string) => {
+    const snapshot = await readGitStatusSnapshot(projectPath);
+    return enrichStatus(projectPath, snapshot.status, snapshot.authoritative);
+  };
 
   routes.get("/:projectId/git", async (c) => {
     const projectId = c.req.param("projectId");
@@ -60,7 +134,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -70,7 +146,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json(result);
     } catch (err) {
       if (isNotGitRepoError(err)) {
-        return c.json(NOT_A_GIT_REPO);
+        return c.json(enrichStatus(project.path, NOT_A_GIT_REPO));
       }
       return c.json({ error: "Failed to get git status" }, 500);
     }
@@ -87,7 +163,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -98,7 +176,16 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
     }
 
     try {
-      return c.json(await getUntrackedFolderInfo(project.path, path));
+      const info = await getUntrackedFolderInfo(project.path, path);
+      const lastEditors =
+        deps.dirtyFileEditorService?.editorsForPaths(
+          project.path,
+          info.files,
+        ) ?? {};
+      return c.json({
+        ...info,
+        ...(Object.keys(lastEditors).length > 0 ? { lastEditors } : {}),
+      });
     } catch (err) {
       if (isNotGitRepoError(err)) {
         return c.json({ error: "Not a git repository" }, 400);
@@ -118,7 +205,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -153,7 +242,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         const result: GitRemoteCheckResult = {
           status: "not-a-git-repo",
           checkedRemoteAt: null,
-          gitStatus: NOT_A_GIT_REPO,
+          gitStatus: enrichStatus(project.path, NOT_A_GIT_REPO),
         };
         return c.json(result);
       }
@@ -184,7 +273,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -217,7 +308,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         const result: GitIntegrationOptionsResult = {
           status: "not-a-git-repo",
           checkedRemoteAt: null,
-          gitStatus: NOT_A_GIT_REPO,
+          gitStatus: enrichStatus(project.path, NOT_A_GIT_REPO),
           canAutoRebase: false,
           canAutoMerge: false,
           reasons: ["not-a-git-repo"],
@@ -260,7 +351,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -301,7 +394,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         const result: GitPullResult = {
           status: "not-a-git-repo",
           checkedRemoteAt: null,
-          gitStatus: NOT_A_GIT_REPO,
+          gitStatus: enrichStatus(project.path, NOT_A_GIT_REPO),
         };
         return c.json(result);
       }
@@ -329,7 +422,9 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -387,7 +482,7 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         const result: GitPushResult = {
           status: "not-a-git-repo",
           checkedRemoteAt: null,
-          gitStatus: NOT_A_GIT_REPO,
+          gitStatus: enrichStatus(project.path, NOT_A_GIT_REPO),
         };
         return c.json(result);
       }
@@ -410,13 +505,19 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
    * Body: { path, staged, status, againstHead?, origPath?, fullContext? }
    */
   routes.post("/:projectId/git/diff", async (c) => {
+    const startedAt = performance.now();
+    const timings: GitDiffRequestTimings = {};
     const projectId = c.req.param("projectId");
 
     if (!isUrlProjectId(projectId)) {
       return c.json({ error: "Invalid project ID format" }, 400);
     }
 
-    const project = await deps.scanner.getProject(projectId);
+    const projectStartedAt = performance.now();
+    const project = await deps.scanner.getProject(projectId, {
+      allowStaleSnapshot: true,
+    });
+    timings.project = performance.now() - projectStartedAt;
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
@@ -465,14 +566,41 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
     }
 
     try {
+      const preflightStartedAt = performance.now();
       const untrackedSizeSkip =
         status === "?"
           ? await getUntrackedDiffPreviewSizeSkip(project.path, path)
           : null;
+      timings.preflight = performance.now() - preflightStartedAt;
       if (untrackedSizeSkip) {
+        recordGitDiffRequestTiming(c, {
+          startedAt,
+          projectId,
+          path,
+          timings,
+        });
         return c.json(skippedGitDiffResult(untrackedSizeSkip));
       }
 
+      // The comment-anchor projections only read `HEAD`, so they depend on
+      // nothing this request computes and need not sit on the critical path.
+      // The binary classification deliberately still *gates* the version
+      // reads: it is what keeps a large binary's bytes from being read into
+      // memory at all, so speculating on them in parallel would trade a
+      // bounded skip for an unbounded read.
+      const projectionsPromise = workingTreeReviewProjections(
+        project.path,
+        path,
+        staged,
+        status,
+        againstHead,
+        origPath,
+      );
+      // A skipped preview abandons this; keep its rejection from surfacing as
+      // unhandled while the awaited path still sees it.
+      projectionsPromise.catch(() => {});
+
+      const binaryStartedAt = performance.now();
       if (
         status !== "?" &&
         (await gitDiffReportsBinary(
@@ -481,9 +609,20 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
           path,
         ))
       ) {
+        timings.preflight =
+          (timings.preflight ?? 0) + (performance.now() - binaryStartedAt);
+        recordGitDiffRequestTiming(c, {
+          startedAt,
+          projectId,
+          path,
+          timings,
+        });
         return c.json(skippedBinaryGitDiffResult());
       }
+      timings.preflight =
+        (timings.preflight ?? 0) + (performance.now() - binaryStartedAt);
 
+      const versionsStartedAt = performance.now();
       const { oldContent, newContent } = await getFileVersions(
         project.path,
         path,
@@ -492,17 +631,37 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
         againstHead,
         origPath,
       );
+      timings.versions = performance.now() - versionsStartedAt;
 
-      return c.json(
-        await buildGitDiffResultFromBytes({
-          path,
-          oldContent,
-          newContent,
-          fullContext,
-          ignoreWhitespace,
-        }),
-      );
+      const renderStartedAt = performance.now();
+      const result = await buildGitDiffResultFromBytes({
+        path,
+        oldContent,
+        newContent,
+        markdownProject: { id: projectId, path: project.path },
+        fullContext,
+        ignoreWhitespace,
+      });
+      timings.render = performance.now() - renderStartedAt;
+      if (!result.previewSkipped) {
+        const projectionsStartedAt = performance.now();
+        result.reviewProjections = await projectionsPromise;
+        timings.projections = performance.now() - projectionsStartedAt;
+      }
+      recordGitDiffRequestTiming(c, {
+        startedAt,
+        projectId,
+        path,
+        timings,
+      });
+      return c.json(result);
     } catch (err) {
+      recordGitDiffRequestTiming(c, {
+        startedAt,
+        projectId,
+        path,
+        timings,
+      });
       const message =
         err instanceof Error ? err.message : "Failed to compute diff";
       return c.json({ error: message }, 500);
@@ -510,6 +669,43 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
   });
 
   return routes;
+}
+
+async function workingTreeReviewProjections(
+  cwd: string,
+  path: string,
+  staged: boolean,
+  status: string,
+  againstHead: boolean | undefined,
+  origPath: string | undefined,
+): Promise<NonNullable<GitDiffResult["reviewProjections"]>> {
+  const projections: NonNullable<GitDiffResult["reviewProjections"]> = {
+    new: {
+      kind: staged && !againstHead ? "index" : "worktree",
+      path,
+      side: "new",
+    },
+  };
+  if (!againstHead && !staged) {
+    projections.old = { kind: "index", path, side: "old" };
+    return projections;
+  }
+
+  const head = await getHeadCommit(cwd);
+  if (head) {
+    const oldPath =
+      (status === "R" || status === "C") && origPath ? origPath : path;
+    projections.old = revisionProjection(head, oldPath, "old");
+  }
+  return projections;
+}
+
+function revisionProjection(
+  revision: string,
+  path: string,
+  side: "old" | "new",
+): ReviewSourceProjection {
+  return { kind: "revision", revision, path, side };
 }
 
 function workingTreeDiffArgs(
@@ -642,24 +838,30 @@ async function getCheckedRemoteAt(projectPath: string): Promise<string | null> {
   );
 }
 
-async function getGitStatusWithRemoteCheckTime(
+async function readGitStatusWithRemoteCheckTime(
   projectPath: string,
 ): Promise<GitStatusInfo> {
   return getGitStatus(projectPath, await getCheckedRemoteAt(projectPath));
 }
 
-async function getGitStatusSnapshot(
+async function readGitStatusSnapshot(
   projectPath: string,
-): Promise<GitStatusInfo> {
+): Promise<GitStatusSnapshot> {
   try {
-    return await getGitStatusWithRemoteCheckTime(projectPath);
+    return {
+      status: await readGitStatusWithRemoteCheckTime(projectPath),
+      authoritative: true,
+    };
   } catch (err) {
     if (isNotGitRepoError(err)) {
-      return NOT_A_GIT_REPO;
+      return { status: NOT_A_GIT_REPO, authoritative: true };
     }
     return {
-      ...NOT_A_GIT_REPO,
-      checkedRemoteAt: await getCheckedRemoteAt(projectPath),
+      status: {
+        ...NOT_A_GIT_REPO,
+        checkedRemoteAt: await getCheckedRemoteAt(projectPath),
+      },
+      authoritative: false,
     };
   }
 }
@@ -934,16 +1136,17 @@ async function collectUntrackedFolderFiles(
   limit: number,
 ): Promise<{ files: string[]; truncated: boolean }> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("git", [
-      "-C",
-      projectPath,
-      ...GIT_DECODE_PATHS_ARGS,
-      "status",
-      "--porcelain=v2",
-      "--untracked-files=all",
-      "--",
-      folderPath,
-    ]);
+    const child = spawn(
+      "git",
+      buildGitArgs(projectPath, [
+        ...GIT_DECODE_PATHS_ARGS,
+        "status",
+        "--porcelain=v2",
+        "--untracked-files=all",
+        "--",
+        folderPath,
+      ]),
+    );
     const files: string[] = [];
     let stdoutRemainder = "";
     let stderr = "";

@@ -1,4 +1,5 @@
 import { type CSSProperties, memo, useId, useRef, useState } from "react";
+import { useRememberedDisclosureState } from "../../contexts/RememberedDisclosureStateContext";
 import { useOptionalSessionMetadata } from "../../contexts/SessionMetadataContext";
 import { useI18n } from "../../i18n";
 import { MESSAGE_STALE_THRESHOLD_MS } from "../../lib/messageAge";
@@ -114,7 +115,11 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
   staleNowMs,
   latestVisibleTimestampMs,
 }: Props) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useRememberedDisclosureState(
+    projection.disclosureOwnerId,
+    "explored-group",
+    true,
+  );
   const [expandedParentIds, setExpandedParentIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -173,7 +178,6 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
       return next;
     });
   };
-
   return (
     <div
       className={[

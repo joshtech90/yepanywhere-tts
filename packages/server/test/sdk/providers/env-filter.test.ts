@@ -83,4 +83,32 @@ describe("filterEnvForChildProcess", () => {
     expect(env.YEP_DATA_DIR).toBeUndefined();
     expect(env.npm_execpath).toBeUndefined();
   });
+
+  it("keeps the two-factor browser diagnostic broker environment", () => {
+    const env = filterEnvForChildProcess({
+      YEP_BROWSER_DEBUG_AGENT_URL: "http://127.0.0.1/browser-debug/v1",
+      YEP_BROWSER_DEBUG_CALLER_TOKEN: "boot-token",
+      YEP_DATA_DIR: "/private/data",
+    });
+
+    expect(env.YEP_BROWSER_DEBUG_AGENT_URL).toBe(
+      "http://127.0.0.1/browser-debug/v1",
+    );
+    expect(env.YEP_BROWSER_DEBUG_CALLER_TOKEN).toBe("boot-token");
+    expect(env.YEP_DATA_DIR).toBeUndefined();
+  });
+
+  it("passes the agent's own launch markers through to the child", () => {
+    const env = filterEnvForChildProcess({
+      AGENT_LAUNCHER: "yepanywhere",
+      AGENT_LAUNCH_HARNESS: "claude",
+      AGENT_LAUNCH_MODEL: "claude-opus-5",
+      AGENT_LAUNCH_EFFORT: "xhigh",
+    });
+
+    expect(env.AGENT_LAUNCHER).toBe("yepanywhere");
+    expect(env.AGENT_LAUNCH_HARNESS).toBe("claude");
+    expect(env.AGENT_LAUNCH_MODEL).toBe("claude-opus-5");
+    expect(env.AGENT_LAUNCH_EFFORT).toBe("xhigh");
+  });
 });

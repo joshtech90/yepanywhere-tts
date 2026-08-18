@@ -94,9 +94,16 @@ not carry a migration queue.
   tests may pin behavior, but they do not prove shipped code uses a selector.
 - Each `:global(...)` or `composes ... from global` use in a module must name a
   class present in an authored global stylesheet and carry a module-local class
-  anchor in the same selector. The shared-shell form
+  anchor in the same selector-list branch. An anchor in a sibling comma branch
+  does not scope the global use. The shared-shell form
   `:global(.modal):has(.localContent)` is valid because `.localContent` makes
   ownership and scope explicit.
+- CSS analysis compares selector-parser-decoded class values with complete
+  whitespace-delimited class tokens from source. Selector-shaped strings are
+  parser-decoded, and generated-markup class attributes are tokenized as class
+  lists. Escaped punctuation, Unicode, leading digits, and single-character
+  classes retain one canonical identity; source tokenization must not split one
+  runtime class into ASCII word fragments.
 - `pnpm css:unused` remains the investigative global-and-module report. Its
   known legacy findings may make that command exit nonzero without breaking
   ordinary lint. `--remove` remains limited to global rules; module rules are
@@ -447,10 +454,11 @@ After editing:
    module as undetermined rather than unused, and never rewrites module rules.
    Its CSS and TypeScript parsers scan every authored `packages/*/src`,
    `packages/*/e2e`, and `packages/*/scripts` producer, including `.mjs` and
-   `.cjs` harnesses. They match complete class-like string tokens, plus the
-   class selectors a regular-expression literal spells out after an escaped
-   dot. A stylesheet-contract test that asserts on CSS text is therefore a
-   visible producer.
+   `.cjs` harnesses. They keep whitespace-delimited string tokens whole,
+   parser-decode dot-led selector strings, read generated-markup class
+   attributes as class lists, and record class selectors a regular-expression
+   literal spells out after an escaped dot. A stylesheet-contract test that
+   asserts on CSS text is therefore a visible producer.
    Bare words, other regex punctuation, and pattern flags are not vocabulary.
    Dynamic prefixes remain conservative, and a test-only reference can still be
    an intentional DOM contract, so confirm a verdict against the reported
@@ -461,8 +469,8 @@ After editing:
    local class names are not public selectors.
 5. Run `pnpm css:check`, `pnpm lint`, `pnpm typecheck`, and
    `pnpm console:scan`.
-6. Capture and inspect final browser screenshots at 1920×1080 and 375×812 when
-   the migration affects rendered UI.
+6. Capture and inspect final browser screenshots at 1000×600 and 375×812 when
+   the migration affects rendered UI. Read and inspect one image at a time.
 7. Run `pnpm css:check --record` and verify that only the intended legacy
    ceilings moved downward.
 

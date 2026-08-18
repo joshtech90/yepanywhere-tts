@@ -1,5 +1,5 @@
 /**
- * Wrapper script to start Vite dev server programmatically.
+ * Wrapper script to start the remote-client Vite development server.
  * Writes the resolved port to a file for the test harness to read.
  * This is more reliable than parsing stdout.
  *
@@ -42,7 +42,7 @@ async function main() {
 
   const port = address.port;
   writeFileSync(PORT_FILE, String(port));
-  console.log(`[Vite Remote] Server listening on port ${port}`);
+  console.log(`[Vite Remote] Development server listening on port ${port}`);
 
   // Keep the process alive
   process.on("SIGTERM", async () => {

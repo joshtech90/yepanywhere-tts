@@ -12,7 +12,11 @@ import {
 import { getLogger } from "../logging/logger.js";
 import type { UserMessage } from "../sdk/types.js";
 import type { BusEvent, EventBus } from "../watcher/EventBus.js";
-import type { ModelSettings } from "../supervisor/Supervisor.js";
+import {
+  RetryableSessionLaunchError,
+  type ModelSettings,
+  type SessionLaunchOptions,
+} from "../supervisor/Supervisor.js";
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import type { ProjectQueueService } from "./ProjectQueueService.js";
 import type {
@@ -62,11 +66,13 @@ export interface ProjectQueueSupervisor extends ProjectWorkSupervisor {
     message: UserMessage,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult>;
   createSession(
     projectPath: string,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult>;
   resumeSession(
     sessionId: string,
@@ -74,6 +80,7 @@ export interface ProjectQueueSupervisor extends ProjectWorkSupervisor {
     message: UserMessage,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+    launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult>;
 }
 
@@ -106,6 +113,7 @@ interface PromoteNowOptions {
   itemId?: string;
   force?: boolean;
   deliveryIntent?: "steer";
+  automatic?: boolean;
 }
 
 export interface ProjectQueueSchedulerOptions {
@@ -119,6 +127,7 @@ export interface ProjectQueueSchedulerOptions {
   blockedRetryMs?: number;
   getIdleGraceMs?: () => number;
   getGlobalInstructions?: () => string | undefined;
+  isSessionAutomationPaused?: (sessionId: string) => boolean;
   onSessionStarted?: (args: {
     item: ProjectQueueItem;
     process: ProjectQueueProcessSnapshot;
@@ -155,6 +164,10 @@ export class ProjectQueueScheduler {
   private readonly fixedIdleGraceMs?: number;
   private readonly getConfiguredIdleGraceMs?: () => number;
   private readonly timers = new Map<UrlProjectId, ProjectQueueTimerState>();
+  private readonly userSessionStartReservations = new Map<
+    UrlProjectId,
+    Map<string, number>
+  >();
   private readonly inFlight = new Set<UrlProjectId>();
   private readonly inFlightRuns = new Set<Promise<RunProjectResult>>();
   private readonly unsubscribe: () => void;
@@ -178,8 +191,46 @@ export class ProjectQueueScheduler {
       clearTimeout(state.timer);
     }
     this.timers.clear();
+    this.userSessionStartReservations.clear();
     await Promise.allSettled(this.inFlightRuns);
     this.inFlight.clear();
+  }
+
+  /**
+   * Reserve a project's idle predicate while an admitted user request is
+   * starting a session but has not yet registered a live provider process.
+   */
+  reserveUserSessionStart(
+    projectId: UrlProjectId,
+    sessionId: string,
+  ): () => void {
+    if (this.disposed) return () => {};
+
+    const reservations =
+      this.userSessionStartReservations.get(projectId) ?? new Map();
+    reservations.set(sessionId, (reservations.get(sessionId) ?? 0) + 1);
+    this.userSessionStartReservations.set(projectId, reservations);
+    this.clearProjectTimer(projectId);
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+
+      const current = this.userSessionStartReservations.get(projectId);
+      const count = current?.get(sessionId);
+      if (current && count !== undefined) {
+        if (count > 1) {
+          current.set(sessionId, count - 1);
+        } else {
+          current.delete(sessionId);
+          if (current.size === 0) {
+            this.userSessionStartReservations.delete(projectId);
+          }
+        }
+      }
+      this.scheduleProjectIfDispatchable(projectId);
+    };
   }
 
   async getProjectIdleStatus(
@@ -188,12 +239,20 @@ export class ProjectQueueScheduler {
     // Project Queue ordering and UI semantics are documented in
     // topics/project-queue.md. In particular, per-session queues must drain
     // before a project-level queue item can promote.
-    return getProjectWorkIdleStatus(projectId, {
+    const status = await getProjectWorkIdleStatus(projectId, {
       supervisor: this.supervisor,
       externalTracker: this.externalTracker,
       getRecoveredPatientQueueCount: (candidateProjectId) =>
         this.getRecoveredPatientQueueCount(candidateProjectId),
+      ignoreSessionsPendingDone: true,
     });
+    const reservations = this.userSessionStartReservations.get(projectId);
+    if (reservations) {
+      for (const sessionId of reservations.keys()) {
+        status.blockers.push(`${sessionId}:user-starting`);
+      }
+    }
+    return { idle: status.blockers.length === 0, blockers: status.blockers };
   }
 
   async getProjectStatus(
@@ -224,6 +283,12 @@ export class ProjectQueueScheduler {
     const blockers = [...idle.blockers];
     if (first.status === "failed") {
       blockers.push("project-queue:first-failed");
+    }
+    if (
+      first.target.type === "existing-session" &&
+      this.options.isSessionAutomationPaused?.(first.target.sessionId)
+    ) {
+      blockers.push(`${first.target.sessionId}:automation-paused`);
     }
 
     const now = Date.now();
@@ -272,7 +337,8 @@ export class ProjectQueueScheduler {
     options: PromoteNowOptions = {},
   ): Promise<ProjectQueuePromoteNowResult> {
     if (this.projectQueueService.isDispatchPaused()) {
-      const projectItems = this.projectQueueService.listProject(projectId).items;
+      const projectItems =
+        this.projectQueueService.listProject(projectId).items;
       const requestedItem = options.itemId
         ? projectItems.find((item) => item.id === options.itemId)
         : projectItems[0];
@@ -389,10 +455,13 @@ export class ProjectQueueScheduler {
     this.clearProjectTimer(projectId);
     const scheduledAtMs = Date.now();
     const eligibleAtMs = scheduledAtMs + Math.max(0, Math.round(delayMs));
-    const timer = setTimeout(() => {
-      this.timers.delete(projectId);
-      void this.runProject(projectId);
-    }, Math.max(0, Math.round(delayMs)));
+    const timer = setTimeout(
+      () => {
+        this.timers.delete(projectId);
+        void this.runProject(projectId, { automatic: true });
+      },
+      Math.max(0, Math.round(delayMs)),
+    );
     timer.unref?.();
     this.timers.set(projectId, {
       timer,
@@ -417,7 +486,10 @@ export class ProjectQueueScheduler {
         this.options.blockedRetryMs ??
           Math.max(
             1_000,
-            Math.min(BLOCKED_RETRY_MS, this.getIdleGraceMs() || BLOCKED_RETRY_MS),
+            Math.min(
+              BLOCKED_RETRY_MS,
+              this.getIdleGraceMs() || BLOCKED_RETRY_MS,
+            ),
           ),
       ),
     );
@@ -460,7 +532,10 @@ export class ProjectQueueScheduler {
       return { promoted: false, reason: "paused" };
     }
     const projectItems = this.projectQueueService.listProject(projectId).items;
-    if (options.itemId && !projectItems.some((item) => item.id === options.itemId)) {
+    if (
+      options.itemId &&
+      !projectItems.some((item) => item.id === options.itemId)
+    ) {
       return { promoted: false, reason: "not-found", itemId: options.itemId };
     }
     if (!this.hasRunnableQueuedItem(projectId, options.itemId)) {
@@ -468,6 +543,21 @@ export class ProjectQueueScheduler {
         promoted: false,
         reason: projectItems.length === 0 ? "empty" : "not-queued",
         ...(options.itemId ? { itemId: options.itemId } : {}),
+      };
+    }
+
+    const nextItem = options.itemId
+      ? projectItems.find((item) => item.id === options.itemId)
+      : projectItems.find((item) => item.status === "queued");
+    if (
+      options.automatic === true &&
+      nextItem?.target.type === "existing-session" &&
+      this.options.isSessionAutomationPaused?.(nextItem.target.sessionId)
+    ) {
+      return {
+        promoted: false,
+        reason: "blocked",
+        itemId: nextItem.id,
       };
     }
 
@@ -507,7 +597,9 @@ export class ProjectQueueScheduler {
       }
 
       const result = await this.dispatchItem(item, options);
-      await this.projectQueueService.completeDispatch(projectId, item.id);
+      if (!isQueuedResult(result) || item.target.type === "existing-session") {
+        await this.projectQueueService.completeDispatch(projectId, item.id);
+      }
       const sessionId =
         item.target.type === "existing-session"
           ? item.target.sessionId
@@ -522,20 +614,47 @@ export class ProjectQueueScheduler {
       };
     } catch (error) {
       const message = errorMessage(error);
-      getLogger().warn(
-        { event: "project_queue_dispatch_failed", projectId, error: message },
-        "Project queue dispatch failed",
-      );
-      if (item) {
+      const retryable = error instanceof RetryableSessionLaunchError;
+      let retryScheduled = false;
+      if (item && retryable) {
+        const updated =
+          await this.projectQueueService.recordRetryableStartupFailure(
+            projectId,
+            item.id,
+            message,
+          );
+        retryScheduled = updated?.status === "queued";
+        retryBlockedProject = retryScheduled;
+      } else if (item) {
         await this.projectQueueService.failDispatch(
           projectId,
           item.id,
           message,
         );
       }
+      if (retryScheduled) {
+        getLogger().info(
+          { event: "project_queue_dispatch_retry", projectId, error: message },
+          "Project queue provider startup will retry",
+        );
+      } else if (retryable) {
+        getLogger().warn(
+          {
+            event: "project_queue_dispatch_retry_exhausted",
+            projectId,
+            error: message,
+          },
+          "Project queue item paused after repeated provider startup failures",
+        );
+      } else {
+        getLogger().warn(
+          { event: "project_queue_dispatch_failed", projectId, error: message },
+          "Project queue dispatch failed",
+        );
+      }
       return {
         promoted: false,
-        reason: "failed",
+        reason: retryScheduled ? "blocked" : "failed",
         ...(item ? { itemId: item.id } : {}),
         error: message,
       };
@@ -605,18 +724,46 @@ export class ProjectQueueScheduler {
     modelSettings: ModelSettings,
   ): Promise<ProjectQueueDispatchResult> {
     if (!item.message.stagedAttachments) {
-      return this.supervisor.startSession(
+      let deferred = false;
+      const result = await this.supervisor.startSession(
         item.projectPath,
         this.toUserMessage(item),
         permissionMode,
         modelSettings,
+        {
+          onStarted: async (sessionId) => {
+            if (!deferred) return;
+            await this.completeDeferredNewSessionDispatch(item, sessionId);
+          },
+          onFailed: async (reason) => {
+            if (!deferred) return;
+            await this.projectQueueService.failDispatch(
+              item.projectId,
+              item.id,
+              reason,
+            );
+          },
+          onRetryableFailure: async (reason) => {
+            if (!deferred) return;
+            await this.projectQueueService.recordRetryableStartupFailure(
+              item.projectId,
+              item.id,
+              reason,
+            );
+          },
+          retryProviderStartupFailure: true,
+          requireProviderSessionId: true,
+        },
       );
+      deferred = isQueuedResult(result);
+      return result;
     }
 
     const created = await this.supervisor.createSession(
       item.projectPath,
       permissionMode,
       modelSettings,
+      { retryProviderStartupFailure: true },
     );
     if (isQueueFullResult(created)) {
       return created;
@@ -637,7 +784,44 @@ export class ProjectQueueScheduler {
       this.toUserMessage(item, stagedAttachments),
       permissionMode,
       modelSettings,
+      { requireProviderSessionId: true },
     );
+  }
+
+  private async completeDeferredNewSessionDispatch(
+    item: ProjectQueueItem,
+    sessionId: string,
+  ): Promise<void> {
+    const process = this.supervisor
+      .getAllProcesses()
+      .find((candidate) => candidate.sessionId === sessionId);
+    if (process) {
+      try {
+        await this.options.onSessionStarted?.({ item, process });
+      } catch (error) {
+        getLogger().warn(
+          {
+            event: "project_queue_deferred_session_callback_failed",
+            projectId: item.projectId,
+            itemId: item.id,
+            sessionId,
+            error: errorMessage(error),
+          },
+          "Deferred Project Queue session started but its association callback failed",
+        );
+      }
+    } else {
+      getLogger().warn(
+        {
+          event: "project_queue_deferred_session_missing",
+          projectId: item.projectId,
+          itemId: item.id,
+          sessionId,
+        },
+        "Deferred Project Queue session started without a registered process",
+      );
+    }
+    await this.projectQueueService.completeDispatch(item.projectId, item.id);
   }
 
   private async materializeStagedAttachments(
@@ -672,6 +856,7 @@ export class ProjectQueueScheduler {
         : undefined;
     return {
       text: item.message.text,
+      automaticSource: "project-queue",
       ...(attachments ? { attachments } : {}),
       ...(item.message.mode ? { mode: item.message.mode } : {}),
       ...(item.message.metadata || deliveryIntent
@@ -697,6 +882,7 @@ export class ProjectQueueScheduler {
       ...(target.model && target.model !== "default"
         ? { model: target.model }
         : {}),
+      ...(target.model ? { requestedModel: target.model } : {}),
       ...(target.serviceTier ? { serviceTier: target.serviceTier } : {}),
       ...(thinkingConfig.thinking ? { thinking: thinkingConfig.thinking } : {}),
       ...(thinkingConfig.effort ? { effort: thinkingConfig.effort } : {}),

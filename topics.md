@@ -28,7 +28,8 @@
 - client-session-lifecycle-store - Shared client lifecycle reducer/store for session activity indicators.
 - client-session-collection-store - Normalized client session facts and list projection consistency.
 - relative-filenames - Shortest-unambiguous file path display and link targets.
-- rich-text-rendering - Rendered file/message/diff previews and local-link handling.
+- rich-text-rendering - Rendered file/message/diff previews, source-aware copy,
+  semantic rich copy, and local-link handling.
 - media-rendering-and-routing - Relay-safe media discovery, compact turn
   galleries, and full-image viewer interaction.
 - security - YA trust-boundary contracts for local, authenticated, relay, and public surfaces.
@@ -57,7 +58,8 @@
 - session-list-display - Session list/sidebar badges, model glyph mapping, and the hover tooltip card.
 - session-list-hidden-duplicates - Conservative duplicate-title hiding for session lists, preserving fork/helper lineage and never letting YA helper sessions hide source/current sessions.
 - stream-durable-id-dedup - Stream-vs-durable message id alignment and the approx-dedup backstop (codex/opencode steer double-render).
-- selection-comment-ui - Quote selected assistant output into the composer with source-block tint reminders.
+- selection-comment-ui - Non-obscuring quote/source/rich selection actions,
+  quote-to-composer behavior, and source-block tint reminders.
 - fork-from-turn - Turn-notch fork actions and server-owned fork-after-summary jobs.
 - provider-fork-support - Whether Codex/Pi could implement the forkSession primitive, with per-provider enablement plans and gaps.
 - transcript-display-objects - Persisted viewer-only objects anchored in transcript order.
@@ -65,6 +67,8 @@
 - provider-session-tree - Capability-gated sidebar tree for provider transcripts with parent-link branch data.
 - session-retitle - Explicit title editing and user-confirmed generated retitle proposals.
 - responsive-layout-gaps - Font-metric-sensitive responsive wrapping gaps and the measured layout invariants that should replace fixed pixel/rem thresholds.
+- mobile-transcript-horizontal-overflow - Fixed outer session viewport with
+  renderer-owned code/tool scrollers and swipeable turn galleries.
 - session-defaults - New-session default scoping: all-provider controls vs provider/model economics controls.
 - floating-new-session-composer - Non-session-page `+` quick composer, new-session prefill, and click-time non-browser speech prewarm.
 - permission-mode - Provider-independent approval preference with model-capability-gated Auto fallback.
@@ -147,6 +151,9 @@
   discontinuity for the default compact tail.
 - memory-growth - Browser/client memory-growth investigations and bounded
   transcript load contracts for large provider sessions.
+- server-performance-observability - Draft local operator metrics, bounded
+  diagnostic events, and V8 memory-pressure cache eviction; implementation is
+  deferred pending a measured investigation and compatibility approval.
 - transcript-virtualization - Viewport-bounded transcript rendering, native
   content visibility, and first-traversal scroll stability.
 - codex-code-mode-render-convergence - Shared rollout-recoverable semantic
@@ -160,6 +167,8 @@
   provider persistence and nested beneath its canonical YA parent session.
 - cross-host-delegation - Directed YA-host grants and the product surface for
   creating and supervising separate native worker sessions on another host.
+- claude-cross-session-messaging - Claude's live session messaging and local
+  Agent View compared with YA's durable cross-host delegation control plane.
 - older-claude-models - Default-off server registry and grandfathered custom
   selections for previous provider model versions.
 - host-awake - Server-owned, process-lifetime idle-sleep inhibition with an
@@ -208,6 +217,8 @@
   user-owned visual-verification handoff that skips agent capture work.
 - source-control - Repository-navigation workbench: changes, commits, files,
   blame, diffs, responsive panes, and links to relevant agent sessions.
+- aligned-markdown-diffs - Resumable source-positioned Markdown rendering that
+  keeps changed rows, diff lanes, and scroll context aligned.
 - federated-super-sessions - One canonical YA session whose active provider
   runtime can migrate safely between trusted cross-platform YA peers.
 - skill-invocation - Provider-aware `/name` and `$name` skill discovery,
@@ -215,12 +226,27 @@
   text.
 - relay-client-mux - Optional relay-owned client multiplexing for several
   independently authenticated YA hosts with exact legacy `/ws` fallback.
+- android-native-multi-host - Android saved/included/demanded host ownership,
+  one-or-more-host relay mux, unified filters, server settings, and removal.
 - desktop-v0 - Windows-first self-contained Tauri release with an atomic
   private runtime/server resource, advisory external providers, reload-safe
   loopback bootstrap, and owned process lifecycle.
 - android-fcm-push - Native Android device push subscriptions through a
   hosted FCM broker, with SRP-first enrollment, generic/descriptive privacy
   modes, and registration-lifecycle details deferred to implementation.
+- android-native-shell - First-class Gradle/Kotlin Android ownership, Compose
+  app navigation, a full-web fallback, and an origin-scoped native host
+  message contract without Tauri Mobile.
+- android-native-connection - Kotlin-owned SRP, secretbox, direct/relay YA
+  protocol transport, resumable native sessions, and shared Compose/service
+  lifecycle ownership independent of the WebView.
+- mobile-server-pairing - App-local server profiles, durable mobile-device
+  pairing, Kotlin-owned native transport, independent bundled-web transport,
+  resume-authenticated direct/relay discovery, and push as a revocable child
+  capability; public installation identity is deferred.
+- security-client-audit - Unified browser/native/desktop client registration,
+  signed continuity check-in, revocation-surviving bounded security history,
+  opt-in new-client alerts, and future WebAuthn/platform-attestation assurance.
 - css-architecture - Containment for legacy global stylesheets: CSS Modules by
   default, frozen line-count ceilings, and opportunistic extraction with a
   downward-only ratchet.
@@ -233,3 +259,66 @@
 - website-product-communication - Canonical public feature/provider/
   distribution claims, public docs ownership, and the marketing analytics
   boundary.
+- reload-safe-provider-runtimes - Wrapper-owned provider protocol runtimes
+  that keep active turns alive across a development Hono reload, with bounded
+  reattachment and cleanup.
+- provider-host-api - Same-user local control of wrapper-owned provider
+  workers, headless bootstrap, and authenticated Hono adaptation.
+- project-path-links - Filesystem-authoritative project path membership and
+  highlighted-source linkification.
+- performance-regression-suite - Capacity-keyed black-box latency, memory,
+  correctness, and historical-regression evidence.
+- public-share-persistence - Independent per-session share state, compact
+  bearer-link grants, frozen revisions, and aggregate-store migration.
+- project-directory-storage - App-data-only default for YA-managed state,
+  explicit global opt-in for project-local assets, and no ambient project or
+  Git-metadata writes from browsing, rendering, indexing, or replay.
+- glossary-tooltips - Default-off glossary annotations backed by one governing
+  contained include graph, a compiled phrase matcher, and nonblocking render
+  integration.
+- client-asset-delivery - Immutable generated assets, negotiated precompressed
+  representations, bounded static serving, and deploy-generation retention for
+  old entrypoints.
+- session-catalog-observation - Durable compact session catalog, continuous
+  server observation, interest-prioritized freshness, coherent generations,
+  and multi-client single-flight refresh.
+- biome-format-baseline - Repository-wide Biome formatting invariant, CI
+  enforcement, and blame preservation for verified mechanical rewrites.
+- goal-judge-fork-vs-side-session - Proposal + experiment deciding where a
+  loop-until-done stop judge lives: forked same-model turn vs side session
+  (small/same-tier/cross-vendor/tool-running) vs self-declaration, on
+  false-complete/false-continue rates and real billed cost.
+- composer-full-pane-editing - Viewport-bounded long-form drafting with one
+  spare line, direct Ctrl+Enter submission, and visible New Session, handoff,
+  and in-session entry.
+- session-wake - Event-driven wake turns: authenticated endpoint + agentctl
+  job-completion client (design topic; implementation series to follow).
+- parked-file-viewer - Preserve document reading state while a persistent
+  composer controller or session-list drawer uncovers the live session.
+- settings-ui-placement - Reviewed settings copy, placement, defaults, and
+  externally visible behavior that the UI can state with confidence.
+- cache-aware-session-bootstrap - Current cold-start context placement and the
+  explicit absence of a prepared-session pool or cache-reuse guarantee.
+- agent-context-injection - Provider-specific placement and compaction
+  durability for YA, harness, and project instructions; candidate boot and
+  protected-capsule mechanisms live in its sketches companion.
+- all-session-content-search - Current catalog/in-session search boundary and
+  explicit absence of a cross-session transcript-content index.
+- source-review-followups - Optional clarification, discussion,
+  source-comment, and gap annotations for a future review-sweep workflow.
+- user-authorization-attestation - Current absence of signed gate-specific
+  turns; candidate signature and capability-inbox transports live in sketches.
+- quarto-markdown - Safe `.qmd` viewing and inert, source-preserving file links
+  for Quarto include directives.
+- remote-browser-diagnostics - Explicit per-tab full-JavaScript debugging
+  leases for YA-launched agents, with visible consent, bounded evidence, and
+  server-mediated two-factor authority.
+- mobile-session-startup-stability - A monotonic hosted session shell,
+  selected-route parallel acquisition, coherent session-core chunking, and
+  cache-correct prior-generation asset delivery.
+- ui-control-alignment - Shared baseline and metric policy for compact rows.
+- attachment-storage - YA-managed attachment location and viewer access.
+- nested-harness-launch - Linking a shell-launched second harness process to
+  the session it writes, read from the launching command.
+- isearch-jump - Ctrl+R/S Enter and click must land on the highlighted match
+  after search unhides non-matching turns.

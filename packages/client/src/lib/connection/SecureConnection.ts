@@ -28,6 +28,8 @@ import {
   BinaryFormat,
   DEFAULT_RELAY_CHANNEL,
   SPEECH_RELAY_CHANNEL,
+  TransportChunkError,
+  TransportChunkReassembler,
   encodeUploadChunkPayload,
   isBinaryData,
   isCompressionSupported,
@@ -40,6 +42,7 @@ import {
   isSrpSessionResumed,
 } from "@yep-anywhere/shared";
 import { getRelayDebugEnabled } from "../../hooks/useDeveloperMode";
+import { getClientVersion } from "../clientVersion";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import type { ConnectionManager } from "./ConnectionManager";
 import {
@@ -171,6 +174,7 @@ export class SecureConnection implements Connection {
   private protocol: RelayProtocol;
   private nextOutboundSeq = 0;
   private lastInboundSeq: number | null = null;
+  private readonly inboundChunks = new TransportChunkReassembler();
   private pendingResumeClientNonce: string | null = null;
   private pendingResumeServerNonce: string | null = null;
   private minimumResumeProtocolVersion: number | null = null;
@@ -1312,8 +1316,10 @@ export class SecureConnection implements Connection {
 
     if (isBinaryData(data)) {
       try {
+        const completeMessage = this.inboundChunks.acceptFrame(data);
+        if (!completeMessage) return;
         decrypted = await decryptBinaryEnvelopeWithDecompression(
-          data,
+          completeMessage,
           this.sessionKey,
         );
         if (!decrypted) {
@@ -1322,6 +1328,9 @@ export class SecureConnection implements Connection {
         }
       } catch (err) {
         console.warn("[SecureConnection] Binary envelope error:", err);
+        if (err instanceof TransportChunkError) {
+          this.ws?.close(4005, "Invalid transport chunk sequence");
+        }
         return;
       }
     } else if (typeof data === "string") {
@@ -1447,6 +1456,7 @@ export class SecureConnection implements Connection {
   private resetSequenceState(): void {
     this.nextOutboundSeq = 0;
     this.lastInboundSeq = null;
+    this.inboundChunks.reset();
   }
 
   /**
@@ -1458,6 +1468,7 @@ export class SecureConnection implements Connection {
       BinaryFormat.JSON,
       BinaryFormat.BINARY_UPLOAD,
       BinaryFormat.SPEECH_AUDIO,
+      BinaryFormat.TRANSPORT_CHUNK,
     ];
 
     if (isCompressionSupported()) {
@@ -1466,6 +1477,8 @@ export class SecureConnection implements Connection {
 
     const msg: ClientCapabilities = {
       type: "client_capabilities",
+      version: getClientVersion(),
+      capabilityBits: [],
       formats: formats as ClientCapabilities["formats"],
     };
 
@@ -1504,6 +1517,10 @@ export class SecureConnection implements Connection {
 
   subscribeActivity(handlers: StreamHandlers): Subscription {
     return this.protocol.subscribeActivity(handlers);
+  }
+
+  subscribeGlossary(projectId: string, handlers: StreamHandlers): Subscription {
+    return this.protocol.subscribeGlossary(projectId, handlers);
   }
 
   subscribeSessionWatch(
@@ -1595,6 +1612,7 @@ export class SecureConnection implements Connection {
     this.sessionKey = null;
     this.srpSession = null;
     this.connectionState = "disconnected";
+    this.resetSequenceState();
 
     if (this.ws) {
       this.ws.close();
@@ -1646,6 +1664,7 @@ export class SecureConnection implements Connection {
       this.ws.close();
       this.ws = null;
     }
+    this.resetSequenceState();
 
     const reconnectError = new Error("Connection reconnecting");
     this.protocol.rejectAllPending(reconnectError);

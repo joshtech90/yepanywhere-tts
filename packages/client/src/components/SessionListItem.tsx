@@ -1,13 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
 import { useSessionHoverCardController } from "../hooks/useSessionHoverCardController";
+import {
+  useTooltipMode,
+  useVisibilityAwareTextTooltip,
+} from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
 import { activityBus } from "../lib/activityBus";
 import { toBrowserAppHref } from "../lib/appHref";
 import { formatBriefAge, formatSessionHoverAge } from "../lib/sessionAge";
+import {
+  providerChildActivityLevels,
+  providerChildSessionHref,
+  providerChildTitle,
+} from "../lib/providerChildSessions";
 import {
   buildBtwAsideParentHref,
   getBtwAsideSessionDisplayTitle,
@@ -20,13 +36,16 @@ import type {
   ProviderChildSessionSummary,
   SessionStatus,
 } from "../types";
+import { ProviderChildNavTarget } from "./ProviderChildNavTarget";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ProviderBadge } from "./ProviderBadge";
 import { SessionHoverCard } from "./SessionHoverCard";
+import { PublicShareManagerModal } from "./PublicShareManagerModal";
 import { SessionMenu } from "./SessionMenu";
-import { SessionShareModal } from "./SessionShareModal";
+import { LegacySessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
 import { ThinkingIndicator } from "./ThinkingIndicator";
+import styles from "./SessionListItem.module.css";
 
 interface SessionListItemProps {
   // Core (required)
@@ -77,7 +96,6 @@ interface SessionListItemProps {
   onToggleArchive?: () => void;
   onToggleRead?: () => void;
   onRename?: () => void;
-
   // Selection (for All Sessions page)
   isCurrent?: boolean;
   isSelected?: boolean;
@@ -101,7 +119,11 @@ interface SessionListItemProps {
   /** Cached user vs system/assistant turn counts (for heavier list views) */
   userTurnCount?: number;
   systemTurnCount?: number;
-  /** Whether public share creation controls should be exposed from list menus */
+  /** Whether legacy public-share creation is currently ready. */
+  publicShareCreationReady?: boolean;
+  /** Whether the permanent public-share management capability is available. */
+  publicShareManagementAvailable?: boolean;
+  /** @deprecated Use publicShareCreationReady. */
   publicShareControlsVisible?: boolean;
 }
 
@@ -190,6 +212,8 @@ export function SessionListItem({
   createdAt,
   userTurnCount,
   systemTurnCount,
+  publicShareCreationReady,
+  publicShareManagementAvailable = false,
   publicShareControlsVisible = false,
 }: SessionListItemProps) {
   const { t } = useI18n();
@@ -204,6 +228,9 @@ export function SessionListItem({
   );
   const [isEditing, setIsEditing] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [providerChildrenExpanded, setProviderChildrenExpanded] =
+    useState(false);
+  const providerChildrenOutlineId = useId();
   const [renameValue, setRenameValue] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [localTitle, setLocalTitle] = useState<string | undefined>(undefined);
@@ -213,12 +240,14 @@ export function SessionListItem({
   // Hover card for every list surface (sidebar compact + all-sessions / search
   // cards): a rich hover panel (full first user turn, status line, and the most
   // recent agent turn). The panel (SessionHoverCard) self-positions from this
-  // row geometry + cursor x — below the row and right of the cursor, flipping
-  // above when it would not fit below.
+  // row geometry, preferring open space beyond the row before it falls back to
+  // a cursor-relative viewport clamp.
   const {
     showDelayMs: hoverCardShowDelayMs,
+    warmShowDelayMs: hoverCardWarmShowDelayMs,
     maxHeightPx: hoverCardMaxHeightPx,
   } = useHoverCardSettings();
+  const tooltipMode = useTooltipMode();
   const liRef = useRef<HTMLLIElement>(null);
   // True while this row's ... menu is open; suppresses new card shows.
   const menuOpenRef = useRef(false);
@@ -238,6 +267,7 @@ export function SessionListItem({
     localTitle ?? title ?? (isNewSession ? "New session" : "Untitled session");
   const hasEffectiveCustomTitle = !!localTitle || hasCustomTitle;
   const isBtwAside = isBtwAsideSession({
+    parentSessionId,
     parentSessionKind,
     title: displayTitle,
     fullTitle,
@@ -246,6 +276,10 @@ export function SessionListItem({
     ? getBtwAsideSessionDisplayTitle(displayTitle)
     : displayTitle;
   const copyPromptText = (initialPrompt ?? fullTitle ?? "").trim();
+  const publicShareCreationAvailable =
+    publicShareCreationReady ?? publicShareControlsVisible;
+  const publicShareMenuVisible =
+    publicShareManagementAvailable || publicShareCreationAvailable;
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -432,9 +466,10 @@ export function SessionListItem({
   // drops out when its timestamp is unknown/default.
   const hoverAgeLabel = formatSessionHoverAge(updatedAt, createdAt);
 
-  // Hover card fires on every list surface (sidebar compact + all-sessions /
-  // search cards); it only needs a provider to badge.
-  const showHoverCard = !!provider;
+  // Themed mode may enrich every provider-backed list row with a rich preview.
+  // Native mode stays browser-owned and falls back to the title only when the
+  // rendered row actually clips it.
+  const showHoverCard = !!provider && tooltipMode === "themed";
 
   // The full first user turn (body) and the most recent agent turn (reply)
   // shown in the replacement tooltip.
@@ -447,6 +482,17 @@ export function SessionListItem({
       : initialPrompt || fullTitle || displayTitle || ""
   ).trim();
   const hoverLastAgent = lastAgentText?.trim() || undefined;
+  const knownOmittedTitle =
+    !showHoverCard &&
+    !hasEffectiveCustomTitle &&
+    fullTitle &&
+    fullTitle !== displayTitle
+      ? titleTooltip
+      : null;
+  const titleTooltipAttributes = useVisibilityAwareTextTooltip<HTMLElement>(
+    showHoverCard ? null : titleTooltip,
+    knownOmittedTitle,
+  );
 
   const {
     anchor: previewPos,
@@ -458,6 +504,7 @@ export function SessionListItem({
   } = useSessionHoverCardController({
     targetRef: liRef,
     showDelayMs: hoverCardShowDelayMs,
+    warmShowDelayMs: hoverCardWarmShowDelayMs,
     enabled: showHoverCard,
     refreshPreview: {
       projectId,
@@ -520,6 +567,9 @@ export function SessionListItem({
     isBtwAside && "btw-aside-session",
     isSelected && "selected",
     isArchived && "archived",
+    mode === "compact" &&
+      providerChildren.length > 0 &&
+      styles.compactWithProviderChildren,
   ]
     .filter(Boolean)
     .join(" ");
@@ -529,6 +579,30 @@ export function SessionListItem({
     parentSessionId && isBtwAside
       ? buildBtwAsideParentHref(basePath, projectId, parentSessionId, sessionId)
       : null;
+  const providerChildrenLabel = t(
+    providerChildren.length === 1
+      ? "providerChildrenCountOne"
+      : "providerChildrenCountMany",
+    { count: providerChildren.length },
+  );
+  const providerChildrenTooltip = [
+    providerChildrenLabel,
+    ...providerChildren.map(
+      (child) => child.title || child.agentType || t("providerChildFallback"),
+    ),
+  ].join("\n");
+  const providerChildrenDisclosureLabel = t(
+    providerChildrenExpanded
+      ? "providerChildrenCollapse"
+      : "providerChildrenExpand",
+    { title: visibleTitle },
+  );
+  // Children arrive newest-transcript-activity first; the rail marks which of
+  // them actually ran last so the order is readable without a timestamp column.
+  const providerChildActivity = useMemo(
+    () => providerChildActivityLevels(providerChildren),
+    [providerChildren],
+  );
 
   const handleBtwBadgeClick = useCallback(
     (e: React.MouseEvent<HTMLSpanElement>) => {
@@ -646,6 +720,30 @@ export function SessionListItem({
         />
       )}
 
+      {mode === "compact" && providerChildren.length > 0 && (
+        <button
+          type="button"
+          className={styles.providerChildrenDisclosure}
+          aria-label={providerChildrenDisclosureLabel}
+          aria-expanded={providerChildrenExpanded}
+          aria-controls={providerChildrenOutlineId}
+          onPointerEnter={(event) => {
+            event.stopPropagation();
+            clearPreview();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            clearPreview();
+            setProviderChildrenExpanded((expanded) => !expanded);
+          }}
+        >
+          <svg viewBox="0 0 12 12" aria-hidden="true">
+            <path d="m4 2 4 4-4 4" />
+          </svg>
+        </button>
+      )}
+
       {isEditing ? (
         <input
           ref={renameInputRef}
@@ -663,13 +761,17 @@ export function SessionListItem({
           onClick={handleSessionClick}
           onMouseDown={handleSessionMouseDown}
           onAuxClick={handleSessionAuxClick}
-          title={showHoverCard ? undefined : titleTooltip}
-          className="session-list-item__link"
+          className={`session-list-item__link ${
+            mode === "compact" ? styles.compactLink : ""
+          }`}
         >
           {mode === "card" ? (
             // Card mode: title on one line, meta on second line
             <>
-              <strong className="session-list-item__title">
+              <strong
+                className="session-list-item__title"
+                {...titleTooltipAttributes}
+              >
                 {isStarred && <StarIcon filled size={12} />}
                 {showCardThinkingIndicator && <ThinkingIndicator />}
                 {isBtwAside && (
@@ -689,7 +791,7 @@ export function SessionListItem({
                     /btw
                   </span>
                 )}
-                {visibleTitle}
+                <span>{visibleTitle}</span>
                 {hasDraft && <span className="session-draft-badge">Draft</span>}
                 {hasProjectQueue && (
                   <span
@@ -762,32 +864,37 @@ export function SessionListItem({
                 <span
                   className="session-list-item__provider-children"
                   role="list"
-                  aria-label={t(
-                    providerChildren.length === 1
-                      ? "providerChildrenCountOne"
-                      : "providerChildrenCountMany",
-                    {
-                      count: providerChildren.length,
-                    },
-                  )}
+                  aria-label={providerChildrenLabel}
                 >
                   {providerChildren.map((child) => (
-                    <span
-                      className="session-list-item__provider-child"
-                      key={child.id}
-                      role="listitem"
-                    >
-                      <span aria-hidden>↳</span>
-                      <span className="session-list-item__provider-child-title">
-                        {child.title ||
-                          child.agentType ||
-                          t("providerChildFallback")}
-                      </span>
-                      {child.agentType && child.agentType !== child.title && (
-                        <span className="session-list-item__provider-child-type">
-                          {child.agentType}
+                    <span key={child.id} role="listitem">
+                      <ProviderChildNavTarget
+                        className={`session-list-item__provider-child ${styles.providerChildLink}`}
+                        href={providerChildSessionHref(
+                          basePath,
+                          projectId,
+                          sessionId,
+                          child.id,
+                        )}
+                      >
+                        <span aria-hidden>↳</span>
+                        <span className="session-list-item__provider-child-title">
+                          {providerChildTitle(
+                            child,
+                            t("providerChildFallback"),
+                          )}
                         </span>
-                      )}
+                        {child.agentType &&
+                          child.agentType !==
+                            providerChildTitle(
+                              child,
+                              t("providerChildFallback"),
+                            ) && (
+                            <span className="session-list-item__provider-child-type">
+                              {child.agentType}
+                            </span>
+                          )}
+                      </ProviderChildNavTarget>
                     </span>
                   ))}
                 </span>
@@ -798,7 +905,10 @@ export function SessionListItem({
             <>
               <span className="session-list-item__title-row">
                 {isStarred && <StarIcon filled />}
-                <span className="session-list-item__title-text">
+                <span
+                  className="session-list-item__title-text"
+                  {...titleTooltipAttributes}
+                >
                   {isNewSession && <ThinkingIndicator />}
                   {isBtwAside && (
                     // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
@@ -817,7 +927,7 @@ export function SessionListItem({
                       /btw
                     </span>
                   )}
-                  {visibleTitle}
+                  <span>{visibleTitle}</span>
                 </span>
                 {hasDraft && <span className="session-draft-badge">Draft</span>}
                 {hasProjectQueue && (
@@ -830,26 +940,14 @@ export function SessionListItem({
                 )}
                 {providerChildren.length > 0 && (
                   <span
-                    className="session-provider-children-badge"
+                    className={`${styles.providerChildrenBadge} ${
+                      hasUnread ? styles.providerChildrenBadgeUnread : ""
+                    }`}
                     role="img"
-                    title={providerChildren
-                      .map(
-                        (child) =>
-                          child.title ||
-                          child.agentType ||
-                          t("providerChildFallback"),
-                      )
-                      .join("\n")}
-                    aria-label={t(
-                      providerChildren.length === 1
-                        ? "providerChildrenCountOne"
-                        : "providerChildrenCountMany",
-                      {
-                        count: providerChildren.length,
-                      },
-                    )}
+                    title={providerChildrenTooltip}
+                    aria-label={providerChildrenLabel}
                   >
-                    ↳{providerChildren.length}
+                    {providerChildren.length}
                   </span>
                 )}
               </span>
@@ -883,26 +981,117 @@ export function SessionListItem({
           onCopyPrompt={copyPromptText ? handleCopyPrompt : undefined}
           onOpenNewTab={handleOpenNewTab}
           onShare={
-            publicShareControlsVisible
-              ? () => setShowShareModal(true)
-              : undefined
+            publicShareMenuVisible ? () => setShowShareModal(true) : undefined
           }
           useEllipsisIcon
+          overlayTrigger
           useFixedPositioning
           onOpenChange={handleMenuOpenChange}
           className="session-list-item__menu"
         />
       )}
 
-      {showShareModal && (
-        <SessionShareModal
-          projectId={projectId}
-          sessionId={sessionId}
-          title={displayTitle}
-          canCreateShares={publicShareControlsVisible}
-          onClose={() => setShowShareModal(false)}
-        />
-      )}
+      {mode === "compact" &&
+        providerChildren.length > 0 &&
+        providerChildrenExpanded && (
+          <ul
+            id={providerChildrenOutlineId}
+            className={styles.providerChildrenOutline}
+            aria-label={providerChildrenLabel}
+            onPointerEnter={(event) => {
+              event.stopPropagation();
+              clearPreview();
+            }}
+          >
+            {providerChildren.map((child) => {
+              const childTitle = providerChildTitle(
+                child,
+                t("providerChildFallback"),
+              );
+              const activityLevel =
+                providerChildActivity.get(child.id) ?? "older";
+              const activityAge = formatBriefAge(child.updatedAt);
+              return (
+                <li
+                  key={child.id}
+                  className={styles.providerChildrenOutlineItem}
+                >
+                  <Link
+                    to={providerChildSessionHref(
+                      basePath,
+                      projectId,
+                      sessionId,
+                      child.id,
+                    )}
+                    className={styles.providerChildrenOutlineLink}
+                    title={
+                      activityAge
+                        ? `${childTitle} — ${t("providerChildActivityAge", {
+                            age: activityAge,
+                          })}`
+                        : childTitle
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (
+                        !event.metaKey &&
+                        !event.ctrlKey &&
+                        !event.shiftKey &&
+                        !event.altKey
+                      ) {
+                        onNavigate?.();
+                      }
+                    }}
+                    onAuxClick={(event) => event.stopPropagation()}
+                  >
+                    <span
+                      className={`${styles.providerChildrenActivity} ${
+                        activityLevel === "latest"
+                          ? styles.providerChildrenActivityLatest
+                          : activityLevel === "recent"
+                            ? styles.providerChildrenActivityRecent
+                            : ""
+                      }`}
+                      data-activity={activityLevel}
+                      aria-hidden
+                    />
+                    <span className={styles.providerChildrenOutlineTitle}>
+                      {childTitle}
+                    </span>
+                    {child.agentType && child.agentType !== childTitle && (
+                      <span className={styles.providerChildrenOutlineType}>
+                        {child.agentType}
+                      </span>
+                    )}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+      {showShareModal &&
+        (publicShareManagementAvailable ? (
+          <PublicShareManagerModal
+            creationIdentity={{
+              projectId,
+              sessionId,
+              title: displayTitle,
+              initialPrompt,
+            }}
+            creationReady={publicShareCreationAvailable}
+            onClose={() => setShowShareModal(false)}
+          />
+        ) : (
+          <LegacySessionShareModal
+            projectId={projectId}
+            sessionId={sessionId}
+            title={displayTitle}
+            initialPrompt={initialPrompt}
+            canCreateShares={publicShareCreationAvailable}
+            onClose={() => setShowShareModal(false)}
+          />
+        ))}
 
       {showHoverCard && provider && previewPos && (
         <SessionHoverCard

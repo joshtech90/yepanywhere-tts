@@ -6,11 +6,19 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   type ProviderInfo,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,9 +147,200 @@ describe("ProvidersSettings additional models", () => {
 
     render(<ProvidersSettings />);
 
+    expect(screen.queryByText("providersAdditionalModelsTitle")).toBeNull();
+  });
+
+  it("hides idle harness lifetime from older servers", () => {
+    render(<ProvidersSettings />);
+
+    expect(screen.queryByText("providersIdleReapHoursLabel")).toBeNull();
+    expect(screen.queryByText("providersSubagentMaxDepthLabel")).toBeNull();
+  });
+
+  it("hides Codex reasoning summaries from older servers", () => {
+    render(<ProvidersSettings />);
+
     expect(
-      screen.queryByText("providersAdditionalModelsTitle"),
+      screen.queryByText("providersCodexReasoningSummaryTitle"),
     ).toBeNull();
+    expect(mockUpdateSetting).not.toHaveBeenCalled();
+  });
+
+  it("shows the default Codex reasoning-summary mode and saves exact values", async () => {
+    versionState.capabilities = [CODEX_REASONING_SUMMARY_SETTING_CAPABILITY];
+    render(<ProvidersSettings />);
+    const select = screen.getByLabelText(
+      "providersCodexReasoningSummaryAria",
+    ) as HTMLSelectElement;
+
+    expect(select.value).toBe("auto");
+    fireEvent.change(select, { target: { value: "detailed" } });
+
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith(
+        "codexReasoningSummary",
+        "detailed",
+      );
+    });
+  });
+
+  it("reflects a saved Codex reasoning-summary mode", () => {
+    hookState.settings = {
+      ...hookState.settings,
+      codexReasoningSummary: "concise",
+    };
+    versionState.capabilities = [CODEX_REASONING_SUMMARY_SETTING_CAPABILITY];
+
+    render(<ProvidersSettings />);
+
+    expect(
+      (
+        screen.getByLabelText(
+          "providersCodexReasoningSummaryAria",
+        ) as HTMLSelectElement
+      ).value,
+    ).toBe("concise");
+  });
+
+  it("shows the Never notch as -1", () => {
+    hookState.settings = {
+      ...hookState.settings,
+      idleReapHours: -1,
+    };
+    versionState.capabilities = [IDLE_REAP_HOURS_SETTING_CAPABILITY];
+
+    render(<ProvidersSettings />);
+
+    expect(screen.getByText("providersIdleReapHoursLabel")).toBeTruthy();
+    expect(screen.getByText("providersIdleReapNeverHint")).toBeTruthy();
+    expect(
+      document.querySelector<HTMLInputElement>(
+        "#providers-idle-reap-hours-control-number",
+      )?.value,
+    ).toBe("-1");
+  });
+
+  it("saves fractional idle harness hours from the number field", async () => {
+    hookState.settings = {
+      ...hookState.settings,
+      idleReapHours: 24,
+    };
+    versionState.capabilities = [IDLE_REAP_HOURS_SETTING_CAPABILITY];
+    render(<ProvidersSettings />);
+    const numberInput = document.querySelector<HTMLInputElement>(
+      "#providers-idle-reap-hours-control-number",
+    );
+    expect(numberInput).not.toBeNull();
+
+    fireEvent.change(numberInput as HTMLInputElement, {
+      target: { value: "2.5" },
+    });
+    fireEvent.blur(numberInput as HTMLInputElement);
+
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith("idleReapHours", 2.5);
+    });
+  });
+
+  it("shows the default subagent limit and provider coverage", () => {
+    versionState.capabilities = [SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY];
+
+    render(<ProvidersSettings />);
+
+    expect(screen.getByText("providersSubagentMaxDepthLabel")).toBeTruthy();
+    expect(screen.getByText("providersSubagentMaxDepthCoverage")).toBeTruthy();
+    expect(
+      document.querySelector<HTMLInputElement>(
+        "#providers-subagent-max-depth-control-number",
+      )?.value,
+    ).toBe("1");
+  });
+
+  it("renders provider-default subagent depth as an empty number", () => {
+    hookState.settings = {
+      ...hookState.settings,
+      subagentMaxDepth: null,
+    };
+    versionState.capabilities = [SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY];
+
+    render(<ProvidersSettings />);
+
+    expect(
+      document.querySelector<HTMLInputElement>(
+        "#providers-subagent-max-depth-control-number",
+      )?.value,
+    ).toBe("");
+    expect(
+      document.querySelector<HTMLInputElement>(
+        "#providers-subagent-max-depth-control",
+      )?.value,
+    ).toBe("-1");
+  });
+
+  it("saves blank and zero subagent depth selections", async () => {
+    hookState.settings = {
+      ...hookState.settings,
+      subagentMaxDepth: 2,
+    };
+    versionState.capabilities = [SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY];
+    render(<ProvidersSettings />);
+    const numberInput = document.querySelector<HTMLInputElement>(
+      "#providers-subagent-max-depth-control-number",
+    );
+    const slider = document.querySelector<HTMLInputElement>(
+      "#providers-subagent-max-depth-control",
+    );
+    expect(numberInput).not.toBeNull();
+    expect(slider).not.toBeNull();
+
+    fireEvent.change(numberInput as HTMLInputElement, {
+      target: { value: "" },
+    });
+    fireEvent.blur(numberInput as HTMLInputElement);
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith("subagentMaxDepth", null);
+    });
+
+    mockUpdateSetting.mockClear();
+    fireEvent.change(slider as HTMLInputElement, { target: { value: "0" } });
+    fireEvent.pointerUp(slider as HTMLInputElement);
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith("subagentMaxDepth", 0);
+    });
+  });
+
+  it("shows Codex before Claude", () => {
+    render(<ProvidersSettings />);
+
+    const providerRows = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-settings-item^="provider-"]',
+      ),
+    );
+    expect(
+      providerRows.slice(0, 2).map((row) => row.dataset.settingsItem),
+    ).toEqual(["provider-codex", "provider-claude"]);
+  });
+
+  it("hides legacy reload-safe Codex settings when advertised", () => {
+    hookState.providers = [
+      {
+        name: "codex",
+        displayName: "Codex",
+        installed: false,
+        authenticated: true,
+        enabled: true,
+        models: [],
+      },
+    ];
+    versionState.capabilities = [
+      RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
+      RELOAD_SAFE_CODEX_RUNTIME_CAPABILITY,
+    ];
+
+    render(<ProvidersSettings />);
+
+    expect(screen.queryByText("providersCodexReloadSafeTitle")).toBeNull();
   });
 
   it("hides the Claude auto-compaction setting from older servers", () => {
@@ -152,9 +351,7 @@ describe("ProvidersSettings additional models", () => {
 
     render(<ProvidersSettings />);
 
-    expect(
-      screen.queryByText("providersClaudeAutoCompactTitle"),
-    ).toBeNull();
+    expect(screen.queryByText("providersClaudeAutoCompactTitle")).toBeNull();
   });
 
   it("saves and clears the global Claude auto-compaction setting", async () => {
@@ -209,21 +406,16 @@ describe("ProvidersSettings additional models", () => {
         name: /providersAdditionalModelsNone/u,
       }),
     );
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: /Opus 4\.8/u }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /Opus 4\.8/u }));
 
     await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "claudeAdditionalModels",
-        [
-          {
-            id: "claude-opus-4-8",
-            label: "Opus 4.8",
-            origin: "registry",
-          },
-        ],
-      );
+      expect(mockUpdateSetting).toHaveBeenCalledWith("claudeAdditionalModels", [
+        {
+          id: "claude-opus-4-8",
+          label: "Opus 4.8",
+          origin: "registry",
+        },
+      ]);
       expect(mockReloadProviders).toHaveBeenCalledTimes(1);
     });
   });
@@ -236,13 +428,9 @@ describe("ProvidersSettings additional models", () => {
         name: /providersAdditionalModelsNone/u,
       }),
     );
-    fireEvent.click(
-      screen.getByText("providersAdditionalModelsCustomTitle"),
-    );
+    fireEvent.click(screen.getByText("providersAdditionalModelsCustomTitle"));
     fireEvent.change(
-      screen.getByPlaceholderText(
-        "providersAdditionalModelsCustomPlaceholder",
-      ),
+      screen.getByPlaceholderText("providersAdditionalModelsCustomPlaceholder"),
       { target: { value: "claude-experimental-6" } },
     );
     fireEvent.click(
@@ -252,16 +440,13 @@ describe("ProvidersSettings additional models", () => {
     );
 
     await waitFor(() => {
-      expect(mockUpdateSetting).toHaveBeenCalledWith(
-        "claudeAdditionalModels",
-        [
-          {
-            id: "claude-experimental-6",
-            label: "claude-experimental-6",
-            origin: "custom",
-          },
-        ],
-      );
+      expect(mockUpdateSetting).toHaveBeenCalledWith("claudeAdditionalModels", [
+        {
+          id: "claude-experimental-6",
+          label: "claude-experimental-6",
+          origin: "custom",
+        },
+      ]);
     });
   });
 
@@ -283,9 +468,10 @@ describe("ProvidersSettings additional models", () => {
       screen.getByRole("button", { name: /providersAdditionalModelsOne/u }),
     );
 
-    expect(
-      screen.getByRole("checkbox", { name: /Opus 4\.5/u }),
-    ).toHaveProperty("checked", true);
+    expect(screen.getByRole("checkbox", { name: /Opus 4\.5/u })).toHaveProperty(
+      "checked",
+      true,
+    );
     expect(
       screen.getByText("providersAdditionalModelsUnlistedDescription"),
     ).toBeTruthy();
@@ -301,6 +487,16 @@ describe("ProvidersSettings additional models", () => {
     versionState.capabilities = [CLAUDE_GATEWAY_CAPABILITY];
     render(<ProvidersSettings />);
 
+    const gatewayCard = document.querySelector<HTMLElement>(
+      '[data-settings-item="provider-claude-gateway"]',
+    );
+    expect(gatewayCard).not.toBeNull();
+    expect(
+      within(gatewayCard as HTMLElement).getByText(
+        "providersClaudeGatewayTitle",
+      ),
+    ).toBeTruthy();
+
     fireEvent.change(
       screen.getByRole("textbox", {
         name: "providersClaudeGatewayUrlAria",
@@ -315,6 +511,28 @@ describe("ProvidersSettings additional models", () => {
         "http://localhost:4141",
       );
       expect(mockReloadProviders).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("submits Claude Gateway edits through its form", async () => {
+    versionState.capabilities = [CLAUDE_GATEWAY_CAPABILITY];
+    render(<ProvidersSettings />);
+
+    const input = screen.getByRole("textbox", {
+      name: "providersClaudeGatewayUrlAria",
+    });
+    fireEvent.change(input, {
+      target: { value: "http://localhost:4242" },
+    });
+    const form = input.closest("form");
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith(
+        "claudeGatewayUrl",
+        "http://localhost:4242",
+      );
     });
   });
 
@@ -342,6 +560,56 @@ describe("ProvidersSettings additional models", () => {
         name: "providersClaudeGatewayStartCommandAria",
       }),
     ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "providersClaudeGatewayDisableAgentTitle",
+      }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "providersClaudeGatewayDisablePlanModeTitle",
+      }),
+    ).toBeNull();
+  });
+
+  it("defaults the capability-gated Gateway Agent denial on", () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+    ];
+    render(<ProvidersSettings />);
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: "providersClaudeGatewayDisableAgentTitle",
+    });
+    expect(checkbox).toHaveProperty("checked", true);
+
+    fireEvent.click(checkbox);
+
+    expect(mockUpdateSetting).toHaveBeenCalledWith(
+      "claudeGatewayDisableAgent",
+      false,
+    );
+  });
+
+  it("defaults the capability-gated Gateway plan-mode exclusion on", () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+    ];
+    render(<ProvidersSettings />);
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: "providersClaudeGatewayDisablePlanModeTitle",
+    });
+    expect(checkbox).toHaveProperty("checked", true);
+
+    fireEvent.click(checkbox);
+
+    expect(mockUpdateSetting).toHaveBeenCalledWith(
+      "claudeGatewayDisablePlanMode",
+      false,
+    );
   });
 
   it("saves a capability-gated Gateway start command with the URL", async () => {

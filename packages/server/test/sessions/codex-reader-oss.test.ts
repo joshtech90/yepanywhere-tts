@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +29,7 @@ const hasNativeZstd =
   typeof zstdCompressSync === "function" && isZstdJsonlSupported();
 const itIfNativeZstd = hasNativeZstd ? it : it.skip;
 const itIfNoNativeZstd = hasNativeZstd ? it.skip : it;
+const itIfWindows = process.platform === "win32" ? it : it.skip;
 
 function zstdCompressed(content: string): Buffer {
   if (!zstdCompressSync) {
@@ -180,6 +188,46 @@ describe("CodexSessionReader - OSS Support", () => {
       sourceBytes: expect.any(Number),
     });
   });
+
+  itIfWindows(
+    "advances list recency while a Windows rollout mtime stays fixed",
+    async () => {
+      const sessionId = "windows-open-rollout";
+      const filePath = join(testDir, `${sessionId}.jsonl`);
+      const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+      await createSessionFile(sessionId, "openai", "gpt-5");
+      await utimes(filePath, fixedTime, fixedTime);
+
+      const before = await reader.getSessionListSummary(
+        sessionId,
+        "test-project" as UrlProjectId,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await appendFile(
+        filePath,
+        `${JSON.stringify({
+          type: "event_msg",
+          timestamp: new Date().toISOString(),
+          payload: { type: "agent_message", message: "More output" },
+        })}\n`,
+      );
+      await utimes(filePath, fixedTime, fixedTime);
+      const afterStats = await stat(filePath);
+
+      const after = await reader.getSessionListSummary(
+        sessionId,
+        "test-project" as UrlProjectId,
+      );
+
+      expect(afterStats.mtimeMs).toBe(fixedTime.getTime());
+      expect(Date.parse(after?.updatedAt ?? "")).toBe(
+        Math.trunc(afterStats.ctimeMs),
+      );
+      expect(Date.parse(after?.updatedAt ?? "")).toBeGreaterThan(
+        Date.parse(before?.updatedAt ?? ""),
+      );
+    },
+  );
 
   it("streams summary state without full entry retention", async () => {
     const sessionId = "summary-stream-session";
@@ -364,6 +412,135 @@ describe("CodexSessionReader - OSS Support", () => {
       contextUsage: summary?.contextUsage,
     });
   });
+
+  it("recovers launch settings from the latest Codex turn context", async () => {
+    const sessionId = "recovered-launch-settings";
+    const now = new Date().toISOString();
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: now,
+        payload: {
+          id: sessionId,
+          cwd: "/test/project",
+          timestamp: now,
+          model_provider: "openai",
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: now,
+        payload: {
+          cwd: "/test/project",
+          approval_policy: "on-request",
+          sandbox_policy: { type: "workspace-write" },
+          model: "gpt-5.4",
+          effort: "none",
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: now,
+        payload: {
+          cwd: "/test/project",
+          approval_policy: "never",
+          sandbox_policy: { type: "danger-full-access" },
+          model: "gpt-5.6-sol",
+          effort: "xhigh",
+        },
+      }),
+    ];
+    await writeFile(
+      join(testDir, `${sessionId}.jsonl`),
+      `${lines.join("\n")}\n`,
+    );
+
+    await expect(reader.getRecoveredLaunchSettings(sessionId)).resolves.toEqual(
+      {
+        permissionMode: "bypassPermissions",
+        requestedModel: "gpt-5.6-sol",
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "xhigh",
+      },
+    );
+    expect(reader.getEntryCacheStats()).toEqual({
+      sessions: 0,
+      entries: 0,
+      sourceBytes: 0,
+      partialLineBytes: 0,
+    });
+  });
+
+  it.each([
+    {
+      name: "Plan and disabled thinking",
+      approvalPolicy: "on-request",
+      sandboxType: "read-only",
+      effort: "none",
+      expected: {
+        permissionMode: "plan",
+        requestedModel: "gpt-5",
+        thinking: { type: "disabled" },
+      },
+    },
+    {
+      name: "ambiguous workspace write",
+      approvalPolicy: "on-request",
+      sandboxType: "workspace-write",
+      effort: "minimal",
+      expected: {
+        permissionMode: "default",
+        requestedModel: "gpt-5",
+      },
+    },
+    {
+      name: "incomplete Bypass evidence",
+      approvalPolicy: "never",
+      sandboxType: "workspace-write",
+      effort: undefined,
+      expected: {
+        permissionMode: "default",
+        requestedModel: "gpt-5",
+      },
+    },
+  ])(
+    "recovers $name conservatively",
+    async ({ approvalPolicy, sandboxType, effort, expected }) => {
+      const sessionId = `recovered-${sandboxType}-${approvalPolicy}-${effort ?? "unset"}`;
+      const now = new Date().toISOString();
+      const lines = [
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: now,
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp: now,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "turn_context",
+          timestamp: now,
+          payload: {
+            cwd: "/test/project",
+            approval_policy: approvalPolicy,
+            sandbox_policy: { type: sandboxType },
+            model: "gpt-5",
+            ...(effort ? { effort } : {}),
+          },
+        }),
+      ];
+      await writeFile(
+        join(testDir, `${sessionId}.jsonl`),
+        `${lines.join("\n")}\n`,
+      );
+
+      await expect(
+        reader.getRecoveredLaunchSettings(sessionId),
+      ).resolves.toEqual(expected);
+    },
+  );
 
   it("skips plugin-prefixed startup instructions when deriving titles", async () => {
     const sessionId = "plugin-prefixed-startup-title";
@@ -783,56 +960,59 @@ describe("CodexSessionReader - OSS Support", () => {
     expect(session?.data.session.entries).toHaveLength(2);
   });
 
-  itIfNoNativeZstd("skips zstd-compressed rollouts without native zstd", async () => {
-    const sessionId = "unsupported-zstd-rollout";
-    const now = new Date().toISOString();
-    const lines = [
-      JSON.stringify({
-        type: "session_meta",
-        timestamp: now,
-        payload: {
-          id: sessionId,
-          cwd: "/test/project",
+  itIfNoNativeZstd(
+    "skips zstd-compressed rollouts without native zstd",
+    async () => {
+      const sessionId = "unsupported-zstd-rollout";
+      const now = new Date().toISOString();
+      const lines = [
+        JSON.stringify({
+          type: "session_meta",
           timestamp: now,
-          model_provider: "openai",
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp: now,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: now,
+          payload: {
+            type: "user_message",
+            message: "Hello compressed history",
+          },
+        }),
+      ];
+
+      await writeFile(
+        join(testDir, `${sessionId}.jsonl.zst`),
+        Buffer.from(`${lines.join("\n")}\n`),
+      );
+
+      await expect(
+        reader.listSessions("test-project" as UrlProjectId),
+      ).resolves.toEqual([]);
+
+      const metrics = reader.getLastScanMetrics();
+      expect(metrics).toMatchObject({
+        compressedRolloutFiles: 1,
+        sessionsParsed: 0,
+        failedFiles: 1,
+        sessionsReturned: 0,
+        discovery: {
+          zstdUnsupported: 1,
+          firstLineReadsZstd: 0,
+          metadataReadFailures: 0,
         },
-      }),
-      JSON.stringify({
-        type: "event_msg",
-        timestamp: now,
-        payload: {
-          type: "user_message",
-          message: "Hello compressed history",
-        },
-      }),
-    ];
+      });
 
-    await writeFile(
-      join(testDir, `${sessionId}.jsonl.zst`),
-      Buffer.from(`${lines.join("\n")}\n`),
-    );
-
-    await expect(
-      reader.listSessions("test-project" as UrlProjectId),
-    ).resolves.toEqual([]);
-
-    const metrics = reader.getLastScanMetrics();
-    expect(metrics).toMatchObject({
-      compressedRolloutFiles: 1,
-      sessionsParsed: 0,
-      failedFiles: 1,
-      sessionsReturned: 0,
-      discovery: {
-        zstdUnsupported: 1,
-        firstLineReadsZstd: 0,
-        metadataReadFailures: 0,
-      },
-    });
-
-    await expect(
-      reader.getSession(sessionId, "test-project" as UrlProjectId),
-    ).resolves.toBeNull();
-  });
+      await expect(
+        reader.getSession(sessionId, "test-project" as UrlProjectId),
+      ).resolves.toBeNull();
+    },
+  );
 
   it("records reader scan metrics and shared cache hits", async () => {
     const dataDir = join(tmpdir(), `codex-reader-data-${randomUUID()}`);

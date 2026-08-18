@@ -10,10 +10,14 @@ import * as path from "node:path";
 import {
   type CacheMissBillingRecord,
   type DurableRecapMessage,
+  type DurableSyntheticDoneMessage,
+  type EffortLevel,
+  type PermissionMode,
   type ProviderName,
   type PromptSuggestionMode,
   type RecapMode,
   type SessionSandboxLevel,
+  type ThinkingConfig,
   type TranscriptDisplayObject,
   type UrlProjectId,
   type WorkstreamId,
@@ -21,6 +25,28 @@ import {
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+
+export interface EffectiveSessionLaunchSettings {
+  /** Record schema, independent of the containing metadata-file schema. */
+  schemaVersion: 1;
+  /** Monotonic session-local revision for ordered client/server updates. */
+  revision: number;
+  /** Standing permission selector restored when YA owns a new process. */
+  permissionMode: PermissionMode;
+  /** Exact YA model token, including "default"; null means provider default. */
+  requestedModel: string | null;
+  /** Provider-visible service tier; null means provider/default behavior. */
+  serviceTier: string | null;
+  /** Effective thinking configuration; null means disabled/default behavior. */
+  thinking: ThinkingConfig | null;
+  /** Effective effort selection; null means provider/default behavior. */
+  effort: EffortLevel | null;
+}
+
+export type EffectiveSessionLaunchSettingsValue = Omit<
+  EffectiveSessionLaunchSettings,
+  "schemaVersion" | "revision"
+>;
 
 export interface SessionMetadata {
   /** Custom title that overrides auto-generated title */
@@ -39,6 +65,8 @@ export interface SessionMetadata {
   transcriptDisplayObjects?: TranscriptDisplayObject[];
   /** Durable YA-owned recap rows merged into the transcript view only. */
   recapMessages?: DurableRecapMessage[];
+  /** Durable YA-only `/done` rows merged into the transcript view only. */
+  syntheticDoneMessages?: DurableSyntheticDoneMessage[];
   /** Provider usage evidence for warm/forked prefix cache hits and recomputes. */
   cacheMissBillingEvents?: CacheMissBillingRecord[];
   /**
@@ -48,6 +76,8 @@ export interface SessionMetadata {
    * Absent for sessions YA didn't start. See topics/provider-abstraction.md.
    */
   requestedModel?: string;
+  /** Last successfully applied per-session process launch settings. */
+  effectiveLaunchSettings?: EffectiveSessionLaunchSettings;
   /** Provider used for this session (for backward compatibility with sessions that don't have provider in JSONL) */
   provider?: ProviderName;
   /** SSH host alias for remote execution (undefined = local) */
@@ -56,6 +86,8 @@ export interface SessionMetadata {
   initialPrompt?: string;
   /** Whether this session is opted in to heartbeat turns */
   heartbeatTurnsEnabled?: boolean;
+  /** Per-session session-wake override; absent inherits the server default. */
+  wakeTurnsEnabled?: boolean;
   /** Explicit Kill blocks YA-owned automatic resume without hiding history. */
   autoResumeDisabled?: boolean;
   /** Optional per-session idle threshold override in minutes */
@@ -68,6 +100,10 @@ export interface SessionMetadata {
   promptSuggestionMode?: PromptSuggestionMode;
   /** Browser-away duration before YA asks the live process for a recap. */
   recapAfterSeconds?: number;
+  /** Explicit Stop/Terminate suppresses recaps until a fresh user turn. */
+  recapPausedUntilUserTurn?: boolean;
+  /** YA `/done` suppresses all automatic session turns until a real user turn. */
+  automationPausedUntilUserTurn?: boolean;
   /** Settled YA host filesystem confinement for every launch of this session. */
   sandboxLevel?: SessionSandboxLevel;
   /** Opaque key for the canonical project's private provider runtime state. */
@@ -98,6 +134,7 @@ export interface SessionMetadataState {
 
 const CURRENT_VERSION = 3;
 const MAX_RECAP_MESSAGES_PER_SESSION = 200;
+const MAX_SYNTHETIC_DONE_MESSAGES_PER_SESSION = 200;
 const MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION = 100;
 
 export interface SessionMetadataServiceOptions {
@@ -110,7 +147,8 @@ export class SessionMetadataService {
   private dataDir: string;
   private filePath: string;
   private sessionIdAliases = new Map<string, string>();
-  private save = createCoalescingSaver(() => this.doSave()).save;
+  private metadataSaver = createCoalescingSaver(() => this.doSave());
+  private save = this.metadataSaver.save;
 
   constructor(options: SessionMetadataServiceOptions = {}) {
     this.dataDir =
@@ -149,7 +187,9 @@ export class SessionMetadataService {
       let changed = parsed.version !== CURRENT_VERSION;
       for (const metadata of Object.values(this.state.sessions)) {
         if (migrateLegacyLineage && metadata.parentSessionId) {
-          if (/^\/btw(?:\s+|$)/i.test(metadata.customTitle?.trimStart() ?? "")) {
+          if (
+            /^\/btw(?:\s+|$)/i.test(metadata.customTitle?.trimStart() ?? "")
+          ) {
             metadata.parentSessionKind = "btw-aside";
           } else {
             metadata.forkedFromSessionId ??= metadata.parentSessionId;
@@ -217,6 +257,16 @@ export class SessionMetadataService {
     return { ...this.state.sessions };
   }
 
+  /** Distinct providers persisted by prior successful YA session boundaries. */
+  getRecordedProviders(): ProviderName[] {
+    const providers = new Set<ProviderName>();
+    for (const sessionId in this.state.sessions) {
+      const metadata = this.state.sessions[sessionId];
+      if (metadata?.provider) providers.add(metadata.provider);
+    }
+    return [...providers];
+  }
+
   getTranscriptDisplayObjects(sessionId: string): TranscriptDisplayObject[] {
     return [
       ...(this.state.sessions[this.resolveSessionId(sessionId)]
@@ -226,8 +276,15 @@ export class SessionMetadataService {
 
   getRecapMessages(sessionId: string): DurableRecapMessage[] {
     return [
-      ...(this.state.sessions[this.resolveSessionId(sessionId)]?.recapMessages ??
-        []),
+      ...(this.state.sessions[this.resolveSessionId(sessionId)]
+        ?.recapMessages ?? []),
+    ];
+  }
+
+  getSyntheticDoneMessages(sessionId: string): DurableSyntheticDoneMessage[] {
+    return [
+      ...(this.state.sessions[this.resolveSessionId(sessionId)]
+        ?.syntheticDoneMessages ?? []),
     ];
   }
 
@@ -276,6 +333,32 @@ export class SessionMetadataService {
       return {
         ...metadata,
         recapMessages: nextMessages.slice(-MAX_RECAP_MESSAGES_PER_SESSION),
+      };
+    });
+    await this.save();
+  }
+
+  async recordSyntheticDone(
+    sessionId: string,
+    message: DurableSyntheticDoneMessage,
+    options?: { archived?: boolean },
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => {
+      const existing = metadata.syntheticDoneMessages ?? [];
+      const nextMessages = existing.some(
+        (candidate) => candidate.uuid === message.uuid,
+      )
+        ? existing.map((candidate) =>
+            candidate.uuid === message.uuid ? message : candidate,
+          )
+        : [...existing, message];
+      return {
+        ...metadata,
+        syntheticDoneMessages: nextMessages.slice(
+          -MAX_SYNTHETIC_DONE_MESSAGES_PER_SESSION,
+        ),
+        automationPausedUntilUserTurn: true,
+        ...(options?.archived ? { isArchived: true } : {}),
       };
     });
     await this.save();
@@ -409,9 +492,11 @@ export class SessionMetadataService {
     sessionId: string,
     provider: ProviderName | undefined,
   ): Promise<void> {
+    const normalizedProvider = provider || undefined;
+    if (this.getMetadata(sessionId)?.provider === normalizedProvider) return;
     this.updateSessionMetadata(sessionId, (metadata) => ({
       ...metadata,
-      provider: provider || undefined,
+      provider: normalizedProvider,
     }));
     await this.save();
   }
@@ -443,8 +528,70 @@ export class SessionMetadataService {
     this.updateSessionMetadata(sessionId, (metadata) => ({
       ...metadata,
       requestedModel: requestedModel || undefined,
+      ...(metadata.effectiveLaunchSettings &&
+      metadata.effectiveLaunchSettings.requestedModel !==
+        (requestedModel || null)
+        ? {
+            effectiveLaunchSettings: {
+              ...metadata.effectiveLaunchSettings,
+              revision: metadata.effectiveLaunchSettings.revision + 1,
+              requestedModel: requestedModel || null,
+            },
+          }
+        : {}),
     }));
     await this.save();
+  }
+
+  getEffectiveLaunchSettings(
+    sessionId: string,
+  ): EffectiveSessionLaunchSettings | undefined {
+    return this.getMetadata(sessionId)?.effectiveLaunchSettings;
+  }
+
+  /**
+   * Record one complete, successfully applied launch-settings snapshot.
+   * Identical snapshots are no-ops so reload-safe host reattachment does not
+   * manufacture revisions or rewrite metadata.
+   */
+  async recordEffectiveLaunchSettings(
+    sessionId: string,
+    value: EffectiveSessionLaunchSettingsValue,
+  ): Promise<EffectiveSessionLaunchSettings> {
+    const existing = this.getEffectiveLaunchSettings(sessionId);
+    if (
+      existing &&
+      existing.permissionMode === value.permissionMode &&
+      existing.requestedModel === value.requestedModel &&
+      existing.serviceTier === value.serviceTier &&
+      JSON.stringify(existing.thinking) === JSON.stringify(value.thinking) &&
+      existing.effort === value.effort
+    ) {
+      await this.metadataSaver.flush();
+      return existing;
+    }
+
+    const next: EffectiveSessionLaunchSettings = {
+      schemaVersion: 1,
+      revision: (existing?.revision ?? 0) + 1,
+      ...value,
+    };
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      requestedModel: value.requestedModel || undefined,
+      effectiveLaunchSettings: next,
+    }));
+    await this.metadataSaver.flush();
+    return next;
+  }
+
+  /**
+   * Rewrite the current metadata snapshot and wait for the coalesced writer to
+   * reach quiescence. Callers use this after a group of ordinary metadata
+   * mutations when their response must acknowledge durable state.
+   */
+  async flushPendingWrites(): Promise<void> {
+    await this.metadataSaver.flush();
   }
 
   /**
@@ -510,7 +657,7 @@ export class SessionMetadataService {
    * Get the provider for a session.
    * Returns undefined if the provider was never explicitly saved.
    */
-  getProvider(sessionId: string): string | undefined {
+  getProvider(sessionId: string): ProviderName | undefined {
     return this.getMetadata(sessionId)?.provider;
   }
 
@@ -519,7 +666,11 @@ export class SessionMetadataService {
    * Returns undefined for sessions YA didn't start (no requested id was stored).
    */
   getRequestedModel(sessionId: string): string | undefined {
-    return this.getMetadata(sessionId)?.requestedModel;
+    const metadata = this.getMetadata(sessionId);
+    if (metadata?.effectiveLaunchSettings) {
+      return metadata.effectiveLaunchSettings.requestedModel ?? undefined;
+    }
+    return metadata?.requestedModel;
   }
 
   /**
@@ -578,7 +729,7 @@ export class SessionMetadataService {
 
     this.state.sessions[targetId] = {
       ...source,
-      ...(this.state.sessions[targetId] ?? {}),
+      ...this.state.sessions[targetId],
     };
     const { [sourceId]: _, ...remaining } = this.state.sessions;
     this.state.sessions = remaining;
@@ -615,6 +766,7 @@ export class SessionMetadataService {
       parentSessionKind?: "btw-aside" | null;
       forkedFromSessionId?: string | null;
       heartbeatTurnsEnabled?: boolean;
+      wakeTurnsEnabled?: boolean | null;
       autoResumeDisabled?: boolean;
       heartbeatTurnsAfterMinutes?: number | null;
       heartbeatTurnText?: string | null;
@@ -622,6 +774,8 @@ export class SessionMetadataService {
       promptSuggestionMode?: PromptSuggestionMode | null;
       recapAfterSeconds?: number | null;
       recapMode?: RecapMode | null;
+      recapPausedUntilUserTurn?: boolean;
+      automationPausedUntilUserTurn?: boolean;
     },
   ): Promise<void> {
     this.updateSessionMetadata(sessionId, (metadata) => {
@@ -668,6 +822,10 @@ export class SessionMetadataService {
         }
       }
 
+      if (updates.wakeTurnsEnabled !== undefined) {
+        result.wakeTurnsEnabled = updates.wakeTurnsEnabled ?? undefined;
+      }
+
       if (updates.autoResumeDisabled !== undefined) {
         result.autoResumeDisabled = updates.autoResumeDisabled || undefined;
       }
@@ -706,6 +864,16 @@ export class SessionMetadataService {
         result.recapMode = updates.recapMode ?? undefined;
       }
 
+      if (updates.recapPausedUntilUserTurn !== undefined) {
+        result.recapPausedUntilUserTurn =
+          updates.recapPausedUntilUserTurn || undefined;
+      }
+
+      if (updates.automationPausedUntilUserTurn !== undefined) {
+        result.automationPausedUntilUserTurn =
+          updates.automationPausedUntilUserTurn || undefined;
+      }
+
       return result;
     });
     await this.save();
@@ -741,15 +909,24 @@ export class SessionMetadataService {
     if (updated.recapMessages?.length) {
       cleaned.recapMessages = updated.recapMessages;
     }
+    if (updated.syntheticDoneMessages?.length) {
+      cleaned.syntheticDoneMessages = updated.syntheticDoneMessages;
+    }
     if (updated.cacheMissBillingEvents?.length) {
       cleaned.cacheMissBillingEvents = updated.cacheMissBillingEvents;
     }
     if (updated.requestedModel) cleaned.requestedModel = updated.requestedModel;
+    if (updated.effectiveLaunchSettings) {
+      cleaned.effectiveLaunchSettings = updated.effectiveLaunchSettings;
+    }
     if (updated.provider) cleaned.provider = updated.provider;
     if (updated.executor) cleaned.executor = updated.executor;
     if (updated.initialPrompt) cleaned.initialPrompt = updated.initialPrompt;
     if (updated.heartbeatTurnsEnabled) {
       cleaned.heartbeatTurnsEnabled = updated.heartbeatTurnsEnabled;
+    }
+    if (updated.wakeTurnsEnabled !== undefined) {
+      cleaned.wakeTurnsEnabled = updated.wakeTurnsEnabled;
     }
     if (updated.autoResumeDisabled) {
       cleaned.autoResumeDisabled = updated.autoResumeDisabled;
@@ -771,6 +948,13 @@ export class SessionMetadataService {
     }
     if (updated.recapMode) {
       cleaned.recapMode = updated.recapMode;
+    }
+    if (updated.recapPausedUntilUserTurn) {
+      cleaned.recapPausedUntilUserTurn = updated.recapPausedUntilUserTurn;
+    }
+    if (updated.automationPausedUntilUserTurn) {
+      cleaned.automationPausedUntilUserTurn =
+        updated.automationPausedUntilUserTurn;
     }
     if (updated.sandboxLevel) {
       cleaned.sandboxLevel = updated.sandboxLevel;

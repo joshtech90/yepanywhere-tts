@@ -5,44 +5,59 @@
  * - serviceWorkerEnabled: Whether clients should register the service worker
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
   AgentContextHints,
   CacheMissBillingSettings,
   ClaudeAdditionalModelSelection,
+  ClaudeSteerBackgroundBashSettings,
   ClientDefaults,
+  CodexReasoningSummary,
   HelperTargetConfig,
   HostIdentity,
   HostAwakeMode,
   NewSessionDefaults,
   PromptCacheKeepaliveSettings,
   SessionToolbarPresenceClientDefaults,
+  SubagentMaxDepth,
   ToolbarControlPresence,
   AutoSessionTitleSettings,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+  DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
+  DEFAULT_CODEX_REASONING_SUMMARY,
+  DEFAULT_HEARTBEAT_TURN_TEXT,
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   normalizeAutoSessionTitleSettings,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
+  MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   clampProjectQueueQuietSeconds,
+  isIdleReapHours,
+  isSubagentMaxDepth,
+  normalizeIdleReapHours,
   normalizeYaClientBaseUrlFromShareViewerUrl,
   isHostAwakeBatteryFloorPercent,
   isHostAwakeMode,
+  isCodexReasoningSummary,
   parseClaudeAdditionalModelSelections,
+  parseClaudeSteerBackgroundBashSettings,
 } from "@yep-anywhere/shared";
 import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
-import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 
 export type { FileAccessSettings };
 
 const CURRENT_VERSION = 2;
 export const DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS = 56;
 export const DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES = 400 * 1024 * 1024;
-const DEFAULT_HEARTBEAT_TURN_TEXT = "continue";
+export const DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS = 8;
+export const MIN_SOURCE_REVIEW_RESPONSE_TURNS = 1;
+export const MAX_SOURCE_REVIEW_RESPONSE_TURNS = 32;
 export const MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH = 10_000;
 const LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS = new Set([
   "heartbeat",
@@ -59,8 +74,26 @@ export interface SpeechAudioRetentionSettings {
   maxBytes: number;
 }
 
+export const PROJECT_DIRECTORY_STORAGE_VALUES = [
+  "app-data",
+  "project",
+] as const;
+export type ProjectDirectoryStorage =
+  (typeof PROJECT_DIRECTORY_STORAGE_VALUES)[number];
+
+export const TOOL_RESULT_MEDIA_PRESERVATION_VALUES = [
+  "on-demand",
+  "preserve",
+] as const;
+export type ToolResultMediaPreservation =
+  (typeof TOOL_RESULT_MEDIA_PRESERVATION_VALUES)[number];
+
 /** Server-wide settings */
 export interface ServerSettings {
+  /** Where YA writes new project-scoped state. */
+  projectDirectoryStorage: ProjectDirectoryStorage;
+  /** Whether new live tool-result images receive durable YA-owned copies. */
+  toolResultMediaPreservation: ToolResultMediaPreservation;
   /** Whether clients should register the service worker (for push notifications) */
   serviceWorkerEnabled: boolean;
   /** Whether remote SRP resume sessions should be persisted to disk (default: false/in-memory only) */
@@ -73,6 +106,10 @@ export interface ServerSettings {
   publicSharesEnabled: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether captured source-review submissions and outcomes are enabled. */
+  sourceReviewSubmissionsEnabled?: boolean;
+  /** Completed assistant turns that may ingest one submission response. */
+  sourceReviewResponseTurns?: number;
   /** Whether Agents may sample same-user provider processes on this host. */
   hostProcessObservabilityEnabled: boolean;
   /** Base URL for the hosted YA client; remote login/share routes are appended */
@@ -106,10 +143,18 @@ export interface ServerSettings {
   heartbeatTurnsAfterMinutes?: number;
   /** Default text queued as the synthetic heartbeat user turn */
   heartbeatTurnText?: string;
+  /** Whether authenticated external session-wake turns are enabled by default. */
+  wakeTurnsEnabled?: boolean;
   /** Anthropic-compatible endpoint for the isolated claude-gateway provider */
   claudeGatewayUrl?: string;
   /** Optional shell line that starts a loopback Claude Gateway on demand. */
   claudeGatewayStartCommand?: string;
+  /** Whether Claude Gateway launches deny Claude Code's Agent tool. */
+  claudeGatewayDisableAgent: boolean;
+  /** Whether Claude Gateway launches remove Claude Code's plan-mode tools. */
+  claudeGatewayDisablePlanMode: boolean;
+  /** YA launch override for supported providers' native subagent nesting. */
+  subagentMaxDepth: SubagentMaxDepth;
   /** Ollama server URL for claude-ollama provider (default: http://localhost:11434) */
   ollamaUrl?: string;
   /** Custom system prompt for Ollama provider (overrides the default minimal prompt) */
@@ -125,6 +170,8 @@ export interface ServerSettings {
    * auto-compaction window. Absent leaves Claude's environment unchanged.
    */
   claudeAutoCompactPercentOverride?: number;
+  /** Foreground Bash commands Claude may make resumable when a steer arrives. */
+  claudeSteerBackgroundBash: ClaudeSteerBackgroundBashSettings;
   /** Whether the device bridge (emulator/device streaming) feature is enabled */
   deviceBridgeEnabled?: boolean;
   /** Defaults applied when opening the new session form */
@@ -147,6 +194,8 @@ export interface ServerSettings {
   lifecycleWebhookToken?: string;
   /** When true, include dryRun=true in lifecycle webhook payloads */
   lifecycleWebhookDryRun?: boolean;
+  /** Reasoning-summary mode applied when Codex app-server sessions start. */
+  codexReasoningSummary: CodexReasoningSummary;
   /**
    * How the server handles Codex CLI updates:
    * - "auto": automatically run `npm install -g <pkg>@latest` when an update
@@ -155,6 +204,10 @@ export interface ServerSettings {
    * - "off": don't check or surface updates.
    */
   codexUpdatePolicy?: "auto" | "notify" | "off";
+  /** Keep eligible local Linux Codex runtimes across YA server reloads. */
+  codexReloadSafeSessions: boolean;
+  /** Best-effort idle provider reap grace in hours; negative disables it. */
+  idleReapHours?: number;
   /**
    * Max seconds between consecutive compose times for queued-while-busy turns
    * to join into one `--------`-joined provider turn at a delivery boundary.
@@ -167,6 +220,12 @@ export interface ServerSettings {
    * delivered queued turns. Unset falls back to env `YEP_COMPOSE_ANCHORS`.
    */
   composeAnchorsEnabled?: boolean;
+  /**
+   * Absolute `[sent <ISO>]` compose-time markers on provider-bound user
+   * turns, before or after the text. Unset falls back to env
+   * `YEP_TURN_TIMESTAMPS` (topics/compose-time-context-anchors.md).
+   */
+  turnTimestamps?: "off" | "before" | "after";
   /**
    * Seconds the whole-project idle predicate must remain clear before Project
    * Queue promotes one item. Range 0-300, default 30.
@@ -185,17 +244,22 @@ export type CodexUpdatePolicy = (typeof CODEX_UPDATE_POLICIES)[number];
 
 /** Default settings */
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
+  projectDirectoryStorage: "app-data",
+  toolResultMediaPreservation: "on-demand",
   serviceWorkerEnabled: true,
   persistRemoteSessionsToDisk: false,
   clientLogCollectionRequested: false,
   approvalAuditLogEnabled: false,
   publicSharesEnabled: false,
   workstreamsEnabled: false,
+  sourceReviewSubmissionsEnabled: true,
+  sourceReviewResponseTurns: DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS,
   hostProcessObservabilityEnabled: true,
   hostAwakeMode: "off",
   hostAwakeBatteryFloorPercent: DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   heartbeatTurnsAfterMinutes: 15,
   heartbeatTurnText: DEFAULT_HEARTBEAT_TURN_TEXT,
+  wakeTurnsEnabled: false,
   speechAudioRetention: {
     enabled: true,
     maxAgeDays: DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS,
@@ -204,7 +268,13 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   lifecycleWebhooksEnabled: false,
   lifecycleWebhookDryRun: true,
   grokBuildUseXaiApiKey: false,
+  claudeGatewayDisableAgent: true,
+  claudeGatewayDisablePlanMode: true,
+  subagentMaxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
+  codexReasoningSummary: DEFAULT_CODEX_REASONING_SUMMARY,
   codexUpdatePolicy: "notify",
+  codexReloadSafeSessions: false,
+  claudeSteerBackgroundBash: DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   clientDefaults: DEFAULT_CLIENT_DEFAULTS,
   cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
@@ -309,10 +379,30 @@ function mergeLoadedClientDefaults(
 
 function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   const normalized = { ...DEFAULT_SERVER_SETTINGS, ...settings };
+  normalized.projectDirectoryStorage =
+    settings.projectDirectoryStorage === "project"
+      ? "project"
+      : DEFAULT_SERVER_SETTINGS.projectDirectoryStorage;
+  normalized.toolResultMediaPreservation =
+    settings.toolResultMediaPreservation === "preserve"
+      ? "preserve"
+      : DEFAULT_SERVER_SETTINGS.toolResultMediaPreservation;
   normalized.hostProcessObservabilityEnabled =
     typeof settings.hostProcessObservabilityEnabled === "boolean"
       ? settings.hostProcessObservabilityEnabled
       : DEFAULT_SERVER_SETTINGS.hostProcessObservabilityEnabled;
+  normalized.codexReasoningSummary = isCodexReasoningSummary(
+    settings.codexReasoningSummary,
+  )
+    ? settings.codexReasoningSummary
+    : DEFAULT_CODEX_REASONING_SUMMARY;
+  normalized.codexReloadSafeSessions =
+    typeof settings.codexReloadSafeSessions === "boolean"
+      ? settings.codexReloadSafeSessions
+      : DEFAULT_SERVER_SETTINGS.codexReloadSafeSessions;
+  normalized.idleReapHours = isIdleReapHours(settings.idleReapHours)
+    ? normalizeIdleReapHours(settings.idleReapHours)
+    : undefined;
   normalized.hostAwakeMode = isHostAwakeMode(settings.hostAwakeMode)
     ? settings.hostAwakeMode
     : DEFAULT_SERVER_SETTINGS.hostAwakeMode;
@@ -337,6 +427,12 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     settings.claudeAutoCompactPercentOverride <= 100
       ? settings.claudeAutoCompactPercentOverride
       : undefined;
+  normalized.claudeSteerBackgroundBash =
+    settings.claudeSteerBackgroundBash === undefined
+      ? DEFAULT_CLAUDE_STEER_BACKGROUND_BASH
+      : (parseClaudeSteerBackgroundBashSettings(
+          settings.claudeSteerBackgroundBash,
+        ) ?? { allowRegex: "", denyRegex: "" });
   const gatewayStartCommand = settings.claudeGatewayStartCommand;
   normalized.claudeGatewayStartCommand =
     typeof gatewayStartCommand === "string" &&
@@ -345,12 +441,27 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     gatewayStartCommand.trim()
       ? gatewayStartCommand.trim()
       : undefined;
+  normalized.claudeGatewayDisableAgent =
+    typeof settings.claudeGatewayDisableAgent === "boolean"
+      ? settings.claudeGatewayDisableAgent
+      : DEFAULT_SERVER_SETTINGS.claudeGatewayDisableAgent;
+  normalized.claudeGatewayDisablePlanMode =
+    typeof settings.claudeGatewayDisablePlanMode === "boolean"
+      ? settings.claudeGatewayDisablePlanMode
+      : DEFAULT_SERVER_SETTINGS.claudeGatewayDisablePlanMode;
+  normalized.subagentMaxDepth = isSubagentMaxDepth(settings.subagentMaxDepth)
+    ? settings.subagentMaxDepth
+    : DEFAULT_SUBAGENT_MAX_DEPTH;
   const loadedHeartbeatText = settings.heartbeatTurnText?.trim();
-  if (
-    loadedHeartbeatText &&
-    LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS.has(loadedHeartbeatText)
-  ) {
+  if (!loadedHeartbeatText) {
     normalized.heartbeatTurnText = DEFAULT_SERVER_SETTINGS.heartbeatTurnText;
+  } else if (LEGACY_DEFAULT_HEARTBEAT_TURN_TEXTS.has(loadedHeartbeatText)) {
+    normalized.heartbeatTurnText = DEFAULT_SERVER_SETTINGS.heartbeatTurnText;
+  } else {
+    normalized.heartbeatTurnText = loadedHeartbeatText.slice(
+      0,
+      MAX_HEARTBEAT_TURN_TEXT_LENGTH,
+    );
   }
   if (!normalized.yaClientBaseUrl && normalized.publicShareViewerBaseUrl) {
     try {
@@ -373,6 +484,21 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.projectQueueQuietSeconds =
     clampProjectQueueQuietSeconds(settings.projectQueueQuietSeconds) ??
     DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
+  normalized.sourceReviewSubmissionsEnabled =
+    typeof settings.sourceReviewSubmissionsEnabled === "boolean"
+      ? settings.sourceReviewSubmissionsEnabled
+      : DEFAULT_SERVER_SETTINGS.sourceReviewSubmissionsEnabled;
+  normalized.sourceReviewResponseTurns =
+    typeof settings.sourceReviewResponseTurns === "number" &&
+    Number.isInteger(settings.sourceReviewResponseTurns) &&
+    settings.sourceReviewResponseTurns >= MIN_SOURCE_REVIEW_RESPONSE_TURNS &&
+    settings.sourceReviewResponseTurns <= MAX_SOURCE_REVIEW_RESPONSE_TURNS
+      ? settings.sourceReviewResponseTurns
+      : DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS;
+  normalized.wakeTurnsEnabled =
+    typeof settings.wakeTurnsEnabled === "boolean"
+      ? settings.wakeTurnsEnabled
+      : DEFAULT_SERVER_SETTINGS.wakeTurnsEnabled;
   return normalized;
 }
 
@@ -384,6 +510,7 @@ interface SettingsState {
 
 export interface ServerSettingsServiceOptions {
   dataDir: string;
+  logger?: Pick<Console, "error">;
 }
 
 export type ServerSettingsChangeListener = (
@@ -396,12 +523,14 @@ export class ServerSettingsService {
   private dataDir: string;
   private filePath: string;
   private initialized = false;
-  private save = createCoalescingSaver(() => this.doSave()).save;
+  private updateTail: Promise<void> = Promise.resolve();
   private readonly changeListeners = new Set<ServerSettingsChangeListener>();
+  private readonly logger: Pick<Console, "error">;
 
   constructor(options: ServerSettingsServiceOptions) {
     this.dataDir = options.dataDir;
     this.filePath = path.join(this.dataDir, "server-settings.json");
+    this.logger = options.logger ?? console;
     this.state = {
       version: CURRENT_VERSION,
       settings: DEFAULT_SERVER_SETTINGS,
@@ -432,7 +561,7 @@ export class ServerSettingsService {
           version: CURRENT_VERSION,
           settings: normalizeLoadedSettings(parsed.settings),
         };
-        await this.save();
+        await this.doSave(this.state);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -456,6 +585,7 @@ export class ServerSettingsService {
     publishDeferredDeliverySettings({
       deferredJoinWindowSeconds: this.state.settings.deferredJoinWindowSeconds,
       composeAnchorsEnabled: this.state.settings.composeAnchorsEnabled,
+      turnTimestamps: this.state.settings.turnTimestamps,
     });
   }
 
@@ -487,25 +617,33 @@ export class ServerSettingsService {
   /**
    * Update settings.
    */
-  async updateSettings(
-    updates: Partial<ServerSettings>,
-  ): Promise<ServerSettings> {
+  updateSettings(updates: Partial<ServerSettings>): Promise<ServerSettings> {
     this.ensureInitialized();
+    const operation = this.updateTail.then(async () => {
+      const previousSettings = this.state.settings;
+      const nextState: SettingsState = {
+        version: CURRENT_VERSION,
+        settings: {
+          ...previousSettings,
+          ...updates,
+        },
+      };
+      await this.doSave(nextState);
+      this.state = nextState;
 
-    const previousSettings = this.state.settings;
-    this.state.settings = {
-      ...previousSettings,
-      ...updates,
-    };
-
-    const settings = { ...this.state.settings };
-    const previous = { ...previousSettings };
-    for (const listener of this.changeListeners) {
-      listener(settings, previous);
-    }
-    await this.save();
-    this.publishDeferredDelivery();
-    return settings;
+      const settings = { ...nextState.settings };
+      const previous = { ...previousSettings };
+      for (const listener of this.changeListeners) {
+        listener(settings, previous);
+      }
+      this.publishDeferredDelivery();
+      return settings;
+    });
+    this.updateTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   /**
@@ -519,13 +657,37 @@ export class ServerSettingsService {
     }
   }
 
-  private async doSave(): Promise<void> {
+  private async doSave(state: SettingsState): Promise<void> {
+    const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
+    let published = false;
     try {
-      const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      const file = await fs.open(temporaryPath, "wx", 0o600);
+      try {
+        await file.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf-8");
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await fs.rename(temporaryPath, this.filePath);
+      published = true;
+      const directory = await fs.open(this.dataDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } catch (error) {
-      console.error("[ServerSettingsService] Failed to save settings:", error);
+      this.logger.error(
+        "[ServerSettingsService] Failed to save settings:",
+        error,
+      );
       throw error;
+    } finally {
+      if (!published) {
+        await fs.unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
     }
   }
 }

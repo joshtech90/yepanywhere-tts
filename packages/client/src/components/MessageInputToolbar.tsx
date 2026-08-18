@@ -8,10 +8,12 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
+  hasServerCapabilityAdvertisement,
   serverHasCapability,
 } from "@yep-anywhere/shared";
-import type { MouseEvent, RefObject, TouchEvent } from "react";
+import type { CSSProperties, MouseEvent, RefObject, TouchEvent } from "react";
 import {
   type Dispatch,
   type SetStateAction,
@@ -23,6 +25,7 @@ import {
   useState,
 } from "react";
 import { useOptionalRenderModeContext } from "../contexts/RenderModeContext";
+import { useOptionalToastContext } from "../contexts/ToastContext";
 import { ConversationViewIcon } from "./ConversationViewIcon";
 import {
   type EffortLevel,
@@ -30,7 +33,9 @@ import {
   useModelSettings,
 } from "../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
+import { useBrowserDebugLease } from "../hooks/useBrowserDebugLease";
 import { useConversationView } from "../hooks/useConversationView";
+import { useSpeechSourceRuntime } from "../hooks/useSpeechSourceRuntime";
 import {
   getComposerToolbarOverflowLayoutSignature,
   type MessageInputToolbarLayoutRefs,
@@ -51,8 +56,18 @@ import {
   useSessionToolbarPresence,
 } from "../hooks/useSessionToolbarPresence";
 import { useVersion } from "../hooks/useVersion";
+import {
+  DEFAULT_WAVEFORM_BUTTON_BACKGROUND_OPACITY_PERCENT,
+  useWaveformButtonBackgroundOpacity,
+} from "../hooks/useWaveformButtonBackgroundOpacity";
 import { useI18n } from "../i18n";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
+import { writeClipboardTextLater } from "../lib/clipboard";
+import { BROWSER_DEBUG_LEASE_TTL_MS } from "../lib/browserDebugLease";
+import {
+  type SessionViewerControllerState,
+  useSessionViewerController,
+} from "../lib/sessionViewerController";
 import {
   type EffortLevelOption,
   getEffortLevelLabel,
@@ -79,11 +94,13 @@ import {
   type SessionIsearchGuideState,
   type SessionIsearchScope,
 } from "../lib/sessionIsearchGuide";
+import toolbarModuleStyles from "./MessageInputToolbar.module.css";
 import {
   DEFAULT_SPEECH_METHOD,
   canSpeechMethodStream,
   getSpeechMethodCapabilities,
   getSpeechMethods,
+  isBrowserNativeSpeechAvailable,
   isSpeechMethodId,
   resolveSpeechMethod,
   type SpeechMethodId,
@@ -94,8 +111,10 @@ import type {
   SpeechTranscriptionResultMetadata,
   SpeechTranscriptionSettlement,
 } from "../lib/speechProviders/SpeechProvider";
+import type { SpeechCommitOutcome } from "../lib/speechDraftTransaction";
 import type { ContextUsage, PermissionMode } from "../types";
 import { ContextThresholdQuickEdit } from "./ContextThresholdQuickEdit";
+import { SpeechPrefixActionCue } from "./SpeechPrefixActionCue";
 import type { FilterOption } from "./FilterDropdown";
 import { MessageAge } from "./MessageAge";
 import { ModeSelector } from "./ModeSelector";
@@ -104,8 +123,10 @@ import { SpeechControlMenu } from "./SpeechControlMenu";
 import { SpeechWaveform } from "./SpeechWaveform";
 import { ThinkingControlsPanel, ThinkingIcon } from "./ThinkingControls";
 import { RenderModeGlyph } from "./ui/RenderModeGlyph";
+import { SessionViewerToolbarController } from "./SessionViewerToolbarController";
 import {
   VoiceInputButton,
+  type SpeechCycleSettlement,
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
@@ -178,6 +199,8 @@ function getIsearchAlternateRows(
 }
 
 export interface MessageInputToolbarProps {
+  /** Canonical YA session id represented by this composer. */
+  sessionId?: string;
   // Mode selector
   mode?: PermissionMode;
   onModeChange?: (mode: PermissionMode) => void;
@@ -198,11 +221,14 @@ export interface MessageInputToolbarProps {
   onVoiceTranscript?: (
     transcript: string,
     metadata?: SpeechTranscriptionResultMetadata,
-  ) => void;
+  ) => SpeechCommitOutcome | undefined;
   onInterimTranscript?: (transcript: string) => void;
   onListeningStart?: () => void;
-  onListeningStop?: () => void;
-  onPendingSpeechChange?: (kind: SpeechPendingKind | null) => void;
+  onListeningStop?: () => boolean | undefined;
+  onPendingSpeechChange?: (
+    kind: SpeechPendingKind | null,
+    settlement?: SpeechCycleSettlement,
+  ) => void;
   onTranscriptionSettled?: (settlement: SpeechTranscriptionSettlement) => void;
   voiceDisabled?: boolean;
   getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
@@ -263,6 +289,8 @@ export interface MessageInputToolbarProps {
   isRunning?: boolean;
   isThinking?: boolean;
   onStop?: () => void;
+  onDone?: () => void;
+  doneTitle?: string;
   onSend?: () => void;
   /** Queue a deferred message. Only provided when agent is running. */
   onQueue?: () => void;
@@ -286,9 +314,15 @@ export interface MessageInputToolbarProps {
   };
   canForkAfterSummary?: boolean;
   canSend?: boolean;
+  /** Exact prefix this delivery will prepend, or null for an unchanged payload. */
+  speechMessagePrefix?: string | null;
+  /** Primary-action override for local-only composer commands. */
+  primarySpeechMessagePrefix?: string | null;
   disabled?: boolean;
   /** Keep toolbar utilities/settings but omit the ordinary primary/alternate actions. */
   hidePrimaryDeliveryActions?: boolean;
+  /** Keep the live mic outside this toolbar instance. */
+  hideVoiceInput?: boolean;
 
   // Pending approval indicator
   pendingApproval?: {
@@ -516,17 +550,20 @@ type ToolbarVoiceButtonControl =
       onTranscript: (
         transcript: string,
         metadata?: SpeechTranscriptionResultMetadata,
-      ) => void;
+      ) => SpeechCommitOutcome | undefined;
       onInterimTranscript: (transcript: string) => void;
       onListeningStart?: () => void;
-      onListeningStop?: () => void;
-      onPendingSpeechChange?: (kind: SpeechPendingKind | null) => void;
+      onListeningStop?: () => boolean | undefined;
+      onPendingSpeechChange?: (
+        kind: SpeechPendingKind | null,
+        settlement?: SpeechCycleSettlement,
+      ) => void;
       onTranscriptionSettled?: (
         settlement: SpeechTranscriptionSettlement,
       ) => void;
       showWaveform?: boolean;
       disabled?: boolean;
-      speechMethod: SpeechMethodId;
+      speechMethod: SpeechMethodId | null;
       getTranscriptionContext?: () => SpeechTranscriptionContext | undefined;
       smartTurn?: SpeechSmartTurnSettings;
     }
@@ -538,7 +575,7 @@ type ToolbarVoiceButtonControl =
 interface ToolbarSpeechControl {
   showMethodSelector: boolean;
   methodOptions: FilterOption<SpeechMethodId>[];
-  selectedMethod: SpeechMethodId;
+  selectedMethod: SpeechMethodId | null;
   onMethodChange: (selected: string[]) => void;
   smartTurnSettings?: SpeechSmartTurnSettings;
   onSmartTurnSettingsChange?: (settings: SpeechSmartTurnSettings) => void;
@@ -563,6 +600,15 @@ interface ToolbarStatusControl {
   hasPositionAge: boolean;
   /** Last-activity freshness present regardless of the sessionStatus toggle. */
   hasLastActivityAge: boolean;
+}
+
+interface ToolbarBrowserDebugControl {
+  active: boolean;
+  enabling?: boolean;
+  remainingFraction: number;
+  performanceLabel?: string | null;
+  title: string;
+  onToggle: () => void;
 }
 
 interface ToolbarShortcutsControl {
@@ -601,6 +647,8 @@ interface ToolbarSendControl {
   primaryActionLabel: string;
   tooltip: string;
   icon: string;
+  speechMessagePrefix?: string | null;
+  primarySpeechMessagePrefix?: string | null;
   showSteerNowMode?: boolean;
   steerNowEnabled?: boolean;
   onToggleSteerNow?: () => void;
@@ -623,6 +671,11 @@ interface ToolbarProjectQueueControl {
 
 interface ToolbarStopControl {
   onStop: () => void;
+  title: string;
+}
+
+interface ToolbarDoneControl {
+  onDone: () => void;
   title: string;
 }
 
@@ -655,9 +708,14 @@ export interface MessageInputToolbarViewProps {
   thinkingControl?: ToolbarThinkingControl | null;
   renderModeControl?: ToolbarRenderModeControl | null;
   conversationViewControl?: ToolbarConversationViewControl | null;
+  browserDebugControl?: ToolbarBrowserDebugControl | null;
   nudgeControl?: ToolbarNudgeControl | null;
+  doneControl?: ToolbarDoneControl | null;
   speechControl?: ToolbarSpeechControl | null;
   speechWaveformActive?: boolean;
+  speechWaveformPreview?: boolean;
+  waveformButtonBackgroundOpacityPercent?: number;
+  fileViewerController?: SessionViewerControllerState | null;
   statusControl?: ToolbarStatusControl | null;
   pendingApproval?: MessageInputToolbarProps["pendingApproval"];
   shortcutsControl: ToolbarShortcutsControl;
@@ -683,6 +741,82 @@ function ToolbarMicrophoneIcon() {
       <line x1="12" y1="19" x2="12" y2="23" />
       <line x1="8" y1="23" x2="16" y2="23" />
     </svg>
+  );
+}
+
+function ToolbarDoneIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8 12 2.5 2.5L16 9" />
+    </svg>
+  );
+}
+
+function BrowserDebugBugIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m8 2 1.9 1.9" />
+      <path d="M14.1 3.9 16 2" />
+      <path d="M9 7.1V6a3 3 0 0 1 6 0v1.1" />
+      <rect width="12" height="13" x="6" y="7" rx="5" />
+      <path d="M3 13h3M18 13h3M4 7.5l2.4 1.2M17.6 8.7 20 7.5M4 18.5l2.4-1.2M17.6 17.3l2.4 1.2M12 12v8" />
+    </svg>
+  );
+}
+
+function BrowserDebugLeaseIcon({
+  active,
+  remainingFraction,
+  performanceLabel,
+}: {
+  active: boolean;
+  remainingFraction: number;
+  performanceLabel?: string | null;
+}) {
+  if (!active) return <BrowserDebugBugIcon />;
+  return (
+    <>
+      <span
+        className={toolbarModuleStyles.browserDebugCountdown}
+        style={
+          {
+            "--browser-debug-remaining": remainingFraction,
+          } as CSSProperties
+        }
+        aria-hidden="true"
+      >
+        <span className={toolbarModuleStyles.browserDebugWarning}>!</span>
+      </span>
+      {performanceLabel ? (
+        <span
+          className={toolbarModuleStyles.browserDebugPerformance}
+          aria-hidden="true"
+        >
+          {performanceLabel}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -717,6 +851,8 @@ function getToolbarThinkingTitle(
   return t("toolbarThinkingTitle", { current });
 }
 
+const THINKING_MENU_VIEWPORT_GUTTER_PX = 12;
+
 function ThinkingToolbarControl({
   control,
   t,
@@ -726,6 +862,7 @@ function ThinkingToolbarControl({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressTouchClickRef = useRef(false);
   const title = getToolbarThinkingTitle(t, control);
@@ -752,6 +889,75 @@ function ThinkingToolbarControl({
       document.removeEventListener("mousedown", handleMouseDown);
     };
   }, [close, open]);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const menu = menuRef.current;
+    if (!open || !root || !menu || typeof window === "undefined") return;
+
+    let frameId = 0;
+    const updateInlinePosition = () => {
+      frameId = 0;
+      menu.style.setProperty("--thinking-menu-inline-shift", "0px");
+      const viewport = window.visualViewport;
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const viewportWidth = viewport?.width ?? window.innerWidth;
+      menu.style.setProperty(
+        "--thinking-menu-max-inline-size",
+        `${Math.max(0, viewportWidth - THINKING_MENU_VIEWPORT_GUTTER_PX * 2)}px`,
+      );
+
+      const rect = menu.getBoundingClientRect();
+      const minLeft = viewportLeft + THINKING_MENU_VIEWPORT_GUTTER_PX;
+      const maxLeft =
+        viewportLeft +
+        viewportWidth -
+        THINKING_MENU_VIEWPORT_GUTTER_PX -
+        rect.width;
+      const targetLeft =
+        maxLeft < minLeft
+          ? minLeft
+          : Math.min(Math.max(rect.left, minLeft), maxLeft);
+      menu.style.setProperty(
+        "--thinking-menu-inline-shift",
+        `${targetLeft - rect.left}px`,
+      );
+    };
+    const scheduleInlinePositionUpdate = () => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(updateInlinePosition);
+    };
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleInlinePositionUpdate);
+    resizeObserver?.observe(root);
+    resizeObserver?.observe(menu);
+    window.addEventListener("resize", scheduleInlinePositionUpdate);
+    window.visualViewport?.addEventListener(
+      "resize",
+      scheduleInlinePositionUpdate,
+    );
+    window.visualViewport?.addEventListener(
+      "scroll",
+      scheduleInlinePositionUpdate,
+    );
+    updateInlinePosition();
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleInlinePositionUpdate);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        scheduleInlinePositionUpdate,
+      );
+      window.visualViewport?.removeEventListener(
+        "scroll",
+        scheduleInlinePositionUpdate,
+      );
+    };
+  }, [open]);
 
   const clearLongPress = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -794,10 +1000,11 @@ function ThinkingToolbarControl({
   );
 
   return (
-    <div className="thinking-toolbar-control" ref={rootRef}>
+    <div className={toolbarModuleStyles.thinkingControl} ref={rootRef}>
       <button
         type="button"
         className={`thinking-toggle-button ${control.mode !== "off" ? `active ${control.mode}` : ""}`}
+        data-thinking-mode={control.mode}
         onClick={(event) => {
           if (suppressTouchClickRef.current) {
             suppressTouchClickRef.current = false;
@@ -822,7 +1029,12 @@ function ThinkingToolbarControl({
         </span>
       </button>
       {open && (
-        <div className="thinking-toolbar-menu" role="menu">
+        <div
+          className={toolbarModuleStyles.thinkingMenu}
+          data-testid="thinking-toolbar-menu"
+          ref={menuRef}
+          role="menu"
+        >
           <ThinkingControlsPanel
             mode={control.mode}
             modeOptions={control.modeOptions}
@@ -838,7 +1050,7 @@ function ThinkingToolbarControl({
             onSelect={close}
             optionRole="menuitemradio"
           />
-          <div className="thinking-toolbar-menu-hint">
+          <div className={toolbarModuleStyles.thinkingMenuHint}>
             {t("toolbarThinkingAppliesNextTurn")}
           </div>
         </div>
@@ -859,9 +1071,14 @@ export function MessageInputToolbarView({
   thinkingControl,
   renderModeControl,
   conversationViewControl,
+  browserDebugControl,
   nudgeControl,
+  doneControl,
   speechControl,
   speechWaveformActive = false,
+  speechWaveformPreview = false,
+  waveformButtonBackgroundOpacityPercent = DEFAULT_WAVEFORM_BUTTON_BACKGROUND_OPACITY_PERCENT,
+  fileViewerController = null,
   statusControl,
   pendingApproval,
   shortcutsControl,
@@ -869,7 +1086,26 @@ export function MessageInputToolbarView({
   hidePrimaryDeliveryActions = false,
 }: MessageInputToolbarViewProps) {
   const tooltipMode = useTooltipMode();
+  const normalizedWaveformButtonBackgroundOpacity = Math.min(
+    100,
+    Math.max(0, waveformButtonBackgroundOpacityPercent),
+  );
+  const waveformBackdropActive = speechWaveformActive;
+  const waveformBackdropStyle = waveformBackdropActive
+    ? ({
+        "--waveform-control-surface-opacity": `${normalizedWaveformButtonBackgroundOpacity}%`,
+      } as CSSProperties)
+    : undefined;
   const controlPriority = priority ?? DEFAULT_SESSION_TOOLBAR_PRIORITY;
+  const effectivePriority = (
+    key: SessionToolbarVisibilityKey,
+  ): ToolbarNarrowingPriority => {
+    const configured = controlPriority[key];
+    if (fileViewerController && configured === "pin" && key !== "microphone") {
+      return "last";
+    }
+    return configured;
+  };
   // Inline copy always carries `-inline`; append the priority-derived tier (or
   // nothing when pinned). Menu copy carries just the tier. Both mirror each
   // other so a control's inline and menu presentations stay mutually exclusive.
@@ -880,7 +1116,7 @@ export function MessageInputToolbarView({
     [
       ...extra,
       "composer-bottom-overflow-inline",
-      priorityToTierClass(controlPriority[key]),
+      priorityToTierClass(effectivePriority(key)),
     ]
       .filter(Boolean)
       .join(" ");
@@ -888,13 +1124,13 @@ export function MessageInputToolbarView({
     key: SessionToolbarVisibilityKey,
     ...extra: string[]
   ): string => {
-    const tierClass = priorityToTierClass(controlPriority[key]);
+    const tierClass = priorityToTierClass(effectivePriority(key));
     return [...extra, tierClass || "composer-bottom-overflow-pinned"]
       .filter(Boolean)
       .join(" ");
   };
   const isPriorityCollapsible = (key: SessionToolbarVisibilityKey): boolean =>
-    controlPriority[key] !== "pin";
+    effectivePriority(key) !== "pin";
   const shortcutsPopoverOpen = shortcutsControl.open;
   const shortcutSettings =
     shortcutsControl.canSwapEnterAction && shortcutsControl.onSwapEnterAction
@@ -942,7 +1178,7 @@ export function MessageInputToolbarView({
   );
   const showProjectQueueButton =
     showCurrentSessionProjectQueueButton || showNewSessionProjectQueueButton;
-  const selectedSpeechMethod = speechControl?.selectedMethod;
+  const selectedSpeechMethod = speechControl?.selectedMethod ?? null;
   const queueControl = actionsControl.send?.queue;
   const canToggleSteerNow = !!(
     visibility.steerNow &&
@@ -1128,6 +1364,21 @@ export function MessageInputToolbarView({
     }
     const projectQueue = actionsControl.projectQueue;
     const disabled = actionsControl.disabled || !projectQueue.canSend;
+    const speechPrefix = actionsControl.send.speechMessagePrefix;
+    const deliveryLabel = (label: string) =>
+      speechPrefix
+        ? t("speechPrefixDeliveryLabel", {
+            action: label,
+            prefix: speechPrefix,
+          })
+        : label;
+    const deliveryTooltip = (tooltip: string | undefined) =>
+      speechPrefix && tooltip
+        ? t("speechPrefixDeliveryTooltip", {
+            tooltip,
+            prefix: speechPrefix,
+          })
+        : tooltip;
     const classNameFor = (
       key: "projectQueue" | "projectQueueNewSessionShortcut",
       ...extra: string[]
@@ -1147,11 +1398,12 @@ export function MessageInputToolbarView({
               onClick={projectQueue.onProjectQueue}
               disabled={disabled}
               className={classNameFor("projectQueue")}
-              aria-label={t("toolbarProjectQueueLabel")}
-              title={projectQueue.tooltip}
+              aria-label={deliveryLabel(t("toolbarProjectQueueLabel"))}
+              title={deliveryTooltip(projectQueue.tooltip)}
               role={menu ? "menuitem" : undefined}
             >
               <span className="send-icon">⇥</span>
+              {speechPrefix && <SpeechPrefixActionCue prefix={speechPrefix} />}
             </button>
           )}
         {showNewSessionProjectQueueButton &&
@@ -1165,8 +1417,10 @@ export function MessageInputToolbarView({
                 "projectQueueNewSessionShortcut",
                 "project-queue-new-session-button",
               )}
-              aria-label={t("toolbarProjectQueueNewSessionLabel")}
-              title={projectQueue.newSessionTooltip}
+              aria-label={deliveryLabel(
+                t("toolbarProjectQueueNewSessionLabel"),
+              )}
+              title={deliveryTooltip(projectQueue.newSessionTooltip)}
               role={menu ? "menuitem" : undefined}
             >
               <span className="send-icon">⇥</span>
@@ -1176,6 +1430,7 @@ export function MessageInputToolbarView({
               >
                 +
               </span>
+              {speechPrefix && <SpeechPrefixActionCue prefix={speechPrefix} />}
             </button>
           )}
       </>
@@ -1198,7 +1453,13 @@ export function MessageInputToolbarView({
     (visibility.conversationView &&
       conversationViewControl &&
       isPriorityCollapsible("conversationView")) ||
+    (visibility.browserDebug &&
+      browserDebugControl &&
+      isPriorityCollapsible("browserDebug")) ||
     (visibility.nudge && nudgeControl && isPriorityCollapsible("nudge")) ||
+    (visibility.syntheticDone &&
+      doneControl &&
+      isPriorityCollapsible("syntheticDone")) ||
     (visibility.sessionStatus &&
       showToolbarStatus &&
       statusControl &&
@@ -1216,47 +1477,61 @@ export function MessageInputToolbarView({
       actionsControl.send &&
       isPriorityCollapsible("projectQueueNewSessionShortcut"))
   );
-  const bottomOverflowLayoutKey = getComposerToolbarOverflowLayoutSignature({
+  const bottomOverflowLayoutKey = `${getComposerToolbarOverflowLayoutSignature({
     modeSelector:
       visibility.modeSelector && modeControl
-        ? controlPriority.modeSelector
+        ? effectivePriority("modeSelector")
         : "off",
-    attachments: visibility.attachments ? controlPriority.attachments : "off",
+    attachments: visibility.attachments
+      ? effectivePriority("attachments")
+      : "off",
     slashMenu:
-      visibility.slashMenu && slashControl ? controlPriority.slashMenu : "off",
+      visibility.slashMenu && slashControl
+        ? effectivePriority("slashMenu")
+        : "off",
     thinkingToggle:
       visibility.thinkingToggle && thinkingControl
-        ? controlPriority.thinkingToggle
+        ? effectivePriority("thinkingToggle")
         : "off",
     renderMode:
       visibility.renderMode && renderModeControl
-        ? controlPriority.renderMode
+        ? effectivePriority("renderMode")
         : "off",
     conversationView:
       visibility.conversationView && conversationViewControl
-        ? controlPriority.conversationView
+        ? effectivePriority("conversationView")
         : "off",
-    nudge: visibility.nudge && nudgeControl ? controlPriority.nudge : "off",
+    browserDebug:
+      visibility.browserDebug && browserDebugControl
+        ? effectivePriority("browserDebug")
+        : "off",
+    nudge:
+      visibility.nudge && nudgeControl ? effectivePriority("nudge") : "off",
+    syntheticDone:
+      visibility.syntheticDone && doneControl
+        ? effectivePriority("syntheticDone")
+        : "off",
     sessionStatus:
       visibility.sessionStatus && showToolbarStatus && statusControl
-        ? controlPriority.sessionStatus
+        ? effectivePriority("sessionStatus")
         : "off",
     shortcutsHelp: visibility.shortcutsHelp
-      ? controlPriority.shortcutsHelp
+      ? effectivePriority("shortcutsHelp")
       : "off",
     contextUsage:
       visibility.contextUsage && actionsControl.contextUsage
-        ? controlPriority.contextUsage
+        ? effectivePriority("contextUsage")
         : "off",
-    btw: visibility.btw && actionsControl.btw ? controlPriority.btw : "off",
-    steerNow: canToggleSteerNow ? controlPriority.steerNow : "off",
+    btw:
+      visibility.btw && actionsControl.btw ? effectivePriority("btw") : "off",
+    steerNow: canToggleSteerNow ? effectivePriority("steerNow") : "off",
     projectQueue:
       showCurrentSessionProjectQueueButton && actionsControl.send
-        ? controlPriority.projectQueue
+        ? effectivePriority("projectQueue")
         : "off",
     projectQueueNewSessionShortcut:
       showNewSessionProjectQueueButton && actionsControl.send
-        ? controlPriority.projectQueueNewSessionShortcut
+        ? effectivePriority("projectQueueNewSessionShortcut")
         : "off",
     microphone:
       visibility.microphone &&
@@ -1277,7 +1552,7 @@ export function MessageInputToolbarView({
     alternate: !hidePrimaryDeliveryActions && !!actionsControl.send?.alternate,
     stop: showStopButton,
     pending: pendingApproval?.type ?? "off",
-  });
+  })}|fileViewer:${fileViewerController ? "on" : "off"}`;
   const [bottomOverflowOpen, setBottomOverflowOpen] = useState(false);
   const { tier: bottomOverflowTier, setToolbarRef } =
     useMeasuredComposerOverflow({
@@ -1306,230 +1581,316 @@ export function MessageInputToolbarView({
       openShortcutSettings();
     }, 520);
   };
+  const handleToolbarClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+    if (!fileViewerController || fileViewerController.minimized) return;
+    if (!(event.target instanceof Element)) return;
+    const action = event.target.closest(
+      "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [role='button']:not([aria-disabled='true'])",
+    );
+    if (!action || !event.currentTarget.contains(action)) return;
+    fileViewerController.minimize();
+  };
 
   return (
     <div
       ref={setToolbarRef}
-      className={`message-input-toolbar${applyStatusFloats ? " status-floats" : ""} overflow-tier-${bottomOverflowTier}`}
+      className={`message-input-toolbar${applyStatusFloats ? " status-floats" : ""} overflow-tier-${bottomOverflowTier}${
+        fileViewerController
+          ? ` ${toolbarModuleStyles.fileViewerControllerActive}`
+          : ""
+      }${
+        fileViewerController && !fileViewerController.minimized
+          ? ` ${toolbarModuleStyles.fileViewerOpen}`
+          : ""
+      }${
+        waveformBackdropActive
+          ? ` ${toolbarModuleStyles.waveformBackdropActive}`
+          : ""
+      }`}
+      data-waveform-button-background-opacity={
+        waveformBackdropActive
+          ? normalizedWaveformButtonBackgroundOpacity
+          : undefined
+      }
+      style={waveformBackdropStyle}
+      onClickCapture={handleToolbarClickCapture}
     >
-      <div ref={refs?.left} className="message-input-left">
-        {visibility.modeSelector && modeControl && (
-          <span className={inlineTierClass("modeSelector")}>
-            <ModeSelector
-              mode={modeControl.mode}
-              onModeChange={modeControl.onModeChange}
-              modes={modeControl.modes}
-              changesApplyNextTurn={modeControl.changesApplyNextTurn}
-              modeChangePending={modeControl.modeChangePending}
-            />
-          </span>
-        )}
-        {visibility.attachments && (
-          <button
-            type="button"
-            className={inlineTierClass("attachments", "attach-button")}
-            onClick={attachmentControl.onAttachClick}
-            disabled={!attachmentControl.canAttach}
-            title={
-              attachmentControl.canAttach
-                ? t("toolbarAttachFiles")
-                : t("toolbarAttachDisabled")
-            }
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              aria-hidden="true"
-            >
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-            {attachmentControl.attachmentCount > 0 && (
-              <span className="attach-count">
-                {attachmentControl.attachmentCount}
-              </span>
-            )}
-          </button>
-        )}
-        {visibility.slashMenu && slashControl && (
-          <span className={inlineTierClass("slashMenu")}>
-            <SlashCommandButton
-              commands={slashControl.commands}
-              onSelectCommand={slashControl.onSelectCommand}
-              disabled={slashControl.disabled}
-            />
-          </span>
-        )}
-        {visibility.thinkingToggle && thinkingControl && (
-          <span className={inlineTierClass("thinkingToggle")}>
-            <ThinkingToolbarControl control={thinkingControl} t={t} />
-          </span>
-        )}
-        {visibility.renderMode && renderModeControl && (
-          <button
-            type="button"
-            className={inlineTierClass(
-              "renderMode",
-              "render-mode-toolbar-button",
-              renderModeControl.state === "rendered"
-                ? "is-rendered"
-                : renderModeControl.state === "mixed"
-                  ? "is-mixed"
-                  : "",
-            )}
-            onClick={renderModeControl.onToggle}
-            title={renderModeControl.title}
-            aria-label={renderModeControl.title}
-            aria-pressed={
-              renderModeControl.state === "mixed"
-                ? "mixed"
-                : renderModeControl.state === "rendered"
-            }
-          >
-            <RenderModeGlyph />
-          </button>
-        )}
-        {visibility.conversationView && conversationViewControl && (
-          <button
-            type="button"
-            className={inlineTierClass(
-              "conversationView",
-              "conversation-view-toolbar-button",
-              conversationViewControl.enabled ? "active" : "",
-            )}
-            onClick={conversationViewControl.onToggle}
-            title={conversationViewControl.title}
-            aria-label={conversationViewControl.title}
-            aria-pressed={conversationViewControl.enabled}
-          >
-            <ConversationViewIcon />
-          </button>
-        )}
-        {visibility.nudge && nudgeControl && (
-          <button
-            type="button"
-            className={inlineTierClass(
-              "nudge",
-              "heartbeat-toolbar-button",
-              nudgeControl.enabled ? "active" : "",
-            )}
-            onClick={nudgeControl.onClick}
-            onContextMenu={nudgeControl.onContextMenu}
-            onTouchStart={nudgeControl.onTouchStart}
-            onTouchEnd={nudgeControl.onTouchEnd}
-            onTouchCancel={nudgeControl.onClearTouch}
-            onTouchMove={nudgeControl.onClearTouch}
-            title={nudgeControl.title}
-            aria-label={nudgeControl.title}
-            aria-pressed={nudgeControl.enabled}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="miter"
-              aria-hidden="true"
-            >
-              <path className="heartbeat-baseline" d="M0.75 15H7" />
-              <path
-                className="heartbeat-excursion"
-                d="M7 15l2-5 2 9 4-16 3 12"
+      <div
+        className={`${toolbarModuleStyles.waveformRegion}${
+          speechWaveformPreview
+            ? ` ${toolbarModuleStyles.waveformPreviewRegion}`
+            : ""
+        }`}
+      >
+        <div ref={refs?.left} className="message-input-left">
+          {visibility.modeSelector && modeControl && (
+            <span className={inlineTierClass("modeSelector")}>
+              <ModeSelector
+                mode={modeControl.mode}
+                onModeChange={modeControl.onModeChange}
+                modes={modeControl.modes}
+                changesApplyNextTurn={modeControl.changesApplyNextTurn}
+                modeChangePending={modeControl.modeChangePending}
               />
-              <path className="heartbeat-baseline" d="M18 15h5.25" />
-            </svg>
-          </button>
-        )}
-        {visibility.microphone &&
-          selectedSpeechMethod &&
-          speechControl?.voiceButton?.kind === "preview" && (
-            <SpeechControlMenu
-              showMethodSelector={speechControl.showMethodSelector}
-              methodOptions={speechControl.methodOptions}
-              selectedMethod={selectedSpeechMethod}
-              onMethodChange={speechControl.onMethodChange}
-              smartTurnSettings={speechControl.smartTurnSettings}
-              onSmartTurnSettingsChange={
-                speechControl.onSmartTurnSettingsChange
-              }
-              smartTurnDisabled={speechControl.smartTurnDisabled}
-              trigger={
-                <button
-                  type="button"
-                  className="voice-input-button"
-                  disabled={speechControl.voiceButton.disabled}
-                  title={t("voiceInputStart" as never)}
-                  aria-label={t("voiceInputStartLabel" as never)}
-                >
-                  <ToolbarMicrophoneIcon />
-                </button>
-              }
-            />
+            </span>
           )}
-        {visibility.microphone &&
-          selectedSpeechMethod &&
-          speechControl?.voiceButton?.kind === "live" &&
-          speechControl.voiceButton.ref && (
-            <SpeechControlMenu
-              showMethodSelector={speechControl.showMethodSelector}
-              methodOptions={speechControl.methodOptions}
-              selectedMethod={selectedSpeechMethod}
-              onMethodChange={speechControl.onMethodChange}
-              smartTurnSettings={speechControl.smartTurnSettings}
-              onSmartTurnSettingsChange={
-                speechControl.onSmartTurnSettingsChange
+          {visibility.attachments && (
+            <button
+              type="button"
+              className={inlineTierClass("attachments", "attach-button")}
+              onClick={attachmentControl.onAttachClick}
+              disabled={!attachmentControl.canAttach}
+              title={
+                attachmentControl.canAttach
+                  ? t("toolbarAttachFiles")
+                  : t("toolbarAttachDisabled")
               }
-              smartTurnDisabled={speechControl.smartTurnDisabled}
-              onBeforeOpen={() => {
-                if (speechControl.voiceButton?.kind !== "live") return;
-                speechControl.voiceButton.onListeningStop?.();
-                speechControl.voiceButton.ref?.current?.stopAndFinalize();
-                speechControl.voiceButton.onInterimTranscript("");
-              }}
-              onBeforeCaptureChange={() => {
-                if (speechControl.voiceButton?.kind !== "live") return;
-                speechControl.voiceButton.onListeningStop?.();
-                speechControl.voiceButton.ref?.current?.stopAndFinalize();
-                speechControl.voiceButton.onInterimTranscript("");
-              }}
-              onPointerNearTrigger={() =>
-                speechControl.voiceButton?.kind === "live"
-                  ? speechControl.voiceButton.ref?.current?.prewarm?.()
-                  : undefined
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              {attachmentControl.attachmentCount > 0 && (
+                <span className="attach-count">
+                  {attachmentControl.attachmentCount}
+                </span>
+              )}
+            </button>
+          )}
+          {visibility.slashMenu && slashControl && (
+            <span className={inlineTierClass("slashMenu")}>
+              <SlashCommandButton
+                commands={slashControl.commands}
+                onSelectCommand={slashControl.onSelectCommand}
+                disabled={slashControl.disabled}
+              />
+            </span>
+          )}
+          {visibility.thinkingToggle && thinkingControl && (
+            <span className={inlineTierClass("thinkingToggle")}>
+              <ThinkingToolbarControl control={thinkingControl} t={t} />
+            </span>
+          )}
+          {visibility.renderMode && renderModeControl && (
+            <button
+              type="button"
+              className={inlineTierClass(
+                "renderMode",
+                "render-mode-toolbar-button",
+                renderModeControl.state === "rendered"
+                  ? "is-rendered"
+                  : renderModeControl.state === "mixed"
+                    ? "is-mixed"
+                    : "",
+              )}
+              onClick={renderModeControl.onToggle}
+              title={renderModeControl.title}
+              aria-label={renderModeControl.title}
+              aria-pressed={
+                renderModeControl.state === "mixed"
+                  ? "mixed"
+                  : renderModeControl.state === "rendered"
               }
-              trigger={
-                <VoiceInputButton
-                  ref={speechControl.voiceButton.ref}
-                  onTranscript={speechControl.voiceButton.onTranscript}
-                  onInterimTranscript={
-                    speechControl.voiceButton.onInterimTranscript
-                  }
-                  onListeningStart={speechControl.voiceButton.onListeningStart}
-                  onListeningStop={speechControl.voiceButton.onListeningStop}
-                  onPendingSpeechChange={
-                    speechControl.voiceButton.onPendingSpeechChange
-                  }
-                  onTranscriptionSettled={
-                    speechControl.voiceButton.onTranscriptionSettled
-                  }
-                  disabled={speechControl.voiceButton.disabled}
-                  speechMethod={speechControl.voiceButton.speechMethod}
-                  getTranscriptionContext={
-                    speechControl.voiceButton.getTranscriptionContext
-                  }
-                  smartTurn={speechControl.voiceButton.smartTurn}
-                  showWaveform={speechControl.voiceButton.showWaveform}
+            >
+              <RenderModeGlyph />
+            </button>
+          )}
+          {visibility.conversationView && conversationViewControl && (
+            <button
+              type="button"
+              className={inlineTierClass(
+                "conversationView",
+                "conversation-view-toolbar-button",
+                conversationViewControl.enabled ? "active" : "",
+              )}
+              onClick={conversationViewControl.onToggle}
+              title={conversationViewControl.title}
+              aria-label={conversationViewControl.title}
+              aria-pressed={conversationViewControl.enabled}
+            >
+              <ConversationViewIcon />
+            </button>
+          )}
+          {visibility.browserDebug && browserDebugControl && (
+            <button
+              type="button"
+              className={[
+                inlineTierClass("browserDebug"),
+                toolbarModuleStyles.browserDebugButton,
+                browserDebugControl.active
+                  ? toolbarModuleStyles.browserDebugButtonActive
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              onClick={browserDebugControl.onToggle}
+              title={browserDebugControl.title}
+              aria-label={browserDebugControl.title}
+              aria-pressed={browserDebugControl.active}
+              disabled={browserDebugControl.enabling}
+            >
+              <BrowserDebugLeaseIcon
+                active={browserDebugControl.active}
+                remainingFraction={browserDebugControl.remainingFraction}
+                performanceLabel={browserDebugControl.performanceLabel}
+              />
+            </button>
+          )}
+          {visibility.nudge && nudgeControl && (
+            <button
+              type="button"
+              className={inlineTierClass(
+                "nudge",
+                "heartbeat-toolbar-button",
+                nudgeControl.enabled ? "active" : "",
+              )}
+              onClick={nudgeControl.onClick}
+              onContextMenu={nudgeControl.onContextMenu}
+              onTouchStart={nudgeControl.onTouchStart}
+              onTouchEnd={nudgeControl.onTouchEnd}
+              onTouchCancel={nudgeControl.onClearTouch}
+              onTouchMove={nudgeControl.onClearTouch}
+              title={nudgeControl.title}
+              aria-label={nudgeControl.title}
+              aria-pressed={nudgeControl.enabled}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="miter"
+                aria-hidden="true"
+              >
+                <path className="heartbeat-baseline" d="M0.75 15H7" />
+                <path
+                  className="heartbeat-excursion"
+                  d="M7 15l2-5 2 9 4-16 3 12"
                 />
-              }
-            />
+                <path className="heartbeat-baseline" d="M18 15h5.25" />
+              </svg>
+            </button>
           )}
-        {speechWaveformActive && <SpeechWaveform />}
+          {visibility.syntheticDone && doneControl && (
+            <button
+              type="button"
+              className={`${inlineTierClass("syntheticDone")} ${toolbarModuleStyles.doneButton}`}
+              onClick={doneControl.onDone}
+              title={doneControl.title}
+              aria-label={doneControl.title}
+              data-testid="synthetic-done-toolbar-button"
+            >
+              <ToolbarDoneIcon />
+            </button>
+          )}
+          {visibility.microphone &&
+            speechControl?.voiceButton?.kind === "preview" && (
+              <SpeechControlMenu
+                showMethodSelector={speechControl.showMethodSelector}
+                methodOptions={speechControl.methodOptions}
+                selectedMethod={selectedSpeechMethod}
+                onMethodChange={speechControl.onMethodChange}
+                smartTurnSettings={speechControl.smartTurnSettings}
+                onSmartTurnSettingsChange={
+                  speechControl.onSmartTurnSettingsChange
+                }
+                smartTurnDisabled={speechControl.smartTurnDisabled}
+                trigger={
+                  <button
+                    type="button"
+                    className="voice-input-button"
+                    disabled={speechControl.voiceButton.disabled}
+                    title={t("voiceInputStart" as never)}
+                    aria-label={t("voiceInputStartLabel" as never)}
+                  >
+                    <ToolbarMicrophoneIcon />
+                  </button>
+                }
+              />
+            )}
+          {visibility.microphone &&
+            speechControl?.voiceButton?.kind === "live" &&
+            speechControl.voiceButton.ref && (
+              <SpeechControlMenu
+                showMethodSelector={speechControl.showMethodSelector}
+                methodOptions={speechControl.methodOptions}
+                selectedMethod={selectedSpeechMethod}
+                onMethodChange={speechControl.onMethodChange}
+                smartTurnSettings={speechControl.smartTurnSettings}
+                onSmartTurnSettingsChange={
+                  speechControl.onSmartTurnSettingsChange
+                }
+                smartTurnDisabled={speechControl.smartTurnDisabled}
+                onBeforeOpen={() => {
+                  if (speechControl.voiceButton?.kind !== "live") return;
+                  speechControl.voiceButton.onListeningStop?.();
+                  speechControl.voiceButton.ref?.current?.stopAndFinalize();
+                  speechControl.voiceButton.onInterimTranscript("");
+                }}
+                onBeforeCaptureChange={() => {
+                  if (speechControl.voiceButton?.kind !== "live") return;
+                  speechControl.voiceButton.onListeningStop?.();
+                  speechControl.voiceButton.ref?.current?.stopAndFinalize();
+                  speechControl.voiceButton.onInterimTranscript("");
+                }}
+                onPointerNearTrigger={() =>
+                  speechControl.voiceButton?.kind === "live"
+                    ? speechControl.voiceButton.ref?.current?.prewarm?.()
+                    : undefined
+                }
+                trigger={
+                  <VoiceInputButton
+                    ref={speechControl.voiceButton.ref}
+                    onTranscript={speechControl.voiceButton.onTranscript}
+                    onInterimTranscript={
+                      speechControl.voiceButton.onInterimTranscript
+                    }
+                    onListeningStart={
+                      speechControl.voiceButton.onListeningStart
+                    }
+                    onListeningStop={speechControl.voiceButton.onListeningStop}
+                    onPendingSpeechChange={
+                      speechControl.voiceButton.onPendingSpeechChange
+                    }
+                    onTranscriptionSettled={
+                      speechControl.voiceButton.onTranscriptionSettled
+                    }
+                    disabled={speechControl.voiceButton.disabled}
+                    speechMethod={speechControl.voiceButton.speechMethod}
+                    getTranscriptionContext={
+                      speechControl.voiceButton.getTranscriptionContext
+                    }
+                    smartTurn={speechControl.voiceButton.smartTurn}
+                    showWaveform={speechControl.voiceButton.showWaveform}
+                  />
+                }
+              />
+            )}
+        </div>
+        {fileViewerController && (
+          <SessionViewerToolbarController
+            controller={fileViewerController}
+            t={t}
+            waveformButtonBackgroundOpacityPercent={
+              waveformBackdropActive
+                ? normalizedWaveformButtonBackgroundOpacity
+                : undefined
+            }
+          />
+        )}
+        {speechWaveformActive && (
+          <SpeechWaveform preview={speechWaveformPreview} />
+        )}
       </div>
       {renderStatusAges(
         visibility.sessionStatus
@@ -1675,6 +2036,36 @@ export function MessageInputToolbarView({
                       <ConversationViewIcon />
                     </button>
                   )}
+                {visibility.browserDebug &&
+                  browserDebugControl &&
+                  isPriorityCollapsible("browserDebug") && (
+                    <button
+                      type="button"
+                      className={[
+                        menuTierClass("browserDebug"),
+                        toolbarModuleStyles.browserDebugButton,
+                        browserDebugControl.active
+                          ? toolbarModuleStyles.browserDebugButtonActive
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onClick={browserDebugControl.onToggle}
+                      title={browserDebugControl.title}
+                      aria-label={browserDebugControl.title}
+                      role="menuitemcheckbox"
+                      aria-checked={browserDebugControl.active}
+                      disabled={browserDebugControl.enabling}
+                    >
+                      <BrowserDebugLeaseIcon
+                        active={browserDebugControl.active}
+                        remainingFraction={
+                          browserDebugControl.remainingFraction
+                        }
+                        performanceLabel={browserDebugControl.performanceLabel}
+                      />
+                    </button>
+                  )}
                 {visibility.nudge &&
                   nudgeControl &&
                   isPriorityCollapsible("nudge") && (
@@ -1714,6 +2105,21 @@ export function MessageInputToolbarView({
                         />
                         <path className="heartbeat-baseline" d="M18 15h5.25" />
                       </svg>
+                    </button>
+                  )}
+                {visibility.syntheticDone &&
+                  doneControl &&
+                  isPriorityCollapsible("syntheticDone") && (
+                    <button
+                      type="button"
+                      className={`${menuTierClass("syntheticDone")} ${toolbarModuleStyles.doneButton}`}
+                      onClick={doneControl.onDone}
+                      title={doneControl.title}
+                      aria-label={doneControl.title}
+                      role="menuitem"
+                      data-testid="synthetic-done-overflow-button"
+                    >
+                      <ToolbarDoneIcon />
                     </button>
                   )}
                 {visibility.shortcutsHelp &&
@@ -2058,6 +2464,13 @@ export function MessageInputToolbarView({
                     <div className="session-shortcuts-row">
                       <span className="session-shortcuts-keys">
                         <kbd>Ctrl</kbd>
+                        <kbd>U</kbd>
+                      </span>
+                      <span>{t("toolbarShortcutFullPaneComposer")}</span>
+                    </div>
+                    <div className="session-shortcuts-row">
+                      <span className="session-shortcuts-keys">
+                        <kbd>Ctrl</kbd>
                         <kbd>Shift</kbd>
                         <kbd>M</kbd>
                       </span>
@@ -2107,10 +2520,29 @@ export function MessageInputToolbarView({
                     actionsControl.disabled || !actionsControl.send.canSend
                   }
                   className="send-button queue-button"
-                  aria-label={t("toolbarQueueLabel")}
-                  title={queueControl.queueTooltip}
+                  aria-label={
+                    actionsControl.send.speechMessagePrefix
+                      ? t("speechPrefixDeliveryLabel", {
+                          action: t("toolbarQueueLabel"),
+                          prefix: actionsControl.send.speechMessagePrefix,
+                        })
+                      : t("toolbarQueueLabel")
+                  }
+                  title={
+                    actionsControl.send.speechMessagePrefix
+                      ? t("speechPrefixDeliveryTooltip", {
+                          tooltip: queueControl.queueTooltip,
+                          prefix: actionsControl.send.speechMessagePrefix,
+                        })
+                      : queueControl.queueTooltip
+                  }
                 >
                   <span className="send-icon queue-icon">→</span>
+                  {actionsControl.send.speechMessagePrefix && (
+                    <SpeechPrefixActionCue
+                      prefix={actionsControl.send.speechMessagePrefix}
+                    />
+                  )}
                 </button>
               )}
             {!hidePrimaryDeliveryActions &&
@@ -2124,10 +2556,29 @@ export function MessageInputToolbarView({
                     actionsControl.disabled || !actionsControl.send.canSend
                   }
                   className="send-button steer-button"
-                  aria-label={t("toolbarSteerTooltip")}
-                  title={t("toolbarSteerTooltip")}
+                  aria-label={
+                    actionsControl.send.speechMessagePrefix
+                      ? t("speechPrefixDeliveryLabel", {
+                          action: t("toolbarSteerTooltip"),
+                          prefix: actionsControl.send.speechMessagePrefix,
+                        })
+                      : t("toolbarSteerTooltip")
+                  }
+                  title={
+                    actionsControl.send.speechMessagePrefix
+                      ? t("speechPrefixDeliveryTooltip", {
+                          tooltip: t("toolbarSteerTooltip"),
+                          prefix: actionsControl.send.speechMessagePrefix,
+                        })
+                      : t("toolbarSteerTooltip")
+                  }
                 >
                   <span className="send-icon">↗</span>
+                  {actionsControl.send.speechMessagePrefix && (
+                    <SpeechPrefixActionCue
+                      prefix={actionsControl.send.speechMessagePrefix}
+                    />
+                  )}
                 </button>
               )}
             {!hidePrimaryDeliveryActions && actionsControl.send.alternate && (
@@ -2138,12 +2589,31 @@ export function MessageInputToolbarView({
                   actionsControl.disabled || !actionsControl.send.canSend
                 }
                 className="send-button fork-summary-no-summary-button"
-                aria-label={actionsControl.send.alternate.label}
-                title={actionsControl.send.alternate.tooltip}
+                aria-label={
+                  actionsControl.send.speechMessagePrefix
+                    ? t("speechPrefixDeliveryLabel", {
+                        action: actionsControl.send.alternate.label,
+                        prefix: actionsControl.send.speechMessagePrefix,
+                      })
+                    : actionsControl.send.alternate.label
+                }
+                title={
+                  actionsControl.send.speechMessagePrefix
+                    ? t("speechPrefixDeliveryTooltip", {
+                        tooltip: actionsControl.send.alternate.tooltip,
+                        prefix: actionsControl.send.speechMessagePrefix,
+                      })
+                    : actionsControl.send.alternate.tooltip
+                }
               >
                 <span className="send-icon">
                   {actionsControl.send.alternate.icon}
                 </span>
+                {actionsControl.send.speechMessagePrefix && (
+                  <SpeechPrefixActionCue
+                    prefix={actionsControl.send.speechMessagePrefix}
+                  />
+                )}
               </button>
             )}
             {renderProjectQueueButtons()}
@@ -2159,13 +2629,30 @@ export function MessageInputToolbarView({
                     ? "queue-mode"
                     : ""
                 }`}
-                aria-label={actionsControl.send.primaryActionLabel}
+                aria-label={
+                  actionsControl.send.primarySpeechMessagePrefix
+                    ? t("speechPrefixDeliveryLabel", {
+                        action: actionsControl.send.primaryActionLabel,
+                        prefix: actionsControl.send.primarySpeechMessagePrefix,
+                      })
+                    : actionsControl.send.primaryActionLabel
+                }
                 {...getTextTooltipAttributes(
-                  actionsControl.send.tooltip,
+                  actionsControl.send.primarySpeechMessagePrefix
+                    ? t("speechPrefixDeliveryTooltip", {
+                        tooltip: actionsControl.send.tooltip,
+                        prefix: actionsControl.send.primarySpeechMessagePrefix,
+                      })
+                    : actionsControl.send.tooltip,
                   tooltipMode,
                 )}
               >
                 <span className="send-icon">{actionsControl.send.icon}</span>
+                {actionsControl.send.primarySpeechMessagePrefix && (
+                  <SpeechPrefixActionCue
+                    prefix={actionsControl.send.primarySpeechMessagePrefix}
+                  />
+                )}
               </button>
             )}
           </>
@@ -2176,6 +2663,7 @@ export function MessageInputToolbarView({
 }
 
 export function MessageInputToolbar({
+  sessionId,
   mode = "default",
   onModeChange,
   modeChangesApplyNextTurn,
@@ -2221,6 +2709,8 @@ export function MessageInputToolbar({
   isRunning,
   isThinking,
   onStop,
+  onDone,
+  doneTitle,
   onSend,
   onQueue,
   onProjectQueue,
@@ -2231,11 +2721,20 @@ export function MessageInputToolbar({
   sendAlternate,
   canForkAfterSummary,
   canSend,
+  speechMessagePrefix,
+  primarySpeechMessagePrefix,
   disabled,
   hidePrimaryDeliveryActions = false,
+  hideVoiceInput = false,
   pendingApproval,
 }: MessageInputToolbarProps) {
   const { t } = useI18n();
+  const showToast = useOptionalToastContext()?.showToast;
+  const sessionViewerController = useSessionViewerController();
+  const fileViewerController =
+    sessionViewerController?.sessionId === (sessionId ?? "")
+      ? sessionViewerController
+      : null;
   const {
     thinkingMode,
     thinkingLevel,
@@ -2251,10 +2750,19 @@ export function MessageInputToolbar({
     setSpeechSmartTurnSettings,
   } = useModelSettings();
   const { version: versionInfo } = useVersion();
+  const browserDebugLease = useBrowserDebugLease();
+  const { relayTransport, relayedServerSpeechAvailable } =
+    useSpeechSourceRuntime();
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const supportsBrowserDebug = serverHasCapability(
+    versionInfo,
+    REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  );
   const { providers } = useProviders();
   const { visibility: toolbarVisibility, priority: toolbarPriority } =
     useSessionToolbarPresence();
+  const { waveformButtonBackgroundOpacityPercent } =
+    useWaveformButtonBackgroundOpacity();
   const { conversationViewEnabled, setConversationViewEnabled } =
     useConversationView();
   const renderMode = useOptionalRenderModeContext();
@@ -2427,6 +2935,102 @@ export function MessageInputToolbar({
   const conversationViewTitle = conversationViewEnabled
     ? t("toolbarConversationViewDisable")
     : t("toolbarConversationViewEnable");
+  const browserDebugActive = browserDebugLease.phase === "active";
+  useEffect(() => {
+    if (
+      browserDebugLease.phase === "active" &&
+      browserDebugLease.sessionId !== sessionId
+    ) {
+      void browserDebugLease.disable();
+    }
+  }, [
+    browserDebugLease.disable,
+    browserDebugLease.phase,
+    browserDebugLease.sessionId,
+    sessionId,
+  ]);
+  const effectiveToolbarVisibility = useMemo(
+    () =>
+      browserDebugActive && !toolbarVisibility.browserDebug
+        ? { ...toolbarVisibility, browserDebug: true }
+        : toolbarVisibility,
+    [browserDebugActive, toolbarVisibility],
+  );
+  const browserDebugRemainingFraction = browserDebugLease.expiresAtMs
+    ? Math.max(
+        0,
+        Math.min(
+          1,
+          (browserDebugLease.expiresAtMs - Date.now()) /
+            BROWSER_DEBUG_LEASE_TTL_MS,
+        ),
+      )
+    : 0;
+  const browserDebugPerformanceLabel =
+    browserDebugActive && browserDebugLease.performanceSummary
+      ? t("toolbarBrowserDebugPerformanceCompact", {
+          delay: Math.round(
+            browserDebugLease.performanceSummary.recentMaxDelayMs,
+          ),
+          tasks: browserDebugLease.performanceSummary.recentLongTaskCount,
+        })
+      : null;
+  const browserDebugTitle = browserDebugActive
+    ? [
+        t("toolbarBrowserDebugDisable", {
+          expiry: new Date(
+            browserDebugLease.expiresAtMs ?? Date.now(),
+          ).toLocaleTimeString(),
+        }),
+        browserDebugLease.performanceSummary
+          ? t("toolbarBrowserDebugPerformanceTitle", {
+              seconds: Math.max(
+                1,
+                Math.round(
+                  browserDebugLease.performanceSummary.recentWindowMs / 1_000,
+                ),
+              ),
+              delay: Math.round(
+                browserDebugLease.performanceSummary.recentMaxDelayMs,
+              ),
+              tasks: browserDebugLease.performanceSummary.recentLongTaskCount,
+              frameGaps:
+                browserDebugLease.performanceSummary.recentFrameGapCount,
+              keystrokes:
+                browserDebugLease.performanceSummary
+                  .recentDelayedKeystrokeCount,
+            })
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : t("toolbarBrowserDebugEnable");
+  const toggleBrowserDebug = useCallback(() => {
+    if (browserDebugActive) {
+      void browserDebugLease.disable();
+      return;
+    }
+    if (!sessionId) return;
+    const prompt = browserDebugLease.enable(sessionId);
+    const copy = writeClipboardTextLater(prompt);
+    void Promise.all([prompt, copy])
+      .then(([, copied]) => {
+        showToast?.(
+          copied
+            ? t("browserDebugCopiedBanner")
+            : t("browserDebugClipboardFailed"),
+          "error",
+        );
+      })
+      .catch((error) => {
+        showToast?.(
+          t("browserDebugEnableFailed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+          "error",
+        );
+      });
+  }, [browserDebugActive, browserDebugLease, sessionId, showToast, t]);
   const hasPotentialDualActions = !!(onSend && onQueue && onSteer);
   const effectivePrimaryActionKind =
     primaryActionKind ?? (hasPotentialDualActions ? "steer" : "send");
@@ -2484,9 +3088,8 @@ export function MessageInputToolbar({
   const showStopButton = !!(isRunning && onStop && isThinking && !canSend);
   const showSendButton = !!(onSend && (!showStopButton || canSend));
   const serverVoiceEnabled =
-    versionInfo?.capabilities === undefined
-      ? true
-      : serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
+    !hasServerCapabilityAdvertisement(versionInfo) ||
+    serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
   const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
   const speechMethodOptions = useMemo((): FilterOption<SpeechMethodId>[] => {
     const serverBackends = versionInfo?.voiceBackends ?? [];
@@ -2496,6 +3099,7 @@ export function MessageInputToolbar({
       value: method.id,
       label: method.label,
       description: method.description,
+      disabled: !method.clientSupported,
     }));
   }, [versionInfo?.voiceBackends, hasBrowserXaiSttApiKey]);
   const selectedSpeechMethod = useMemo(
@@ -2504,7 +3108,10 @@ export function MessageInputToolbar({
         speechMethod,
         versionInfo?.voiceBackends,
         hasStoredSpeechMethod,
-        { directXaiAvailable: hasBrowserXaiSttApiKey },
+        {
+          directXaiAvailable: hasBrowserXaiSttApiKey,
+          browserNativeAvailable: isBrowserNativeSpeechAvailable(),
+        },
       ),
     [
       speechMethod,
@@ -2527,14 +3134,21 @@ export function MessageInputToolbar({
     voiceInputEnabled &&
     serverVoiceEnabled &&
     speechMethodOptions.length > 1;
-  const selectedSpeechMethodCapabilities = getSpeechMethodCapabilities(
-    selectedSpeechMethod,
-    versionInfo?.voiceBackendCapabilities,
-  );
-  const selectedSpeechCanStream = canSpeechMethodStream({
-    methodId: selectedSpeechMethod,
-    serverCapabilities: versionInfo?.voiceBackendCapabilities,
-  });
+  const selectedSpeechMethodCapabilities =
+    selectedSpeechMethod === null
+      ? {}
+      : getSpeechMethodCapabilities(
+          selectedSpeechMethod,
+          versionInfo?.voiceBackendCapabilities,
+        );
+  const selectedSpeechCanStream =
+    selectedSpeechMethod !== null &&
+    canSpeechMethodStream({
+      methodId: selectedSpeechMethod,
+      serverCapabilities: versionInfo?.voiceBackendCapabilities,
+      relayTransport,
+      relayedServerSpeechAvailable,
+    });
   const supportsSelectedSpeechSmartTurn =
     selectedSpeechCanStream &&
     selectedSpeechMethodCapabilities.smartTurn === true;
@@ -2767,9 +3381,9 @@ export function MessageInputToolbar({
 
   const heartbeatTitle = t("sessionHeartbeatTitle");
   const handleToolbarPendingSpeechChange = useCallback(
-    (kind: SpeechPendingKind | null) => {
+    (kind: SpeechPendingKind | null, settlement?: SpeechCycleSettlement) => {
       setSpeechCaptureActive(kind === "listening");
-      onPendingSpeechChange?.(kind);
+      onPendingSpeechChange?.(kind, settlement);
     },
     [onPendingSpeechChange],
   );
@@ -2783,9 +3397,10 @@ export function MessageInputToolbar({
         status: toolbarStatusRef,
         actions: toolbarActionsRef,
       }}
-      visibility={toolbarVisibility}
+      visibility={effectiveToolbarVisibility}
       priority={toolbarPriority}
       isCompactStatusMode={isCompactStatusMode}
+      fileViewerController={fileViewerController}
       modeControl={
         onModeChange && supportsPermissionMode
           ? {
@@ -2842,6 +3457,18 @@ export function MessageInputToolbar({
         title: conversationViewTitle,
         onToggle: () => setConversationViewEnabled(!conversationViewEnabled),
       }}
+      browserDebugControl={
+        supportsBrowserDebug && sessionId
+          ? {
+              active: browserDebugActive,
+              enabling: browserDebugLease.phase === "enabling",
+              remainingFraction: browserDebugRemainingFraction,
+              performanceLabel: browserDebugPerformanceLabel,
+              title: browserDebugTitle,
+              onToggle: toggleBrowserDebug,
+            }
+          : null
+      }
       nudgeControl={
         onToggleHeartbeat
           ? {
@@ -2852,6 +3479,14 @@ export function MessageInputToolbar({
               onTouchStart: handleHeartbeatTouchStart,
               onTouchEnd: handleHeartbeatTouchEnd,
               onClearTouch: clearHeartbeatLongPress,
+            }
+          : null
+      }
+      doneControl={
+        onDone
+          ? {
+              onDone,
+              title: doneTitle ?? t("syntheticDoneToolbarTitle"),
             }
           : null
       }
@@ -2866,6 +3501,7 @@ export function MessageInputToolbar({
           : undefined,
         smartTurnDisabled: voiceDisabled,
         voiceButton:
+          !hideVoiceInput &&
           toolbarVisibility.microphone &&
           voiceButtonRef &&
           onVoiceTranscript &&
@@ -2891,6 +3527,9 @@ export function MessageInputToolbar({
         toolbarVisibility.waveform &&
         speechCaptureActive &&
         selectedSpeechMethod !== DEFAULT_SPEECH_METHOD
+      }
+      waveformButtonBackgroundOpacityPercent={
+        waveformButtonBackgroundOpacityPercent
       }
       statusControl={{
         showToolbarStatus,
@@ -2952,6 +3591,11 @@ export function MessageInputToolbar({
               primaryActionLabel,
               tooltip: sendTooltip,
               icon: primaryActionIcon,
+              speechMessagePrefix,
+              primarySpeechMessagePrefix:
+                primarySpeechMessagePrefix === undefined
+                  ? speechMessagePrefix
+                  : primarySpeechMessagePrefix,
               showSteerNowMode,
               steerNowEnabled,
               onToggleSteerNow,

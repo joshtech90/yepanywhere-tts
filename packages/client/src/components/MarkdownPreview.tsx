@@ -1,5 +1,4 @@
 import {
-  type ClipboardEventHandler,
   type CSSProperties,
   forwardRef,
   type KeyboardEventHandler,
@@ -8,19 +7,14 @@ import {
   useMemo,
   useState,
 } from "react";
-import { copySemanticHtmlSelectionToClipboard } from "../lib/semanticHtmlClipboard";
+import { useGlossaryArtifact } from "../contexts/GlossaryContext";
+import { annotateGlossaryHtml } from "../lib/glossary/annotateGlossaryHtml";
 
 const FILE_VIEWER_DENSITY_STORAGE_KEY = "yep-anywhere-file-viewer-density-zoom";
 const FILE_VIEWER_DENSITY_MIN = -4;
 const FILE_VIEWER_DENSITY_MAX = 6;
 const FILE_VIEWER_FONT_STEP_PX = 0.5;
 const FILE_VIEWER_VSPACE_STEP_PX = 1;
-const handleMarkdownPreviewCopy: ClipboardEventHandler<HTMLDivElement> = (
-  event,
-) => {
-  copySemanticHtmlSelectionToClipboard(event.nativeEvent, event.currentTarget);
-};
-
 export interface MarkdownPreviewDensityOffsets {
   fontSizeOffsetPx?: number;
   verticalSpacingOffsetPx?: number;
@@ -145,21 +139,37 @@ interface MarkdownPreviewProps {
   onClick?: MouseEventHandler<HTMLDivElement>;
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
+  sourcePath?: string;
 }
 
 export const MarkdownPreview = forwardRef<HTMLDivElement, MarkdownPreviewProps>(
   function MarkdownPreview(
-    { ariaLabel, className, density, html, onClick, onContextMenu, onKeyDown },
+    {
+      ariaLabel,
+      className,
+      density,
+      html,
+      onClick,
+      onContextMenu,
+      onKeyDown,
+      sourcePath,
+    },
     ref,
   ) {
     const classes = ["markdown-preview", className].filter(Boolean).join(" ");
+    const glossary = useGlossaryArtifact(sourcePath);
+    const renderedHtml = useMemo(() => {
+      if (glossary.state !== "ready" || glossary.result?.status !== "ready") {
+        return html;
+      }
+      return annotateGlossaryHtml(html, glossary.result.artifact).html;
+    }, [glossary, html]);
     return (
       <div
         className={classes}
         role="region"
         aria-label={ariaLabel ?? "Markdown preview"}
         onClick={onClick}
-        onCopy={handleMarkdownPreviewCopy}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
         ref={ref}
@@ -168,7 +178,7 @@ export const MarkdownPreview = forwardRef<HTMLDivElement, MarkdownPreviewProps>(
         <div
           className="markdown-rendered"
           // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown is sanitized
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={{ __html: renderedHtml }}
         />
       </div>
     );

@@ -1,5 +1,7 @@
 import type {
+  CapabilityBitset,
   ClientDefaults,
+  OptionalServerCapabilityBitset,
   SessionSandboxAvailability,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
@@ -16,6 +18,16 @@ export interface VersionInfo {
   remoteCompatibilityLevel?: number;
   /** Feature capabilities supported by the server. Undefined on older servers. */
   capabilities?: string[];
+  /** Negotiated numeric capability representation. */
+  capabilityEncoding?: number;
+  /** Explicit capability IDs not implied by `current`. */
+  capabilityBits?: CapabilityBitset;
+  /** Version-implied capability IDs explicitly denied by this server. */
+  deniedCapabilityBits?: CapabilityBitset;
+  /** Compact sparse words for optional capabilities. Undefined on older servers. */
+  optionalCapabilityBits?: OptionalServerCapabilityBitset;
+  /** Capability names not implied by the reported release. */
+  capabilityExtensions?: string[];
   /** Local server-host sandbox preflight. Undefined on older servers. */
   sessionSandboxing?: SessionSandboxAvailability;
   /** Server-routed speech backend ids validated by the server. */

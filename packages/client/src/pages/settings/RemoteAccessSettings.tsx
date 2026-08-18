@@ -3,6 +3,7 @@ import {
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
   DEFAULT_YA_CLIENT_BASE_URL,
   HOST_AWAKE_CONTROL_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   type HostAwakeStatus,
   type HostIdentity,
   MAX_HOST_IDENTITY_ICON_CODE_UNITS,
@@ -13,6 +14,7 @@ import {
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { PublicShareStatusResponse } from "../../api/client";
+import { PublicShareManagerModal } from "../../components/PublicShareManagerModal";
 import { RemoteAccessSetup } from "../../components/RemoteAccessSetup";
 import { useHostIdentity } from "../../contexts/HostIdentityContext";
 import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
@@ -22,7 +24,9 @@ import { useHostAwakeStatus } from "../../hooks/useHostAwakeStatus";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
+import { buildFrontendReloadUrl } from "../../lib/frontendReload";
 import { getHostById } from "../../lib/hostStorage";
+import { markSwitchHostReload } from "../../lib/switchHostReload";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
@@ -107,7 +111,9 @@ function HostIdentitySettings({
           className="host-identity-custom"
           onSubmit={(event) => {
             event.preventDefault();
-            if (normalizedDraft) void save({ icon: normalizedDraft });
+            if (normalizedDraft && normalizedDraft !== currentIcon) {
+              void save({ icon: normalizedDraft });
+            }
           }}
         >
           <input
@@ -118,23 +124,24 @@ function HostIdentitySettings({
             placeholder={t("hostIdentityCustomPlaceholder")}
             disabled={disabled || saving}
             onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (
+                nextTarget instanceof HTMLElement &&
+                nextTarget.dataset.hostIdentityClear !== undefined
+              ) {
+                return;
+              }
+              if (normalizedDraft && normalizedDraft !== currentIcon) {
+                void save({ icon: normalizedDraft });
+              }
+            }}
           />
-          <button
-            type="submit"
-            className="settings-button"
-            disabled={
-              disabled ||
-              saving ||
-              normalizedDraft === null ||
-              normalizedDraft === currentIcon
-            }
-          >
-            {t("hostIdentitySave")}
-          </button>
           {currentIcon && (
             <button
               type="button"
               className="settings-button settings-button-secondary"
+              data-host-identity-clear
               disabled={disabled || saving}
               onClick={() => {
                 setDraft("");
@@ -352,6 +359,17 @@ export function RemoteAccessSettings() {
     version,
     HOST_AWAKE_CONTROL_CAPABILITY,
   );
+  const publicShareManagementSupported = serverHasCapability(
+    version,
+    PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  );
+  const [showPublicShareManagement, setShowPublicShareManagement] =
+    useState(false);
+  useEffect(() => {
+    if (!publicShareManagementSupported) {
+      setShowPublicShareManagement(false);
+    }
+  }, [publicShareManagementSupported]);
   const {
     status: hostAwakeStatus,
     isLoading: hostAwakeStatusLoading,
@@ -365,10 +383,12 @@ export function RemoteAccessSettings() {
     poll: publicSharesEnabled,
   });
 
-  // Handle switching hosts - disconnect and go to host picker
   const handleSwitchHost = () => {
     remoteConnection?.disconnect();
-    navigate("/login");
+    markSwitchHostReload();
+    window.location.replace(
+      buildFrontendReloadUrl(window.location.href, String(Date.now())),
+    );
   };
 
   const defaultYaClientBaseUrl =
@@ -414,6 +434,23 @@ export function RemoteAccessSettings() {
   };
 
   const shareReadinessMessage = getShareReadinessMessage(publicShareStatus);
+  const updatePublicSharesEnabled = async (enabled: boolean) => {
+    if (
+      !enabled &&
+      publicShareManagementSupported &&
+      !window.confirm(
+        typeof publicShareStatus?.totalValidLinks === "number"
+          ? t("advancedPublicShareDisableConfirm", {
+              count: publicShareStatus.totalValidLinks,
+            })
+          : t("advancedPublicShareDisableConfirmUnknown"),
+      )
+    ) {
+      return;
+    }
+    await updateSetting("publicSharesEnabled", enabled);
+    if (!enabled) setShowPublicShareManagement(false);
+  };
   const hostIdentityItem = hostIdentitySupported ? (
     <HostIdentitySettings
       currentIcon={settings?.hostIdentity?.icon ?? ""}
@@ -433,7 +470,9 @@ export function RemoteAccessSettings() {
         DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT
       }
       onUpdate={updateSettings}
-      onRefresh={() => refetchHostAwakeStatus(true)}
+      onRefresh={async () => {
+        await refetchHostAwakeStatus(true);
+      }}
     />
   ) : null;
 
@@ -471,41 +510,69 @@ export function RemoteAccessSettings() {
             type="checkbox"
             checked={publicSharesEnabled}
             disabled={isLoading}
-            onChange={(e) =>
-              void updateSetting("publicSharesEnabled", e.target.checked)
-            }
+            onChange={(e) => void updatePublicSharesEnabled(e.target.checked)}
           />
           <span className="toggle-slider" />
         </label>
       </SettingsItem>
 
-      <HideInSettingsSearch>
-        <div
-          className="settings-item"
-          style={{ flexDirection: "column", alignItems: "stretch" }}
+      {publicShareManagementSupported && (
+        <SettingsItem
+          id="manage-public-shares"
+          label={t("advancedPublicShareManageTitle")}
+          description={t("advancedPublicShareManageDescription")}
+          keywords={[
+            "public share",
+            "broadcast",
+            "link",
+            "manage",
+            "revoke",
+            "viewer",
+          ]}
         >
-          <div className="settings-item-info">
-            <strong>{t("advancedYaClientTitle")}</strong>
-            <p>{t("advancedYaClientDescription")}</p>
-            <p className="settings-hint" style={{ wordBreak: "break-all" }}>
-              {t("advancedYaClientEffective", {
-                url: effectiveYaClientBaseUrl,
-              })}
-            </p>
-            <p className="settings-hint" style={{ wordBreak: "break-all" }}>
-              {t("advancedPublicShareViewerEffective", {
-                url: effectiveViewerBaseUrl,
-              })}
-            </p>
-            {publicShareStatus?.yaClientBaseUrlError && (
-              <p className="settings-warning">
-                {publicShareStatus.yaClientBaseUrlError}
-              </p>
-            )}
-          </div>
-        </div>
-      </HideInSettingsSearch>
+          <button
+            type="button"
+            className="settings-button settings-button-secondary"
+            onClick={() => setShowPublicShareManagement(true)}
+          >
+            {t("advancedPublicShareManageButton")}
+          </button>
+        </SettingsItem>
+      )}
+
+      {showPublicShareManagement && publicShareManagementSupported && (
+        <PublicShareManagerModal
+          creationReady={false}
+          onClose={() => setShowPublicShareManagement(false)}
+        />
+      )}
     </div>
+  );
+
+  const yaClientInfo = (
+    <HideInSettingsSearch>
+      <div className="form-hint">
+        <p>
+          <strong>{t("advancedYaClientTitle")}</strong>.{" "}
+          {t("advancedYaClientDescription")}
+        </p>
+        <p style={{ wordBreak: "break-all" }}>
+          {t("advancedYaClientEffective", {
+            url: effectiveYaClientBaseUrl,
+          })}
+        </p>
+        <p style={{ wordBreak: "break-all" }}>
+          {t("advancedPublicShareViewerEffective", {
+            url: effectiveViewerBaseUrl,
+          })}
+        </p>
+        {publicShareStatus?.yaClientBaseUrlError && (
+          <p className="settings-warning">
+            {publicShareStatus.yaClientBaseUrlError}
+          </p>
+        )}
+      </div>
+    </HideInSettingsSearch>
   );
 
   const persistSessionsToggle = (
@@ -561,6 +628,7 @@ export function RemoteAccessSettings() {
       <SettingsSection description={t("remoteAccessConnectedDescription")}>
         {hostAwakeConfig}
         {publicShareConfig}
+        {yaClientInfo}
         <div className="settings-group">
           <SettingsItem
             label={t("remoteAccessCurrentHostTitle")}
@@ -586,6 +654,12 @@ export function RemoteAccessSettings() {
             </div>
           </SettingsItem>
           {hostIdentityItem}
+          {currentHost?.relayUrl && (
+            <SettingsItem
+              label={t("remoteAccessRelayUrlTitle")}
+              description={currentHost.relayUrl}
+            />
+          )}
           <SettingsItem
             label={t("remoteAccessLogoutTitle")}
             description={t("remoteAccessLogoutDescription")}
@@ -616,6 +690,7 @@ export function RemoteAccessSettings() {
         <RemoteAccessSetup
           title={t("remoteAccessConnectedTitle")}
           description={t("remoteAccessSetupDescription")}
+          yaClientInfo={yaClientInfo}
         />
       </HideInSettingsSearch>
       {persistSessionsToggle}

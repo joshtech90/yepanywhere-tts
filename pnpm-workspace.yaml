@@ -2,10 +2,16 @@ packages:
   - "packages/*"
 
 overrides:
+  # Mirror of package.json "pnpm.overrides" — the pnpm in use reads only this
+  # file, so both places must stay identical.
+  "@mdit/helper@1.0.1>markdown-it": 15.0.0
+  "@mdit/plugin-katex@1.0.2>katex": 0.16.45
+  "@mdit/plugin-katex@1.0.2>markdown-it": 15.0.0
+  "@mdit/plugin-tex@1.0.2>markdown-it": 15.0.0
   # Keep bn.js patched (web-push -> asn1.js -> bn.js chain) until web-push
   # ships an upstream fix. See CLAUDE.md "Dependency Security Maintenance".
   bn.js: 5.2.3
   # Pinned exactly: ajv declares ^3.0.1 and fast-uri 4.x is published, so a
   # caret range would escape the parent's declared range.
-  fast-uri: 3.1.4
+  fast-uri: 3.1.5
   postcss: ^8.5.23

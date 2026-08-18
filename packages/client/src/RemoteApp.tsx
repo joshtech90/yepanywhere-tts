@@ -16,18 +16,22 @@
  * Both ConnectionGate and RelayConnectionGate render ConnectedAppContent when connected.
  */
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { BottomOverscrollReload } from "./components/BottomOverscrollReload";
 import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
 import { ConnectionBar } from "./components/ConnectionBar";
-import { FloatingActionButton } from "./components/FloatingActionButton";
 import { HostOfflineModal } from "./components/HostOfflineModal";
-import {
-  ReloadBanner,
-  ReloadBannerStack,
-} from "./components/ReloadBanner";
+import { ReloadBanner, ReloadBannerStack } from "./components/ReloadBanner";
 import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNotices";
+import { StartupShell } from "./components/StartupShell";
 import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
 import {
   HostIdentityProvider,
@@ -41,6 +45,7 @@ import {
 import { SchemaValidationProvider } from "./contexts/SchemaValidationContext";
 import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
+import { useI18n } from "./i18n";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
 import { primeProviderCache } from "./hooks/useProviders";
@@ -57,6 +62,12 @@ import {
   getRelayCanonicalRedirectTarget,
   getSafeRemoteReturnTarget,
 } from "./lib/remoteRoutePaths";
+
+const FloatingActionButton = lazy(() =>
+  import("./components/FloatingActionButton").then(
+    ({ FloatingActionButton }) => ({ default: FloatingActionButton }),
+  ),
+);
 
 interface Props {
   children: ReactNode;
@@ -140,7 +151,9 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
         onReload={reloadFrontend}
       />
       {children}
-      <FloatingActionButton />
+      <Suspense fallback={null}>
+        <FloatingActionButton />
+      </Suspense>
     </>
   );
 }
@@ -190,6 +203,7 @@ export function UnauthenticatedGate() {
  * - Connected: render ConnectedAppContent + child routes
  */
 export function ConnectionGate() {
+  const { t } = useI18n();
   const {
     connection,
     currentRelayUsername,
@@ -266,12 +280,7 @@ export function ConnectionGate() {
   // During auto-resume, don't redirect - show loading state
   // This preserves the current URL so we stay on the same page after successful resume
   if (isAutoResuming) {
-    return (
-      <div className="auto-resume-loading">
-        <div className="loading-spinner" />
-        <p>Reconnecting...</p>
-      </div>
-    );
+    return <StartupShell phase="connection">{t("reconnecting")}</StartupShell>;
   }
 
   // Not connected (and not auto-resuming)

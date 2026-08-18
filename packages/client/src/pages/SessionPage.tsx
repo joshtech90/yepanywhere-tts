@@ -6,7 +6,6 @@ import type {
   ProviderName,
   ProjectQueueItemSummary,
   ProjectQueueStagedAttachments,
-  PublicSessionShareSessionStatusResponse,
   SlashCommand,
   ThinkingMode,
   TranscriptDisplayObject,
@@ -14,12 +13,21 @@ import type {
   UserQuestionAnswers,
 } from "@yep-anywhere/shared";
 import {
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
   getCanonicalInvocationToken,
   isClaudeProviderName,
+  serverHasCapability,
+  startsWithSlashCommand,
   thinkingOptionToConfig,
 } from "@yep-anywhere/shared";
 import {
+  type ComponentProps,
+  lazy,
   type MouseEvent as ReactMouseEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -29,24 +37,27 @@ import {
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
+import { SessionViewerProvider } from "../components/SessionManagedViewer";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
+import { useStartNewSessionWithPrefillAction } from "../components/FileResourceActions";
 import { HostIdentityMarker } from "../components/HostIdentityMarker";
 import { getForkSummaryAutoOpen } from "../hooks/useForkSummaryAutoOpen";
 import { PendingToolWarning } from "../components/PendingToolWarning";
-import {
-  MessageInput,
-  type MessageSubmissionMetadata,
-  type UploadProgress,
+import { ProviderChildSessionControl } from "../components/ProviderChildSessionControl";
+import type {
+  FullPaneComposerControls,
+  MessageSubmissionMetadata,
+  UploadProgress,
 } from "../components/MessageInput";
 import { MessageInputToolbar } from "../components/MessageInputToolbar";
-import { MessageList } from "../components/MessageList";
 import { ModelSwitchModal } from "../components/ModelSwitchModal";
 import { ProcessInfoBody } from "../components/ProcessInfoModal";
+import { ProjectSessionDefaultsModal } from "../components/ProjectSessionDefaultsModal";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { QuestionAnswerPanel } from "../components/QuestionAnswerPanel";
 import { RecentSessionsDropdown } from "../components/RecentSessionsDropdown";
@@ -60,6 +71,7 @@ import { ToolApprovalPanel } from "../components/ToolApprovalPanel";
 import type { ModalAnchorRect } from "../components/ui/Modal";
 import { ViewerCountIndicator } from "../components/ViewerCountIndicator";
 import { AgentContentProvider } from "../contexts/AgentContentContext";
+import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { RenderModeProvider } from "../contexts/RenderModeContext";
 import { SessionMetadataProvider } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
@@ -90,12 +102,14 @@ import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProject, useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
+import { usePublicSessionShareStatus } from "../hooks/usePublicSessionShareStatus";
 import { recordSessionVisit } from "../hooks/useRecentSessions";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
 import type { SessionLoadProgress } from "../hooks/useSessionMessages";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
+import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useVersion } from "../hooks/useVersion";
 import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
 import {
@@ -137,6 +151,7 @@ import {
   thinkingOptionFromProcess,
   thinkingOptionFromSelection,
 } from "../lib/liveThinkingConfig";
+import { getPersistentEditApprovalResponse } from "../lib/permissionModes";
 import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
@@ -194,10 +209,16 @@ import {
   CLIENT_SLASH_COMMANDS,
   createClientSlashCommand,
   normalizeSlashCommandForMatch,
+  resolveComposerDoneTarget,
+  resolveComposerSessionOperation,
   resolveComposerSlashTurn,
 } from "../lib/slashCommands";
 import { messageContentToPlainText } from "../lib/sessionMessageText";
 import { generateUUID } from "../lib/uuid";
+import {
+  loadMessageInputModule,
+  loadMessageListModule,
+} from "../lib/sessionRouteModules";
 import type { Message, Project } from "../types";
 
 // Helpers for auto read-aloud: pull the plain text out of the last assistant
@@ -218,7 +239,46 @@ function isAssistantRole(message: Message | undefined): message is Message {
   );
 }
 
-const PUBLIC_SHARE_STATUS_POLL_MS = 5000;
+const LazyMessageList = lazy(() =>
+  loadMessageListModule().then(({ MessageList }) => ({
+    default: MessageList,
+  })),
+);
+const LazyMessageInput = lazy(() =>
+  loadMessageInputModule().then(({ MessageInput }) => ({
+    default: MessageInput,
+  })),
+);
+
+function SessionRouteModuleFallback({
+  label,
+}: {
+  label: "loading" | "sessionLoading";
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="loading" role="status">
+      {t(label)}
+    </div>
+  );
+}
+
+function MessageList(props: ComponentProps<typeof LazyMessageList>) {
+  return (
+    <Suspense fallback={<SessionRouteModuleFallback label="sessionLoading" />}>
+      <LazyMessageList {...props} />
+    </Suspense>
+  );
+}
+
+function MessageInput(props: ComponentProps<typeof LazyMessageInput>) {
+  return (
+    <Suspense fallback={<SessionRouteModuleFallback label="loading" />}>
+      <LazyMessageInput {...props} />
+    </Suspense>
+  );
+}
+
 const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
   "Claude session cannot be safely resumed because the Claude SDK recorded an API-error response as the latest assistant message. Start a handoff session instead.";
 const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
@@ -333,17 +393,19 @@ export function SessionPage({
   // Key ensures component remounts on session change, resetting all state
   // Wrap with StreamingMarkdownProvider for server-rendered markdown streaming
   return (
-    <StreamingMarkdownProvider>
-      <RenderModeProvider key={sessionId}>
-        <SessionPageContent
-          key={sessionId}
-          projectId={projectId}
-          sessionId={sessionId}
-          routeLocation={routeLocation}
-          isDomLingerParked={isDomLingerParked}
-        />
-      </RenderModeProvider>
-    </StreamingMarkdownProvider>
+    <GlossaryProjectProvider projectId={projectId} enabled={!isDomLingerParked}>
+      <StreamingMarkdownProvider>
+        <RenderModeProvider key={sessionId}>
+          <SessionPageContent
+            key={sessionId}
+            projectId={projectId}
+            sessionId={sessionId}
+            routeLocation={routeLocation}
+            isDomLingerParked={isDomLingerParked}
+          />
+        </RenderModeProvider>
+      </StreamingMarkdownProvider>
+    </GlossaryProjectProvider>
   );
 }
 
@@ -388,6 +450,7 @@ function SessionPageContent({
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
   const basePath = useRemoteBasePath();
+  const startNewSessionWithPrefill = useStartNewSessionWithPrefillAction();
   const { project } = useProject(projectId);
   const { projects } = useProjects();
   const activeProjectSessionIds = useActiveProjectSessionIds(projectId);
@@ -408,7 +471,21 @@ function SessionPageContent({
     [sessionDraftReference],
   );
   const { version: versionInfo } = useVersion();
+  const { presence: toolbarPresence } = useSessionToolbarPresence();
+  const syntheticDoneEnabled = toolbarPresence.syntheticDone !== "off";
+  const supportsSyntheticDone = serverHasCapability(
+    versionInfo,
+    SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  );
+  const supportsSyntheticArchive = serverHasCapability(
+    versionInfo,
+    SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
+  );
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const supportsProjectSessionDefaults = serverHasCapability(
+    versionInfo,
+    PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  );
   const projectQueueProjectIds = useMemo(
     () =>
       supportsProjectQueue ? [projectId] : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
@@ -464,13 +541,20 @@ function SessionPageContent({
     () => ({
       ...clientTailParams,
       detailedLoadingProgress: sessionLoadingProgressEnabled,
+      backgroundEffectsPaused: isDomLingerParked,
       onConfigurationError: (failure: { setting: "effort" }) => {
         if (failure.setting === "effort") {
           showToast(t("effortChangeApplyFailed"), "error");
         }
       },
     }),
-    [clientTailParams, sessionLoadingProgressEnabled, showToast, t],
+    [
+      clientTailParams,
+      isDomLingerParked,
+      sessionLoadingProgressEnabled,
+      showToast,
+      t,
+    ],
   );
 
   const updateClientTailParams = useCallback(
@@ -557,11 +641,13 @@ function SessionPageContent({
     pagination,
     activeWindowTrimRevision,
     loadingOlder,
+    olderLoadContinuationRequired,
     loadOlderMessages,
     initialScrollSnapshot,
     updateRouteScrollSnapshot,
     updateActiveWindowFollowingBottom,
     reconnectStream,
+    fetchNewMessages,
     promptSuggestion,
     dismissPromptSuggestion,
   } = useSession(
@@ -684,6 +770,15 @@ function SessionPageContent({
   // Effective provider/model for immediate display before session data loads
   const effectiveProvider = session?.provider ?? initialProvider;
   const effectiveModel = session?.model ?? initialModel;
+  const startNewSessionFromSelection = useCallback(
+    (prefill: string) => {
+      startNewSessionWithPrefill(projectId, prefill, {
+        provider: effectiveProvider,
+        model: effectiveModel,
+      });
+    },
+    [effectiveModel, effectiveProvider, projectId, startNewSessionWithPrefill],
+  );
   const codexPermissionModeChangePending =
     effectiveProvider === "codex" &&
     status.owner === "self" &&
@@ -693,6 +788,18 @@ function SessionPageContent({
     useState<LiveModelConfig | null>(null);
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
+  const composerFullPaneControlsRef = useRef<FullPaneComposerControls | null>(
+    null,
+  );
+  const handleFollowCurrent = useCallback(() => {
+    composerFullPaneControlsRef.current?.restore();
+  }, []);
+  const handleFullPaneControlsReady = useCallback(
+    (controls: FullPaneComposerControls | null) => {
+      composerFullPaneControlsRef.current = controls;
+    },
+    [],
+  );
   const draftControlsRef = useRef<DraftControls | null>(null);
   const [quoteClearSignal, setQuoteClearSignal] = useState(0);
   const pendingMotherComposerTransferRef = useRef<string | null>(null);
@@ -741,6 +848,7 @@ function SessionPageContent({
     sessionModel: session?.model,
     sessionExecutor: session?.executor,
     parentSessionId: isBtwAsideSession({
+      parentSessionId: session?.parentSessionId,
       parentSessionKind: session?.parentSessionKind,
       title: session?.customTitle ?? session?.title,
       fullTitle: session?.fullTitle,
@@ -939,7 +1047,9 @@ function SessionPageContent({
             (command) =>
               command !== "model" &&
               (command !== "btw" || supportsBtwAsides) &&
-              (command !== "done" || !!focusedBtwAsideId),
+              (command !== "done" ||
+                mainComposerForAside ||
+                syntheticDoneEnabled),
           ).map(createClientSlashCommand)
         : [];
     if (supportsManualCompact) {
@@ -971,11 +1081,12 @@ function SessionPageContent({
 
     return orderedCommands;
   }, [
-    focusedBtwAsideId,
+    mainComposerForAside,
     slashCommands,
     status.owner,
     supportsBtwAsides,
     supportsManualCompact,
+    syntheticDoneEnabled,
   ]);
 
   // Get provider capabilities based on session's provider
@@ -1848,8 +1959,55 @@ function SessionPageContent({
   const prepareComposerSubmission = (
     text: string,
   ): PreparedComposerSubmission | null => {
+    // Recalling a turn and editing its slash command means "issue this command
+    // again", not "correct my last sentence". Correction framing prepends a
+    // line, which pushes `/goal ...` off offset 0 so the provider sends the
+    // command through as prose, and a stripping command like `/fast ...` would
+    // diff its bare argument against the unstripped original. So the whole
+    // submission below behaves as a fresh invocation, including re-issuing an
+    // unedited command the way shell history does. The decision reads the raw
+    // composer text because `resolveComposerSlashTurn` has already consumed the
+    // leading token by the time the outgoing text is built.
+    const issuesSlashCommand =
+      !!correctionDraft && startsWithSlashCommand(text);
+    const outgoingTextFor = (candidate: string): string | null =>
+      issuesSlashCommand ? candidate : getOutgoingMessageText(candidate);
+    // Commands YA runs itself never reach the send path that ends correction
+    // mode, so clear it here or the banner would outlive the command and wrap
+    // the next ordinary message.
+    const endCorrectionForLocalCommand = () => {
+      if (issuesSlashCommand) {
+        setCorrectionDraft(null);
+      }
+    };
+
     const slashTurn = resolveComposerSlashTurn(text);
     if (slashTurn.kind === "custom") {
+      const sessionOperation = resolveComposerSessionOperation({
+        text,
+        routesToFocusedAside: false,
+        syntheticDoneEnabled,
+        syntheticDoneSupported: supportsSyntheticDone,
+        syntheticArchiveSupported: supportsSyntheticArchive,
+        hasAttachments:
+          attachmentsRef.current.length > 0 ||
+          pendingUploadsRef.current.size > 0,
+      });
+      if (sessionOperation.kind === "blocked") {
+        draftControlsRef.current?.setDraft(text);
+        showToast(sessionOperation.message, "error");
+        return null;
+      }
+      if (sessionOperation.kind === "session-boundary") {
+        endCorrectionForLocalCommand();
+        void handleSyntheticSessionBoundary(sessionOperation.command);
+        return null;
+      }
+      if (sessionOperation.kind === "title") {
+        endCorrectionForLocalCommand();
+        void handleLocalTitleCommand(sessionOperation.title);
+        return null;
+      }
       if (slashTurn.command === "btw" && !supportsBtwAsides) {
         draftControlsRef.current?.setDraft(text);
         showToast(
@@ -1858,18 +2016,11 @@ function SessionPageContent({
         );
         return null;
       }
-      if (slashTurn.command === "done" && !focusedBtwAside) {
-        draftControlsRef.current?.setDraft(text);
-        showToast(
-          "/done closes a focused /btw aside; no aside is focused.",
-          "error",
-        );
-        return null;
-      }
       if (handleCustomCommand(slashTurn.command, slashTurn.argument)) {
+        endCorrectionForLocalCommand();
         return null;
       }
-      const outgoingText = getOutgoingMessageText(text);
+      const outgoingText = outgoingTextFor(text);
       return outgoingText ? { outgoingText } : null;
     }
 
@@ -1879,7 +2030,7 @@ function SessionPageContent({
       return null;
     }
 
-    const outgoingText = getOutgoingMessageText(slashTurn.text);
+    const outgoingText = outgoingTextFor(slashTurn.text);
     if (!outgoingText) {
       return null;
     }
@@ -1895,13 +2046,33 @@ function SessionPageContent({
   const [approvalCollapsed, setApprovalCollapsed] = useState(false);
 
   const [showHeartbeatModal, setShowHeartbeatModal] = useState(false);
+  const [showProjectSettingsModal, setShowProjectSettingsModal] =
+    useState(false);
   const [showRecapModal, setShowRecapModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [shareModalView, setShareModalView] = useState<"manage" | "session">(
+    "session",
+  );
   const [shareModalAnchor, setShareModalAnchor] =
     useState<ModalAnchorRect | null>(null);
-  const [publicShareStatus, setPublicShareStatus] =
-    useState<PublicSessionShareSessionStatusResponse | null>(null);
-  const showPublicShareControls = publicShareGlobalStatus?.canCreate ?? false;
+  const { status: publicShareStatus, updateStatus: setPublicShareStatus } =
+    usePublicSessionShareStatus({
+      enabled: publicSharesEnabled,
+      projectId,
+      sessionId: actualSessionId,
+      storageState: publicShareGlobalStatus?.storageState,
+    });
+  const canCreatePublicShares = publicShareGlobalStatus?.canCreate ?? false;
+  const publicShareManagementAvailable = serverHasCapability(
+    versionInfo,
+    PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  );
+  const publicShareActionAvailable =
+    publicShareManagementAvailable || canCreatePublicShares;
+  const showPublicShareIndicator =
+    canCreatePublicShares ||
+    (publicShareStatus?.activeCount ?? 0) > 0 ||
+    (publicShareManagementAvailable && publicSharesEnabled);
   const [pendingElsewhereDismissedToolId, setPendingElsewhereDismissedToolId] =
     useState<string | null>(null);
 
@@ -1957,6 +2128,92 @@ function SessionPageContent({
     },
     [setComposerAttachments, t, updatePendingMessage],
   );
+
+  const handleSyntheticSessionBoundary = useCallback(
+    async (command: "done" | "archive") => {
+      try {
+        const result =
+          command === "archive"
+            ? await api.archiveSession(actualSessionId)
+            : await api.markSessionDone(actualSessionId);
+        // The composer cleared the command optimistically but kept the
+        // localStorage recovery copy. Without this the text is restored on
+        // remount and the session keeps a "Draft" badge for a command it
+        // already consumed.
+        draftControlsRef.current?.confirmInputClear();
+        if (command === "archive") {
+          setLocalIsArchived(true);
+          activityBus.emitLocal("session-metadata-changed", {
+            type: "session-metadata-changed",
+            sessionId: actualSessionId,
+            archived: true,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        if (result.deferredMessages) {
+          setDeferredMessages(result.deferredMessages);
+        }
+        if (result.queued !== true) {
+          await fetchNewMessages();
+        }
+        setScrollTrigger((previous) => previous + 1);
+      } catch {
+        draftControlsRef.current?.restoreFromStorage();
+        showToast(
+          t(
+            command === "archive"
+              ? "syntheticArchiveFailed"
+              : "syntheticDoneFailed",
+          ),
+          "error",
+        );
+      }
+    },
+    [actualSessionId, fetchNewMessages, setDeferredMessages, showToast, t],
+  );
+
+  const closeFocusedBtwAside = useCallback(
+    (argument = "") => {
+      if (!focusedBtwAside) {
+        return false;
+      }
+      hideBtwAside(focusedBtwAside.id);
+      if (argument.trim()) {
+        // Report-back drafting (/done <text>, /done summary, /done file ...)
+        // is described in topics/provider-agnostic-btw-asides.md but is not
+        // wired yet; close-only for now.
+        showToast(
+          "Aside closed. (Report-back drafting not yet implemented.)",
+          "info",
+        );
+      }
+      return true;
+    },
+    [focusedBtwAside, hideBtwAside, showToast],
+  );
+
+  const handleDoneAction = useCallback(() => {
+    const target = resolveComposerDoneTarget({
+      text: "/done",
+      routesToFocusedAside: mainComposerForAside,
+      syntheticDoneEnabled,
+      hasAttachments: false,
+    });
+    if (target === "focused-aside") {
+      if (closeFocusedBtwAside()) {
+        draftControlsRef.current?.confirmInputClear();
+      }
+      return;
+    }
+    if (target === "synthetic-session") {
+      void handleSyntheticSessionBoundary("done");
+    }
+  }, [
+    closeFocusedBtwAside,
+    handleSyntheticSessionBoundary,
+    mainComposerForAside,
+    syntheticDoneEnabled,
+  ]);
 
   const handleSend = async (
     text: string,
@@ -2118,7 +2375,7 @@ function SessionPageContent({
       }
       // Success - clear the draft from localStorage
       rememberSentSubmission(text, tempId);
-      draftControlsRef.current?.clearDraft();
+      draftControlsRef.current?.confirmInputClear();
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
@@ -2185,7 +2442,7 @@ function SessionPageContent({
             recapAfterSeconds: result.recapAfterSeconds,
           });
           rememberSentSubmission(text, tempId);
-          draftControlsRef.current?.clearDraft();
+          draftControlsRef.current?.confirmInputClear();
           revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
@@ -2536,7 +2793,7 @@ function SessionPageContent({
           tempId,
         };
       }
-      draftControlsRef.current?.clearDraft();
+      draftControlsRef.current?.confirmInputClear();
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
@@ -2588,7 +2845,7 @@ function SessionPageContent({
             recapAfterSeconds: result.recapAfterSeconds,
           });
           rememberSentSubmission(text, tempId);
-          draftControlsRef.current?.clearDraft();
+          draftControlsRef.current?.confirmInputClear();
           revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
@@ -2716,7 +2973,7 @@ function SessionPageContent({
         targetType,
         uploadWaitMs: requestSentAtMs - actionAtMs,
       });
-      draftControlsRef.current?.clearDraft();
+      draftControlsRef.current?.confirmInputClear();
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
@@ -3246,9 +3503,32 @@ function SessionPageContent({
   );
 
   const handleFocusedBtwSend = useCallback(
-    (text: string) => {
+    (text: string, source: "main" | "pane" = "main") => {
       if (!focusedBtwAside) {
         void handleSendRef.current(text);
+        return;
+      }
+      const sessionOperation = resolveComposerSessionOperation({
+        text,
+        routesToFocusedAside: true,
+        syntheticDoneEnabled,
+        syntheticDoneSupported: supportsSyntheticDone,
+        syntheticArchiveSupported: supportsSyntheticArchive,
+        hasAttachments: false,
+      });
+      if (
+        sessionOperation.kind === "focused-aside" &&
+        closeFocusedBtwAside(sessionOperation.argument)
+      ) {
+        return;
+      }
+      if (sessionOperation.kind === "blocked") {
+        if (source === "pane") {
+          setAsideDraft(text);
+        } else {
+          draftControlsRef.current?.setDraft(text);
+        }
+        showToast(sessionOperation.message, "error");
         return;
       }
       void runBtwAsideTurn(
@@ -3257,7 +3537,16 @@ function SessionPageContent({
         focusedBtwAside.status === "draft" && !focusedBtwAside.sessionId,
       );
     },
-    [focusedBtwAside, runBtwAsideTurn],
+    [
+      closeFocusedBtwAside,
+      focusedBtwAside,
+      runBtwAsideTurn,
+      setAsideDraft,
+      showToast,
+      supportsSyntheticArchive,
+      supportsSyntheticDone,
+      syntheticDoneEnabled,
+    ],
   );
 
   const applyMotherComposerTransfer = useCallback(
@@ -3446,21 +3735,10 @@ function SessionPageContent({
         return startBtwAside(argument);
       }
       if (command === "done") {
-        if (!focusedBtwAside) {
+        if (!closeFocusedBtwAside(argument)) {
           showToast(
             "/done closes a focused /btw aside; no aside is focused.",
             "error",
-          );
-          return true;
-        }
-        hideBtwAside(focusedBtwAside.id);
-        if (argument.trim()) {
-          // Report-back drafting (/done <text>, /done summary, /done file ...)
-          // is described in topics/provider-agnostic-btw-asides.md but is not
-          // wired yet; close-only for now.
-          showToast(
-            "Aside closed. (Report-back drafting not yet implemented.)",
-            "info",
           );
         }
         return true;
@@ -3468,9 +3746,8 @@ function SessionPageContent({
       return false;
     },
     [
-      focusedBtwAside,
+      closeFocusedBtwAside,
       handleCompactSession,
-      hideBtwAside,
       showToast,
       startBtwAside,
       supportsManualCompact,
@@ -3588,15 +3865,16 @@ function SessionPageContent({
   const handleApproveAcceptEdits = useCallback(async () => {
     if (pendingInputRequest) {
       try {
-        // Approve and switch to acceptEdits mode
+        const response = getPersistentEditApprovalResponse(permissionMode);
         const result = await api.respondToInput(
           sessionId,
           pendingInputRequest.id,
-          "approve_accept_edits",
+          response,
         );
         setPendingInputRequest(result.pendingInputRequest ?? null);
-        // Update local permission mode
-        setPermissionMode("acceptEdits");
+        if (response === "approve_accept_edits") {
+          setPermissionMode("acceptEdits");
+        }
       } catch (err) {
         await handleInputResponseError(err, t("sessionApproveFailed"));
       }
@@ -3604,6 +3882,7 @@ function SessionPageContent({
   }, [
     sessionId,
     pendingInputRequest,
+    permissionMode,
     setPendingInputRequest,
     setPermissionMode,
     handleInputResponseError,
@@ -3916,12 +4195,12 @@ function SessionPageContent({
     };
   };
 
-  const saveTitleValue = async (nextTitle: string) => {
+  const saveTitleValue = async (nextTitle: string): Promise<boolean> => {
     const trimmed = nextTitle.trim();
-    if (!trimmed || isRenaming) return;
+    if (!trimmed || isRenaming) return false;
     if (trimmed === displayTitle) {
       handleCancelEditingTitle();
-      return;
+      return true;
     }
 
     invalidateGeneratedRetitle();
@@ -3940,9 +4219,11 @@ function SessionPageContent({
       setTitleEditMode("manual");
       setRenameValue("");
       showToast(t("sessionRenamed"), "success");
+      return true;
     } catch (err) {
       console.error("Failed to rename session:", err);
       showToast(t("sessionRenameFailed"), "error");
+      return false;
     } finally {
       setIsRenaming(false);
       isSavingTitleRef.current = false;
@@ -4027,6 +4308,25 @@ function SessionPageContent({
 
   const handleGenerateAndApplyTitle = () => {
     handleStartRetitleTitle({ applyWhenReady: true });
+  };
+
+  const handleLocalTitleCommand = async (title: string | null) => {
+    if (title !== null) {
+      const saved = await saveTitleValue(title);
+      if (saved) {
+        draftControlsRef.current?.confirmInputClear();
+      } else {
+        draftControlsRef.current?.restoreFromStorage();
+      }
+      return;
+    }
+
+    handleGenerateAndApplyTitle();
+    if (supportsForkFromTurn) {
+      draftControlsRef.current?.confirmInputClear();
+    } else {
+      draftControlsRef.current?.restoreFromStorage();
+    }
   };
 
   const handleCancelEditingTitle = () => {
@@ -4189,7 +4489,7 @@ function SessionPageContent({
   const handleTerminate = async () => {
     if (status.owner === "self" && status.processId) {
       try {
-        await api.abortProcess(status.processId);
+        await api.abortProcess(status.processId, { blockResume: true });
         showToast(t("sessionTerminated"), "success");
       } catch (err) {
         console.error("Failed to terminate session:", err);
@@ -4200,12 +4500,23 @@ function SessionPageContent({
   };
 
   const handleShare = useCallback(() => {
+    if (showShareModal) {
+      setShowShareModal(false);
+      setShareModalAnchor(null);
+      return;
+    }
     setShareModalAnchor(null);
+    setShareModalView(publicShareManagementAvailable ? "manage" : "session");
     setShowShareModal(true);
-  }, []);
+  }, [publicShareManagementAvailable, showShareModal]);
 
   const handleShareIndicatorClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (showShareModal) {
+        setShowShareModal(false);
+        setShareModalAnchor(null);
+        return;
+      }
       const rect = event.currentTarget.getBoundingClientRect();
       setShareModalAnchor({
         bottom: rect.bottom,
@@ -4215,54 +4526,20 @@ function SessionPageContent({
         top: rect.top,
         width: rect.width,
       });
+      setShareModalView(publicShareManagementAvailable ? "manage" : "session");
       setShowShareModal(true);
     },
-    [],
+    [publicShareManagementAvailable, showShareModal],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    setPublicShareStatus(null);
-
-    if (!showPublicShareControls) {
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const refreshPublicShareStatus = async () => {
-      try {
-        const nextStatus = await api.getPublicSessionShareStatus(
-          projectId,
-          actualSessionId,
-        );
-        if (!cancelled) {
-          setPublicShareStatus(nextStatus);
-        }
-      } catch {
-        if (!cancelled) {
-          setPublicShareStatus(null);
-        }
-      } finally {
-        if (!cancelled) {
-          timer = setTimeout(
-            refreshPublicShareStatus,
-            PUBLIC_SHARE_STATUS_POLL_MS,
-          );
-        }
-      }
-    };
-
-    void refreshPublicShareStatus();
-
-    return () => {
-      cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-      }
-    };
-  }, [actualSessionId, projectId, showPublicShareControls]);
+  const handleShareIndicatorContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (!publicShareManagementAvailable) return;
+      event.preventDefault();
+      handleShareIndicatorClick(event);
+    },
+    [handleShareIndicatorClick, publicShareManagementAvailable],
+  );
 
   const handleToggleHeartbeat = useCallback(async () => {
     const previousEnabled = heartbeatTurnsEnabled;
@@ -4739,6 +5016,11 @@ function SessionPageContent({
                   }
                   onClone={supportsForkFromTurn ? cloneSession : undefined}
                   cloneDisabled={forkAfterDisabled}
+                  onConfigureProjectSettings={
+                    supportsProjectSessionDefaults
+                      ? () => setShowProjectSettingsModal(true)
+                      : undefined
+                  }
                   onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
                   onConfigureRecaps={
                     status.owner === "self"
@@ -4775,7 +5057,7 @@ function SessionPageContent({
                   }
                   onTerminate={handleTerminate}
                   onReload={() => window.location.reload()}
-                  onShare={showPublicShareControls ? handleShare : undefined}
+                  onShare={publicShareActionAvailable ? handleShare : undefined}
                   useFixedPositioning
                   useEllipsisIcon
                   onOpenChange={(open) => {
@@ -4814,8 +5096,15 @@ function SessionPageContent({
                 <path d="M12.5 3.5a5.5 5.5 0 0 1 0 9" />
               </svg>
             </button>
+            <ProviderChildSessionControl
+              projectId={projectId}
+              sessionId={actualSessionId}
+              basePath={basePath}
+              childrenFromSession={session?.providerChildren}
+              processState={processState}
+            />
             <ClientLogRecordingBadge inline />
-            {showPublicShareControls && (
+            {showPublicShareIndicator && (
               <ViewerCountIndicator
                 className="session-header-viewer-count"
                 count={
@@ -4834,6 +5123,11 @@ function SessionPageContent({
                     : t("sessionShareOpenTitle")
                 }
                 onClick={handleShareIndicatorClick}
+                onContextMenu={
+                  publicShareManagementAvailable
+                    ? handleShareIndicatorContextMenu
+                    : undefined
+                }
               />
             )}
             {canStopOwnedProcess && (
@@ -4904,6 +5198,14 @@ function SessionPageContent({
         />
       )}
 
+      {showProjectSettingsModal && supportsProjectSessionDefaults && (
+        <ProjectSessionDefaultsModal
+          projectId={projectId}
+          projectName={project?.name}
+          onClose={() => setShowProjectSettingsModal(false)}
+        />
+      )}
+
       {showRecapModal && status.owner === "self" && (
         <SessionRecapModal
           sessionId={actualSessionId}
@@ -4932,7 +5234,9 @@ function SessionPageContent({
           sessionId={actualSessionId}
           initialPrompt={publicShareInitialPrompt}
           title={displayTitle}
-          canCreateShares={showPublicShareControls}
+          canCreateShares={canCreatePublicShares}
+          initialView={shareModalView}
+          managementAvailable={publicShareManagementAvailable}
           onStatusChange={setPublicShareStatus}
           onClose={() => {
             setShowShareModal(false);
@@ -5059,7 +5363,7 @@ function SessionPageContent({
             : ""
         }`}
       >
-        <main className="session-messages">
+        <main className="session-messages" tabIndex={-1}>
           {loading ? (
             <div className="loading">
               <div>{t("sessionLoading")}</div>
@@ -5087,91 +5391,110 @@ function SessionPageContent({
                 projectId={projectId}
                 sessionId={sessionId}
               >
-                <MessageList
-                  messages={messages}
-                  transcriptDisplayObjects={session?.transcriptDisplayObjects}
-                  provider={session?.provider}
-                  isProcessing={sessionActivityUi.showProcessingIndicator}
-                  isCompacting={isCompacting}
-                  scrollTrigger={scrollTrigger}
-                  scrollToTurnRequest={scrollToTurnRequest}
-                  pendingMessages={pendingMessages}
-                  deferredMessages={deferredMessages}
-                  projectQueueMessages={inlineProjectQueueMessages}
-                  projectQueueDispatchPaused={
-                    projectQueues.dispatchState.status === "paused"
-                  }
-                  projectQueueDispatchMutating={
-                    projectQueues.mutatingDispatchState
-                  }
-                  btwAsides={historyBtwAsides}
-                  onFocusBtwAside={setFocusedBtwAsideId}
-                  onDoneBtwAside={handleDoneBtwAside}
-                  onStopBtwAside={handleStopBtwAsideFromTranscript}
-                  onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
-                  onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
-                  onQuoteSelection={insertQuotedSelection}
-                  composerDraftSignal={composerDraftSignal}
-                  composerEditAvailabilityStore={composerEditAvailabilityStore}
-                  quoteClearSignal={quoteClearSignal}
-                  onCancelDeferred={handleCancelDeferred}
-                  onEditDeferred={handleEditDeferred}
-                  onCancelUnconfirmedUserMessage={
-                    handleCancelUnconfirmedUserMessage
-                  }
-                  onSteerDeferred={handleSteerDeferred}
-                  onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
-                  onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
-                  onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
-                  onCancelProjectQueueMessage={handleCancelProjectQueueItem}
-                  onEditProjectQueueMessage={handleEditProjectQueueItem}
-                  onSteerProjectQueueMessage={handleSteerProjectQueueItem}
-                  onResumeProjectQueueDispatch={
-                    handleResumeProjectQueueDispatch
-                  }
-                  onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
-                  onTrimBeforeUserMessage={trimClientFromUserMessage}
-                  onForkBeforeUserMessage={
-                    supportsForkFromTurn ? forkBeforeUserMessage : undefined
-                  }
-                  onForkAfterUserMessage={
-                    supportsForkFromTurn ? forkAfterUserMessage : undefined
-                  }
-                  onForkAfterSummaryUserMessage={
-                    supportsForkFromTurn ? beginForkAfterSummary : undefined
-                  }
-                  forkAfterUserMessageDisabled={forkAfterDisabled}
-                  onCopyUserMessage={copyUserMessage}
-                  markdownAugments={markdownAugments}
-                  activeToolApproval={activeToolApproval}
-                  hasOlderMessages={pagination?.hasOlderMessages}
-                  activeWindowTrimRevision={activeWindowTrimRevision}
-                  loadingOlder={loadingOlder}
-                  onLoadOlderMessages={loadOlderMessages}
-                  clientTailActive={clientTailActive}
-                  progressiveRenderEnabled={sessionLoadingProgressEnabled}
-                  progressiveRenderStatusVisible={
-                    sessionLoadingProgressDetailsVisible
-                  }
-                  progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                  conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                  initialScrollSnapshot={initialScrollSnapshot}
-                  onScrollSnapshotChange={updateRouteScrollSnapshot}
-                  onFollowingBottomChange={updateActiveWindowFollowingBottom}
-                  scrollBehaviorMode={sessionScrollBehaviorMode}
-                  offscreenTranscriptRenderingEnabled={
-                    sessionOffscreenTranscriptRenderingEnabled
-                  }
-                  getForkSummaryTargetHref={getForkSummaryTargetHref}
-                  onCancelForkSummary={handleCancelForkSummary}
-                  onToggleForkSummaryAutoOpen={handleToggleForkSummaryAutoOpen}
-                  onFollowForkSummary={followForkSummary}
-                  bangCommandHandlers={bangCommandHandlers}
-                  onTranscriptPositionTimestampChange={
-                    setTranscriptPositionTimestampMs
-                  }
-                  inert={isDomLingerParked}
-                />
+                <SessionViewerProvider
+                  sessionId={actualSessionId}
+                  inactive={isDomLingerParked}
+                >
+                  <MessageList
+                    messages={messages}
+                    transcriptDisplayObjects={session?.transcriptDisplayObjects}
+                    provider={effectiveProvider}
+                    isProcessing={sessionActivityUi.showProcessingIndicator}
+                    isCompacting={isCompacting}
+                    scrollTrigger={scrollTrigger}
+                    scrollToTurnRequest={scrollToTurnRequest}
+                    pendingMessages={pendingMessages}
+                    deferredMessages={deferredMessages}
+                    projectQueueMessages={inlineProjectQueueMessages}
+                    projectQueueDispatchPaused={
+                      projectQueues.dispatchState.status === "paused"
+                    }
+                    projectQueueDispatchMutating={
+                      projectQueues.mutatingDispatchState
+                    }
+                    btwAsides={historyBtwAsides}
+                    onFocusBtwAside={setFocusedBtwAsideId}
+                    onDoneBtwAside={handleDoneBtwAside}
+                    onStopBtwAside={handleStopBtwAsideFromTranscript}
+                    onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
+                    onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
+                    onQuoteSelection={insertQuotedSelection}
+                    onStartNewSessionFromSelection={
+                      startNewSessionFromSelection
+                    }
+                    composerDraftSignal={composerDraftSignal}
+                    composerEditAvailabilityStore={
+                      composerEditAvailabilityStore
+                    }
+                    quoteClearSignal={quoteClearSignal}
+                    onCancelDeferred={handleCancelDeferred}
+                    onEditDeferred={handleEditDeferred}
+                    onCancelUnconfirmedUserMessage={
+                      handleCancelUnconfirmedUserMessage
+                    }
+                    onSteerDeferred={handleSteerDeferred}
+                    onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
+                    onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
+                    onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
+                    onCancelProjectQueueMessage={handleCancelProjectQueueItem}
+                    onEditProjectQueueMessage={handleEditProjectQueueItem}
+                    onSteerProjectQueueMessage={handleSteerProjectQueueItem}
+                    onResumeProjectQueueDispatch={
+                      handleResumeProjectQueueDispatch
+                    }
+                    onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
+                    onTrimBeforeUserMessage={trimClientFromUserMessage}
+                    onForkBeforeUserMessage={
+                      supportsForkFromTurn ? forkBeforeUserMessage : undefined
+                    }
+                    onForkAfterUserMessage={
+                      supportsForkFromTurn ? forkAfterUserMessage : undefined
+                    }
+                    onForkAfterSummaryUserMessage={
+                      supportsForkFromTurn ? beginForkAfterSummary : undefined
+                    }
+                    forkAfterUserMessageDisabled={forkAfterDisabled}
+                    onCopyUserMessage={copyUserMessage}
+                    markdownAugments={markdownAugments}
+                    activeToolApproval={activeToolApproval}
+                    hasOlderMessages={pagination?.hasOlderMessages}
+                    olderMessagesCursor={
+                      pagination?.truncatedBeforeMessageId ?? null
+                    }
+                    activeWindowTrimRevision={activeWindowTrimRevision}
+                    loadingOlder={loadingOlder}
+                    olderLoadContinuationRequired={
+                      olderLoadContinuationRequired
+                    }
+                    onLoadOlderMessages={loadOlderMessages}
+                    clientTailActive={clientTailActive}
+                    progressiveRenderEnabled={sessionLoadingProgressEnabled}
+                    progressiveRenderStatusVisible={
+                      sessionLoadingProgressDetailsVisible
+                    }
+                    progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                    conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                    initialScrollSnapshot={initialScrollSnapshot}
+                    onScrollSnapshotChange={updateRouteScrollSnapshot}
+                    onFollowingBottomChange={updateActiveWindowFollowingBottom}
+                    onFollowCurrent={handleFollowCurrent}
+                    scrollBehaviorMode={sessionScrollBehaviorMode}
+                    offscreenTranscriptRenderingEnabled={
+                      sessionOffscreenTranscriptRenderingEnabled
+                    }
+                    getForkSummaryTargetHref={getForkSummaryTargetHref}
+                    onCancelForkSummary={handleCancelForkSummary}
+                    onToggleForkSummaryAutoOpen={
+                      handleToggleForkSummaryAutoOpen
+                    }
+                    onFollowForkSummary={followForkSummary}
+                    bangCommandHandlers={bangCommandHandlers}
+                    onTranscriptPositionTimestampChange={
+                      setTranscriptPositionTimestampMs
+                    }
+                    inert={isDomLingerParked}
+                  />
+                </SessionViewerProvider>
               </AgentContentProvider>
             </SessionMetadataProvider>
           )}
@@ -5182,7 +5505,7 @@ function SessionPageContent({
             draft={asideDraft}
             composerRef={asideComposerRef}
             onDraftChange={setAsideDraft}
-            onSendFollowup={handleFocusedBtwSend}
+            onSendFollowup={(text) => handleFocusedBtwSend(text, "pane")}
             onHide={() => setBtwSidePaneCollapsed(true)}
             onDone={(argument) => handleCustomCommand("done", argument)}
             onStop={() => void handleStopBtwAside(focusedBtwAside.id)}
@@ -5205,6 +5528,7 @@ function SessionPageContent({
           <div
             className={`session-connection-bar session-connection-${sessionConnectionStatus}`}
           />
+          <div data-selection-actions-mobile-slot />
           <div className="session-input-inner">
             <BtwAsideStickyCards
               asides={composerStickyBtwAsides}
@@ -5246,6 +5570,7 @@ function SessionPageContent({
                     projectPath={project?.path ?? null}
                   />
                   <MessageInputToolbar
+                    sessionId={actualSessionId}
                     mode={permissionMode}
                     onModeChange={setPermissionMode}
                     modeChangesApplyNextTurn={
@@ -5280,6 +5605,14 @@ function SessionPageContent({
                     isRunning={status.owner === "self"}
                     isThinking={canStopOwnedProcess}
                     onStop={handleAbort}
+                    onDone={
+                      syntheticDoneEnabled || mainComposerForAside
+                        ? handleDoneAction
+                        : undefined
+                    }
+                    doneTitle={
+                      mainComposerForAside ? t("btwAsideDoneTitle") : undefined
+                    }
                     pendingApproval={
                       approvalCollapsed
                         ? {
@@ -5301,7 +5634,7 @@ function SessionPageContent({
               <MessageInput
                 onSend={
                   mainComposerForAside
-                    ? handleFocusedBtwSend
+                    ? (text) => handleFocusedBtwSend(text, "main")
                     : primaryComposerAction === "steer"
                       ? handleSend
                       : shouldDeferMessages
@@ -5350,6 +5683,14 @@ function SessionPageContent({
                 isRunning={status.owner === "self"}
                 isThinking={canStopOwnedProcess}
                 onStop={handleAbort}
+                onDone={
+                  syntheticDoneEnabled || mainComposerForAside
+                    ? handleDoneAction
+                    : undefined
+                }
+                doneTitle={
+                  mainComposerForAside ? t("btwAsideDoneTitle") : undefined
+                }
                 draftKey={
                   mainComposerForAside && focusedBtwAside
                     ? `draft-btw-${focusedBtwAside.sessionId ?? focusedBtwAside.id}`
@@ -5382,6 +5723,7 @@ function SessionPageContent({
                     pendingInputRequest.sessionId === actualSessionId
                   )
                 }
+                onFullPaneControlsReady={handleFullPaneControlsReady}
                 contextUsage={session?.contextUsage}
                 lastActivityAt={activityAt}
                 positionTimestampMs={transcriptPositionTimestampMs}

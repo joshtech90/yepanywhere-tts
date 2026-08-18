@@ -319,8 +319,10 @@ arbiter for demand traffic; callers only opt *optional* work out.
   `ClientLogCollector` already follows this pattern against the singleton
   manager and generalizes to per-source status.
 - **UI affordances** (offline banners, composer state, connection bar): read
-  `transport.status`. Users see offline-ness; the plumbing does not reject
-  work it could complete in under a second.
+  `transport.status`. The global diagnostic bar is exceptional-state-only:
+  ready renders no full-width success rule, while reconnecting and disconnected
+  remain visible. Users see offline-ness; the plumbing does not reject work it
+  could complete in under a second.
 - **Subscriptions** while not ready: raw `subscribe*` delivers an async
   `onError` (retryable classification). The managed-stream layer is what
   waits for readiness and installs the subscription; raw primitives stay
@@ -405,10 +407,23 @@ Generalizing the 050 product invariant from "the remote app" to any source:
   lease is held. Local gates the lease on auth state (the 401-avoidance in
   `useActivityBusConnection`); the remote shell holds it whenever mounted
   (its gate guarantees auth).
+- A retained document suspends its activity streams on `pagehide`, closing the
+  raw subscriptions before navigation, discard, or browser caching can leave
+  a logical tab registered. If that same document returns through `pageshow`,
+  each still-retained source installs one fresh managed stream. The lease
+  counts survive suspension; the underlying subscriptions do not.
 - `SecureConnection` itself never auto-subscribes to activity (050 non-goal
   stands); the runtime layer owns the invariant.
 - Suspension of non-current sources is expressed by releasing or downgrading
   the lease, per the topology topic's resource policy.
+- `activityBus.connected` is derived from those stream records, so it changes
+  only on stream open, error, close, and retain changes. It is therefore
+  observable: `subscribeConnected` notifies on change, and consumers must use
+  it rather than polling the getter on an interval. A polled consumer pays a
+  wakeup per period per mounted instance forever and still reports the change
+  up to a period late; a hook mounted by the app shell, Settings, and a
+  settings pane pays that three times over for a value that is usually
+  constant for the life of the tab.
 
 ## Behavior Parity Contract
 
@@ -553,6 +568,9 @@ runtime's transport until callers migrate.
   one runtime must not resubscribe or clear subscriptions in the other.
 - Preserve teardown behavior: closing a tab/component releases the session or
   watch subscription exactly once.
+- Prove `pagehide` closes every retained activity subscription, `pageshow`
+  recreates one per retained source, and repeated reloads never raise the
+  server tab count above the actual document count.
 - Preserve non-retryable subscription-error behavior.
 - Before claiming real coexistence support, run two YA servers with
   independent transports and show that disposing one source does not affect

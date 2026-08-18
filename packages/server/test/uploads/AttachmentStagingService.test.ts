@@ -4,6 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AttachmentStagingService } from "../../src/uploads/index.js";
+import { ProjectStoragePolicy } from "../../src/projects/projectStoragePolicy.js";
+
+function projectModeService(stagingRoot: string): AttachmentStagingService {
+  return new AttachmentStagingService({
+    stagingRoot,
+    storagePolicy: new ProjectStoragePolicy({
+      dataDir: join(stagingRoot, "app-data"),
+      getMode: () => "project",
+    }),
+  });
+}
 
 async function completeDraftUpload(
   service: AttachmentStagingService,
@@ -185,9 +196,9 @@ describe("AttachmentStagingService", () => {
     await expect(service.deleteDraftAttachment(batchId, ref.id)).resolves.toBe(
       false,
     );
-    await expect(service.listQueueAttachments("queue-item-a")).resolves.toEqual([
-      expect.objectContaining({ id: ref.id }),
-    ]);
+    await expect(service.listQueueAttachments("queue-item-a")).resolves.toEqual(
+      [expect.objectContaining({ id: ref.id })],
+    );
   });
 
   it("transfers draft attachments to queue ownership", async () => {
@@ -217,12 +228,13 @@ describe("AttachmentStagingService", () => {
   });
 
   it("materializes draft attachments into final session attachments", async () => {
-    const service = new AttachmentStagingService({ stagingRoot });
+    const service = projectModeService(stagingRoot);
     const { batchId, ref } = await completeDraftUpload(
       service,
       Buffer.from("session attachment"),
     );
     const projectPath = join(stagingRoot, "project");
+    await mkdir(projectPath, { recursive: true });
 
     const files = await service.materializeDraftAttachmentsForSession({
       batchId,
@@ -236,7 +248,7 @@ describe("AttachmentStagingService", () => {
         id: ref.id,
         originalName: ref.originalName,
         name: ref.name,
-        path: join(projectPath, ".attachments", "session-a", ref.name),
+        path: join(projectPath, ".yep", "attachments", "session-a", ref.name),
         size: ref.size,
         mimeType: ref.mimeType,
       },
@@ -276,13 +288,13 @@ describe("AttachmentStagingService", () => {
   });
 
   it("fails materialization when a final attachment has the wrong size", async () => {
-    const service = new AttachmentStagingService({ stagingRoot });
+    const service = projectModeService(stagingRoot);
     const { batchId, ref } = await completeDraftUpload(
       service,
       Buffer.from("expected"),
     );
     const projectPath = join(stagingRoot, "project");
-    const finalDir = join(projectPath, ".attachments", "session-a");
+    const finalDir = join(projectPath, ".yep", "attachments", "session-a");
     await mkdir(finalDir, { recursive: true });
     await writeFile(join(finalDir, ref.name), "wrong size");
 
@@ -308,16 +320,16 @@ describe("AttachmentStagingService", () => {
       refs: [ref],
     });
 
-    await expect(
-      service.deleteQueueAttachments("queue-item-a"),
-    ).resolves.toBe(1);
+    await expect(service.deleteQueueAttachments("queue-item-a")).resolves.toBe(
+      1,
+    );
     await expect(service.listQueueAttachments("queue-item-a")).resolves.toEqual(
       [],
     );
   });
 
   it("materializes queue-owned attachments for a session", async () => {
-    const service = new AttachmentStagingService({ stagingRoot });
+    const service = projectModeService(stagingRoot);
     const { batchId, ref } = await completeDraftUpload(
       service,
       Buffer.from("queued session attachment"),
@@ -328,6 +340,7 @@ describe("AttachmentStagingService", () => {
       refs: [ref],
     });
     const projectPath = join(stagingRoot, "project");
+    await mkdir(projectPath, { recursive: true });
 
     const files = await service.materializeQueueAttachmentsForSession({
       queueItemId: "queue-item-a",
@@ -341,7 +354,7 @@ describe("AttachmentStagingService", () => {
         id: ref.id,
         originalName: ref.originalName,
         name: ref.name,
-        path: join(projectPath, ".attachments", "session-a", ref.name),
+        path: join(projectPath, ".yep", "attachments", "session-a", ref.name),
         size: ref.size,
         mimeType: ref.mimeType,
       },
@@ -379,9 +392,9 @@ describe("AttachmentStagingService", () => {
     await expect(reloaded.listDraftAttachments(stale.batchId)).resolves.toEqual(
       [],
     );
-    await expect(reloaded.listQueueAttachments("queue-item-a")).resolves.toEqual(
-      [expect.objectContaining({ id: queued.ref.id })],
-    );
+    await expect(
+      reloaded.listQueueAttachments("queue-item-a"),
+    ).resolves.toEqual([expect.objectContaining({ id: queued.ref.id })]);
   });
 
   it("removes missing index records on startup", async () => {

@@ -55,9 +55,55 @@ describe("concatUserMessages", () => {
 
     expect(combined.mode).toBe("bypassPermissions");
   });
+
+  it("keeps automatic batches from posing as fresh user intent", () => {
+    const combined = concatUserMessages([
+      { ...msg("heartbeat"), automaticSource: "heartbeat" },
+      { ...msg("queued project work"), automaticSource: "project-queue" },
+      { ...msg("wake continuation"), automaticSource: "wake" },
+    ]);
+
+    expect(combined.recapResumeHandled).toBe(true);
+  });
 });
 
 describe("MessageQueue", () => {
+  it("reports only SDK-yielded messages through subscribeYielded", async () => {
+    const queue = new MessageQueue();
+    const yielded: string[][] = [];
+    const events: string[] = [];
+    queue.subscribeYielded((messages) => {
+      yielded.push(messages.map((message) => message.text));
+      events.push("yielded");
+    });
+    queue.subscribeRemoved(() => events.push("removed"));
+    queue.push(msg("externally drained"));
+    queue.drain();
+    events.length = 0;
+    queue.push(msg("provider-bound"));
+
+    await queue[Symbol.asyncIterator]().next();
+
+    expect(yielded).toEqual([["provider-bound"]]);
+    expect(events).toEqual(["yielded", "removed"]);
+  });
+
+  it("reports authoritative removals to remote queue mirrors", () => {
+    const queue = new MessageQueue();
+    const removed: string[][] = [];
+    const unsubscribe = queue.subscribeRemoved((messages) => {
+      removed.push(messages.map((message) => message.uuid ?? ""));
+    });
+    queue.push({ ...msg("first", "temp-1"), uuid: "uuid-1" });
+    queue.push({ ...msg("second", "temp-2"), uuid: "uuid-2" });
+
+    queue.removeByTempId("temp-1");
+    queue.drain();
+    unsubscribe();
+
+    expect(removed).toEqual([["uuid-1"], ["uuid-2"]]);
+  });
+
   it("removes queued messages by temp id before they are yielded", () => {
     const queue = new MessageQueue();
     queue.push(msg("first", "temp-1"));

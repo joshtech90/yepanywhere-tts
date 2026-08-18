@@ -37,16 +37,16 @@ describe("useTooltipAppearance", () => {
     expect(getTooltipDelayMs()).toBe(100);
   });
 
-  it("defaults to native and valid delay edits select themed mode", () => {
+  it("defaults to themed while preserving explicit mode choices", () => {
     const { result } = renderHook(() => useTooltipAppearance());
 
-    expect(result.current.tooltipMode).toBe("native");
-
-    act(() => result.current.setTooltipMode("themed"));
     expect(result.current.tooltipMode).toBe("themed");
 
     act(() => result.current.setTooltipMode("native"));
     expect(result.current.tooltipMode).toBe("native");
+
+    act(() => result.current.setTooltipMode("themed"));
+    expect(result.current.tooltipMode).toBe("themed");
 
     act(() => result.current.setTooltipDelayMs(80));
     expect(result.current.tooltipMode).toBe("themed");
@@ -85,9 +85,7 @@ describe("useTooltipAppearance", () => {
     expect(getEffectiveTooltipDelayMs()).toBe(0);
     endTooltipVisibility(token);
     vi.setSystemTime(
-      1_000 +
-        DEFAULT_TOOLTIP_DELAY_MS * TOOLTIP_WARM_GRACE_MULTIPLIER -
-        1,
+      1_000 + DEFAULT_TOOLTIP_DELAY_MS * TOOLTIP_WARM_GRACE_MULTIPLIER - 1,
     );
     expect(getEffectiveTooltipDelayMs()).toBe(0);
 

@@ -2,13 +2,14 @@ import type {
   GitDiffPreviewSkipped,
   GitDiffResult,
   GitFileChange,
+  GitFileDiffMode,
   PatchHunk,
   ReviewCommentRevision,
 } from "@yep-anywhere/shared";
 import {
   forwardRef,
-  memo,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -18,16 +19,48 @@ import {
   useState,
 } from "react";
 import { api } from "../api/client";
+import { CopyButton } from "../components/CopyButton";
 import { MarkdownPreview } from "../components/MarkdownPreview";
+import { renderFixedFontRichContent } from "../components/ui/FixedFontMathToggle";
 import { Modal } from "../components/ui/Modal";
 import { useDiffViewMode } from "../hooks/useDiffViewMode";
 import { isEditableKeyboardTarget } from "../hooks/useSourceKeyboard";
 import { type DiffViewMode, resolveDiffViewMode } from "../lib/diffSideBySide";
-import { DiffCommentLayer } from "./DiffCommentLayer";
+import { isMarkdownLikeFile } from "../lib/markdownFiles";
+import {
+  captureScrollPositionAnchor,
+  restoreScrollPositionAnchor,
+  type ScrollPositionAnchor,
+} from "../lib/scrollAnchor";
+import { DiffCommentController } from "./DiffCommentLayer";
 import { SideBySideDiff } from "./SideBySideDiff";
+import { CHANGED_DIFF_LINE_SELECTOR, UnifiedDiff } from "./UnifiedDiff";
 import type { MessageKey, TranslationFn } from "../i18n";
 
 const GIT_DIFF_MAX_RENDERED_HTML_CHARS = 1_000_000;
+
+function getDiffSourceText(hunks: PatchHunk[]): string {
+  return hunks.flatMap((hunk) => hunk.lines).join("\n");
+}
+
+function getPostChangeText(hunks: PatchHunk[]): string | null {
+  if (hunks.length === 0) return null;
+  return hunks
+    .map((hunk) =>
+      hunk.lines
+        .filter((line) => line.startsWith(" ") || line.startsWith("+"))
+        .map((line) => line.slice(1))
+        .join("\n"),
+    )
+    .join("\n");
+}
+
+function getDiffScrollRoot(content: HTMLElement): HTMLElement {
+  return (
+    content.closest<HTMLElement>(".git-diff-preview-body, .modal-content") ??
+    content
+  );
+}
 
 export interface GitDiffViewState {
   showFullContext?: boolean;
@@ -37,6 +70,11 @@ export interface GitDiffViewState {
 interface GitDiffPreviewRetentionProps {
   retainedDiffView?: GitDiffViewState;
   onRetainDiffView?: (fileKey: string, view: GitDiffViewState) => void;
+}
+
+interface GitDiffScrollRetentionProps {
+  retainedScrollRatio?: number;
+  onRetainScrollRatio?: (fileKey: string, ratio: number) => void;
 }
 
 interface DiffPaneHeader {
@@ -57,16 +95,17 @@ interface HunkNavigationHandlers {
   previous: () => boolean;
 }
 
-interface GitDiffPreviewProps extends GitDiffPreviewRetentionProps {
+interface GitDiffPreviewProps
+  extends GitDiffPreviewRetentionProps,
+    GitDiffScrollRetentionProps {
   file: GitFileChange | null;
   fileKey: string | null;
   projectId: string;
   source?: GitDiffSource;
   /** Actions for the selected file, shown in the pane header (the file banner). */
   headerActions?: ReactNode;
-  retainedScrollTop?: number;
-  onRetainScrollTop?: (fileKey: string, scrollTop: number) => void;
   onCommentEditorOpenChange?: (open: boolean) => void;
+  captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionRequestFailure?: () => void;
@@ -84,12 +123,24 @@ export type GitDiffSource =
   | { kind: "worktree" }
   | { kind: "working-tree-history" }
   | { kind: "commit"; sha: string }
-  | { kind: "comparison"; baseSha: string; headSha: string };
+  | { kind: "comparison"; baseSha: string; headSha: string }
+  | { kind: "file-projection"; mode: GitFileDiffMode };
 
 const WORKTREE_SOURCE: GitDiffSource = { kind: "worktree" };
 const WORKING_TREE_HISTORY_SOURCE: GitDiffSource = {
   kind: "working-tree-history",
 };
+
+function getRelativeScrollRatio(element: HTMLElement): number {
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  if (maxScrollTop === 0) return 0;
+  return Math.min(1, Math.max(0, element.scrollTop / maxScrollTop));
+}
+
+function restoreRelativeScrollRatio(element: HTMLElement, ratio: number): void {
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  element.scrollTop = maxScrollTop * Math.min(1, Math.max(0, ratio));
+}
 
 /**
  * Rebuild a source from its primitives. Effects depend on (kind, sha) rather
@@ -99,14 +150,17 @@ function sourceFromPrimitives(
   kind: GitDiffSource["kind"],
   baseSha: string,
   headSha: string,
+  fileDiffMode: GitFileDiffMode,
 ): GitDiffSource {
   return kind === "commit"
     ? { kind: "commit", sha: baseSha }
     : kind === "comparison"
       ? { kind: "comparison", baseSha, headSha }
-      : kind === "working-tree-history"
-        ? WORKING_TREE_HISTORY_SOURCE
-        : WORKTREE_SOURCE;
+      : kind === "file-projection"
+        ? { kind: "file-projection", mode: fileDiffMode }
+        : kind === "working-tree-history"
+          ? WORKING_TREE_HISTORY_SOURCE
+          : WORKTREE_SOURCE;
 }
 
 function fetchDiffForSource(
@@ -135,6 +189,13 @@ function fetchDiffForSource(
       ...(file.origPath ? { origPath: file.origPath } : {}),
       fullContext,
       ...(ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+    });
+  }
+  if (source.kind === "file-projection") {
+    return api.getGitFileProjectionDiff(projectId, {
+      path: file.path,
+      mode: source.mode,
+      fullContext,
     });
   }
   return api.getGitDiff(projectId, {
@@ -184,11 +245,12 @@ export const GitDiffPreview = forwardRef<
     projectId,
     source = WORKTREE_SOURCE,
     headerActions,
-    retainedScrollTop,
+    retainedScrollRatio,
     retainedDiffView,
-    onRetainScrollTop,
+    onRetainScrollRatio,
     onRetainDiffView,
     onCommentEditorOpenChange,
+    captureReviewProjections = false,
     ignoreWhitespace = false,
     onToggleIgnoreWhitespace,
     onProjectionRequestFailure,
@@ -216,20 +278,14 @@ export const GitDiffPreview = forwardRef<
   );
 
   useLayoutEffect(() => {
-    if (!fileKey || !bodyRef.current || typeof retainedScrollTop !== "number") {
-      return;
-    }
-    bodyRef.current.scrollTop = retainedScrollTop;
-  }, [fileKey, retainedScrollTop]);
-
-  useLayoutEffect(() => {
+    const scrollContainer = bodyRef.current;
     return () => {
-      if (!fileKey || !bodyRef.current) {
+      if (!fileKey || !scrollContainer) {
         return;
       }
-      onRetainScrollTop?.(fileKey, bodyRef.current.scrollTop);
+      onRetainScrollRatio?.(fileKey, getRelativeScrollRatio(scrollContainer));
     };
-  }, [fileKey, onRetainScrollTop]);
+  }, [fileKey, onRetainScrollRatio]);
 
   return (
     <section className="git-diff-preview-pane">
@@ -240,6 +296,8 @@ export const GitDiffPreview = forwardRef<
             fileKey={fileKey}
             projectId={projectId}
             source={source}
+            retainedScrollRatio={retainedScrollRatio}
+            scrollContainerRef={bodyRef}
             retainedDiffView={retainedDiffView}
             onRetainDiffView={onRetainDiffView}
             paneHeader={{
@@ -249,6 +307,7 @@ export const GitDiffPreview = forwardRef<
             }}
             onHunkNavigationChange={handleHunkNavigationChange}
             onCommentEditorOpenChange={onCommentEditorOpenChange}
+            captureReviewProjections={captureReviewProjections}
             ignoreWhitespace={ignoreWhitespace}
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
             onProjectionRequestFailure={onProjectionRequestFailure}
@@ -277,9 +336,12 @@ export function GitDiffModal({
   projectId,
   source = WORKTREE_SOURCE,
   headerActions,
+  retainedScrollRatio,
   retainedDiffView,
+  onRetainScrollRatio,
   onRetainDiffView,
   onCommentEditorOpenChange,
+  captureReviewProjections = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace,
   onProjectionRequestFailure,
@@ -292,17 +354,35 @@ export function GitDiffModal({
   source?: GitDiffSource;
   /** Actions for the selected file, shown above the diff (the file banner). */
   headerActions?: ReactNode;
+  retainedScrollRatio?: number;
   retainedDiffView?: GitDiffViewState;
+  onRetainScrollRatio?: (fileKey: string, ratio: number) => void;
   onRetainDiffView?: (fileKey: string, view: GitDiffViewState) => void;
   onCommentEditorOpenChange?: (open: boolean) => void;
+  captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionRequestFailure?: () => void;
   t: TranslationFn;
   onClose: () => void;
 }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const scrollContainer = bodyRef.current;
+    return () => {
+      if (!scrollContainer) return;
+      onRetainScrollRatio?.(fileKey, getRelativeScrollRatio(scrollContainer));
+    };
+  }, [fileKey, onRetainScrollRatio]);
+
   return (
-    <Modal title={file.path} onClose={onClose} closeOnBackGesture>
+    <Modal
+      title={file.path}
+      onClose={onClose}
+      closeOnBackGesture
+      contentRef={bodyRef}
+    >
       {headerActions && (
         <div className="git-diff-preview-header-actions">{headerActions}</div>
       )}
@@ -311,9 +391,12 @@ export function GitDiffModal({
         fileKey={fileKey}
         projectId={projectId}
         source={source}
+        retainedScrollRatio={retainedScrollRatio}
+        scrollContainerRef={bodyRef}
         retainedDiffView={retainedDiffView}
         onRetainDiffView={onRetainDiffView}
         onCommentEditorOpenChange={onCommentEditorOpenChange}
+        captureReviewProjections={captureReviewProjections}
         ignoreWhitespace={ignoreWhitespace}
         onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
         onProjectionRequestFailure={onProjectionRequestFailure}
@@ -333,9 +416,12 @@ export function GitDiffBody({
   paneHeader,
   onHunkNavigationChange,
   onCommentEditorOpenChange,
+  captureReviewProjections = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace,
   onProjectionRequestFailure,
+  retainedScrollRatio,
+  scrollContainerRef,
   t,
 }: {
   file: GitFileChange;
@@ -345,9 +431,12 @@ export function GitDiffBody({
   paneHeader?: DiffPaneHeader;
   onHunkNavigationChange?: (handlers: HunkNavigationHandlers | null) => void;
   onCommentEditorOpenChange?: (open: boolean) => void;
+  captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionRequestFailure?: () => void;
+  retainedScrollRatio?: number;
+  scrollContainerRef?: RefObject<HTMLElement | null>;
   t: TranslationFn;
 } & GitDiffPreviewRetentionProps) {
   // Depend on the source's primitives (a fresh `{kind,sha}` object each render
@@ -360,11 +449,14 @@ export function GitDiffBody({
         ? source.baseSha
         : "";
   const sourceHeadSha = source.kind === "comparison" ? source.headSha : "";
+  const sourceFileDiffMode =
+    source.kind === "file-projection" ? source.mode : "worktree";
   const requestKey = JSON.stringify([
     fileKey,
     sourceKind,
     sourceBaseSha,
     sourceHeadSha,
+    sourceFileDiffMode,
     ignoreWhitespace,
   ]);
   const [loadState, setLoadState] = useState<{
@@ -388,13 +480,42 @@ export function GitDiffBody({
           error: null,
         };
   const { result: diffResult, loading, error } = currentLoad;
+  const visibleDiffResultRef = useRef(diffResult);
+  const pendingScrollRef = useRef<{
+    fileKey: string;
+    ratio: number;
+  } | null>(
+    retainedScrollRatio === undefined
+      ? null
+      : { fileKey, ratio: retainedScrollRatio },
+  );
+  visibleDiffResultRef.current = diffResult;
+
+  useLayoutEffect(() => {
+    pendingScrollRef.current =
+      retainedScrollRatio === undefined
+        ? null
+        : { fileKey, ratio: retainedScrollRatio };
+  }, [fileKey, retainedScrollRatio]);
+
+  useLayoutEffect(() => {
+    const pendingScroll = pendingScrollRef.current;
+    if (!diffResult || pendingScroll?.fileKey !== fileKey) return;
+    const scrollContainer = scrollContainerRef?.current;
+    if (!scrollContainer) return;
+    restoreRelativeScrollRatio(scrollContainer, pendingScroll.ratio);
+    pendingScrollRef.current = null;
+  }, [diffResult, fileKey, scrollContainerRef]);
 
   useEffect(() => {
     let cancelled = false;
     // A working-tree status poll intentionally refetches the live diff, even
-    // when its summary fields are unchanged. Retain the current result while
-    // that request runs so user-owned state inside GitDiffContent (notably an
-    // open comment editor) remains mounted.
+    // when its summary fields are unchanged, so `file` is a deliberate
+    // dependency: a new snapshot must reload. The owning browser is
+    // responsible for only handing over a new `file` when the snapshot
+    // actually changed. Retain the current result while that request runs so
+    // user-owned state inside GitDiffContent (notably an open comment editor)
+    // remains mounted.
     setLoadState((current) =>
       current.requestKey === requestKey
         ? { ...current, loading: true, error: null }
@@ -409,12 +530,24 @@ export function GitDiffBody({
     fetchDiffForSource(
       projectId,
       file,
-      sourceFromPrimitives(sourceKind, sourceBaseSha, sourceHeadSha),
+      sourceFromPrimitives(
+        sourceKind,
+        sourceBaseSha,
+        sourceHeadSha,
+        sourceFileDiffMode,
+      ),
       undefined,
       ignoreWhitespace,
     )
       .then((result) => {
         if (!cancelled) {
+          const scrollContainer = scrollContainerRef?.current;
+          if (visibleDiffResultRef.current && scrollContainer) {
+            pendingScrollRef.current = {
+              fileKey,
+              ratio: getRelativeScrollRatio(scrollContainer),
+            };
+          }
           setLoadState({
             requestKey,
             result,
@@ -448,12 +581,15 @@ export function GitDiffBody({
   }, [
     projectId,
     file,
+    fileKey,
     requestKey,
     sourceKind,
     sourceBaseSha,
     sourceHeadSha,
+    sourceFileDiffMode,
     ignoreWhitespace,
     onProjectionRequestFailure,
+    scrollContainerRef,
     t,
   ]);
 
@@ -487,6 +623,7 @@ export function GitDiffBody({
             paneHeader={paneHeader}
             onHunkNavigationChange={onHunkNavigationChange}
             onCommentEditorOpenChange={onCommentEditorOpenChange}
+            captureReviewProjections={captureReviewProjections}
             ignoreWhitespace={ignoreWhitespace}
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
             onProjectionRequestFailure={onProjectionRequestFailure}
@@ -509,6 +646,7 @@ function GitDiffContent({
   paneHeader,
   onHunkNavigationChange,
   onCommentEditorOpenChange,
+  captureReviewProjections = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace,
   onProjectionRequestFailure,
@@ -522,6 +660,7 @@ function GitDiffContent({
   paneHeader?: DiffPaneHeader;
   onHunkNavigationChange?: (handlers: HunkNavigationHandlers | null) => void;
   onCommentEditorOpenChange?: (open: boolean) => void;
+  captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionRequestFailure?: () => void;
@@ -567,6 +706,7 @@ function GitDiffContent({
     () => retainedDiffView?.showMarkdownPreview ?? false,
   );
   const contentRef = useRef<HTMLDivElement>(null);
+  const pendingScrollAnchorRef = useRef<ScrollPositionAnchor | null>(null);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(
     null,
   );
@@ -584,14 +724,20 @@ function GitDiffContent({
         ? source.baseSha
         : "";
   const sourceHeadSha = source.kind === "comparison" ? source.headSha : "";
+  const sourceFileDiffMode =
+    source.kind === "file-projection" ? source.mode : "worktree";
   const commentRevisions = useMemo(
     () =>
       commentRevisionsForSource(
-        sourceFromPrimitives(sourceKind, sourceBaseSha, sourceHeadSha),
+        sourceFromPrimitives(
+          sourceKind,
+          sourceBaseSha,
+          sourceHeadSha,
+          sourceFileDiffMode,
+        ),
       ),
-    [sourceBaseSha, sourceHeadSha, sourceKind],
+    [sourceBaseSha, sourceFileDiffMode, sourceHeadSha, sourceKind],
   );
-
   // Measure the diff pane (content width, not viewport) so `auto` can pick
   // side-by-side only when two readable code columns fit.
   useEffect(() => {
@@ -615,10 +761,55 @@ function GitDiffContent({
     );
   }, [viewMode, setViewMode]);
 
-  const isMarkdown = /\.(md|markdown)$/i.test(file.path);
+  const isMarkdown = isMarkdownLikeFile(file.path);
+  const diffOnlyRendered = useMemo(
+    () =>
+      isMarkdown
+        ? renderFixedFontRichContent(
+            getDiffSourceText(diffResult.structuredPatch),
+            {
+              diffAware: true,
+              baseFilePath: file.path,
+              projectId,
+            },
+          )
+        : null,
+    [diffResult.structuredPatch, file.path, isMarkdown, projectId],
+  );
+  const fullContextText = useMemo(
+    () =>
+      fullContextResult
+        ? getPostChangeText(fullContextResult.structuredPatch)
+        : null,
+    [fullContextResult],
+  );
+  const fullContextRendered = useMemo(
+    () =>
+      !isMarkdown || fullContextText === null || fullContextResult?.markdownHtml
+        ? null
+        : renderFixedFontRichContent(fullContextText, {
+            baseFilePath: file.path,
+            projectId,
+          }),
+    [
+      file.path,
+      fullContextResult?.markdownHtml,
+      fullContextText,
+      isMarkdown,
+      projectId,
+    ],
+  );
+  const fullContextRenderedHtml =
+    fullContextResult?.markdownHtml || fullContextRendered?.html;
   const hasMarkdownPreview =
     isMarkdown &&
-    !!(fullContextResult?.markdownHtml || diffResult.markdownHtml);
+    (!!diffResult.markdownHtml ||
+      diffOnlyRendered?.changed === true ||
+      fullContextRendered?.changed === true);
+  const showingMarkdownPreview = showMarkdownPreview && hasMarkdownPreview;
+  const renderedPreviewHtml = showFullContext
+    ? fullContextRenderedHtml
+    : diffOnlyRendered?.html;
 
   const retainDiffView = useCallback(
     (view: GitDiffViewState) => {
@@ -627,72 +818,88 @@ function GitDiffContent({
     [fileKey, onRetainDiffView],
   );
 
-  const loadFullContext = useCallback(async () => {
-    if (fullContextResult || contextLoading) {
-      return true;
-    }
-    const revisionKey = fullContextRevisionKey;
-    setFullContextLoad((current) =>
-      current.revisionKey === revisionKey
-        ? { ...current, loading: true, error: null }
-        : {
-            revisionKey,
-            result: null,
-            loading: true,
-            error: null,
-          },
-    );
-    try {
-      const result = await fetchDiffForSource(
-        projectId,
-        file,
-        sourceFromPrimitives(sourceKind, sourceBaseSha, sourceHeadSha),
-        true,
-        ignoreWhitespace,
-      );
-      setFullContextLoad((current) =>
-        current.revisionKey === revisionKey
-          ? { revisionKey, result, loading: false, error: null }
-          : current,
-      );
-      return true;
-    } catch (err) {
-      if (ignoreWhitespace || sourceKind === "comparison") {
-        onProjectionRequestFailure?.();
+  const loadFullContext =
+    useCallback(async (): Promise<GitDiffResult | null> => {
+      if (fullContextResult) {
+        return fullContextResult;
       }
-      const message =
-        err instanceof Error ? err.message : t("gitStatusLoadContextFailed");
+      if (contextLoading) {
+        return null;
+      }
+      const revisionKey = fullContextRevisionKey;
       setFullContextLoad((current) =>
         current.revisionKey === revisionKey
-          ? {
+          ? { ...current, loading: true, error: null }
+          : {
               revisionKey,
               result: null,
-              loading: false,
-              error: message,
-            }
-          : current,
+              loading: true,
+              error: null,
+            },
       );
-      return false;
-    }
-  }, [
-    fullContextResult,
-    contextLoading,
-    fullContextRevisionKey,
-    projectId,
-    file,
-    sourceKind,
-    sourceBaseSha,
-    sourceHeadSha,
-    ignoreWhitespace,
-    onProjectionRequestFailure,
-    t,
-  ]);
+      try {
+        const result = await fetchDiffForSource(
+          projectId,
+          file,
+          sourceFromPrimitives(
+            sourceKind,
+            sourceBaseSha,
+            sourceHeadSha,
+            sourceFileDiffMode,
+          ),
+          true,
+          ignoreWhitespace,
+        );
+        setFullContextLoad((current) =>
+          current.revisionKey === revisionKey
+            ? { revisionKey, result, loading: false, error: null }
+            : current,
+        );
+        return result;
+      } catch (err) {
+        if (ignoreWhitespace || sourceKind === "comparison") {
+          onProjectionRequestFailure?.();
+        }
+        const message =
+          err instanceof Error ? err.message : t("gitStatusLoadContextFailed");
+        setFullContextLoad((current) =>
+          current.revisionKey === revisionKey
+            ? {
+                revisionKey,
+                result: null,
+                loading: false,
+                error: message,
+              }
+            : current,
+        );
+        return null;
+      }
+    }, [
+      fullContextResult,
+      contextLoading,
+      fullContextRevisionKey,
+      projectId,
+      file,
+      sourceKind,
+      sourceBaseSha,
+      sourceHeadSha,
+      sourceFileDiffMode,
+      ignoreWhitespace,
+      onProjectionRequestFailure,
+      t,
+    ]);
 
   const handleToggleContext = useCallback(async () => {
     const nextShowFullContext = !showFullContext;
     if (nextShowFullContext && !(await loadFullContext())) {
       return;
     }
+    const content = contentRef.current;
+    const scrollRoot = content ? getDiffScrollRoot(content) : null;
+    pendingScrollAnchorRef.current = captureScrollPositionAnchor(
+      scrollRoot,
+      content?.querySelector(CHANGED_DIFF_LINE_SELECTOR) ?? null,
+    );
     setShowFullContext(nextShowFullContext);
     retainDiffView({ showFullContext: nextShowFullContext });
   }, [loadFullContext, retainDiffView, showFullContext]);
@@ -703,38 +910,37 @@ function GitDiffContent({
     retainDiffView({ showMarkdownPreview: nextShowMarkdownPreview });
   }, [retainDiffView, showMarkdownPreview]);
 
+  const resolveCopyContent = useCallback(async () => {
+    const result = showFullContext
+      ? (fullContextResult ?? (await loadFullContext()))
+      : diffResult;
+    const content = result ? getPostChangeText(result.structuredPatch) : null;
+    if (content === null) {
+      throw new Error("Diff content is unavailable");
+    }
+    return content;
+  }, [diffResult, fullContextResult, loadFullContext, showFullContext]);
+
   useEffect(() => {
     if (showFullContext && !fullContextResult && !contextLoading) {
       void loadFullContext();
     }
   }, [contextLoading, fullContextResult, loadFullContext, showFullContext]);
 
-  useEffect(() => {
-    if (!hasMarkdownPreview && showMarkdownPreview) {
-      setShowMarkdownPreview(false);
-      retainDiffView({ showMarkdownPreview: false });
-    }
-  }, [hasMarkdownPreview, retainDiffView, showMarkdownPreview]);
-
-  // Scroll to first changed line when showing full context
-  useEffect(() => {
-    if (showFullContext && fullContextResult && contentRef.current) {
-      requestAnimationFrame(() => {
-        const firstChange = contentRef.current?.querySelector(
-          ".line-deleted, .line-inserted",
-        );
-        if (firstChange) {
-          firstChange.scrollIntoView({ block: "center", behavior: "instant" });
-        }
-      });
-    }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: projection changes trigger restoring the ref-held DOM anchor
+  useLayoutEffect(() => {
+    const anchor = pendingScrollAnchorRef.current;
+    if (!anchor) return;
+    pendingScrollAnchorRef.current = null;
+    restoreScrollPositionAnchor(
+      anchor,
+      contentRef.current?.querySelector(CHANGED_DIFF_LINE_SELECTOR) ?? null,
+    );
   }, [showFullContext, fullContextResult]);
 
   const displayResult =
     showFullContext && fullContextResult ? fullContextResult : diffResult;
 
-  const markdownHtml =
-    fullContextResult?.markdownHtml || diffResult.markdownHtml;
   const oversizedHtmlSkip = getOversizedDiffHtmlSkip(displayResult.diffHtml);
   const binaryPatchSkip = useMemo(
     () =>
@@ -753,11 +959,13 @@ function GitDiffContent({
   }, [hunkPosition]);
 
   const renderedHunks = useCallback((): HTMLElement[] => {
-    if (showMarkdownPreview || previewSkipped || !contentRef.current) return [];
+    if (showingMarkdownPreview || previewSkipped || !contentRef.current) {
+      return [];
+    }
     return Array.from(
       contentRef.current.querySelectorAll<HTMLElement>(".line-hunk"),
     );
-  }, [previewSkipped, showMarkdownPreview]);
+  }, [previewSkipped, showingMarkdownPreview]);
 
   const updateHunkPosition = useCallback(() => {
     const content = contentRef.current;
@@ -768,8 +976,7 @@ function GitDiffContent({
       );
       return;
     }
-    const scrollRoot =
-      content.closest<HTMLElement>(".git-diff-preview-body") ?? content;
+    const scrollRoot = getDiffScrollRoot(content);
     const threshold = scrollRoot.getBoundingClientRect().top + 52;
     let index = 0;
     for (let i = 0; i < hunks.length; i++) {
@@ -809,8 +1016,7 @@ function GitDiffContent({
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
-    const scrollRoot =
-      content.closest<HTMLElement>(".git-diff-preview-body") ?? content;
+    const scrollRoot = getDiffScrollRoot(content);
     // Coalesce to one measurement per frame: the update queries every rendered
     // hunk's rect, which is too much work to repeat per scroll event.
     let frame = requestAnimationFrame(updateHunkPosition);
@@ -890,7 +1096,7 @@ function GitDiffContent({
       {onToggleIgnoreWhitespace && (
         <button
           type="button"
-          className={`diff-context-toggle diff-toolbar-icon-button diff-ignore-whitespace-toggle ${
+          className={`diff-context-toggle diff-toolbar-icon-button ${
             ignoreWhitespace ? "active" : ""
           }`}
           onClick={onToggleIgnoreWhitespace}
@@ -899,7 +1105,7 @@ function GitDiffContent({
           aria-pressed={ignoreWhitespace}
         >
           <span className="diff-whitespace-glyph" aria-hidden="true">
-            ␠
+            ␣
           </span>
         </button>
       )}
@@ -907,48 +1113,57 @@ function GitDiffContent({
         <button
           type="button"
           className={`diff-context-toggle diff-toolbar-icon-button ${
-            showMarkdownPreview ? "active" : ""
+            showingMarkdownPreview ? "active" : ""
           }`}
           onClick={handleToggleMarkdownPreview}
           title={
-            showMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
+            showingMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
           }
           aria-label={
-            showMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
+            showingMarkdownPreview ? t("gitStatusDiff") : t("gitStatusPreview")
           }
-          aria-pressed={showMarkdownPreview}
+          aria-pressed={showingMarkdownPreview}
         >
-          <MarkdownModeIcon showDiff={showMarkdownPreview} />
+          <MarkdownModeIcon showDiff={showingMarkdownPreview} />
         </button>
       )}
-      {!showMarkdownPreview && (
-        <button
-          type="button"
-          className={`diff-context-toggle diff-toolbar-icon-button ${
-            showFullContext ? "active" : ""
-          }`}
-          onClick={handleToggleContext}
-          disabled={contextLoading}
-          title={
-            contextLoading
-              ? t("gitStatusLoading")
-              : showFullContext
-                ? t("gitStatusDiffOnly")
-                : t("gitStatusFullContext")
-          }
-          aria-label={
-            contextLoading
-              ? t("gitStatusLoading")
-              : showFullContext
-                ? t("gitStatusDiffOnly")
-                : t("gitStatusFullContext")
-          }
-          aria-pressed={showFullContext}
-        >
-          <ContextModeIcon expanded={showFullContext} />
-        </button>
-      )}
-      {!showMarkdownPreview && (
+      <button
+        type="button"
+        className={`diff-context-toggle diff-toolbar-icon-button ${
+          showFullContext ? "active" : ""
+        }`}
+        onClick={handleToggleContext}
+        disabled={contextLoading}
+        title={
+          contextLoading
+            ? t("gitStatusLoading")
+            : showFullContext
+              ? t("gitStatusDiffOnly")
+              : t("gitStatusFullContext")
+        }
+        aria-label={
+          contextLoading
+            ? t("gitStatusLoading")
+            : showFullContext
+              ? t("gitStatusDiffOnly")
+              : t("gitStatusFullContext")
+        }
+        aria-pressed={showFullContext}
+      >
+        <ContextModeIcon expanded={showFullContext} />
+      </button>
+      <CopyButton
+        value={resolveCopyContent}
+        title={t("fileViewerCopyContent")}
+        className="diff-context-toggle diff-toolbar-icon-button"
+        disabled={
+          contextLoading ||
+          !!previewSkipped ||
+          displayResult.structuredPatch.length === 0
+        }
+        icon="content"
+      />
+      {!showingMarkdownPreview && (
         <button
           type="button"
           className="diff-context-toggle diff-toolbar-icon-button"
@@ -965,6 +1180,40 @@ function GitDiffContent({
       )}
     </>
   );
+
+  const renderDiffProjection = (
+    splitAfterLine: number | undefined,
+    editor: ReactNode,
+  ) =>
+    displayResult.structuredPatch.length === 0 ? (
+      <div className="git-diff-empty-projection">
+        {ignoreWhitespace
+          ? t("gitStatusWhitespaceChangesHidden")
+          : t("gitStatusNoContentChanges")}
+      </div>
+    ) : displayResult.diffHtml &&
+      resolveDiffViewMode(viewMode, paneWidth) === "side-by-side" ? (
+      <SideBySideDiff
+        diffHtml={displayResult.diffHtml}
+        structuredPatch={displayResult.structuredPatch}
+        splitAfterLine={splitAfterLine}
+        editor={editor}
+      />
+    ) : displayResult.diffHtml ? (
+      <UnifiedDiff
+        diffHtml={displayResult.diffHtml}
+        structuredPatch={displayResult.structuredPatch}
+        splitAfterLine={splitAfterLine}
+        editor={editor}
+      />
+    ) : (
+      <UnifiedDiff
+        diffHtml=""
+        structuredPatch={displayResult.structuredPatch}
+        splitAfterLine={splitAfterLine}
+        editor={editor}
+      />
+    );
 
   return (
     <>
@@ -987,45 +1236,34 @@ function GitDiffContent({
         className="diff-modal-content source-diff-pane diff-gutter-aligned"
         ref={mountContent}
       >
-        {showMarkdownPreview && markdownHtml ? (
-          <MarkdownPreview html={markdownHtml} />
+        {showingMarkdownPreview && renderedPreviewHtml ? (
+          <MarkdownPreview html={renderedPreviewHtml} sourcePath={file.path} />
         ) : previewSkipped ? (
           <GitDiffPreviewSkippedState
             file={file}
             previewSkipped={previewSkipped}
             t={t}
           />
+        ) : contentElement ? (
+          <DiffCommentController
+            projectId={projectId}
+            filePath={file.path}
+            structuredPatch={displayResult.structuredPatch}
+            revisions={commentRevisions}
+            projections={
+              captureReviewProjections
+                ? displayResult.reviewProjections
+                : undefined
+            }
+            container={contentElement}
+            onOpenChange={onCommentEditorOpenChange}
+            renderSource={({ openComment, editor }) =>
+              renderDiffProjection(openComment?.flatIndex, editor)
+            }
+            t={t}
+          />
         ) : (
-          <>
-            {displayResult.structuredPatch.length === 0 ? (
-              <div className="git-diff-empty-projection">
-                {ignoreWhitespace
-                  ? t("gitStatusWhitespaceChangesHidden")
-                  : t("gitStatusNoContentChanges")}
-              </div>
-            ) : displayResult.diffHtml &&
-              resolveDiffViewMode(viewMode, paneWidth) === "side-by-side" ? (
-              <SideBySideDiff
-                diffHtml={displayResult.diffHtml}
-                structuredPatch={displayResult.structuredPatch}
-              />
-            ) : displayResult.diffHtml ? (
-              <HighlightedDiff diffHtml={displayResult.diffHtml} />
-            ) : (
-              <DiffLines hunks={displayResult.structuredPatch} />
-            )}
-            {contentElement && (
-              <DiffCommentLayer
-                projectId={projectId}
-                filePath={file.path}
-                structuredPatch={displayResult.structuredPatch}
-                revisions={commentRevisions}
-                container={contentElement}
-                onOpenChange={onCommentEditorOpenChange}
-                t={t}
-              />
-            )}
-          </>
+          renderDiffProjection(undefined, null)
         )}
       </div>
     </>
@@ -1148,9 +1386,7 @@ function DiffViewModeIcon({ mode }: { mode: DiffViewMode }) {
       ) : (
         <>
           <path d="M4 7h16M4 12h16M4 17h16" />
-          {mode === "auto" && (
-            <path d="M5 4h4M5 4v3M19 20h-4M19 20v-3" />
-          )}
+          {mode === "auto" && <path d="M5 4h4M5 4v3M19 20h-4M19 20v-3" />}
         </>
       )}
     </svg>
@@ -1293,57 +1529,3 @@ function formatBytes(bytes: number): string {
 function formatFraction(value: number): string {
   return value >= 10 ? value.toFixed(0) : value.toFixed(1);
 }
-
-/** Render syntax-highlighted diff HTML from server */
-const HighlightedDiff = memo(function HighlightedDiff({
-  diffHtml,
-}: {
-  diffHtml: string;
-}) {
-  return (
-    <div
-      className="highlighted-diff"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki output is safe
-      dangerouslySetInnerHTML={{ __html: diffHtml }}
-    />
-  );
-});
-
-/** Fallback plain-text diff renderer */
-const DiffLines = memo(function DiffLines({ hunks }: { hunks: PatchHunk[] }) {
-  const rows: ReactNode[] = [];
-  let flatIndex = 0;
-  for (const [hunkIndex, hunk] of hunks.entries()) {
-    rows.push(
-      <div
-        key={`hunk-${hunkIndex}`}
-        className="line line-hunk"
-      >{`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`}</div>,
-    );
-    for (const line of hunk.lines) {
-      const prefix = line[0];
-      const className =
-        prefix === "-"
-          ? "diff-removed"
-          : prefix === "+"
-            ? "diff-added"
-            : "diff-context";
-      const rowIndex = flatIndex++;
-      rows.push(
-        <div
-          key={`${rowIndex}-${line.slice(0, 50)}`}
-          className={className}
-          data-diff-line={rowIndex}
-        >
-          <span className="diff-prefix">{prefix}</span>
-          {line.slice(1)}
-        </div>,
-      );
-    }
-  }
-  return (
-    <div className="diff-hunk">
-      <pre className="diff-content">{rows}</pre>
-    </div>
-  );
-});

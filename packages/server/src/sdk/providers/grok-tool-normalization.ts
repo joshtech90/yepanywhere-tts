@@ -5,7 +5,8 @@
  * Grok 0.2.112 added a versioned `_meta["x.ai/tool"]` envelope whose label,
  * native name, rich kind, and projected input remain stable while the generic
  * ACP kind/title may change over one tool-call lifecycle. Merge this state by
- * tool-call id before selecting a YA renderer.
+ * tool-call id before selecting a YA renderer. Grok 1.0.4 keeps that envelope
+ * (schema version 1) and adds video, goal, workflow, monitor, and LSP kinds.
  */
 
 export interface GrokCanonicalToolMeta {
@@ -47,8 +48,13 @@ const VARIANT_TO_NATIVE_NAME: Record<string, string> = {
   Task: "spawn_subagent",
   TaskOutput: "get_command_or_subagent_output",
   TodoWrite: "todo_write",
+  UpdateGoal: "update_goal",
+  VideoGen: "video_gen",
+  ImageToVideo: "image_to_video",
+  ReferenceToVideo: "reference_to_video",
   WebFetch: "web_fetch",
   WebSearch: "web_search",
+  Workflow: "workflow",
   Write: "write",
 };
 
@@ -155,6 +161,9 @@ export function buildGrokStructuredToolResult(
       return buildExitPlanModeResult(rawOutput);
     case "ImageGen":
     case "ImageEdit":
+    case "VideoGen":
+    case "ImageToVideo":
+    case "ReferenceToVideo":
       return buildImageResult(rawOutput);
     case "Text":
       return buildTextToolResult(rawOutput, state);
@@ -245,6 +254,10 @@ export function formatGrokToolResultContent(
       return `${rawOutput.type === "ImageEdit" ? "Edited" : "Generated"} image ${
         stringField(rawOutput, "filename") ?? ""
       }`.trim();
+    case "VideoGen":
+    case "ImageToVideo":
+    case "ReferenceToVideo":
+      return `Generated video ${stringField(rawOutput, "filename") ?? ""}`.trim();
     case "Text":
       return stringField(rawOutput, "text") ?? "Task started";
     case "TaskOutput":
@@ -264,14 +277,20 @@ export function formatGrokToolResultContent(
   }
 }
 
+const GROK_MEDIA_OUTPUT_TYPES = new Set([
+  "ImageGen",
+  "ImageEdit",
+  "VideoGen",
+  "ImageToVideo",
+  "ReferenceToVideo",
+]);
+
 export function grokToolResultMediaCandidate(
   update: GrokToolUpdate,
 ): GrokToolResultMediaCandidate | undefined {
   const rawOutput = asRecord(update.rawOutput);
-  if (
-    rawOutput?.type !== "ImageGen" &&
-    rawOutput?.type !== "ImageEdit"
-  ) {
+  const outputType = stringField(rawOutput, "type");
+  if (!outputType || !GROK_MEDIA_OUTPUT_TYPES.has(outputType)) {
     return undefined;
   }
   const originalPath = stringField(rawOutput, "path");
@@ -343,15 +362,31 @@ function rendererName(
   if (nativeName === "enter_plan_mode") return "enter_plan_mode";
   if (nativeName === "image_gen") return "ImageGen";
   if (nativeName === "image_edit") return "ImageEdit";
+  if (nativeName === "image_to_video") return "ImageToVideo";
+  if (nativeName === "reference_to_video") return "ReferenceToVideo";
+  if (nativeName === "video_gen") return "VideoGen";
+  if (nativeName === "update_goal") return "update_goal";
+  if (nativeName === "workflow") return "workflow";
+  if (nativeName === "monitor") return "monitor";
 
   const byLabel: Record<string, string> = {
     "Ask User": "AskUserQuestion",
+    "Code Intelligence": "lsp",
     Edit: "Edit",
     "Exit Plan Mode": "ExitPlanMode",
+    "Generate Video":
+      nativeName === "reference_to_video"
+        ? "ReferenceToVideo"
+        : nativeName === "video_gen"
+          ? "VideoGen"
+          : "ImageToVideo",
+    Monitor: "monitor",
     Read: "Read",
     "Run Command": "Bash",
+    "Update Goal": "update_goal",
     "Web Fetch": "WebFetch",
     "Web Search": "WebSearch",
+    Workflow: "workflow",
     Write: "Write",
   };
   if (label && byLabel[label]) return byLabel[label];
@@ -517,14 +552,33 @@ function normalizeCanonicalInput(
     }
     case "image_gen":
     case "image_edit":
+    case "image_to_video":
+    case "reference_to_video":
+    case "video_gen":
       copyString(rawInput, input, "prompt");
       copyString(rawInput, input, "aspect_ratio");
+      copyString(rawInput, input, "resolution_name");
+      copyNumber(rawInput, input, "duration");
       if (Array.isArray(rawInput?.image)) input.image = rawInput.image;
+      if (Array.isArray(rawInput?.images)) input.images = rawInput.images;
       if (rawOutput) {
         copyString(rawOutput, input, "path");
         copyString(rawOutput, input, "filename");
         copyString(rawOutput, input, "session_folder");
+        copyString(rawOutput, input, "uploaded_url");
       }
+      break;
+    case "update_goal":
+      copyString(rawInput, input, "objective");
+      copyString(rawInput, input, "status");
+      break;
+    case "workflow":
+      copyString(rawInput, input, "name");
+      copyString(rawInput, input, "action");
+      break;
+    case "monitor":
+      copyRawString(rawInput, input, "command");
+      copyString(rawInput, input, "description");
       break;
   }
 }
@@ -589,7 +643,11 @@ function readFilePath(
   return (
     stringField(asRecord(rawOutput.FileContent), "absolute_path") ??
     firstLocationPath(update) ??
-    firstString(asRecord(update.rawInput), ["target_file", "file_path", "path"]) ??
+    firstString(asRecord(update.rawInput), [
+      "target_file",
+      "file_path",
+      "path",
+    ]) ??
     stringField(toolInput, "file_path") ??
     ""
   );
@@ -600,9 +658,7 @@ function buildGrepResult(
   toolInput?: Record<string, unknown>,
 ) {
   const stdout =
-    decodeByteArray(rawOutput.stdout) ??
-    stringField(rawOutput, "stdout") ??
-    "";
+    decodeByteArray(rawOutput.stdout) ?? stringField(rawOutput, "stdout") ?? "";
   const mode = grepMode(stringField(toolInput, "output_mode"));
   const fileMatches = Array.isArray(rawOutput.file_matches)
     ? rawOutput.file_matches.flatMap((value) => {
@@ -636,9 +692,7 @@ function buildGrepResult(
   if (matches.length > 0) result.matches = matches;
   if (mode === "content") {
     result.content = stripWorkspaceResultEnvelope(stdout);
-    result.numLines = String(result.content)
-      .split("\n")
-      .filter(Boolean).length;
+    result.numLines = String(result.content).split("\n").filter(Boolean).length;
   }
   const appliedLimit = numberField(toolInput, "head_limit");
   if (appliedLimit !== undefined) result.appliedLimit = appliedLimit;
@@ -706,11 +760,7 @@ function buildEditResult(
     originalFile: "",
     replaceAll: toolInput?.replace_all === true,
     userModified: false,
-    structuredPatch: structuredPatchFromUpdate(
-      update,
-      oldString,
-      newString,
-    ),
+    structuredPatch: structuredPatchFromUpdate(update, oldString, newString),
   };
 }
 
@@ -741,8 +791,7 @@ function buildWebFetchResult(
     codeText: code === 200 ? "OK" : code ? `HTTP ${code}` : "",
     result: rawStringField(content, "content") ?? "",
     durationMs: 0,
-    url:
-      stringField(content, "url") ?? stringField(toolInput, "url") ?? "",
+    url: stringField(content, "url") ?? stringField(toolInput, "url") ?? "",
   };
 }
 
@@ -768,11 +817,19 @@ function buildExitPlanModeResult(rawOutput: Record<string, unknown>) {
 }
 
 function buildImageResult(rawOutput: Record<string, unknown>) {
+  const outputType = stringField(rawOutput, "type");
+  const isVideo =
+    outputType === "VideoGen" ||
+    outputType === "ImageToVideo" ||
+    outputType === "ReferenceToVideo";
   return {
-    type: "image",
+    type: isVideo ? "video" : "image",
     path: stringField(rawOutput, "path") ?? "",
     filename: stringField(rawOutput, "filename") ?? "",
     sessionFolder: stringField(rawOutput, "session_folder") ?? "",
+    ...(stringField(rawOutput, "uploaded_url")
+      ? { uploadedUrl: stringField(rawOutput, "uploaded_url") }
+      : {}),
   };
 }
 
@@ -845,8 +902,7 @@ function normalizeQuestions(value: unknown): Record<string, unknown>[] {
       {
         question: text,
         header:
-          stringField(record, "header") ??
-          `Question ${String(index + 1)}`,
+          stringField(record, "header") ?? `Question ${String(index + 1)}`,
         options,
         multiSelect: record?.multiSelect === true,
       },
@@ -1031,9 +1087,7 @@ function stringArray(value: unknown): string[] {
 function decodeByteArray(value: unknown): string | undefined {
   if (
     !Array.isArray(value) ||
-    !value.every(
-      (byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255,
-    )
+    !value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
   ) {
     return undefined;
   }

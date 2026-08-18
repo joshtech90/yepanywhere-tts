@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  beginTooltipSuppression,
   clearTooltipWarmth,
   DEFAULT_TOOLTIP_DELAY_MS,
   TOOLTIP_CLOSE_DELAY_MULTIPLIER,
@@ -19,6 +20,28 @@ import { TooltipLayer } from "../TooltipLayer";
 import styles from "../TooltipLayer.module.css";
 
 const originalClipboard = navigator.clipboard;
+
+function mockElementRect(
+  element: Element,
+  {
+    left,
+    top,
+    width,
+    height,
+  }: { left: number; top: number; width: number; height: number },
+) {
+  vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({}),
+  });
+}
 
 describe("TooltipLayer", () => {
   beforeEach(() => {
@@ -34,6 +57,7 @@ describe("TooltipLayer", () => {
     localStorage.clear();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: originalClipboard,
@@ -67,6 +91,9 @@ describe("TooltipLayer", () => {
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
     expect(screen.getByRole("tooltip").textContent).toBe("Command tail");
+    expect(screen.getByRole("tooltip").classList).not.toContain(
+      styles.glossary,
+    );
 
     fireEvent.pointerMove(target, {
       pointerType: "mouse",
@@ -169,7 +196,7 @@ describe("TooltipLayer", () => {
     expect(screen.getByRole("tooltip").textContent).toBe("Accidental hint");
   });
 
-  it("keeps the tooltip open while hovering and selecting its text", () => {
+  it("keeps a passive tooltip open across its visible rectangle", () => {
     render(
       <>
         <TooltipLayer />
@@ -190,27 +217,27 @@ describe("TooltipLayer", () => {
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
     const tooltip = screen.getByRole("tooltip");
+    mockElementRect(tooltip, {
+      left: 18,
+      top: 18,
+      width: 80,
+      height: 40,
+    });
 
     fireEvent.pointerOut(target, {
       pointerType: "mouse",
       clientX: 20,
       clientY: 20,
-      relatedTarget: tooltip,
+      relatedTarget: underlyingTarget,
     });
-    fireEvent.pointerOver(tooltip, {
+    fireEvent.pointerOver(underlyingTarget, {
       pointerType: "mouse",
       clientX: 20,
       clientY: 20,
       relatedTarget: target,
     });
-    fireEvent.pointerMove(tooltip, {
+    fireEvent.pointerMove(underlyingTarget, {
       pointerType: "mouse",
-      clientX: 22,
-      clientY: 20,
-    });
-    fireEvent.pointerDown(tooltip, {
-      pointerType: "mouse",
-      button: 0,
       clientX: 22,
       clientY: 20,
     });
@@ -221,6 +248,106 @@ describe("TooltipLayer", () => {
     );
     expect(screen.getByRole("tooltip").textContent).toBe("Selectable tail");
     expect(underlyingTarget.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("allows activation through a passive tooltip only to its trigger", () => {
+    const onTriggerClick = vi.fn();
+    const onCoveredPointerDown = vi.fn();
+    const onCoveredClick = vi.fn();
+    const onCoveredAuxClick = vi.fn();
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" title="Trigger hint" onClick={onTriggerClick}>
+          Trigger
+        </button>
+        <button
+          type="button"
+          onPointerDown={onCoveredPointerDown}
+          onClick={onCoveredClick}
+          onAuxClick={onCoveredAuxClick}
+        >
+          Covered
+        </button>
+      </>,
+    );
+    const trigger = screen.getByRole("button", { name: "Trigger" });
+    const covered = screen.getByRole("button", { name: "Covered" });
+
+    const showTriggerTooltip = () => {
+      fireEvent.pointerOut(trigger, {
+        pointerType: "mouse",
+        relatedTarget: document.body,
+      });
+      fireEvent.pointerOver(trigger, {
+        pointerType: "mouse",
+        clientX: 10,
+        clientY: 10,
+      });
+      act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+      const tooltip = screen.getByRole("tooltip");
+      mockElementRect(tooltip, {
+        left: 18,
+        top: 18,
+        width: 80,
+        height: 40,
+      });
+    };
+
+    showTriggerTooltip();
+    fireEvent.pointerDown(trigger, {
+      pointerType: "mouse",
+      button: 0,
+      clientX: 20,
+      clientY: 20,
+    });
+    fireEvent.click(trigger, {
+      button: 0,
+      clientX: 20,
+      clientY: 20,
+      ctrlKey: true,
+      detail: 1,
+    });
+    expect(onTriggerClick).toHaveBeenCalledTimes(1);
+
+    showTriggerTooltip();
+    expect(
+      fireEvent.pointerDown(covered, {
+        pointerType: "mouse",
+        button: 0,
+        clientX: 20,
+        clientY: 20,
+      }),
+    ).toBe(false);
+    expect(
+      fireEvent.click(covered, {
+        button: 0,
+        clientX: 20,
+        clientY: 20,
+        detail: 1,
+      }),
+    ).toBe(false);
+    expect(onCoveredPointerDown).not.toHaveBeenCalled();
+    expect(onCoveredClick).not.toHaveBeenCalled();
+
+    showTriggerTooltip();
+    fireEvent.pointerDown(covered, {
+      pointerType: "mouse",
+      button: 1,
+      clientX: 20,
+      clientY: 20,
+    });
+    covered.dispatchEvent(
+      new MouseEvent("auxclick", {
+        bubbles: true,
+        cancelable: true,
+        button: 1,
+        clientX: 20,
+        clientY: 20,
+        detail: 1,
+      }),
+    );
+    expect(onCoveredAuxClick).not.toHaveBeenCalled();
   });
 
   it("opens a temporally adjacent tooltip immediately only after a reveal", () => {
@@ -320,6 +447,63 @@ describe("TooltipLayer", () => {
     expect(screen.getByRole("tooltip").textContent).toBe("Send message\nEnter");
   });
 
+  it("gives nested glossary and file hints priority over a row hint", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <div data-testid="output" data-tooltip="Command output tail">
+          <span
+            data-glossary-term="true"
+            data-tooltip="oracle — Best published system."
+          >
+            oracle
+          </span>{" "}
+          <a
+            href="/files/run.mjs"
+            data-fixed-font-file-path="scripts/run.mjs"
+            data-tooltip="scripts/run.mjs"
+          >
+            run.mjs
+          </a>
+        </div>
+      </>,
+    );
+    const output = screen.getByTestId("output");
+    const term = screen.getByText("oracle");
+    const file = screen.getByText("run.mjs");
+
+    fireEvent.pointerOver(output, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip").textContent).toBe("Command output tail");
+
+    fireEvent.pointerOver(term, {
+      pointerType: "mouse",
+      clientX: 11,
+      clientY: 10,
+    });
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+
+    fireEvent.pointerOver(output, {
+      pointerType: "mouse",
+      clientX: 40,
+      clientY: 10,
+    });
+    expect(screen.getByRole("tooltip").textContent).toBe("Command output tail");
+
+    fireEvent.pointerOver(file, {
+      pointerType: "mouse",
+      clientX: 41,
+      clientY: 10,
+    });
+    expect(screen.getByRole("tooltip").textContent).toBe("scripts/run.mjs");
+  });
+
   it("suppresses an exact-content tooltip while the full text is visible", () => {
     render(
       <>
@@ -382,6 +566,7 @@ describe("TooltipLayer", () => {
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
 
     expect(screen.getByRole("tooltip").textContent).toBe("Clipped command");
+    expect(target.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("keeps a row tooltip when its exact-text child is clipped", () => {
@@ -421,6 +606,36 @@ describe("TooltipLayer", () => {
     expect(screen.getByRole("tooltip").textContent).toBe(
       "src/a/long-file-name.ts",
     );
+  });
+
+  it("suppresses a visible exact-text owner inside a composite target", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" data-tooltip="Visible title">
+          <span>Visible title</span>
+          <small>Project · 2m</small>
+        </button>
+      </>,
+    );
+    const title = screen.getByText("Visible title");
+    const target = title.closest("button");
+    expect(target).not.toBeNull();
+    Object.defineProperties(title, {
+      clientWidth: { configurable: true, value: 100 },
+      clientHeight: { configurable: true, value: 24 },
+      scrollWidth: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 24 },
+    });
+
+    fireEvent.pointerOver(target!, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
   it("keeps an exact-content tooltip when a scroll ancestor clips it", () => {
@@ -499,6 +714,54 @@ describe("TooltipLayer", () => {
     expect(target.getAttribute("aria-describedby")).toBeNull();
     expect(target.getAttribute("title")).toBe("");
     expect(target.getAttribute("data-tooltip")).toBe("Focused hint");
+  });
+
+  it("ignores focus departure from an element outside the active trigger", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button">Previously focused</button>
+        <button type="button" title="Hovered hint">
+          Hovered
+        </button>
+      </>,
+    );
+    const previous = screen.getByRole("button", {
+      name: "Previously focused",
+    });
+    const target = screen.getByRole("button", { name: "Hovered" });
+    fireEvent.focusIn(previous);
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+
+    fireEvent.focusOut(previous, { relatedTarget: document.body });
+
+    expect(screen.getByRole("tooltip").textContent).toBe("Hovered hint");
+  });
+
+  it("does not repeat an icon control name as its description", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" aria-label="Settings" title="Settings">
+          <svg aria-hidden="true" />
+        </button>
+      </>,
+    );
+    const target = screen.getByRole("button", { name: "Settings" });
+    vi.spyOn(target, "matches").mockImplementation(
+      (selector) => selector === ":focus-visible",
+    );
+
+    fireEvent.focusIn(target);
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+
+    expect(screen.getByRole("tooltip").textContent).toBe("Settings");
+    expect(target.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("does not open a themed tooltip when a touch tap focuses its target", () => {
@@ -608,9 +871,7 @@ describe("TooltipLayer", () => {
     view.rerender(
       <>
         <TooltipLayer />
-        <button type="button">
-          Target
-        </button>
+        <button type="button">Target</button>
       </>,
     );
     await act(async () => Promise.resolve());
@@ -640,14 +901,122 @@ describe("TooltipLayer", () => {
       clientY: 10,
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    const tooltip = screen.getByRole("tooltip");
+    mockElementRect(tooltip, {
+      left: 18,
+      top: 18,
+      width: 100,
+      height: 40,
+    });
+    const initialPosition = {
+      left: tooltip.style.left,
+      top: tooltip.style.top,
+    };
 
-    fireEvent.contextMenu(screen.getByRole("tooltip"));
+    fireEvent.contextMenu(target, { clientX: 20, clientY: 20 });
 
     expect(writeText).toHaveBeenCalledWith("Copy this tail");
-    expect(screen.getByRole("tooltip").classList).toContain(styles.enlarged);
+    expect(tooltip.classList).toContain(styles.enlarged);
+    expect(tooltip.style.left).toBe(initialPosition.left);
+    expect(tooltip.style.top).toBe(initialPosition.top);
   });
 
-  it("preserves the browser menu for selected tooltip text", () => {
+  it("moves an enlarged tooltip only enough to remain in the viewport", () => {
+    vi.stubGlobal("innerWidth", 300);
+    vi.stubGlobal("innerHeight", 200);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" title="Edge tooltip">
+          Trigger
+        </button>
+      </>,
+    );
+    const target = screen.getByRole("button", { name: "Trigger" });
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 260,
+      clientY: 20,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    const tooltip = screen.getByRole("tooltip");
+    const enlargedClass = styles.enlarged;
+    if (!enlargedClass) throw new Error("missing enlarged tooltip class");
+    vi.spyOn(tooltip, "getBoundingClientRect").mockImplementation(() => {
+      const left = Number.parseFloat(tooltip.style.left) || 0;
+      const top = Number.parseFloat(tooltip.style.top) || 0;
+      const width = tooltip.classList.contains(enlargedClass) ? 200 : 100;
+      const height = tooltip.classList.contains(enlargedClass) ? 60 : 40;
+      return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({}),
+      };
+    });
+    fireEvent.resize(window);
+    expect(tooltip.style.left).toBe("146px");
+
+    fireEvent.contextMenu(target, { clientX: 150, clientY: 40 });
+
+    expect(writeText).toHaveBeenCalledWith("Edge tooltip");
+    expect(tooltip.style.left).toBe("92px");
+    expect(tooltip.style.top).toBe("34px");
+  });
+
+  it("clears a hover tooltip while an app context menu is mounted", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" title="Copy this tail">
+          Ran
+        </button>
+      </>,
+    );
+    const target = screen.getByRole("button", { name: "Ran" });
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    let release = () => {};
+    act(() => {
+      release = beginTooltipSuppression();
+    });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.pointerMove(target, {
+      pointerType: "mouse",
+      clientX: 40,
+      clientY: 40,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    act(() => release());
+    fireEvent.pointerMove(target, {
+      pointerType: "mouse",
+      clientX: 60,
+      clientY: 60,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("preserves an existing page selection on a passive context click", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -672,16 +1041,105 @@ describe("TooltipLayer", () => {
       clientY: 10,
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    const tooltip = screen.getByRole("tooltip");
+    mockElementRect(tooltip, {
+      left: 18,
+      top: 18,
+      width: 100,
+      height: 40,
+    });
 
-    fireEvent.contextMenu(screen.getByRole("tooltip"));
+    fireEvent.contextMenu(target, { clientX: 20, clientY: 20 });
 
     expect(writeText).not.toHaveBeenCalled();
-    expect(screen.getByRole("tooltip").classList).not.toContain(
-      styles.enlarged,
-    );
+    expect(tooltip.classList).not.toContain(styles.enlarged);
   });
 
-  it("preserves an app-owned context click instead of copying", () => {
+  it("contains wheel scrolling inside an overflowing passive tooltip", () => {
+    const onCoveredWheel = vi.fn();
+    render(
+      <>
+        <TooltipLayer />
+        <button type="button" title="Long tooltip content">
+          Trigger
+        </button>
+        <button type="button" onWheel={onCoveredWheel}>
+          Covered
+        </button>
+      </>,
+    );
+    const target = screen.getByRole("button", { name: "Trigger" });
+    const covered = screen.getByRole("button", { name: "Covered" });
+    fireEvent.pointerOver(target, {
+      pointerType: "mouse",
+      clientX: 10,
+      clientY: 10,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    const tooltip = screen.getByRole("tooltip");
+    mockElementRect(tooltip, {
+      left: 18,
+      top: 18,
+      width: 100,
+      height: 40,
+    });
+    let scrollTop = 80;
+    Object.defineProperties(tooltip, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    const initialPosition = {
+      left: tooltip.style.left,
+      top: tooltip.style.top,
+    };
+
+    expect(
+      fireEvent.wheel(covered, {
+        clientX: 20,
+        clientY: 20,
+        deltaY: 30,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      }),
+    ).toBe(false);
+    expect(scrollTop).toBe(100);
+    expect(onCoveredWheel).not.toHaveBeenCalled();
+    expect(tooltip.style.left).toBe(initialPosition.left);
+    expect(tooltip.style.top).toBe(initialPosition.top);
+
+    expect(
+      fireEvent.wheel(covered, {
+        clientX: 20,
+        clientY: 20,
+        deltaY: 30,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      }),
+    ).toBe(false);
+    expect(scrollTop).toBe(100);
+    expect(onCoveredWheel).not.toHaveBeenCalled();
+
+    Object.defineProperty(tooltip, "scrollHeight", {
+      configurable: true,
+      value: 100,
+    });
+    expect(
+      fireEvent.wheel(covered, {
+        clientX: 20,
+        clientY: 20,
+        deltaY: 30,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      }),
+    ).toBe(true);
+    expect(onCoveredWheel).toHaveBeenCalledTimes(1);
+  });
+
+  it("yields to an app-owned context click instead of copying", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -706,16 +1164,15 @@ describe("TooltipLayer", () => {
       clientY: 10,
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
 
     fireEvent.contextMenu(target);
 
     expect(writeText).not.toHaveBeenCalled();
-    expect(screen.getByRole("tooltip").classList).not.toContain(
-      styles.enlarged,
-    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("preserves a browser-owned link context menu instead of copying", () => {
+  it("yields to a browser-owned link context menu instead of copying", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -737,16 +1194,25 @@ describe("TooltipLayer", () => {
       clientY: 10,
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
 
-    fireEvent.contextMenu(target);
+    fireEvent.contextMenu(target, { clientX: 10, clientY: 10 });
 
     expect(writeText).not.toHaveBeenCalled();
-    expect(screen.getByRole("tooltip").classList).not.toContain(
-      styles.enlarged,
-    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // The pointer is still parked on the link, so re-hovering it must not put
+    // the tooltip back over the menu that just opened.
+    fireEvent.pointerMove(target, {
+      pointerType: "mouse",
+      clientX: 12,
+      clientY: 12,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("leaves title timing and presentation to the browser by default", () => {
+  it("uses the themed tooltip layer by default", () => {
     localStorage.removeItem(UI_KEYS.tooltipMode);
     render(
       <>
@@ -765,7 +1231,256 @@ describe("TooltipLayer", () => {
     });
     act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS * 2));
 
-    expect(target.getAttribute("title")).toBe("Browser tip");
+    expect(target.getAttribute("title")).toBe("");
+    expect(target.getAttribute("data-tooltip")).toBe("Browser tip");
+    expect(screen.getByRole("tooltip").textContent).toBe("Browser tip");
+  });
+
+  it("reveals and copies a glossary definition even in native mode", () => {
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <>
+        <TooltipLayer />
+        <span
+          data-glossary-term="true"
+          title="oracle — Best published system."
+          role="button"
+          tabIndex={0}
+        >
+          oracle
+        </span>
+      </>,
+    );
+    const term = screen.getByRole("button", { name: "oracle" });
+
+    fireEvent.click(term, { clientX: 20, clientY: 30 });
+
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+    expect(screen.getByRole("tooltip").classList).toContain(styles.glossary);
+    expect(screen.getByRole("tooltip").classList).toContain(styles.enlarged);
+    expect(writeText).toHaveBeenCalledWith("oracle — Best published system.");
+    expect(term.getAttribute("title")).toBe("oracle — Best published system.");
+    expect(term.getAttribute("data-tooltip")).toBeNull();
+  });
+
+  it("isolates glossary pointer and keyboard activation from enclosing actions", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const openEnclosing = vi.fn();
+    const activateEnclosing = vi.fn();
+    render(
+      <>
+        <TooltipLayer />
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Open enclosing preview"
+          onClick={openEnclosing}
+          onKeyDown={activateEnclosing}
+        >
+          <span
+            data-glossary-term="true"
+            data-tooltip="oracle — Best published system."
+            role="button"
+            tabIndex={0}
+          >
+            oracle
+          </span>
+        </div>
+      </>,
+    );
+    const term = screen.getByRole("button", { name: "oracle" });
+
+    fireEvent.click(term, { clientX: 20, clientY: 30 });
+    fireEvent.keyDown(term, { key: "Enter" });
+    fireEvent.keyDown(term, { key: " " });
+
+    expect(writeText).toHaveBeenCalledTimes(3);
+    expect(openEnclosing).not.toHaveBeenCalled();
+    expect(activateEnclosing).not.toHaveBeenCalled();
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+  });
+
+  it("marks a passively hovered glossary definition without enlarging it", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <span
+          data-glossary-term="true"
+          data-tooltip="oracle — Best published system."
+        >
+          oracle
+        </span>
+      </>,
+    );
+    const term = screen.getByText("oracle");
+
+    fireEvent.pointerOver(term, {
+      pointerType: "mouse",
+      clientX: 20,
+      clientY: 30,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS));
+
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip.classList).toContain(styles.glossary);
+    expect(tooltip.classList).not.toContain(styles.enlarged);
+  });
+
+  it("does not activate glossary hover while a text-selection drag is active", () => {
+    render(
+      <>
+        <TooltipLayer />
+        <span
+          data-glossary-term="true"
+          data-tooltip="oracle — Best published system."
+        >
+          oracle
+        </span>
+      </>,
+    );
+
+    fireEvent.pointerOver(screen.getByText("oracle"), {
+      pointerType: "mouse",
+      buttons: 1,
+      clientX: 20,
+      clientY: 30,
+    });
+    act(() => vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS * 2));
+
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("leaves activated glossary text selection to the browser", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <>
+        <TooltipLayer />
+        <span
+          data-glossary-term="true"
+          data-tooltip="oracle — Best published system."
+          role="button"
+          tabIndex={0}
+        >
+          oracle
+        </span>
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "oracle" }));
+    const tooltip = screen.getByRole("tooltip");
+
+    expect(fireEvent.contextMenu(tooltip)).toBe(true);
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(tooltip.classList).toContain(styles.enlarged);
+  });
+
+  it("reveals a glossary definition inside a click-isolated dialog", () => {
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    render(
+      <>
+        <TooltipLayer />
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: This fixture deliberately isolates bubbled clicks; the term itself remains keyboard-operable. */}
+        <dialog open onClick={(event) => event.stopPropagation()}>
+          <span
+            data-glossary-term="true"
+            title="oracle — Best published system."
+            role="button"
+            tabIndex={0}
+          >
+            oracle
+          </span>
+        </dialog>
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "oracle" }));
+
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+  });
+
+  it("reveals a native-mode glossary definition on keyboard focus", () => {
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    render(
+      <>
+        <TooltipLayer />
+        <span
+          data-glossary-term="true"
+          title="oracle — Best published system."
+          role="button"
+          tabIndex={0}
+        >
+          oracle
+        </span>
+      </>,
+    );
+    const term = screen.getByRole("button", { name: "oracle" });
+    vi.spyOn(term, "matches").mockImplementation(
+      (selector) => selector === ":focus-visible",
+    );
+
+    fireEvent.focusIn(term);
+
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+  });
+
+  it("preserves glossary text selection instead of activating it", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const openEnclosing = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.spyOn(document, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      toString: () => "oracle",
+    } as Selection);
+    render(
+      <>
+        <TooltipLayer />
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Open enclosing preview"
+          onClick={openEnclosing}
+          onKeyDown={openEnclosing}
+        >
+          <span
+            data-glossary-term="true"
+            data-tooltip="oracle — Best published system."
+            role="button"
+            tabIndex={0}
+          >
+            oracle
+          </span>
+        </div>
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "oracle" }));
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(openEnclosing).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });

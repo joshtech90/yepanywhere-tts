@@ -27,56 +27,101 @@ integration, conflict resolution, and recovery remain agent work unless a
 separate proposal justifies one operation's preconditions, feedback, and
 recovery.
 
-The navigation surface has three modes:
+Every Git subprocess launched through Source Control disables Git's optional
+locks. Passive status, diff, history, and file observation must not
+opportunistically refresh the index or briefly create `.git/index.lock` while
+an agent or the user is doing concurrent Git work. Explicit Pull, Push, and
+review-object mutations still take every lock Git requires for correctness.
+
+The navigation surface has these modes:
 
 - **Changes** is the default quick check and owns both the current
-  HEAD-to-filesystem state and explicitly opened commit history. **Working
-  tree** is its permanent default revision, including when its diff is empty.
+  HEAD-to-filesystem state and commit history. **Working tree status** is its
+  normal landing at every repository state. A browser-local preference may
+  instead select the newest commit when the repository is clean; Working tree
+  remains available as a pinned revision.
 - **Files** searches tracked paths and opens file content immediately, then
   enriches its blame column asynchronously when provenance becomes available.
-- **Comments** is the integration point for the pending review workflow owned
-  by [Source Review → New Session](source-review-to-session.md).
+- **Pending Comments** is the unsubmitted accumulator owned by
+  [Source Review → New Session](source-review-to-session.md). Its stable URL
+  key remains `comments`, preserving existing `?tab=comments` links.
+- **Reviews** is the submission and comment-site browser owned by that topic.
+  Its URL key is `reviews`; it shows frozen reviewer entries, captured source,
+  target sessions, outcomes, and open/addressed/resolved state as those
+  contracts become available. The added fourth mode means the wrapping rule
+  in *Header hierarchy* below must be re-verified at phone width rather than
+  assumed to still fit.
 
-Normal Source Control navigation opens Changes with Working tree selected.
-Neither a clean tree nor an empty changed-file list falls through to HEAD or
-another commit. A clean tree renders a quiet confirmation with no recent
-commit card or history list. The detail-level **‹ Commit history** parent link
-is the explicit path into commits and occupies the same position for Working
-tree and narrow-screen commit detail; it names the parent destination without
-claiming that history was necessarily the user's previous view. Legacy
-`?tab=commits` URLs enter that history inside Changes, and a `?rev=<sha>` deep
-link selects its commit.
+Normal Source Control navigation opens Changes with Working tree selected. A
+clean repository renders its quiet clean-state confirmation at desktop and
+phone widths; a dirty repository renders its changed files. The browser-local
+**When the working tree is clean** preference may choose **Latest commit**
+instead of the default **Working tree status** landing. If the repository has
+no commits, the clean Working tree confirmation remains the fallback.
+
+A user-selected mode pushes a browser-history entry. Back from Pending Comments
+or Reviews therefore restores the preceding Source Control mode; a direct entry
+at `?tab=comments` still backs out of Source Control rather than inventing an
+internal predecessor. Phone commit-detail history remains a separate nested
+interaction.
+
+The preference applies only when navigation did not already identify an
+explicit source target. The detail-level **‹ Commit history** parent link,
+legacy `?tab=commits` URL, and `?history=1` open history inside Changes; a
+`?rev=<sha>` deep link selects its commit. A working-tree file link adds
+`?worktreeFile=<path>`; a committed-file link combines `?rev=<sha>` with
+`?commitFile=<path>`. Both select the named file's diff as soon as its corpus is
+available, including the phone drill-in flow.
+
+The pinned Working tree row remains available in history and reflects its
+actual state: clean uses calm success/neutral treatment and explicit clean
+copy, while dirty uses warning treatment with its changed-file count. Selected
+commit detail identifies only the commit; repository cleanliness remains in
+the Source Control identity header and is not repeated as commit metadata.
 
 Desktop uses master-detail panes once history is open; phone layouts drill
 from revisions to files to a full-screen diff and restore the prior list
-position on Back or back-swipe. Once history is open, the pinned Working tree
-behaves like any other revision: desktop keeps it selected beside the history
-list, while phone opens its detail with **‹ Commit history** returning to that
-list. The top-level Changes tab or Clean/Dirty badge restores the standalone
-default working-tree landing.
+position on Back or back-swipe. The pinned Working tree behaves like any other
+revision: desktop keeps it selected beside the history list, while phone opens
+its detail with **‹ Commit history** returning to that list. The top-level
+Changes tab reapplies the status-sensitive landing; the Dirty badge restores
+the standalone Working tree landing.
 
 ## Header hierarchy
 
-The Source Control header keeps repository identity and repository operations
-in separate visual bands. Project selection, branch, upstream, ahead/behind
-state, and the Clean/Dirty badge form the identity band. When the available
-header width fits the complete mode selector, Changes/Files/Comments
-occupies the trailing top-right space without displacing that identity.
-Constrained layouts move the same tabs to their own full-width row.
-One selector serves every viewport: the placement is browser-computed from the
-rendered intrinsic widths of a wrapping header row, not chosen by a
-viewport-width threshold. A narrow-screen rule only compacts the tab styling
-once the row has wrapped.
+Project selection, branch, upstream, ahead/behind state, and the Clean/Dirty
+badge form the Source Control identity cluster. Changes/Files/Pending
+Comments/Reviews is the trailing mode selector. Pull, Push, Check remote, and
+Comments form one repository-action group in that fixed order.
 
-Pull, Push, and Check remote form a second, left-anchored action row in that
-fixed order at every viewport width. Review remains independently anchored at
-the trailing edge. Branch names, upstream names, count badges, action progress,
-and action outcomes must not move the Pull/Push/Check group. Their visible
-labels stay constant while a leading action glyph changes in place to present
-progress and brief success/warning state. Full action feedback remains visible
-below the action row. The project selector retains its intrinsic width, up to
-its desktop cap, before branch and upstream text yield space; ordinary short
-project names must not truncate while unused header space remains.
+On a wide layout, repository actions occupy the title row between identity and
+the trailing modes only when the rendered intrinsic widths of all three groups
+fit. A `ResizeObserver`-backed measurement responds to identity, capability,
+count, and viewport changes; a viewport breakpoint does not infer that fit.
+When they do not fit, identity and modes retain the upper row and repository
+actions take a full-width fallback row below it. Constrained layouts give the
+mode selector and repository actions full-width rows. The same control
+instances move between placements rather than being duplicated.
+
+The branch name in the identity cluster is navigation to the commit that branch
+points at — `recentCommits[0]`, the current `HEAD` tip. It is a real anchor with
+a standalone `?rev=<sha>` URL, so middle-click, modifier-click, and “open in new
+tab” work, while plain left-click stays in the current tab. A detached `HEAD`
+keeps its detached label and still opens and copies that tip SHA. The copy
+control stays beside the name: the name click navigates, the icon copies. A
+server without the Source Control browser leaves the name inert rather than
+linking to a view it cannot render.
+
+Comments always opens Pending Comments, including when drafts exist; submission
+remains on that pane. In the full-width fallback, Comments stays at the trailing
+edge while Pull, Push, and Check remote remain left-anchored. Branch names,
+upstream names, count badges, action progress, and action outcomes must not move
+the Pull/Push/Check group. Their visible labels stay constant while a leading
+action glyph changes in place to present progress and brief success/warning
+state. Full action feedback remains visible below the header. The project
+selector retains its intrinsic width, up to its desktop cap, before branch and
+upstream text yield space; ordinary short project names must not truncate while
+unused header space remains.
 
 A successful fast-forward Pull reports the number of commits by which the
 local branch advanced, or **Already up to date** when `HEAD` did not move. A
@@ -137,12 +182,25 @@ plus additional unstaged changes, use the explicit short label **partial**
 rather than the opaque `±`; its tooltip says “Partially staged: staged changes
 plus additional unstaged changes.”
 
+Compact untracked directories remain outline groups as their existing bounded
+background scan returns children. A group with more than ten loaded children
+starts collapsed; smaller groups start expanded. Expanded child labels omit the
+shared parent while the row tooltip and action identity retain the canonical
+full path. The scan reports loaded/total directory progress, and search reveals
+matching children already received without overwriting a user's collapsed
+state. Clearing the query restores that state. Unloaded children remain outside
+search coverage until the current server enumeration returns them; the progress
+signal is the visible completeness boundary.
+
 Working-tree changes, commit revisions, and Files use one shared file-row/path
-treatment. A truncated
-path exposes its full value from the actual row hover/focus target in both
-Native and Themed tooltip modes; a nested `title` that happens to work in only
-one mode is not sufficient. Touch layouts preserve more path identity in the
-row itself rather than depending on hover.
+treatment. A case-insensitive search match is highlighted and held visible: the
+leading prefix yields from its start and the suffix consumes the remaining live
+row width. A truncated path exposes its full value from the actual row
+hover/focus target in both Native and Themed tooltip modes; a nested `title`
+that happens to work in only one mode is not sufficient. Desktop row menus
+overlay the trailing edge instead of reserving permanent path width. Touch
+layouts keep the menu target in flow and preserve more path identity in the row
+itself rather than depending on hover.
 
 ### Diff gutter
 
@@ -177,6 +235,15 @@ shared ellipsis/context menu discloses the full action set. Right-click,
 long-press, the visible ellipsis, and Shift+F10/Menu open the same accessible
 menu with focus return and keyboard traversal.
 
+When the selected commit has a body, its message card begins with the complete,
+wrapping subject even though the detail banner retains its compact ellipsized
+copy. The subject is preserved verbatim; only likely manual prose wrapping in
+the commit body is folded to the pane width. Its text is selectable; mouse
+activation opens the verbatim message only when the release did not complete a
+selection, while Enter and Space remain keyboard activation. Phone detail keeps
+the full subject above its compact full-message action. **‹ Commit history** is
+styled as an actionable parent link rather than a full-width section label.
+
 Source lists support Up/Down selection, Enter drill-in, Escape return, and `/`
 to focus search when focus is outside an editor. Diff navigation supports
 previous/next hunk and a visible current-hunk indicator. Browser shortcuts must
@@ -203,6 +270,19 @@ live working-tree refresh changes the diff while full context is open, YA
 invalidates and reloads that projection. An older request resolving later
 cannot overwrite the newer projection.
 
+A diff-only/full-context switch preserves the first changed row's current
+viewport offset rather than centering that row. Source Control and session Edit
+details share both this scroll-anchor primitive and the unified diff renderer,
+so the hunk remains visually stationary while surrounding source and the
+scrollbar appear.
+
+A live working-tree refresh preserves the user's selected Diff/Markdown
+Preview mode and maintains the viewed position on a best-effort basis. Until
+the aligned source-marker projection exists, preserving the relative scrollbar
+position is sufficient. If one refreshed response cannot supply Markdown
+preview content, YA temporarily shows the source diff without clearing the
+user's preview choice; preview resumes when a later response can render it.
+
 Source Control presents a text diff only when the exact Git projection is not
 classified as binary and both file versions are safe UTF-8 text. Git attributes
 that mark a tracked path binary are authoritative; a filename extension alone
@@ -214,6 +294,14 @@ A current client also suppresses binary-looking structured patch text returned
 by an older server. Large-content, long-line, and highlighted-HTML limits remain
 independent reasons to omit a text preview.
 
+Markdown Preview follows the explicit diff/full-context scope. Diff-only uses
+the same approximate diff-aware rich-text projection as session Edit details,
+including added/removed/context lanes. Full context renders the complete
+post-change document and may sacrifice changed-block emphasis for a faithful
+whole-file render. Copy content follows that same scope. Exact source-line
+identities, aligned blocks, and the cross-representation scroll contract live in
+[aligned Markdown diffs](aligned-markdown-diffs.md).
+
 The wide diff pane keeps filename, path, view controls, hunk navigation, and
 file actions in one toolbar row when they fit. A narrow pane or phone modal may
 use a compact second row. The filename is the primary identity: it uses compact
@@ -223,12 +311,53 @@ keeps its rightmost segment next to the filename. Toolbar actions use compact
 glyphs with complete hover and accessible names; hunk position uses the
 language-neutral `current/total` form.
 
+Ignore whitespace uses the conventional open-box space glyph `␣`. Its compact
+button is outlined when off and accent-filled when pressed; the selected state
+must not depend on interpreting the glyph or a subtle tint.
+
 Each commit and working-tree changed-file pane exposes one compact file-filter
-disclosure. Opening its magnifier expands a path search across the pane's
-complete current file corpus, including expanded untracked files and both sides
-of a rename. Filtering is case-insensitive and local after the corpus is
-present. On wide layouts, the first visible file becomes the detail when the
+disclosure. Opening its magnifier expands a case-insensitive local path search
+across the pane's current corpus, including both sides of a rename and every
+untracked child returned so far by folder enumeration. New arrivals pass through
+the active query. The loaded/total scan signal discloses when Working tree
+coverage is incomplete; searching unloaded children awaits a future inventory
+contract. On wide layouts, the first visible file becomes the detail when the
 prior selection no longer matches; no match leaves an explicit empty result.
+
+### File-viewer projections
+
+Every project file viewer may expose two exact Git projections in its header.
+**vs HEAD** compares the current `HEAD` tree to the live filesystem. **vs
+HEAD^1** is cumulative: it compares the first parent of `HEAD` to the live
+filesystem, so it includes both the current commit and any staged, unstaged,
+or untracked work. It is not the commit-only `HEAD^1`-to-`HEAD` diff. A
+worktree edit that exactly cancels the current commit's change therefore
+removes that path from the cumulative corpus.
+
+A selector exists only when its complete project-wide Git projection contains
+the path. A clean path has no **vs HEAD** selector; a root commit has no **vs
+HEAD^1** selector; a path with neither net diff has no selector at all.
+Renames match either the old or new path and render as one file projection.
+
+The shared project-file link is the access point in prose and structured
+Read/Edit turns. Hovering the filename reveals the available projections
+beside it; keyboard focus reveals the same links. Touch relies on the viewer
+header. Each target is a real anchor with a standalone URL, so middle-click,
+modifier-click, and browser context-menu opening work normally.
+
+Selecting a projection replaces the source body in the existing file viewer.
+While a diff is active, source line and line-range requests are inapplicable:
+the diff URL omits `line`, `lineEnd`, and `view=range`, and the viewer neither
+loads nor highlights that source window. Returning to **Source** restores the
+original source range. Diff rendering retains full-context, unified/split,
+Markdown-preview, hunk-navigation, and review-projection behavior from the
+shared Source Control renderer.
+
+The permanent `git-file-diff-projections` capability owns
+`GET /api/projects/:projectId/git/file-projections` and
+`POST /api/projects/:projectId/git/file-projection-diff`. Without it the
+client hides all of these selectors and makes no projection request. Existing
+Source Control capability meanings do not expand.
 
 ## Search and compatibility
 
@@ -281,6 +410,14 @@ preferences. When palette generation fails or an older server omits the
 optional preference, a stable author-name hash supplies the preference without
 an unsupported request.
 
+Current source persists that palette at `.yep/git-author-palette.json` and
+warms it merely when a project is opened or added. That post-`0.7.0` behavior
+is audited but not the target contract: under
+[Project Directory Storage](project-directory-storage.md), default project
+browsing performs no project or Git-metadata write. The palette belongs in
+memory or a central project-keyed cache unless project-local storage was
+explicitly enabled.
+
 Files caches the selected file's maximum intrinsic rendered code-line width by
 project, path, content fingerprint, and the typography metrics that affect
 measurement. On a wide layout, selection or a relevant viewport/typography
@@ -304,6 +441,106 @@ distinction for the usually small visible author set. Regenerating only after
 an error keeps corrupt state recoverable without turning palette maintenance
 into a background retry loop.
 
+## Foreground diff latency
+
+A working-tree file selection depends on its exact Git projection and renderer,
+not on fresh provider-session aggregates. Once the project id has resolved in
+the server's project snapshot, every Source Control path-only route may reuse
+that known identity even after the aggregate snapshot's five-second freshness
+window expires. A cold server may discover projects once; clicking a file after
+the Changes list is visible must not synchronously rescan Claude, Codex, or
+Gemini histories. Session/project inventory refresh remains owned by the
+surfaces that consume that mutable inventory.
+
+The working-tree diff endpoint reports `Server-Timing` phases named `project`,
+`preflight`, `versions`, `render`, `projections`, and `total`, and emits the same
+numbers in its debug event. This keeps future regressions attributable: a
+simple file should spend only ordinary subprocess time in Git preflight/version
+reads, while syntax highlighting or Markdown rendering is visible separately
+as `render`. The file-diff request does not compute or fetch blame.
+
+The comment-anchor projections only read `HEAD`, so they depend on nothing
+else the request computes and run concurrently with it. Their phase is
+therefore an overlapping wall-clock window, and the number is the time that
+read was awaited rather than its exclusive share.
+
+The binary classification stays strictly *before* the version reads, and a
+later latency change must not parallelize the two. That ordering is what keeps
+a binary file's bytes from being read into memory at all: the size-based
+preview skip only covers untracked paths, so for a tracked binary the
+classification is the sole guard, and speculating on the version reads
+alongside it would trade a bounded skip for an unbounded read. The cost of
+holding the order is one subprocess latency. Note that a response-level test
+cannot catch a regression here — the classification still wins the race and
+still returns the skip — so the guard is the ordering itself.
+
+Syntax highlighting dominates the remaining cost — roughly 90µs per tokenized
+line, and a whole file is tokenized per version. A version's content determines
+its highlighting exactly, so the server retains highlighted output keyed by
+content and language, bounded by total retained bytes. This is a pure function
+of content and needs no invalidation window; do not add a time-based expiry
+that would reintroduce the cost.
+
+**No request pays whole-file tokenization.** Highlighting a whole file gives
+the tokenizer exact context, but a request that has to compute it scales with
+the file rather than with the change — for a ~2000-line source file that was
+413ms of tokenizing. A diff therefore takes whichever it can have now: the
+retained whole-file result when that is already paid for, otherwise an excerpt
+of just the hunk lines, while scheduling the whole-file tokenization to land
+after the response. The next read of that same version — the status-poll
+refetch, a reselection, a whitespace or full-context toggle — is exact and
+tokenizes nothing. Measured on that file: 413ms → 89ms first look → 9ms
+thereafter.
+
+Scheduled whole-file tokenizations are capped, because each one blocks the
+loop while it runs and walking quickly through a changeset would otherwise
+queue a long stall. Dropping one is safe — the request still has its excerpt,
+and the next read of that version schedules it again.
+
+The excerpt is what makes this a trade rather than a free win: tokenizing only
+the hunk lines starts outside any string or comment that opened above them, so
+a prose word inside a docstring can render keyword-coloured. That error is
+therefore deliberately **transient** — it belongs only to the first look at a
+version and must not become the steady state. A change here that removes the
+background warm, or that serves the excerpt when the whole-file result is
+cached, breaks the contract even though every response still parses.
+
+Do not "fix" the first-look approximation by making the request wait for
+whole-file tokenization; that is the 1.2s this replaced. Worker threads do not
+substitute either: they would let the two versions tokenize in parallel, but
+the common case has one cold version, so they buy no latency there — their
+value is keeping a long tokenize off the loop that also serves live sessions.
+
+Do not add speculative file-diff prewarming as the first remedy for a slow
+selection. Eliminate unrelated project/session scans and measure the remaining
+phases first. Prewarming the likely next file remains an optional latency
+courtesy only if those measurements show a meaningful irreducible renderer
+cost; it cannot become a correctness dependency or retain unbounded file
+content.
+
+### Selection cost is independent of corpus size
+
+Entering Changes and selecting a file must cost what that one file's diff
+costs. Two client-side rules keep it there, both of which a large working tree
+otherwise breaks:
+
+**Background enrichment yields to the foreground.** Compact untracked
+directories expand through one server request each, and each of those is a
+`git status --untracked-files=all` over that directory. A repository with
+hundreds of untracked directories therefore has hundreds of them to run, so the
+sweep is bounded well below the browser's per-host connection budget and its
+arrivals are coalesced into periodic list updates. The status request and the
+selected file's diff must never queue behind it.
+
+**A changed-file row's object identity changes only when its state changes.**
+The diff pane reloads when its `file` prop changes identity — that is how a
+live working-tree refresh reaches an open diff, including when the summary
+fields did not move. Rebuilding every row on each untracked-folder arrival
+therefore recomputed the selected file's diff once per arrival. The merge that
+produces rows reuses the previous object for any path whose state is unchanged,
+and deliberately does not reuse across a new status snapshot, which is the
+live-refresh signal itself.
+
 The permanent `git-source-review` capability currently gates the complete
 Changes/Files/Comments browser, including commit history inside Changes, as
 well as the review endpoints. An
@@ -315,65 +552,67 @@ selected-revision-to-HEAD comparison remain gated by
 [server capabilities](server-capabilities.md) and
 [`063-source-control-hosted-compatibility.md`](../docs/tactical/063-source-control-hosted-compatibility.md).
 
-## Dirty-file editor sessions — proposal
+## Dirty-file last editor
 
-Kyle suggested a button to **“navigate to session(s) that made edits to this
-dirty file”**; graehl agrees (2026-07-28). This reverses the existing bridge
-from a session Edit block into the exact dirty file. In Changes, the selected
-file banner and shared file context menu expose a compact `Sessions (N)`
-action. One candidate may navigate directly; more than one opens a
-newest-evidence-first chooser using the standard session identity, hovercard,
-and canonical YA-session navigation.
+The selected dirty file links to the **last YA session observed editing
+it**. This reverses the existing bridge from a session Edit block into the exact
+dirty file without pretending YA can reconstruct complete authorship. In
+Changes, the selected file banner and shared file context menu expose one
+compact session action when attribution exists; it navigates through the
+canonical YA session id. Selecting a file starts no attribution query.
 
 Git records no dirty-file session authorship. The deliberately bounded
-contract is **sessions with recorded edits**: successful structured file
-mutations YA observed in a canonical session—Edit, Write, `apply_patch`, or a
+contract is **the last session with a recorded edit**: a successful structured
+file mutation YA observed in a canonical session—Edit, Write, `apply_patch`, or a
 provider equivalent—whose normalized project-relative target is this path.
-Do not infer candidates from active sessions, project membership, or file
+Do not infer an editor from active sessions, project membership, or file
 mtime.
 
-Shell commands, generators, human edits, external processes, and provider
-activity YA did not observe may remain unattributed. An unobserved writer can
-also replace or revert an observed session's contribution while leaving the
-path dirty, so a stale candidate can remain until the file next becomes clean.
-This accepted limitation bounds implementation effort; the UI never claims the
-set is exhaustive or that every listed session contributed to the exact
-current contents.
+The server observes every owned provider process at the normalized
+`tool_use`/`tool_result` boundary. It remembers a mutation proposal by tool id,
+then records paths only when the paired result is not an error. `apply_patch`
+parsing covers every Add, Update, Delete, Move, and unified-diff path in a
+multi-file patch. Repeated completion-phase tool-use events do not replace the
+earlier proposal. Provider adapters must mark declined or failed mutations as
+error results; a proposed or failed edit never earns attribution.
 
-Implementation plan:
+One private server-owned JSON store retains a logical row per canonical project
+path and normalized repository-relative file. A row carries only the canonical
+YA session id and successful-result observation time. A later observed edit
+replaces it, while a late completion with an older observation time cannot
+overwrite newer attribution. There is no editor set, event history, tool id,
+content hash, transcript backfill, or before/after lineage. The observer already
+has project and session context, so Source Control must not run provider
+discovery, session inventory, or `agent-mapping` work to construct the link.
 
-1. Characterize each supported provider's structured file-mutation events and
-   success boundary. For `apply_patch`, parse every Add, Update, Delete, and
-   Move header; after a successful multi-file patch, upsert one row for each
-   touched normalized path. Ignore failed or merely proposed mutations.
-2. Persist logical rows of
-   `(source, project, normalized file, canonical YA session, latest edit time)`.
-   A later successful edit by the same session to the same file only replaces
-   that row's time. Retain no event history, tool/message ids, content hashes,
-   transcript backfill, or before/after lineage. Store the set in private
-   server-owned state and reload it after process restart; it has no TTL or
-   bounded-retention expiry. Its lifecycle ends at authoritative clean-state
-   reconciliation, not elapsed time.
-3. Reconcile only from a successful, complete, authoritative Git-status
-   refresh. Whenever such a refresh observes that a tracked path has become not
-   dirty, clear every row for that file. A successful commit normally causes
-   this transition, but
-   a commit that leaves further staged or unstaged changes does not: the
-   clearing condition is observed clean file state, not a commit command.
-   Restart performs the same reconciliation for every reachable project.
-   Temporary source/project disconnect retains rows and does not pretend that
-   files became clean; reconnect reconciles before serving them. Explicit
-   project removal clears that project's rows, and explicit source removal
-   clears all rows owned by that source.
-4. Add a capability-gated query for remaining candidate session summaries,
-   ordered by latest recorded edit, and reuse the existing session
-   hovercard/navigation and file banner/menu.
-5. Test one and several sessions, repeated edits deduplicating to latest time,
-   failed edits being ignored, clean-state clearing, restart persistence and
-   reconciliation, disconnect/reconnect retention, explicit project/source
-   removal, a commit that leaves the file dirty, and accepted missing/stale
-   attribution after unobserved shell or human changes.
+Scripted commands are a deliberately best-effort supplement. For a bounded set
+of recognizable write-shaped shell commands—redirection, common file mutation
+primitives, patch/apply operations, and formatter/package-manager write
+modes—the observer compares Git's dirty paths and filesystem fingerprints just
+before and after a successful command. Only dirty paths whose fingerprint
+changed are attributed. Arbitrary scripts, generators with unrecognized command
+shapes, human edits, external processes, provider activity YA did not observe,
+and fast writes racing the initial snapshot may remain unattributed. Concurrent
+external writes during a recognized command can be misattributed. These gaps
+are preferable to scanning Git around every read-only shell command or guessing
+from active sessions.
 
-**Difficulty:** the UI is low difficulty. Provider mutation hooks, clean-state
-observation, the small tuple set, and its query are low-to-medium difficulty.
-Exact lineage and exhaustive attribution are deliberately out of scope.
+A successful complete Git-status refresh is the clearing authority. Any stored
+path absent from dirty status is deleted; a commit that leaves another staged or
+unstaged change does not clear it. A failed or unavailable status read is not a
+clean listing and never prunes attribution; it may decorate whatever rows are
+available, but stored rows survive until an authoritative refresh. Compact
+untracked-directory rows preserve stored child attribution until Git expands or
+cleans that directory. The compact folder itself does not expose a child-session
+link; its existing expansion response includes attribution for the individual
+files. Reconciliation may wait until Source Control enters or refreshes the
+project; restart does not walk all repositories. An unobserved writer can
+therefore replace or revert the recorded session's contribution while leaving
+the path dirty, so the action is worded as the last editing session and never
+claims exact-byte authorship.
+
+The permanent `git-dirty-file-editor` capability adds optional
+`files[].lastEditor = { sessionId, observedAt }` data to the existing
+status response. Servers without it retain the complete released Source Control
+behavior; clients hide the session action and make no additional request.
+Existing `git-status-enhanced` and `git-source-review` meanings do not grow.

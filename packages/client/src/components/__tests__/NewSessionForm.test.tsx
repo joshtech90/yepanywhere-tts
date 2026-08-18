@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   PROJECT_QUEUE_CAPABILITY,
@@ -26,11 +27,13 @@ import {
   YA_GROK_BATCH_SPEECH_METHOD,
   XAI_DIRECT_STREAMING_SPEECH_METHOD,
 } from "../../lib/speechProviders/methods";
+import { UI_KEYS } from "../../lib/storageKeys";
 import { NewSessionForm } from "../NewSessionForm";
 
 const {
   mockNavigate,
   mockRefetchProviders,
+  mockRefreshProviderRow,
   mockUpdateSetting,
   mockStartSession,
   mockStartDetachedSession,
@@ -52,10 +55,12 @@ const {
   mockSetGrokSpeechAudioSettings,
   mockVoiceToggle,
   mockVoiceCancelProcessing,
+  mockVoiceContinueAfterSpeechSend,
   voicePropsState,
   draftKeys,
   modelSettingsState,
   providersState,
+  providerRowState,
   serverSettingsState,
   versionState,
   remoteBasePathState,
@@ -67,6 +72,7 @@ const {
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRefetchProviders: vi.fn(),
+  mockRefreshProviderRow: vi.fn(),
   mockUpdateSetting: vi.fn(),
   mockStartSession: vi.fn(),
   mockStartDetachedSession: vi.fn(),
@@ -88,13 +94,23 @@ const {
   mockSetGrokSpeechAudioSettings: vi.fn(),
   mockVoiceToggle: vi.fn(),
   mockVoiceCancelProcessing: vi.fn(),
+  mockVoiceContinueAfterSpeechSend: vi.fn(),
   voicePropsState: {
     current: null as null | {
       onPendingSpeechChange?: (
-        kind: "listening" | "transcribing" | "finalizing" | null,
+        kind: "starting" | "listening" | "transcribing" | "finalizing" | null,
+        settlement?: "completed" | "failed",
       ) => void;
       onInterimTranscript?: (text: string) => void;
-      onListeningStop?: () => void;
+      onTranscript?: (
+        text: string,
+        metadata?: {
+          smartTurnCommand?: "cancel" | "send" | "wait";
+          smartTurnAutoSend?: boolean;
+        },
+      ) => void;
+      onListeningStart?: () => void;
+      onListeningStop?: () => boolean | undefined;
     },
   },
   draftKeys: [] as string[],
@@ -139,6 +155,11 @@ const {
       }>;
     }>,
     loading: false,
+  },
+  providerRowState: {
+    fresh: true,
+    refreshing: false,
+    error: null as Error | null,
   },
   serverSettingsState: {
     settings: null as {
@@ -233,6 +254,12 @@ const {
       updatedAt: string;
     },
   },
+}));
+
+const coarsePointerState = vi.hoisted(() => ({ current: false }));
+
+vi.mock("../../lib/deviceDetection", () => ({
+  hasCoarsePointer: () => coarsePointerState.current,
 }));
 
 vi.mock("react-router-dom", async () => {
@@ -355,6 +382,21 @@ vi.mock("../../hooks/useProviders", () => ({
     error: null,
     refetch: mockRefetchProviders,
     reload: vi.fn(),
+  }),
+  useProviderRow: (providerName: string | null | undefined) => ({
+    row:
+      providersState.providers.find(
+        (provider) => provider.name === providerName,
+      ) ?? null,
+    loading:
+      providerRowState.refreshing &&
+      !providersState.providers.some(
+        (provider) => provider.name === providerName,
+      ),
+    refreshing: providerRowState.refreshing,
+    fresh: providerRowState.fresh,
+    error: providerRowState.error,
+    refresh: mockRefreshProviderRow,
   }),
   getAvailableProviders: (providers: typeof providersState.providers) =>
     providers.filter(
@@ -498,6 +540,12 @@ vi.mock("../../i18n", () => ({
           "Summarize from a temporary fork after backgrounding (not closing) for {seconds} s.",
         toolbarProjectQueueTooltipWithShortcut:
           "Send after all sessions in this project are idle\nCtrl+Enter",
+        composerFullPaneExpand: "Expand composer",
+        composerFullPaneExpandTitle: "Expand composer ({shortcut})",
+        composerFullPaneRestore: "Restore composer",
+        composerFullPaneRestoreTitle: "Restore composer ({shortcut})",
+        speechPrefixDeliveryLabel: "{action}. Prepends {prefix}.",
+        speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
       };
       let translated = text[key] ?? key;
       if (!vars) return translated;
@@ -554,6 +602,8 @@ vi.mock("../VoiceInputButton", () => ({
         stopAndFinalize: () => "",
         toggle: mockVoiceToggle,
         cancelProcessing: mockVoiceCancelProcessing,
+        beginInsertionBoundary: vi.fn(),
+        continueAfterSpeechSend: mockVoiceContinueAfterSpeechSend,
         isListening: false,
         isAvailable: true,
       }),
@@ -620,6 +670,7 @@ function installObjectUrlMock() {
 
 describe("NewSessionForm", () => {
   beforeEach(() => {
+    coarsePointerState.current = false;
     installObjectUrlMock();
     vi.stubGlobal(
       "matchMedia",
@@ -665,6 +716,9 @@ describe("NewSessionForm", () => {
       },
     ];
     providersState.loading = false;
+    providerRowState.fresh = true;
+    providerRowState.refreshing = false;
+    providerRowState.error = null;
     serverSettingsState.settings = null;
     serverSettingsState.isLoading = true;
     filterDropdownState.selected = [];
@@ -677,6 +731,8 @@ describe("NewSessionForm", () => {
     mockNavigate.mockReset();
     mockRefetchProviders.mockReset();
     mockRefetchProviders.mockResolvedValue(undefined);
+    mockRefreshProviderRow.mockReset();
+    mockRefreshProviderRow.mockResolvedValue(undefined);
     mockUpdateSetting.mockReset();
     mockStartSession.mockReset();
     mockStartDetachedSession.mockReset();
@@ -697,6 +753,7 @@ describe("NewSessionForm", () => {
     mockSetGrokSpeechAudioSettings.mockReset();
     mockVoiceToggle.mockReset();
     mockVoiceCancelProcessing.mockReset();
+    mockVoiceContinueAfterSpeechSend.mockReset();
     voicePropsState.current = null;
     draftKeys.length = 0;
     draftAttachmentState.value = null;
@@ -775,10 +832,12 @@ describe("NewSessionForm", () => {
         lastActivity: null,
       },
     });
+    window.localStorage.setItem(UI_KEYS.speechMessagePrefixMode, "asr");
   });
 
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
@@ -1042,7 +1101,7 @@ describe("NewSessionForm", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("refreshes and blocks Claude Gateway until its catalog has a model", async () => {
+  it("keeps stale Gateway models visible but blocked until named validation", async () => {
     providersState.providers.push({
       name: "claude-gateway",
       displayName: "Claude Gateway",
@@ -1050,7 +1109,7 @@ describe("NewSessionForm", () => {
       authenticated: true,
       enabled: true,
       supportsThinkingToggle: true,
-      models: [],
+      models: [{ id: "gpt-5.5", name: "Saved Gateway" }],
     });
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -1062,6 +1121,8 @@ describe("NewSessionForm", () => {
       },
     };
     serverSettingsState.isLoading = false;
+    providerRowState.fresh = false;
+    providerRowState.refreshing = true;
 
     const { rerender } = render(
       <NewSessionForm
@@ -1071,17 +1132,10 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(mockRefetchProviders).toHaveBeenCalledTimes(1);
-    });
+    expect(screen.getByText("newSessionGatewayCatalogLoading")).toBeDefined();
     expect(
-      screen.getByText("newSessionGatewayCatalogUnavailable"),
-    ).toBeDefined();
-    expect(screen.queryByRole("button", { name: "gpt-5.5" })).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: "newSessionGatewayCatalogRetry" }),
-    );
-    expect(mockRefetchProviders).toHaveBeenCalledTimes(2);
+      screen.getAllByRole("button", { name: "Saved Gateway" }).length,
+    ).toBeGreaterThan(0);
 
     const composer = screen.getByPlaceholderText("newSessionPlaceholder");
     fireEvent.change(composer, { target: { value: "hello" } });
@@ -1090,6 +1144,24 @@ describe("NewSessionForm", () => {
     ).toHaveProperty("disabled", true);
     fireEvent.keyDown(composer, { key: "Enter" });
     expect(mockStartSession).not.toHaveBeenCalled();
+
+    providerRowState.refreshing = false;
+    providerRowState.error = new Error("gateway unavailable");
+    rerender(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    expect(
+      screen.getByText("newSessionGatewayCatalogUnavailable"),
+    ).toBeDefined();
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionGatewayCatalogRetry" }),
+    );
+    expect(mockRefreshProviderRow).toHaveBeenCalledTimes(1);
+    expect(mockRefetchProviders).not.toHaveBeenCalled();
 
     const gateway = providersState.providers.find(
       (provider) => provider.name === "claude-gateway",
@@ -1104,6 +1176,8 @@ describe("NewSessionForm", () => {
         supportedEffortLevels: ["low", "high", "xhigh"],
       },
     ];
+    providerRowState.fresh = true;
+    providerRowState.error = null;
     rerender(
       <NewSessionForm
         projectId="project-1"
@@ -1841,6 +1915,63 @@ describe("NewSessionForm", () => {
     expect(mockStartSession).not.toHaveBeenCalled();
   });
 
+  it("expands for long-form editing and makes Ctrl+Enter start", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const composer = screen.getByPlaceholderText("newSessionPlaceholder");
+    const expandButton = screen.getByRole("button", {
+      name: "Expand composer",
+    });
+    const attachButton = screen.getByRole("button", {
+      name: "newSessionAttachFiles",
+    });
+    const auxiliaryToolbar = expandButton.closest(
+      ".new-session-form-toolbar-left",
+    );
+    expect(attachButton.compareDocumentPosition(expandButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(auxiliaryToolbar?.lastElementChild).toBe(expandButton);
+    expect(expandButton.title).toBe("Expand composer (Ctrl+U)");
+    fireEvent.click(expandButton);
+    expect(expandButton.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.keyDown(composer, {
+      key: "u",
+      ctrlKey: true,
+    });
+    expect(expandButton.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.keyDown(composer, {
+      key: "u",
+      ctrlKey: true,
+    });
+    expect(expandButton.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.change(composer, { target: { value: "edit the handoff" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(mockStartSession).not.toHaveBeenCalled();
+    expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(composer, { key: "Enter", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockCreateProjectQueueItem).not.toHaveBeenCalled();
+  });
+
   it("queues staged new-session files through Project Queue", async () => {
     toolbarVisibilityState.projectQueue = true;
     inboxState.active = [
@@ -1933,11 +2064,29 @@ describe("NewSessionForm", () => {
     expect(
       screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
     ).toBe(null);
+    expect(
+      document.querySelector('[data-new-session-project-queue="true"]'),
+    ).toBeNull();
   });
 
   it("hides the new-session Project Queue action without server capability", () => {
     toolbarVisibilityState.projectQueue = true;
     versionState.version = { capabilities: [] };
+    projectQueueState.byProject = {
+      "project-1": [
+        {
+          id: "unsupported-queue",
+          projectId: "project-1",
+          target: { type: "new-session", title: "Unsupported queue" },
+          messagePreview: "Unsupported queue",
+          message: { text: "Unsupported queue" },
+          createdAt: "2026-08-15T00:00:00.000Z",
+          updatedAt: "2026-08-15T00:00:00.000Z",
+          status: "queued",
+          attachmentCount: 0,
+        },
+      ],
+    };
     inboxState.active = [
       { sessionId: "session-active", projectId: "project-1" },
     ];
@@ -1954,6 +2103,9 @@ describe("NewSessionForm", () => {
     expect(
       screen.queryByRole("button", { name: "toolbarProjectQueueLabel" }),
     ).toBe(null);
+    expect(
+      document.querySelector('[data-new-session-project-queue="true"]'),
+    ).toBeNull();
   });
 
   it("hides the new-session Project Queue action by default", () => {
@@ -2038,6 +2190,84 @@ describe("NewSessionForm", () => {
     expect(screen.getAllByText("newSessionProjectDetached")).toHaveLength(2);
     expect(screen.getAllByText("Alpha").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Beta").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the selected project queue directly beneath its selector", () => {
+    projectQueueState.byProject = {
+      "project-1": [
+        {
+          id: "queue-alpha",
+          projectId: "project-1",
+          target: { type: "new-session", title: "Alpha queued session" },
+          messagePreview: "Alpha queued session",
+          message: { text: "Alpha queued session" },
+          createdAt: "2026-08-15T00:00:00.000Z",
+          updatedAt: "2026-08-15T00:00:00.000Z",
+          status: "queued",
+          attachmentCount: 0,
+        },
+      ],
+      "project-2": [
+        {
+          id: "queue-beta",
+          projectId: "project-2",
+          target: { type: "new-session", title: "Beta queued session" },
+          messagePreview: "Beta queued session",
+          message: { text: "Beta queued session" },
+          createdAt: "2026-08-15T00:01:00.000Z",
+          updatedAt: "2026-08-15T00:01:00.000Z",
+          status: "failed",
+          attachmentCount: 0,
+          lastError: "Provider startup failed",
+        },
+      ],
+    };
+    const onProjectChange = vi.fn();
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+        onProjectChange={onProjectChange}
+      />,
+    );
+
+    const projectSlot = container.querySelector(
+      ".new-session-project-slot",
+    ) as HTMLElement;
+    let queue = projectSlot.querySelector(
+      '[data-new-session-project-queue="true"]',
+    ) as HTMLElement;
+    expect(projectSlot.children[1]).toBe(queue);
+    expect(within(queue).getByText("Alpha queued session")).toBeDefined();
+    expect(within(queue).queryByText("Beta queued session")).toBeNull();
+
+    fireEvent.click(
+      projectSlot.querySelector(".new-session-project-summary") as HTMLElement,
+    );
+    const betaOption = Array.from(
+      projectSlot.querySelectorAll<HTMLElement>(
+        ".new-session-project-suggestions .new-session-project-option",
+      ),
+    ).find((option) => option.textContent?.includes("Beta"));
+    if (!betaOption) throw new Error("missing Beta project option");
+    fireEvent.click(betaOption);
+
+    queue = projectSlot.querySelector(
+      '[data-new-session-project-queue="true"]',
+    ) as HTMLElement;
+    expect(projectSlot.children[1]).toBe(queue);
+    expect(within(queue).getByText("Beta queued session")).toBeDefined();
+    expect(within(queue).getByText("Provider startup failed")).toBeDefined();
+    expect(within(queue).queryByText("Alpha queued session")).toBeNull();
+    expect(onProjectChange).toHaveBeenCalledWith("project-2");
+
+    fireEvent.click(
+      queue.querySelector(
+        '[data-new-session-project-queue-item-id="queue-beta"] button',
+      ) as HTMLElement,
+    );
+    expect(mockNavigate).toHaveBeenCalledWith("/projects?queueItem=queue-beta");
   });
 
   it("shows recent projects when opening a selected project chooser", () => {
@@ -2211,7 +2441,7 @@ describe("NewSessionForm", () => {
     expect(screen.queryByRole("button", { name: "HD" })).toBeNull();
   });
 
-  it("places all-provider controls before provider-specific controls", async () => {
+  it("places core launch controls before optional session helpers", async () => {
     serverSettingsState.isLoading = false;
 
     const { container } = render(
@@ -2233,18 +2463,62 @@ describe("NewSessionForm", () => {
       container.querySelectorAll(".new-session-provider-slot h3"),
       (element) => element.textContent,
     );
-    expect(headings.indexOf("newSessionModeTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionPromptSuggestionsTitle"),
-    );
-    expect(headings.indexOf("showThinkingTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionModeTitle"),
-    );
-    expect(headings.indexOf("newSessionProviderTitle")).toBeGreaterThan(
-      headings.indexOf("showThinkingTitle"),
+    expect(headings.indexOf("newSessionModelTitle")).toBeGreaterThan(
+      headings.indexOf("newSessionProviderTitle"),
     );
     expect(headings.indexOf("modelSettingsThinkingTitle")).toBeGreaterThan(
       headings.indexOf("newSessionModelTitle"),
     );
+    expect(headings.indexOf("newSessionModeTitle")).toBeGreaterThan(
+      headings.indexOf("modelSettingsThinkingTitle"),
+    );
+    expect(headings.indexOf("newSessionRecapTitle")).toBeGreaterThan(
+      headings.indexOf("newSessionModeTitle"),
+    );
+    expect(
+      headings.indexOf("newSessionPromptSuggestionsTitle"),
+    ).toBeGreaterThan(headings.indexOf("newSessionRecapTitle"));
+  });
+
+  it("uses the selected rapid-speech prefix for new-session Project Queue", async () => {
+    toolbarVisibilityState.projectQueue = true;
+    inboxState.active = [
+      { sessionId: "session-active", projectId: "project-1" },
+    ];
+    serverSettingsState.isLoading = false;
+    window.localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "1000");
+    window.localStorage.setItem(UI_KEYS.speechMessagePrefixMode, "stt");
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onTranscript?.("queued speech");
+    });
+
+    const projectQueueButton = screen.getByRole("button", {
+      name: /toolbarProjectQueueLabel.*\[STT\]/,
+    });
+    expect(projectQueueButton.textContent).toContain("STT");
+    expect(
+      screen.getByRole("button", { name: /newSessionStartAction.*\[STT\]/ }),
+    ).toBeDefined();
+    fireEvent.click(projectQueueButton);
+
+    await waitFor(() => {
+      expect(mockCreateProjectQueueItem).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          message: expect.objectContaining({ text: "[STT] queued speech" }),
+        }),
+      );
+    });
   });
 
   it("shows the selected recap timing description as a caption and tooltip", async () => {
@@ -2404,6 +2678,135 @@ describe("NewSessionForm", () => {
     expect(mockVoiceToggle).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps mic focus through coarse-pointer speech transitions", () => {
+    coarsePointerState.current = true;
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText("newSessionPlaceholder");
+    const voice = screen.getByRole("button", { name: "voice" });
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStart?.());
+    expect(document.activeElement).toBe(voice);
+
+    act(() => voicePropsState.current?.onListeningStop?.());
+    expect(document.activeElement).toBe(voice);
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("returns keyboard mic focus to the fine-pointer composer", () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText("newSessionPlaceholder");
+    const voice = screen.getByRole("button", { name: "voice" });
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStart?.());
+    expect(document.activeElement).toBe(textarea);
+
+    act(() => voice.focus());
+    act(() => voicePropsState.current?.onListeningStop?.());
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("prefixes speech-triggered new-session submissions with ASR", async () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(
+      "newSessionPlaceholder",
+    ) as HTMLTextAreaElement;
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("Start here.");
+    });
+    await waitFor(() => expect(textarea.value).toBe("Start here."));
+
+    act(() => {
+      voicePropsState.current?.onTranscript?.("", {
+        smartTurnCommand: "send",
+        smartTurnAutoSend: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "[ASR] Start here.",
+        expect.any(Object),
+        undefined,
+        expect.any(Number),
+      );
+    });
+    expect(mockVoiceContinueAfterSpeechSend).toHaveBeenCalledOnce();
+  });
+
+  it("starts with the visible interim snapshot after speech settles", async () => {
+    window.localStorage.setItem(UI_KEYS.speechAsrAttributionMs, "500");
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("listening");
+      voicePropsState.current?.onInterimTranscript?.("provisional words");
+    });
+    const start = screen.getByRole("button", {
+      name: /newSessionStartAction/,
+    });
+    expect(start.textContent).toContain("ASR");
+    fireEvent.click(start);
+    expect(mockStartSession).not.toHaveBeenCalled();
+
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.("finalizing");
+      voicePropsState.current?.onTranscript?.("backend final words");
+    });
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByPlaceholderText(
+            "newSessionPlaceholder",
+          ) as HTMLTextAreaElement
+        ).value,
+      ).toBe("backend final words");
+    });
+    act(() => {
+      voicePropsState.current?.onPendingSpeechChange?.(null, "completed");
+    });
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "[ASR] provisional words",
+        expect.any(Object),
+        undefined,
+        expect.any(Number),
+      );
+    });
+    expect(mockStartSession.mock.calls[0]?.[1]).not.toContain(
+      "backend final words",
+    );
+  });
+
   it("keeps the real new-session textarea editable while transcribing", async () => {
     render(
       <NewSessionForm
@@ -2438,6 +2841,35 @@ describe("NewSessionForm", () => {
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
     expect(textarea.value).toBe("typed while transcribing");
+  });
+
+  it("commits the visible interim when the new-session mic stops", async () => {
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(
+      "newSessionPlaceholder",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "alpha omega" } });
+    textarea.setSelectionRange("alpha".length, "alpha".length);
+
+    act(() => {
+      voicePropsState.current?.onListeningStart?.();
+      voicePropsState.current?.onInterimTranscript?.("visible words");
+    });
+    let committed = false;
+    act(() => {
+      committed = voicePropsState.current?.onListeningStop?.() === true;
+    });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("alpha visible words omega");
+    });
+    expect(committed).toBe(true);
   });
 
   it("keeps Listening out of the draft and places the caret after provisional speech", async () => {

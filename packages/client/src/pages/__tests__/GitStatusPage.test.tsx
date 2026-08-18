@@ -1,11 +1,25 @@
 import type { GitStatusInfo } from "@yep-anywhere/shared";
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
   GIT_STATUS_PULL_CAPABILITY,
@@ -13,6 +27,7 @@ import {
   GIT_STATUS_REMOTE_CHECK_CAPABILITY,
 } from "@yep-anywhere/shared";
 import selectorStyles from "../../components/ProjectSelector.module.css";
+import { setSourceControlCleanLandingPreference } from "../../hooks/useSourceControlCleanLanding";
 import { resetRouteRetentionForTests } from "../../lib/routeRetention";
 import type { Project } from "../../types";
 import { GitStatusPage } from "../GitStatusPage";
@@ -29,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   useGitStatus: vi.fn(),
   useNavigationLayout: vi.fn(),
   useMediaQuery: vi.fn(),
+  serverSettings: { sourceReviewSubmissionsEnabled: false },
   renderWorkingTreeBrowser: vi.fn(),
   renderCommitBrowser: vi.fn(),
   renderBlameBrowser: vi.fn(),
@@ -45,7 +61,7 @@ vi.mock("../../api/client", () => ({
 }));
 
 vi.mock("../CommitBrowser", () => ({
-  CommitBrowser: (props: { initialSha?: string }) => {
+  CommitBrowser: (props: { initialPath?: string; initialSha?: string }) => {
     mocks.renderCommitBrowser(props);
     return <div data-testid="commit-browser">commit-history</div>;
   },
@@ -79,6 +95,7 @@ vi.mock("../WorkingTreeBrowser", async () => {
       status: GitStatusInfo;
       initialWorkingTreePath?: string;
       ignoreWhitespace?: boolean;
+      supportsLastEditor?: boolean;
       onToggleIgnoreWhitespace?: () => void;
       onBrowseHistory?: () => void;
     }) => {
@@ -124,6 +141,10 @@ vi.mock("../../hooks/useRelativeNow", () => ({
 
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: mocks.useVersion,
+}));
+
+vi.mock("../../hooks/useServerSettings", () => ({
+  useServerSettings: () => ({ settings: mocks.serverSettings }),
 }));
 
 vi.mock("../../i18n", () => ({
@@ -186,6 +207,22 @@ function status(): GitStatusInfo {
   };
 }
 
+function NavigationProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <div data-testid="test-location">
+        {location.pathname}
+        {location.search}
+      </div>
+      <button type="button" onClick={() => navigate(-1)}>
+        testBrowserBack
+      </button>
+    </>
+  );
+}
+
 function renderPage(
   initialEntry:
     | string
@@ -194,11 +231,27 @@ function renderPage(
         search: string;
         state: unknown;
       } = "/git-status?projectId=project-a",
+  precedingEntry?: string,
 ) {
+  const initialEntries = precedingEntry
+    ? [precedingEntry, initialEntry]
+    : [initialEntry];
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={initialEntries}
+      initialIndex={initialEntries.length - 1}
+    >
       <Routes>
-        <Route path="/git-status" element={<GitStatusPage />} />
+        <Route
+          path="/git-status"
+          element={
+            <>
+              <GitStatusPage />
+              <NavigationProbe />
+            </>
+          }
+        />
+        <Route path="/previous" element={<div>previous-page</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -220,6 +273,8 @@ const CORE_GIT_COMPATIBILITY_RELEASES = [
 ] as const;
 
 beforeEach(() => {
+  localStorage.clear();
+  setSourceControlCleanLandingPreference("working-tree");
   resetRouteRetentionForTests();
   mocks.checkGitRemote.mockReset();
   mocks.getGitIntegrationOptions.mockReset();
@@ -231,6 +286,7 @@ beforeEach(() => {
     batches: [],
     pendingCount: 0,
   });
+  mocks.serverSettings.sourceReviewSubmissionsEnabled = false;
   mocks.checkGitRemote.mockResolvedValue({
     status: "checked",
     checkedRemoteAt: "2026-07-26T12:00:00.000Z",
@@ -268,6 +324,7 @@ beforeEach(() => {
       capabilities: [
         GIT_SOURCE_REVIEW_CAPABILITY,
         GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+        GIT_DIRTY_FILE_EDITOR_CAPABILITY,
         GIT_STATUS_ENHANCED_CAPABILITY,
         GIT_STATUS_REMOTE_CHECK_CAPABILITY,
       ],
@@ -292,7 +349,7 @@ beforeEach(() => {
 });
 
 describe("GitStatusPage source header", () => {
-  it("keeps identity and tabs in the header with actions in their own row", async () => {
+  it("keeps identity, tabs, and fallback repository actions in the header", async () => {
     renderPage();
     await screen.findByTestId("working-tree-browser");
     await waitFor(() =>
@@ -305,18 +362,188 @@ describe("GitStatusPage source header", () => {
     ).toHaveLength(1);
     expect(header.querySelector('[role="tablist"]')).not.toBeNull();
     expect(header.querySelectorAll('[role="tab"]')).toHaveLength(3);
-    expect(header.querySelector(".review-tray-button")).toBeNull();
 
-    const actionRow = document.querySelector(
-      ".source-control-action-row",
+    const actions = header.querySelector(
+      '[data-source-actions-placement="fallback"]',
     ) as HTMLElement;
-    expect(actionRow).not.toBeNull();
-    expect(actionRow.querySelector(".review-tray-button")?.textContent).toContain(
-      "sourceReviewStart",
+    expect(actions).not.toBeNull();
+    expect(actions.querySelector(".review-tray-button")?.textContent).toContain(
+      "sourceCommentsAction",
     );
+    expect(document.querySelector(".source-control-action-row")).toBeNull();
     expect(
       document.querySelector('.git-status > [data-testid="repo-status-bar"]'),
     ).toBeNull();
+  });
+
+  it("uses the title row only while the rendered repository actions fit", async () => {
+    mocks.useVersion.mockReturnValue({
+      version: {
+        capabilities: [
+          GIT_SOURCE_REVIEW_CAPABILITY,
+          GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+          GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+          GIT_STATUS_PULL_CAPABILITY,
+          GIT_STATUS_PUSH_CAPABILITY,
+          GIT_STATUS_REMOTE_CHECK_CAPABILITY,
+        ],
+      },
+      loading: false,
+      error: null,
+    });
+
+    let headerWidth = 900;
+    let notifyResize: (() => void) | undefined;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          notifyResize = () => callback([], this as unknown as ResizeObserver);
+        }
+
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+
+    const widthOf = (element: HTMLElement) => {
+      const parent = element.parentElement;
+      if (parent?.matches("[data-source-action-group]")) return 80;
+      if (parent?.getAttribute("role") === "tablist") return 72;
+      if (parent?.classList.contains("session-header-left")) return 96;
+      return 0;
+    };
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("session-header-inner")
+          ? headerWidth
+          : widthOf(this);
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return widthOf(this);
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const width = widthOf(this);
+        return {
+          bottom: 20,
+          height: 20,
+          left: 0,
+          right: width,
+          top: 0,
+          width,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      },
+    );
+
+    try {
+      renderPage();
+      await screen.findByTestId("working-tree-browser");
+      const header = document.querySelector(".session-header") as HTMLElement;
+      expect(
+        header.querySelector('[data-source-actions-placement="title"]'),
+      ).not.toBeNull();
+      expect(
+        header.querySelectorAll("[data-source-action-group] > button"),
+      ).toHaveLength(4);
+
+      headerWidth = 360;
+      act(() => notifyResize?.());
+
+      expect(
+        header.querySelector('[data-source-actions-placement="fallback"]'),
+      ).not.toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens Comments even with pending drafts and preserves mode history", async () => {
+    mocks.listReviewComments.mockResolvedValue({
+      comments: [
+        {
+          id: "comment-1",
+          status: "pending",
+          text: "why?",
+          createdAt: "2026-07-26T00:00:00Z",
+          anchor: {
+            path: "a.ts",
+            revision: { kind: "sha", sha: "a".repeat(40) },
+            side: "new",
+            oldLine: null,
+            newLine: 1,
+            snippet: "",
+          },
+        },
+      ],
+      batches: [],
+      pendingCount: 1,
+    });
+    renderPage();
+
+    await screen.findByTestId("working-tree-browser");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "sourceCommentsAction" }),
+    );
+
+    expect(
+      screen
+        .getByRole("tab", { name: /sourceTabComments/ })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "testBrowserBack" }));
+
+    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    expect(
+      screen
+        .getByRole("tab", { name: /sourceTabChanges/ })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("returns from Reviews to the preceding Source Control mode", async () => {
+    mocks.serverSettings.sourceReviewSubmissionsEnabled = true;
+    mocks.useVersion.mockReturnValue({
+      version: {
+        capabilities: [
+          GIT_SOURCE_REVIEW_CAPABILITY,
+          GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+        ],
+      },
+      loading: false,
+      error: null,
+    });
+    renderPage();
+
+    await screen.findByTestId("working-tree-browser");
+    fireEvent.click(screen.getByRole("tab", { name: "sourceTabReviews" }));
+    expect(await screen.findByText("sourceReviewNoSubmissions")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "testBrowserBack" }));
+    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+  });
+
+  it("backs out of Source Control from a directly linked mode", async () => {
+    renderPage("/git-status?projectId=project-a&tab=comments", "/previous");
+
+    expect(
+      (
+        await screen.findByRole("tab", { name: /sourceTabComments/ })
+      ).getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "testBrowserBack" }));
+
+    expect(await screen.findByText("previous-page")).toBeDefined();
   });
 
   it("lands on Changes and keeps its URL as the default", async () => {
@@ -329,6 +556,40 @@ describe("GitStatusPage source header", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
     expect(screen.queryByTestId("commit-browser")).toBeNull();
+  });
+
+  it("lands on Working tree status when Changes is clean", async () => {
+    mocks.useGitStatus.mockReturnValue({
+      gitStatus: { ...status(), isClean: true, files: [] },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    expect(screen.queryByTestId("commit-browser")).toBeNull();
+    expect(
+      screen
+        .getByRole("tab", { name: /sourceTabChanges/ })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("lands on the latest commit when the clean preference opts in", async () => {
+    setSourceControlCleanLandingPreference("latest-commit");
+    mocks.useGitStatus.mockReturnValue({
+      gitStatus: { ...status(), isClean: true, files: [] },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("commit-browser")).toBeDefined();
+    expect(screen.queryByTestId("working-tree-browser")).toBeNull();
   });
 
   it("gates diff projections without blocking ordinary Source Control", async () => {
@@ -349,11 +610,42 @@ describe("GitStatusPage source header", () => {
       screen.getByRole("button", { name: "gitStatusIgnoreWhitespace" }),
     );
 
-    expect(await screen.findByText("sourceProjectionUpgradeNotice")).toBeDefined();
+    expect(
+      await screen.findByText("sourceProjectionUpgradeNotice"),
+    ).toBeDefined();
     expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
       expect.objectContaining({ ignoreWhitespace: false }),
     );
     expect(screen.getByTestId("working-tree-browser")).toBeDefined();
+  });
+
+  it("gates dirty-file session links independently", async () => {
+    mocks.useVersion.mockReturnValue({
+      version: {
+        capabilities: [
+          GIT_SOURCE_REVIEW_CAPABILITY,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+        ],
+      },
+      loading: false,
+      error: null,
+    });
+
+    renderPage();
+
+    await screen.findByTestId("working-tree-browser");
+    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
+      expect.objectContaining({ supportsLastEditor: false }),
+    );
+  });
+
+  it("enables dirty-file session links when advertised", async () => {
+    renderPage();
+
+    await screen.findByTestId("working-tree-browser");
+    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
+      expect.objectContaining({ supportsLastEditor: true }),
+    );
   });
 
   it("enables the whitespace projection when the server advertises it", async () => {
@@ -384,9 +676,7 @@ describe("GitStatusPage source header", () => {
         .getByRole("tab", { name: /sourceTabChanges/ })
         .getAttribute("aria-selected"),
     ).toBe("true");
-    expect(
-      screen.queryByRole("tab", { name: "sourceTabCommits" }),
-    ).toBeNull();
+    expect(screen.queryByRole("tab", { name: "sourceTabCommits" })).toBeNull();
   });
 
   it("maps legacy commit URLs to history inside Changes", async () => {
@@ -398,6 +688,40 @@ describe("GitStatusPage source header", () => {
         .getByRole("tab", { name: /sourceTabChanges/ })
         .getAttribute("aria-selected"),
     ).toBe("true");
+  });
+
+  it("keeps Reviews dormant until the new capability and setting land", async () => {
+    renderPage("/git-status?projectId=project-a&tab=reviews");
+
+    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    expect(screen.queryByRole("tab", { name: "sourceTabReviews" })).toBeNull();
+  });
+
+  it("shows Reviews only when capability and persisted opt-in are both present", async () => {
+    mocks.serverSettings.sourceReviewSubmissionsEnabled = true;
+    mocks.useVersion.mockReturnValue({
+      version: {
+        capabilities: [
+          GIT_SOURCE_REVIEW_CAPABILITY,
+          GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+        ],
+      },
+      loading: false,
+      error: null,
+    });
+    mocks.listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    renderPage("/git-status?projectId=project-a&tab=reviews");
+
+    expect(
+      await screen.findByRole("tab", { name: "sourceTabReviews" }),
+    ).toBeDefined();
+    expect(await screen.findByText("sourceReviewNoSubmissions")).toBeDefined();
   });
 
   it("opens an asynchronously populated Files hash in commit history", async () => {
@@ -418,6 +742,20 @@ describe("GitStatusPage source header", () => {
     ).toBe("true");
     expect(mocks.renderCommitBrowser).toHaveBeenLastCalledWith(
       expect.objectContaining({ initialSha: "b".repeat(40) }),
+    );
+  });
+
+  it("opens a linked file within the requested commit", async () => {
+    renderPage(
+      "/git-status?projectId=project-a&rev=abc123&commitFile=src%2Fx.ts",
+    );
+
+    expect(await screen.findByTestId("commit-browser")).toBeDefined();
+    expect(mocks.renderCommitBrowser).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        initialSha: "abc123",
+        initialPath: "src/x.ts",
+      }),
     );
   });
 
@@ -467,10 +805,7 @@ describe("GitStatusPage source header", () => {
 
   it("shows remote-check feedback without changing the visible button label", async () => {
     let resolveCheck:
-      | ((value: {
-          status: "checked";
-          checkedRemoteAt: string;
-        }) => void)
+      | ((value: { status: "checked"; checkedRemoteAt: string }) => void)
       | undefined;
     mocks.checkGitRemote.mockReturnValue(
       new Promise((resolve) => {
@@ -530,8 +865,9 @@ describe("GitStatusPage source header", () => {
     expect(document.querySelectorAll('[role="tablist"]')).toHaveLength(1);
     expect(document.querySelector(".source-control-mobile-tabs")).toBeNull();
     expect(
-      document.querySelector(".source-control-action-row"),
+      header.querySelector('[data-source-actions-placement="fallback"]'),
     ).not.toBeNull();
+    expect(document.querySelector(".source-control-action-row")).toBeNull();
   });
 
   it("keeps the source-header hooks on a modular project selector", async () => {
@@ -579,56 +915,64 @@ describe("GitStatusPage source header", () => {
 });
 
 describe("GitStatusPage released-server compatibility", () => {
-  it.each(
-    CORE_GIT_COMPATIBILITY_RELEASES,
-  )("keeps basic Source Control for $version ($releasedAt)", async () => {
-    mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
-      loading: false,
-      error: null,
-    });
+  it.each(CORE_GIT_COMPATIBILITY_RELEASES)(
+    "keeps basic Source Control for $version ($releasedAt)",
+    async () => {
+      mocks.useVersion.mockReturnValue({
+        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+        loading: false,
+        error: null,
+      });
 
-    renderPage();
+      renderPage();
 
-    expect(
-      await screen.findByText("gitStatusCompatibilityTitle"),
-    ).toBeDefined();
-    expect(screen.getByText("gitStatusCompatibilityDescription")).toBeDefined();
-    expect(screen.getByRole("button", { name: "gitStatusPull" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "gitStatusPush" })).toBeDefined();
-    expect(
-      screen.getByRole("button", { name: "gitStatusCheckRemote" }),
-    ).toBeDefined();
-    expect(screen.queryByTestId("commit-browser")).toBeNull();
-    expect(document.querySelector('[role="tablist"]')).toBeNull();
-    expect(document.querySelector(".review-tray-button")).toBeNull();
-    expect(mocks.listReviewComments).not.toHaveBeenCalled();
-  });
+      expect(
+        await screen.findByText("gitStatusCompatibilityTitle"),
+      ).toBeDefined();
+      expect(
+        screen.getByText("gitStatusCompatibilityDescription"),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "gitStatusPull" }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "gitStatusPush" }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "gitStatusCheckRemote" }),
+      ).toBeDefined();
+      expect(screen.queryByTestId("commit-browser")).toBeNull();
+      expect(document.querySelector('[role="tablist"]')).toBeNull();
+      expect(document.querySelector(".review-tray-button")).toBeNull();
+      expect(mocks.listReviewComments).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each(
-    CORE_GIT_COMPATIBILITY_RELEASES,
-  )("keeps generic action feedback for $version ($releasedAt)", async () => {
-    mocks.useVersion.mockReturnValue({
-      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
-      loading: false,
-      error: null,
-    });
+  it.each(CORE_GIT_COMPATIBILITY_RELEASES)(
+    "keeps generic action feedback for $version ($releasedAt)",
+    async () => {
+      mocks.useVersion.mockReturnValue({
+        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+        loading: false,
+        error: null,
+      });
 
-    renderPage();
-    fireEvent.click(
-      await screen.findByRole("button", { name: "gitStatusPull" }),
-    );
-    expect((await screen.findByRole("status")).textContent).toContain(
-      "gitStatusPullSuccess",
-    );
+      renderPage();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "gitStatusPull" }),
+      );
+      expect((await screen.findByRole("status")).textContent).toContain(
+        "gitStatusPullSuccess",
+      );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "gitStatusPush" }),
-    );
-    expect((await screen.findByRole("status")).textContent).toContain(
-      "gitStatusPushSuccess",
-    );
-  });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "gitStatusPush" }),
+      );
+      expect((await screen.findByRole("status")).textContent).toContain(
+        "gitStatusPushSuccess",
+      );
+    },
+  );
 
   it("shows commit counts supplied by a current server", async () => {
     mocks.useVersion.mockReturnValue({

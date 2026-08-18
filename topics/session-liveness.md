@@ -10,6 +10,8 @@ patient queue intent.
 Related topic: [heartbeat ownership and timers](heartbeat.md).
 Related topic: [session ownership and shared-transcript writers](session-ownership.md)
 — who is writing the file, a different axis from whether the turn is progressing.
+Related topic: [reload-safe provider runtimes](reload-safe-provider-runtimes.md)
+— proposed owner continuity across a replaceable development backend.
 
 ## Contracts
 
@@ -24,6 +26,41 @@ Related topic: [session ownership and shared-transcript writers](session-ownersh
   session as idle for automatic work. Synthetic heartbeat turns may also run as
   explicit steering-capable doubt probes after their quiet period, but that is
   a heartbeat-specific contract rather than a general idle claim.
+- A mounted live-session stream is a session-local resource-retention lease,
+  not liveness evidence. It suspends idle reaping only for that provider
+  process; global app activity and views of other sessions do not. Active and
+  waiting-input sessions are presumed live and have no viewer-absence kill
+  deadline; only `verified-idle` without another retention owner is eligible
+  for the configured idle grace.
+- An idle grace owns one absolute deadline. Delays longer than Node can arm in
+  one timer are scheduled in safe chunks against that unchanged deadline; a
+  chunk firing is not grace expiry. Live timeout changes replace the deadline
+  from the current idle/no-viewer anchor rather than restarting the idle period.
+- `verified-idle` plus grace expiry permits `Process` to begin teardown; it does
+  not permit `Supervisor` to release session ownership. Idle teardown fences
+  direct and deferred input synchronously, while the existing process mapping
+  and `owner: "self"` projection remain until provider exit is positively
+  verified by PID, provider liveness, or iterator completion. Failed or timed-
+  out verification remains a terminal error owner: it emits no completion or
+  `owner: "none"`, refuses resume/reactivation/configuration replacement, and
+  can be released only by a later explicit abort that verifies exit.
+- Once explicit Kill/Terminate persists `autoResumeDisabled`, no automatic
+  work may start that provider session again. Unowned heartbeat and cold
+  fork-recap revival both obey this gate. Explicit user continuation through
+  the full session page may still reactivate the session.
+- Once `/done` persists `automationPausedUntilUserTurn` — at the request,
+  including while a turn is still running — no YA-driven provider work may
+  enter that session: live/cold heartbeat, session wake, recap/forked recap,
+  threshold compaction, prompt-cache keepalive, patient queue promotion, and
+  automatic Project Queue revival all stop. The action does not interrupt an
+  active turn. Message-less Activate leaves the pause in force; the next real
+  user turn clears it, while automatically sourced turns never do. The
+  Process-local `/done` chip and synthetic row may still be waiting for idle
+  finalize; losing that chip does not clear the persisted pause.
+- Sidebar session rows are navigation and status surfaces only; they never
+  reactivate a provider process. Message-less activation remains available in
+  the full session's model panel, while sending a message resumes an unowned
+  session and delivers that turn.
 - Heartbeat turns are idle-timeout checks, not wall-clock ticks. Once a session
   is `verified-idle`, the timeout anchor is the latest real provider/session
   liveness signal, including verified idle/progress, normalized provider
@@ -102,6 +139,11 @@ Related topic: [session ownership and shared-transcript writers](session-ownersh
   generate a provider interrupt. If an interrupt is observed after one of those
   paths, YA should treat the correlation as a high-priority causality bug while
   still surfacing the interrupt boundary immediately.
+- A viewer opening a session cancels that process's pending idle teardown.
+  When the final viewer of that session leaves, its eligible idle process
+  receives a fresh full grace. Other session views, provider traffic, and
+  process liveness do not extend the deadline, while explicit retention
+  continues to block idle teardown.
 - Server restart or hot reload that tears down the provider owner is not passive
   browser refresh. Treat it as owner-loss liveness evidence first, then decide
   whether the process can be safely resumed or must be shown as interrupted.
@@ -147,6 +189,21 @@ Related topic: [session ownership and shared-transcript writers](session-ownersh
 - Initial-prompt recovery metadata is a copy/retry affordance. It must not
   replace transcript messages or be treated as provider progress evidence.
 
+## Lifecycle Ownership
+
+`ProcessViewerLifecycle` is the single owner of viewer leases, the no-viewer
+anchor, the absolute idle deadline, reload-safe viewer publication, and the
+pending-teardown ownership fence for one `Process`. `Process` reports state and
+retention transitions into that owner and receives one result:
+`onIdleReap`. Provider iteration, abort, and positive teardown verification
+remain in `Process`, so the lifecycle owner cannot release session ownership
+on its own.
+
+This boundary keeps every deadline-affecting transition in one state machine.
+A viewer transition, process-state transition, retention change, live timeout
+change, reload detach, and verified teardown all enter through explicit
+methods; no caller directly arms or clears the timer.
+
 ## Representative Change Types
 
 - Adding a provider-specific status probe or raw event cadence source.
@@ -185,5 +242,16 @@ Related topic: [session ownership and shared-transcript writers](session-ownersh
   timestamps for reconnecting clients.
 - A failed or not-yet-persisted new session with an accepted initial prompt
   exposes a copy action for that prompt in session history.
+- Sidebar session rows expose no message-less Resume action or reactivation
+  request; full-session Activate and resume-on-send remain available.
 - Claude control probes time out and surface errors rather than relying on
   process-alive as proof of progress.
+- Viewer-absence reaping applies only to verified-idle, unretained work. Any
+  open app tab globally refreshes the grace; active, waiting-input, and
+  explicitly retained processes have no viewer-absence deadline.
+- An idle timeout longer than Node's maximum single-timer delay is armed only in
+  bounded chunks and reaps at the original deadline. Live shortening and
+  lengthening retain the current idle/no-viewer anchor.
+- Pending or failed idle teardown keeps the same registered process, rejects
+  direct/deferred input and replacement, and emits no ownership release. A
+  later verified abort retry emits exactly one completion and `owner: "none"`.

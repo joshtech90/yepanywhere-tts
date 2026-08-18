@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsItem } from "../SettingsItem";
+import { SettingsSearchBar } from "../SettingsSearchBar";
 import {
   SettingsJumpTargetProvider,
   type SettingsSearchScope,
@@ -33,6 +34,36 @@ function makeScope(
 
 afterEach(() => {
   cleanup();
+});
+
+describe("SettingsSearchBar credential boundary", () => {
+  it("keeps search outside a mounted settings credential form", () => {
+    render(
+      <>
+        <SettingsSearchBar
+          query=""
+          onQueryChange={vi.fn()}
+          matchValues={false}
+          onMatchValuesChange={vi.fn()}
+        />
+        <input
+          type="password"
+          aria-label="Browser xAI STT Key"
+          autoComplete="new-password"
+        />
+      </>,
+    );
+
+    const search = screen.getByRole("searchbox") as HTMLInputElement;
+    const credential = screen.getByLabelText(
+      "Browser xAI STT Key",
+    ) as HTMLInputElement;
+
+    expect(search.form).not.toBeNull();
+    expect(search.form).not.toBe(credential.form);
+    expect(search.autocomplete).toBe("off");
+    expect(search.name).toBe("settings-search");
+  });
 });
 
 describe("SettingsItem under search scope", () => {
@@ -109,6 +140,59 @@ describe("SettingsItem under search scope", () => {
       </SettingsSearchScopeProvider>,
     );
     expect(screen.getByLabelText("Theme")).toBeTruthy();
+  });
+
+  it("matches multi-word product names on Session Defaults-style rows", () => {
+    render(
+      <SettingsSearchScopeProvider
+        value={makeScope({ query: "compact context early" })}
+      >
+        <SettingsItem
+          id="session-default-compact-early"
+          label="Compact context early"
+          description="Optionally ask for compaction once this model's live context passes the chosen share of its full window."
+          keywords={["early compact", "autocompact", "/compact"]}
+        >
+          <input
+            type="range"
+            aria-label="Compact context early"
+            min={0}
+            max={99}
+          />
+        </SettingsItem>
+        <SettingsItem label="Unrelated recap">
+          <input aria-label="Unrelated recap" />
+        </SettingsItem>
+      </SettingsSearchScopeProvider>,
+    );
+    expect(screen.getByLabelText("Compact context early")).toBeTruthy();
+    expect(screen.queryByLabelText("Unrelated recap")).toBeNull();
+  });
+
+  it("omits searchable={false} clones from search even when they would match", () => {
+    render(
+      <SettingsSearchScopeProvider
+        value={makeScope({ query: "compact context early" })}
+      >
+        <SettingsItem
+          id="primary"
+          label="Compact context early"
+          description="Primary home"
+        >
+          <input aria-label="Compact context early primary" type="range" />
+        </SettingsItem>
+        <SettingsItem
+          id="clone"
+          searchable={false}
+          label="Compact context early"
+          description="Clone next to Claude"
+        >
+          <input aria-label="Compact context early clone" type="range" />
+        </SettingsItem>
+      </SettingsSearchScopeProvider>,
+    );
+    expect(screen.getByLabelText("Compact context early primary")).toBeTruthy();
+    expect(screen.queryByLabelText("Compact context early clone")).toBeNull();
   });
 });
 

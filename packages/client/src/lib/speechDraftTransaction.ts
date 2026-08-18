@@ -2,9 +2,11 @@ import type { SpeechTranscriptionResultMetadata } from "./speechProviders/Speech
 import {
   type SpeechInsertionRange,
   mapSpeechInsertionRangeThroughReplacement,
+  mapTextIndexThroughEdit,
   removeLatestSpeechChunkFromRange,
   replaceSpeechTranscriptBefore,
   replaceSpeechTranscriptInRange,
+  retargetSpeechInsertionRange,
 } from "./speechRecognition";
 import {
   captureTextareaAppendSelection,
@@ -15,6 +17,13 @@ import {
 export interface PendingTextareaSelectionRestore {
   value: string;
   restore: (textarea: HTMLTextAreaElement) => void;
+}
+
+/** A manual caret target that becomes active after the current interim finalizes. */
+export interface PendingSpeechRetarget {
+  draft: string;
+  start: number;
+  end: number;
 }
 
 /**
@@ -35,12 +44,19 @@ export interface SpeechCommitContext {
   pendingTextareaSelectionRef: {
     current: PendingTextareaSelectionRestore | null;
   };
+  pendingSpeechRetargetRef: {
+    current: PendingSpeechRetarget | null;
+  };
+  /** Tell a cumulative provider that later results belong to the new target. */
+  onInsertionBoundary: () => void;
+  /** Refresh the provisional mirror after the active target changes. */
+  onSpeechTargetChanged: () => void;
   /** Record a programmatic draft edit (composition timing); no-op if absent. */
   onEdit?: (next: string) => void;
   /** Capture a transcription id for submission metadata; no-op if absent. */
   onTranscriptionId?: (id: string) => void;
-  /** Submit the composer when a batch/streaming `send` command commits. */
-  onSmartTurnSend?: (text: string) => void;
+  /** Submit the composer; return false only when current admission rejects it. */
+  onSmartTurnSend?: (text: string) => unknown;
   /**
    * Whether the user has manually edited the draft (non-whitespace) during the
    * active mic transaction. When true, an automatic Smart Turn endpoint send is
@@ -60,6 +76,14 @@ export function hasNonWhitespaceEdit(before: string, after: string): boolean {
   return before.replace(/\s+/g, "") !== after.replace(/\s+/g, "");
 }
 
+export type SpeechCommitOutcome =
+  | "committed"
+  | "cancelled"
+  | "wait"
+  | "send-dispatched"
+  | "send-held"
+  | "send-unhandled";
+
 /**
  * Integrate one finalized speech chunk (or a spoken `cancel`/`send` command)
  * into the draft at the transaction's insertion target, mapping any other
@@ -71,7 +95,7 @@ export function commitSpeechTranscript(
   ctx: SpeechCommitContext,
   transcript: string,
   metadata?: SpeechTranscriptionResultMetadata,
-): void {
+): SpeechCommitOutcome {
   const {
     textareaRef,
     getDraft,
@@ -81,6 +105,9 @@ export function commitSpeechTranscript(
     activeSpeechTargetIdRef,
     speechInsertionRangesRef,
     pendingTextareaSelectionRef,
+    pendingSpeechRetargetRef,
+    onInsertionBoundary,
+    onSpeechTargetChanged,
     onEdit,
     onTranscriptionId,
     onSmartTurnSend,
@@ -194,7 +221,7 @@ export function commitSpeechTranscript(
       if (targetId) updateSpeechRange(null);
     }
     setInterimTranscript("");
-    return;
+    return "cancelled";
   }
 
   const currentText = getDraft();
@@ -253,6 +280,48 @@ export function commitSpeechTranscript(
       updateSpeechRange(nextSpeechRange);
     }
   }
+
+  const pendingRetarget = pendingSpeechRetargetRef.current;
+  const retargetsActiveSpeech =
+    pendingRetarget !== null &&
+    (targetId === undefined || targetId === activeSpeechTargetIdRef.current);
+  const committedRange = retargetsActiveSpeech ? getSpeechRange() : null;
+  if (pendingRetarget && committedRange) {
+    const startBeforeCommit = mapTextIndexThroughEdit(
+      pendingRetarget.draft,
+      currentText,
+      pendingRetarget.start,
+    );
+    const endBeforeCommit = mapTextIndexThroughEdit(
+      pendingRetarget.draft,
+      currentText,
+      pendingRetarget.end,
+    );
+    const selectionStart = mapTextIndexThroughEdit(
+      currentText,
+      nextText,
+      startBeforeCommit,
+    );
+    const selectionEnd = mapTextIndexThroughEdit(
+      currentText,
+      nextText,
+      endBeforeCommit,
+    );
+    const nextRange = retargetSpeechInsertionRange(
+      committedRange,
+      selectionStart,
+      selectionEnd,
+    );
+    pendingSpeechRetargetRef.current = null;
+    updateSpeechRange(nextRange);
+    pendingTextareaSelectionRef.current = {
+      value: nextText,
+      restore: (textarea) =>
+        textarea.setSelectionRange(selectionStart, selectionEnd),
+    };
+    onInsertionBoundary();
+    onSpeechTargetChanged();
+  }
   setInterimTranscript("");
   if (metadata?.smartTurnCommand) {
     updateSpeechRange(null);
@@ -265,8 +334,12 @@ export function commitSpeechTranscript(
     const holdAutoSend =
       metadata.smartTurnAutoSend === true &&
       composerEditedDuringSpeech?.() === true;
-    if (!holdAutoSend) {
-      onSmartTurnSend?.(nextText);
+    if (holdAutoSend) return "send-held";
+    if (!onSmartTurnSend || onSmartTurnSend(nextText) === false) {
+      return "send-unhandled";
     }
+    return "send-dispatched";
   }
+  if (metadata?.smartTurnCommand === "wait") return "wait";
+  return "committed";
 }

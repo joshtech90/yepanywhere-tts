@@ -13,7 +13,9 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 const publicFeatures = features as readonly PublicFeature[];
 const publicDistributions = distributions as readonly PublicDistribution[];
-const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+const providerNames = new Map(
+  providers.map((provider) => [provider.id, provider.name]),
+);
 ---
 
 <BaseLayout
@@ -158,14 +160,6 @@ const providerNames = new Map(providers.map((provider) => [provider.id, provider
 <style>
   .features-hero {
     padding: 92px 0 70px;
-  }
-
-  .eyebrow {
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 750;
-    letter-spacing: 0.11em;
-    text-transform: uppercase;
   }
 
   .features-hero h1 {

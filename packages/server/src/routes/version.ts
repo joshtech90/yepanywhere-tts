@@ -10,12 +10,19 @@ import {
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
+  GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+  GLOSSARY_TOOLTIPS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
   GIT_STATUS_INTEGRATION_OPTIONS_CAPABILITY,
@@ -25,14 +32,33 @@ import {
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_FREEZE_CAPABILITY,
   PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY,
+  PROVIDER_HOST_CONTROL_CAPABILITY,
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
+  SIDEBAR_SESSION_RESUME_CAPABILITY,
+  SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  SECURITY_CLIENT_AUDIT_CAPABILITY,
+  TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
+  encodeCompactServerCapabilities,
+  encodeVersionedServerCapabilities,
+  negotiateServerCapabilityEncoding,
+  type CapabilityBitset,
   type ClientDefaults,
+  type OptionalServerCapabilityBitset,
   type SessionSandboxAvailability,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
@@ -81,9 +107,46 @@ export interface CurrentVersionInfo {
 }
 
 /**
+ * The installed package version, its `git describe` name in a source checkout,
+ * and the install source cannot change while this process runs — an in-place
+ * upgrade restarts it. Computing them per request spent a `git describe` or
+ * `npm root -g` subprocess on every `/api/version`, including the ordinary
+ * reads that many mounted consumers issue. `fresh=1` deliberately does not
+ * clear this: it promises a fresh check of the dynamic sandbox/device facts,
+ * which read from their own owning services.
+ */
+let currentVersionInfoPromise: Promise<CurrentVersionInfo> | null = null;
+let currentVersionInfoComputations = 0;
+
+function getCurrentVersionInfo(): Promise<CurrentVersionInfo> {
+  if (!currentVersionInfoPromise) {
+    currentVersionInfoComputations += 1;
+    currentVersionInfoPromise = computeCurrentVersionInfo().catch((error) => {
+      // A failed probe must not poison the process; the next request retries.
+      currentVersionInfoPromise = null;
+      throw error;
+    });
+  }
+  return currentVersionInfoPromise;
+}
+
+/**
+ * Test-only: drop the process-generation snapshot. The probe counter keeps
+ * accumulating so a caller can measure how many probes a shape actually cost.
+ */
+export function resetCurrentVersionInfoForTests(): void {
+  currentVersionInfoPromise = null;
+}
+
+/** Test-only: how many times the underlying probes actually ran. */
+export function getCurrentVersionInfoComputations(): number {
+  return currentVersionInfoComputations;
+}
+
+/**
  * Read the current package version and best-effort install source.
  */
-async function getCurrentVersionInfo(): Promise<CurrentVersionInfo> {
+async function computeCurrentVersionInfo(): Promise<CurrentVersionInfo> {
   try {
     // In production (npm package), package.json is in the parent of dist/
     // In development, it's in packages/server/
@@ -226,8 +289,18 @@ export interface VersionInfo {
   resumeProtocolVersion: number;
   /** Coarse hosted remote UI/server compatibility level. */
   remoteCompatibilityLevel: number;
-  /** Feature capabilities supported by this server. Used by clients to show/hide UI. */
-  capabilities: string[];
+  /** Legacy full names for clients predating version-based ID negotiation. */
+  capabilities?: string[];
+  /** Numeric capability encoding chosen for this client's version. */
+  capabilityEncoding?: number;
+  /** Explicit capability IDs not implied by `current`. */
+  capabilityBits?: CapabilityBitset;
+  /** Version-implied capability IDs this server generation explicitly denies. */
+  deniedCapabilityBits?: CapabilityBitset;
+  /** Sparse 32-bit words for optional capabilities in compact-v1 responses. */
+  optionalCapabilityBits?: OptionalServerCapabilityBitset;
+  /** Names not yet implied by the reported release, chiefly source builds. */
+  capabilityExtensions?: readonly string[];
   /** Local host preflight for the optional YA session sandbox backend. */
   sessionSandboxing?: SessionSandboxAvailability;
   /**
@@ -257,9 +330,13 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  GLOSSARY_TOOLTIPS_CAPABILITY,
   GIT_STATUS_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+  GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   GIT_STATUS_REMOTE_CHECK_CAPABILITY,
   GIT_STATUS_PULL_CAPABILITY,
@@ -270,14 +347,29 @@ const BASE_CAPABILITIES: string[] = [
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  PUBLIC_SHARE_MANAGEMENT_FREEZE_CAPABILITY,
   PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY,
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
+  SIDEBAR_SESSION_RESUME_CAPABILITY,
+  SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
 ];
 
 export type DeviceBridgeState =
@@ -293,6 +385,10 @@ export interface DeviceBridgeStatus {
 }
 
 export interface VersionRouteOptions {
+  /** Test/service override for the process-generation version snapshot. */
+  getCurrentVersionInfo?: () => Promise<CurrentVersionInfo>;
+  /** Whether the signed security-client audit routes are mounted. */
+  securityClientAuditAvailable?: boolean;
   /** Whether the browser-settings backup storage route is mounted. */
   browserSettingsBackupAvailable?: boolean;
   /** Dynamic device bridge state: available (binary exists), downloadable (ADB found, no binary), unavailable (no ADB). */
@@ -320,6 +416,10 @@ export interface VersionRouteOptions {
   getClientDefaults?: () => ClientDefaults | undefined;
   /** Whether this process is the server bundled with the desktop shell. */
   desktopRuntime?: boolean;
+  /** Whether this Hono generation is registered with a provider host. */
+  providerHostControlAvailable?: boolean;
+  /** Version-implied contracts deliberately unavailable in this generation. */
+  deniedCapabilities?: readonly string[];
   /** Resolved local sandbox preflight used while constructing capabilities. */
   sessionSandboxAvailability?: SessionSandboxAvailability;
   /** Test/service override for the cached host preflight. */
@@ -372,15 +472,22 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   if (options?.browserSettingsBackupAvailable) {
     capabilities.push(BROWSER_SETTINGS_BACKUP_CAPABILITY);
   }
+  if (options?.securityClientAuditAvailable) {
+    capabilities.push(SECURITY_CLIENT_AUDIT_CAPABILITY);
+  }
   if (options?.voiceInputEnabled !== false) {
     capabilities.push(VOICE_INPUT_CAPABILITY);
+  }
+  if (options?.providerHostControlAvailable) {
+    capabilities.push(PROVIDER_HOST_CONTROL_CAPABILITY);
   }
   const deviceBridgeState = options?.getDeviceBridgeState?.() ?? "unavailable";
   const enabled = options?.isDeviceBridgeEnabled?.() ?? false;
   capabilities.push(
     ...getCapabilitiesForDeviceBridgeState(deviceBridgeState, enabled),
   );
-  return capabilities;
+  const denied = new Set(options?.deniedCapabilities ?? []);
+  return capabilities.filter((capability) => !denied.has(capability));
 }
 
 export function getEnabledVoiceBackends(
@@ -406,7 +513,7 @@ export function getServerCompatibilityInfo(
 ): Promise<ServerCompatibilityInfo> {
   const clientDefaults = options?.getClientDefaults?.();
   return Promise.all([
-    getCurrentVersionInfo(),
+    (options?.getCurrentVersionInfo ?? getCurrentVersionInfo)(),
     (
       options?.getSessionSandboxAvailability ??
       getLocalSessionSandboxAvailability
@@ -429,8 +536,17 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
   const routes = new Hono();
 
   routes.get("/", async (c) => {
-    const currentVersionInfo = await getCurrentVersionInfo();
+    const currentVersionInfo = await (
+      options?.getCurrentVersionInfo ?? getCurrentVersionInfo
+    )();
     const current = currentVersionInfo.version;
+    const clientVersion =
+      c.req.query("clientVersion") ?? c.req.header("X-Yep-Client-Version");
+    const capabilityEncoding = negotiateServerCapabilityEncoding(
+      clientVersion,
+      current,
+    );
+    const compactCapabilities = c.req.query("capabilities") === "compact-v1";
     const fresh =
       c.req.query("fresh") === "1" || c.req.query("fresh") === "true";
     const deviceBridgeStatus = options?.getDeviceBridgeStatus
@@ -445,6 +561,7 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       getDeviceBridgeState: () => deviceBridgeStatus.state,
       sessionSandboxAvailability,
     });
+    const deniedCapabilities = options?.deniedCapabilities ?? [];
     const voiceBackends = getEnabledVoiceBackends(options);
     const voiceBackendStatuses = options?.getVoiceBackendStatuses?.() ?? [];
     const voiceBackendCapabilities = getVoiceBackendCapabilities(options);
@@ -465,7 +582,19 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       installSource: currentVersionInfo.installSource,
       resumeProtocolVersion: RESUME_PROTOCOL_VERSION,
       remoteCompatibilityLevel: REMOTE_COMPATIBILITY_LEVEL,
-      capabilities,
+      ...(capabilityEncoding
+        ? encodeVersionedServerCapabilities(
+            capabilities,
+            current,
+            deniedCapabilities,
+          )
+        : compactCapabilities
+          ? encodeCompactServerCapabilities(
+              capabilities,
+              current,
+              deniedCapabilities,
+            )
+          : { capabilities }),
       sessionSandboxing: sessionSandboxAvailability,
       voiceBackends,
       voiceBackendStatuses,

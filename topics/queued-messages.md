@@ -4,7 +4,8 @@
 > server's list and issues add/cancel requests. It never keeps its own copy of
 > the queue or reconciles by text. Long-lived patient entries are durable
 > server state while queued; short-term direct/deferred entries remain
-> process-local.
+> process-local. YA-local command chips may reuse this projection without
+> entering any provider-delivery queue.
 
 Topic: queued-messages
 
@@ -31,10 +32,11 @@ minutes.
 
 ## Principles
 
-1. **Server-authoritative.** The single source of truth is the in-process
-   queue on `Process` (`deferredQueue`). Every client renders exactly what the
-   server reports. There is no client-side queue model, merge step, or
-   reconciliation pass.
+1. **Server-authoritative.** Live queue state is owned by the in-process queue
+   on `Process` (`deferredQueue`), while restart-recovered patient entries are
+   owned by the server persistence service. Every client renders exactly the
+   server's canonical projection of those two stores. There is no client-side
+   queue model, merge step, or reconciliation pass.
 2. **There is one composer draft, and it is the only client-persisted state.**
    Queued messages introduce no draft of their own. The only thing persisted on
    the client is the existing main session composer draft — the text you are
@@ -54,7 +56,14 @@ minutes.
    `paused-after-restart` queue chips and require an explicit action: resume
    (rejoin the provider's patient/deferred delivery path), steer (deliver now),
    or delete.
-5. **No optimism.** Queuing and cancelling behave exactly like sending a normal
+5. **YA commands are explicitly tagged controls.** A queued YA-routed command
+   uses the Process-local `pendingYaCommands` lane and a `kind: "ya-command"`
+   summary. It is never inferred from slash-shaped queued text and never enters
+   deferred, patient, direct, or provider delivery. This preserves provider
+   skills with colliding command names. The `/done` chip itself stays
+   Process-local; its automation pause is durable session metadata written at
+   request time (see [session-context-actions](session-context-actions.md)).
+6. **No optimism.** Queuing and cancelling behave exactly like sending a normal
    session message: the composer disables, the request goes to the server, and
    the UI only changes when confirmed server state comes back. No optimistic
    chip, no optimistic removal, no revert path.
@@ -76,17 +85,40 @@ minutes.
   gone. Persisted patient entries load as `paused-after-restart`; clients
   reflect those server-reported entries on the next sync and never resurrect
   queue state locally.
+- **YA-local command boundary.** An accepted command may use the same queued
+  chip while an agent turn remains active. The control lane resolves locally at
+  the first safe boundary, and ordinary queued provider work stays held until
+  that resolution commits. It neither consumes a patient/regular queue
+  position nor exposes provider-queue edit, steer, or cancel actions.
+
+## Canonical queue projection
+
+Every complete wire snapshot is produced by `sessionQueueSummaries()`. It
+combines the active `Process` deferred and YA-command projections with
+persisted `paused-after-restart` patient entries, orders the result
+chronologically, and removes a
+resume-transition duplicate by durable queue id. A resumed live patient entry
+carries the same durable id as its persisted representation and wins while both
+stores briefly contain it.
+
+The initial session `connected` event, every `deferred-queue` event, session
+detail reads, and queue mutation responses all publish this same projection.
+An internal `Process` `deferred-queue` event is only a change signal; the
+transport queries the projection when it emits rather than forwarding a
+process-local list. Consequently, replacing the client's last snapshot remains
+correct: an empty authoritative list removes deleted work, while a stream event
+cannot erase a recovered chip that still exists on the server.
 
 ## Surface
 
 - **List:** the client receives the queue from the server only — the `connected`
-  event payload on (re)connect and `deferred-queue` SSE events on change.
-  Session detail/metadata responses may also decorate recovered
-  `paused-after-restart` patient entries for initial load after a server
-  restart.
-- **Add:** `POST` a queue request; the server appends and broadcasts the new
-  list.
-- **Cancel:** `DELETE` by id; the server removes and broadcasts the new list.
+  event payload on (re)connect and `deferred-queue` subscription events on
+  change. Session detail/metadata responses use the same canonical projection
+  for initial load after a server restart.
+- **Add:** `POST` a queue request; the server appends and returns/broadcasts the
+  new canonical list.
+- **Cancel:** `DELETE` by id; the server removes and returns/broadcasts the new
+  canonical list.
 - **Draft:** the main composer's existing single draft, persisted in
   `localStorage` per session and cleared on a confirmed send. Queue and send-now
   share this one draft; there is no queued-message-specific draft.
@@ -157,9 +189,12 @@ reports recovered patient entries as preserved work, not blockers, and converts
 live patient entries to `paused-after-restart` once active sessions plus
 short-term/direct queue blockers have drained. Project Queue promotion treats
 persisted recovered patient entries as project-busy so project-level work
-cannot jump ahead of preserved per-session work. The Projects page shows a
-read-only recovered queue overview grouped by session; management remains on
-the session page, and project-level resume-all controls are still pending.
+cannot jump ahead of preserved per-session work. The Projects page groups
+recovered entries by session and offers per-row Resume and Delete through the
+same session-scoped routes as the session page. Those actions remain
+server-confirmed and id-addressed: Resume preserves resume-through ordering,
+and Delete removes only the selected durable id. Full context and Steer now
+remain on the session page; there is no project-level Resume all control.
 
 ## What we are removing and why
 

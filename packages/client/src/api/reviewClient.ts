@@ -2,7 +2,12 @@ import type {
   ReviewBatch,
   ReviewComment,
   ReviewCommentAnchor,
+  ReviewInboxItem,
   ReviewNewSessionOptions,
+  ReviewReviewerEntry,
+  ReviewSiteStateSummary,
+  ReviewSubmissionDetail,
+  ReviewSubmissionSummary,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
 
@@ -51,6 +56,13 @@ export interface ReviewSubmitResult {
   consumed?: string[];
   /** "queued" (HTTP 202) when the supervisor was at capacity. */
   status?: "queued";
+  submissionId?: string;
+}
+
+export interface ReviewSubmissionPage {
+  submissions: ReviewSubmissionSummary[];
+  nextCursor: string | null;
+  siteStates?: ReviewSiteStateSummary[];
 }
 
 export const reviewApi = {
@@ -93,9 +105,71 @@ export const reviewApi = {
     include: string[],
     target: "new" | string,
     newSession?: ReviewNewSessionOptions,
+    submission?: { id: string; name?: string },
   ) =>
     fetchJSON<ReviewSubmitResult>(`/projects/${projectId}/review/submit`, {
       method: "POST",
-      body: JSON.stringify({ include, target, newSession }),
+      body: JSON.stringify({
+        include,
+        target,
+        newSession,
+        ...(submission
+          ? { submissionId: submission.id, name: submission.name }
+          : {}),
+      }),
     }),
+
+  listReviewSubmissions: (
+    projectId: string,
+    options?: { cursor?: string; limit?: number },
+  ) => {
+    const params = new URLSearchParams();
+    if (options?.cursor) params.set("cursor", options.cursor);
+    if (options?.limit) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params}` : "";
+    return fetchJSON<ReviewSubmissionPage>(
+      `/projects/${projectId}/review/submissions${query}`,
+    );
+  },
+
+  getReviewSubmission: (projectId: string, submissionId: string) =>
+    fetchJSON<ReviewSubmissionDetail>(
+      `/projects/${projectId}/review/submissions/${encodeURIComponent(submissionId)}`,
+    ),
+
+  addReviewFollowUp: (projectId: string, siteId: string, text: string) =>
+    fetchJSON<{ entry: ReviewReviewerEntry }>(
+      `/projects/${projectId}/review/sites/${encodeURIComponent(siteId)}/follow-ups`,
+      { method: "POST", body: JSON.stringify({ text }) },
+    ),
+
+  resolveReviewSite: (projectId: string, siteId: string) =>
+    fetchJSON<{ resolved: true }>(
+      `/projects/${projectId}/review/sites/${encodeURIComponent(siteId)}/resolve`,
+      { method: "POST" },
+    ),
+
+  acknowledgeReviewSubmission: (projectId: string, submissionId: string) =>
+    fetchJSON<{ submission: ReviewSubmissionSummary }>(
+      `/projects/${projectId}/review/submissions/${encodeURIComponent(submissionId)}/acknowledge`,
+      { method: "POST" },
+    ),
+
+  refreshReviewSubmissionResponse: (projectId: string, submissionId: string) =>
+    fetchJSON<
+      ReviewSubmissionDetail & {
+        responseStatus: "missing" | "invalid" | "unchanged" | "ingested";
+      }
+    >(
+      `/projects/${projectId}/review/submissions/${encodeURIComponent(submissionId)}/refresh-response`,
+      { method: "POST" },
+    ),
+
+  listReviewSiteStates: (projectId: string) =>
+    fetchJSON<ReviewSubmissionPage>(
+      `/projects/${projectId}/review/submissions?limit=1&includeSiteStates=1`,
+    ).then((page) => page.siteStates ?? []),
+
+  listReviewInbox: () =>
+    fetchJSON<{ items: ReviewInboxItem[] }>("/review/inbox"),
 };

@@ -1,9 +1,4 @@
-import {
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Process,
   createControllableIterator,
@@ -11,10 +6,7 @@ import {
   createRecapProvider,
   waitFor,
 } from "./process.test-support.js";
-import type {
-  SDKMessage,
-  UrlProjectId,
-} from "./process.test-support.js";
+import type { SDKMessage, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
   describe("recaps", () => {
@@ -237,6 +229,127 @@ describe("Process", () => {
         }),
       );
       expect(recaps.at(-1)?.content).toBe("during");
+      controller.finish();
+      await process.abort();
+    });
+
+    it("drops a deferred recap after Stop until a fresh user turn", async () => {
+      const controller = createControllableIterator();
+      const generateSummary = vi.fn(async () => ({ text: "summary" }));
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        recapsEnabled: true,
+      });
+
+      controller.push({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-1",
+      });
+      controller.push({ type: "assistant", message: { content: "during" } });
+      await waitFor(() =>
+        expect(process.getRecentAssistantText()).toEqual(["during"]),
+      );
+
+      await expect(
+        process.requestRecap(createRecapProvider(generateSummary)),
+      ).resolves.toMatchObject({
+        emitted: false,
+        reason: "recap deferred until turn completes",
+      });
+
+      process.pauseRecapsUntilUserTurn();
+      controller.push({ type: "result", session_id: "sess-1" });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+
+      expect(generateSummary).not.toHaveBeenCalled();
+      await expect(
+        process.requestRecap(createRecapProvider(generateSummary)),
+      ).resolves.toMatchObject({
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      });
+
+      process.queueMessage({
+        text: "automatic heartbeat",
+        automaticSource: "heartbeat",
+      });
+      expect(process.isRecapPausedUntilUserTurn).toBe(true);
+
+      process.queueMessage({
+        text: "automatic project queue",
+        automaticSource: "project-queue",
+      });
+      process.queueMessage({
+        text: "automatic wake",
+        automaticSource: "wake",
+      });
+      expect(process.isRecapPausedUntilUserTurn).toBe(true);
+
+      process.queueMessage({
+        text: "/compact",
+        metadata: { hidden: true },
+      });
+      expect(process.isRecapPausedUntilUserTurn).toBe(true);
+
+      process.queueMessage({
+        text: "continue",
+        metadata: { serverReceivedAt: new Date().toISOString() },
+      });
+      expect(process.isRecapPausedUntilUserTurn).toBe(false);
+
+      controller.finish();
+      await process.abort();
+    });
+
+    it("drops a recap that finishes after the session is paused", async () => {
+      const controller = createControllableIterator();
+      let finishSummary: (value: { text: string }) => void = () => {};
+      const generateSummary = vi.fn(
+        () =>
+          new Promise<{ text: string }>((resolve) => {
+            finishSummary = resolve;
+          }),
+      );
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        recapsEnabled: true,
+      });
+      const recaps: SDKMessage[] = [];
+      process.subscribe((event) => {
+        if (
+          event.type === "message" &&
+          event.message.type === "system" &&
+          event.message.subtype === "away_summary"
+        ) {
+          recaps.push(event.message);
+        }
+      });
+
+      controller.push({ type: "assistant", message: { content: "finished" } });
+      controller.push({ type: "result", session_id: "sess-1" });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+
+      const request = process.requestRecap(
+        createRecapProvider(generateSummary),
+      );
+      await waitFor(() => expect(generateSummary).toHaveBeenCalledTimes(1));
+      process.pauseRecapsUntilUserTurn();
+      finishSummary({ text: "too late" });
+
+      await expect(request).resolves.toMatchObject({
+        emitted: false,
+        reason: "recaps paused until next user turn",
+      });
+      expect(recaps).toEqual([]);
       controller.finish();
       await process.abort();
     });

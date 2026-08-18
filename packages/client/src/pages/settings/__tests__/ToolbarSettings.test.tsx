@@ -9,6 +9,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
+} from "@yep-anywhere/shared";
+import {
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
 } from "../../../lib/projectQueueVisibility";
@@ -16,6 +20,10 @@ import {
   DEFAULT_CONVERSATION_VIEW_TURN_LIMIT,
   setConversationViewTurnLimit,
 } from "../../../hooks/useConversationView";
+import {
+  DEFAULT_WAVEFORM_BUTTON_BACKGROUND_OPACITY_PERCENT,
+  setWaveformButtonBackgroundOpacityPercent,
+} from "../../../hooks/useWaveformButtonBackgroundOpacity";
 import { ToolbarSettings } from "../ToolbarSettings";
 
 const state = vi.hoisted(() => {
@@ -27,6 +35,7 @@ const state = vi.hoisted(() => {
     thinkingToggle: "mid",
     renderMode: "hidden",
     conversationView: "last",
+    browserDebug: "hidden",
     microphone: "pin",
     waveform: "pin",
     shortcutsHelp: "last",
@@ -36,6 +45,7 @@ const state = vi.hoisted(() => {
     sessionStatus: "pin",
     projectQueue: "pin",
     projectQueueNewSessionShortcut: "hidden",
+    syntheticDone: "off",
     composerRecall: "hidden",
   };
   return {
@@ -129,6 +139,9 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarConversationViewTitle: "Conversation View",
           appearanceToolbarConversationViewDescription:
             "Show condensed conversation",
+          appearanceToolbarBrowserDebugTitle: "Remote Browser Debugging",
+          appearanceToolbarBrowserDebugDescription:
+            "Grant full JavaScript access to this tab",
           appearanceToolbarConversationViewTurnLimitTitle:
             "Conversation View history",
           appearanceToolbarConversationViewTurnLimitDescription:
@@ -138,6 +151,11 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarMicrophoneDescription: "Show microphone",
           appearanceToolbarWaveformTitle: "Live Microphone Waveform",
           appearanceToolbarWaveformDescription: "Show waveform",
+          appearanceToolbarWaveformButtonOpacityTitle:
+            "Button background opacity over waveform",
+          appearanceToolbarWaveformButtonOpacityDescription:
+            "Keep button foregrounds solid",
+          appearanceToolbarWaveformButtonOpacityUnit: "%",
           appearanceToolbarShortcutsTitle: "Shortcuts Help",
           appearanceToolbarShortcutsDescription: "Show shortcuts",
           appearanceToolbarContextTitle: "Context Usage",
@@ -146,6 +164,8 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarBtwDescription: "Show /btw",
           appearanceToolbarNudgeTitle: "Heartbeat/Nudge Button",
           appearanceToolbarNudgeDescription: "Show nudge",
+          appearanceToolbarSyntheticDoneTitle: "/done Button",
+          appearanceToolbarSyntheticDoneDescription: "Mark done locally",
           appearanceToolbarStatusTitle: "Session Status",
           appearanceToolbarStatusDescription: "Show status",
           appearanceToolbarSteerNowTitle: '"Now" steering selector',
@@ -171,6 +191,7 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarCollapsedButtonAlternate: "Alternate",
           appearanceToolbarCollapsedButtonMicrophone: "Microphone",
           appearanceToolbarPresenceAria: `${params?.control} visibility`,
+          appearanceToolbarPresenceOffCaption: "Disabled",
           appearanceToolbarPresenceHiddenCaption: "Not shown on the toolbar.",
           appearanceToolbarPresenceFirstCaption: "Collapses first",
           appearanceToolbarPresenceMidCaption: "Collapses in the middle",
@@ -180,6 +201,7 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarActivateControl: `Edit ${params?.control}`,
           appearanceSessionToolbarReset: "Reset",
           appearanceToolbarHide: "Hide",
+          appearanceToolbarOff: "Off",
           appearanceToolbarShowAlways: "Show always",
         }) as Record<string, string>
       )[key] ?? key,
@@ -199,6 +221,9 @@ describe("ToolbarSettings", () => {
     state.version = { capabilities: [] };
     state.presence = { ...state.defaultPresence };
     setConversationViewTurnLimit(DEFAULT_CONVERSATION_VIEW_TURN_LIMIT);
+    setWaveformButtonBackgroundOpacityPercent(
+      DEFAULT_WAVEFORM_BUTTON_BACKGROUND_OPACITY_PERCENT,
+    );
   });
 
   afterEach(() => {
@@ -210,6 +235,36 @@ describe("ToolbarSettings", () => {
 
     expect(screen.queryByText("Project Queue")).toBe(null);
     expect(screen.queryByText("Queue as New Session Shortcut")).toBe(null);
+  });
+
+  it("hides browser debugging unless the server contract is present", () => {
+    render(<ToolbarSettings />);
+
+    expect(screen.queryByText("Remote Browser Debugging")).toBe(null);
+  });
+
+  it("offers browser debugging hidden with normal toolbar priorities", () => {
+    state.version = {
+      capabilities: [REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY],
+    };
+
+    render(<ToolbarSettings />);
+
+    const row = screen
+      .getByText("Remote Browser Debugging")
+      .closest(".session-toolbar-control-row");
+    expect(row).toBeTruthy();
+    const slider = within(row as HTMLElement).getByRole<HTMLInputElement>(
+      "slider",
+      { name: "Remote Browser Debugging visibility" },
+    );
+    expect(slider.value).toBe("0");
+    expect(slider.getAttribute("max")).toBe("4");
+
+    fireEvent.change(slider, { target: { value: "2" } });
+    fireEvent.pointerUp(slider);
+
+    expect(state.presence.browserDebug).toBe("mid");
   });
 
   it("shows only the current-session control without shortcut capability", () => {
@@ -258,11 +313,34 @@ describe("ToolbarSettings", () => {
     expect(slider.getAttribute("max")).toBe("1");
   });
 
+  it("shows synthetic done only with capability and gives it an Off notch", () => {
+    state.version = {
+      capabilities: [SYNTHETIC_DONE_COMMAND_CAPABILITY],
+    };
+    render(<ToolbarSettings />);
+
+    const row = screen
+      .getByText("/done Button")
+      .closest(".session-toolbar-control-row");
+    expect(row).toBeTruthy();
+    const slider = within(row as HTMLElement).getByRole<HTMLInputElement>(
+      "slider",
+      { name: "/done Button visibility" },
+    );
+    expect(slider.value).toBe("0");
+    expect(slider.getAttribute("max")).toBe("5");
+
+    fireEvent.change(slider, { target: { value: "1" } });
+    fireEvent.pointerUp(slider);
+    expect(state.presence.syntheticDone).toBe("hidden");
+  });
+
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 15 control-presence sliders plus the Conversation View history slider.
-    expect(screen.getAllByRole("slider")).toHaveLength(16);
+    // 15 control-presence sliders plus Conversation View history and waveform
+    // button-background opacity.
+    expect(screen.getAllByRole("slider")).toHaveLength(17);
     // Overflow-supported controls get the full notch scale...
     expect(
       screen
@@ -294,6 +372,26 @@ describe("ToolbarSettings", () => {
     fireEvent.pointerUp(slider);
 
     expect(slider.value).toBe("150");
+  });
+
+  it("configures browser-local button opacity beside the waveform control", () => {
+    render(<ToolbarSettings />);
+
+    const waveformRow = screen
+      .getByText("Live Microphone Waveform")
+      .closest(".session-toolbar-control-row");
+    expect(waveformRow).toBeTruthy();
+    const slider = within(
+      waveformRow as HTMLElement,
+    ).getByRole<HTMLInputElement>("slider", {
+      name: "Button background opacity over waveform",
+    });
+    expect(slider.value).toBe("70");
+
+    fireEvent.change(slider, { target: { value: "40" } });
+    fireEvent.pointerUp(slider);
+
+    expect(slider.value).toBe("40");
   });
 
   it("keeps hidden overflow controls priority-editable", () => {

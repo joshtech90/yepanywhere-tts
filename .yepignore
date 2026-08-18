@@ -1,0 +1,17 @@
+# Dependency trees. Entries are literal project-relative directories.
+node_modules
+packages/client/node_modules
+packages/desktop/node_modules
+packages/mobile/node_modules
+packages/push-broker/node_modules
+packages/relay/node_modules
+packages/server/node_modules
+packages/shared/node_modules
+site/node_modules
+
+# Local environments, checkouts, generated artifacts, and runtime state.
+.pixi
+.local-checkouts
+.artifacts
+references
+.yep

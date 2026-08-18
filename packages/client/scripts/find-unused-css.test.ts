@@ -16,6 +16,8 @@ import {
   extractBindingUsage,
   extractComposes,
   extractModuleImports,
+  extractModuleSelectors,
+  extractSelectorClassNames,
   findSourceFiles,
   moduleContractIssues,
   parseArgs,
@@ -47,18 +49,26 @@ function unusedNames(basename: string): string[] {
 
 describe("class-production evidence", () => {
   it("separates class-producing syntax from generic source strings", () => {
+    const templateSource = [
+      'const state = "active";',
+      "const templateClass = `card $" +
+        '{state === "active" ? "card-selected" : ""}`;',
+      "export const view = <div className={templateClass} />;",
+    ].join("\n");
     const source = new Map([
       [
         "Owner.tsx",
         `
           const status = "status";
-          const finiteClass = active ? "card-active" : "card-idle";
+          const state = "active";
+          const finiteClass = state === "active" ? "card-active" : "card-idle";
           element.classList.add("card-mounted");
           export const view = (
             <div className={finiteClass} data-status={status} />
           );
         `,
       ],
+      ["TemplateOwner.tsx", templateSource],
     ]);
 
     const permissive = buildSourceUsageIndex(source);
@@ -66,9 +76,34 @@ describe("class-production evidence", () => {
 
     expect(permissive.exact.get("status")).toBeDefined();
     expect(producers.exact.get("status")).toBeUndefined();
+    expect(producers.exact.get("active")).toBeUndefined();
     expect(producers.exact.get("card-active")).toBeDefined();
     expect(producers.exact.get("card-idle")).toBeDefined();
+    expect(producers.exact.get("card-selected")).toBeDefined();
     expect(producers.exact.get("card-mounted")).toBeDefined();
+  });
+
+  it("resolves shadowed class variables in their lexical scope", () => {
+    const producers = buildClassProducerUsageIndex(
+      new Map([
+        [
+          "ScopedOwner.tsx",
+          `
+            function Visible() {
+              const classes = "alpha";
+              return <div className={classes} />;
+            }
+            function Unused() {
+              const classes = "beta";
+              return <span />;
+            }
+          `,
+        ],
+      ]),
+    );
+
+    expect(producers.exact.has("alpha")).toBe(true);
+    expect(producers.exact.has("beta")).toBe(false);
   });
 });
 
@@ -271,6 +306,95 @@ describe("module selector analysis", () => {
 });
 
 describe("parsing helpers", () => {
+  it("extracts selector nodes without reading quoted attribute values", () => {
+    expect(
+      extractSelectorClassNames(
+        '.root[data-ext=".json"]:not(.disabled, .escaped\\:state)',
+      ),
+    ).toEqual(["root", "disabled", "escaped:state"]);
+  });
+
+  it("matches decoded selectors to complete source class tokens", () => {
+    const names = extractSelectorClassNames(
+      ".escaped\\:state, .\\31 23, .café, .x",
+    );
+    const source = buildSourceUsageIndex(
+      new Map([["Owner.tsx", 'const classes = "escaped:state 123 café x";']]),
+    );
+
+    expect(names).toEqual(["escaped:state", "123", "café", "x"]);
+    for (const name of names) expect(source.exact.has(name)).toBe(true);
+    expect(source.exact.has("escaped")).toBe(false);
+    expect(source.exact.has("state")).toBe(false);
+  });
+
+  it("canonicalizes selector strings and generated markup class lists", () => {
+    const source = buildSourceUsageIndex(
+      new Map([
+        [
+          "Selector.test.ts",
+          String.raw`const selector = ".escaped\\:state, .\\31 23, .café, .x";`,
+        ],
+        [
+          "generated.ts",
+          `const markup = '<div class="generated:shell café">';`,
+        ],
+      ]),
+    );
+
+    for (const name of ["escaped:state", "123", "café", "x"]) {
+      expect(source.exact.get(name)).toContain("Selector.test.ts");
+    }
+    expect(source.exact.get("generated:shell")).toContain("generated.ts");
+    expect(source.exact.get("café")).toContain("generated.ts");
+    expect(source.exact.has("escaped")).toBe(false);
+    expect(source.exact.has("state")).toBe(false);
+  });
+
+  it("keeps module-global anchors local to their selector branch", () => {
+    const { globalUses } = extractModuleSelectors(
+      [
+        ":global(.shell), .other { color: red; }",
+        ":global(.shell).owned, .other { color: blue; }",
+        ".owned, :global(.shell) { composes: legacy from global; }",
+      ].join("\n"),
+      "Branches.module.css",
+    );
+
+    expect(globalUses).toEqual([
+      expect.objectContaining({
+        name: "shell",
+        selector: ":global(.shell)",
+        localAnchors: [],
+        kind: "selector",
+      }),
+      expect.objectContaining({
+        name: "shell",
+        selector: ":global(.shell).owned",
+        localAnchors: ["owned"],
+        kind: "selector",
+      }),
+      expect.objectContaining({
+        name: "shell",
+        selector: ":global(.shell)",
+        localAnchors: [],
+        kind: "selector",
+      }),
+      expect.objectContaining({
+        name: "legacy",
+        selector: ".owned",
+        localAnchors: ["owned"],
+        kind: "composes",
+      }),
+      expect.objectContaining({
+        name: "legacy",
+        selector: ":global(.shell)",
+        localAnchors: [],
+        kind: "composes",
+      }),
+    ]);
+  });
+
   it("scans every package for generated vocabulary by default", () => {
     expect(parseArgs([]).srcDir).toBe("packages");
     expect(parseArgs(["--modules-check"]).modulesCheck).toBe(true);
@@ -296,9 +420,18 @@ describe("parsing helpers", () => {
   });
 
   it("separates :global(...) references from module-scoped selectors", () => {
-    expect(splitGlobalReferences(":global(.modal):has(.content) {")).toEqual({
-      scoped: ":has(.content) {",
+    expect(splitGlobalReferences(":global(.modal):has(.content)")).toEqual({
+      scoped: ":has(.content)",
       globalRefs: ["modal"],
+    });
+  });
+
+  it("does not read :global syntax from quoted attribute values", () => {
+    expect(
+      splitGlobalReferences('.root[data-label=":global(.phantom)"]'),
+    ).toEqual({
+      scoped: '.root[data-label=":global(.phantom)"]',
+      globalRefs: [],
     });
   });
 

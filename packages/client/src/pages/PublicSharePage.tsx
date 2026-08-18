@@ -1,12 +1,13 @@
 import {
   DEFAULT_RELAY_URL,
   sanitizeSessionTitle,
+  type PublicSessionSharePublicMetadata,
   type PublicSessionShareMode,
   type PublicSessionShareResponse,
   normalizeRelayUrl,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { BrandWordmark } from "../components/BrandWordmark";
 import { ConversationViewIcon } from "../components/ConversationViewIcon";
 import { MessageList } from "../components/MessageList";
@@ -22,7 +23,11 @@ import { SessionMetadataProvider } from "../contexts/SessionMetadataContext";
 import { StreamingMarkdownProvider } from "../contexts/StreamingMarkdownContext";
 import { ToastProvider } from "../contexts/ToastContext";
 import { useI18n } from "../i18n";
-import { fetchPublicShareViaRelay } from "../lib/publicShareRelay";
+import {
+  fetchPublicShareV2ViaRelay,
+  fetchPublicShareViaRelay,
+  PublicShareRelayError,
+} from "../lib/publicShareRelay";
 import type { Message } from "../types";
 
 const LIVE_POLL_MS = 2000;
@@ -36,6 +41,7 @@ interface PublicShareHints {
   mode: PublicSessionShareMode | null;
   projectName: string | null;
   title: string | null;
+  version: number | null;
 }
 
 function generateViewerId(): string {
@@ -75,6 +81,7 @@ function parseShareHints(hash: string): PublicShareHints {
     mode: mode === "frozen" || mode === "live" ? mode : null,
     projectName: params.get("p"),
     title: params.get("t"),
+    version: params.get("v") === "2" ? 2 : null,
   };
 }
 
@@ -98,6 +105,9 @@ function formatSnapshotDate(timestamp: string | null): string | null {
 function shouldRetryPublicShareError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
+  }
+  if (error instanceof PublicShareRelayError) {
+    return error.retryable;
   }
   return (
     error.message === "Relay connection closed" ||
@@ -224,15 +234,45 @@ export function getPublicShareCautionKey(
 }
 
 export function PublicSharePage() {
+  const { secret } = useParams<{ secret: string }>();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const requestedViewerId = searchParams.get("viewerId");
+  const shareIdentity = JSON.stringify([
+    secret ?? "",
+    searchParams.get("h") ?? "",
+    searchParams.get("r") ?? "",
+    requestedViewerId && PUBLIC_SHARE_VIEWER_ID_REGEX.test(requestedViewerId)
+      ? requestedViewerId
+      : "",
+    location.hash,
+  ]);
+  return (
+    <PublicSharePageGeneration
+      key={shareIdentity}
+      locationHash={location.hash}
+    />
+  );
+}
+
+function PublicSharePageGeneration({ locationHash }: { locationHash: string }) {
   const { t } = useI18n();
   const { secret } = useParams<{ secret: string }>();
   const [searchParams] = useSearchParams();
   const [share, setShare] = useState<PublicSessionShareResponse | null>(null);
+  const [metadata, setMetadata] =
+    useState<PublicSessionSharePublicMetadata | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
-  const [viewerId] = useState(getPublicShareViewerId);
+  const [viewerId] = useState(() => {
+    const requestedViewerId = searchParams.get("viewerId");
+    return requestedViewerId &&
+      PUBLIC_SHARE_VIEWER_ID_REGEX.test(requestedViewerId)
+      ? requestedViewerId
+      : getPublicShareViewerId();
+  });
   const [conversationViewEnabled, setConversationViewEnabled] = useState(true);
   const [floatingControlsElement, setFloatingControlsElement] =
     useState<HTMLDivElement | null>(null);
@@ -253,7 +293,7 @@ export function PublicSharePage() {
       };
     }
   }, [searchParams]);
-  const hints = useMemo(() => parseShareHints(window.location.hash), []);
+  const hints = useMemo(() => parseShareHints(locationHash), [locationHash]);
   const publicShareContext = useMemo<PublicShareContextValue | null>(() => {
     if (!secret || !relayUsername) {
       return null;
@@ -263,20 +303,34 @@ export function PublicSharePage() {
       relayUrl: relayConfig.url,
       relayUsername,
       secret,
+      viewerId,
     };
-  }, [relayConfig.url, relayUsername, secret, share?.share.source.projectId]);
+  }, [
+    relayConfig.url,
+    relayUsername,
+    secret,
+    share?.share.source.projectId,
+    viewerId,
+  ]);
 
   const title = useMemo(
     () =>
       share?.share.title ??
       share?.session.customTitle ??
       share?.session.title ??
+      metadata?.title ??
       hints.title,
-    [share, hints.title],
+    [share, metadata?.title, hints.title],
   );
-  const projectName = share?.share.source.projectName ?? hints.projectName;
-  const mode = share?.share.mode ?? hints.mode;
-  const capturedAt = share?.share.capturedAt ?? hints.capturedAt;
+  const projectName =
+    share?.share.source.projectName ??
+    metadata?.projectName ??
+    hints.projectName;
+  const mode = share?.share.mode ?? metadata?.mode ?? hints.mode;
+  const capturedAt =
+    share?.share.capturedAt ?? metadata?.capturedAt ?? hints.capturedAt;
+  const linkedFileMode =
+    share?.share.linkedFileMode ?? metadata?.linkedFileMode;
   const activeViewerCount = share?.share.activeViewerCount ?? null;
   const badgeLabel = useMemo(() => {
     if (mode === "live") {
@@ -296,29 +350,58 @@ export function PublicSharePage() {
   const isFetching = loading || retrying;
   const cautionKey = getPublicShareCautionKey(mode);
   const cautionLabel = cautionKey ? t(cautionKey) : null;
+  const initialPromptPreview = metadata?.initialPrompt ?? hints.initialPrompt;
 
   const refresh = useCallback(
-    async (afterMessageId?: string) => {
+    async (
+      afterMessageId?: string,
+      onMetadata?: (metadata: PublicSessionSharePublicMetadata) => void,
+      signal?: AbortSignal,
+    ) => {
       if (!secret || !relayUsername) {
         throw new Error(t("publicShareMissingRelay"));
       }
       if (relayConfig.error) {
         throw new Error(relayConfig.error);
       }
-      return await fetchPublicShareViaRelay({
-        afterMessageId,
-        relayUrl: relayConfig.url,
-        relayUsername,
-        secret,
-        viewerId,
-      });
+      if (hints.version === 2 && !afterMessageId) {
+        const result = await fetchPublicShareV2ViaRelay({
+          relayUrl: relayConfig.url,
+          relayUsername,
+          secret,
+          viewerId,
+          signal,
+          onMetadata,
+        });
+        return { metadata: result.metadata, share: result.share };
+      }
+      return {
+        share: await fetchPublicShareViaRelay({
+          afterMessageId,
+          relayUrl: relayConfig.url,
+          relayUsername,
+          secret,
+          viewerId,
+          rawJson: hints.version === 2,
+          signal,
+        }),
+      };
     },
-    [relayConfig.error, relayConfig.url, relayUsername, secret, t, viewerId],
+    [
+      hints.version,
+      relayConfig.error,
+      relayConfig.url,
+      relayUsername,
+      secret,
+      t,
+      viewerId,
+    ],
   );
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const abortController = new AbortController();
 
     const run = async () => {
       try {
@@ -326,8 +409,15 @@ export function PublicSharePage() {
           shareRef.current?.share.mode === "live"
             ? (lastMessageIdRef.current ?? undefined)
             : undefined;
-        const response = await refresh(afterMessageId);
+        const result = await refresh(
+          afterMessageId,
+          (nextMetadata) => {
+            if (!cancelled) setMetadata(nextMetadata);
+          },
+          abortController.signal,
+        );
         if (cancelled) return;
+        const response = result.share;
         const nextShare = mergePublicShareResponse(
           shareRef.current,
           response,
@@ -364,6 +454,7 @@ export function PublicSharePage() {
 
     return () => {
       cancelled = true;
+      abortController.abort();
       if (timer) {
         clearTimeout(timer);
       }
@@ -493,6 +584,11 @@ export function PublicSharePage() {
             {cautionLabel}
           </div>
         )}
+        {mode === "frozen" && linkedFileMode === "live" && (
+          <div className="public-share-caution" role="note">
+            {t("publicShareFrozenLinkedFilesLiveWarning")}
+          </div>
+        )}
         <ToastProvider>
           <SchemaValidationProvider>
             <StreamingMarkdownProvider>
@@ -507,10 +603,10 @@ export function PublicSharePage() {
                 </div>
               ) : messageContent ? (
                 messageContent
-              ) : hints.initialPrompt ? (
+              ) : initialPromptPreview ? (
                 <div className="public-share-preview">
                   <div className="public-share-preview-text">
-                    {hints.initialPrompt}
+                    {initialPromptPreview}
                   </div>
                   <div className="public-share-fetch-status" role="status">
                     <span className="public-share-spinner" aria-hidden="true" />

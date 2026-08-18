@@ -38,8 +38,11 @@ export function CommitBrowser({
   status,
   isWideScreen,
   initialSha,
+  initialPath,
   onBlameFile,
+  captureReviewProjections = false,
   supportsProjections = false,
+  supportsLastEditor = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace = NOOP,
   onProjectionUnavailable = NOOP,
@@ -51,9 +54,13 @@ export function CommitBrowser({
   isWideScreen: boolean;
   /** Direct commit selection, e.g. from an asynchronously populated blame hash. */
   initialSha?: string;
+  /** Direct file selection within the initial commit. */
+  initialPath?: string;
   /** Bridge a commit file to its blame-at-HEAD view (the files tab). */
   onBlameFile?: (path: string) => void;
+  captureReviewProjections?: boolean;
   supportsProjections?: boolean;
+  supportsLastEditor?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionUnavailable?: () => void;
@@ -107,12 +114,16 @@ export function CommitBrowser({
     status,
     isWideScreen,
     initialSha,
+    initialPath,
     supportsProjections,
     onProjectionUnavailable,
     t,
   });
 
-  const { pending } = useProjectReviewComments(projectId);
+  const { pending, siteStates } = useProjectReviewComments(
+    projectId,
+    captureReviewProjections,
+  );
   const readState = useCommitReadWatermark(projectId);
 
   // Pending review-comment counts for the row badges: per commit sha (commit
@@ -149,6 +160,15 @@ export function CommitBrowser({
     }
     return counts;
   }, [pending, selectedSha]);
+  const reviewStatesByPath = useMemo(() => {
+    const states = new Map<string, typeof siteStates>();
+    for (const state of siteStates) {
+      const current = states.get(state.path);
+      if (current) current.push(state);
+      else states.set(state.path, [state]);
+    }
+    return states;
+  }, [siteStates]);
 
   const openRevision = useCallback(
     (key: string) => {
@@ -309,6 +329,8 @@ export function CommitBrowser({
               />
             }
             onBlameFile={onBlameFile}
+            captureReviewProjections={captureReviewProjections}
+            supportsLastEditor={supportsLastEditor}
             ignoreWhitespace={ignoreWhitespace}
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
             onProjectionRequestFailure={handleProjectionRequestFailure}
@@ -322,9 +344,7 @@ export function CommitBrowser({
             selectedSha={selectedSha}
             selectedCommit={selectedCommit}
             detail={detail}
-            loading={
-              loadingDetail || (compareToHead && loadingComparison)
-            }
+            loading={loadingDetail || (compareToHead && loadingComparison)}
             detailError={detailError}
             compareToHead={compareToHead}
             isWideScreen={isWideScreen}
@@ -332,6 +352,7 @@ export function CommitBrowser({
             selectedFiles={selectedFiles}
             selectedPath={selectedPath}
             fileCommentCount={fileCommentCount}
+            reviewStatesByPath={reviewStatesByPath}
             revisionNavigation={
               <RevisionJump
                 newerKey={newerKey}
@@ -379,6 +400,7 @@ export function CommitBrowser({
               fileKey={diffFileKey}
               projectId={projectId}
               source={source}
+              captureReviewProjections={captureReviewProjections}
               headerActions={fileActions}
               ignoreWhitespace={ignoreWhitespace}
               onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
@@ -408,6 +430,7 @@ export function CommitBrowser({
             fileKey={diffFileKey}
             projectId={projectId}
             source={source}
+            captureReviewProjections={captureReviewProjections}
             headerActions={fileActions}
             ignoreWhitespace={ignoreWhitespace}
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}

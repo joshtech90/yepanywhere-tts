@@ -16,6 +16,10 @@
 - Session UI customization
 - Provider image sizing guidance
 - Attachment previews and same-browser cache
+- Project directory storage (app-data-only default, global project-local
+  opt-in, writer audit, and Git-metadata boundary)
+- Storage settings (YA data directory vs. project `.yep`, default lazy media,
+  and live managed-session preservation opt-in)
 - OpenCode backend capability and rendering parity
 - OpenCode ses_ session ID unification with YA session ID
 - MessageQueue batch delivery and steering UI
@@ -60,6 +64,8 @@
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)
 - Cross-host delegation (directed grants let one YA server create and supervise
   a separate native worker session on another YA host)
+- Claude cross-session messaging compared with YA delegation (live Claude
+  session messaging and Agent View versus a durable cross-host control plane)
 - Federated super sessions (one canonical single-writer provider session
   migrates between trusted YA peers for native cross-platform work)
 - Session media handles (problem statement for lazy transcript image/blob
@@ -90,3 +96,8 @@
   monolith convenience wins absent a contributing community)
 - Project settings overrides (banked seed: project-scoped overrides beating
   global settings; mechanically easy, visualization is the cost)
+- Session wake turns (authenticated automation endpoint queues a user turn
+  into one session; agentctl job-completion client, resume-on-wake gates,
+  provider-CLI fallback rules)
+- User authorization attestations (sketch: opt-in signed turns or a Linux-
+  bounded capability inbox for only predeclared authorization gates)

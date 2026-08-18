@@ -39,6 +39,11 @@ native-preferred fallback: wait a bounded grace window, use a native recap
 if it arrives, and only synthesize when native does not arrive in time. The
 supervisor must uphold:
 
+- **Inherit the source model.** The generator's one helper turn uses the
+  source session's exact selected model, or its provider-reported model when
+  the source selected `default`. Provider-specific helper effort remains
+  independent and may be lower than the source effort.
+
 1. **At most one fork worker per process.** A second concurrent request
    while one is in flight is refused with reason "recap already in
    flight" (`requestForkedRecap`, `Supervisor.ts:2098`).
@@ -65,6 +70,13 @@ supervisor must uphold:
    (`unregisterProcess`, `Supervisor.ts:3470`). An aborted generation is
    reported as "cancelled by new activity", not logged as a failure
    (`Supervisor.ts` catch in `requestForkedRecap`).
+
+   Stop/Interrupt and Terminate are stronger cancellation boundaries: both
+   abort an in-flight fork, drop a deferred request before the parent reaches
+   idle, and persist a session-level recap pause. Away-timer requests remain
+   rejected across process replacement or server restart until a fresh
+   user-authored turn is accepted. Hidden control and automatic heartbeat turns
+   do not lift the pause.
 
 4. **Suppress empty recaps.** No recent assistant text since the user
    left ⇒ no recap (`getRecentAssistantText`). The floor is raised to the
@@ -117,10 +129,19 @@ The session-keyed route resolves the trigger:
 - A **cold** session (no live process) is revived and recapped **only when its
   durable `recapMode` is `fork`** — `side-session`/`native` recaps need the
   in-memory recent-text buffer a revived process lacks, while `fork` reads the
-  transcript from disk. Revival uses `reactivateSession(..., {preempt:false})`:
-  a background recap must **never evict a live worker** to revive a different
-  session, so at capacity it skips rather than preempts. The revived recap
-  passes `{revived:true}` to bypass the native-wait + emptiness gate (point 4).
+  transcript from disk. A persisted `autoResumeDisabled` marker blocks this
+  automatic revival; only a fresh explicit user action such as Activate or Send
+  may continue a terminated session. Otherwise revival uses
+  `reactivateSession(..., {preempt:false})`: a background recap must **never
+  evict a live worker** to revive a different session, so at capacity it skips
+  rather than preempts. The revived recap passes `{revived:true}` to bypass the
+  native-wait + emptiness gate (point 4).
+- A durable `recapPausedUntilUserTurn` marker blocks both live dispatch and
+  cold revival after Stop/Interrupt or Terminate. A fresh user-authored turn on
+  the current or replacement process clears that marker; hidden/internal turns
+  and automatic heartbeat turns do not. Terminate's separate
+  `autoResumeDisabled` and heartbeat settings are unchanged by this
+  recap-specific clear.
 
 Because the timer only exists for the session a client is *displaying*, an
 unfocused / list-only session never time-triggers a recap — the focus scoping
@@ -248,6 +269,9 @@ waiting for idle and then using `process.sessionId` for detail/list assertions.
 - A fork request while `in-turn` does not start a generator until idle.
 - A parent turn starting mid-generation aborts the generator turn (no
   late `away_summary` emitted after the new turn began).
+- Stop/Interrupt or Terminate drops a deferred or in-flight fork and keeps
+  session-keyed away requests suppressed across process replacement/restart
+  until a fresh visible user turn is accepted.
 - A recap with no assistant output since the user left emits nothing.
 - A recap with no assistant output since the last emitted recap emits
   nothing, even when the away window reaches back before that recap.
@@ -258,6 +282,9 @@ waiting for idle and then using `process.sessionId` for detail/list assertions.
 - A cold (process-dead) fork-mode session is revived and recapped on the
   session-keyed away trigger; a cold non-fork session is not revived; a
   background recap never preempts a live worker (skips at capacity).
+- A forked recap request carries the resolved source model into the provider;
+  gateway model settings and native Codex resume params receive that same
+  model while helper effort remains independently configurable.
 - `recapMode` round-trips through `SessionMetadataService` (persist on
   recap-config, read on reactivation), surviving server restart.
 - A revived process with an empty recap buffer still emits a forked recap

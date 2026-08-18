@@ -15,12 +15,14 @@ import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import type { WSContext, WSEvents } from "hono/ws";
 import type { ProjectScanner } from "../projects/scanner.js";
+import { getDataDir } from "../config.js";
+import { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import {
   type AttachmentStagingService,
   UploadManager,
-  getProjectAttachmentDir,
+  getLegacyProjectAttachmentDir,
+  isSafeUploadPathSegment,
   resolveUploadStoragePath,
-  UPLOADS_DIR,
 } from "../uploads/index.js";
 
 /** Progress update interval in bytes (64KB) */
@@ -35,6 +37,7 @@ export interface UploadDeps {
   /** Maximum upload file size in bytes. 0 = unlimited */
   maxUploadSizeBytes?: number;
   attachmentStagingService?: AttachmentStagingService;
+  storagePolicy?: ProjectStoragePolicy;
 }
 
 interface DraftAttachmentRefsBody {
@@ -73,8 +76,15 @@ function isStagedAttachmentRefArray(
 
 export function createUploadRoutes(deps: UploadDeps): Hono {
   const routes = new Hono();
+  const storagePolicy =
+    deps.storagePolicy ??
+    new ProjectStoragePolicy({
+      dataDir: getDataDir(),
+      getMode: () => "app-data",
+    });
   const uploadManager = new UploadManager({
     maxUploadSizeBytes: deps.maxUploadSizeBytes,
+    storagePolicy,
   });
 
   const sendMessage = (ws: WSContext, msg: UploadServerMessage) => {
@@ -536,7 +546,11 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
       }
 
       // Validate filename - must have UUID prefix format
-      if (!filename || !/^[0-9a-f-]{36}_/.test(filename)) {
+      if (
+        !filename ||
+        !/^[0-9a-f-]{36}_/.test(filename) ||
+        !isSafeUploadPathSegment(filename)
+      ) {
         return c.json({ error: "Invalid filename" }, 400);
       }
 
@@ -545,22 +559,31 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
         return c.json({ error: "Unknown project" }, 404);
       }
 
-      const filePath = join(
-        getProjectAttachmentDir(project.path, sessionId),
+      const policyFilePaths = storagePolicy.readPaths(
+        project.path,
+        "attachments",
+        sessionId,
+        filename,
+      );
+      const legacyProjectFilePath = join(
+        getLegacyProjectAttachmentDir(project.path, sessionId),
         filename,
       );
       const legacyFilePath = resolveUploadStoragePath(
-        UPLOADS_DIR,
+        join(storagePolicy.dataDir, "uploads"),
         projectId,
         sessionId,
         filename,
       );
 
       try {
-        const candidates = [filePath, legacyFilePath].filter(
-          (candidate): candidate is string => Boolean(candidate),
-        );
+        const candidates = [
+          ...policyFilePaths,
+          legacyProjectFilePath,
+          legacyFilePath,
+        ].filter((candidate): candidate is string => Boolean(candidate));
 
+        let found: { path: string; size: number } | null = null;
         for (const candidate of candidates) {
           const stats = await stat(candidate).catch((err) => {
             if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -568,38 +591,45 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
             }
             throw err;
           });
-          if (!stats?.isFile()) {
-            continue;
+          if (stats?.isFile()) {
+            found = { path: candidate, size: stats.size };
+            break;
           }
-
-          // Determine content type from filename extension
-          const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-          const mimeTypes: Record<string, string> = {
-            png: "image/png",
-            jpg: "image/jpeg",
-            jpeg: "image/jpeg",
-            gif: "image/gif",
-            webp: "image/webp",
-            svg: "image/svg+xml",
-            pdf: "application/pdf",
-            txt: "text/plain",
-            json: "application/json",
-          };
-          const contentType = mimeTypes[ext] ?? "application/octet-stream";
-
-          c.header("Content-Type", contentType);
-          c.header("Content-Length", stats.size.toString());
-          c.header("Cache-Control", "private, max-age=3600");
-
-          return stream(c, async (s) => {
-            const readable = createReadStream(candidate);
-            for await (const chunk of readable) {
-              await s.write(chunk);
-            }
-          });
         }
 
-        return c.json({ error: "File not found" }, 404);
+        // The URL's session segment is the physical directory named by the
+        // persisted file path (the client derives it there), so an exact
+        // candidate lookup suffices. See topics/attachment-storage.md.
+        if (!found) {
+          return c.json({ error: "File not found" }, 404);
+        }
+        const foundPath = found.path;
+
+        // Determine content type from filename extension
+        const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+        const mimeTypes: Record<string, string> = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+          pdf: "application/pdf",
+          txt: "text/plain",
+          json: "application/json",
+        };
+        const contentType = mimeTypes[ext] ?? "application/octet-stream";
+
+        c.header("Content-Type", contentType);
+        c.header("Content-Length", found.size.toString());
+        c.header("Cache-Control", "private, max-age=3600");
+
+        return stream(c, async (s) => {
+          const readable = createReadStream(foundPath);
+          for await (const chunk of readable) {
+            await s.write(chunk);
+          }
+        });
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           return c.json({ error: "File not found" }, 404);

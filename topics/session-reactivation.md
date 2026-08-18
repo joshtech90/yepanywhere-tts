@@ -1,6 +1,6 @@
 # Session Reactivation (message-less resume)
 
-> Reactivation is a planned server primitive that spawns a live harness process
+> Reactivation is a server primitive that spawns a live harness process
 > for an existing session id **without delivering a user turn**, flipping the
 > session back to owned/`self` and idle so the client can read live process
 > state (model options, config) before any message is sent.
@@ -8,15 +8,18 @@
 Topic: session-reactivation
 
 Status: **implemented** (2026-06-17, after the kzahel merge; lifecycle corrected
-2026-07-31). The message-less spawn primitive already existed in the
+2026-07-31; durable settings restored 2026-08-03). The message-less spawn
+primitive already existed in the
 supervisor; this work exposed it as a public `Supervisor.reactivateSession`, a
 `POST …/reactivate` route, and a client Activate button. See *As built* below.
 
-Naming: the user-facing button label is **"Activate"** (from the client's point
-of view a reaped session simply isn't active). The server primitive / this
-topic is **reactivate**. Avoid "reattach" — there is no live process to attach
-to; reactivation spawns a *fresh* harness process bound to the session id and
-replays its history. "Revive" is an acceptable synonym. Candidate glossary row.
+Naming: the model panel's button label is **"Activate"** because it makes an
+inactive process available for configuration. Older clients labeled the now-
+retired sidebar shortcut **"Resume"** because its user intent was to continue
+an interrupted session. Both called the server **reactivate** primitive. Avoid
+"reattach" — there is no live process to attach to; reactivation spawns a
+*fresh* harness process bound to the session id and replays its history.
+"Revive" is an acceptable synonym. Candidate glossary row.
 <!-- unconfirmed: 2026-06-16 -->
 
 ## Motivation
@@ -59,10 +62,20 @@ resume:
 ## As built
 
 - **`Supervisor.reactivateSession(projectPath, resumeSessionId, mode?, settings?)`**
-  — idempotent (returns the existing live process if already owned); preempts an
-  idle worker at capacity, else throws; otherwise calls
+  — serializes activation and configuration by session id. A request that joins
+  an existing or in-flight process reconciles its explicit overrides after
+  earlier requests; live-supported changes apply in place, while a launch-only
+  change returns conflict during an active turn. A cold request preempts an idle
+  worker at capacity, else throws, then calls
   `createProviderSession`/`createRealSession` with the `resumeSessionId` and no
   message.
+- **Activation/configuration ownership:** `SessionActivationCoordinator` owns
+  each session's activation promise, ordered configuration tail, pending durable
+  launch snapshot, cold-setting recovery, and live-versus-restart decision.
+  `Supervisor` supplies capacity and provider launch/restart operations and
+  receives the single settled `Process` result; launch, queue, recap, heartbeat,
+  and provider-event concerns no longer mutate the coordinator's transition
+  state directly.
 - **Message-less lifecycle:** both create-only factories construct the process
   as idle before the provider emits anything. Passive provider initialization
   does not wake it; the first accepted user/provider-work message transitions
@@ -72,14 +85,43 @@ resume:
   reactivation observes `verified-idle`, waits the entry's patience window, and
   then promotes it. It cannot be blocked forever by a synthetic `in-turn`
   state when no provider turn was actually submitted.
-- **`POST /api/projects/:projectId/sessions/:sessionId/reactivate`** — resolves
-  provider/model/executor from the persisted YA launch record
-  (`SessionMetadata.requestedModel`/`provider`, populated by `persistLaunchMetadata`),
-  returns `{ processId, permissionMode, modeVersion }`.
+- **`POST /api/projects/:projectId/sessions/:sessionId/reactivate`** — validates
+  the complete optional body before project or process lookup, then separates
+  exact request overrides from cold-launch fallbacks. Explicit mode, model,
+  service tier, thinking, provider, executor, permission rules, recap, prompt suggestion, and sandbox fields reconcile even when a process already exists;
+  explicit empty helper settings reset to their normal process defaults. The
+  browser-only **Show thinking** preference remains outside process launch
+  state. The route returns the process identity and mode; the established
+  process-info request/stream supplies authoritative live configuration without
+  adding a new wire dependency.
 - **Client:** `api.reactivateSession`; `ModelSwitchModal`'s "No active process"
   note becomes an Activate button (`onActivate`); `SessionPage` calls reactivate
   and flips `status` to `{ owner: "self", processId }`, after which the existing
   `processId`-keyed effect loads models and the full options replace the note.
+- **Sidebar recovery retired:** current clients keep session rows as navigation
+  and status surfaces; they never issue message-less reactivation from the
+  sidebar. Explicit activation remains in the full session's model panel, and
+  sending a message still resumes an unowned session with that turn. Servers
+  continue advertising the permanent `sidebar-session-resume` capability and
+  its manual-termination field so older clients remain compatible.
+- **Durable settings:** `SessionMetadata.effectiveLaunchSettings` is a complete,
+  versioned snapshot of the last successfully applied process launch policy.
+  Resolution is explicit request, complete durable snapshot, pre-snapshot YA
+  requested-model metadata and provider evidence, then conservative
+  server/provider defaults. For Codex, the first cold launch of a session with
+  no snapshot recovers its latest rollout model, unambiguous approval/sandbox
+  pair, and supported reasoning effort. Ask/Accept-Edits ambiguity resolves to
+  Ask and incomplete evidence never grants Bypass. Recovery itself is
+  read-only; the settings used by a successful launch become authoritative and
+  are saved through the normal snapshot boundary, while a failed launch writes
+  nothing. Configuration success waits for provider application and for the
+  coalesced metadata writer to flush the snapshot containing that state.
+  Explicit provider, executor, recap, prompt suggestion, and sandbox metadata
+  uses the same per-session transaction and receives a final durability flush
+  before the response. A failed write leaves the live state in place and
+  pending for retry; it is not reported as rolled back or successful. Identical
+  reattach snapshots do not advance the session-local revision, but do retry a
+  prior failed write.
 - Coverage: `supervisor.test.ts` asserts message-less resume, immediate idle
   liveness, ownership, idempotency, first-message wake, ordinary idle reaping,
   and recovered patient-message promotion.
@@ -131,15 +173,24 @@ is ~zero on the provider side (local process resources only). Confirm this
 against the provider's resume/load path; if reactivation itself triggers any
 billed provider call, the button must surface it per the economics rule.
 
-## Open questions
+## Resolved decisions
 
-- Should reactivate optionally **apply pending config** (the model the user just
-  picked) at spawn, or strictly spawn-then-configure via the normal model-switch
-  path?
+- Reactivate applies validated request overrides when present and otherwise
+  inherits the durable effective configuration. A successful override becomes
+  the next durable snapshot; a rejected provider change does not.
 - Sibling concern (task029): requested-model persistence may let a model choice
   take effect on the *next* natural turn without reactivating at all —
   reactivation is for users who want the process live *now*. Keep both; they
   serve different intents.
+
+## Design decisions
+
+- **One per-session coordinator state** (vs. independent activation,
+  configuration, and persistence maps on `Supervisor`): activation,
+  configuration ordering, and snapshot retry are transitions of the same
+  session owner. Keeping them together makes cleanup conditional on the whole
+  state and leaves `Supervisor` with one settled `Process` result rather than
+  partially applied configuration facts.
 
 ## Coordination (resolved)
 

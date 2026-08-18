@@ -3,6 +3,7 @@ import {
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
@@ -16,12 +17,10 @@ import {
 } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
-import { useReloadNotifications } from "../../hooks/useReloadNotifications";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import {
-  getDevelopmentCategory,
   getEmulatorCategory,
   getSettingsCategories,
 } from "../../i18n-settings";
@@ -59,7 +58,10 @@ import {
   SettingsUndoProvider,
   useSettingsUndoRegistration,
 } from "./SettingsUndoContext";
+import { SettingsUndoButton } from "./SettingsUndoButton";
 import { SpeechSettings } from "./SpeechSettings";
+import { SourceControlSettings } from "./SourceControlSettings";
+import { StorageSettings } from "./StorageSettings";
 import { ToolbarSettings } from "./ToolbarSettings";
 import type { SettingsCategory } from "./types";
 
@@ -71,6 +73,8 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
   model: ModelSettings,
   "cache-miss-billing": CacheMissBillingSettings,
   "message-delivery": MessageDeliverySettings,
+  "source-control": SourceControlSettings,
+  storage: StorageSettings,
   "agent-context": AgentContextSettings,
   notifications: NotificationsSettings,
   webhooks: LifecycleWebhooksSettings,
@@ -179,7 +183,6 @@ export function SettingsLayout() {
   const useTwoColumnSettings = shouldUseSettingsTwoColumn(
     settingsContainerWidth,
   );
-  const { isManualReloadMode } = useReloadNotifications();
   const { version: versionInfo } = useVersion();
   const canBackUpBrowserSettings = serverHasCapability(
     versionInfo,
@@ -216,6 +219,14 @@ export function SettingsLayout() {
     ...getSettingsCategories((key) => t(key as never)),
   ];
   if (
+    !serverHasCapability(versionInfo, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY)
+  ) {
+    const sourceControlIndex = categories.findIndex(
+      (item) => item.id === "source-control",
+    );
+    if (sourceControlIndex >= 0) categories.splice(sourceControlIndex, 1);
+  }
+  if (
     serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY) ||
     serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY) ||
     serverHasCapability(versionInfo, DEVICE_BRIDGE_AVAILABLE_CAPABILITY)
@@ -227,10 +238,6 @@ export function SettingsLayout() {
       getEmulatorCategory((key) => t(key as never)),
     );
   }
-  if (isManualReloadMode) {
-    categories.push(getDevelopmentCategory((key) => t(key as never)));
-  }
-
   // Two-column settings can fit before the persistent app sidebar can.
   const effectiveCategory =
     category || (useTwoColumnSettings ? categories[0]?.id : undefined);
@@ -274,6 +281,7 @@ export function SettingsLayout() {
   };
 
   const handleCategoryClick = (categoryId: string, jumpToItemId?: string) => {
+    setSearchQuery("");
     const openedFromList =
       !category || shouldPopSettingsDetailBack(location.state);
     const navigationState = createSettingsDetailNavigationState(openedFromList);
@@ -289,12 +297,10 @@ export function SettingsLayout() {
   };
 
   const handleSearchOpenCategory = (categoryId: string) => {
-    setSearchQuery("");
     handleCategoryClick(categoryId);
   };
 
   const handleSearchJumpToItem = (categoryId: string, itemId: string) => {
-    setSearchQuery("");
     handleCategoryClick(categoryId, itemId);
   };
 
@@ -361,24 +367,14 @@ export function SettingsLayout() {
     </span>
   );
 
-  const canUndoSettingsChange = undoRegistration?.canUndo ?? false;
-
   // The single per-pane Undo affordance: panes register via useSettingsUndo.
   // Keep the button's header footprint even while hidden so settings rows do
   // not shift when a field first becomes undoable.
   const undoButton = (
-    <button
-      type="button"
-      className="settings-button"
-      onClick={() => void undoRegistration?.undo()}
-      title={t("settingsUndoChangesTooltip")}
-      disabled={!canUndoSettingsChange}
-      aria-hidden={!canUndoSettingsChange}
-      tabIndex={canUndoSettingsChange ? 0 : -1}
-      style={{ visibility: canUndoSettingsChange ? "visible" : "hidden" }}
-    >
-      {t("settingsUndoChanges")}
-    </button>
+    <SettingsUndoButton
+      registration={undoRegistration}
+      paneTitle={resolvedPaneTitle}
+    />
   );
 
   // Narrow settings: category list OR category detail (not both)

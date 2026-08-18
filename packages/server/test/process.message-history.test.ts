@@ -1,17 +1,10 @@
-import {
-  describe,
-  expect,
-  it,
-} from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   MessageQueue,
   Process,
   createMockIterator,
 } from "./process.test-support.js";
-import type {
-  SDKMessage,
-  UrlProjectId,
-} from "./process.test-support.js";
+import type { SDKMessage, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
   describe("messageHistory", () => {
@@ -135,7 +128,7 @@ describe("Process", () => {
       expect(userMessages).toHaveLength(1);
       const content = userMessages[0]?.message?.content as string;
       expect(content).toContain("Here is a screenshot");
-      expect(content).toContain("User uploaded files in .attachments:");
+      expect(content).toContain("User uploaded files:");
       expect(content).toContain("screenshot.png");
       expect(content).toContain("1\u202fkb");
       expect(content).toContain("image/png");

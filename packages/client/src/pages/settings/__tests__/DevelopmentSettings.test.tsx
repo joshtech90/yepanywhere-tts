@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetDeveloperModeForTest,
@@ -8,6 +15,10 @@ import {
 } from "../../../hooks/useDeveloperMode";
 import { UI_KEYS } from "../../../lib/storageKeys";
 import { DevelopmentSettings } from "../DevelopmentSettings";
+
+let isManualReloadMode = true;
+let interruptibleSessionCount = 0;
+let queuedSessionMessageCount = 0;
 
 vi.mock("../../../contexts/SchemaValidationContext", () => ({
   useSchemaValidationContext: () => ({
@@ -18,12 +29,14 @@ vi.mock("../../../contexts/SchemaValidationContext", () => ({
 
 vi.mock("../../../hooks/useReloadNotifications", () => ({
   useReloadNotifications: () => ({
-    isManualReloadMode: true,
+    isManualReloadMode,
     pendingReloads: { backend: false },
     connected: true,
     reloadBackend: vi.fn(),
-    unsafeToRestart: false,
-    interruptibleSessionCount: 0,
+    unsafeToRestart:
+      interruptibleSessionCount > 0 || queuedSessionMessageCount > 0,
+    interruptibleSessionCount,
+    queuedSessionMessageCount,
   }),
 }));
 
@@ -43,12 +56,16 @@ vi.mock("../../../hooks/useServerSettings", () => ({
 
 vi.mock("../../../i18n", () => ({
   useI18n: () => ({
-    t: (key: string) =>
+    t: (key: string, params?: Record<string, string | number>) =>
       (
         ({
           developmentSectionTitle: "Development",
           developmentSchemaTitle: "Schema Validation",
           developmentSchemaDescription: "Validate tool results",
+          developmentCrossHostDelegationTitle: "YA Hosts Preview",
+          developmentCrossHostDelegationDescription:
+            "Expose the experimental host preview",
+          developmentHostsPreviewOpen: "Open YA Hosts",
           developmentMultiHostMonitorTitle: "All Hosts Monitor",
           developmentMultiHostMonitorDescription:
             "Show the experimental all-hosts monitor link",
@@ -78,9 +95,17 @@ vi.mock("../../../i18n", () => ({
             "Do not retain scroll snapshots",
           developmentRestartTitle: "Restart Server",
           developmentRestartDescription: "Restart the backend server",
+          developmentInterruptedWarning:
+            "{count} active session{suffix}will be interrupted",
+          developmentInterruptedWarningActiveAndQueued:
+            "{activeCount} active session{activeSuffix} and {queuedCount} queued message{queuedSuffix} will be interrupted",
+          developmentInterruptedWarningQueued:
+            "{count} queued message{suffix} will be interrupted",
           developmentRestart: "Restart Server",
         }) as Record<string, string>
-      )[key] ?? key,
+      )[key]?.replaceAll(/\{(\w+)\}/gu, (_match, name: string) =>
+        String(params?.[name] ?? ""),
+      ) ?? key,
   }),
 }));
 
@@ -93,7 +118,17 @@ vi.mock("../SettingsUndoContext", () => ({
 }));
 
 describe("DevelopmentSettings", () => {
+  const renderSettings = () =>
+    render(
+      <MemoryRouter>
+        <DevelopmentSettings />
+      </MemoryRouter>,
+    );
+
   beforeEach(() => {
+    isManualReloadMode = true;
+    interruptibleSessionCount = 0;
+    queuedSessionMessageCount = 0;
     window.localStorage.clear();
     __resetDeveloperModeForTest();
   });
@@ -105,9 +140,10 @@ describe("DevelopmentSettings", () => {
   });
 
   it("shows the remaining development settings", () => {
-    render(<DevelopmentSettings />);
+    renderSettings();
 
     expect(screen.getByText("Schema Validation")).toBeTruthy();
+    expect(screen.getByText("YA Hosts Preview")).toBeTruthy();
     expect(screen.getByText("All Hosts Monitor")).toBeTruthy();
     expect(screen.getByText("Relay Debug Logging")).toBeTruthy();
     expect(screen.getByText("Browser Diagnostics")).toBeTruthy();
@@ -117,8 +153,31 @@ describe("DevelopmentSettings", () => {
     expect(screen.queryByText("Store-Backed Session Detail")).toBeNull();
   });
 
+  it("keeps development settings visible when server restart is unavailable", () => {
+    isManualReloadMode = false;
+
+    renderSettings();
+
+    expect(screen.getByText("Schema Validation")).toBeTruthy();
+    expect(screen.getByText("Browser Diagnostics")).toBeTruthy();
+    expect(screen.queryByText("Restart Server")).toBeNull();
+  });
+
+  it("warns about the work the restart would actually interrupt", () => {
+    interruptibleSessionCount = 1;
+    queuedSessionMessageCount = 2;
+
+    renderSettings();
+
+    expect(
+      screen.getByText(
+        "1 active session and 2 queued messages will be interrupted",
+      ),
+    ).toBeTruthy();
+  });
+
   it("exposes the session cursor behavior debug setting", () => {
-    render(<DevelopmentSettings />);
+    renderSettings();
 
     const select = screen.getByLabelText("Restore mode") as HTMLSelectElement;
     expect(select.value).toBe("live-tail");
@@ -133,7 +192,7 @@ describe("DevelopmentSettings", () => {
   });
 
   it("toggles relay debug logging from development settings", () => {
-    render(<DevelopmentSettings />);
+    renderSettings();
 
     const toggle = screen.getByRole("checkbox", {
       name: "Relay Debug Logging",
@@ -153,7 +212,7 @@ describe("DevelopmentSettings", () => {
   });
 
   it("toggles the all-hosts monitor link from development settings", () => {
-    render(<DevelopmentSettings />);
+    renderSettings();
 
     const toggle = screen.getByRole("checkbox", {
       name: "All Hosts Monitor",
@@ -167,6 +226,28 @@ describe("DevelopmentSettings", () => {
       JSON.parse(localStorage.getItem(UI_KEYS.developerMode) ?? "{}"),
     ).toMatchObject({
       multiHostMonitorEnabled: true,
+    });
+  });
+
+  it("reveals the server-scoped hosts route behind its toggle", () => {
+    renderSettings();
+
+    expect(screen.queryByRole("link", { name: "Open YA Hosts" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "YA Hosts Preview" }));
+
+    const previewRow = screen
+      .getByText("YA Hosts Preview")
+      .closest("[data-settings-item]");
+    expect(previewRow).not.toBeNull();
+    const link = within(previewRow as HTMLElement).getByRole("link", {
+      name: "Open YA Hosts",
+    });
+    expect(link.getAttribute("href")).toBe("/-/hosts");
+    expect(
+      JSON.parse(localStorage.getItem(UI_KEYS.developerMode) ?? "{}"),
+    ).toMatchObject({
+      crossHostDelegationEnabled: true,
     });
   });
 });

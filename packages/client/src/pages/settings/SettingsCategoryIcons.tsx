@@ -41,6 +41,8 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
   model: "🧠",
   "cache-miss-billing": "🧾",
   "message-delivery": "📨",
+  "source-control": "🔎",
+  storage: "🗄️",
   "agent-context": "📋",
   notifications: "🔔",
   webhooks: "🪝",
@@ -132,6 +134,22 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
       {/* Send / paper plane */}
       <path d="M22 2 11 13" />
       <path d="m22 2-7 20-4-9-9-4Z" />
+    </Icon>
+  ),
+
+  "source-control": (
+    <Icon>
+      <circle cx="10" cy="10" r="6" />
+      <path d="m14.5 14.5 5 5" />
+      <path d="M7 10h6" />
+    </Icon>
+  ),
+
+  storage: (
+    <Icon>
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+      <path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" />
     </Icon>
   ),
 

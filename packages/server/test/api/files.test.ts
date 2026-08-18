@@ -1,11 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FileContentResponse } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../../src/app.js";
+import { createApp } from "../setup/create-app.js";
 import { canonicalizeProjectPath } from "../../src/projects/paths.js";
+import {
+  initFileAccess,
+  updateFileAccess,
+} from "../../src/middleware/file-access.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 
@@ -19,7 +30,7 @@ describe("Files API", () => {
     mockSdk = new MockClaudeSDK();
 
     // Create temp directory structure with a valid project
-    testDir = join(tmpdir(), `claude-test-${randomUUID()}`);
+    testDir = join(await realpath(tmpdir()), `claude-test-${randomUUID()}`);
     projectPath = canonicalizeProjectPath(join(testDir, "myproject"));
     projectId = encodeProjectId(projectPath);
     const encodedPath = projectPath.replace(/[/\\:]/g, "-");
@@ -92,6 +103,38 @@ describe("Files API", () => {
       expect(json.rawUrl).toContain("/files/raw?path=README.md");
     });
 
+    it("keeps file reads independent of provider inventory refreshes", async () => {
+      const { app } = createApp({
+        codexSessionsDir: join(testDir, "codex-sessions"),
+        geminiSessionsDir: join(testDir, "gemini-sessions"),
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+        projectScanCacheTtlMs: 0,
+      });
+
+      const initial = await app.request(
+        `/api/projects/${projectId}/files?path=README.md`,
+      );
+      expect(initial.status).toBe(200);
+
+      await rm(join(testDir, "sessions"), { recursive: true });
+
+      const inline = await app.request(
+        `/api/projects/${projectId}/files?path=README.md`,
+      );
+      expect(inline.status).toBe(200);
+      const json = (await inline.json()) as FileContentResponse;
+      expect(json.content).toBe("# Test Project\n\nThis is a test.");
+
+      const raw = await app.request(
+        `/api/projects/${projectId}/files/raw?path=README.md`,
+      );
+      expect(raw.status).toBe(200);
+      await expect(raw.text()).resolves.toBe(
+        "# Test Project\n\nThis is a test.",
+      );
+    });
+
     it("renders Markdown previews with relative project media resolved", async () => {
       const { app } = createApp({
         sdk: mockSdk,
@@ -104,13 +147,15 @@ describe("Files API", () => {
 
       expect(res.status).toBe(200);
       const json = (await res.json()) as FileContentResponse;
-      const peerPath = await realpath(join(projectPath, "docs", "peer.md"));
       const diagramPath = await realpath(
         join(projectPath, "docs", "assets", "diagram.svg"),
       );
       expect(json.renderedMarkdownHtml).toContain("<h1>Guide</h1>");
       expect(json.renderedMarkdownHtml).toContain(
-        `href="/api/local-file?path=${encodeURIComponent(peerPath)}&amp;render=1"`,
+        `href="/projects/${projectId}/file?path=docs%2Fpeer.md"`,
+      );
+      expect(json.renderedMarkdownHtml).not.toContain(
+        "data-ya-private-project-file-link",
       );
       expect(json.renderedMarkdownHtml).toContain(
         `data-media-path="${diagramPath}"`,
@@ -122,6 +167,79 @@ describe("Files API", () => {
       expect(json.embeddedMedia?.["docs/assets/diagram.svg"]).toEqual(
         json.embeddedMedia?.[diagramPath],
       );
+    });
+
+    it("renders Quarto includes as contained project FileViewer links", async () => {
+      await mkdir(join(projectPath, "shared"), { recursive: true });
+      await writeFile(join(projectPath, "docs", "_introduction.qmd"), "Intro");
+      await writeFile(join(projectPath, "shared", "_methods.md"), "Methods");
+      await writeFile(
+        join(projectPath, "docs", "report.qmd"),
+        [
+          "# Report",
+          "",
+          "{{< include _introduction.qmd >}}",
+          "",
+          "{{< include /shared/_methods.md >}}",
+        ].join("\n"),
+      );
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=docs/report.qmd&highlight=true`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.metadata.mimeType).toBe("text/markdown");
+      expect(json.highlightedLanguage).toBe("markdown");
+      expect(json.renderedMarkdownHtml).toContain(
+        `href="/projects/${projectId}/file?path=docs%2F_introduction.qmd"`,
+      );
+      expect(json.renderedMarkdownHtml).toContain(
+        `href="/projects/${projectId}/file?path=shared%2F_methods.md"`,
+      );
+      expect(json.renderedMarkdownHtml).not.toContain(
+        "data-ya-private-project-file-link",
+      );
+    });
+
+    it("embeds the resolved SVG for an extensionless document image", async () => {
+      const svg = '<svg width="320" height="180"></svg>';
+      await writeFile(
+        join(projectPath, "docs", "extensionless.md"),
+        "# Figures\n\n![Frontier](assets/frontier)",
+      );
+      await writeFile(join(projectPath, "docs", "assets", "frontier.svg"), svg);
+      await writeFile(
+        join(projectPath, "docs", "assets", "frontier.png"),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=docs/extensionless.md&highlight=true`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      const svgPath = await realpath(
+        join(projectPath, "docs", "assets", "frontier.svg"),
+      );
+      expect(json.renderedMarkdownHtml).toContain(
+        `data-media-path="${svgPath}"`,
+      );
+      expect(json.renderedMarkdownHtml).not.toContain("frontier.png");
+      expect(json.embeddedMedia?.[svgPath]).toEqual({
+        data: Buffer.from(svg).toString("base64"),
+        mimeType: "image/svg+xml",
+      });
     });
 
     it("wraps requested Markdown preview line ranges", async () => {
@@ -187,13 +305,12 @@ describe("Files API", () => {
 
       expect(res.status).toBe(200);
       const json = (await res.json()) as FileContentResponse;
-      const peerPath = await realpath(join(projectPath, "docs", "peer.md"));
       expect(json.content).toBe("See [Peer][peer]");
       expect(json.renderedMarkdownHtml).toContain(
         'class="markdown-preview-span markdown-preview-span-start" data-line-start="1" data-line-end="1"',
       );
       expect(json.renderedMarkdownHtml).toContain(
-        `href="/api/local-file?path=${encodeURIComponent(peerPath)}&amp;render=1"`,
+        `href="/projects/${projectId}/file?path=docs%2Fpeer.md"`,
       );
     });
 
@@ -219,10 +336,9 @@ describe("Files API", () => {
 
       expect(res.status).toBe(200);
       const json = (await res.json()) as FileContentResponse;
-      const peerPath = await realpath(join(projectPath, "docs", "peer.md"));
       expect(json.content).toBe("See [Peer][peer]");
       expect(json.renderedMarkdownHtml).toContain(
-        `href="/api/local-file?path=${encodeURIComponent(peerPath)}&amp;render=1"`,
+        `href="/projects/${projectId}/file?path=docs%2Fpeer.md"`,
       );
     });
 
@@ -264,10 +380,7 @@ describe("Files API", () => {
     });
 
     it("sniffs unknown-extension UTF-8 files as displayable text", async () => {
-      await writeFile(
-        join(projectPath, "job.output"),
-        "alpha\nbeta\ngamma\n",
-      );
+      await writeFile(join(projectPath, "job.output"), "alpha\nbeta\ngamma\n");
       const { app } = createApp({
         sdk: mockSdk,
         projectsDir: join(testDir, "sessions"),
@@ -447,6 +560,48 @@ describe("Files API", () => {
       expect(json.error).toBe("Invalid file path");
     });
 
+    it("serves an app-data project attachment path", async () => {
+      const dataDir = join(testDir, "data");
+      const attachmentDir = join(
+        dataDir,
+        "projects",
+        "0123456789abcdef0123456789abcdef",
+        "attachments",
+        "session-a",
+      );
+      const attachmentFile = join(attachmentDir, "photo.png");
+      await mkdir(attachmentDir, { recursive: true });
+      await writeFile(attachmentFile, "png-bytes");
+      initFileAccess({
+        uploadsDir: join(dataDir, "uploads"),
+        homeDir: "/home/me",
+        tempPaths: [],
+        envPaths: null,
+        appDataProjectsDir: join(dataDir, "projects"),
+      });
+      updateFileAccess({
+        projects: true,
+        uploads: false,
+        temp: false,
+        home: false,
+        custom: [],
+      });
+
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=${encodeURIComponent(attachmentFile)}`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.metadata.mimeType).toBe("image/png");
+      expect(json.metadata.isText).toBe(false);
+    });
+
     it.skipIf(process.platform === "win32")(
       "returns 400 for symlink escaping project root",
       async () => {
@@ -555,6 +710,25 @@ describe("Files API", () => {
       expect(res.headers.get("Content-Type")).toBe("image/png");
       const buffer = await res.arrayBuffer();
       expect(buffer.byteLength).toBe(8);
+    });
+
+    it("streams a sparse file larger than the public relay limit over direct HTTP", async () => {
+      const sparsePath = join(projectPath, "large-sparse.bin");
+      const sparseSize = 8 * 1024 * 1024 + 1;
+      await writeFile(sparsePath, "");
+      await truncate(sparsePath, sparseSize);
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files/raw?path=large-sparse.bin`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Length")).toBe(String(sparseSize));
+      await res.body?.cancel();
     });
 
     it("sets attachment disposition when download=true", async () => {

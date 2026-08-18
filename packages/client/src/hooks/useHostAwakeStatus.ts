@@ -35,7 +35,9 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-function getSnapshot(sourceKey: ClientSummarySourceKey): HostAwakeStatusSnapshot {
+function getSnapshot(
+  sourceKey: ClientSummarySourceKey,
+): HostAwakeStatusSnapshot {
   return snapshots.get(sourceKey) ?? EMPTY_SNAPSHOT;
 }
 
@@ -77,6 +79,7 @@ export function useHostAwakeStatus(enabled: boolean) {
   const query = useRetainedClientQuery<HostAwakeStatusResponse>({
     sourceKey,
     key: QUERY_KEY,
+    bootstrapTier: "supplementary",
     enabled,
     ready,
     hasData: snapshot.observedAt !== undefined,

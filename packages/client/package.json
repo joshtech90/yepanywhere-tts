@@ -20,7 +20,16 @@
     "test:e2e:chromeos": "CHROMEOS_HOST=${CHROMEOS_HOST:-chromeroot} playwright test --grep \"streams ChromeOS\"",
     "request:census": "node scripts/request-census.mjs",
     "transcript:artifacts": "node scripts/transcript-artifact-smoke.mjs",
-    "transcript:benchmark": "tsx scripts/transcript-projection-benchmark.ts"
+    "transcript:benchmark": "tsx scripts/transcript-projection-benchmark.ts",
+    "benchmark:version-snapshot": "tsx scripts/version-snapshot-benchmark.ts",
+    "benchmark:project-queue-backstop": "tsx scripts/project-queue-backstop-benchmark.ts",
+    "benchmark:query-revalidation-owner": "tsx scripts/query-revalidation-owner-benchmark.ts",
+    "benchmark:forced-refetch-staleness": "tsx scripts/forced-refetch-staleness-benchmark.ts",
+    "benchmark:global-sessions-feed-owner": "tsx scripts/global-sessions-feed-owner-benchmark.ts",
+    "benchmark:reload-status-fanout": "tsx scripts/reload-status-fanout-benchmark.ts",
+    "benchmark:reload-status-shared-snapshot": "tsx scripts/reload-status-shared-snapshot-benchmark.ts",
+    "benchmark:query-bootstrap-order": "tsx scripts/query-bootstrap-order-benchmark.ts",
+    "benchmark:global-sessions-conditional-read": "tsx scripts/global-sessions-conditional-read-benchmark.ts"
   },
   "dependencies": {
     "@yep-anywhere/shared": "workspace:*",

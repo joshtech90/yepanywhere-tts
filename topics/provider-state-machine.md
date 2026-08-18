@@ -17,6 +17,13 @@ are valid in each state.
 - `isCompacting` (`system` status subtype `status` + `status=compacting`)
 - `status.owner` (`self` / `external` / `none`) for action availability
 
+Navigation status is only an optimistic bootstrap hint for a newly started
+session. It may establish ownership and open the live stream, but it is not
+durable evidence that a turn is still active. After the initial session-detail
+load, the client must reconcile current ownership and `processState` even when
+the process remains self-owned; browser history can replay an old navigation
+hint after that process has become idle.
+
 `terminated` is a derived/diagnostic condition for unhealthy termination; it is
 shown through liveness status (`needs-attention`) and server recovery workflows
 rather than as a first-class interactive state.
@@ -40,8 +47,8 @@ This text lives in `slashModelIndicatorTitle` and is passed to both:
 | State | Safe actions | Disabled/blocked actions |
 |---|---|---|
 | `idle` | Send, queue, /model, queue mode, `/compact` if exposed | stop (no active turn), tool approval controls |
-| `in-turn` (`status.owner="self"`) | Stop (interrupt/abort), queue/steer depending provider and queue mode, select Claude effort for the next turn, `/compact` if available | /model editing text; model/thinking/service-tier changes that require a restart |
-| `waiting-input` (`status.owner="self"`) | Answer prompt with approval path (`ToolApprovalPanel` or `QuestionAnswerPanel`); select Claude effort for the next turn | regular composer send action; stop is currently off |
+| `in-turn` (`status.owner="self"`) | Stop (interrupt/abort), queue/steer depending provider and queue mode, select effort for the next turn when supported, `/compact` if available | /model editing text; model/thinking/service-tier changes that require a restart |
+| `waiting-input` (`status.owner="self"`) | Answer prompt with approval path (`ToolApprovalPanel` or `QuestionAnswerPanel`); select effort for the next turn when supported | regular composer send action; stop is currently off |
 | `compacting` (overlay) | same as underlying `processState` | model/config substitution text is busy copy only |
 | `needs-attention` | show warning copy and retain manual controls as supported | no automatic idle assumptions |
 | `verified-idle` (liveness) | treat as normal boundary for automation | should not be assumed from `recently-active-unverified` / `long-silent-unverified` |
@@ -94,9 +101,11 @@ root cause of the interrupt is outside YA, because the user cannot distinguish
 3. Keep liveness-derived states visible without turning them into hard action locks.
 4. Never hide or soften a known provider interruption behind generic running,
    stale-spinner, or reconnect copy.
-5. A Claude effort selection made during an active turn is pending next-turn
-   configuration: show the selection immediately, apply its provider control
-   at the idle boundary before queued work, and never interrupt the active turn.
+5. An effort selection made during an active turn is pending next-turn
+   configuration when the provider supports per-turn effort: show the selection
+   immediately, keep it selected across process-info refreshes, apply its
+   provider control at the idle boundary before queued work, and never interrupt
+   the active turn. Claude and Codex both support this contract.
 
 ## Hard abort contract
 
@@ -134,9 +143,11 @@ forcing silent state transitions.[^claude-queued-bug][^codex-queued-bug]
 
 ## Provider-specific capability notes
 
-- Claude does not expose provider steering (`supportsSteering=false`), so active
-  in-turn control is limited to existing stop/approval paths; queue behavior still
-  works for turn-end replay.[^claude]
+- Claude exposes provider steering (`supportsSteering=true`). YA sends active-turn
+  input through Claude's `now` lane by default, with `next` available through the
+  explicit **Steer now** preference. Matching foreground Bash calls may be made
+  resumable by exact tool ID after the steer enters Claude's input stream; this
+  preserves the command but permits concurrent agent action.[^claude]
 - OpenCode reports no slash commands or permission-mode/steering toggles in current
   provider metadata (`supportsSlashCommands=false`, `supportsPermissionMode=false`,
   `supportsSteering=false`), so state is mainly communicated through process/liveness
@@ -178,8 +189,8 @@ rather than widening a generic schema until the UI actually consumes it.
   production-safe control path across provider surfaces. The current default remains
   template-driven handoff as the validated recovery baseline.
 
-[^claude]: If a future Claude provider path adds steering, the above matrix should be
-re-evaluated for `in-turn`/`waiting-input`.
+[^claude]: Claude steering and foreground-Bash re-entry semantics are measured and
+  maintained in [steer-queue-provider-differences.md](steer-queue-provider-differences.md).
 [^opencode]: OpenCode tool-approval semantics are explicitly marked as experimental in
 provider metadata; avoid baking policy assumptions beyond current runtime signals.
 [^codex]: Codex is non-interruptible while compacting at the provider level; treat

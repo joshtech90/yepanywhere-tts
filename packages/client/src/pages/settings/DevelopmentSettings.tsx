@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useSchemaValidationContext } from "../../contexts/SchemaValidationContext";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
+import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useSchemaValidation } from "../../hooks/useSchemaValidation";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useSessionPerformanceSettings } from "../../hooks/useSessionPerformanceSettings";
@@ -51,6 +53,7 @@ const sessionScrollMemoryModeLabelKeys: Record<
 
 export function DevelopmentSettings() {
   const { t } = useI18n();
+  const basePath = useRemoteBasePath();
   useSettingsPaneTitle(t("developmentSectionTitle"));
   const {
     isManualReloadMode,
@@ -59,10 +62,13 @@ export function DevelopmentSettings() {
     reloadBackend,
     unsafeToRestart,
     interruptibleSessionCount,
+    queuedSessionMessageCount,
   } = useReloadNotifications();
   const { settings: validationSettings, setEnabled: setValidationEnabled } =
     useSchemaValidation();
   const {
+    crossHostDelegationEnabled,
+    setCrossHostDelegationEnabled,
     multiHostMonitorEnabled,
     setMultiHostMonitorEnabled,
     relayDebugEnabled,
@@ -81,6 +87,7 @@ export function DevelopmentSettings() {
       serverSettings
         ? {
             validationEnabled: validationSettings.enabled,
+            crossHostDelegationEnabled,
             multiHostMonitorEnabled,
             relayDebugEnabled,
             remoteLogCollectionEnabled,
@@ -91,6 +98,7 @@ export function DevelopmentSettings() {
         : null,
     [
       validationSettings.enabled,
+      crossHostDelegationEnabled,
       multiHostMonitorEnabled,
       relayDebugEnabled,
       remoteLogCollectionEnabled,
@@ -101,6 +109,7 @@ export function DevelopmentSettings() {
   const restoreUndoState = useCallback(
     (snapshot: NonNullable<typeof undoState>) => {
       setValidationEnabled(snapshot.validationEnabled);
+      setCrossHostDelegationEnabled(snapshot.crossHostDelegationEnabled);
       setMultiHostMonitorEnabled(snapshot.multiHostMonitorEnabled);
       setRelayDebugEnabled(snapshot.relayDebugEnabled);
       setRemoteLogCollectionEnabled(snapshot.remoteLogCollectionEnabled);
@@ -116,6 +125,7 @@ export function DevelopmentSettings() {
     },
     [
       setValidationEnabled,
+      setCrossHostDelegationEnabled,
       setMultiHostMonitorEnabled,
       setRelayDebugEnabled,
       setRemoteLogCollectionEnabled,
@@ -138,10 +148,23 @@ export function DevelopmentSettings() {
     await reloadBackend();
   };
 
-  // Only render in manual reload mode (dev mode)
-  if (!isManualReloadMode) {
-    return null;
-  }
+  const restartWarning =
+    interruptibleSessionCount > 0 && queuedSessionMessageCount > 0
+      ? t("developmentInterruptedWarningActiveAndQueued", {
+          activeCount: interruptibleSessionCount,
+          activeSuffix: interruptibleSessionCount !== 1 ? "s" : "",
+          queuedCount: queuedSessionMessageCount,
+          queuedSuffix: queuedSessionMessageCount !== 1 ? "s" : "",
+        })
+      : queuedSessionMessageCount > 0
+        ? t("developmentInterruptedWarningQueued", {
+            count: queuedSessionMessageCount,
+            suffix: queuedSessionMessageCount !== 1 ? "s" : "",
+          })
+        : t("developmentInterruptedWarning", {
+            count: interruptibleSessionCount,
+            suffix: interruptibleSessionCount !== 1 ? "s " : " ",
+          });
 
   return (
     <SettingsSection>
@@ -186,6 +209,33 @@ export function DevelopmentSettings() {
             </button>
           </SettingsItem>
         )}
+        <SettingsItem
+          label={t("developmentCrossHostDelegationTitle")}
+          description={t("developmentCrossHostDelegationDescription")}
+          className="settings-item--wide-control"
+        >
+          <div className="settings-item-actions">
+            {crossHostDelegationEnabled && (
+              <Link
+                className="settings-button settings-button-secondary"
+                to={`${basePath}/-/hosts`}
+              >
+                {t("developmentHostsPreviewOpen")}
+              </Link>
+            )}
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                aria-label={t("developmentCrossHostDelegationTitle")}
+                checked={crossHostDelegationEnabled}
+                onChange={(event) =>
+                  setCrossHostDelegationEnabled(event.target.checked)
+                }
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </SettingsItem>
         <SettingsItem
           label={t("developmentMultiHostMonitorTitle")}
           description={t("developmentMultiHostMonitorDescription")}
@@ -318,47 +368,44 @@ export function DevelopmentSettings() {
         </div>
       </HideInSettingsSearch>
 
-      <div className="settings-group">
-        <SettingsItem
-          label={t("developmentRestartTitle")}
-          description={t("developmentRestartDescription")}
-          info={
-            <>
-              <strong>{t("developmentRestartTitle")}</strong>
-              <p>
-                {t("developmentRestartDescription")}
-                {pendingReloads.backend && (
-                  <span className="settings-pending">
-                    {" "}
-                    {t("developmentChangesPending")}
-                  </span>
-                )}
-              </p>
-              {unsafeToRestart && (
-                <p className="settings-warning">
-                  {t("developmentInterruptedWarning", {
-                    count: interruptibleSessionCount,
-                    suffix: interruptibleSessionCount !== 1 ? "s " : " ",
-                  })}
+      {isManualReloadMode && (
+        <div className="settings-group">
+          <SettingsItem
+            label={t("developmentRestartTitle")}
+            description={t("developmentRestartDescription")}
+            info={
+              <>
+                <strong>{t("developmentRestartTitle")}</strong>
+                <p>
+                  {t("developmentRestartDescription")}
+                  {pendingReloads.backend && (
+                    <span className="settings-pending">
+                      {" "}
+                      {t("developmentChangesPending")}
+                    </span>
+                  )}
                 </p>
-              )}
-            </>
-          }
-        >
-          <button
-            type="button"
-            className={`settings-button ${unsafeToRestart ? "settings-button-danger" : ""}`}
-            onClick={handleRestartServer}
-            disabled={restarting}
+                {unsafeToRestart && (
+                  <p className="settings-warning">{restartWarning}</p>
+                )}
+              </>
+            }
           >
-            {restarting
-              ? t("developmentRestarting")
-              : unsafeToRestart
-                ? t("developmentRestartAnyway")
-                : t("developmentRestart")}
-          </button>
-        </SettingsItem>
-      </div>
+            <button
+              type="button"
+              className={`settings-button ${unsafeToRestart ? "settings-button-danger" : ""}`}
+              onClick={handleRestartServer}
+              disabled={restarting}
+            >
+              {restarting
+                ? t("developmentRestarting")
+                : unsafeToRestart
+                  ? t("developmentRestartAnyway")
+                  : t("developmentRestart")}
+            </button>
+          </SettingsItem>
+        </div>
+      )}
     </SettingsSection>
   );
 }

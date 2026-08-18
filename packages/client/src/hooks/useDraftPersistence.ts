@@ -36,6 +36,8 @@ export interface DraftControls {
   flushDraft: () => void;
   /** Clear input state only, keeping localStorage for failure recovery */
   clearInput: () => void;
+  /** Confirm an optimistic clear without deleting a newer live draft. */
+  confirmInputClear: () => void;
   /** Clear both input state and localStorage (call on confirmed success) */
   clearDraft: () => void;
   /** Restore from localStorage (call on failure) */
@@ -69,10 +71,7 @@ function saveToStorage(
 
   try {
     const previousValue = localStorage.getItem(key);
-    const nextValue = draftStorageValueForText(
-      value,
-      previousValue,
-    );
+    const nextValue = draftStorageValueForText(value, previousValue);
     if (nextValue) {
       localStorage.setItem(key, nextValue);
     } else {
@@ -103,10 +102,7 @@ function saveAttachmentStateToStorage(
 
   try {
     const previousValue = localStorage.getItem(key);
-    const nextValue = draftStorageValueForAttachments(
-      value,
-      previousValue,
-    );
+    const nextValue = draftStorageValueForAttachments(value, previousValue);
     if (nextValue) {
       localStorage.setItem(key, nextValue);
     } else {
@@ -372,6 +368,15 @@ export function useDraftPersistence(
     }
   }, []);
 
+  // A successful async submission may settle after the user has already
+  // started the next turn. Remove the recovery copy only while the optimistic
+  // clear still owns an empty live input; otherwise localStorage now contains
+  // the newer draft and must remain untouched.
+  const confirmInputClear = useCallback(() => {
+    if (valueRef.current !== "") return;
+    removeFromStorage(keyRef.current, sessionDraftRef.current);
+  }, []);
+
   // Clear both state and localStorage (for confirmed successful send)
   const clearDraft = useCallback(() => {
     valueRef.current = "";
@@ -420,6 +425,7 @@ export function useDraftPersistence(
       setAttachmentState,
       flushDraft: flushPending,
       clearInput,
+      confirmInputClear,
       clearDraft,
       restoreFromStorage,
     }),
@@ -430,6 +436,7 @@ export function useDraftPersistence(
       setAttachmentState,
       flushPending,
       clearInput,
+      confirmInputClear,
       clearDraft,
       restoreFromStorage,
     ],

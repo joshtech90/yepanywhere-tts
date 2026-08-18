@@ -103,6 +103,9 @@ export class BrowserNativeProvider implements SpeechProvider {
   private recognition: SpeechRecognition | null = null;
   private isStopping = false;
   private lastFinalTranscript = "";
+  private lastFinalResultIndex = -1;
+  private lastFinalResultPrefix = "";
+  private lastCommittedFinalChunk = "";
   private disposed = false;
   private speechActivityTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -146,6 +149,9 @@ export class BrowserNativeProvider implements SpeechProvider {
 
     this.isStopping = false;
     this.lastFinalTranscript = "";
+    this.lastFinalResultIndex = -1;
+    this.lastFinalResultPrefix = "";
+    this.lastCommittedFinalChunk = "";
     this.setState({
       status: "starting",
       isListening: false,
@@ -157,10 +163,11 @@ export class BrowserNativeProvider implements SpeechProvider {
     this.recognition = recognition;
     recognition.continuous = true;
     recognition.interimResults = true;
-    // Chrome 151+ can infer punctuation from pauses and prosody. Keep older
-    // browsers on their existing raw-transcript path without UA sniffing.
+    // Chrome 151+ can infer punctuation from pauses and prosody. Keep this
+    // default-off preference harmless on older recognizers without UA sniffing.
     if ("unspokenPunctuation" in recognition) {
-      recognition.unspokenPunctuation = true;
+      recognition.unspokenPunctuation =
+        this.options.unspokenPunctuation === true;
     }
     // Always set lang explicitly so we don't depend on the browser's
     // locale guess. Caller's override wins; otherwise fall back to the
@@ -206,25 +213,83 @@ export class BrowserNativeProvider implements SpeechProvider {
 
       let interimText = "";
       let latestFinal = "";
+      let latestFinalResultIndex = -1;
 
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         if (result) {
           const transcript = result[0]?.transcript ?? "";
           if (result.isFinal) {
-            latestFinal = transcript;
+            // Final results before resultIndex are immutable history. Chrome
+            // includes them in every complete result list; reprocessing them
+            // would misclassify old speech as the current utterance.
+            if (i >= event.resultIndex) {
+              latestFinal = transcript;
+              latestFinalResultIndex = i;
+            }
           } else {
             interimText += transcript;
           }
         }
       }
 
-      const deltaTranscript = computeSpeechDelta(
-        latestFinal,
-        this.lastFinalTranscript,
-      );
-      if (deltaTranscript) {
+      const revisesLastFinal =
+        latestFinalResultIndex >= 0 &&
+        latestFinalResultIndex === this.lastFinalResultIndex;
+      let finalChunk = "";
+      if (latestFinalResultIndex >= 0) {
+        if (revisesLastFinal) {
+          // A repeated result-list slot is a revision boundary. Replacing the
+          // chunk owned by that slot keeps a corrected cumulative final from
+          // being appended as a second utterance.
+          finalChunk = latestFinal.slice(this.lastFinalResultPrefix.length);
+        } else {
+          finalChunk = computeSpeechDelta(
+            latestFinal,
+            this.lastFinalTranscript,
+          );
+          this.lastFinalResultPrefix = latestFinal.startsWith(
+            this.lastFinalTranscript,
+          )
+            ? this.lastFinalTranscript
+            : "";
+        }
         this.lastFinalTranscript = latestFinal;
+        this.lastFinalResultIndex = latestFinalResultIndex;
+      }
+
+      const trimmedFinalChunk = finalChunk.trim();
+      const previousCommittedFinalChunk = this.lastCommittedFinalChunk;
+      let shouldEmitFinal = false;
+      let replacePreviousTranscriptChars: number | undefined;
+      if (
+        revisesLastFinal &&
+        trimmedFinalChunk !== previousCommittedFinalChunk
+      ) {
+        shouldEmitFinal = true;
+        replacePreviousTranscriptChars = previousCommittedFinalChunk.length;
+        this.lastCommittedFinalChunk = trimmedFinalChunk;
+      } else if (!revisesLastFinal && trimmedFinalChunk) {
+        shouldEmitFinal = true;
+      }
+      if (!revisesLastFinal) {
+        this.lastCommittedFinalChunk = trimmedFinalChunk;
+      }
+
+      // A final closes the old provisional fragment. Commit it before exposing
+      // any following interim entry so a queued caret can become the anchor for
+      // that next fragment without relocating text that is still provisional.
+      if (shouldEmitFinal) {
+        const hadInterim = this.state.interimTranscript.length > 0;
+        this.setState({ interimTranscript: "" });
+        if (hadInterim) this.options.onInterimResult?.("");
+        if (replacePreviousTranscriptChars) {
+          this.options.onResult?.(trimmedFinalChunk, {
+            replacePreviousTranscriptChars,
+          });
+        } else {
+          this.options.onResult?.(trimmedFinalChunk);
+        }
       }
 
       const trimmedInterim = interimText.trim();
@@ -233,12 +298,6 @@ export class BrowserNativeProvider implements SpeechProvider {
         this.options.onInterimResult?.(trimmedInterim);
       } else if (interimText && !trimmedInterim) {
         this.setState({ interimTranscript: "" });
-      }
-
-      const trimmedDelta = deltaTranscript.trim();
-      if (trimmedDelta) {
-        this.setState({ interimTranscript: "" });
-        this.options.onResult?.(trimmedDelta);
       }
     };
 
@@ -282,6 +341,10 @@ export class BrowserNativeProvider implements SpeechProvider {
       if (!this.isStopping && this.recognition === recognition) {
         // Auto-restart after Chrome's ~60s idle timeout.
         this.setState({ status: "reconnecting", error: null });
+        this.lastFinalTranscript = "";
+        this.lastFinalResultIndex = -1;
+        this.lastFinalResultPrefix = "";
+        this.lastCommittedFinalChunk = "";
         try {
           recognition.start();
         } catch {
@@ -327,6 +390,14 @@ export class BrowserNativeProvider implements SpeechProvider {
       status: "idle",
       error: null,
     });
+  }
+
+  beginInsertionBoundary(): void {
+    // Chrome may keep extending the same finalized result-list slot across
+    // pauses. Make the already-finalized cumulative text the immutable prefix
+    // so the next same-slot update emits only its new tail at the live caret.
+    this.lastFinalResultPrefix = this.lastFinalTranscript;
+    this.lastCommittedFinalChunk = "";
   }
 
   dispose(): void {

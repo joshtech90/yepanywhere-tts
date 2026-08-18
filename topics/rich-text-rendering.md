@@ -34,7 +34,9 @@ bookkeeping that does not help supervise the goal — thread ids, timestamps, an
 the model-only completion-report instruction — stays out of the visual summary.
 An empty `get_goal` response says that no goal is set, pending calls state the
 operation in progress, and failures show the provider error rather than a
-serialized response object.
+serialized response object. A failed mutation keeps the requested operation in
+its row heading; it must not use the past-tense success heading reserved for a
+completed mutation.
 
 The separate Codex app-server `thread/goal/set`, `thread/goal/get`, and
 `thread/goal/clear` methods, plus updated/cleared notifications, are control
@@ -109,6 +111,12 @@ These run unconditionally and are not user-configurable:
   target currently exists under the project root. The Markdown parser's
   existing `codespan` token is the detection boundary; YA does not reparse raw
   assistant Markdown for this.
+- **Confirmed tool-content file links** — completed Bash/Ran command text and
+  string tool-result bodies render exact server-confirmed project paths as file
+  viewer links. A whole path anchor takes precedence over glossary annotation,
+  and activating it does not trigger the containing row's expand action. The
+  optional per-body annotation is absent on older servers and ignored in public
+  shares, where the same content remains plain.
 - **Line numbers** — shown in the plain-text fallback path (no Shiki highlight).
 
 ## Math delimiter parity
@@ -149,16 +157,29 @@ file links should therefore inherit the same source/preview controls,
 large-file windowing, hline span markers, scrollbars, copy affordance, media
 hydration, and public-share capability scoping.
 
-Native rich-text copy from rendered Markdown—both full previews and
-Σ-rendered fixed-font/diff views—must not carry YA's display presentation into
-the destination. The `copy` handler serializes the selected rendered fragment
-as semantic HTML, stripping CSS classes, inline styles, stylesheet elements,
-and legacy color attributes. Fixed-font views keep the existing source-aware
-`text/plain` fallback. Neither path relies on Chromium's default computed-style
-clipboard payload, which can transfer only part of a foreground/background
-pair into editors such as Jira. Table headers and inline/block code still
-declare paired themed colors for correct rendering inside YA; those
-declarations never enter the explicit clipboard HTML.
+Ordinary copy from a rendered document uses the registered pre-render source
+mapping and writes the best aligned authored span to `text/plain`. For a
+Markdown preview that is Markdown; for a rendered math selection it includes
+the original TeX expression and delimiters when they can be recovered
+unambiguously. It must not be preempted by the preview's rich-text serializer:
+source-preserving `Ctrl/Cmd+C` is the default document-copy contract. The
+independently enabled blue `</>` selection action invokes the same best-effort
+source projection. The purple `Aa` companion serializes the stored selection
+ranges as semantic HTML plus visible plain text for users who want the rendered
+projection. If the browser cannot write multiple clipboard representations,
+the rich action falls back to its visible plain-text representation. These
+buttons are default-off; their visibility never changes the keyboard-copy
+contract.
+
+Semantic rich-text copy from Σ-rendered fixed-font/diff views must not carry
+YA's display presentation into the destination. Its handler serializes the
+selected rendered fragment as semantic HTML, stripping CSS classes, inline
+styles, stylesheet elements, and legacy color attributes, while keeping the
+existing source-aware `text/plain` fallback. It does not rely on Chromium's
+default computed-style clipboard payload, which can transfer only part of a
+foreground/background pair into editors such as Jira. Table headers and
+inline/block code still declare paired themed colors for correct rendering
+inside YA; those declarations never enter the explicit clipboard HTML.
 
 KaTeX display output contains both an accessible MathML branch and its styled
 visual HTML branch. Semantic clipboard HTML keeps only the MathML branch before
@@ -235,9 +256,9 @@ exclusive until a compositing path is built.
 
 Filename-affiliated plain-text files retain only the math portion of the
 `FixedFontMathToggle` pipeline unless their extension is Markdown-like (`.md`,
-`.markdown`, `.mdx`, `.mdown`, `.mkd`, `.mkdn`). This avoids structural Markdown
-false positives from source files without Shiki highlighting, especially TSX
-template literals and backtick-heavy code.
+`.markdown`, `.mdx`, `.mdown`, `.mkd`, `.mkdn`, `.qmd`). This avoids structural
+Markdown false positives from source files without Shiki highlighting,
+especially TSX template literals and backtick-heavy code.
 
 For markdown files, `FileModalContent` uses its own outer Σ button (not
 `FixedFontMathToggle`) to toggle between the server-rendered HTML preview and
@@ -343,7 +364,12 @@ formulas as literal text, matching the experience in their editor.
   inline, as a tooltip, or as a compact note after the rendered fragment. A
   future higher-fidelity range marker path should render the document in whole
   chunks with renderer-provided or coarse source-line alignment, then place range
-  markers against that rendered output.
+  markers against that rendered output. The broader `.qmd`, caption,
+  cross-reference, figure-layout, and optional delayed-render work is tracked in
+  [`gaps/quarto-aware-document-view.md`](../gaps/quarto-aware-document-view.md).
+  The currently supported `.qmd` recognition and inert include-link behavior
+  are specified in
+  [`topics/quarto-markdown.md`](../topics/quarto-markdown.md).
 - Edit diff rich render does not yet inline-expand image links. This would help
   Markdown edits that add or update `![image](...)`, but it should share the
   local-media hydration path rather than adding a second image loader.

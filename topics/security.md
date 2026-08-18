@@ -59,9 +59,10 @@ viewer must not navigate into `/api/local-file`, `/api/local-image`, or
 `/projects/.../file` directly, because those routes are authenticated/local app
 surfaces and cause public viewers to fall into Remote Access login.
 
-See [`attachment-storage`](attachment-storage.md) for how project-relative
-`.attachments/` uploads interact with these same `/api/local-image` and
-`/api/local-file` routes.
+See [`attachment-storage`](attachment-storage.md) for the current legacy
+project-relative `.attachments/` path and the app-data-only target. Physical
+attachment location does not broaden these `/api/local-image` and
+`/api/local-file` routes or constitute public authorization.
 
 The current lightweight route serves project files whose relative or
 project-root-absolute path is present in the shared transcript. Public clients
@@ -72,28 +73,40 @@ visible from the transcript, the route may also serve bounded local media assets
 referenced by that document so public preview images do not fall through to
 login-gated local routes.
 
-A stronger public-share file viewer should eventually expose only manifest
-entries and render assets captured from shared content:
+Public authorization follows captured share-visible links; it is not a general
+filesystem discovery facility:
 
-- A frozen snapshot share should persist an immutable manifest of linked files
-  and required render assets at capture time, so later filesystem changes do not
-  change what the link exposes. The current route still reads the live project
-  file after checking transcript visibility.
-- A live share may refresh its manifest only from transcript-visible links or
-  other deliberate share content, not from arbitrary project paths supplied by
-  the public viewer.
-- The current transitive render-asset allowance is still computed live from the
-  referenced Markdown/HTML source. A frozen manifest should eventually capture
-  those image references at share creation time.
-- Public endpoints should use opaque share asset identifiers or manifest
-  entries, not raw absolute paths, project-relative paths, `..` traversal, or
-  symlink-sensitive filesystem resolution requested by the browser.
+- A frozen revision attempts a whole-project copy-on-write clone only when the
+  actual project/app-data filesystem pair supports it. The clone is private
+  app-data storage and does not authorize its unlinked contents. Authorized
+  frozen file views resolve from the clone, so later source changes do not
+  change those bytes.
+- When CoW cloning is unsupported, retain the current behavior of resolving an
+  authorized frozen link against the live project rather than making an
+  unbounded physical worktree copy. Both the owner creation flow and public
+  frozen viewer must persistently warn that linked files remain live and may
+  expose later contents. An unexpected clone failure aborts creation instead
+  of silently downgrading to that mode.
+- A live share may refresh its allowed paths only from transcript-visible links
+  or other deliberate share content, not from arbitrary project paths supplied
+  by the public viewer. A frozen share may replay path-existence link decisions
+  that were already known when captured, but it never answers new existence
+  queries.
+- The current transitive render-asset allowance is computed live from the
+  referenced Markdown/HTML source. A CoW-backed frozen view resolves it within
+  that frozen tree; a live-file fallback carries the same warning.
+- Public endpoints should use captured opaque targets or exact allowed entries,
+  not raw absolute paths, `..` traversal, or symlink-sensitive filesystem
+  resolution chosen by the browser.
+- CoW project snapshots omit symlinks. A symlink can otherwise escape the
+  immutable clone and expose later external bytes while the share reports that
+  linked files are frozen.
 
 The design point is intentionally narrower than "the user could ask the agent to
 cat that file." That argument applies to the authenticated operator, not to an
 unauthenticated public share recipient.
 
-Until a full manifest exists, public-share viewers must not follow
+Until a captured allowed-path set exists, public-share viewers must not follow
 local/authenticated file links into the normal app. A share-scoped relay request
 is acceptable for transcript-visible project files; otherwise blocking the click
 with an explicit notice is preferable to falling through to Remote Access login,

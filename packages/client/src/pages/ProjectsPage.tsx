@@ -1,10 +1,15 @@
-import type { ProjectQueueMessage } from "@yep-anywhere/shared";
+import {
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  type ProjectQueueMessage,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { ProjectCard } from "../components/ProjectCard";
 import { ProjectQueueSection } from "../components/ProjectQueueSection";
+import { ProjectSessionDefaultsModal } from "../components/ProjectSessionDefaultsModal";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProjects } from "../hooks/useProjects";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -22,12 +27,17 @@ export function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const { version } = useVersion();
   const supportsProjectQueue = serverSupportsProjectQueue(version);
+  const supportsProjectSessionDefaults = serverHasCapability(
+    version,
+    PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  );
   const inboxCountsByProject = useInboxCountsByProject();
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProjectPath, setNewProjectPath] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [settingsProject, setSettingsProject] = useState<Project | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(
     null,
   );
@@ -47,9 +57,11 @@ export function ProjectsPage() {
     ? projectIds
     : EMPTY_PROJECT_QUEUE_PROJECT_IDS;
   const projectQueues = useProjectQueues(projectQueueProjectIds);
-  const queueCountByProject = useMemo(() => {
-    if (!supportsProjectQueue) return new Map<string, number>();
-    const counts = new Map<string, number>();
+  const queueStateByProject = useMemo(() => {
+    if (!supportsProjectQueue) {
+      return new Map<string, { count: number; hasFailed: boolean }>();
+    }
+    const queueState = new Map<string, { count: number; hasFailed: boolean }>();
     for (const [projectId, items] of Object.entries(
       projectQueues.queuesByProject,
     )) {
@@ -57,10 +69,13 @@ export function ProjectsPage() {
         (item) => item.status === "queued" || item.status === "failed",
       ).length;
       if (visibleCount > 0) {
-        counts.set(projectId, visibleCount);
+        queueState.set(projectId, {
+          count: visibleCount,
+          hasFailed: items.some((item) => item.status === "failed"),
+        });
       }
     }
-    return counts;
+    return queueState;
   }, [projectQueues.queuesByProject, supportsProjectQueue]);
 
   // Sort projects: those needing attention first, then by recency
@@ -124,6 +139,28 @@ export function ProjectsPage() {
   const handleDeleteQueueItem = async (projectId: string, itemId: string) => {
     try {
       await projectQueues.deleteItem(projectId, itemId);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleResumeRecoveredQueueItem = async (
+    sessionId: string,
+    queueId: string,
+  ) => {
+    try {
+      await projectQueues.resumeRecoveredItem(sessionId, queueId);
+    } catch {
+      // The hook exposes the error in the queue section.
+    }
+  };
+
+  const handleDeleteRecoveredQueueItem = async (
+    sessionId: string,
+    queueId: string,
+  ) => {
+    try {
+      await projectQueues.deleteRecoveredItem(sessionId, queueId);
     } catch {
       // The hook exposes the error in the queue section.
     }
@@ -281,6 +318,7 @@ export function ProjectsPage() {
               loading={projectQueues.loading}
               error={projectQueues.error}
               mutatingItemId={projectQueues.mutatingItemId}
+              mutatingRecoveredQueueId={projectQueues.mutatingRecoveredQueueId}
               mutatingDispatchState={projectQueues.mutatingDispatchState}
               mutatingPromoteItemId={projectQueues.mutatingPromoteItemId}
               dispatchState={projectQueues.dispatchState}
@@ -291,6 +329,8 @@ export function ProjectsPage() {
               onResumeDispatch={handleResumeProjectQueue}
               onPromoteNow={handlePromoteProjectQueueItem}
               onDeleteItem={handleDeleteQueueItem}
+              onResumeRecoveredItem={handleResumeRecoveredQueueItem}
+              onDeleteRecoveredItem={handleDeleteRecoveredQueueItem}
               onRetryItem={handleRetryQueueItem}
               onMoveItemToTop={handleMoveQueueItemToTop}
               onUpdateItem={handleUpdateQueueItem}
@@ -327,9 +367,17 @@ export function ProjectsPage() {
                   thinkingCount={
                     inboxCountsByProject.get(project.id)?.active ?? 0
                   }
-                  queueCount={queueCountByProject.get(project.id) ?? 0}
+                  queueCount={queueStateByProject.get(project.id)?.count ?? 0}
+                  hasQueueWarning={
+                    queueStateByProject.get(project.id)?.hasFailed ?? false
+                  }
                   basePath={basePath}
                   onDeleteProject={handleDeleteProject}
+                  onOpenSettings={
+                    supportsProjectSessionDefaults
+                      ? setSettingsProject
+                      : undefined
+                  }
                   isDeleting={deletingProjectId === project.id}
                 />
               ))}
@@ -337,6 +385,13 @@ export function ProjectsPage() {
           )}
         </div>
       </main>
+      {settingsProject && (
+        <ProjectSessionDefaultsModal
+          projectId={settingsProject.id}
+          projectName={settingsProject.name}
+          onClose={() => setSettingsProject(null)}
+        />
+      )}
     </MainContent>
   );
 }

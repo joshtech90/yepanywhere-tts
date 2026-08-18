@@ -1,0 +1,14 @@
+/Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/deps/serde-14aa57cffbd5e0ce.d: /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/build/serde-ed3d927fc6099e73/out/private.rs
+
+/Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/deps/libserde-14aa57cffbd5e0ce.rlib: /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/build/serde-ed3d927fc6099e73/out/private.rs
+
+/Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/deps/libserde-14aa57cffbd5e0ce.rmeta: /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/build/serde-ed3d927fc6099e73/out/private.rs
+
+/Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/joscha/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/build/serde-ed3d927fc6099e73/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/joscha/Projects/yepanywhere/packages/mobile/src-tauri/target/debug/build/serde-ed3d927fc6099e73/out

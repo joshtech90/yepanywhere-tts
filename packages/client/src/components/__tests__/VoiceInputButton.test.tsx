@@ -1,16 +1,32 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { VOICE_INPUT_CAPABILITY } from "@yep-anywhere/shared";
+import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UseSpeechRecognitionOptions } from "../../hooks/useSpeechRecognition";
-import { VoiceInputButton } from "../VoiceInputButton";
+import {
+  cancelSpeechFollowUp,
+  getSpeechFollowUpSnapshot,
+} from "../../lib/speechFollowUp";
+import {
+  VoiceInputButton,
+  type VoiceInputButtonRef,
+} from "../VoiceInputButton";
 
 const {
   observedSpeechOptions,
   openSpeechSocket,
   sourceTransport,
+  speechCaptureState,
   speechState,
+  startListening,
   versionState,
 } = vi.hoisted(() => {
   const openSpeechSocket = vi.fn();
@@ -23,7 +39,16 @@ const {
         speech: { open: openSpeechSocket },
       },
     },
+    speechCaptureState: {
+      keepMicWarm: false,
+      micDeviceId: null as string | null,
+      reducePlayback: true,
+      unspokenPunctuation: false,
+      followUpListenMs: 0,
+    },
+    startListening: vi.fn(),
     speechState: {
+      isSupported: true,
       isListening: false,
       status: "idle" as
         | "idle"
@@ -34,9 +59,16 @@ const {
         | "finalizing"
         | "reconnecting"
         | "error",
+      interimTranscript: "",
     },
     versionState: {
       capabilities: [] as string[],
+      loading: false,
+      voiceBackends: [] as string[],
+      voiceBackendCapabilities: {} as Record<
+        string,
+        { streaming?: boolean; smartTurn?: boolean }
+      >,
     },
   };
 });
@@ -62,21 +94,18 @@ vi.mock("../../hooks/useRemoteBasePath", () => ({
 }));
 
 vi.mock("../../hooks/useSpeechCaptureSettings", () => ({
-  useSpeechCaptureSettings: () => ({
-    keepMicWarm: false,
-    micDeviceId: null,
-  }),
+  useSpeechCaptureSettings: () => speechCaptureState,
 }));
 
 vi.mock("../../hooks/useSpeechRecognition", () => ({
   useSpeechRecognition: (options: UseSpeechRecognitionOptions) => {
     observedSpeechOptions.push(options);
     return {
-      isSupported: true,
+      isSupported: speechState.isSupported,
       isListening: speechState.isListening,
       status: speechState.status,
-      interimTranscript: "",
-      startListening: vi.fn(),
+      interimTranscript: speechState.interimTranscript,
+      startListening,
       stopListening: vi.fn(),
       toggleListening: vi.fn(),
       prewarm: vi.fn(),
@@ -89,9 +118,10 @@ vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
       capabilities: versionState.capabilities,
-      voiceBackends: [],
-      voiceBackendCapabilities: {},
+      voiceBackends: versionState.voiceBackends,
+      voiceBackendCapabilities: versionState.voiceBackendCapabilities,
     },
+    loading: versionState.loading,
   }),
 }));
 
@@ -105,6 +135,7 @@ vi.mock("../../i18n", () => ({
       ({
         speechReadyStatus: "Ready",
         speechStartingStatus: "Starting...",
+        speechUnavailableStatus: "Speech input unavailable",
         speechSpeakNowStatus: "Speak now...",
         speechListeningPlaceholder: "Listening...",
         speechTranscribingPlaceholder: "Transcribing...",
@@ -118,6 +149,10 @@ vi.mock("../../lib/deviceDetection", () => ({
   hasCoarsePointer: () => false,
 }));
 
+vi.mock("../SpeechWaveform", () => ({
+  SpeechWaveform: () => <div className="composer-speech-waveform" />,
+}));
+
 describe("VoiceInputButton", () => {
   beforeEach(() => {
     versionState.capabilities = [VOICE_INPUT_CAPABILITY];
@@ -128,7 +163,100 @@ describe("VoiceInputButton", () => {
     observedSpeechOptions.length = 0;
     openSpeechSocket.mockReset();
     speechState.isListening = false;
+    speechState.isSupported = true;
     speechState.status = "idle";
+    speechState.interimTranscript = "";
+    speechCaptureState.keepMicWarm = false;
+    speechCaptureState.micDeviceId = null;
+    speechCaptureState.reducePlayback = true;
+    speechCaptureState.unspokenPunctuation = false;
+    speechCaptureState.followUpListenMs = 0;
+    startListening.mockReset();
+    versionState.loading = false;
+    versionState.voiceBackends = [];
+    versionState.voiceBackendCapabilities = {};
+    cancelSpeechFollowUp();
+    vi.useRealTimers();
+  });
+
+  it("warms only an armed follow-up and ends the window on wait", () => {
+    speechCaptureState.followUpListenMs = 3_000;
+    versionState.voiceBackends = ["ya-grok"];
+    versionState.voiceBackendCapabilities = {
+      "ya-grok": { streaming: true, smartTurn: true },
+    };
+    const ref = createRef<VoiceInputButtonRef>();
+    const onTranscript = vi.fn(() => "wait" as const);
+
+    render(
+      <VoiceInputButton
+        ref={ref}
+        onTranscript={onTranscript}
+        speechMethod="ya-grok"
+        smartTurn={{
+          enabled: true,
+          threshold: 0.95,
+          timeoutMs: 3_000,
+          graceMs: 0,
+        }}
+      />,
+    );
+
+    const options = observedSpeechOptions.at(-1);
+    expect(options?.keepMicWarm).toBe(false);
+    expect(options?.temporarilyKeepMicWarm?.()).toBe(false);
+
+    act(() => ref.current?.continueAfterSpeechSend());
+    expect(getSpeechFollowUpSnapshot().active).toBe(true);
+    expect(options?.temporarilyKeepMicWarm?.()).toBe(true);
+
+    act(() => {
+      options?.onResult?.("wait", { smartTurnCommand: "wait" });
+    });
+    expect(getSpeechFollowUpSnapshot().active).toBe(false);
+  });
+
+  it("does not restart after the absolute follow-up deadline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    speechCaptureState.followUpListenMs = 3_000;
+    versionState.voiceBackends = ["ya-grok"];
+    versionState.voiceBackendCapabilities = {
+      "ya-grok": { streaming: true, smartTurn: true },
+    };
+    const ref = createRef<VoiceInputButtonRef>();
+    const props = {
+      ref,
+      onTranscript: vi.fn(() => "committed" as const),
+      speechMethod: "ya-grok" as const,
+      smartTurn: {
+        enabled: true,
+        threshold: 0.95,
+        timeoutMs: 3_000,
+        graceMs: 0,
+      },
+    };
+
+    const view = render(<VoiceInputButton {...props} />);
+    act(() => ref.current?.continueAfterSpeechSend());
+    expect(startListening).toHaveBeenCalledOnce();
+
+    speechState.status = "receiving";
+    speechState.isListening = true;
+    view.rerender(<VoiceInputButton {...props} />);
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(getSpeechFollowUpSnapshot()).toMatchObject({
+      active: true,
+      deadlineMs: 13_000,
+      expired: true,
+    });
+
+    const startsAtExpiry = startListening.mock.calls.length;
+    speechState.status = "idle";
+    speechState.isListening = false;
+    view.rerender(<VoiceInputButton {...props} />);
+    expect(getSpeechFollowUpSnapshot().active).toBe(false);
+    expect(startListening).toHaveBeenCalledTimes(startsAtExpiry);
   });
 
   it("keeps the relayed speech socket opener stable across rerenders", () => {
@@ -148,6 +276,49 @@ describe("VoiceInputButton", () => {
 
     expect(firstOpenSpeechSocket).toBeDefined();
     expect(secondOpenSpeechSocket).toBe(firstOpenSpeechSocket);
+    expect(observedSpeechOptions.at(-1)?.reducePlayback).toBe(true);
+    expect(observedSpeechOptions.at(-1)?.unspokenPunctuation).toBe(false);
+  });
+
+  it("passes the browser punctuation preference to speech providers", () => {
+    speechCaptureState.unspokenPunctuation = true;
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="browser-native"
+      />,
+    );
+
+    expect(observedSpeechOptions.at(-1)?.unspokenPunctuation).toBe(true);
+  });
+
+  it("keeps an unavailable enabled microphone visible but disabled", () => {
+    speechState.isSupported = false;
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="browser-native"
+      />,
+    );
+
+    const button = screen.getByRole("button", {
+      name: "Speech input unavailable",
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("does not fall back to unavailable browser-native speech", () => {
+    render(<VoiceInputButton onTranscript={vi.fn()} />);
+
+    expect(observedSpeechOptions.at(-1)?.speechMethod).toBeNull();
+    const button = screen.getByRole("button", {
+      name: "Speech input unavailable",
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("does not render post-capture processing as active capture", () => {
@@ -218,6 +389,140 @@ describe("VoiceInputButton", () => {
     expect(onPendingSpeechChange).toHaveBeenCalledWith("listening");
   });
 
+  it("ignores provider revisions after Stop commits the visible interim", () => {
+    speechState.status = "receiving";
+    speechState.isListening = true;
+    speechState.interimTranscript = "visible words";
+    const onTranscript = vi.fn();
+    const onListeningStop = vi.fn(() => true);
+
+    render(
+      <VoiceInputButton
+        onTranscript={onTranscript}
+        onInterimTranscript={vi.fn()}
+        onListeningStop={onListeningStop}
+        speechMethod="browser-native"
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "voiceInputStopLabel" }),
+    );
+    expect(onListeningStop).toHaveBeenCalledOnce();
+
+    observedSpeechOptions.at(-1)?.onResult?.("later backend correction");
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it("keeps revisions suppressed if Stop is clicked while finalizing", () => {
+    speechState.status = "receiving";
+    speechState.isListening = true;
+    const onTranscript = vi.fn();
+    const onListeningStop = vi
+      .fn<() => boolean | undefined>()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const props = {
+      onTranscript,
+      onInterimTranscript: vi.fn(),
+      onListeningStop,
+      speechMethod: "browser-native",
+    } as const;
+    const { rerender } = render(<VoiceInputButton {...props} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "voiceInputStopLabel" }),
+    );
+    speechState.status = "finalizing";
+    speechState.isListening = false;
+    rerender(<VoiceInputButton {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Finalizing..." }));
+
+    observedSpeechOptions.at(-1)?.onResult?.("late final revision");
+    expect(onListeningStop).toHaveBeenCalledOnce();
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it("keeps a post-stop result when no visible interim was committed", () => {
+    speechState.status = "listening";
+    speechState.isListening = true;
+    const onTranscript = vi.fn();
+
+    render(
+      <VoiceInputButton
+        onTranscript={onTranscript}
+        onInterimTranscript={vi.fn()}
+        onListeningStop={() => false}
+        speechMethod="browser-native"
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "voiceInputStopLabel" }),
+    );
+    observedSpeechOptions.at(-1)?.onResult?.("batch result");
+    expect(onTranscript).toHaveBeenCalledWith("batch result", undefined);
+  });
+
+  it("keeps one pending transaction from capture startup into listening", () => {
+    speechState.status = "starting";
+    const onPendingSpeechChange = vi.fn();
+    const props = {
+      onTranscript: vi.fn(),
+      onInterimTranscript: vi.fn(),
+      onPendingSpeechChange,
+      speechMethod: "browser-native",
+    };
+
+    const { rerender } = render(<VoiceInputButton {...props} />);
+    expect(onPendingSpeechChange).toHaveBeenCalledWith("starting");
+
+    speechState.status = "listening";
+    speechState.isListening = true;
+    rerender(<VoiceInputButton {...props} />);
+    expect(onPendingSpeechChange).toHaveBeenLastCalledWith("listening");
+    expect(onPendingSpeechChange).not.toHaveBeenCalledWith(
+      null,
+      expect.anything(),
+    );
+  });
+
+  it("fails a delivery transaction when capture startup fails", () => {
+    speechState.status = "starting";
+    const onPendingSpeechChange = vi.fn();
+    const props = {
+      onTranscript: vi.fn(),
+      onInterimTranscript: vi.fn(),
+      onPendingSpeechChange,
+      speechMethod: "browser-native",
+    };
+
+    const { rerender } = render(<VoiceInputButton {...props} />);
+    speechState.status = "error";
+    rerender(<VoiceInputButton {...props} />);
+
+    expect(onPendingSpeechChange).toHaveBeenLastCalledWith(null, "failed");
+  });
+
+  it("fails a pending speech transaction when the mic unmounts", () => {
+    speechState.status = "starting";
+    const onPendingSpeechChange = vi.fn();
+
+    const { unmount } = render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        onPendingSpeechChange={onPendingSpeechChange}
+        speechMethod="browser-native"
+      />,
+    );
+    onPendingSpeechChange.mockClear();
+    unmount();
+
+    expect(onPendingSpeechChange).toHaveBeenCalledOnce();
+    expect(onPendingSpeechChange).toHaveBeenCalledWith(null, "failed");
+  });
+
   it("suppresses redundant listening text when a live waveform is available", () => {
     speechState.status = "listening";
     speechState.isListening = true;
@@ -235,6 +540,43 @@ describe("VoiceInputButton", () => {
     const recordingIcon = document.querySelector(".voice-input-recording");
     expect(recordingIcon).toBeTruthy();
     expect(recordingIcon?.classList.contains("is-speech-active")).toBe(false);
+  });
+
+  it("puts an inline waveform inside the microphone touch target", () => {
+    speechState.status = "listening";
+    speechState.isListening = true;
+    const onWaveformActiveChange = vi.fn();
+
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        onWaveformActiveChange={onWaveformActiveChange}
+        speechMethod="ya-parakeet"
+        showWaveform
+        inlineWaveform
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "voiceInputStopLabel" });
+    expect(button.querySelector(".composer-speech-waveform")).toBeTruthy();
+    expect(onWaveformActiveChange).toHaveBeenCalledWith(true);
+  });
+
+  it("reserves the full inline microphone touch target before capture", () => {
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="ya-parakeet"
+        showWaveform
+        inlineWaveform
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "voiceInputStartLabel" });
+    expect(button.getAttribute("data-inline-waveform")).toBe("true");
+    expect(button.querySelector(".composer-speech-waveform")).toBeNull();
   });
 
   it("prompts when browser-native capture is ready without sample access", () => {
@@ -289,7 +631,7 @@ describe("VoiceInputButton", () => {
     expect(screen.getByRole("status").textContent).toBe("Starting...");
   });
 
-  it("keeps the microphone neutral while capture starts", () => {
+  it("shows a distinct requested state while capture starts", () => {
     speechState.status = "starting";
 
     render(
@@ -301,8 +643,25 @@ describe("VoiceInputButton", () => {
     );
 
     const button = screen.getByRole("button", { name: "voiceInputStopLabel" });
-    expect(button.classList.contains("connecting")).toBe(false);
+    expect(button.getAttribute("data-speech-phase")).toBe("starting");
+    expect(button.className).toContain("starting");
     expect(button.classList.contains("listening")).toBe(false);
     expect(document.querySelector(".voice-input-recording")).toBeNull();
+  });
+
+  it("shows the selected STT backend inside the wider mic chip", () => {
+    render(
+      <VoiceInputButton
+        onTranscript={vi.fn()}
+        onInterimTranscript={vi.fn()}
+        speechMethod="ya-parakeet"
+      />,
+    );
+
+    const button = screen.getByRole("button", {
+      name: "voiceInputStartLabel",
+    });
+    expect(button.textContent).toContain("Para");
+    expect(button.getAttribute("data-speech-method")).toBe("ya-parakeet");
   });
 });

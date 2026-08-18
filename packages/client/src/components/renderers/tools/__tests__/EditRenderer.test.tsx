@@ -6,11 +6,35 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataContext";
 import { I18nProvider } from "../../../../i18n";
 import { UI_KEYS } from "../../../../lib/storageKeys";
+import { TooltipLayer } from "../../../ui/TooltipLayer";
 import { editRenderer } from "../EditRenderer";
+
+const mocks = vi.hoisted(() => ({
+  useFileVersionControl: vi.fn(),
+  getFile: vi.fn(),
+  expandDiffContext: vi.fn(),
+}));
+
+vi.mock("../../../../hooks/useFileVersionControl", () => ({
+  useFileVersionControl: mocks.useFileVersionControl,
+}));
+
+vi.mock("../../../../api/client", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../../api/client")>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      getFile: mocks.getFile,
+      expandDiffContext: mocks.expandDiffContext,
+    },
+  };
+});
 
 vi.mock("../../../../contexts/SchemaValidationContext", () => ({
   useSchemaValidationContext: () => ({
@@ -27,23 +51,53 @@ const renderContext = {
   isStreaming: false,
   theme: "dark" as const,
 };
+
+function rect(top: number): DOMRect {
+  return {
+    bottom: top + 10,
+    height: 10,
+    left: 0,
+    right: 10,
+    top,
+    width: 10,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  };
+}
 if (!editRenderer.renderCollapsedPreview) {
   throw new Error("Edit renderer must provide collapsed preview");
 }
 const renderCollapsedPreview = editRenderer.renderCollapsedPreview;
 
-function LocationStateProbe() {
-  const location = useLocation();
-  return (
-    <pre data-testid="location-state">
-      {JSON.stringify({ pathname: location.pathname, state: location.state })}
-    </pre>
-  );
-}
-
 describe("EditRenderer collapsed preview fallback", () => {
   beforeEach(() => {
     window.localStorage.setItem(UI_KEYS.tooltipMode, "themed");
+    mocks.getFile.mockReset();
+    mocks.expandDiffContext.mockReset();
+    mocks.getFile.mockResolvedValue({
+      metadata: {
+        path: "notes.md",
+        size: 12,
+        mimeType: "text/markdown",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "",
+    });
+    mocks.expandDiffContext.mockResolvedValue({
+      structuredPatch: [],
+      diffHtml: "",
+    });
+    mocks.useFileVersionControl.mockImplementation(
+      (_projectId: string, filePath: string) => ({
+        cumulativeFile: null,
+        loading: false,
+        relativePath: filePath,
+        supported: false,
+        worktreeFile: null,
+      }),
+    );
   });
 
   afterEach(() => {
@@ -709,7 +763,7 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(screen.getByRole("button", { name: /Foo\.tsx/i })).toBeDefined();
   });
 
-  it("links an Edit block to its dirty file with this session as the default", async () => {
+  it("links an Edit block to its exact worktree diff", () => {
     if (!editRenderer.renderInteractiveSummary) {
       throw new Error("Edit renderer must provide interactive summary");
     }
@@ -722,6 +776,19 @@ describe("EditRenderer collapsed preview fallback", () => {
         lines: ["-const x = 1;", "+const x = 2;"],
       },
     ];
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile: null,
+      loading: false,
+      relativePath: "src/example.ts",
+      supported: true,
+      worktreeFile: {
+        path: "src/example.ts",
+        status: "M",
+        staged: false,
+        linesAdded: 1,
+        linesDeleted: 1,
+      },
+    });
 
     render(
       <MemoryRouter initialEntries={["/projects/project-1/sessions/session-1"]}>
@@ -749,41 +816,18 @@ describe("EditRenderer collapsed preview fallback", () => {
                   renderContext,
                 )}
               />
-              <Route path="/git-status" element={<LocationStateProbe />} />
             </Routes>
           </I18nProvider>
         </SessionMetadataProvider>
       </MemoryRouter>,
     );
 
-    const link = screen.getByRole("link", { name: "Review" });
-    expect(link.getAttribute("href")).toBe(
-      "/git-status?projectId=project-1&worktreeFile=src%2Fexample.ts",
-    );
-    fireEvent.click(link);
-
-    const route = JSON.parse(
-      (await screen.findByTestId("location-state")).textContent ?? "{}",
-    ) as {
-      pathname: string;
-      state: unknown;
-    };
-    expect(route).toEqual({
-      pathname: "/git-status",
-      state: {
-        defaultSession: {
-          projectId: "project-1",
-          id: "session-1",
-          title: "Fix polling",
-          newSession: {
-            provider: "codex",
-            model: "gpt-5.4",
-            thinking: { type: "adaptive", display: "summarized" },
-            effort: "high",
-          },
-        },
-      },
+    const link = screen.getByRole("link", {
+      name: "View HEAD to working tree diff for src/example.ts",
     });
+    expect(link.getAttribute("href")).toBe(
+      "/projects/project-1/file?path=src%2Fexample.ts&diff=worktree",
+    );
   });
 
   it("puts all multi-file patch targets in the interactive summary title", () => {
@@ -1017,13 +1061,57 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(pathLink.getAttribute("href")).toBe(
       "/projects/project-1/file?path=research%2Fprogress-2026-05-18.md&line=1&lineEnd=13",
     );
+    const copyPath = screen.getByRole("button", { name: "Copy path" });
+    expect(copyPath.closest(".modal-header-actions")).not.toBeNull();
+    expect(modal?.querySelector(".file-path-copy")).toBeNull();
     const modalToggle = modal?.querySelector(
       ".fixed-font-render-toggle__button",
     );
     expect(modalToggle).toBeTruthy();
 
     fireEvent.click(modalToggle as Element);
+    expect(modal?.querySelector(".line-hunk")?.textContent).toContain(
+      "@@ -1,0 +1,13 @@",
+    );
     expect(container.textContent).toContain("Recent MT Adapter Progress");
+  });
+
+  it("does not open the full diff when a glossary term is activated", () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ["-old", "+oracle"],
+      },
+    ];
+    const { container } = render(
+      <>
+        <TooltipLayer />
+        {renderCollapsedPreview(
+          { _structuredPatch: structuredPatch } as never,
+          { filePath: "notes.md", structuredPatch } as never,
+          false,
+          renderContext,
+        )}
+      </>,
+    );
+    const preview = container.querySelector<HTMLElement>(".diff-tap-target");
+    const term = document.createElement("span");
+    term.dataset.glossaryTerm = "true";
+    term.dataset.tooltip = "oracle — Best published system.";
+    term.setAttribute("role", "button");
+    term.tabIndex = 0;
+    term.textContent = "oracle";
+    preview?.append(term);
+
+    fireEvent.click(term);
+
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "oracle — Best published system.",
+    );
+    expect(document.body.querySelector(".modal")).toBeNull();
   });
 
   it("counts only hidden rendered diff lines in the +N badge", () => {
@@ -1163,5 +1251,169 @@ describe("EditRenderer collapsed preview fallback", () => {
         selection?.anchorNode ? modal?.contains(selection.anchorNode) : false,
       ).toBe(true);
     });
+  });
+
+  it("expands a Grok-style edit to full context from the current file", async () => {
+    const structuredPatch = [
+      {
+        oldStart: 2,
+        oldLines: 1,
+        newStart: 2,
+        newLines: 2,
+        lines: [" keep", "+added"],
+      },
+    ];
+    mocks.getFile.mockResolvedValue({
+      metadata: {
+        path: "notes.md",
+        size: 20,
+        mimeType: "text/markdown",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "keep\nadded\n",
+    });
+    mocks.expandDiffContext.mockResolvedValue({
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 2,
+          lines: [" keep", "+added"],
+        },
+      ],
+      diffHtml:
+        '<pre class="shiki"><code><span class="line">keep</span></code></pre>',
+    });
+
+    render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          {renderCollapsedPreview(
+            {
+              old_string: "",
+              new_string: "added",
+              _structuredPatch: structuredPatch,
+            } as never,
+            {
+              filePath: "notes.md",
+              oldString: "",
+              newString: "added",
+              originalFile: "",
+              structuredPatch,
+            } as never,
+            false,
+            renderContext,
+          )}
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show full diff" }));
+    const toggle = await screen.findByRole("button", {
+      name: "Show full context",
+    });
+    const scrollRoot = document.querySelector<HTMLElement>(".modal-content");
+    if (!scrollRoot) throw new Error("Expected modal scroll root");
+    scrollRoot.scrollTop = 40;
+    const rectSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        if (this === scrollRoot) return rect(20);
+        if (
+          this instanceof Element &&
+          (this.classList.contains("line-inserted") ||
+            this.classList.contains("fixed-font-diff-added"))
+        ) {
+          return rect(
+            document.body.textContent?.includes("Show diff only") ? 140 : 80,
+          );
+        }
+        return rect(0);
+      });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mocks.getFile).toHaveBeenCalledWith("project-1", "notes.md");
+      expect(mocks.expandDiffContext).toHaveBeenCalledWith(
+        "project-1",
+        "notes.md",
+        "keep\n",
+        "keep\nadded\n",
+        "keep\n",
+      );
+    });
+    expect(
+      await screen.findByRole("button", { name: "Show diff only" }),
+    ).toBeDefined();
+    expect(scrollRoot.scrollTop).toBe(100);
+    rectSpy.mockRestore();
+  });
+
+  it("shows the current file without diff markers when the edit cannot be located", async () => {
+    const structuredPatch = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ["-old", "+new"],
+      },
+    ];
+    mocks.getFile.mockResolvedValue({
+      metadata: {
+        path: "notes.md",
+        size: 9,
+        mimeType: "text/markdown",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "unrelated",
+    });
+
+    render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          {renderCollapsedPreview(
+            {
+              old_string: "old",
+              new_string: "new",
+              _structuredPatch: structuredPatch,
+            } as never,
+            {
+              filePath: "notes.md",
+              oldString: "old",
+              newString: "new",
+              originalFile: "",
+              structuredPatch,
+            } as never,
+            false,
+            renderContext,
+          )}
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show full diff" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Show full context" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("unrelated")).toBeDefined();
+    });
+    expect(mocks.expandDiffContext).not.toHaveBeenCalled();
+    const modal = document.body.querySelector(".modal");
+    expect(modal?.querySelector(".diff-added")).toBeNull();
+    expect(modal?.textContent).not.toContain("+new");
   });
 });

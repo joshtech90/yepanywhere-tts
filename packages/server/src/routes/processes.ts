@@ -16,9 +16,13 @@ import type { SessionMetadataService } from "../metadata/SessionMetadataService.
 import type { ProjectScanner } from "../projects/scanner.js";
 import { getProvider } from "../sdk/providers/index.js";
 import type { ResumeExemptionResult } from "../sessions/resume-exemption.js";
+import { resolveProviderChildSessions } from "../sessions/provider-child-sessions.js";
 import type { ISessionReader } from "../sessions/types.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
-import type { Supervisor } from "../supervisor/Supervisor.js";
+import {
+  SessionConfigurationConflictError,
+  type Supervisor,
+} from "../supervisor/Supervisor.js";
 import type { ProcessInfo, Project } from "../supervisor/types.js";
 
 export interface ProcessesDeps {
@@ -112,11 +116,11 @@ async function enrichProcessInfo(
       enriched.model = summary.model;
     }
 
-    // Prefer the durable session provider over the process provider when available.
-    // This fixes stale terminated-process rows that were started with the wrong
-    // provider but whose session metadata and on-disk transcript are correct.
-    enriched.provider =
-      summary?.provider ?? metadata?.provider ?? process.provider;
+    // Persisted metadata and the owning process carry the canonical provider
+    // route. A transcript summary may only infer a Claude-family variant from
+    // its model name, so letting it override either source can recast Gateway
+    // sessions as Claude Ollama in the Agents view.
+    enriched.provider = metadata?.provider ?? process.provider;
 
     // Resolve the YA model id used to key per-model settings. Prefer the live
     // requested alias, then the alias persisted when YA started the session
@@ -132,8 +136,10 @@ async function enrichProcessInfo(
       enriched.contextUsage = summary.contextUsage;
     }
 
-    const providerChildren = await reader.listProviderChildSessions?.(
+    const providerChildren = await resolveProviderChildSessions(
+      reader,
       process.sessionId,
+      "accepted-or-cheap",
     );
     if (providerChildren?.length) {
       enriched.providerChildren = providerChildren;
@@ -189,6 +195,7 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
     const blockResume = body.blockResume === true;
 
     try {
+      await deps.supervisor.pauseRecapsUntilUserTurn(processId);
       const result =
         await deps.supervisor.abortProcessWithVerification(processId);
       if (!result) {
@@ -462,12 +469,15 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
     }>();
     const updates: {
       model?: string;
+      requestedModel?: string;
       thinking?: ReturnType<typeof thinkingOptionToConfig>["thinking"];
       effort?: ReturnType<typeof thinkingOptionToConfig>["effort"];
     } = {};
 
     if ("model" in body) {
-      updates.model = body.model;
+      updates.model =
+        body.model && body.model !== "default" ? body.model : undefined;
+      updates.requestedModel = body.model;
     }
     if ("thinking" in body) {
       if (body.thinking === undefined) {
@@ -483,10 +493,18 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
       }
     }
 
-    const updatedProcess = await deps.supervisor.reconfigureProcess(
-      processId,
-      updates,
-    );
+    let updatedProcess: Awaited<ReturnType<Supervisor["reconfigureProcess"]>>;
+    try {
+      updatedProcess = await deps.supervisor.reconfigureProcess(
+        processId,
+        updates,
+      );
+    } catch (error) {
+      if (error instanceof SessionConfigurationConflictError) {
+        return c.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
 
     if (!updatedProcess) {
       return c.json({ error: "Process reconfiguration failed" }, 400);
@@ -509,9 +527,18 @@ export function createProcessesRoutes(deps: ProcessesDeps): Hono {
     if (!process) {
       return c.json({ error: "Process not found" }, 404);
     }
-    const updatedProcess = await deps.supervisor.reconfigureProcess(processId, {
-      model: body.model,
-    });
+    let updatedProcess: Awaited<ReturnType<Supervisor["reconfigureProcess"]>>;
+    try {
+      updatedProcess = await deps.supervisor.reconfigureProcess(processId, {
+        model: body.model && body.model !== "default" ? body.model : undefined,
+        requestedModel: body.model,
+      });
+    } catch (error) {
+      if (error instanceof SessionConfigurationConflictError) {
+        return c.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
     if (!updatedProcess) {
       return c.json({ error: "Model switching failed" }, 400);
     }

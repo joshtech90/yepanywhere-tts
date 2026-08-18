@@ -294,11 +294,34 @@ export function getSpeechInterimDisplayTranscript(
   ) {
     return trimmedTranscript;
   }
-  return smoothPausedSpeechCapitalization(
+  return smoothPausedSpeechCapitalization(base, trimmedTranscript, range.end);
+}
+
+/**
+ * Snapshot the exact text projected by the composer mirror. Provisional speech
+ * remains absent from the editable textarea, but an explicit delivery action
+ * can use this value without waiting for a later recognizer revision.
+ */
+export function getSpeechVisibleDraftText(
+  base: string,
+  interimTranscript: string,
+  range: SpeechInsertionRange | null,
+): string {
+  const displayTranscript = getSpeechInterimDisplayTranscript(
     base,
-    trimmedTranscript,
-    range.end,
+    interimTranscript,
+    range,
   );
+  if (!displayTranscript) return base;
+  return range
+    ? getSpeechTranscriptReplacementParts(
+        base,
+        displayTranscript,
+        range.end,
+        range.replaceEnd ?? range.end,
+      ).text
+    : getSpeechTranscriptInsertionParts(base, displayTranscript, base.length)
+        .text;
 }
 
 function normalizeSpeechTranscriptForReplacementContext(
@@ -402,7 +425,7 @@ export function createSpeechInsertionRange(
   };
 }
 
-export function retargetSpeechInsertionRangeReplacement(
+export function retargetSpeechInsertionRange(
   range: SpeechInsertionRange,
   selectionStart: number,
   selectionEnd: number,
@@ -410,12 +433,18 @@ export function retargetSpeechInsertionRangeReplacement(
 ): SpeechInsertionRange {
   const start = Math.max(0, Math.min(selectionStart, selectionEnd));
   const end = Math.max(start, Math.max(selectionStart, selectionEnd));
-  if (end <= start) return range;
+  if (
+    range.end === start &&
+    range.replaceEnd === (end > start ? end : undefined) &&
+    (end <= start || range.replaceSelectedAtMs !== undefined)
+  ) {
+    return range;
+  }
   return {
     ...range,
     end: start,
-    replaceEnd: end,
-    replaceSelectedAtMs: selectedAtMs,
+    replaceEnd: end > start ? end : undefined,
+    replaceSelectedAtMs: end > start ? selectedAtMs : undefined,
   };
 }
 
@@ -547,23 +576,26 @@ export function replaceSpeechTranscriptInRange(
   range: SpeechInsertionRange,
   previousChars: number,
 ): SpeechRangeReplacement {
-  const replacementEnd = Math.max(range.end, range.replaceEnd ?? range.end);
   const replacingExplicitRange =
     range.replaceEnd !== undefined && range.replaceEnd > range.end;
+  const latestSpeechEnd = range.chunks.at(-1)?.end;
+  const replacementEnd = replacingExplicitRange
+    ? (range.replaceEnd ?? range.end)
+    : previousChars > 0 && latestSpeechEnd !== undefined
+      ? latestSpeechEnd
+      : range.end;
   const replacementStart = Math.max(
     0,
     replacingExplicitRange
       ? Math.min(range.end, base.length)
-      : Math.min(range.end, base.length) - Math.max(0, previousChars),
+      : Math.min(replacementEnd, base.length) - Math.max(0, previousChars),
   );
   const clampedReplacementEnd = Math.max(
     replacementStart,
     Math.min(replacementEnd, base.length),
   );
   const normalizedTranscript =
-    range.chunks.length > 0 &&
-    previousChars === 0 &&
-    !replacingExplicitRange
+    range.chunks.length > 0 && previousChars === 0 && !replacingExplicitRange
       ? smoothPausedSpeechCapitalization(base, transcript, replacementStart)
       : transcript;
   const insertion = replacingExplicitRange
@@ -596,7 +628,6 @@ export function replaceSpeechTranscriptInRange(
       start: insertionStart,
       end: insertion.cursor,
     });
-    nextChunks.sort((a, b) => a.start - b.start || a.end - b.end);
   }
 
   return {
@@ -606,7 +637,12 @@ export function replaceSpeechTranscriptInRange(
     insertedLength,
     range: {
       start: range.start,
-      end: insertion.cursor,
+      end: mapTextIndexThroughReplacement(
+        range.end,
+        replacementStart,
+        clampedReplacementEnd,
+        insertedLength,
+      ),
       chunks: nextChunks,
     },
   };
@@ -620,8 +656,17 @@ export function removeLatestSpeechChunkFromRange(
   if (!latest) return null;
 
   const replacement = removeTextRange(base, latest.start, latest.end);
-  const nextChunks = range.chunks.slice(0, -1);
-  const nextEnd = nextChunks.at(-1)?.end ?? latest.start;
+  const nextChunks = range.chunks
+    .slice(0, -1)
+    .map((chunk) =>
+      mapChunkAfterReplacement(
+        chunk,
+        latest.start,
+        latest.end,
+        latest.start - latest.end,
+      ),
+    )
+    .filter((chunk): chunk is SpeechOwnedChunk => chunk !== null);
   return {
     text: replacement.text,
     cursor: replacement.cursor,
@@ -630,7 +675,7 @@ export function removeLatestSpeechChunkFromRange(
     insertedLength: 0,
     range: {
       start: range.start,
-      end: nextEnd,
+      end: latest.start,
       replaceEnd: range.replaceEnd,
       replaceSelectedAtMs: range.replaceSelectedAtMs,
       chunks: nextChunks,

@@ -6,6 +6,7 @@ import {
   type SessionToolbarVisibilityKey,
   useSessionToolbarPresence,
 } from "../hooks/useSessionToolbarPresence";
+import { useWaveformButtonBackgroundOpacity } from "../hooks/useWaveformButtonBackgroundOpacity";
 import { useI18n } from "../i18n";
 import { getEffortLevelOptions } from "../lib/effortLevels";
 import { createClientSlashCommand } from "../lib/slashCommands";
@@ -70,7 +71,9 @@ function usePreviewToolbarControls(previewNowMs: number) {
       | "thinkingControl"
       | "renderModeControl"
       | "conversationViewControl"
+      | "browserDebugControl"
       | "nudgeControl"
+      | "doneControl"
       | "speechControl"
       | "statusControl"
       | "shortcutsControl"
@@ -114,6 +117,12 @@ function usePreviewToolbarControls(previewNowMs: number) {
         title: t("toolbarConversationViewDisable"),
         onToggle: noop,
       },
+      browserDebugControl: {
+        active: false,
+        remainingFraction: 0,
+        title: t("toolbarBrowserDebugEnable"),
+        onToggle: noop,
+      },
       nudgeControl: {
         enabled: true,
         title: t("sessionHeartbeatTitle"),
@@ -122,6 +131,10 @@ function usePreviewToolbarControls(previewNowMs: number) {
         onTouchStart: noop,
         onTouchEnd: (event) => event.preventDefault(),
         onClearTouch: noop,
+      },
+      doneControl: {
+        onDone: noop,
+        title: t("syntheticDoneToolbarTitle"),
       },
       speechControl: {
         showMethodSelector: false,
@@ -214,6 +227,8 @@ function useInertPreviewRef() {
 export function SessionToolbarPreview() {
   const { t } = useI18n();
   const { visibility, priority } = useSessionToolbarPresence();
+  const { waveformButtonBackgroundOpacityPercent } =
+    useWaveformButtonBackgroundOpacity();
   const previewNowMs = useMemo(() => Date.now(), []);
   const controls = usePreviewToolbarControls(previewNowMs);
   const inertRef = useInertPreviewRef();
@@ -231,8 +246,15 @@ export function SessionToolbarPreview() {
           thinkingControl={controls.thinkingControl}
           renderModeControl={controls.renderModeControl}
           conversationViewControl={controls.conversationViewControl}
+          browserDebugControl={controls.browserDebugControl}
           nudgeControl={controls.nudgeControl}
+          doneControl={controls.doneControl}
           speechControl={controls.speechControl}
+          speechWaveformActive={visibility.waveform}
+          speechWaveformPreview
+          waveformButtonBackgroundOpacityPercent={
+            waveformButtonBackgroundOpacityPercent
+          }
           statusControl={controls.statusControl}
           shortcutsControl={controls.shortcutsControl}
           actionsControl={{
@@ -265,6 +287,8 @@ export function ToolbarControlPreview({
   const { t } = useI18n();
   const previewNowMs = useMemo(() => Date.now(), []);
   const controls = usePreviewToolbarControls(previewNowMs);
+  const { waveformButtonBackgroundOpacityPercent } =
+    useWaveformButtonBackgroundOpacity();
   const inertRef = useInertPreviewRef();
   const actionContextSend: NonNullable<
     MessageInputToolbarViewProps["actionsControl"]["send"]
@@ -317,9 +341,15 @@ export function ToolbarControlPreview({
         thinkingControl={controls.thinkingControl}
         renderModeControl={controls.renderModeControl}
         conversationViewControl={controls.conversationViewControl}
+        browserDebugControl={controls.browserDebugControl}
         nudgeControl={controls.nudgeControl}
+        doneControl={controls.doneControl}
         speechControl={controls.speechControl}
         speechWaveformActive={controlKey === "waveform"}
+        speechWaveformPreview={controlKey === "waveform"}
+        waveformButtonBackgroundOpacityPercent={
+          waveformButtonBackgroundOpacityPercent
+        }
         statusControl={controls.statusControl}
         shortcutsControl={controls.shortcutsControl}
         actionsControl={actionsControl}

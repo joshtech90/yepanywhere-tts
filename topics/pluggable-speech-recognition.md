@@ -1,8 +1,8 @@
 # Pluggable Speech Recognition Providers
 > YA speech recognition should be an explicit user-selected method:
-> browser-native stays as the device-local fallback, while configured YA server
-> backends receive browser-captured audio for transcription or future audio
-> forwarding without exposing speech credentials to clients.
+> browser-native remains a device-local option when available, while configured
+> YA server backends receive browser-captured audio for transcription or future
+> audio forwarding without exposing speech credentials to clients.
 
 Topic: pluggable-speech-recognition
 
@@ -113,7 +113,12 @@ streaming/confidence surface exists.
 - Client speech capture was refactored behind a `SpeechProvider` interface.
   `BrowserNativeProvider` owns the Web Speech state machine, explicit
   language setting, interim/final result handling, mobile cumulative-final
-  deduplication, and auto-restart behavior.
+  deduplication, and auto-restart behavior. Browser-native result handling uses
+  `resultIndex` as the changed-range boundary: immutable final entries before
+  it remain history, a changed final at the same index can replace text YA
+  committed for that index, and a higher index remains a distinct result. A
+  recognizer restart clears that index ownership before accepting results from
+  the new run.
 - `YaServerProvider` captures microphone audio with `MediaRecorder`, buffers a
   complete utterance, and posts it to `/api/speech/transcribe` through the
   shared client API helper. Remote/SecureConnection clients therefore use the
@@ -149,7 +154,9 @@ streaming/confidence surface exists.
   in the same visual compose plane as the committed draft and highlights the
   mutable tail, but it is not part of the textarea value. The textarea remains
   the committed draft only, so user edits do not accidentally freeze recognizer
-  text that may still be revised.
+  text that may still be revised. A caret move during an interim queues the
+  insertion target for the following provider fragment; the current interim
+  stays anchored until its final arrives.
   Appending committed speech deltas must not steal the textarea cursor: if the
   user is editing earlier committed text, preserve selection and scroll; if the
   cursor was already at the old end, let it follow the appended speech.
@@ -275,7 +282,9 @@ streaming/confidence surface exists.
 - The browser-local xAI STT key field is always reachable from STT settings and
   from the mic-button speech options. Saving a non-empty browser key updates
   the method list locally and can make direct Grok streaming the selected
-  default even when the YA server advertises no Grok STT backend.
+  default even when the YA server advertises no Grok STT backend. The masked
+  key field is a new credential, never a saved-login password; browser password
+  managers must not pair it with an earlier text or search field.
 - YA-controlled and direct xAI STT paths share one browser mic capture owner
   when Keep Mic Warm is enabled. The shared stream is keyed by the selected mic
   device, requests the same raw speech constraints for batch and streaming
@@ -317,16 +326,19 @@ client through `fetchJSON("/speech/transcribe", ...)`.
 
 - With no cloud STT keys and an empty `YEP_VOICE_BACKENDS`, a server advertises
   `voiceInput` but `voiceBackends: []`, causing the UI to expose only
-  browser-native recognition. Seeing device-native speech on mobile is
-  therefore expected in that bare runtime.
+  browser-native recognition when that browser supports it. A browser without
+  Web Speech instead shows the visible-disabled unavailable mic state.
 - `/api/speech/ws` remains the direct/local streaming endpoint. Relay streaming
   uses the dedicated secure relay `speech` channel instead of trying to route a
   raw browser WebSocket through the hosted app origin.
-- Previously selected server methods are reconciled against current
-  `voiceBackends` before the mic button is used. If an explicit server backend
-  disappears, the current resolver falls back to browser-native rather than
-  silently choosing another server backend; a one-time notice or re-pick prompt
-  is still a UI follow-up.
+- Previously selected methods are reconciled against the current source's
+  `voiceBackends` and browser capability before the mic button is used. If an
+  explicit server method disappears, or an explicit browser-native choice is
+  unavailable in the current browser, the resolver returns an explicit
+  unavailable state rather than silently choosing another method. The mic stays
+  visible-disabled with unavailable copy, and the user can choose an advertised
+  method from the selector. Legacy hidden Grok batch ids still migrate to Grok
+  streaming only while the corresponding Grok method remains available.
 - The current UI setting is a server-learned client default plus local override,
   not a true per-session speech method. The original plan's per-new-session
   override is not persisted as session metadata or passed through message
@@ -337,7 +349,8 @@ client through `fetchJSON("/speech/transcribe", ...)`.
   retention contract above.
 - Backend biasing is not wired. There is no `buildBiasingContext()` helper
   feeding Whisper `initial_prompt` or Deepgram `keyterm` values from project
-  and session context.
+  and session context. See *Keyterm Biasing* below for the plumbing status
+  and the command-word assessment.
 - Deepgram streaming partials are not implemented. Deepgram, Whisper, and dummy
   backends still use batch transcription unless a future backend explicitly
   implements the streaming extension.
@@ -384,6 +397,52 @@ client through `fetchJSON("/speech/transcribe", ...)`.
 6. Re-check current provider audio-input support before implementing
    audio-as-modality. Providers that accept audio should get the original
    audio content, while text-only providers keep the transcript-first path.
+
+## Keyterm Biasing
+
+Status 2026-08-09: assessed, deliberately not wired. Revisit when retained
+speech traces show recognition misses that vocabulary bias would plausibly fix.
+
+What the backends offer. xAI STT (batch and streaming) and Deepgram accept a
+repeatable `keyterm` parameter that biases recognition *toward* the listed
+vocabulary (xAI: up to 100 terms, each ≤50 chars; see
+[direct-xai-speech.md](direct-xai-speech.md) for the endpoint facts). Biasing
+is the strongest primitive available: neither backend documents word-level
+confidence, n-best alternatives, or any "score this audio against a command
+list" query, so a resemblance-style constrained-command match cannot be built
+from the API surface — only a thumb on the transcript scale.
+
+YA plumbing status. The batch path is plumbed except at the source:
+`POST /api/speech/transcribe` accepts `keyterms` and both cloud backends
+forward it (`routes/speech.ts`, `xaiSttBackend.ts`, `deepgramBackend.ts`), but
+no client code sends any. The streaming path has no keyterm support at all:
+the client WS start frame, the server's xAI streaming URL builder, and the
+direct-xAI `buildXaiSttUrl` would each need the parameter added.
+
+Candidate uses, in rough value order:
+
+1. **Project/session vocabulary** — the planned `buildBiasingContext()`
+   (Remaining Plan item 4) feeding file names, glossary terms, and session
+   nouns. This is the use keyterm exists for: rare terms the recognizer
+   has no prior for.
+2. **Spoken command words** — biasing `send`/`cancel`/`wait` on streaming
+   Smart Turn input. Assessed below; weaker case than it first appears.
+
+Command-word biasing tradeoff. The command vocabulary is already among the
+most common English words, so the recognizer needs no help on a clean
+utterance; the plausible win is only the turn-end trailing token
+("send" → "sent" style misses). Against that, the bias applies to the whole
+stream, so near-homophones anywhere in ordinary dictation can be pulled toward
+command forms ("sent"→"send", "weight"→"wait") — a transcript-quality cost on
+every utterance to improve a rare boundary token. The command *action* surface
+is partially guarded: mid-utterance text is never a command, a trailing
+`send`/`cancel` needs a >500 ms pause, but `wait` deliberately skips the pause
+gate, and a trailing word biased into `send` after a real pause would submit.
+Net: probably safe at three terms, but unverified — xAI does not document
+bias strength, and we have no observed command-word misrecognition to fix.
+Do not wire it ahead of evidence (same stance as the Smart Turn judging
+layer above). If wired, record the sent keyterms in retained-utterance
+metadata so before/after transcription quality is auditable.
 
 ## Server-Local STT Deployment Plan
 
@@ -658,5 +717,7 @@ to a local model remains a later optimization after local batch is solid.
   the Transformers backend is active switches the STT backend to `ya-nemo` and
   prewarms that model. With `ya-nemo` unavailable, compact mic options hide that
   preset and global settings disable it with a required-backend hint.
-- Removing a previously selected backend causes an explicit method-selection
-  prompt or notice, not a silent fallback and not a dead mic button.
+- Removing a previously selected backend does not silently select another
+  provider: the current method resolves unavailable, the mic remains visible
+  and disabled with unavailable copy, and advertised methods remain available
+  for explicit re-selection.

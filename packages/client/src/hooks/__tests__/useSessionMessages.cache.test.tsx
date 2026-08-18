@@ -119,12 +119,15 @@ function sessionResponse(messageId: string): GetSessionResult {
 
 function activeWindowSessionResponse(turnCount: number): GetSessionResult {
   const response = sessionResponse("seed");
-  const messages = Array.from({ length: turnCount }, (_, index): Message => ({
-    uuid: `user-${index}`,
-    type: "user",
-    timestamp: "2020-01-01T00:00:00.000Z",
-    message: { role: "user", content: `request ${index}` },
-  }));
+  const messages = Array.from(
+    { length: turnCount },
+    (_, index): Message => ({
+      uuid: `user-${index}`,
+      type: "user",
+      timestamp: "2020-01-01T00:00:00.000Z",
+      message: { role: "user", content: `request ${index}` },
+    }),
+  );
   return {
     ...response,
     session: { ...response.session, messageCount: turnCount },
@@ -180,7 +183,9 @@ function fakeRuntime(sourceKey: string, messageId: string): YaSourceRuntime {
 function runtimeWrapper(runtime: YaSourceRuntime) {
   return function RuntimeWrapper({ children }: { children: ReactNode }) {
     return (
-      <SourceRuntimeProvider runtime={runtime}>{children}</SourceRuntimeProvider>
+      <SourceRuntimeProvider runtime={runtime}>
+        {children}
+      </SourceRuntimeProvider>
     );
   };
 }
@@ -486,9 +491,9 @@ describe("useSessionMessages cache", () => {
         tailTurns: DEFAULT_INITIAL_TAIL_TURNS,
       }),
     );
-    expect(first.result.current.messages.map((message) => message.uuid)).toEqual(
-      ["msg-first"],
-    );
+    expect(
+      first.result.current.messages.map((message) => message.uuid),
+    ).toEqual(["msg-first"]);
     expect(
       second.result.current.messages.map((message) => message.uuid),
     ).toEqual(["msg-second"]);
@@ -547,7 +552,9 @@ describe("useSessionMessages cache", () => {
         rendered.result.current.messages.map((message) => message.uuid),
       ).toEqual(["msg-1"]);
       expect(readStoreMessageIds()).toEqual(["msg-1"]);
-      expect(defaultSessionDetailMemoryCache.getStats().retainedEntryCount).toBe(1);
+      expect(
+        defaultSessionDetailMemoryCache.getStats().retainedEntryCount,
+      ).toBe(1);
       expect(
         warn.mock.calls.some(([label, payload]) => {
           if (label !== "[SessionDetailStore]") return false;
@@ -785,7 +792,9 @@ describe("useSessionMessages cache", () => {
     );
 
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
-    expect(defaultSessionDetailMemoryCache.getStats().retainedEntryCount).toBe(1);
+    expect(defaultSessionDetailMemoryCache.getStats().retainedEntryCount).toBe(
+      1,
+    );
 
     // A TTL sweep far in the future must not evict the mounted entry.
     expect(
@@ -796,7 +805,9 @@ describe("useSessionMessages cache", () => {
     expect(readStoreMessageIds()).toEqual(["msg-1"]);
 
     rendered.unmount();
-    expect(defaultSessionDetailMemoryCache.getStats().retainedEntryCount).toBe(0);
+    expect(defaultSessionDetailMemoryCache.getStats().retainedEntryCount).toBe(
+      0,
+    );
   });
 
   it("returns store-selected messages", async () => {
@@ -834,18 +845,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:01:00.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:01:00.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
 
     await waitFor(() =>
@@ -897,23 +905,20 @@ describe("useSessionMessages cache", () => {
     const returnedToolUseToAgent = rendered.result.current.toolUseToAgent;
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "setSessionMetadata",
-          session: {
-            id: "sess-1",
-            projectId: "proj-1" as SessionMetadata["projectId"],
-            provider: "claude",
-            title: "After",
-            fullTitle: "After",
-            createdAt: "2026-05-04T00:00:00.000Z",
-            updatedAt: "2026-05-04T00:01:00.000Z",
-            messageCount: 1,
-            ownership: { owner: "self", processId: "pid-1" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "setSessionMetadata",
+        session: {
+          id: "sess-1",
+          projectId: "proj-1" as SessionMetadata["projectId"],
+          provider: "claude",
+          title: "After",
+          fullTitle: "After",
+          createdAt: "2026-05-04T00:00:00.000Z",
+          updatedAt: "2026-05-04T00:01:00.000Z",
+          messageCount: 1,
+          ownership: { owner: "self", processId: "pid-1" },
         },
-      );
+      });
     });
 
     // Session is store-backed, so the metadata change re-renders exactly once
@@ -1086,17 +1091,14 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
     });
 
     await waitFor(() =>
@@ -1135,14 +1137,11 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "registerToolUseAgent",
-          toolUseId: "toolu_store",
-          agentId: "agent-store",
-        },
-      );
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "registerToolUseAgent",
+        toolUseId: "toolu_store",
+        agentId: "agent-store",
+      });
     });
 
     await waitFor(() =>
@@ -1303,14 +1302,11 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "registerToolUseAgent",
-          toolUseId: "toolu_store",
-          agentId: "agent-store",
-        },
-      );
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "registerToolUseAgent",
+        toolUseId: "toolu_store",
+        agentId: "agent-store",
+      });
       rendered.result.current.registerToolUseAgent("toolu_hook", "agent-hook");
     });
 
@@ -1450,18 +1446,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     await waitFor(() =>
       expect(
@@ -1525,18 +1518,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     await waitFor(() =>
       expect(
@@ -1600,18 +1590,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     await waitFor(() =>
       expect(result.current.messages.map((message) => message.uuid)).toEqual([
@@ -1784,18 +1771,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     await waitFor(() =>
       expect(
@@ -1953,18 +1937,15 @@ describe("useSessionMessages cache", () => {
     expect(second.result.current.loading).toBe(true);
     expect(second.result.current.messages).toEqual([]);
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     expect(second.result.current.messages).toEqual([]);
     expect(readStoreMessageIds()).toEqual(["msg-1", "store-only-msg"]);
@@ -2492,56 +2473,50 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(rendered.result.current.loading).toBe(false));
     expect(rendered.result.current.pagination?.hasOlderMessages).toBe(true);
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
+        },
+      });
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "replaceTailWindow",
+        session: {
+          id: "sess-1",
+          projectId: "proj-1" as SessionMetadata["projectId"],
+          provider: "claude",
+          title: "Session",
+          fullTitle: "Session",
+          createdAt: "2026-05-04T00:00:00.000Z",
+          updatedAt: "2026-05-04T00:00:30.000Z",
+          messageCount: 2,
+          ownership: { owner: "self", processId: "pid-1" },
+        },
+        messages: [
+          {
+            uuid: "msg-1",
+            type: "user",
+            timestamp: "2026-05-04T00:00:00.000Z",
+            message: { role: "user", content: "hello" },
+          },
+          {
             uuid: "store-only-msg",
             type: "assistant",
             timestamp: "2026-05-04T00:00:30.000Z",
             message: { role: "assistant", content: "store update" },
           },
+        ],
+        pagination: {
+          hasOlderMessages: true,
+          truncatedBeforeMessageId: "store-cursor",
+          totalMessageCount: 3,
+          returnedMessageCount: 2,
+          totalCompactions: 0,
         },
-      );
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "replaceTailWindow",
-          session: {
-            id: "sess-1",
-            projectId: "proj-1" as SessionMetadata["projectId"],
-            provider: "claude",
-            title: "Session",
-            fullTitle: "Session",
-            createdAt: "2026-05-04T00:00:00.000Z",
-            updatedAt: "2026-05-04T00:00:30.000Z",
-            messageCount: 2,
-            ownership: { owner: "self", processId: "pid-1" },
-          },
-          messages: [
-            {
-              uuid: "msg-1",
-              type: "user",
-              timestamp: "2026-05-04T00:00:00.000Z",
-              message: { role: "user", content: "hello" },
-            },
-            {
-              uuid: "store-only-msg",
-              type: "assistant",
-              timestamp: "2026-05-04T00:00:30.000Z",
-              message: { role: "assistant", content: "store update" },
-            },
-          ],
-          pagination: {
-            hasOlderMessages: true,
-            truncatedBeforeMessageId: "store-cursor",
-            totalMessageCount: 3,
-            returnedMessageCount: 2,
-            totalCompactions: 0,
-          },
-        },
-      );
+      });
     });
     await waitFor(() =>
       expect(
@@ -2573,6 +2548,129 @@ describe("useSessionMessages cache", () => {
     ]);
     expect(rendered.result.current.pagination?.hasOlderMessages).toBe(false);
     expect(rendered.result.current.pagination?.returnedMessageCount).toBe(2);
+  });
+
+  it("loads compact pages through the preceding real user turn", async () => {
+    apiMocks.getSession
+      .mockResolvedValueOnce({
+        ...sessionResponse("current-user"),
+        messages: [
+          {
+            uuid: "current-user",
+            type: "user",
+            timestamp: "2026-05-04T00:00:00.000Z",
+            message: { role: "user", content: "current" },
+          },
+        ],
+        pagination: {
+          hasOlderMessages: true,
+          truncatedBeforeMessageId: "current-user",
+          totalMessageCount: 4,
+          returnedMessageCount: 1,
+          totalCompactions: 2,
+        },
+      })
+      .mockResolvedValueOnce({
+        ...sessionResponse("older-assistant"),
+        pagination: {
+          hasOlderMessages: true,
+          truncatedBeforeMessageId: "older-assistant",
+          totalMessageCount: 4,
+          returnedMessageCount: 1,
+          totalCompactions: 1,
+        },
+      })
+      .mockResolvedValueOnce({
+        ...sessionResponse("older-user"),
+        messages: [
+          {
+            uuid: "older-user",
+            type: "user",
+            timestamp: "2026-05-03T23:58:00.000Z",
+            message: { role: "user", content: "older request" },
+          },
+        ],
+        pagination: {
+          hasOlderMessages: true,
+          truncatedBeforeMessageId: "older-user",
+          totalMessageCount: 4,
+          returnedMessageCount: 1,
+          totalCompactions: 0,
+        },
+      });
+
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+
+    await act(async () => rendered.result.current.loadOlderMessages());
+
+    expect(apiMocks.getSession).toHaveBeenNthCalledWith(
+      2,
+      "proj-1",
+      "sess-1",
+      undefined,
+      { tailCompactions: 2, beforeMessageId: "current-user" },
+    );
+    expect(apiMocks.getSession).toHaveBeenNthCalledWith(
+      3,
+      "proj-1",
+      "sess-1",
+      undefined,
+      { tailCompactions: 2, beforeMessageId: "older-assistant" },
+    );
+    expect(
+      rendered.result.current.messages.map((message) => message.uuid),
+    ).toEqual(["older-user", "older-assistant", "current-user"]);
+    expect(rendered.result.current.olderLoadContinuationRequired).toBe(false);
+  });
+
+  it("pauses a large assistant-only history span with a resumable warning", async () => {
+    apiMocks.getSession.mockResolvedValueOnce({
+      ...sessionResponse("current-user"),
+      messages: [
+        {
+          uuid: "current-user",
+          type: "user",
+          timestamp: "2026-05-04T00:00:00.000Z",
+          message: { role: "user", content: "current" },
+        },
+      ],
+      pagination: {
+        hasOlderMessages: true,
+        truncatedBeforeMessageId: "cursor-8",
+        totalMessageCount: 20,
+        returnedMessageCount: 1,
+        totalCompactions: 9,
+      },
+    });
+    for (let index = 8; index > 0; index -= 1) {
+      apiMocks.getSession.mockResolvedValueOnce({
+        ...sessionResponse(`assistant-${index}`),
+        pagination: {
+          hasOlderMessages: true,
+          truncatedBeforeMessageId: `cursor-${index - 1}`,
+          totalMessageCount: 20,
+          returnedMessageCount: 1,
+          totalCompactions: index,
+        },
+      });
+    }
+
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+
+    await act(async () => rendered.result.current.loadOlderMessages());
+
+    expect(apiMocks.getSession).toHaveBeenCalledTimes(9);
+    expect(rendered.result.current.pagination).toMatchObject({
+      hasOlderMessages: true,
+      truncatedBeforeMessageId: "cursor-0",
+    });
+    expect(rendered.result.current.olderLoadContinuationRequired).toBe(true);
   });
 
   it("mirrors incremental catch-up messages into the session detail store", async () => {
@@ -2610,18 +2708,15 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: {
-            uuid: "store-only-msg",
-            type: "assistant",
-            timestamp: "2026-05-04T00:00:30.000Z",
-            message: { role: "assistant", content: "store update" },
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: {
+          uuid: "store-only-msg",
+          type: "assistant",
+          timestamp: "2026-05-04T00:00:30.000Z",
+          message: { role: "assistant", content: "store update" },
         },
-      );
+      });
     });
     await waitFor(() =>
       expect(result.current.messages.map((message) => message.uuid)).toEqual([
@@ -2733,6 +2828,128 @@ describe("useSessionMessages cache", () => {
     });
 
     expect(apiMocks.getSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles the bounded tail after an incremental refresh fails", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { result } = renderHook(() =>
+      useSessionMessages({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+      }),
+    );
+
+    try {
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      apiMocks.getSession.mockClear();
+      apiMocks.getSession
+        .mockRejectedValueOnce(new Error("incremental anchor failed"))
+        .mockResolvedValueOnce(activeWindowSessionResponse(2));
+
+      await act(async () => {
+        await result.current.fetchNewMessages();
+      });
+
+      expect(apiMocks.getSession).toHaveBeenNthCalledWith(
+        1,
+        "proj-1",
+        "sess-1",
+        "msg-1",
+      );
+      expect(apiMocks.getSession).toHaveBeenNthCalledWith(
+        2,
+        "proj-1",
+        "sess-1",
+        undefined,
+        defaultInitialTailRequest(),
+      );
+      expect(result.current.messages.map((message) => message.uuid)).toEqual([
+        "user-0",
+        "user-1",
+      ]);
+      expect(diagnostic).toHaveBeenCalledWith(
+        "[SessionIncrementalRefresh]",
+        expect.objectContaining({
+          event: "incremental-refresh-reconciliation",
+          outcome: "recovered",
+          afterMessageId: "msg-1",
+          incrementalError: "incremental anchor failed",
+        }),
+      );
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it("bounds failed reconciliation and rate-limits its diagnostic", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { result } = renderHook(() =>
+      useSessionMessages({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+      }),
+    );
+
+    try {
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      apiMocks.getSession.mockClear();
+      apiMocks.getSession
+        .mockRejectedValueOnce(new Error("incremental failed 1"))
+        .mockRejectedValueOnce(new Error("reconciliation failed 1"))
+        .mockRejectedValueOnce(new Error("incremental failed 2"))
+        .mockRejectedValueOnce(new Error("reconciliation failed 2"))
+        .mockRejectedValueOnce(new Error("incremental failed 3"))
+        .mockRejectedValueOnce(new Error("reconciliation failed 3"));
+
+      await act(async () => {
+        await result.current.fetchNewMessages();
+      });
+      await act(async () => {
+        await result.current.fetchNewMessages();
+      });
+
+      expect(apiMocks.getSession).toHaveBeenCalledTimes(4);
+      expect(diagnostic).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(31_001);
+      await act(async () => {
+        await result.current.fetchNewMessages();
+      });
+
+      expect(apiMocks.getSession).toHaveBeenCalledTimes(6);
+      expect(diagnostic).toHaveBeenCalledTimes(2);
+      expect(diagnostic).toHaveBeenNthCalledWith(
+        1,
+        "[SessionIncrementalRefresh]",
+        expect.objectContaining({
+          event: "incremental-refresh-reconciliation",
+          outcome: "failed",
+          afterMessageId: "msg-1",
+          incrementalError: "incremental failed 1",
+          reconciliationError: "reconciliation failed 1",
+        }),
+      );
+      expect(diagnostic).toHaveBeenNthCalledWith(
+        2,
+        "[SessionIncrementalRefresh]",
+        expect.objectContaining({
+          event: "incremental-refresh-reconciliation",
+          outcome: "failed",
+          afterMessageId: "msg-1",
+          incrementalError: "incremental failed 3",
+          reconciliationError: "reconciliation failed 3",
+          suppressedCount: 1,
+        }),
+      );
+      expect(result.current.messages.map((message) => message.uuid)).toEqual([
+        "msg-1",
+      ]);
+    } finally {
+      now.mockRestore();
+      diagnostic.mockRestore();
+    }
   });
 
   it("suppresses Codex live streaming messages when response streaming is disabled", async () => {
@@ -2964,17 +3181,14 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
       result.current.handleStreamSubagentMessage(streamMessage, "task-1");
     });
 
@@ -2987,7 +3201,8 @@ describe("useSessionMessages cache", () => {
       status: "running",
     });
     expect(
-      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())?.agentContent,
+      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())
+        ?.agentContent,
     ).toMatchObject({
       "task-1": {
         messages: [streamMessage],
@@ -3044,13 +3259,10 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: storeOnlyMessage,
-        },
-      );
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: storeOnlyMessage,
+      });
       result.current.handleStreamingUpdate(first);
       result.current.handleStreamingUpdate(updated);
     });
@@ -3115,13 +3327,10 @@ describe("useSessionMessages cache", () => {
 
     act(() => {
       result.current.handleStreamingUpdate(streaming);
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "applyStreamMessage",
-          message: storeOnlyMessage,
-        },
-      );
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "applyStreamMessage",
+        message: storeOnlyMessage,
+      });
       result.current.clearStreamingPlaceholders();
     });
 
@@ -3229,17 +3438,14 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
       result.current.mergeLoadedAgentContent("task-1", {
         messages: [loadedMessage],
         status: "completed",
@@ -3255,7 +3461,8 @@ describe("useSessionMessages cache", () => {
       status: "completed",
     });
     expect(
-      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())?.agentContent,
+      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())
+        ?.agentContent,
     ).toMatchObject({
       "task-1": {
         messages: [loadedMessage],
@@ -3303,17 +3510,14 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
       result.current.updateAgentContextUsage("task-1", contextUsage);
     });
 
@@ -3327,7 +3531,8 @@ describe("useSessionMessages cache", () => {
       contextUsage,
     });
     expect(
-      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())?.agentContent,
+      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())
+        ?.agentContent,
     ).toMatchObject({
       "task-1": {
         messages: [],
@@ -3385,17 +3590,14 @@ describe("useSessionMessages cache", () => {
     };
 
     act(() => {
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
       result.current.handleStreamingUpdate(first, "task-1");
       result.current.handleStreamingUpdate(updated, "task-1");
     });
@@ -3409,7 +3611,8 @@ describe("useSessionMessages cache", () => {
       status: "running",
     });
     expect(
-      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())?.agentContent["task-1"],
+      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())
+        ?.agentContent["task-1"],
     ).toEqual({
       messages: [updated],
       status: "running",
@@ -3465,17 +3668,14 @@ describe("useSessionMessages cache", () => {
         messages: [durableMessage, streamingMessage],
         status: "running",
       });
-      defaultSessionDetailMemoryCache.dispatch(
-        defaultStoreEntryKey(),
-        {
-          type: "mergeLoadedAgentContent",
-          agentId: "task-store",
-          content: {
-            messages: [storeOnlyMessage],
-            status: "completed",
-          },
+      defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
+        type: "mergeLoadedAgentContent",
+        agentId: "task-store",
+        content: {
+          messages: [storeOnlyMessage],
+          status: "completed",
         },
-      );
+      });
       result.current.clearAgentStreamingPlaceholders("task-1");
     });
 
@@ -3488,7 +3688,8 @@ describe("useSessionMessages cache", () => {
       status: "running",
     });
     expect(
-      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())?.agentContent,
+      defaultSessionDetailMemoryCache.read(defaultStoreEntryKey())
+        ?.agentContent,
     ).toMatchObject({
       "task-1": {
         messages: [durableMessage],

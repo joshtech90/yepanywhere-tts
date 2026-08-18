@@ -32,6 +32,7 @@ import {
   LocalMediaModal,
   type LocalMediaSource,
 } from "./LocalMediaModal";
+import { useImageResourceActions } from "./ImageResourceActions";
 import styles from "./TurnImageGallery.module.css";
 
 interface TurnImageGalleryNavigation {
@@ -101,13 +102,23 @@ function GalleryThumbnail({
   const transport = useCurrentSourceRuntime().transport;
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const loadBlob = useCallback(
+    () => fetchLocalMediaBlob(candidate.path, mediaSource, "inline", transport),
+    [candidate.path, mediaSource, transport],
+  );
+  const imageActions = useImageResourceActions({
+    fileName: candidate.basename,
+    filePath: candidate.path,
+    loadBlob,
+    onOpen: () => onOpen(candidate),
+  });
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
     setImageUrl(null);
     setError(false);
-    void fetchLocalMediaBlob(candidate.path, mediaSource, "inline", transport)
+    void loadBlob()
       .then((blob) => {
         if (cancelled) {
           return;
@@ -126,7 +137,7 @@ function GalleryThumbnail({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [candidate.path, mediaSource, transport]);
+  }, [loadBlob]);
 
   return (
     <div
@@ -145,6 +156,7 @@ function GalleryThumbnail({
         className={styles.thumbnail}
         aria-label={t("turnImageGalleryOpen", { label: candidate.label })}
         onClick={() => onOpen(candidate)}
+        onContextMenu={imageActions.handleContextMenu}
       >
         {imageUrl ? (
           <img
@@ -167,6 +179,7 @@ function GalleryThumbnail({
           </span>
         )}
       </button>
+      {imageActions.contextMenuElement}
     </div>
   );
 }
@@ -188,7 +201,9 @@ export function AssistantTurnImageGallery({
   );
   const candidatesById = useMemo(
     () =>
-      new Map(candidates.map((candidate) => [candidate.id, candidate] as const)),
+      new Map(
+        candidates.map((candidate) => [candidate.id, candidate] as const),
+      ),
     [candidates],
   );
   const candidateLabels = useMemo(
@@ -663,9 +678,7 @@ export function AssistantTurnImageGallery({
                           });
                         }}
                         onFeature={setFeaturedId}
-                        onOpen={(candidate) =>
-                          openViewer(candidate, "gallery")
-                        }
+                        onOpen={(candidate) => openViewer(candidate, "gallery")}
                         registerElement={(id, element) => {
                           if (element) {
                             thumbnailElementsRef.current.set(id, element);

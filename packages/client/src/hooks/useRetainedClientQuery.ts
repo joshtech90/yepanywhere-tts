@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { activityBus, type ActivityEventType } from "../lib/activityBus";
+import type { ActivityEventType } from "../lib/activityBus";
+import {
+  type ClientQueryBootstrapTier,
+  acquireClientQueryBootstrapSlot,
+} from "../lib/clientQueryBootstrap";
 import {
   createClientQueryKey,
   ensureClientQuery,
   retainClientQuery,
   type ClientQueryCoverage,
   type ClientQueryRequestContext,
+  type ClientQuerySettlement,
 } from "../lib/clientQueryController";
+import {
+  retainQueryRevalidation,
+  type QueryRevalidationHandle,
+} from "../lib/clientQueryRevalidation";
 import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
 
 const DEFAULT_REVALIDATE_DEBOUNCE_MS = 500;
@@ -20,20 +29,29 @@ export interface UseRetainedClientQueryOptions<T> {
   hasData?: boolean;
   staleTimeMs?: number;
   debounceMs?: number;
+  /**
+   * Which startup tier this query's *first* acquisition belongs to. Omitted
+   * means ungated. Revalidations never wait, whatever this says.
+   */
+  bootstrapTier?: ClientQueryBootstrapTier;
   meta?: unknown;
   revalidateOn?: readonly ActivityEventType[];
   shouldRevalidateEvent?: (event: RetainedClientQueryEvent) => boolean;
   fetcher: (context: ClientQueryRequestContext) => Promise<T>;
-  applySnapshot?: (
-    result: T,
-    context: ClientQueryRequestContext,
-  ) => void | Promise<void>;
+  applySnapshot?: (result: T, context: ClientQueryRequestContext) => void;
 }
+
+export type RetainedClientQuerySettlement =
+  | ClientQuerySettlement
+  | { status: "failed"; error: Error }
+  | { status: "skipped" };
 
 export interface UseRetainedClientQueryResult {
   loading: boolean;
   error: Error | null;
-  refetch: (options?: RetainedClientQueryRunOptions) => Promise<void>;
+  refetch: (
+    options?: RetainedClientQueryRunOptions,
+  ) => Promise<RetainedClientQuerySettlement>;
   scheduleRevalidation: () => void;
 }
 
@@ -57,6 +75,7 @@ export function useRetainedClientQuery<T>({
   hasData = false,
   staleTimeMs,
   debounceMs = DEFAULT_REVALIDATE_DEBOUNCE_MS,
+  bootstrapTier,
   meta,
   revalidateOn = [],
   shouldRevalidateEvent,
@@ -83,7 +102,6 @@ export function useRetainedClientQuery<T>({
   const [loading, setLoading] = useState(enabled && !hasData);
   const [error, setError] = useState<Error | null>(null);
   const hasSuccessfulFetchRef = useRef(hasData);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const runSequenceRef = useRef(0);
   const coverageRef = useRef(coverage);
@@ -114,10 +132,8 @@ export function useRetainedClientQuery<T>({
     hasSuccessfulFetchRef.current = hasData;
     setError(null);
     setLoading(enabled && !hasData);
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+    // A pending debounce is the owner's, and releasing this subscriber on a
+    // source/query change already drops it when nobody else wants it.
   }, [enabled, hasData, sourceKey, queryKey, coverageKey]);
 
   useEffect(() => {
@@ -132,9 +148,9 @@ export function useRetainedClientQuery<T>({
       force = false,
       background = false,
       meta,
-    }: RetainedClientQueryRunOptions = {}) => {
+    }: RetainedClientQueryRunOptions = {}): Promise<RetainedClientQuerySettlement> => {
       if (!enabled || !ready) {
-        return;
+        return { status: "skipped" };
       }
       void coverageKey;
 
@@ -148,7 +164,7 @@ export function useRetainedClientQuery<T>({
       try {
         const fetcherAtStart = fetcherRef.current;
         const applySnapshotAtStart = applySnapshotRef.current;
-        await ensureClientQuery({
+        const settlement = await ensureClientQuery({
           sourceKey,
           key: queryKey,
           coverage: coverageRef.current,
@@ -156,22 +172,28 @@ export function useRetainedClientQuery<T>({
           force,
           meta: meta ?? metaRef.current,
           fetcher: (context) => fetcherAtStart(context),
-          applySnapshot: (result, context) =>
-            applySnapshotAtStart?.(result, context),
+          applySnapshot: (result, context) => {
+            applySnapshotAtStart?.(result, context);
+          },
         });
 
-        if (!mountedRef.current || requestId !== runSequenceRef.current) {
-          return;
+        if (
+          mountedRef.current &&
+          requestId === runSequenceRef.current &&
+          settlement.status !== "obsolete"
+        ) {
+          hasSuccessfulFetchRef.current = true;
+          setError(null);
         }
-        hasSuccessfulFetchRef.current = true;
-        setError(null);
+        return settlement;
       } catch (err) {
-        if (!mountedRef.current || requestId !== runSequenceRef.current) {
-          return;
+        const error = err instanceof Error ? err : new Error(String(err));
+        if (mountedRef.current && requestId === runSequenceRef.current) {
+          if (!background || !hasSuccessfulFetchRef.current) {
+            setError(error);
+          }
         }
-        if (!background || !hasSuccessfulFetchRef.current) {
-          setError(err instanceof Error ? err : new Error(String(err)));
-        }
+        return { status: "failed", error };
       } finally {
         if (mountedRef.current && requestId === runSequenceRef.current) {
           setLoading(false);
@@ -181,51 +203,87 @@ export function useRetainedClientQuery<T>({
     [enabled, ready, sourceKey, queryKey, coverageKey, staleTimeMs],
   );
 
+  // Event listening and the debounce timer belong to the shared
+  // `(sourceKey, queryKey)` owner, not to this hook instance, so twenty mounted
+  // consumers of one query install one listener set and arm one timer.
+  const revalidationRef = useRef<QueryRevalidationHandle | null>(null);
+  const runRef = useRef(run);
+  runRef.current = run;
+
+  useEffect(() => {
+    if (!enabled) {
+      revalidationRef.current = null;
+      return undefined;
+    }
+    const handle = retainQueryRevalidation({
+      sourceKey,
+      key: queryKey,
+      subscriber: {
+        coverage: coverageRef.current,
+        events: revalidateEvents,
+        debounceMs,
+        shouldRevalidateEvent: (event) =>
+          shouldRevalidateEventRef.current?.(event) !== false,
+        run: () => {
+          void runRef.current({ force: true, background: true });
+        },
+      },
+    });
+    revalidationRef.current = handle;
+    return () => {
+      revalidationRef.current = null;
+      handle.release();
+    };
+  }, [enabled, sourceKey, queryKey, revalidateEvents, debounceMs]);
+
+  // Closures and coverage change between renders; the owner needs the current
+  // ones without the retention itself churning.
+  useEffect(() => {
+    revalidationRef.current?.update({
+      coverage: coverageRef.current,
+      events: revalidateEvents,
+      debounceMs,
+      shouldRevalidateEvent: (event) =>
+        shouldRevalidateEventRef.current?.(event) !== false,
+      run: () => {
+        void runRef.current({ force: true, background: true });
+      },
+    });
+  });
+
   const scheduleRevalidation = useCallback(() => {
     if (!enabled) {
       return;
     }
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      void run({ force: true, background: true });
-    }, debounceMs);
-  }, [debounceMs, enabled, run]);
+    revalidationRef.current?.schedule();
+  }, [enabled]);
 
+  // Only this first acquisition waits for its startup tier. The revalidation
+  // owner above calls `run` directly, so a reconnect recovers at full speed
+  // even while a slow route request still holds the bootstrap gate.
   useEffect(() => {
-    if (!enabled || revalidateEvents.length === 0) {
+    if (!enabled || !ready) {
       return undefined;
     }
-    const unsubscribers = revalidateEvents.map((eventType) =>
-      activityBus.on(eventType, (data) => {
-        if (shouldRevalidateEventRef.current?.({ eventType, data }) === false) {
-          return;
-        }
-        scheduleRevalidation();
-      }),
-    );
-    return () => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
-      }
-    };
-  }, [enabled, revalidateEvents, scheduleRevalidation]);
-
-  useEffect(() => {
-    if (enabled && ready) {
+    if (!bootstrapTier) {
       void run();
+      return undefined;
     }
-  }, [enabled, ready, run]);
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
+    let cancelled = false;
+    const slot = acquireClientQueryBootstrapSlot(sourceKey, bootstrapTier);
+    void slot.ready().then(() => {
+      if (cancelled) {
+        slot.settle();
+        return;
       }
+      void run().finally(() => slot.settle());
+    });
+    return () => {
+      cancelled = true;
+      slot.settle();
     };
-  }, []);
+  }, [enabled, ready, run, sourceKey, bootstrapTier]);
 
   return {
     loading,

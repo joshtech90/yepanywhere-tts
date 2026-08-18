@@ -8,7 +8,7 @@
  * whether it is a secret, and a one-line description.
  *
  * Secrets never leave the server in full: {@link buildEnvSettings} replaces a
- * set secret's value with a redacted preview (a few trailing characters), so the
+ * set secret's value with a redacted preview (at most four trailing characters), so the
  * raw value is not placed in the report object that the route serializes.
  */
 
@@ -44,8 +44,9 @@ export interface EnvVarDescriptor {
   name: string;
   group: EnvGroup;
   /**
-   * Mark explicitly secret. Names matching {@link SECRET_NAME_RE} are treated as
-   * secret regardless, so a future key var is redacted even if this is omitted.
+   * Mark explicitly secret. Conventional credential suffixes (`_KEY`, `_TOKEN`,
+   * `_SECRET`, and `_PASSWORD`) are always treated as secret, even when a
+   * descriptor incorrectly opts out.
    */
   secret?: boolean;
   description: string;
@@ -62,7 +63,7 @@ export interface EnvSettingEntry {
   secret: boolean;
   set: boolean;
   /**
-   * Plain value for non-secrets; a redacted preview (e.g. "⋯xyz") for set
+   * Plain value for non-secrets; a redacted preview (e.g. "⋯wxyz") for set
    * secrets; empty string for a var set to "". Absent when the var is unset.
    */
   value?: string;
@@ -78,18 +79,22 @@ export interface EnvSettingsReport {
   entries: EnvSettingEntry[];
 }
 
-/** Any var whose name contains one of these is redacted even if not flagged. */
+/** A conventionally named credential can never opt out of redaction. */
+const MANDATORY_SECRET_NAME_RE = /_(?:KEY|TOKEN|SECRET|PASSWORD)$/;
+
+/** Other conventional secret names are redacted unless explicitly classified. */
 const SECRET_NAME_RE = /KEY|SECRET|TOKEN|PASSWORD/;
 
 const REDACT_GLYPH = "⋯";
 /** Only reveal trailing chars when the value is long enough to spare them. */
 const MIN_LEN_FOR_TAIL = 8;
-const TAIL_CHARS = 3;
+const TAIL_CHARS = 4;
 
 export function isSecretName(name: string, declared?: boolean): boolean {
-  // An explicit flag is authoritative in both directions; the name heuristic
-  // only decides for vars that don't declare one. This lets a non-secret like
-  // SHARE_XAI_KEY_WITH_CLIENTS (name contains "KEY") opt out of redaction.
+  if (MANDATORY_SECRET_NAME_RE.test(name)) return true;
+  // An explicit flag classifies names that are not themselves key values. This
+  // lets a policy flag such as SHARE_XAI_KEY_WITH_CLIENTS opt out even though
+  // its name mentions a key.
   if (declared !== undefined) return declared;
   return SECRET_NAME_RE.test(name);
 }
@@ -168,6 +173,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description:
       "Hosted YA client base URL used when generating public-share links.",
   },
+  {
+    name: "YEP_SESSION_WAKE_BASE_URL",
+    group: "Server & network",
+    description:
+      "Reachable HTTP(S) server base injected into remote session-wake clients.",
+  },
 
   // Data & profiles
   {
@@ -187,6 +198,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     group: "Data & profiles",
     description:
       "Claude Code config directory (default ~/.claude). Sessions are scanned from {dir}/projects.",
+  },
+  {
+    name: "GROK_HOME",
+    group: "Data & profiles",
+    description:
+      "Grok CLI state directory for binaries, authentication, cache, documentation, and sessions (default ~/.grok).",
   },
 
   // Sessions & scanning
@@ -287,7 +304,7 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "IDLE_TIMEOUT",
     group: "Processes & workers",
     description:
-      "Seconds an idle provider process is kept warm before it is reaped. Default 3600 (60 min), matching the prompt-cache window.",
+      "Seconds an eligible idle provider process is kept warm before it may be reaped. Default 86400 (24 hours).",
   },
   {
     name: "IDLE_PREEMPT_THRESHOLD",
@@ -354,6 +371,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
       "Set 1 to prepend compose-time staleness anchors to delivered deferred turns.",
   },
   {
+    name: "YEP_TURN_TIMESTAMPS",
+    group: "Providers & features",
+    description:
+      "Add an absolute compose-time marker before or after provider-bound user turns (before|after). The Message Delivery setting overrides it.",
+  },
+  {
     name: "OLLAMA_URL",
     group: "Providers & features",
     description:
@@ -375,6 +398,18 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "CLAUDE_CODE_PATH",
     group: "Providers & features",
     description: "Alternate path hint for the Claude Code CLI executable.",
+  },
+  {
+    name: "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+    group: "Providers & features",
+    description:
+      "Operator override for the maximum subagent nesting depth on Claude, Claude Gateway, and Claude Ollama launches. When set, it wins over the server-wide Subagent nesting limit setting (default 1).",
+  },
+  {
+    name: "YA_BANG_ACLI_COMPLETERS",
+    group: "Providers & features",
+    description:
+      "Comma-separated executable basenames allowed to provide argument completions for !! commands.",
   },
   {
     name: "PI_EXECUTABLE",
@@ -575,13 +610,18 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
   {
     name: "CODEX_READER_LOG_PARSE",
     group: "Diagnostics & development",
-    description:
-      "Log Codex entry-read parse/cache timings and memory deltas.",
+    description: "Log Codex entry-read parse/cache timings and memory deltas.",
   },
   {
     name: "CLAUDE_READER_LOG_PARSE",
     group: "Diagnostics & development",
     description: "Log Claude summary stream timings and memory deltas.",
+  },
+  {
+    name: "YEP_CLAUDE_PARSE_CACHE_MB",
+    group: "Diagnostics & development",
+    description:
+      "Memory budget in MB for the process-wide incremental Claude transcript parse cache. Invalid or unset values use the built-in budget; 0 disables retention.",
   },
   {
     name: "SESSION_FOCUSED_WATCH_LOG_EVENTS",

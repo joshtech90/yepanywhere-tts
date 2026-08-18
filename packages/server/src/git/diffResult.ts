@@ -1,5 +1,9 @@
-import { extname } from "node:path";
-import type { GitDiffResult } from "@yep-anywhere/shared";
+import { dirname, isAbsolute, resolve } from "node:path";
+import {
+  type GitDiffResult,
+  isMarkdownLikeFile,
+  isQuartoMarkdownFile,
+} from "@yep-anywhere/shared";
 import {
   computeEditDiffHtml,
   computeEditPatch,
@@ -19,6 +23,10 @@ export interface BuildGitDiffResultInput {
   path: string;
   oldContent: string;
   newContent: string;
+  markdownProject?: {
+    id: string;
+    path: string;
+  };
   fullContext?: boolean;
   ignoreWhitespace?: boolean;
 }
@@ -51,11 +59,9 @@ export async function buildGitDiffResult(
     old_string: input.oldContent,
     new_string: input.newContent,
   };
-  const hunks = computeEditPatch(
-    editInput,
-    input.fullContext ? 999999 : 3,
-    { ignoreWhitespace: input.ignoreWhitespace },
-  );
+  const hunks = computeEditPatch(editInput, input.fullContext ? 999999 : 3, {
+    ignoreWhitespace: input.ignoreWhitespace,
+  });
   if (hunks === null) {
     return skippedGitDiffResult(
       abortedDiffPreviewSkip(input.oldContent, input.newContent),
@@ -70,15 +76,26 @@ export async function buildGitDiffResult(
     structuredPatch: hunks,
   };
 
-  const ext = extname(input.path).toLowerCase();
   if (
-    (ext === ".md" || ext === ".markdown") &&
+    isMarkdownLikeFile(input.path) &&
     input.newContent &&
     // Unlike the diff, a markdown preview renders the whole file.
     input.newContent.length <= GIT_DIFF_PREVIEW_MAX_DIFF_CHARS
   ) {
     try {
-      result.markdownHtml = await renderMarkdownToHtml(input.newContent);
+      const project = input.markdownProject;
+      const localFileBasePath = project
+        ? resolve(project.path, dirname(input.path))
+        : isAbsolute(input.path)
+          ? dirname(input.path)
+          : undefined;
+      result.markdownHtml = await renderMarkdownToHtml(input.newContent, {
+        localFileBasePath,
+        quartoMarkdown: isQuartoMarkdownFile(input.path),
+        projectFileLinks: project
+          ? { projectId: project.id, projectPath: project.path }
+          : undefined,
+      });
     } catch {
       // Markdown preview is optional; the source diff remains usable.
     }

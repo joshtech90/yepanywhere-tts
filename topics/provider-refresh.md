@@ -117,6 +117,12 @@ codex --version
 pnpm codex:protocol:check
 ```
 
+Protocol generation gives each invocation an ephemeral `CODEX_HOME` under the
+repository's `node_modules/.cache`. This keeps Codex's startup-time arg0
+janitor away from the shared home used by live sessions, while preserving all
+Codex stderr as verification output. The ephemeral home and generated output
+must be removed after both successful checks and detected protocol drift.
+
 For a no-token model catalog check, query `codex app-server --listen
 stdio://`, send `initialize`, send `initialized`, then call `model/list`.
 `scripts/probe-codex-app-server-turns.mjs` is useful for steering/interrupt
@@ -143,6 +149,67 @@ protocol subset was last audited against. It is not a minimum supported version:
 older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
+
+Current source refresh, 2026-08-10:
+
+- Installed Codex is `0.147.0`; the official `rust-v0.147.0` source is commit
+  `be6e8eac029b183056b7e4402879f15d2c85f61b`. Root compatibility and
+  expected-protocol markers now record `0.147.0`.
+- Regeneration adds `ThreadSection` and changes six files in YA's checked-in
+  app-server subset. Threads replace `isPinned` with section metadata; image
+  generation, encrypted function arguments, MCP read-only hints, and the
+  legacy read-path alias are additive or string-compatible metadata that YA
+  does not consume. Turn start, steer, interrupt, and completion shapes used by
+  YA are unchanged.
+- `ToolRequestUserInputParams.isBlocking` is the one consumed behavioral
+  addition. YA preserves the flag in its pending-input request and treats a
+  missing field from pre-0.147 app servers as blocking, matching Codex's legacy
+  deserialization contract. A non-blocking request is allowed to wait for an
+  explicit browser answer; automatically submitting an empty answer would
+  require a separate interaction/countdown design rather than a compatibility
+  fallback.
+- The no-token `model/list` probe returns the same seven visible models as
+  0.146.0. Sol remains the default; effort, modality, personality, service-tier,
+  and 5.4-to-Terra / 5.4-Mini-to-Luna migration metadata are already covered by
+  YA's catalog normalizer and fallbacks.
+- The active 0.147.0 rollout used for the reported lost-message investigation
+  parses cleanly: 24,395 entries, 132 paired user events, 132 normalized
+  provenanced user turns, no malformed lines, and no audit exceptions. The
+  full local census also had no parse failures; its two exceptions are old
+  April rollouts with pre-existing unpaired events, not 0.147 schema drift.
+- Codex core gained an acknowledged user-input admission helper, but app-server
+  still exposes YA's existing `turn/start` and `turn/steer` response contracts.
+  No new acknowledgement route or response field is available for YA to adopt.
+
+Status: Codex 0.147.0 app-server, model-catalog, and persisted-transcript
+compatibility is refreshed. The earlier active-turn ID recovery remains the
+app-server control fix for heartbeat or other steering races.
+
+Current source refresh, 2026-08-02:
+
+- Installed Codex and npm `@openai/codex` `latest` are `0.146.0`. The official
+  `rust-v0.146.0` source is commit
+  `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`; root compatibility and expected
+  protocol markers now record `0.146.0`.
+- Regeneration changes three files in YA's checked-in app-server subset:
+  plugin-supplied skills can carry remote icon URLs, threads carry their pinned
+  state, and command-execution items identify a trusted plugin script. These are
+  additive metadata fields that YA does not yet consume, so provider controls
+  and normalizers need no compatibility change.
+- The no-token `model/list` probe returns the same seven-model catalog and
+  consumed metadata as 0.145.0: Sol, Terra, Luna, GPT-5.5, GPT-5.4,
+  GPT-5.4-Mini, and GPT-5.3-Codex-Spark. Sol remains the default; effort,
+  modality, personality, and service-tier metadata still match YA's catalog
+  normalizer and fallbacks.
+- The persisted transcript census found two 0.145-era multi-agent shapes that
+  the prior audit missed. YA now retains `inter_agent_communication_metadata`
+  as non-rendered provider metadata and renders persisted `sub_agent_activity`
+  as the same visible system activity used for live app-server items. All
+  1,362,565 lines across 681 local Codex rollouts validate after the schema
+  refresh.
+
+Status: Codex 0.146.0 app-server and persisted-transcript compatibility is
+refreshed; no model-catalog, permission, or turn-control change is required.
 
 Current source refresh, 2026-07-23:
 
@@ -247,10 +314,10 @@ Current source refresh, 2026-07-09:
   catalog for 0.124 through 0.143 installs.
 - Compact model badges use semantic glyphs for the named 5.6 variants:
   `Cd ☀` (Sol), `Cd ♁` (Terra), and `Cd ☾` (Luna).
-- Codex's best-effort shared arg0-temp janitor still emits a known
-  `Directory not empty` warning while concurrent Codex sessions populate that
-  directory. The protocol check itself completes cleanly and reports the
-  generated subset up to date.
+- Codex's best-effort shared arg0-temp janitor emitted `Directory not empty`
+  while concurrent Codex sessions populated the shared home. Protocol
+  generation now uses an isolated ephemeral Codex home, so routine checks stay
+  warning-free without hiding other Codex stderr.
 
 Status: Codex 0.144 compatibility, GPT-5.6 model defaults/catalog, and compact
 glyphs refreshed; no additional provider runtime change is required.
@@ -420,6 +487,44 @@ Previous-model registry review:
    auto-migrate them.
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
+
+Current source refresh, 2026-08-06:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.220` to `0.3.223`;
+  its SDK-bundled executable reports Claude Code `2.1.223`. YA resolves that
+  bundled executable before the independently installed `claude`, so updating
+  only the standalone installation would not update ordinary YA sessions.
+- SDK type drift remains additive on YA-consumed surfaces. New fields include a
+  resume dropped-turn identifier and unclassified resource metadata; schema
+  internals also accept a wider set of raw inputs before producing the same
+  typed file/environment results. YA's model/command discovery, query control,
+  thinking updates, interruption, MCP status, and message unions compile
+  unchanged.
+- Claude Code 2.1.223 adds assumed-window enforcement for models absent from its
+  built-in recognition registry. Its
+  `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` opt-out restores the
+  reactive `auto` source but does not enlarge the numeric context maximum or
+  change `modelUsage.contextWindow`. Claude Gateway uses that opt-out only for
+  a catalog-known row without usable window metadata; metadata-rich rows retain
+  their catalog-derived total and automatic-compaction controls.
+- Gateway model IDs are not inherently unknown: Claude Code canonicalization,
+  built-in models, and model overrides decide recognition. Numeric maximum
+  overrides remain ineffective for IDs normalized to `claude-*`; that separate
+  long-context path is not claimed as compatible by the generic gateway
+  mapping.
+- A successful Gateway catalog read publishes its model metadata together with
+  the exact loopback address that answered readiness. Session launch uses that
+  same endpoint until a later successful catalog replaces it; failed refreshes
+  retain the prior snapshot, while a configuration change invalidates the whole
+  generation. This prevents dual-stack `localhost` from validating one gateway
+  and launching against another.
+
+Status: Claude Code 2.1.223 / SDK 0.3.223 package, type, and gateway launch
+compatibility is refreshed. A live `gpt-5.6-sol` request crossed the former
+200K local boundary with 205,104 active input/cache tokens and reported the
+catalog-derived 400K runtime window; details and the metadata-less runtime
+recheck boundary are in
+[resume-compaction](resume-compaction.md#claude-gateway-runtime-context-and-compaction-windows).
 
 Current source refresh, 2026-07-25:
 
@@ -650,7 +755,9 @@ Primary sources:
   `11-custom-models.md`, and `22-permissions-and-safety.md`;
 - first-party `xai-org/grok-build` source, including its package version and
   root `SOURCE_REV`;
+- root `package.json` `yepAnywhere.grokCli.compatibleThroughVersion`;
 - `packages/server/src/sdk/providers/grok-acp.ts`;
+- `packages/server/src/sdk/providers/grok-tool-normalization.ts`;
 - `packages/server/src/sessions/grok-reader.ts`;
 - ACP SDK dependency `@agentclientprotocol/sdk`;
 - persisted sessions under `~/.grok/sessions/`.
@@ -670,7 +777,8 @@ Difference detectors:
 - `grok models` or `models_cache.json` changes visible ids, metadata, cache
   shape, or the default in a way the dynamic normalizer does not preserve.
 - `grok agent` flags move between top-level, `agent`, and `agent stdio`
-  positions; YA currently places effort/model flags before `agent stdio`.
+  positions; YA 1.0.4+ places `--effort`/`-m` after `agent` and passes
+  `--no-leader` before `stdio`.
 - Local docs or first-party source add or remove ACP methods, reverse
   extension requests, permission modes, interject/steering semantics, session
   storage files, compaction behavior, or custom-model credential precedence.
@@ -678,6 +786,33 @@ Difference detectors:
   normalization tests.
 - `@agentclientprotocol/sdk` changes enough to alter `ACPClient` request,
   notification, or permission typings.
+
+Current source refresh, 2026-08-16:
+
+- Installed Grok is `grok 1.0.4 (d846eb93d9) [stable]`. Public `xai-org/grok-build`
+  is git `9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4`, `SOURCE_REV`
+  `7bd63df3c9bb1bf98e7a9b3486f4a0189ea94e55`, crate version 1.0.5 (one patch
+  ahead of the installed binary).
+- `grok models` and a no-token ACP `initialize`/`session/new` both advertise
+  default `grok-4.6` plus `grok-4.5`. Grok 4.6 default effort is `xhigh`; 4.5
+  remains `high`. YA's catalog listing parser now accepts both `*` and `-`
+  rows so 4.5 stays selectable.
+- Launch is `grok agent [--effort] [-m] --no-leader stdio`. `--include-partial-messages`
+  is headless-only and is not an ACP launch flag. There is no Grok-specific
+  Node agent SDK; official embedding remains ACP via
+  `@agentclientprotocol/sdk`.
+- `loadSession` is still true. Initialize also advertises
+  `sessionCapabilities.resume`; YA keeps `session/load` + `_meta.noReplay`
+  because that path is measured and still advertised.
+- New canonical kinds (`video_gen` / `image_to_video` / `reference_to_video`,
+  `update_goal`, `workflow`, `monitor`, `lsp`) stay on the existing generic
+  activity vocabulary. Video files are not fed through the image media
+  store.
+- `@agentclientprotocol/sdk` remains 0.12.0. 0.24.0 is latest; 1.0.4 initialize
+  and the extension methods YA already handles do not require the upgrade.
+
+Status: Grok ACP is current through installed 1.0.4. Root
+`yepAnywhere.grokCli.compatibleThroughVersion` records `1.0.4`.
 
 Enacted audit, 2026-07-23:
 
@@ -778,7 +913,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.220` | `0.3.220` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.223` | `0.3.223` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

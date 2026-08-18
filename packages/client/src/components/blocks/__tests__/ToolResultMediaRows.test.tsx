@@ -17,7 +17,10 @@ import { asClientSummarySourceKey } from "../../../lib/clientSummaryStore";
 import type { YaSourceRuntime } from "../../../lib/sourceRuntime";
 import { SourceRuntimeProvider } from "../../../lib/sourceRuntimeReact";
 import { FakeSourceTransport } from "../../../lib/transport";
-import { ToolResultMediaRows } from "../ToolResultMediaRows";
+import {
+  getToolResultImageSourcePath,
+  ToolResultMediaRows,
+} from "../ToolResultMediaRows";
 
 const STORED_MEDIA: ToolResultMedia[] = [
   {
@@ -52,7 +55,11 @@ function createRuntime(transport: FakeSourceTransport): YaSourceRuntime {
   };
 }
 
-function renderRows(media: ToolResultMedia[], transport: FakeSourceTransport) {
+function renderRows(
+  media: ToolResultMedia[],
+  transport: FakeSourceTransport,
+  sourcePath?: string,
+) {
   return render(
     <I18nProvider>
       <SourceRuntimeProvider runtime={createRuntime(transport)}>
@@ -64,6 +71,7 @@ function renderRows(media: ToolResultMedia[], transport: FakeSourceTransport) {
           <ToolResultMediaRows
             displayName="Viewed"
             media={media}
+            sourcePath={sourcePath}
             status="complete"
           />
         </SessionMetadataProvider>
@@ -151,6 +159,32 @@ describe("ToolResultMediaRows", () => {
     ).toHaveLength(1);
   });
 
+  it("renders a stored video with a video player", async () => {
+    setInlineMediaExpandedPreference(true);
+    const fetchBlob = vi.fn(
+      async () => new Blob(["ftyp"], { type: "video/mp4" }),
+    );
+    renderRows(
+      [
+        {
+          state: "stored",
+          toolCallId: "tool-video",
+          id: "media-v",
+          mimeType: "video/mp4",
+          byteLength: 64,
+          filename: "1.mp4",
+        },
+      ],
+      new FakeSourceTransport({ fetchBlob }),
+    );
+
+    await waitFor(() => expect(fetchBlob).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("(video)")).toBeTruthy();
+    const player = document.querySelector("video");
+    expect(player).toBeTruthy();
+    expect(player?.getAttribute("src")).toBe("blob:tool-result");
+  });
+
   it("shows rejected media explicitly without fetching", () => {
     const fetchBlob = vi.fn();
     renderRows(
@@ -168,5 +202,59 @@ describe("ToolResultMediaRows", () => {
     expect(screen.getByText("vector.svg")).toBeTruthy();
     expect(screen.getByText("(image unavailable)")).toBeTruthy();
     expect(fetchBlob).not.toHaveBeenCalled();
+  });
+
+  it("offers image and semantic path actions from the filename", () => {
+    const transport = new FakeSourceTransport({
+      fetchBlob: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+    });
+    renderRows(
+      [STORED_MEDIA[0] as ToolResultMedia],
+      transport,
+      "/project/captures/first.png",
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "first.png" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual([
+      "Open",
+      "Download",
+      "Copy image",
+      "Copy project-relative path",
+      "Copy absolute file path",
+      "Copy viewer link",
+    ]);
+  });
+
+  it("uses a tool-input path only for a single path-backed image", () => {
+    expect(
+      getToolResultImageSourcePath(
+        "ViewImage",
+        { path: "/tmp/capture.png" },
+        1,
+      ),
+    ).toBe("/tmp/capture.png");
+    expect(
+      getToolResultImageSourcePath(
+        "Read",
+        { file_path: "captures/first.png" },
+        1,
+      ),
+    ).toBe("captures/first.png");
+    expect(
+      getToolResultImageSourcePath(
+        "ViewImage",
+        { path: "/tmp/capture.png" },
+        2,
+      ),
+    ).toBeUndefined();
+    expect(
+      getToolResultImageSourcePath(
+        "GenerateImage",
+        { path: "/tmp/capture.png" },
+        1,
+      ),
+    ).toBeUndefined();
   });
 });

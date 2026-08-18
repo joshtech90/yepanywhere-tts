@@ -38,7 +38,7 @@ translate more provider-specific concepts itself:
 | Session startup and resume | SDK `query()` with `resume` and native session files. | App-server `thread/start` / `thread/resume`. | Starts or resumes native `ses_*` sessions through `opencode serve`; YA currently exposes that native ID as the session ID. |
 | Initial message | Queued through `MessageQueue`. | Queued through `MessageQueue`. | Queued through `MessageQueue`, then sent as a single OpenCode text part. |
 | Global instructions | SDK system prompt append. | Prompt-visible `[Global context]` prefix on first turn. | Same prompt-visible `[Global context]` prefix as Codex, not a native system/config channel. |
-| Uploaded file references | `.attachments` references are appended by `MessageQueue`; image blocks can also be passed to the Claude SDK. | `.attachments` references survive as text; image blocks are discarded when Codex extracts text for app-server input. | `.attachments` references survive as text; base64 image blocks become OpenCode file parts with data URLs. |
+| Uploaded file references | Prompt-visible file references are appended by `MessageQueue`; image blocks can also be passed to the Claude SDK. | File references survive as text; image blocks are discarded when Codex extracts text for app-server input. | File references survive as text; base64 image blocks become OpenCode file parts with data URLs. |
 | Permission modes | Passed to SDK; YA `canUseTool` mediates approvals. | Maps YA modes to app-server approval/sandbox policy and handles approval requests. | No static YA permission-mode mapping, but `permission.asked` and `question.asked` are bridged through the normal YA approval/question UI. |
 | Slash commands | Native SDK command list, with YA `/goal` alias for `/loop` when needed. | YA advertises built-in `/goal`; native command surface is app-server-specific. | `supportsSlashCommands=false`; no advertised command list or `/compact` equivalent in YA. |
 | Thinking and effort settings | Passed to SDK and adjustable through `setMaxThinkingTokens`. | Maps YA thinking/effort to Codex reasoning effort. | Per-model OpenCode variants map to YA effort; thinking text is rendered when the upstream provider supplies it. |
@@ -277,7 +277,11 @@ spawning `opencode export` when a local read suffices; the DB still covers all
 enumerate from the `session` table when the DB has this worktree's project, and
 only fall back to `opencode session list` when it does not (pre-1.16 / no DB) —
 the CLI reads the same store in 1.16+, so unioning it would just re-spawn the
-subprocess for rows the DB already returned.
+subprocess for rows the DB already returned. Rows with `session.parent_id`
+(legacy file-tree `parentID`) are OpenCode task/subagent children: they are
+omitted from those top-level lists and exposed through
+`listProviderChildSessions` instead. See
+[provider-child-sessions.md](provider-child-sessions.md).
 
 **Global opt-out: `OPENCODE_DB_READER` (default on).** Set it to `0`/`false`/
 `off`/`no` and the reader never opens the DB and never imports `node:sqlite` —
@@ -444,7 +448,8 @@ the later 1.18.9 refresh govern current behavior; the explicitly dated
    `getAvailableModels` advertises `supportsEffort`/`supportedEffortLevels` and
    dispatch sends `variant=effort`. (Earlier "no surface" assessment was wrong.)
 8. **Partly DONE.** Multimodal input: base64 image content blocks are now sent as
-   OpenCode `FilePartInput` (data-URL); `.attachments` text references remain.
+   OpenCode `FilePartInput` (data-URL); prompt-visible uploaded-file references
+   remain independent of physical attachment location.
 9. **DONE.** Graceful control: `interrupt()` POSTs `/session/:id/abort` (stop the
    turn, keep the server) alongside the SIGTERM `abort()`. Steer still absent.
 10. **Open.** Session ID split: YA still exposes the native `ses_*` as the YA

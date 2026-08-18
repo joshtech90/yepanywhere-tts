@@ -17,10 +17,12 @@ import {
   deriveTransportKey,
   encrypt,
 } from "../crypto/index.js";
+import { getLogger } from "../logging/logger.js";
 import type {
   RemoteAccessService,
   RemoteSessionService,
 } from "../remote-access/index.js";
+import type { SecurityClientService } from "../services/SecurityClientService.js";
 import type { ConnectionState, WSAdapter } from "./ws-relay-handlers.js";
 import {
   hasEstablishedSrpTransport,
@@ -259,6 +261,8 @@ export function cleanupSrpConnectionState(connState: ConnectionState): void {
   cleanupSrpHandshakeState(connState);
   connState.sessionKey = null;
   connState.baseSessionKey = null;
+  connState.transportNonce = null;
+  connState.authenticationMethod = null;
   connState.nextOutboundSeq = 0;
   connState.lastInboundSeq = null;
 }
@@ -469,6 +473,8 @@ export async function handleSrpResume(
     connState.requiresEncryptedMessages = true;
     connState.username = session.username;
     connState.sessionId = session.sessionId;
+    connState.transportNonce = transportNonce;
+    connState.authenticationMethod = "srp-resume";
     connState.nextOutboundSeq = 0;
     connState.lastInboundSeq = null;
 
@@ -609,6 +615,7 @@ export async function handleSrpProof(
   msg: SrpClientProof,
   clientA: string,
   remoteSessionService: RemoteSessionService | undefined,
+  securityClientService?: SecurityClientService,
 ): Promise<void> {
   if (!connState.srpSession || !isSrpProofPending(connState)) {
     cleanupSrpHandshakeState(connState);
@@ -627,7 +634,7 @@ export async function handleSrpProof(
 
     if (!result) {
       const now = Date.now();
-      console.warn(
+      getLogger().warn(
         `[WS Relay] SRP authentication failed for ${connState.username}`,
       );
       applyFailedProofPenalty(connState.srpLimiter, now);
@@ -636,6 +643,20 @@ export async function handleSrpProof(
           getUsernameLimiter(connState.username, now),
           now,
         );
+        await securityClientService
+          ?.recordSrpFullFailed({
+            username: connState.username,
+            transport: connState.transport,
+            ...(connState.peerAddress
+              ? { peerAddress: connState.peerAddress }
+              : {}),
+          })
+          .catch((error) => {
+            console.error(
+              "[WS Relay] Failed to record SRP audit event:",
+              error,
+            );
+          });
       }
       sendSrpMessage(ws, {
         type: "srp_error",
@@ -658,6 +679,8 @@ export async function handleSrpProof(
     connState.authState = "authenticated";
     connState.requiresEncryptedMessages = true;
     connState.pendingResumeChallenge = null;
+    connState.transportNonce = transportNonce;
+    connState.authenticationMethod = "srp-full";
     connState.nextOutboundSeq = 0;
     connState.lastInboundSeq = null;
     resetFailedProofPenalty(connState.srpLimiter);
@@ -687,6 +710,21 @@ export async function handleSrpProof(
       console.log("[WS Relay] Session created:", sessionId);
     }
 
+    if (connState.username) {
+      await securityClientService
+        ?.recordSrpFullSucceeded({
+          username: connState.username,
+          sessionId,
+          transport: connState.transport,
+          ...(connState.peerAddress
+            ? { peerAddress: connState.peerAddress }
+            : {}),
+        })
+        .catch((error) => {
+          console.error("[WS Relay] Failed to record SRP audit event:", error);
+        });
+    }
+
     const verify: SrpServerVerify = {
       type: "srp_verify",
       M2: result.M2,
@@ -711,6 +749,17 @@ export async function handleSrpProof(
     applyFailedProofPenalty(connState.srpLimiter, now);
     if (connState.username) {
       applyFailedProofPenalty(getUsernameLimiter(connState.username, now), now);
+      await securityClientService
+        ?.recordSrpFullFailed({
+          username: connState.username,
+          transport: connState.transport,
+          ...(connState.peerAddress
+            ? { peerAddress: connState.peerAddress }
+            : {}),
+        })
+        .catch((error) => {
+          console.error("[WS Relay] Failed to record SRP audit event:", error);
+        });
     }
     console.error("[WS Relay] SRP proof error:", err);
     sendSrpMessage(ws, {

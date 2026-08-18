@@ -96,6 +96,9 @@ export function isConversationViewActivity(item: RenderItem): boolean {
   if (item.type !== "tool_call") {
     return false;
   }
+  if (toolRegistry.get(item.toolName).tool === "UpdatePlan") {
+    return false;
+  }
   return (
     !isMediaToolCall(item) &&
     item.status !== "error" &&
@@ -128,12 +131,59 @@ function compactPathToken(token: string): string {
   return quote ? `${quote}${basename}${quote}` : basename;
 }
 
+function splitShellPreviewSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  const finishSegment = () => {
+    const segment = current.trim();
+    if (segment) segments.push(segment);
+    current = "";
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (!char) continue;
+
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      current += char;
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    const next = command[index + 1];
+    if (char === ";" || char === "|" || (char === "&" && next === "&")) {
+      finishSegment();
+      if ((char === "|" || char === "&") && next === char) index += 1;
+      continue;
+    }
+    current += char;
+  }
+  finishSegment();
+  return segments;
+}
+
 export function compactCommandActivityPreview(command: string): string {
-  const segments = command
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(/\s*(?:&&|\|\||;|\|)\s*/)
-    .filter(Boolean);
+  const segments = splitShellPreviewSegments(
+    command.replace(/\s+/g, " ").trim(),
+  );
   const segment =
     segments.find((candidate) => !SETUP_COMMAND.test(candidate)) ??
     segments[0] ??
@@ -222,13 +272,44 @@ function getRecentActivity(
   return null;
 }
 
+/**
+ * The last thinking block that has finished, which bounds how far back the
+ * activity names reach. Deliberately the last *complete* block rather than the
+ * last block: while a new one streams, the reader is still working out of the
+ * previous completed thought, so the activities that thought led to must stay
+ * visible.
+ */
+function findLastCompleteThinkingId(
+  items: readonly RenderItem[],
+): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.type === "thinking" && item.status === "complete") {
+      return item.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Activity names back to the last complete thinking block, newest first.
+ *
+ * The list answers "what has happened since the thought I just read", so the
+ * thought is its lower bound. A boundary that is absent from these items — no
+ * thinking yet, or the last complete block belongs to an earlier turn — leaves
+ * every activity here after it, so all of them qualify.
+ */
 function getRecentActivities(
   items: readonly RenderItem[],
+  boundaryThinkingId: string | null,
 ): ConversationRecentActivity[] | undefined {
+  const boundaryIndex = boundaryThinkingId
+    ? items.findIndex((item) => item.id === boundaryThinkingId)
+    : -1;
   const activities: ConversationRecentActivity[] = [];
   for (
     let index = items.length - 1;
-    index >= 0 && activities.length < RECENT_ACTIVITY_LIMIT;
+    index > boundaryIndex && activities.length < RECENT_ACTIVITY_LIMIT;
     index -= 1
   ) {
     const item = items[index];
@@ -266,6 +347,7 @@ export function selectConversationThinkingPreviews(
       slot: "latest",
       thinking: latest.thinking,
       status: latest.status,
+      endedAtMs: getLatestMessageTimestampMs(latest.sourceMessages),
     },
   ];
   if (latest.status !== "streaming") return previews;
@@ -281,6 +363,7 @@ export function selectConversationThinkingPreviews(
       slot: "previous",
       thinking: candidate.thinking,
       status: candidate.status,
+      endedAtMs: getLatestMessageTimestampMs(candidate.sourceMessages),
     });
     break;
   }
@@ -356,6 +439,10 @@ export function projectConversationView(
       !expandedThinkingIds.has(preview.id) &&
       !dismissedThinkingPreviewSlots.has(preview.slot),
   );
+  // Global, not per-turn: the bound is the last completed thought anywhere in
+  // the transcript, so a turn that did no thinking of its own still measures
+  // from the one the reader last saw.
+  const lastCompleteThinkingId = findLastCompleteThinkingId(items);
 
   return groups.flatMap((group, groupIndex) => {
     if (group.isUserPrompt || group.isStandalone) {
@@ -389,11 +476,13 @@ export function projectConversationView(
         groupIndex === lastActivityGroupIndex && thinkingPreviews.length > 0
           ? thinkingPreviews
           : undefined,
+      // Not gated on the turn still being active: a finished turn keeps the
+      // activities that followed its last thought, which is the part the
+      // reader has not accounted for yet. Everything before that thought is
+      // already summarized by the count, so it stays folded away.
       recentActivities:
-        isActive &&
-        groupIndex === lastActivityGroupIndex &&
-        thinkingPreviews.length > 0
-          ? getRecentActivities(hiddenItems)
+        groupIndex === lastActivityGroupIndex && thinkingPreviews.length > 0
+          ? getRecentActivities(hiddenItems, lastCompleteThinkingId)
           : undefined,
       startedAtMs,
       endedAtMs: isActive ? nowMs : endedAtMs,

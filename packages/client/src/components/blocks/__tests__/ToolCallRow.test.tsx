@@ -556,6 +556,61 @@ describe("ToolCallRow", () => {
     ).toBeDefined();
   });
 
+  it("links confirmed paths in both the Ran command and its output", () => {
+    const path = "topics/performance-regression-suite.md";
+    const links = [{ filePath: path, text: path }];
+    const { container } = render(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath="/repo"
+        sessionId="session-1"
+      >
+        <I18nProvider>
+          <ToolCallRow
+            id="tool-path-links"
+            toolName="Bash"
+            toolInput={{
+              command: `cat ${path} topics/commits.md`,
+              _projectPathLinks: links,
+            }}
+            toolResult={{
+              structured: {
+                stdout: `228 ${path}\nwc: topics/commits.md: missing`,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              },
+              content: `228 ${path}\nwc: topics/commits.md: missing`,
+              isError: false,
+              projectPathLinks: links,
+            }}
+            status="complete"
+            sessionProvider="codex"
+          />
+        </I18nProvider>
+      </SessionMetadataProvider>,
+    );
+
+    const commandTarget = container.querySelector<HTMLElement>(
+      ".tool-summary-command",
+    );
+    const commandLink =
+      commandTarget?.querySelector<HTMLAnchorElement>(".file-path-link");
+    const outputLink = container.querySelector<HTMLAnchorElement>(
+      ".bash-preview-output a[data-fixed-font-file-path]",
+    );
+
+    expect(commandTarget?.tagName).toBe("SPAN");
+    expect(commandLink?.textContent).toBe(path);
+    expect(commandLink?.closest("button")).toBeNull();
+    expect(outputLink?.textContent).toBe(path);
+    expect(container.querySelectorAll("a")).toHaveLength(2);
+    expect(container.textContent).toContain("topics/commits.md");
+
+    fireEvent.click(commandTarget as HTMLElement);
+    expect(commandTarget?.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("registers Ran command text as a quoteable selection source", () => {
     const { container } = render(
       <ToolCallRow
@@ -695,6 +750,57 @@ describe("ToolCallRow", () => {
     expect(
       container.querySelector(".tool-row-content .code-block")?.textContent,
     ).toBe("false");
+  });
+
+  it("shows failed Bash output normally with return code in the header", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-bash-output-error"
+        toolName="Bash"
+        toolInput={{ command: "node scripts/perf-suite/run.mjs" }}
+        toolResult={{
+          structured: {
+            stdout: "amended-working-tree/smoke: repetition 1/1",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            exitCode: 1,
+          },
+          content: "Exit code 1\namended-working-tree/smoke: repetition 1/1",
+          isError: true,
+        }}
+        status="error"
+        sessionProvider="claude"
+      />,
+    );
+
+    expect(screen.getByText("rc=1")).toBeDefined();
+    expect(
+      screen.getByText("amended-working-tree/smoke: repetition 1/1"),
+    ).toBeDefined();
+    expect(container.textContent).not.toContain("Error: Exit code 1");
+    expect(container.querySelector(".bash-preview-error")).toBeNull();
+  });
+
+  it("does not infer an exit code from successful command output text", () => {
+    const { container } = render(
+      <ToolCallRow
+        id="tool-bash-output-error-text"
+        toolName="Bash"
+        toolInput={{ command: "printf 'Error: Exit code 1'" }}
+        toolResult={{
+          structured: "Error: Exit code 1\nreported by the command",
+          content: "Error: Exit code 1\nreported by the command",
+          isError: false,
+        }}
+        status="complete"
+        sessionProvider="claude"
+      />,
+    );
+
+    expect(container.textContent).toContain("Error: Exit code 1");
+    expect(screen.queryByText("rc=1")).toBeNull();
+    expect(container.querySelector(".bash-preview-error")).toBeNull();
   });
 
   it("expands Bash command text without toggling row details", () => {
@@ -1340,6 +1446,32 @@ describe("ToolCallRow", () => {
         8 * DEFERRED_PREVIEW_HEIGHT.outputLineHeightPx +
         DEFERRED_PREVIEW_HEIGHT.previewBorderPx,
     );
+  });
+
+  it("unwraps Codex exit metadata before estimating preview height", () => {
+    const envelope = [
+      "Chunk ID: abc123",
+      "Wall time: 0.8 seconds",
+      "Process exited with code 2",
+      "Output:",
+      "one line of command output",
+    ].join("\n");
+    const fromEnvelope = estimateDeferredPreviewHeightPx({
+      toolName: "Bash",
+      toolInput: { command: "false" },
+      result: envelope,
+      status: "error",
+      rowWidthPx: 760,
+    });
+    const fromStructuredOutput = estimateDeferredPreviewHeightPx({
+      toolName: "Bash",
+      toolInput: { command: "false" },
+      result: { stdout: "one line of command output", stderr: "" },
+      status: "error",
+      rowWidthPx: 760,
+    });
+
+    expect(fromEnvelope).toBe(fromStructuredOutput);
   });
 
   it("scales deferred Bash preview height with output typography metrics", () => {

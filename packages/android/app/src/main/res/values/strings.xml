@@ -1,0 +1,75 @@
+<resources>
+    <string name="app_name">Yep Anywhere</string>
+    <string name="open_full_app">Open full app</string>
+    <string name="connect_to_server">Connect to your server</string>
+    <string name="connect_to_server_explanation">Enter the remote-access username and password configured on your Yep Anywhere server.</string>
+    <string name="advanced_connection">Advanced connection</string>
+    <string name="hide_advanced_connection">Hide advanced connection</string>
+    <string name="connection_route">Connection route</string>
+    <string name="direct_connection">Direct</string>
+    <string name="relay_connection">Relay</string>
+    <string name="direct_connection_explanation">Enter the exact secure WebSocket address of your server.</string>
+    <string name="relay_connection_explanation">The public Yep Anywhere relay is used when the custom URL is empty.</string>
+    <string name="custom_relay_url">Custom relay URL</string>
+    <string name="default_relay_url" translatable="false">wss://relay.yepanywhere.com/ws</string>
+    <string name="websocket_url">WebSocket URL</string>
+    <string name="websocket_url_example" translatable="false">wss://example.com/api/ws</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="connect">Connect</string>
+    <string name="cancel">Cancel</string>
+    <string name="back">Back</string>
+    <string name="settings">Settings</string>
+    <string name="servers">Servers</string>
+    <string name="all_servers">All servers</string>
+    <string name="no_servers_included">No servers are included. Choose servers in Settings.</string>
+    <string name="add_server">Add server</string>
+    <string name="refresh">Refresh</string>
+    <string name="forget_server">Forget server</string>
+    <string name="forget_server_title">Forget this server?</string>
+    <string name="forget_server_explanation">This removes the saved server profile and its protected resume credential from this device.</string>
+    <string name="remove_server">Remove server</string>
+    <string name="remove_server_title">Remove this server?</string>
+    <string name="remove_server_explanation">Yep Anywhere will first unregister this Android device from the server, revoking its saved sessions and push access, and then erase the local profile and protected keys.</string>
+    <string name="forget_anyway">Forget anyway</string>
+    <string name="forget_anyway_title">Could not unregister this device</string>
+    <string name="forget_anyway_explanation">The server is offline or rejected the request. Forgetting anyway erases this phone’s profile and keys, but the server-side device or push record may remain until you remove it there.</string>
+    <string name="finish_forgetting">Finish forgetting</string>
+    <string name="finish_forgetting_title">Device unregistered</string>
+    <string name="finish_forgetting_explanation">The server revoked this device, but Android could not erase the local profile. Try the local cleanup again.</string>
+    <string name="include_in_all_servers">Included</string>
+    <string name="notifications_setup_pending">Notification delivery settings will appear here after native push registration is connected to this server.</string>
+    <string name="sign_in_again">Sign in again</string>
+    <string name="sign_in_again_explanation">The saved session expired or was rejected. Enter your server password to create a new session.</string>
+    <string name="sign_in">Sign in</string>
+    <string name="recent_sessions">Recent sessions</string>
+    <string name="no_sessions_yet">No sessions yet</string>
+    <string name="untitled_session">Untitled session</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="connection_idle">Idle</string>
+    <string name="connection_connecting">Connecting…</string>
+    <string name="connection_connected">Connected</string>
+    <string name="connection_retrying">Reconnecting…</string>
+    <string name="connection_sign_in_required">Sign-in required</string>
+    <string name="connection_revoked">Device revoked</string>
+    <string name="connection_failed">Offline</string>
+    <string name="approval_needed">Approval needed</string>
+    <string name="answer_needed">Answer needed</string>
+    <string name="input_needed">Input needed</string>
+    <string name="session_working">Working</string>
+    <string name="session_waiting">Waiting for input</string>
+    <string name="invalid_server_details">Check the username, password, and any advanced connection settings.</string>
+    <string name="authentication_failed">Could not authenticate with this server.</string>
+    <string name="connection_failed_message">Could not update the saved server.</string>
+    <string name="session_load_failed">Could not load sessions from this server.</string>
+    <string name="retry">Retry</string>
+    <string name="web_client_unavailable">Yep Anywhere is unavailable.</string>
+    <string name="notification_channel_activity_id" translatable="false">ya_activity</string>
+    <string name="notification_channel_activity_name">Session activity</string>
+    <string name="notification_channel_activity_description">Approvals, questions, and session updates</string>
+    <string name="asset_statements" translatable="false">
+        [{
+          \"include\": \"https://yepanywhere.com/.well-known/assetlinks.json\"
+        }]
+    </string>
+</resources>

@@ -7,6 +7,130 @@ Topic: backward-compat
 
 ## Decisions
 
+2026-08-17 agent launch markers — renamed `YEP_AGENT_HARNESS`,
+`YEP_AGENT_INITIAL_MODEL`, and `YEP_AGENT_INITIAL_EFFORT` to
+`AGENT_LAUNCH_HARNESS`, `AGENT_LAUNCH_MODEL`, and `AGENT_LAUNCH_EFFORT`, and
+added `AGENT_LAUNCHER=yepanywhere`. No compatibility shim: the old names never
+reached the reader they were written for. The provider host stamped them on the
+worker, then `filterEnvForChildProcess` stripped them one process later along
+with every other inherited `YEP_*`, so no agent binary ever saw them and no
+in-repo consumer read them. Keeping the `YEP_*` names would have required an
+allowlist exception that contradicts "`YEP_*`/`YA_*` is YA's own configuration,
+not the agent's"; the unprefixed `AGENT_` namespace passes the filter with no
+exception. The host now also deletes the three old names from a worker
+environment, so a YA server running inside a session an older YA launched cannot
+pass the outer session's stale launch facts down as this launch's. See
+[YA environment variables](ya-env-vars.md) § Child launch markers.
+
+2026-08-17 `cacheMissBilling.minimumInputTokens` — dropped and replaced by
+`minimumWastedTokens`, which counts only the excess over a turn's expected new
+content rather than raw uncached input. The old key measured a quantity the
+corrected contract no longer treats as a defect, so carrying its value forward
+would preserve a wrong threshold under a right-sounding name. A persisted
+`minimumInputTokens` is ignored and the new default (10,000) applies; nothing
+depended on the old value, since the feature had never recorded an event. Also
+new: `recentActivityMinutes`, absent-means-default at 10.
+
+2026-08-15 `claudeSteerBackgroundBash` expressions — keep the persisted
+`allowRegex` / `denyRegex` fields and whole-command matching, but evaluate the
+documented regular-expression subset with a linear-time engine. Reject
+lookarounds, backreferences, inline flags, word boundaries, and braced
+quantifiers on settings writes. A previously persisted expression outside the
+subset disables Bash backgrounding instead of reverting to the allow-all
+default; explicit supported policies and the absent-setting default retain
+their existing meaning.
+
+2026-08-08 session file-change facts — releases `v0.5.2`, `v0.6.0`,
+`v0.6.1`, `v0.6.2`, and `v0.7.0` expose the existing activity and focused
+session-watch streams but omit exact path/mtime/size correlation facts,
+focused change versions, and source-observation timestamps. Add those fields
+optionally without a new capability or request: they optimize duplicate
+notifications but do not change either event's meaning. A new client
+deduplicates only exact cross-route facts within a bounded window. When the
+fields are absent, it preserves the existing leading/trailing refresh behavior
+and makes no unsupported request; older clients ignore the additive fields.
+
+2026-08-06 frozen public-share relay transport — releases `v0.5.2`, `v0.6.0`,
+`v0.6.1`, `v0.6.2`, and `v0.7.0` expose only a materialized one-response
+public-share relay path. Add the exact secret-authorized metadata capability
+`public-share-session-chunks-v1` for bounded 256 KiB compressed pull requests
+over the existing relay request/response framing. Marked v2 metadata without
+it keeps `wire=raw-json` and makes no chunk request; unmarked links keep the
+combined request and make no metadata or chunk request. Existing capability
+meanings and `#v=2` remain unchanged. A browser without
+`DecompressionStream` uses the same-socket raw-json fallback even when the
+metadata capability is present. New clients require exact success statuses and
+runtime-validate each artifact before publishing it: compact metadata may
+publish before the body, while a raw or decompressed complete session validates
+before session publication. A pre-auth socket selects one lifetime mode: its
+first public read locks it to public-read-only, while any SRP control attempt
+locks it to SRP even when authentication later fails. Request responses keep the framing
+selected at admission rather than consulting later mutable auth state.
+Public-read-only sockets allow one request in flight; a second request aborts
+and closes as a protocol violation, while authenticated relay multiplexing
+remains unchanged. Chunk transfer is available only for safe integer compressed
+and decompressed lengths up to 64 MiB. Oversized historical revisions remain
+structurally valid but are not chunk-capable: they omit the capability, so a
+conforming client sends no chunk request and uses `wire=raw-json`. Relay
+raw-json succeeds only through 8 MiB; a larger response returns 413 with update
+guidance. Direct HTTP streaming can still load a larger structurally valid
+revision. Cap every pre-auth public-share response in the WebSocket adapter at
+8 MiB. The adapter retains no more than the accepted 8 MiB body plus
+one logical inspection byte. Controlled combined/raw-json serializers emit at
+most 64 KiB per source chunk, so cancellation may consume at most one such
+bounded chunk past the accepted prefix; an unexpectedly unbounded controlled
+producer chunk is an internal invariant failure. Other public resources use
+declared length only as an early rejection and enforce the streamed count as
+the hard bound; overflow returns 413 without broadening the session-chunk
+capability to files. Direct HTTP public-share streams, authenticated relay
+traffic, and unrelated relay routes remain uncapped by this adapter policy.
+
+2026-08-05 public-share grants and compact URLs — preserve every
+legacy 64-byte/86-character bearer secret and display-hint fragment while new
+links use a 16-byte/22-character secret plus a compact protocol marker and
+server-persisted header. Old viewers ignore the marker and keep using the
+combined response; new viewers use legacy fragments and do not call the new
+metadata route for an unmarked link. Gate global inventory and opaque-id
+revocation behind the new `public-share-management` capability so older
+servers receive no unsupported management request.
+
+2026-08-05 public-share owner copy — retain the exact URL for new grants and
+return it as an optional authenticated inventory field; pre-change and migrated
+hash-only grants remain valid and revocable but cannot offer copy because their
+bearer secret is unrecoverable. New clients treat an absent URL as a disabled
+copy action, so supported older servers require no new request or response
+shape.
+
+2026-08-04 `idleReapHours` settings contract — advertise the optional field
+with the permanent `idle-reap-hours-setting` capability. New clients hide the
+control and make no settings write against older servers. Until an operator
+saves the field, the legacy `IDLE_TIMEOUT` environment value remains
+authoritative; saving opts the deployment into the persisted setting.
+
+2026-08-04 reload-safe runtime viewer presence — retain host protocol v1 and
+advertise viewer-state retention as an optional additive lifecycle capability.
+A replacement Hono may attach to a host already running older v1 code and use
+generation-local viewer timing; capable hosts preserve viewer-absence evidence
+across Hono reloads. Older Hono generations ignore the added runtime fields and
+never issue the new operation.
+
+2026-08-03 project-directory storage — a server that first implements
+`project-directory-storage-policy` defaults absent configuration to app-data
+storage, but does not migrate, rewrite, exclude, or delete legacy
+`.attachments`, `.yep`, or `refs/yep/*` state during upgrade. Legacy data may
+remain readable without permission to refresh or grow it. Older servers lack
+the capability and may retain their historical project-write behavior; newer
+clients omit the unsupported setting and explain that an update is required to
+enforce app-data-only storage.
+
+2026-08-01 `.yep/review-comments.json` version 2 — migrate every valid
+version-1 draft, archived comment, and batch into canonical sites, reviewer
+entries, active-draft references, and submission summaries before persisting
+new submission manifests. Migrated entries use `legacy-missing` rather than a
+fabricated current-file capture. The established review-comments endpoint
+continues returning its version-1 comments/batches projection for older
+clients; only active drafts count toward the 2,000-comment creation limit.
+
 2026-07-31 Source Control action commit counts — add optional
 `commitsAdvanced` fields to the existing Pull and Push responses without a new
 capability. Released capable servers `v0.6.0`, `v0.6.1`, `v0.6.2`, and
@@ -114,3 +238,32 @@ the vanilla-defaults established-convention carve-out. Key kept because it is
 a persisted server setting named in the `bang-commands` capability contract;
 older co-deployed clients that still gate the composer on it merely under-use
 the server.
+
+2026-08-05 progressive session catalog — gate the client's move from
+request-complete session/Inbox enumeration to generation-reusing progressive
+snapshots behind a permanent `progressive-session-catalog` capability, rather
+than changing the existing responses in place. Permanent because YA is
+self-hosted with no forced upgrade, so old servers persist indefinitely and the
+gate never becomes removable. The approved obligation is a performance floor,
+not a feature floor: an out-of-date client against a current server, and a
+current client against an out-of-date server, must still perform basic actions
+at some non-optimal performance level, so the ungated path stays a working
+enumeration rather than a degraded stub. The server half now exists —
+`GET /api/sessions` reports `generation`, accepts `knownGeneration`, and answers
+`{ unchanged: true }` on a match — and is additive: an older server ignores the
+parameter and returns a full response, so a client without the capability is
+safe either way. The client half now sends the token behind the capability;
+release corpus audited at that point was `v0.7.0` (2026-07-25), `v0.6.2`
+(2026-07-11), and `v0.6.1` (2026-07-10) — no stable release advertises
+`progressive-session-catalog`, so every released server takes the enumeration
+fallback and receives no `knownGeneration`. No existing capability's meaning
+changed. See [Server Capabilities](server-capabilities.md) § Session-catalog
+gate.
+
+2026-08-05 `.yepignore` — removed with the project path index's breadth-first
+warm. The file was read only to narrow that crawl, so with no crawl it
+configures nothing. It is user-authored project-local input, never a YA-written
+file, and it never restricted lookup: a path under an excluded directory always
+linked when the file existed. A project still holding one is unaffected, since
+the index now hydrates only the directory components a displayed candidate
+names. See [Project path links](project-path-links.md) § The index.

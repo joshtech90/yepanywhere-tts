@@ -3,7 +3,7 @@
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 9998;
+  z-index: 10010;
   background: transparent;
   border: 0;
   padding: 0;
@@ -12,10 +12,13 @@
 
 .menu {
   position: fixed;
-  z-index: 9999;
+  z-index: 10011;
   display: flex;
   flex-direction: column;
-  min-width: 170px;
+  min-width: 230px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   padding: var(--space-1);
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
@@ -25,6 +28,7 @@
 
 .menu button {
   appearance: none;
+  min-height: 36px;
   text-align: left;
   background: transparent;
   border: 0;
@@ -36,6 +40,51 @@
 }
 
 .menu button:hover,
-.menu button:focus-visible {
+.menu button:focus-visible,
+.menu button.activeItem {
   background: var(--bg-hover);
+}
+
+.submenu {
+  z-index: 10012;
+}
+
+.branchLabel,
+.backLabel {
+  display: flex;
+  align-items: center;
+}
+
+.branchLabel {
+  width: 100%;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.backLabel {
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+.copyActionLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.copyActionLabel svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.separator {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--border-subtle);
+}
+
+@media (pointer: coarse) {
+  .menu button {
+    min-height: 44px;
+  }
 }

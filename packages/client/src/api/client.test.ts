@@ -112,6 +112,7 @@ describe("fetchJSON source transport routing", () => {
     const headers = request?.headers as Headers;
     expect(headers.get("Content-Type")).toBe("application/json");
     expect(headers.get("X-Yep-Anywhere")).toBe("true");
+    expect(headers.get("X-Yep-Client-Version")).toBe("unknown");
   });
 
   it("routes remote attached fetches through the backing secure connection", async () => {
@@ -488,8 +489,16 @@ describe("api server metadata facade", () => {
         body: request?.body,
       })),
     ).toEqual([
-      { url: "/api/version", method: "GET", body: undefined },
-      { url: "/api/version?fresh=1", method: "GET", body: undefined },
+      {
+        url: "/api/version",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "/api/version?fresh=1",
+        method: "GET",
+        body: undefined,
+      },
       { url: "/api/server-info", method: "GET", body: undefined },
       { url: "/api/env-settings", method: "GET", body: undefined },
       {

@@ -20,6 +20,8 @@ import {
   parseShellToolOutput,
 } from "../../../lib/shellToolOutput";
 import { validateToolResult } from "../../../lib/validateToolResult";
+import { ActivityDetailModal } from "../../ActivityDetailModal";
+import { ProjectPathLinkedText } from "../../ProjectPathLinkedText";
 import { SchemaWarning } from "../../SchemaWarning";
 import { AnsiText } from "../../ui/AnsiText";
 import {
@@ -28,7 +30,8 @@ import {
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
 import { HiddenContentBadge } from "../../ui/HiddenContentBadge";
-import { Modal } from "../../ui/Modal";
+import type { RenderContext } from "../types";
+import { NestedHarnessLaunchLink } from "./NestedHarnessLaunchLink";
 import {
   getHiddenOutputLineCount,
   getOutputTailTooltip,
@@ -36,6 +39,7 @@ import {
   OutputCopyButton,
   truncateOutput,
 } from "./outputPreview";
+import styles from "./BashRenderer.module.css";
 import type { BashInput, BashResult, ToolRenderer } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
@@ -64,12 +68,15 @@ function normalizeBashResult(
     return { stdout: "", stderr: "", interrupted: false, isImage: false };
   }
   if (typeof result === "string") {
-    const parsed = parseShellToolOutput(result);
+    const parsed = parseShellToolOutput(result, {
+      bareExitCodeIsEnvelope: isError,
+    });
     const output = parsed.hasEnvelope ? parsed.output : result;
-    // Plain string result - put in stderr if error, stdout otherwise
+    // A recognized provider envelope carries combined command output. A raw
+    // error string without that metadata remains stderr.
     return {
-      stdout: isError ? "" : output,
-      stderr: isError ? output : "",
+      stdout: !isError || parsed.hasEnvelope ? output : "",
+      stderr: isError && !parsed.hasEnvelope ? output : "",
       interrupted: false,
       isImage: false,
       ...(parsed.exitCode !== undefined ? { exitCode: parsed.exitCode } : {}),
@@ -108,7 +115,7 @@ function renderFixedFontMathPanel(html: string, className = "code-block") {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
       <div
-        className="fixed-font-rendered__content"
+        className={`fixed-font-rendered__content ${styles.fixedWidthOutput}`}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
         dangerouslySetInnerHTML={{ __html: html }}
       />
@@ -140,10 +147,12 @@ function BashModalContent({
   input,
   result: rawResult,
   isError,
+  projectPathLinks,
 }: {
   input: BashInput;
   result: BashResult | string | undefined;
   isError: boolean;
+  projectPathLinks?: RenderContext["projectPathLinks"];
 }) {
   // Normalize result to handle both structured and string formats
   const result = rawResult
@@ -163,9 +172,15 @@ function BashModalContent({
         />
         <div className="bash-modal-code">
           <pre className="code-block">
-            <code>{command}</code>
+            <code>
+              <ProjectPathLinkedText
+                text={command}
+                links={input._projectPathLinks}
+              />
+            </code>
           </pre>
         </div>
+        <NestedHarnessLaunchLink command={command} />
       </div>
       {stdout && (
         <div className="bash-modal-section">
@@ -177,6 +192,7 @@ function BashModalContent({
           <div className="bash-modal-code">
             <FixedFontMathToggle
               sourceText={stdout}
+              projectPathLinks={projectPathLinks}
               sourceView={
                 <pre className="code-block">
                   <AnsiText text={stdout} />
@@ -201,6 +217,7 @@ function BashModalContent({
           <div className="bash-modal-code bash-modal-code-error">
             <FixedFontMathToggle
               sourceText={stderr}
+              projectPathLinks={projectPathLinks}
               sourceView={
                 <pre className="code-block code-block-error">
                   <AnsiText text={stderr} />
@@ -282,8 +299,14 @@ function BashToolUse({ input }: { input: BashInput }) {
         <OutputCopyButton text={command} label="Copy command" />
       </div>
       <pre ref={commandRef} className="code-block">
-        <code>{displayCommand}</code>
+        <code>
+          <ProjectPathLinkedText
+            text={displayCommand}
+            links={input._projectPathLinks}
+          />
+        </code>
       </pre>
+      <NestedHarnessLaunchLink command={command} />
       {needsCollapse && (
         <button
           type="button"
@@ -304,10 +327,12 @@ function BashToolResult({
   result: rawResult,
   isError,
   input,
+  projectPathLinks,
 }: {
   result: BashResult | string;
   isError: boolean;
   input?: BashInput;
+  projectPathLinks?: RenderContext["projectPathLinks"];
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { enabled, reportValidationError, isToolIgnored } =
@@ -344,15 +369,29 @@ function BashToolResult({
     () =>
       renderFixedFontRichContent(stdout, {
         projectId: sessionMetadata?.projectId,
+        projectPath: sessionMetadata?.projectPath ?? undefined,
+        projectPathLinks,
       }),
-    [stdout, sessionMetadata?.projectId],
+    [
+      stdout,
+      sessionMetadata?.projectId,
+      sessionMetadata?.projectPath,
+      projectPathLinks,
+    ],
   );
   const richStderr = useMemo(
     () =>
       renderFixedFontRichContent(stderr, {
         projectId: sessionMetadata?.projectId,
+        projectPath: sessionMetadata?.projectPath ?? undefined,
+        projectPathLinks,
       }),
-    [stderr, sessionMetadata?.projectId],
+    [
+      stderr,
+      sessionMetadata?.projectId,
+      sessionMetadata?.projectPath,
+      projectPathLinks,
+    ],
   );
   const needsCollapse = stdoutLines.length > MAX_LINES_COLLAPSED;
   const displayStdout =
@@ -373,8 +412,14 @@ function BashToolResult({
             <OutputCopyButton text={command} label="Copy command" />
           </div>
           <pre ref={commandRef} className="code-block">
-            <code>{command}</code>
+            <code>
+              <ProjectPathLinkedText
+                text={command}
+                links={input?._projectPathLinks}
+              />
+            </code>
           </pre>
+          <NestedHarnessLaunchLink command={command} />
         </div>
       )}
       {result?.interrupted && (
@@ -394,6 +439,7 @@ function BashToolResult({
           </div>
           <FixedFontMathToggle
             sourceText={stdoutRenderText}
+            projectPathLinks={projectPathLinks}
             precomputedRendered={
               stdoutRenderText === stdout
                 ? richStdout
@@ -432,6 +478,7 @@ function BashToolResult({
           </div>
           <FixedFontMathToggle
             sourceText={stderr}
+            projectPathLinks={projectPathLinks}
             precomputedRendered={richStderr}
             sourceView={
               <pre className="code-block code-block-error">
@@ -470,11 +517,13 @@ function BashCollapsedPreview({
   result: rawResult,
   isError,
   provider,
+  projectPathLinks,
 }: {
   input: BashInput;
   result: BashResult | string | undefined;
   isError: boolean;
   provider?: string;
+  projectPathLinks?: RenderContext["projectPathLinks"];
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const outputToolPreviewLineCount = useOutputToolPreviewLineCount();
@@ -506,16 +555,24 @@ function BashCollapsedPreview({
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("Bash");
   const sessionMetadata = useOptionalSessionMetadata();
+  const previewIsStderr = !!result?.stderr;
   const output = sanitizeOutputForPreview(
-    result?.stdout || result?.stderr || "",
+    (previewIsStderr ? result?.stderr : result?.stdout) || "",
     provider,
   );
   const fullRichPreview = useMemo(
     () =>
       renderFixedFontRichContent(output, {
         projectId: sessionMetadata?.projectId,
+        projectPath: sessionMetadata?.projectPath ?? undefined,
+        projectPathLinks,
       }),
-    [output, sessionMetadata?.projectId],
+    [
+      output,
+      sessionMetadata?.projectId,
+      sessionMetadata?.projectPath,
+      projectPathLinks,
+    ],
   );
   const { text: previewText, truncated } = truncateOutput(
     output,
@@ -540,8 +597,17 @@ function BashCollapsedPreview({
     }
     return renderFixedFontRichContent(previewText, {
       projectId: sessionMetadata?.projectId,
+      projectPath: sessionMetadata?.projectPath ?? undefined,
+      projectPathLinks,
     });
-  }, [previewText, output, fullRichPreview, sessionMetadata?.projectId]);
+  }, [
+    previewText,
+    output,
+    fullRichPreview,
+    sessionMetadata?.projectId,
+    sessionMetadata?.projectPath,
+    projectPathLinks,
+  ]);
   const hasOutput = previewText.length > 0;
 
   const handleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -587,7 +653,7 @@ function BashCollapsedPreview({
         {hasOutput && (
           <div className="bash-preview-row bash-preview-output-row">
             <div
-              className={`bash-preview-output ${truncated ? "bash-preview-truncated" : ""} ${isError || result?.stderr ? "bash-preview-error" : ""}`}
+              className={`bash-preview-output ${truncated ? "bash-preview-truncated" : ""} ${previewIsStderr ? "bash-preview-error" : ""}`}
               style={
                 {
                   "--bash-preview-line-count": String(
@@ -598,6 +664,7 @@ function BashCollapsedPreview({
             >
               <FixedFontMathToggle
                 sourceText={previewText}
+                projectPathLinks={projectPathLinks}
                 precomputedRendered={previewRichContent}
                 sourceView={
                   <pre>
@@ -607,7 +674,7 @@ function BashCollapsedPreview({
                 renderRenderedView={(html) => (
                   <pre>
                     <div
-                      className="fixed-font-rendered__content"
+                      className={`fixed-font-rendered__content ${styles.fixedWidthOutput}`}
                       // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
                       dangerouslySetInnerHTML={{ __html: html }}
                     />
@@ -618,7 +685,7 @@ function BashCollapsedPreview({
             </div>
             <OutputCopyButton
               text={output}
-              label={result?.stderr ? "Copy stderr" : "Copy output"}
+              label={previewIsStderr ? "Copy stderr" : "Copy output"}
             />
             {hiddenOutputLineCount > 0 && (
               <HiddenContentBadge
@@ -641,12 +708,18 @@ function BashCollapsedPreview({
         )}
       </div>
       {isModalOpen && (
-        <Modal
+        <ActivityDetailModal
           title={input.description || "Bash Command"}
+          label={input.description || "Bash Command"}
           onClose={handleClose}
         >
-          <BashModalContent input={input} result={result} isError={isError} />
-        </Modal>
+          <BashModalContent
+            input={input}
+            result={result}
+            isError={isError}
+            projectPathLinks={projectPathLinks}
+          />
+        </ActivityDetailModal>
       )}
     </>
   );
@@ -664,8 +737,9 @@ export const bashRenderer: ToolRenderer<BashInput, BashResult> = {
     if (status !== "complete") {
       return undefined;
     }
-    const backgroundStatus = (input as unknown as Record<string, unknown> | null)
-      ?._backgroundTaskStatus;
+    const backgroundStatus = (
+      input as unknown as Record<string, unknown> | null
+    )?._backgroundTaskStatus;
     return backgroundStatus === "running" ? "Running" : undefined;
   },
 
@@ -673,12 +747,13 @@ export const bashRenderer: ToolRenderer<BashInput, BashResult> = {
     return <BashToolUse input={input as BashInput} />;
   },
 
-  renderToolResult(result, isError, _context, input) {
+  renderToolResult(result, isError, context, input) {
     return (
       <BashToolResult
         result={result as BashResult}
         isError={isError}
         input={input as BashInput | undefined}
+        projectPathLinks={context.projectPathLinks}
       />
     );
   },
@@ -721,6 +796,7 @@ export const bashRenderer: ToolRenderer<BashInput, BashResult> = {
         result={result as BashResult | undefined}
         isError={isError}
         provider={context.provider}
+        projectPathLinks={context.projectPathLinks}
       />
     );
   },

@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_PROJECT_QUEUE_QUIET_SECONDS } from "@yep-anywhere/shared";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 
@@ -24,12 +24,290 @@ describe("ServerSettingsService", () => {
     expect(service.getSetting("heartbeatTurnText")).toBe("continue");
   });
 
+  it("denies the Claude Gateway Agent tool by default", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeGatewayDisableAgent")).toBe(true);
+  });
+
+  it("removes Claude Gateway plan-mode tools by default", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeGatewayDisablePlanMode")).toBe(true);
+  });
+
+  it("defaults subagent nesting to one level and preserves explicit unset", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("subagentMaxDepth")).toBe(1);
+    await service.updateSettings({ subagentMaxDepth: null });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("subagentMaxDepth")).toBeNull();
+  });
+
+  it("normalizes invalid persisted subagent nesting to one level", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { subagentMaxDepth: 5 },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("subagentMaxDepth")).toBe(1);
+  });
+
   it("keeps experimental workstreams disabled by default", async () => {
     const service = new ServerSettingsService({ dataDir: testDir });
 
     await service.initialize();
 
     expect(service.getSetting("workstreamsEnabled")).toBe(false);
+  });
+
+  it("defaults project writes to app data and tool media to on demand", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("projectDirectoryStorage")).toBe("app-data");
+    expect(service.getSetting("toolResultMediaPreservation")).toBe("on-demand");
+
+    await service.updateSettings({
+      projectDirectoryStorage: "project",
+      toolResultMediaPreservation: "preserve",
+    });
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("projectDirectoryStorage")).toBe("project");
+    expect(reloaded.getSetting("toolResultMediaPreservation")).toBe("preserve");
+  });
+
+  it("does not publish a storage mode whose durable write failed", async () => {
+    const error = vi.fn();
+    const service = new ServerSettingsService({
+      dataDir: testDir,
+      logger: { error },
+    });
+    await service.initialize();
+    await service.updateSettings({ projectDirectoryStorage: "project" });
+
+    const displaced = `${testDir}-before-failure`;
+    await fs.rename(testDir, displaced);
+    await fs.writeFile(testDir, "not a directory", "utf-8");
+    try {
+      await expect(
+        service.updateSettings({ projectDirectoryStorage: "app-data" }),
+      ).rejects.toBeTruthy();
+      expect(service.getSetting("projectDirectoryStorage")).toBe("project");
+      expect(error).toHaveBeenCalledWith(
+        "[ServerSettingsService] Failed to save settings:",
+        expect.any(Error),
+      );
+    } finally {
+      await fs.rm(testDir);
+      await fs.rename(displaced, testDir);
+    }
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("projectDirectoryStorage")).toBe("project");
+  });
+
+  it("normalizes unknown storage policy values to safe defaults", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          projectDirectoryStorage: "both",
+          toolResultMediaPreservation: "cache",
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("projectDirectoryStorage")).toBe("app-data");
+    expect(service.getSetting("toolResultMediaPreservation")).toBe("on-demand");
+  });
+
+  it("keeps reload-safe Codex sessions off by default and persists opt-in", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("codexReloadSafeSessions")).toBe(false);
+    await service.updateSettings({ codexReloadSafeSessions: true });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("codexReloadSafeSessions")).toBe(true);
+  });
+
+  it("defaults Codex reasoning summaries to auto and persists a selection", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("codexReasoningSummary")).toBe("auto");
+    await service.updateSettings({ codexReasoningSummary: "concise" });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("codexReasoningSummary")).toBe("concise");
+  });
+
+  it("normalizes an invalid persisted Codex reasoning summary to auto", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { codexReasoningSummary: "short" },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("codexReasoningSummary")).toBe("auto");
+  });
+
+  it("defaults Claude steer backgrounding to every Bash command", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("claudeSteerBackgroundBash")).toEqual({
+      allowRegex: ".*",
+      denyRegex: "",
+    });
+  });
+
+  it("fails closed for an invalid persisted Claude steer policy", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          claudeSteerBackgroundBash: {
+            allowRegex: "[",
+            denyRegex: "",
+          },
+        },
+      }),
+    );
+
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("claudeSteerBackgroundBash")).toEqual({
+      allowRegex: "",
+      denyRegex: "",
+    });
+  });
+
+  it("leaves idle-reap hours absent until explicitly saved", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("idleReapHours")).toBeUndefined();
+
+    await service.updateSettings({ idleReapHours: 2.5 });
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("idleReapHours")).toBe(2.5);
+  });
+
+  it("normalizes persisted negative idle-reap hours to Never", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { idleReapHours: -12 },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("idleReapHours")).toBe(-1);
+  });
+
+  it("drops persisted idle-reap hours above the supported range", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { idleReapHours: 73 },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("idleReapHours")).toBeUndefined();
+  });
+
+  it("normalizes malformed reload-safe Codex values to off", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { codexReloadSafeSessions: "yes" },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("codexReloadSafeSessions")).toBe(false);
+  });
+
+  it("keeps source-review submissions off with an eight-turn response window", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("sourceReviewSubmissionsEnabled")).toBe(true);
+    expect(service.getSetting("sourceReviewResponseTurns")).toBe(8);
+
+    await service.updateSettings({
+      sourceReviewSubmissionsEnabled: true,
+      sourceReviewResponseTurns: 12,
+    });
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("sourceReviewSubmissionsEnabled")).toBe(true);
+    expect(reloaded.getSetting("sourceReviewResponseTurns")).toBe(12);
+  });
+
+  it("normalizes malformed source-review settings to safe defaults", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          sourceReviewSubmissionsEnabled: "yes",
+          sourceReviewResponseTurns: 33,
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("sourceReviewSubmissionsEnabled")).toBe(true);
+    expect(service.getSetting("sourceReviewResponseTurns")).toBe(8);
   });
 
   it("enables host process observability by default and persists opt-out", async () => {
@@ -152,6 +430,64 @@ describe("ServerSettingsService", () => {
     );
   });
 
+  it("persists an opt-out from the Claude Gateway Agent denial", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    await service.updateSettings({ claudeGatewayDisableAgent: false });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+
+    expect(reloaded.getSetting("claudeGatewayDisableAgent")).toBe(false);
+  });
+
+  it("defaults malformed persisted Claude Gateway Agent denial values", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          claudeGatewayDisableAgent: "false",
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeGatewayDisableAgent")).toBe(true);
+  });
+
+  it("persists an opt-out from the Claude Gateway plan-mode exclusion", async () => {
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+    await service.updateSettings({ claudeGatewayDisablePlanMode: false });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+
+    expect(reloaded.getSetting("claudeGatewayDisablePlanMode")).toBe(false);
+  });
+
+  it("defaults malformed persisted Gateway plan-mode exclusion values", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          claudeGatewayDisablePlanMode: "false",
+        },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("claudeGatewayDisablePlanMode")).toBe(true);
+  });
+
   it("drops malformed persisted Claude Gateway start commands", async () => {
     await fs.writeFile(
       path.join(testDir, "server-settings.json"),
@@ -194,31 +530,31 @@ describe("ServerSettingsService", () => {
     expect(service.getSetting("claudeAdditionalModels")).toBeUndefined();
   });
 
-  it.each([
-    "heartbeat",
-    "yepanywhere heartbeat",
-  ])("migrates legacy built-in heartbeat turn text default %j", async (heartbeatTurnText) => {
-    await fs.writeFile(
-      path.join(testDir, "server-settings.json"),
-      JSON.stringify({
-        version: 1,
-        settings: {
-          heartbeatTurnText,
-        },
-      }),
-      "utf-8",
-    );
-    const service = new ServerSettingsService({ dataDir: testDir });
+  it.each(["heartbeat", "yepanywhere heartbeat"])(
+    "migrates legacy built-in heartbeat turn text default %j",
+    async (heartbeatTurnText) => {
+      await fs.writeFile(
+        path.join(testDir, "server-settings.json"),
+        JSON.stringify({
+          version: 1,
+          settings: {
+            heartbeatTurnText,
+          },
+        }),
+        "utf-8",
+      );
+      const service = new ServerSettingsService({ dataDir: testDir });
 
-    await service.initialize();
+      await service.initialize();
 
-    expect(service.getSetting("heartbeatTurnText")).toBe("continue");
-    const persisted = JSON.parse(
-      await fs.readFile(path.join(testDir, "server-settings.json"), "utf-8"),
-    ) as { settings: { heartbeatTurnText?: string }; version: number };
-    expect(persisted.version).toBe(2);
-    expect(persisted.settings.heartbeatTurnText).toBe("continue");
-  });
+      expect(service.getSetting("heartbeatTurnText")).toBe("continue");
+      const persisted = JSON.parse(
+        await fs.readFile(path.join(testDir, "server-settings.json"), "utf-8"),
+      ) as { settings: { heartbeatTurnText?: string }; version: number };
+      expect(persisted.version).toBe(2);
+      expect(persisted.settings.heartbeatTurnText).toBe("continue");
+    },
+  );
 
   it("preserves custom heartbeat turn text", async () => {
     await fs.writeFile(

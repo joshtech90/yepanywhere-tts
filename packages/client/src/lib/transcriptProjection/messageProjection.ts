@@ -1,3 +1,7 @@
+import {
+  isInjectedContinuationPrompt,
+  isSyntheticNoResponseTurn,
+} from "@yep-anywhere/shared";
 import type { ContentBlock, Message } from "../../types";
 import type {
   RenderItem,
@@ -17,6 +21,8 @@ import {
   isTaskNotificationMessage,
   parseTaskNotification,
 } from "../parseTaskNotification";
+import { readProjectPathLinkTargets } from "../projectPathLinks";
+import { parseShellToolOutput } from "../shellToolOutput";
 import { parseAgentResultFromText } from "./agentResults";
 import { contentBlocksText } from "./slashCommandBodies";
 import type { TranscriptProjectionAugments } from "./types";
@@ -115,8 +121,34 @@ function getPreprocessMessageContent(
   );
 }
 
+/** Claude's durable compact-summary body opener (JSONL + live stream). */
+const CLAUDE_COMPACT_SUMMARY_PREAMBLE =
+  "This session is being continued from a previous conversation that ran out of context";
+
+/**
+ * Compact-summary rows are user-role in the provider log but must never paint
+ * as a user bubble. Prefer the explicit flag; fall back to Claude's stable
+ * preamble (and transcript-only marker) when live SDK stream omits the flag.
+ */
 function isCompactSummaryMessage(msg: Message): boolean {
-  return msg.isCompactSummary === true;
+  if (msg.isCompactSummary === true) {
+    return true;
+  }
+  const content = getPreprocessMessageContent(msg);
+  if (content === undefined) {
+    return false;
+  }
+  const text =
+    typeof content === "string" ? content : contentBlocksText(content);
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(CLAUDE_COMPACT_SUMMARY_PREAMBLE)) {
+    return false;
+  }
+  // Preamble alone is extremely distinctive; still require a user-role row.
+  const role =
+    (msg.message as { role?: "user" | "assistant" } | undefined)?.role ??
+    msg.role;
+  return msg.type === "user" || role === "user";
 }
 
 function isCompactCommand(command: string): boolean {
@@ -154,6 +186,17 @@ function systemLocalCommandContent(content: unknown): string | null {
   return trimmedContent ? trimmedContent : null;
 }
 
+function systemLocalCommandDetails(msg: Message): string[] | undefined {
+  const details = (msg as { details?: unknown }).details;
+  if (!Array.isArray(details)) {
+    return undefined;
+  }
+  const text = details.filter(
+    (detail): detail is string => typeof detail === "string" && !!detail.trim(),
+  );
+  return text.length > 0 ? text : undefined;
+}
+
 function compactMetadataDetail(msg: Message): string | null {
   const metadata = (msg as { compactMetadata?: unknown }).compactMetadata;
   if (!isRecord(metadata)) {
@@ -162,8 +205,22 @@ function compactMetadataDetail(msg: Message): string | null {
   return `compactMetadata:\n${JSON.stringify(metadata, null, 2)}`;
 }
 
+/**
+ * Human-readable compact body first, then raw provider metadata — so expand
+ * shows the compression summary before machine JSON.
+ *
+ * Deliberately excludes `msg.content`: the chip's own label already renders it
+ * verbatim, so repeating it here made the expanded body restate its own
+ * heading. When neither a retained summary nor metadata exists the chip stays
+ * expandable and the renderer supplies its empty-detail line instead.
+ */
 function compactBoundaryDetails(msg: Message): Array<string | ContentBlock[]> {
   const details: Array<string | ContentBlock[]> = [];
+  const summaryText = (msg as { compactSummaryText?: unknown })
+    .compactSummaryText;
+  if (typeof summaryText === "string" && summaryText.trim()) {
+    details.push(summaryText.trim());
+  }
   const metadata = compactMetadataDetail(msg);
   if (metadata) {
     details.push(metadata);
@@ -242,6 +299,27 @@ function processMessage(
 ): void {
   const msgId = getMessageId(msg);
 
+  // Claude Code restarts a session whose process is gone by injecting a
+  // "Continue from where you left off." meta prompt and answering it with a
+  // zero-token placeholder. Neither is a real turn, so rendering them as a user
+  // bubble followed by an assistant reply invents an exchange that never
+  // happened. Drop the injected prompt; show the placeholder as the one system
+  // notice that says what actually occurred.
+  if (isInjectedContinuationPrompt(msg)) {
+    return;
+  }
+  if (isSyntheticNoResponseTurn(msg)) {
+    items.push({
+      type: "system",
+      id: msgId,
+      subtype: "no_model_turn",
+      content: "Session continued without running a turn",
+      sourceMessages: [msg],
+      isSubagent: msg.isSubagent,
+    });
+    return;
+  }
+
   // Handle provider/runtime error entries as visible system messages.
   if (msg.type === "error") {
     const errorText =
@@ -270,6 +348,7 @@ function processMessage(
           id: msgId,
           subtype,
           content,
+          details: systemLocalCommandDetails(msg),
           sourceMessages: [msg],
           isSubagent: msg.isSubagent,
         });
@@ -425,6 +504,7 @@ function processMessage(
         type: "user_prompt",
         id: msgId,
         content,
+        projectPathLinks: readProjectPathLinkTargets(msg._projectPathLinks),
         sourceMessages: [msg],
         isSubagent: msg.isSubagent,
       });
@@ -466,6 +546,18 @@ function processMessage(
 
   // Check if this is a real user prompt (not tool results)
   if (isUserMessage) {
+    if (isCompactSummaryMessage(msg)) {
+      items.push({
+        type: "system",
+        id: msgId,
+        subtype: "compact_boundary",
+        content: "Context compacted",
+        details: compactSummaryDetails(content),
+        sourceMessages: [msg],
+        isSubagent: msg.isSubagent,
+      });
+      return;
+    }
     items.push({
       type: "user_prompt",
       id: msgId,
@@ -643,11 +735,14 @@ function attachToolResult(
   if (!structured && (item.toolName === "Agent" || item.toolName === "Task")) {
     structured = parseAgentResultFromText(block);
   }
+  structured = normalizeBashFailureResult(item, block, structured);
+  const projectPathLinks = readProjectPathLinkTargets(block._projectPathLinks);
 
   const resultData: ToolResultData = {
     content: typeof block.content === "string" ? block.content : "",
     isError: block.is_error || false,
     structured,
+    ...(projectPathLinks ? { projectPathLinks } : {}),
     ...(resultMessage.toolResultMedia?.some(
       (media) => media.toolCallId === block.tool_use_id,
     )
@@ -693,6 +788,35 @@ function attachToolResult(
   if (!isBackgroundProcessResult && !isInterruptedProcessResult) {
     pendingToolCalls.delete(toolUseId);
   }
+}
+
+function normalizeBashFailureResult(
+  item: ToolCallItem,
+  block: ContentBlock,
+  structured: unknown,
+): unknown {
+  if (item.toolName !== "Bash" || block.is_error !== true) {
+    return structured;
+  }
+  const resultText =
+    typeof structured === "string"
+      ? structured
+      : typeof block.content === "string"
+        ? block.content
+        : "";
+  const parsed = parseShellToolOutput(resultText, {
+    bareExitCodeIsEnvelope: true,
+  });
+  if (!parsed.hasEnvelope || parsed.exitCode === undefined) {
+    return structured;
+  }
+  return {
+    stdout: parsed.output,
+    stderr: "",
+    interrupted: false,
+    isImage: false,
+    exitCode: parsed.exitCode,
+  };
 }
 
 function isBackgroundProcessToolResult(

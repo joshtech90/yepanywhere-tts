@@ -10,20 +10,35 @@ import {
   createStreamAugmenter,
   markSubagent,
 } from "./augments/index.js";
+import { createTaskListAugmenter } from "./augments/task-list-augments.js";
 import { getLogger } from "./logging/logger.js";
+import {
+  sessionQueueSummaries,
+  type SessionQueueSummaryDeps,
+} from "./routes/session-queue-summaries.js";
+import {
+  type ProjectPathIndex,
+  tryClaimProjectPathIndex,
+} from "./projects/projectPathIndex.js";
 import type { Process } from "./supervisor/Process.js";
 import type { ProcessEvent } from "./supervisor/types.js";
 import type { BusEvent, EventBus } from "./watcher/index.js";
 
 export type Emit = (eventType: string, data: unknown) => void;
 
-export interface SubscriptionOptions {
+export interface SubscriptionOptions extends SessionQueueSummaryDeps {
   /** Called when an internal error occurs (e.g. augmentation failure). */
   onError?: (err: unknown) => void;
   /** Optional label for debug logs (e.g., subscription id). */
   logLabel?: string;
   /** Whether this subscriber wants live provider deltas and streaming augments. */
   wantsLiveDeltas?: boolean;
+  /** Injectable augmenter factory for deterministic transport tests. */
+  createAugmenter?: typeof createStreamAugmenter;
+  /** Authenticated exact probes for bare absolute-path viewer links. */
+  resolveAbsoluteFilePaths?: (
+    paths: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -74,6 +89,13 @@ function isLiveDeltaMessage(message: Record<string, unknown>): boolean {
   return message.type === "stream_event" || message._isStreaming === true;
 }
 
+function getStableMessageIdentity(
+  message: Record<string, unknown>,
+): string | null {
+  if (typeof message.uuid === "string") return message.uuid;
+  return typeof message.id === "string" ? message.id : null;
+}
+
 /**
  * Create a session subscription that forwards process events via `emit`.
  *
@@ -87,38 +109,180 @@ export function createSessionSubscription(
 ): { cleanup: () => void } {
   let completed = false;
   const wantsLiveDeltas = options?.wantsLiveDeltas !== false;
+  const unregisterViewer = process.registerViewer();
   const unregisterLiveDeltaSubscriber = wantsLiveDeltas
     ? process.registerLiveDeltaSubscriber()
     : null;
 
+  // Task correlation is synchronous and order-sensitive, so prepare it before
+  // raw delivery. The async augmenter shares this idempotent instance.
+  const taskListAugmenter = createTaskListAugmenter();
+
   // Lazy augmenter
   let augmenter: StreamAugmenter | null = null;
   let augmenterPromise: Promise<StreamAugmenter> | null = null;
+  // One path-cache claim for the augmenter's life. A streaming session renders
+  // many turns against the same few directories, so re-claiming per turn would
+  // let the project be evicted between them and re-probe from cold each time.
+  let pathIndex: ProjectPathIndex | null = null;
 
   const getAugmenter = async (): Promise<StreamAugmenter> => {
     if (augmenter) return augmenter;
     if (!augmenterPromise) {
-      augmenterPromise = createStreamAugmenter({
-        safeMarkdownOptions: {
-          projectFileLinks: {
-            projectId: process.projectId,
-            projectPath: process.projectPath,
+      augmenterPromise = (async () => {
+        pathIndex = await tryClaimProjectPathIndex(process.projectPath);
+        // The claim can land after teardown, and an unreleased one pins the
+        // project's cached directories for as long as the process lives.
+        if (completed) {
+          pathIndex?.release();
+          pathIndex = null;
+        }
+        return (options?.createAugmenter ?? createStreamAugmenter)({
+          safeMarkdownOptions: {
+            projectFileLinks: {
+              projectId: process.projectId,
+              projectPath: process.projectPath,
+              ...(pathIndex ? { index: pathIndex } : {}),
+              resolveAbsoluteFilePaths: options?.resolveAbsoluteFilePaths,
+            },
           },
-        },
-        onMarkdownAugment: (data) => {
-          if (!completed) emit("markdown-augment", data);
-        },
-        onPending: (data) => {
-          if (!completed) emit("pending", data);
-        },
-        onError: (err, context) => {
-          options?.onError?.(err);
-          console.warn(`[subscription] ${context}:`, err);
-        },
-      });
+          taskListAugmenter,
+          onMarkdownAugment: (data) => {
+            if (!completed) emit("markdown-augment", data);
+          },
+          onPending: (data) => {
+            if (!completed) emit("pending", data);
+          },
+          onError: (err, context) => {
+            options?.onError?.(err);
+            console.warn(`[subscription] ${context}:`, err);
+          },
+        });
+      })();
     }
     augmenter = await augmenterPromise;
     return augmenter;
+  };
+
+  // Coordinator state is mutable across deltas, so it retains one FIFO lane.
+  // Finalized-message rendering is independent and runs through the bounded
+  // per-item queue below instead of waiting behind unrelated messages.
+  let coordinatorTail: Promise<void> = Promise.resolve();
+  const processCoordinatorInOrder = (
+    message: Record<string, unknown>,
+  ): Promise<void> => {
+    const next = coordinatorTail.then(async () => {
+      if (completed) return;
+      const aug = await getAugmenter();
+      await aug.processStreamingMessage(message);
+    });
+    coordinatorTail = next.catch(() => {});
+    return next;
+  };
+
+  interface FinalizationJob {
+    id: string;
+    generation: number;
+    message: Record<string, unknown>;
+    resolve: () => void;
+  }
+
+  const maxConcurrentFinalizations = 4;
+  const maxQueuedFinalizations = 128;
+  let activeFinalizations = 0;
+  const finalizationGenerations = new Map<string, number>();
+  const finalizationQueue: FinalizationJob[] = [];
+
+  const settleDroppedFinalization = (job: FinalizationJob): void => {
+    if (finalizationGenerations.get(job.id) === job.generation) {
+      finalizationGenerations.delete(job.id);
+    }
+    job.resolve();
+  };
+
+  const drainFinalizations = (): void => {
+    while (
+      !completed &&
+      activeFinalizations < maxConcurrentFinalizations &&
+      finalizationQueue.length > 0
+    ) {
+      const job = finalizationQueue.shift();
+      if (!job) break;
+      if (finalizationGenerations.get(job.id) !== job.generation) {
+        job.resolve();
+        continue;
+      }
+
+      activeFinalizations += 1;
+      void getAugmenter()
+        .then(async (aug) => {
+          if (completed) return;
+          const finalMarkdown = await aug.processFinalizedMessage(job.message);
+          if (
+            completed ||
+            finalizationGenerations.get(job.id) !== job.generation
+          ) {
+            return;
+          }
+          emit("message", markSubagent(job.message));
+          if (!completed && finalMarkdown) {
+            emit("markdown-augment", finalMarkdown);
+          }
+        })
+        .catch((error) => {
+          options?.onError?.(error);
+        })
+        .finally(() => {
+          activeFinalizations -= 1;
+          if (finalizationGenerations.get(job.id) === job.generation) {
+            finalizationGenerations.delete(job.id);
+          }
+          job.resolve();
+          drainFinalizations();
+        });
+    }
+  };
+
+  const scheduleFinalization = (
+    message: Record<string, unknown>,
+  ): Promise<void> => {
+    const id = getStableMessageIdentity(message);
+    if (!id || completed) return Promise.resolve();
+
+    const generation = (finalizationGenerations.get(id) ?? 0) + 1;
+    finalizationGenerations.set(id, generation);
+    const queuedIndex = finalizationQueue.findIndex((job) => job.id === id);
+    if (queuedIndex >= 0) {
+      finalizationQueue.splice(queuedIndex, 1)[0]?.resolve();
+    }
+
+    return new Promise((resolve) => {
+      if (finalizationQueue.length >= maxQueuedFinalizations) {
+        const dropped = finalizationQueue.shift();
+        if (dropped) {
+          settleDroppedFinalization(dropped);
+          options?.onError?.(
+            new Error(
+              `Finalized-message augmentation queue exceeded ${maxQueuedFinalizations} items`,
+            ),
+          );
+        }
+      }
+      finalizationQueue.push({
+        id,
+        generation,
+        message: structuredClone(message),
+        resolve,
+      });
+      drainFinalizations();
+    });
+  };
+
+  const clearQueuedFinalizations = (): void => {
+    for (const job of finalizationQueue.splice(0)) {
+      settleDroppedFinalization(job);
+    }
+    finalizationGenerations.clear();
   };
 
   const emitStatus = (state: Process["state"]) => {
@@ -161,27 +325,23 @@ export function createSessionSubscription(
           if (!wantsLiveDeltas && isLiveDeltaMessage(message)) {
             break;
           }
-          const isStreamEvent = message.type === "stream_event";
-          const processAugments = async () => {
-            const aug = await getAugmenter();
-            await aug.processMessage(message);
-          };
+          taskListAugmenter.processMessage(message);
 
           // NOTE: streaming-text accumulation now happens ONCE inside the
           // Process at the emission point (Process.accumulateStreamingFromMessage),
           // not per-subscriber — otherwise N live-delta subscribers would each
           // append the same delta, corrupting the shared catch-up buffer.
 
-          if (isStreamEvent || isPlainUserEcho(message)) {
-            // User echoes reconcile optimistic/deferred queue state; do not let
-            // markdown/tool augmentation delay that delivery signal.
-            emit("message", markSubagent(message));
-            void processAugments().catch((err) => {
-              options?.onError?.(err);
-            });
-          } else {
-            await processAugments();
-            emit("message", markSubagent(message));
+          // Raw provider messages are the ordered, user-visible activity path.
+          // Optional markdown/tool enrichment may follow as a same-id update,
+          // but must never delay or reorder the underlying transcript event.
+          emit("message", markSubagent(message));
+
+          void processCoordinatorInOrder(message).catch((error) => {
+            options?.onError?.(error);
+          });
+          if (!isLiveDeltaMessage(message) && !isPlainUserEcho(message)) {
+            await scheduleFinalization(message);
           }
           break;
         }
@@ -231,22 +391,29 @@ export function createSessionSubscription(
 
         case "deferred-queue":
           emit("deferred-queue", {
-            messages: event.messages,
+            messages: sessionQueueSummaries(
+              options ?? {},
+              process.sessionId,
+              process,
+            ),
             reason: event.reason,
             tempId: event.tempId,
+            yaCommand: event.yaCommand,
           });
           break;
 
         case "complete":
-          if (augmenter) {
-            await augmenter.flush();
-          }
+          // Optional enrichment must not hold the client in a processing state.
+          // Each completed stream message flushes its own coordinator work; any
+          // still-queued finalized enrichment is safely superseded by the
+          // durable transcript catch-up triggered by this event.
           emit("complete", {
             sessionId: process.sessionId,
             timestamp: new Date().toISOString(),
             providerRuntimeStatus: process.getProviderRuntimeStatus(),
           });
           completed = true;
+          clearQueuedFinalizations();
           clearInterval(heartbeatInterval);
           break;
       }
@@ -257,7 +424,11 @@ export function createSessionSubscription(
 
   // Now that we're subscribed, capture state and emit "connected"
   const currentState = process.state;
-  const deferredMessages = process.getDeferredQueueSummary();
+  const deferredMessages = sessionQueueSummaries(
+    options ?? {},
+    process.sessionId,
+    process,
+  );
   emit("connected", {
     processId: process.id,
     sessionId: process.sessionId,
@@ -277,15 +448,18 @@ export function createSessionSubscription(
     ...(deferredMessages.length > 0 ? { deferredMessages } : {}),
   });
 
-  // Replay buffered messages for late-joining clients
-  for (const message of process.getMessageHistory()) {
-    emit(
-      "message",
-      markSubagent({
-        ...message,
-        isReplay: true,
-      }),
-    );
+  // Replay buffered messages for late-joining clients. Prepare clones so task
+  // correlation and optional presentation fields never mutate Process history.
+  for (const historyMessage of process.getMessageHistory()) {
+    const message = normalizeStreamMessage({
+      ...structuredClone(historyMessage),
+      isReplay: true,
+    });
+    taskListAugmenter.processMessage(message);
+    emit("message", markSubagent(message));
+    if (!isLiveDeltaMessage(message) && !isPlainUserEcho(message)) {
+      void scheduleFinalization(message);
+    }
   }
 
   // Catch-up: send accumulated streaming text as pending HTML
@@ -311,9 +485,13 @@ export function createSessionSubscription(
   return {
     cleanup: () => {
       completed = true;
+      clearQueuedFinalizations();
       clearInterval(heartbeatInterval);
       unsubscribe();
       unregisterLiveDeltaSubscriber?.();
+      unregisterViewer();
+      pathIndex?.release();
+      pathIndex = null;
       // Streaming text is owned by the Process (accumulated once at the
       // emission point), so a single subscriber disconnect must NOT clear the
       // shared buffer — other live subscribers still need it for catch-up.

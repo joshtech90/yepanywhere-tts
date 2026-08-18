@@ -26,11 +26,14 @@ import styles from "./TooltipLayer.module.css";
 const TOOLTIP_ID = "ya-global-tooltip";
 const VIEWPORT_MARGIN_PX = 8;
 const POINTER_OFFSET_PX = 14;
+const DEFAULT_WHEEL_LINE_HEIGHT_PX = 16;
 
 interface VisibleTooltip {
   text: string;
   anchorX: number;
   anchorY: number;
+  forcedThemed: boolean;
+  glossary: boolean;
 }
 
 interface PointerPosition {
@@ -53,6 +56,10 @@ interface SavedDescription {
   value: string | null;
 }
 
+interface BlockedPointerActivation {
+  button: number;
+}
+
 function pointerCanHover(event: PointerEvent): boolean {
   return event.pointerType !== "touch";
 }
@@ -66,20 +73,27 @@ function tooltipTargetFromNode(
   activeTarget: Element | null,
 ): Element | null {
   if (!(node instanceof Element)) return null;
-  if (activeTarget?.contains(node)) return activeTarget;
   if (activeTarget && node.closest(`#${TOOLTIP_ID}`)) return activeTarget;
-  return node.closest("[data-tooltip], [title]");
+  return (
+    node.closest("[data-tooltip], [title]") ??
+    (activeTarget?.contains(node) ? activeTarget : null)
+  );
+}
+
+function isNestedTooltipTarget(
+  target: Element,
+  activeTarget: Element | null,
+): boolean {
+  return (
+    !!activeTarget && activeTarget !== target && activeTarget.contains(target)
+  );
 }
 
 function isPointerJitter(
   event: PointerEvent,
   position: PointerPosition | null,
 ): boolean {
-  return !exceedsTooltipPointerJitter(
-    position,
-    event.clientX,
-    event.clientY,
-  );
+  return !exceedsTooltipPointerJitter(position, event.clientX, event.clientY);
 }
 
 function normalizeVisibleText(value: string): string {
@@ -88,28 +102,53 @@ function normalizeVisibleText(value: string): string {
 
 function repeatsFullyVisibleContent(target: Element, text: string): boolean {
   const normalizedText = normalizeVisibleText(text);
+  const exactOwners: HTMLElement[] = [];
   if (
-    normalizeVisibleText(target.textContent ?? "") !== normalizedText
+    target instanceof HTMLElement &&
+    normalizeVisibleText(target.textContent ?? "") === normalizedText
   ) {
-    return false;
+    exactOwners.push(target);
   }
-  if (!(target instanceof HTMLElement)) return false;
-  if (!isElementFullyScrollVisible(target)) return false;
-
-  // A row can fit while the one descendant carrying that same text is
-  // ellipsized. Suppress only when every exact-text presentation is visible.
   for (const descendant of target.querySelectorAll<HTMLElement>("*")) {
-    if (
-      normalizeVisibleText(descendant.textContent ?? "") === normalizedText &&
-      !isElementFullyScrollVisible(descendant)
-    ) {
-      return false;
+    if (normalizeVisibleText(descendant.textContent ?? "") === normalizedText) {
+      exactOwners.push(descendant);
     }
   }
-  return true;
+  return (
+    exactOwners.length > 0 && exactOwners.every(isElementFullyScrollVisible)
+  );
 }
 
-function appendDescriptionId(target: Element): SavedDescription {
+function descriptionRepeatsAccessibleName(
+  target: Element,
+  text: string,
+): boolean {
+  const normalizedText = normalizeVisibleText(text);
+  const ariaLabel = normalizeVisibleText(
+    target.getAttribute("aria-label") ?? "",
+  );
+  if (ariaLabel === normalizedText) return true;
+
+  const labelledBy = target.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const labelledText = normalizeVisibleText(
+      labelledBy
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" "),
+    );
+    if (labelledText === normalizedText) return true;
+  }
+
+  return normalizeVisibleText(target.textContent ?? "") === normalizedText;
+}
+
+function appendDescriptionId(
+  target: Element,
+  text: string,
+): SavedDescription | null {
+  if (descriptionRepeatsAccessibleName(target, text)) return null;
   const value = target.getAttribute("aria-describedby");
   const ids = new Set(value?.split(/\s+/).filter(Boolean) ?? []);
   ids.add(TOOLTIP_ID);
@@ -141,6 +180,23 @@ function isContextMenuOperable(event: MouseEvent): boolean {
   );
 }
 
+function wheelDeltaYPixels(event: WheelEvent, tooltip: HTMLElement): number {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * tooltip.clientHeight;
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    const computedLineHeight = Number.parseFloat(
+      getComputedStyle(tooltip).lineHeight,
+    );
+    const lineHeight =
+      Number.isFinite(computedLineHeight) && computedLineHeight >= 4
+        ? computedLineHeight
+        : DEFAULT_WHEEL_LINE_HEIGHT_PX;
+    return event.deltaY * lineHeight;
+  }
+  return event.deltaY;
+}
+
 /**
  * One delegated text-tooltip layer covers existing `title=` affordances and
  * explicit `data-tooltip` targets without forcing every renderer to own
@@ -159,6 +215,12 @@ export function TooltipLayer() {
   const savedDescriptionRef = useRef<SavedDescription | null>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blockedActivationTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const blockedPointerActivationRef = useRef<BlockedPointerActivation | null>(
+    null,
+  );
   const visibilityTokenRef = useRef<symbol | null>(null);
   const lastPointerPositionRef = useRef<PointerPosition | null>(null);
   const visibleRef = useRef(false);
@@ -177,6 +239,33 @@ export function TooltipLayer() {
     clearTimeout(hideTimerRef.current);
     hideTimerRef.current = null;
   }, []);
+
+  const clearBlockedPointerActivation = useCallback(() => {
+    if (blockedActivationTimerRef.current) {
+      clearTimeout(blockedActivationTimerRef.current);
+      blockedActivationTimerRef.current = null;
+    }
+    blockedPointerActivationRef.current = null;
+  }, []);
+
+  const pointIsInsidePassiveTooltip = useCallback(
+    (clientX: number, clientY: number): boolean => {
+      const currentTooltip = visibleTooltipRef.current;
+      const tooltip = tooltipRef.current;
+      if (!currentTooltip || currentTooltip.forcedThemed || !tooltip) {
+        return false;
+      }
+      const rect = tooltip.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) return false;
+      return (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      );
+    },
+    [],
+  );
 
   const restoreDetachedTitles = useCallback(() => {
     for (const [target, saved] of detachedTitlesRef.current) {
@@ -221,8 +310,7 @@ export function TooltipLayer() {
       return existing?.value ?? "";
     }
     const injectedDataTooltip =
-      existing?.injectedDataTooltip ??
-      !target.hasAttribute("data-tooltip");
+      existing?.injectedDataTooltip ?? !target.hasAttribute("data-tooltip");
     detachedTitlesRef.current.set(target, {
       value: liveTitle,
       injectedDataTooltip,
@@ -275,8 +363,7 @@ export function TooltipLayer() {
 
   const scheduleHide = useCallback(() => {
     if (hideTimerRef.current) return;
-    const delayMs =
-      getTooltipDelayMs() * TOOLTIP_CLOSE_DELAY_MULTIPLIER;
+    const delayMs = getTooltipDelayMs() * TOOLTIP_CLOSE_DELAY_MULTIPLIER;
     if (delayMs === 0) {
       hide();
       return;
@@ -288,11 +375,19 @@ export function TooltipLayer() {
   }, [hide]);
 
   const show = useCallback(
-    (target: Element, anchorX: number, anchorY: number) => {
+    (
+      target: Element,
+      anchorX: number,
+      anchorY: number,
+      forcedThemed = false,
+    ) => {
       showTimerRef.current = null;
       if (activeTargetRef.current !== target || !target.isConnected) return;
       const currentText =
-        target.getAttribute("data-tooltip") ?? detachTitle(target);
+        target.getAttribute("data-tooltip") ??
+        (forcedThemed
+          ? (target.getAttribute("title") ?? "")
+          : detachTitle(target));
       if (!currentText.trim()) return;
       if (repeatsFullyVisibleContent(target, currentText)) {
         movementDismissedTargetRef.current = target;
@@ -301,7 +396,7 @@ export function TooltipLayer() {
       }
       visibilityTokenRef.current ??= beginTooltipVisibility(hide);
       restoreDescription(savedDescriptionRef.current);
-      savedDescriptionRef.current = appendDescriptionId(target);
+      savedDescriptionRef.current = appendDescriptionId(target, currentText);
       visibleRef.current = true;
       const resolvedAnchorX = finiteCoordinate(anchorX);
       const resolvedAnchorY = finiteCoordinate(anchorY);
@@ -313,6 +408,8 @@ export function TooltipLayer() {
         text: currentText,
         anchorX: resolvedAnchorX,
         anchorY: resolvedAnchorY,
+        forcedThemed,
+        glossary: target.matches("[data-glossary-term]"),
       });
     },
     [detachTitle, dismissUntilDeparture, hide],
@@ -381,6 +478,103 @@ export function TooltipLayer() {
   );
 
   useEffect(() => subscribeTooltipSuppression(hide), [hide]);
+
+  useEffect(() => {
+    const glossaryTarget = (node: EventTarget | null): HTMLElement | null => {
+      if (!(node instanceof Element)) return null;
+      const target = node.closest<HTMLElement>("[data-glossary-term]");
+      return target?.dataset.tooltip || target?.title ? target : null;
+    };
+    const revealAndCopy = (
+      target: HTMLElement,
+      anchorX: number,
+      anchorY: number,
+    ) => {
+      if (hasSelectedText()) return;
+      hide();
+      activeTargetRef.current = target;
+      show(target, anchorX, anchorY, true);
+      // Explicit glossary activation is reading intent, so use the existing
+      // enlarged tooltip treatment immediately. Pointer hover stays compact.
+      setEnlarged(true);
+      void writeClipboardText(target.dataset.tooltip ?? target.title);
+    };
+    const onClick = (event: MouseEvent) => {
+      const target = glossaryTarget(event.target);
+      if (!target || hasSelectedText()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      revealAndCopy(target, event.clientX, event.clientY);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && visibleTooltipRef.current?.forcedThemed) {
+        hide();
+        return;
+      }
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target = glossaryTarget(event.target);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = target.getBoundingClientRect();
+      revealAndCopy(target, rect.left + rect.width / 2, rect.bottom);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!visibleTooltipRef.current?.forcedThemed) return;
+      const activeTarget = activeTargetRef.current;
+      if (
+        event.target instanceof Node &&
+        (activeTarget?.contains(event.target) ||
+          tooltipRef.current?.contains(event.target))
+      ) {
+        return;
+      }
+      hide();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (tooltipMode !== "native") return;
+      const target = glossaryTarget(event.target);
+      if (!target?.matches(":focus-visible")) return;
+      hide();
+      activeTargetRef.current = target;
+      const rect = target.getBoundingClientRect();
+      show(target, rect.left + rect.width / 2, rect.bottom, true);
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      const activeTarget = activeTargetRef.current;
+      if (
+        !visibleTooltipRef.current?.forcedThemed ||
+        !activeTarget ||
+        !(event.target instanceof Node) ||
+        !activeTarget.contains(event.target)
+      ) {
+        return;
+      }
+      if (
+        event.relatedTarget instanceof Node &&
+        activeTarget.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      hide();
+    };
+
+    // Glossary terms also appear inside dialogs whose click boundaries stop
+    // bubbling. Capture activation so the same term interaction works in
+    // file-viewer modals and ordinary rendered prose.
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+    };
+  }, [hide, show, tooltipMode]);
 
   useEffect(() => {
     const onComposerInput = (event: Event) => {
@@ -493,6 +687,10 @@ export function TooltipLayer() {
 
     const onPointerOver = (event: PointerEvent) => {
       if (!pointerCanHover(event)) return;
+      if (event.buttons !== 0) {
+        hide();
+        return;
+      }
       const dismissedTarget = movementDismissedTargetRef.current;
       if (
         dismissedTarget &&
@@ -502,14 +700,14 @@ export function TooltipLayer() {
         return;
       }
       movementDismissedTargetRef.current = null;
-      const target = tooltipTargetFromNode(
-        event.target,
-        activeTargetRef.current,
-      );
+      const target = pointIsInsidePassiveTooltip(event.clientX, event.clientY)
+        ? activeTargetRef.current
+        : tooltipTargetFromNode(event.target, activeTargetRef.current);
       if (!target) return;
       if (
         visibleRef.current &&
         target !== activeTargetRef.current &&
+        !isNestedTooltipTarget(target, activeTargetRef.current) &&
         isPointerJitter(event, lastPointerPositionRef.current)
       ) {
         return;
@@ -522,6 +720,10 @@ export function TooltipLayer() {
     };
     const onPointerMove = (event: PointerEvent) => {
       if (!pointerCanHover(event)) return;
+      if (event.buttons !== 0) {
+        hide();
+        return;
+      }
       const dismissedTarget = movementDismissedTargetRef.current;
       if (
         dismissedTarget &&
@@ -530,15 +732,12 @@ export function TooltipLayer() {
       ) {
         return;
       }
-      const target = tooltipTargetFromNode(
-        event.target,
-        activeTargetRef.current,
-      );
+      const target = pointIsInsidePassiveTooltip(event.clientX, event.clientY)
+        ? activeTargetRef.current
+        : tooltipTargetFromNode(event.target, activeTargetRef.current);
       if (!target) {
         if (visibleRef.current) {
-          if (
-            isPointerJitter(event, lastPointerPositionRef.current)
-          ) {
+          if (isPointerJitter(event, lastPointerPositionRef.current)) {
             return;
           }
           scheduleHide();
@@ -550,6 +749,7 @@ export function TooltipLayer() {
       if (
         visibleRef.current &&
         target !== activeTargetRef.current &&
+        !isNestedTooltipTarget(target, activeTargetRef.current) &&
         isPointerJitter(event, lastPointerPositionRef.current)
       ) {
         return;
@@ -575,8 +775,11 @@ export function TooltipLayer() {
         movementDismissedTargetRef.current = null;
       }
       if (!activeTarget) return;
-      const eventTarget =
-        event.target instanceof Node ? event.target : null;
+      if (pointIsInsidePassiveTooltip(event.clientX, event.clientY)) {
+        clearHideTimer();
+        return;
+      }
+      const eventTarget = event.target instanceof Node ? event.target : null;
       const tooltip = tooltipRef.current;
       const leftActiveRegion =
         !!eventTarget &&
@@ -612,7 +815,13 @@ export function TooltipLayer() {
     const onFocusOut = (event: FocusEvent) => {
       const activeTarget = activeTargetRef.current;
       if (
-        activeTarget &&
+        !activeTarget ||
+        !(event.target instanceof Node) ||
+        !activeTarget.contains(event.target)
+      ) {
+        return;
+      }
+      if (
         event.relatedTarget instanceof Node &&
         activeTarget.contains(event.relatedTarget)
       ) {
@@ -629,16 +838,73 @@ export function TooltipLayer() {
       dismissUntilDeparture();
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 2) {
+      if (event.button === 2) return;
+      const activeTarget = activeTargetRef.current;
+      if (pointIsInsidePassiveTooltip(event.clientX, event.clientY)) {
         if (
           event.target instanceof Node &&
-          tooltipRef.current?.contains(event.target)
+          activeTarget?.contains(event.target)
         ) {
+          movementDismissedTargetRef.current = activeTarget;
+          dismissUntilDeparture();
           return;
         }
-        movementDismissedTargetRef.current = activeTargetRef.current;
+        clearBlockedPointerActivation();
+        blockedPointerActivationRef.current = { button: event.button };
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        movementDismissedTargetRef.current = activeTarget;
         dismissUntilDeparture();
+        return;
       }
+      if (
+        event.target instanceof Node &&
+        tooltipRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      movementDismissedTargetRef.current = activeTarget;
+      dismissUntilDeparture();
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const blocked = blockedPointerActivationRef.current;
+      if (!blocked || event.button !== blocked.button) return;
+      if (blockedActivationTimerRef.current) {
+        clearTimeout(blockedActivationTimerRef.current);
+      }
+      blockedActivationTimerRef.current = setTimeout(() => {
+        blockedActivationTimerRef.current = null;
+        blockedPointerActivationRef.current = null;
+      }, 0);
+    };
+    const onPointerCancel = () => {
+      clearBlockedPointerActivation();
+    };
+    const onBlockedClick = (event: MouseEvent) => {
+      const blocked = blockedPointerActivationRef.current;
+      if (!blocked || event.detail === 0 || event.button !== blocked.button) {
+        return;
+      }
+      clearBlockedPointerActivation();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const onPassiveTooltipContextMenu = (event: MouseEvent) => {
+      const currentTooltip = visibleTooltipRef.current;
+      if (
+        !currentTooltip ||
+        currentTooltip.forcedThemed ||
+        !pointIsInsidePassiveTooltip(event.clientX, event.clientY) ||
+        hasSelectedText() ||
+        (event.target instanceof Element &&
+          event.target.closest("[data-context-menu]"))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setEnlarged(true);
+      void writeClipboardText(currentTooltip.text);
     };
     const onContextMenu = (event: MouseEvent) => {
       const currentTooltip = visibleTooltipRef.current;
@@ -649,14 +915,46 @@ export function TooltipLayer() {
         !activeTarget ||
         !(event.target instanceof Node) ||
         (!activeTarget.contains(event.target) &&
-          !tooltip?.contains(event.target)) ||
-        isContextMenuOperable(event)
+          !tooltip?.contains(event.target))
       ) {
+        return;
+      }
+      // Glossary activation already copied and enlarged the definition. Keep
+      // its context menu native so touch long-press can establish selection.
+      if (currentTooltip.forcedThemed || isContextMenuOperable(event)) {
+        // Right-clicking the definition itself acts on the tooltip, so that
+        // one stays. Everywhere else some other menu — the browser's, or an
+        // app menu such as the file link's "Copy path" — is taking this
+        // position, and a hover hint must not cover it. The pointer then
+        // holds still over the menu, so nothing else would clear the tooltip
+        // until it travelled past the jitter tolerance.
+        if (tooltip?.contains(event.target)) return;
+        movementDismissedTargetRef.current = activeTarget;
+        dismissUntilDeparture();
         return;
       }
       event.preventDefault();
       setEnlarged(true);
       void writeClipboardText(currentTooltip.text);
+    };
+    const onWheel = (event: WheelEvent) => {
+      const tooltip = tooltipRef.current;
+      if (
+        !tooltip ||
+        !pointIsInsidePassiveTooltip(event.clientX, event.clientY) ||
+        tooltip.scrollHeight <= tooltip.clientHeight
+      ) {
+        return;
+      }
+      const deltaY = wheelDeltaYPixels(event, tooltip);
+      if (!Number.isFinite(deltaY) || deltaY === 0) return;
+      const maxScrollTop = tooltip.scrollHeight - tooltip.clientHeight;
+      tooltip.scrollTop = Math.min(
+        maxScrollTop,
+        Math.max(0, tooltip.scrollTop + deltaY),
+      );
+      event.preventDefault();
+      event.stopImmediatePropagation();
     };
     const handleScroll = () => {
       if (!visibleRef.current && activeTargetRef.current) hide();
@@ -674,8 +972,17 @@ export function TooltipLayer() {
     document.addEventListener("pointerout", onPointerOut);
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
-    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("pointercancel", onPointerCancel, true);
+    document.addEventListener("click", onBlockedClick, true);
+    document.addEventListener("auxclick", onBlockedClick, true);
+    document.addEventListener("contextmenu", onPassiveTooltipContextMenu, true);
     document.addEventListener("contextmenu", onContextMenu);
+    document.addEventListener("wheel", onWheel, {
+      capture: true,
+      passive: false,
+    });
     document.addEventListener("keydown", onKeyDown);
     window.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", handleResize);
@@ -687,22 +994,35 @@ export function TooltipLayer() {
       document.removeEventListener("pointerout", onPointerOut);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
-      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("pointerup", onPointerUp, true);
+      document.removeEventListener("pointercancel", onPointerCancel, true);
+      document.removeEventListener("click", onBlockedClick, true);
+      document.removeEventListener("auxclick", onBlockedClick, true);
+      document.removeEventListener(
+        "contextmenu",
+        onPassiveTooltipContextMenu,
+        true,
+      );
       document.removeEventListener("contextmenu", onContextMenu);
+      document.removeEventListener("wheel", onWheel, true);
       document.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("blur", hide);
+      clearBlockedPointerActivation();
       hide();
       restoreDetachedTitles();
     };
   }, [
     activate,
+    clearBlockedPointerActivation,
     clearHideTimer,
     detachTitle,
     detachSvgTitle,
     dismissUntilDeparture,
     hide,
+    pointIsInsidePassiveTooltip,
     restoreDetachedTitles,
     scheduleHide,
     tooltipMode,
@@ -712,6 +1032,26 @@ export function TooltipLayer() {
     const element = tooltipRef.current;
     if (!element || !visible) return;
     const rect = element.getBoundingClientRect();
+    if (enlarged) {
+      setPosition((current) => {
+        const maxLeft = Math.max(
+          VIEWPORT_MARGIN_PX,
+          window.innerWidth - VIEWPORT_MARGIN_PX - rect.width,
+        );
+        const maxTop = Math.max(
+          VIEWPORT_MARGIN_PX,
+          window.innerHeight - VIEWPORT_MARGIN_PX - rect.height,
+        );
+        const next = {
+          left: Math.min(maxLeft, Math.max(VIEWPORT_MARGIN_PX, current.left)),
+          top: Math.min(maxTop, Math.max(VIEWPORT_MARGIN_PX, current.top)),
+        };
+        return next.left === current.left && next.top === current.top
+          ? current
+          : next;
+      });
+      return;
+    }
     let left = visible.anchorX + POINTER_OFFSET_PX;
     let top = visible.anchorY + POINTER_OFFSET_PX;
     if (left + rect.width > window.innerWidth - VIEWPORT_MARGIN_PX) {
@@ -724,14 +1064,20 @@ export function TooltipLayer() {
       left: Math.max(VIEWPORT_MARGIN_PX, left),
       top: Math.max(VIEWPORT_MARGIN_PX, top),
     });
-  }, [visible]);
+  }, [enlarged, visible]);
 
-  if (tooltipMode !== "themed" || !visible) return null;
+  if ((!visible?.forcedThemed && tooltipMode !== "themed") || !visible) {
+    return null;
+  }
   return createPortal(
     <div
       ref={tooltipRef}
       id={TOOLTIP_ID}
-      className={`${styles.root}${enlarged ? ` ${styles.enlarged}` : ""}`}
+      className={`${styles.root}${
+        visible.glossary ? ` ${styles.glossary}` : ""
+      }${visible.forcedThemed ? ` ${styles.interactive}` : ""}${
+        enlarged ? ` ${styles.enlarged}` : ""
+      }`}
       role="tooltip"
       style={{ left: position.left, top: position.top }}
     >

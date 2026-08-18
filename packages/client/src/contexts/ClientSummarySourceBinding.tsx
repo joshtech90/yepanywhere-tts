@@ -16,20 +16,11 @@ import {
   getSourceRuntimeRegistry,
   type SourceTransportRegistration,
 } from "../lib/sourceRuntime";
+import {
+  getRelayUsernameFromRoute,
+  isDirectAppRouteSegment,
+} from "../lib/remoteRoutePaths";
 import { useOptionalRemoteConnection } from "./RemoteConnectionContext";
-
-const DIRECT_ROUTE_SEGMENTS = new Set([
-  "",
-  "activity",
-  "agents",
-  "devices",
-  "git-status",
-  "inbox",
-  "new-session",
-  "projects",
-  "sessions",
-  "settings",
-]);
 
 const NON_HOST_ROUTE_SEGMENTS = new Set(["login", "remote", "share"]);
 
@@ -63,16 +54,20 @@ export function resolveClientSummarySourceKey(options: {
     return LOCAL_CLIENT_SUMMARY_SOURCE_KEY;
   }
 
-  const segment = firstPathSegment(pathname);
-  if (NON_HOST_ROUTE_SEGMENTS.has(segment)) {
-    return REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY;
-  }
-
-  if (!DIRECT_ROUTE_SEGMENTS.has(segment)) {
-    const host = getHostByRelayUsername(segment);
+  const relayUsername = getRelayUsernameFromRoute(pathname);
+  if (relayUsername) {
+    const host = getHostByRelayUsername(relayUsername);
     return host
       ? resolveSourceKeyForSavedHost(host)
       : REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY;
+  }
+
+  const segment = firstPathSegment(pathname);
+  if (
+    NON_HOST_ROUTE_SEGMENTS.has(segment) ||
+    (segment !== "" && !isDirectAppRouteSegment(segment))
+  ) {
+    return REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY;
   }
 
   const currentHost = remote.currentHostId

@@ -1,4 +1,7 @@
-import type { DurableRecapMessage } from "@yep-anywhere/shared";
+import type {
+  DurableRecapMessage,
+  DurableSyntheticDoneMessage,
+} from "@yep-anywhere/shared";
 import type { NotificationService } from "../notifications/index.js";
 import type { SDKMessage } from "../sdk/types.js";
 import type { Message, Session, SessionSummary } from "../supervisor/types.js";
@@ -152,6 +155,56 @@ export function mergeRecapMessages(
   return merged;
 }
 
+export function mergeSyntheticDoneMessages(
+  messages: readonly Message[],
+  doneMessages: readonly DurableSyntheticDoneMessage[],
+): Message[] {
+  if (doneMessages.length === 0) {
+    return [...messages];
+  }
+
+  const merged = [...messages];
+  const sortedDoneMessages = [...doneMessages].sort(
+    (a, b) => (messageTimestampMs(a) ?? 0) - (messageTimestampMs(b) ?? 0),
+  );
+  for (const doneMessage of sortedDoneMessages) {
+    if (
+      merged.some(
+        (message) =>
+          message.uuid === doneMessage.uuid || message.id === doneMessage.id,
+      )
+    ) {
+      continue;
+    }
+    const doneMs = messageTimestampMs(doneMessage);
+    let insertAt = merged.length;
+    if (doneMs !== null) {
+      const laterIndex = merged.findIndex((message) => {
+        const messageMs = messageTimestampMs(message);
+        return messageMs !== null && messageMs > doneMs;
+      });
+      if (laterIndex >= 0) {
+        insertAt = laterIndex;
+      }
+    }
+    merged.splice(insertAt, 0, doneMessage as Message);
+  }
+  return merged;
+}
+
+export function mergeSessionOverlayMessages(
+  messages: readonly Message[],
+  recaps: readonly DurableRecapMessage[],
+  doneMessages: readonly DurableSyntheticDoneMessage[],
+): Message[] {
+  // Insert user-visible done boundaries before recaps so recap supersession
+  // recognizes `/done` as intervening transcript content.
+  return mergeRecapMessages(
+    mergeSyntheticDoneMessages(messages, doneMessages),
+    recaps,
+  );
+}
+
 export function latestRecapMessage(
   recaps: readonly DurableRecapMessage[],
 ): DurableRecapMessage | undefined {
@@ -211,6 +264,22 @@ export function applyRecapOverlayToSession<T extends Session>(
   };
 }
 
+export function applySessionOverlaysToSession<T extends Session>(
+  session: T,
+  recaps: readonly DurableRecapMessage[],
+  doneMessages: readonly DurableSyntheticDoneMessage[],
+): T {
+  const summary = applyRecapOverlayToSummary(session, recaps);
+  return {
+    ...summary,
+    messages: mergeSessionOverlayMessages(
+      session.messages,
+      recaps,
+      doneMessages,
+    ),
+  };
+}
+
 /**
  * Unread tracks provider content only: recap overlays bump `updatedAt` for
  * list freshness (see applyRecapOverlayToSummary), so every unread
@@ -225,4 +294,27 @@ export function hasUnreadProviderContent(
   return notificationService
     ? notificationService.hasUnread(sessionId, preOverlayUpdatedAt)
     : undefined;
+}
+
+/**
+ * A live YA process sees provider messages before every platform necessarily
+ * publishes the rollout's final filesystem timestamp. Keep provider unread
+ * state on the later real activity clock without letting recap-only overlays
+ * participate in the comparison.
+ */
+export function getEffectiveProviderUpdatedAt(
+  summaryUpdatedAt: string,
+  process: { lastProviderMessageTime?: Date | null } | undefined,
+): string {
+  const lastProviderMessageTime = process?.lastProviderMessageTime;
+  if (!(lastProviderMessageTime instanceof Date)) return summaryUpdatedAt;
+
+  const processUpdatedAtMs = lastProviderMessageTime.getTime();
+  if (!Number.isFinite(processUpdatedAtMs)) return summaryUpdatedAt;
+
+  const summaryUpdatedAtMs = Date.parse(summaryUpdatedAt);
+  return !Number.isFinite(summaryUpdatedAtMs) ||
+    processUpdatedAtMs > summaryUpdatedAtMs
+    ? lastProviderMessageTime.toISOString()
+    : summaryUpdatedAt;
 }

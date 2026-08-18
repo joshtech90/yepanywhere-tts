@@ -1,0 +1,326 @@
+.fileViewerControllerActive :global(.message-input-left) {
+  flex: 0 0 auto;
+}
+
+.fileViewerControllerActive :global(.composer-status-ages) {
+  margin-left: 0;
+}
+
+.fileViewerOpen {
+  position: relative;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+:global(.message-input-wrapper) :global(.message-input-toolbar).fileViewerOpen {
+  /* Override the phone layout's static toolbar position so z-index applies. */
+  position: relative;
+}
+
+:global(.navigation-route-layer.is-active):has(.fileViewerOpen) {
+  /* Release the active route's stacking level while its toolbar and viewer
+     overlay must be hit-tested in one stack. */
+  z-index: auto;
+}
+
+.fileViewerOpen :global(button:not(:disabled)),
+.fileViewerOpen :global(a[href]),
+.fileViewerOpen :global(input:not(:disabled)),
+.fileViewerOpen :global(select:not(:disabled)),
+.fileViewerOpen :global([role="button"]:not([aria-disabled="true"])) {
+  pointer-events: auto;
+}
+
+.waveformRegion {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--composer-toolbar-gap);
+}
+
+.thinkingControl {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.thinkingMenu {
+  position: absolute;
+  z-index: 120;
+  bottom: calc(100% + 0.35rem);
+  left: 0;
+  display: grid;
+  box-sizing: border-box;
+  width: min(18rem, var(--thinking-menu-max-inline-size, calc(100vw - 1.5rem)));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  transform: translateX(var(--thinking-menu-inline-shift, 0px));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
+.thinkingMenuHint {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.browserDebugButton {
+  position: relative;
+  display: inline-flex;
+  box-sizing: border-box;
+  width: var(--composer-control-size);
+  min-width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  flex: 0 0 var(--composer-control-size);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+
+.browserDebugButton:hover:not(:disabled) {
+  border-color: var(--border-input);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.browserDebugButton:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.doneButton {
+  appearance: none;
+  display: inline-flex;
+  box-sizing: border-box;
+  width: var(--composer-control-size);
+  min-width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  flex: 0 0 var(--composer-control-size);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.doneButton:hover,
+.doneButton:focus-visible {
+  border-color: var(--border-input);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.doneButton > svg {
+  display: block;
+}
+
+.browserDebugButtonActive {
+  width: auto;
+  min-width: var(--composer-control-size);
+  flex-basis: auto;
+  gap: 5px;
+  padding: 0 6px 0 4px;
+  color: var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 14%, transparent);
+}
+
+.browserDebugButtonActive:hover:not(:disabled) {
+  color: var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 22%, transparent);
+}
+
+.browserDebugCountdown {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(
+    currentcolor calc(var(--browser-debug-remaining) * 1turn),
+    color-mix(in srgb, currentcolor 18%, transparent) 0
+  );
+}
+
+.browserDebugWarning {
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.browserDebugPerformance {
+  color: color-mix(in srgb, currentcolor 84%, var(--text-primary));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.waveformBackdropActive .waveformRegion {
+  isolation: isolate;
+}
+
+.waveformPreviewRegion {
+  min-height: var(--composer-primary-control-size);
+}
+
+:global(.toolbar-control-preview) .waveformPreviewRegion {
+  width: var(--composer-primary-control-size);
+  min-width: var(--composer-primary-control-size);
+  flex: 0 0 var(--composer-primary-control-size);
+}
+
+.waveformBackdropActive .waveformRegion > :global(.message-input-left) {
+  position: relative;
+  z-index: 1;
+}
+
+.waveformBackdropActive .waveformRegion > [data-speech-waveform="true"] {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.waveformBackdropActive :global(.message-input-left .mode-button),
+.waveformBackdropActive :global(.message-input-left .attach-button),
+.waveformBackdropActive :global(.message-input-left .slash-command-button),
+.waveformBackdropActive :global(.message-input-left .thinking-toggle-button),
+.waveformBackdropActive
+  :global(.message-input-left .render-mode-toolbar-button),
+.waveformBackdropActive
+  :global(.message-input-left .conversation-view-toolbar-button),
+.waveformBackdropActive :global(.message-input-left .heartbeat-toolbar-button),
+.waveformBackdropActive .doneButton,
+.waveformBackdropActive :global(.message-input-left .voice-input-button) {
+  background: color-mix(
+    in srgb,
+    var(--bg-surface) var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive :global(.message-input-left .voice-input-status) {
+  padding: 1px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.waveformBackdropActive
+  :global(.message-input-left .mode-button:hover:not(:disabled)),
+.waveformBackdropActive
+  :global(.message-input-left .attach-button:hover:not(:disabled)),
+.waveformBackdropActive
+  :global(.message-input-left .slash-command-button:hover),
+.waveformBackdropActive
+  :global(.message-input-left .thinking-toggle-button:hover),
+.waveformBackdropActive
+  :global(.message-input-left .render-mode-toolbar-button:hover),
+.waveformBackdropActive
+  :global(.message-input-left .conversation-view-toolbar-button:hover),
+.waveformBackdropActive
+  :global(.message-input-left .heartbeat-toolbar-button:hover),
+.waveformBackdropActive .doneButton:hover,
+.waveformBackdropActive :global(.message-input-left .voice-input-button:hover) {
+  background: color-mix(
+    in srgb,
+    var(--bg-hover) var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(
+    .message-input-left .thinking-toggle-button[data-thinking-mode="auto"]
+  ) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, rgb(180, 140, 60) 12%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(
+    .message-input-left .thinking-toggle-button[data-thinking-mode="on"]
+  ) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, rgb(59, 130, 246) 15%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(.message-input-left .conversation-view-toolbar-button.active),
+.waveformBackdropActive
+  :global(.message-input-left .render-mode-toolbar-button.is-rendered) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--app-yep-green) 13%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(.message-input-left .render-mode-toolbar-button.is-mixed) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--attention-color) 14%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(.message-input-left .heartbeat-toolbar-button.active) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--app-yep-green) 18%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}
+
+.waveformBackdropActive
+  :global(.message-input-left .voice-input-button.listening) {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, rgb(239, 68, 68) 15%, var(--bg-surface))
+      var(--waveform-control-surface-opacity),
+    transparent
+  );
+}

@@ -11,6 +11,7 @@ import { handleSourceListKeyDown } from "../hooks/useSourceKeyboard";
 import { writeClipboardText } from "../lib/clipboard";
 import type { TranslationFn } from "../i18n";
 import { WORKING_TREE_KEY } from "./useCommitBrowserModel";
+import styles from "./CommitRevisionPane.module.css";
 
 /**
  * Commit-history master pane. It owns revision-row presentation and row menus;
@@ -141,17 +142,15 @@ export function CommitRevisionPane({
         },
       ];
     },
-    [
-      displayedKeys,
-      onMarkReadTo,
-      onMarkUnreadSince,
-      onOpenRevision,
-      t,
-    ],
+    [displayedKeys, onMarkReadTo, onMarkUnreadSince, onOpenRevision, t],
   );
 
   const noVisibleRevisions =
     displayedCommits.length === 0 && !showWorkingTreeRevision;
+  const workingTreeClean = status?.isClean === true;
+  const workingTreeFileCount = status
+    ? new Set(status.files.map((file) => file.path)).size
+    : 0;
   return (
     <>
       <div className="commit-list-column">
@@ -209,8 +208,12 @@ export function CommitRevisionPane({
                 >
                   <button
                     type="button"
-                    className={`commit-list-item working-tree unread ${
-                      selectedIsWorkingTree ? "selected" : ""
+                    className={`commit-list-item unread ${
+                      workingTreeClean ? "" : styles.dirty
+                    } ${selectedIsWorkingTree ? "selected" : ""} ${
+                      !workingTreeClean && selectedIsWorkingTree
+                        ? styles.dirtySelected
+                        : ""
                     }`}
                     data-source-list-item
                     onFocus={() => {
@@ -237,16 +240,25 @@ export function CommitRevisionPane({
                       )}
                     </span>
                     <span className="commit-meta">
-                      <span className="working-tree-label">
-                        {t("sourceUncommitted")}
-                      </span>
-                      <span>
-                        {t("sourceChangedFileCount", {
-                          count: status
-                            ? new Set(status.files.map((file) => file.path)).size
-                            : 0,
-                        })}
-                      </span>
+                      {workingTreeClean ? (
+                        <>
+                          <span className={styles.cleanLabel}>
+                            {t("gitStatusClean")}
+                          </span>
+                          <span>{t("sourceWorkingTreeCleanDescription")}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className={styles.dirtyLabel}>
+                            {t("sourceUncommitted")}
+                          </span>
+                          <span>
+                            {t("sourceChangedFileCount", {
+                              count: workingTreeFileCount,
+                            })}
+                          </span>
+                        </>
+                      )}
                     </span>
                   </button>
                   <SourceRowMenuTrigger
@@ -261,9 +273,9 @@ export function CommitRevisionPane({
                 const menuActions = revisionMenuActions(commit.hash, commit);
                 return (
                   <li
-                  key={commit.hash}
-                  className={`commit-list-row ${sourceRowMenuSurface}`}
-                >
+                    key={commit.hash}
+                    className={`commit-list-row ${sourceRowMenuSurface}`}
+                  >
                     <button
                       type="button"
                       className={`commit-list-item ${
@@ -278,10 +290,7 @@ export function CommitRevisionPane({
                       )}
                     >
                       <span className="commit-subject-row">
-                        <span
-                          className="commit-subject"
-                          title={commit.subject}
-                        >
+                        <span className="commit-subject" title={commit.subject}>
                           {commit.subject}
                         </span>
                         {commentCount > 0 && (

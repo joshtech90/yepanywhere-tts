@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getLogger } from "../src/logging/logger.js";
 import {
   CONCAT_SEPARATOR,
   MessageQueue,
@@ -11,8 +12,18 @@ import {
 import type { ProcessEvent, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe("effort boundary", () => {
     it("retains a failed effort selection and blocks deferred delivery", async () => {
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      const warnLog = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
       const controller = createControllableIterator();
       const providerQueue = new MessageQueue();
       const push = vi.spyOn(providerQueue, "push");
@@ -63,6 +74,13 @@ describe("Process", () => {
           requestedValue: "high",
         }),
       ]);
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "effort_change_boundary_failed",
+          requestedEffort: "high",
+        }),
+        "Failed to apply effort before queued work",
+      );
 
       await process.setEffort("max");
       expect(process.effort).toBe("max");
@@ -74,11 +92,121 @@ describe("Process", () => {
       await waitFor(() => expect(process.state.type).toBe("idle"));
       unsubscribe();
       process.terminate("test complete");
+      expect(warnLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "process_terminated",
+          reason: "test complete",
+        }),
+        expect.any(String),
+      );
       controller.finish();
     });
   });
 
   describe("deferred queue", () => {
+    it("holds provider delivery behind a separate queued YA command", async () => {
+      const warnLog = vi
+        .spyOn(getLogger(), "warn")
+        .mockImplementation(() => undefined);
+      const controller = createControllableIterator();
+      const providerQueue = new MessageQueue();
+      const push = vi.spyOn(providerQueue, "push");
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "ya-command-session",
+        provider: "claude",
+        queue: providerQueue,
+        idleTimeoutMs: 10_000,
+      });
+      const queueEvents: ProcessEvent[] = [];
+      const unsubscribe = process.subscribe((event) => {
+        if (event.type === "deferred-queue") {
+          queueEvents.push(event);
+        }
+      });
+
+      process.deferMessage({
+        text: "ordinary queued work",
+        tempId: "temp-ordinary",
+      });
+      const pending = process.queueYaCommand("done", {
+        tempId: "ya-done-queued",
+        timestamp: "2026-08-16T10:00:00.000Z",
+      });
+      expect(process.getDeferredQueueSummary()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            tempId: pending.tempId,
+            content: "/done",
+            kind: "ya-command",
+            yaCommand: "done",
+            status: "queued",
+          }),
+        ]),
+      );
+      const archive = process.queueYaCommand("done", { content: "/archive" });
+      expect(archive).toBe(pending);
+      expect(process.getDeferredQueueSummary()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            tempId: pending.tempId,
+            content: "/archive",
+            kind: "ya-command",
+            yaCommand: "done",
+            status: "queued",
+          }),
+        ]),
+      );
+
+      controller.push({
+        type: "result",
+        session_id: "ya-command-session",
+      });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+      expect(push).not.toHaveBeenCalled();
+
+      expect(process.beginPendingYaCommandCompletion("done")).toBe(pending);
+      expect(process.completePendingYaCommand(pending.tempId)).toBe(true);
+      await waitFor(() => expect(push).toHaveBeenCalledOnce());
+      expect(push.mock.calls[0]?.[0]).toMatchObject({
+        text: "ordinary queued work",
+      });
+      expect(
+        push.mock.calls.some(
+          ([message]) =>
+            message.text === "/done" || message.text === "/archive",
+        ),
+      ).toBe(false);
+      expect(queueEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "deferred-queue",
+            reason: "queued",
+            tempId: pending.tempId,
+            yaCommand: "done",
+          }),
+          expect.objectContaining({
+            type: "deferred-queue",
+            reason: "promoted",
+            tempId: pending.tempId,
+            yaCommand: "done",
+          }),
+        ]),
+      );
+
+      unsubscribe();
+      process.terminate("test complete");
+      expect(warnLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "process_terminated",
+          reason: "test complete",
+        }),
+        expect.any(String),
+      );
+      controller.finish();
+    });
+
     it("includes attachment count in deferred queue summaries", async () => {
       const iterator = createMockIterator([
         { type: "system", session_id: "sess-1" },
@@ -213,6 +341,16 @@ describe("Process", () => {
             },
             source: { tempId: "temp-patient" },
             createdAt: "2026-06-30T10:00:00.000Z",
+          },
+        ]);
+        expect(process.getDeferredQueueSummary()).toMatchObject([
+          { tempId: "temp-deferred", content: "short deferred" },
+          {
+            id: service.list()[0]?.id,
+            tempId: "temp-patient",
+            content: "patient follow-up",
+            kind: "patient",
+            status: "queued",
           },
         ]);
 
@@ -453,11 +591,10 @@ describe("Process", () => {
         { text: "second", tempId: "temp-2" },
       ]);
       expect(process.getDeferredQueueSummary()).toEqual([]);
-      expect(deferredEvents[deferredEvents.length - 1]).toMatchObject({
+      expect(deferredEvents[deferredEvents.length - 1]).toEqual({
         type: "deferred-queue",
         reason: "promoted",
         tempId: "temp-1",
-        messages: [],
       });
     });
 
@@ -1198,6 +1335,220 @@ describe("Process", () => {
       await process.abort();
     });
 
+    it("quotes the last-seen assistant text in the first compose anchor", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+        deferredDelivery: { joinWindowSeconds: 3600, composeAnchors: true },
+      });
+      const events: ProcessEvent[] = [];
+      process.subscribe((event) => {
+        events.push(event);
+      });
+
+      // The composer was watching this stream mid-turn when they queued.
+      process.accumulateStreamingText("m1", "Working on the fix now");
+      process.deferMessage({
+        text: "queued reply",
+        tempId: "temp-1",
+        metadata: {
+          deliveryIntent: "deferred",
+          serverReceivedAt: new Date(Date.now() - 45_000).toISOString(),
+        },
+      });
+
+      controller.push({
+        type: "result",
+        session_id: "sess-1",
+      });
+
+      await waitFor(() =>
+        expect(process.getDeferredQueueSummary()).toEqual([]),
+      );
+
+      const userContents = events.flatMap((event) =>
+        event.type === "message" && event.message.type === "user"
+          ? [event.message.message?.content as string]
+          : [],
+      );
+      expect(userContents).toHaveLength(1);
+      expect(userContents[0]).toMatch(
+        /^\(\d+s ago, had seen: "Working on the fix now"\)\n\nqueued reply$/,
+      );
+
+      controller.finish();
+      await process.abort();
+    });
+
+    it("replaces elapsed anchors with needle-only form when stamps are on", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+        deferredDelivery: {
+          joinWindowSeconds: 3600,
+          composeAnchors: true,
+          turnTimestamps: "before",
+        },
+      });
+      const events: ProcessEvent[] = [];
+      process.subscribe((event) => {
+        events.push(event);
+      });
+
+      process.accumulateStreamingText("m1", "Working on the fix now");
+      const composedAt = new Date(Date.now() - 45_000).toISOString();
+      process.deferMessage({
+        text: "queued reply",
+        tempId: "temp-1",
+        metadata: {
+          deliveryIntent: "deferred",
+          serverReceivedAt: composedAt,
+        },
+      });
+
+      controller.push({
+        type: "result",
+        session_id: "sess-1",
+      });
+
+      await waitFor(() =>
+        expect(process.getDeferredQueueSummary()).toEqual([]),
+      );
+
+      const userContents = events.flatMap((event) =>
+        event.type === "message" && event.message.type === "user"
+          ? [event.message.message?.content as string]
+          : [],
+      );
+      expect(userContents).toHaveLength(1);
+      // Every chunk carries its own [sent …], so relative "(Ns ago" is
+      // redundant; only the content needle remains, outermost.
+      expect(userContents[0]).toBe(
+        `(had seen: "Working on the fix now")\n\n[sent ${composedAt}]\n\nqueued reply`,
+      );
+
+      controller.finish();
+      await process.abort();
+    });
+
+    it("stamps provider-bound turns with [sent …] when opted in", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+        deferredDelivery: {
+          joinWindowSeconds: 3600,
+          composeAnchors: false,
+          turnTimestamps: "before",
+        },
+      });
+      const events: ProcessEvent[] = [];
+      process.subscribe((event) => {
+        events.push(event);
+      });
+
+      const composedAt = new Date(Date.now() - 45_000).toISOString();
+      process.deferMessage({
+        text: "stamped queued",
+        tempId: "temp-1",
+        metadata: {
+          deliveryIntent: "deferred",
+          serverReceivedAt: composedAt,
+        },
+      });
+
+      controller.push({
+        type: "result",
+        session_id: "sess-1",
+      });
+
+      await waitFor(() =>
+        expect(process.getDeferredQueueSummary()).toEqual([]),
+      );
+
+      const userContents = events.flatMap((event) =>
+        event.type === "message" && event.message.type === "user"
+          ? [event.message.message?.content as string]
+          : [],
+      );
+      expect(userContents).toHaveLength(1);
+      // "before" placement leads the text with the absolute compose time in
+      // the same ISO format as provider session jsonl.
+      expect(userContents[0]).toBe(`[sent ${composedAt}]\n\nstamped queued`);
+
+      controller.finish();
+      await process.abort();
+    });
+
+    it("appends [sent …] with after placement", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+        deferredDelivery: {
+          joinWindowSeconds: 3600,
+          composeAnchors: false,
+          turnTimestamps: "after",
+        },
+      });
+      const events: ProcessEvent[] = [];
+      process.subscribe((event) => {
+        events.push(event);
+      });
+
+      const composedAt = new Date(Date.now() - 45_000).toISOString();
+      process.deferMessage({
+        text: "stamped queued",
+        tempId: "temp-1",
+        metadata: {
+          deliveryIntent: "deferred",
+          serverReceivedAt: composedAt,
+        },
+      });
+
+      controller.push({
+        type: "result",
+        session_id: "sess-1",
+      });
+
+      await waitFor(() =>
+        expect(process.getDeferredQueueSummary()).toEqual([]),
+      );
+
+      const userContents = events.flatMap((event) =>
+        event.type === "message" && event.message.type === "user"
+          ? [event.message.message?.content as string]
+          : [],
+      );
+      expect(userContents).toHaveLength(1);
+      expect(userContents[0]).toBe(`stamped queued\n\n[sent ${composedAt}]`);
+
+      controller.finish();
+      await process.abort();
+    });
+
     it("promotes deferred messages after turn completion, not completed tool results", async () => {
       const controller = createControllableIterator();
       const queue = new MessageQueue();
@@ -1262,8 +1613,10 @@ describe("Process", () => {
       expect(deferredEvents[deferredEvents.length - 1]).toMatchObject({
         type: "deferred-queue",
         reason: "promoted",
-        messages: [],
       });
+      expect(deferredEvents[deferredEvents.length - 1]).not.toHaveProperty(
+        "messages",
+      );
 
       controller.finish();
       await process.abort();

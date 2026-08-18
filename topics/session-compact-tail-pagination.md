@@ -64,6 +64,16 @@ scope. If that cursor cannot be found, the route falls back to the default
 two-compaction tail. `beforeMessageId` remains the explicit older-page cursor
 and returns another compact-boundary-shaped page.
 
+If an `afterMessageId` request fails at transport, relay, decode, or server
+handling rather than returning a response, the mounted client performs one
+uncursored request with the same compact-tail bounds inside the existing
+per-session in-flight coordinator. A successful response atomically replaces
+the loaded tail window. If that reconciliation also fails, the attempt stops;
+it creates no timer or internal retry loop. Later external activity may start
+another coalesced attempt. Diagnostics are available in development or during
+explicit remote-log collection, limited to one report per route per 30
+seconds, and state how many failures were suppressed.
+
 ## Why This Matters
 
 The previous boundary condition used `totalCompactions <= tailCompactions` as
@@ -84,6 +94,38 @@ transcript.
 prefix contains at least N compact boundaries, the older page starts at the
 Nth boundary from the end of that prefix and reports `hasOlderMessages: true`.
 The next older-page request can then fetch the pre-boundary prefix. This may
-make one additional older-page click necessary compared with the former full
-prefix behavior, but it keeps every page shaped like the requested compact
-tail.
+require one additional page compared with the former full-prefix behavior, but
+it keeps every page shaped like the requested compact tail.
+
+The session transcript treats a visible older-page control as demand to reveal
+at least one earlier real user turn, or to reach the beginning of history. One
+demand may therefore follow several `truncatedBeforeMessageId` cursors through
+assistant, tool, compact-summary, and other synthetic-user-only pages. Each
+server response remains bounded to the existing compact-tail page contract;
+the client performs the continuation and older servers need no new route,
+field, or capability.
+
+The continuation pauses after eight pages or after retaining approximately one
+session-detail cache budget of additional transcript data, whichever happens
+first. If older history remains and no real user turn was reached, the client
+shows that it paused and leaves the button available for an explicit next
+batch. This makes arbitrarily deep traversal possible without letting one
+scroll gesture monopolize memory or the network.
+
+The control automatically starts one such demand when it enters the transcript
+scrollport, while retaining the button as the no-observer and explicit-retry or
+continuation fallback. If a request fails without advancing the cursor, leaving
+and re-entering the boundary permits one new automatic attempt; a continuously
+visible failed cursor does not create a retry loop. Every multi-page prepend is
+one scroll-preservation transaction, so the reader's current transcript
+position remains stable. After that demand settles, a continuously visible
+boundary does not start another demand: it must leave and re-enter the
+scrollport, preventing automatic history drainage beyond the user-turn or
+safety boundary.
+
+Keyboard navigation at the loaded boundary is explicit demand, independent of
+that passive visibility latch. A non-repeated `PageUp` that settles at the top
+starts one older-history demand. Previous-turn `Home` starts one demand when no
+earlier loaded user turn exists. Key repeat does not start additional demands;
+after a batch settles, another distinct key press may request the next bounded
+batch. The same prepend anchoring and per-demand user-turn/safety limits apply.

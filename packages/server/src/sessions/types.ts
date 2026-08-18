@@ -6,7 +6,10 @@
  */
 
 import type {
+  EffortLevel,
+  PermissionMode,
   ProviderChildSessionSummary,
+  ThinkingConfig,
   UnifiedSession,
   UrlProjectId,
 } from "@yep-anywhere/shared";
@@ -26,6 +29,19 @@ export interface SessionListSummary {
   customTitle?: SessionSummary["customTitle"];
   isArchived?: SessionSummary["isArchived"];
   isStarred?: SessionSummary["isStarred"];
+}
+
+/**
+ * Canonical provider-child order: most recently active first, so every surface
+ * that lists subagents (Agents, session cards, the sidebar outline, the child
+ * selector) puts the child that ran last at the top. Sorts in place.
+ */
+export function sortProviderChildSessions(
+  children: ProviderChildSessionSummary[],
+): ProviderChildSessionSummary[] {
+  return children.sort(
+    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
+  );
 }
 
 export function toSessionListSummary(
@@ -90,6 +106,18 @@ export interface LoadedSession {
 }
 
 /**
+ * Best-effort provider transcript evidence used only when a session predates
+ * the complete server-owned launch-settings snapshot.
+ */
+export interface RecoveredSessionLaunchSettings {
+  permissionMode?: PermissionMode;
+  requestedModel?: string;
+  serviceTier?: string;
+  thinking?: ThinkingConfig;
+  effort?: EffortLevel;
+}
+
+/**
  * Common interface for session readers across providers.
  *
  * Provider-specific readers may have additional methods beyond this interface.
@@ -133,6 +161,15 @@ export interface ISessionReader {
     sessionId: string,
     projectId: UrlProjectId,
   ): Promise<SessionListSummary | null>;
+
+  /**
+   * Recover the latest launch-relevant provider context for a pre-snapshot
+   * session. Reading is side-effect free; successful process launch owns the
+   * later metadata write.
+   */
+  getRecoveredLaunchSettings?(
+    sessionId: string,
+  ): Promise<RecoveredSessionLaunchSettings | null>;
 
   /**
    * Get full session with messages.
@@ -185,12 +222,24 @@ export interface ISessionReader {
   ): Promise<{ messages: Message[]; status: string } | null>;
 
   /**
-   * List provider-native child work attached to one canonical YA session.
+   * List provider-native child work attached to one canonical YA session,
+   * most recently active first (see `sortProviderChildSessions`).
    * Readers without provider child sessions omit this method.
    */
   listProviderChildSessions?(
     parentSessionId: string,
   ): Promise<ProviderChildSessionSummary[]>;
+
+  /**
+   * Return the latest accepted child projection and start any needed refresh
+   * in the background. Implementations must not wait for provider storage.
+   * Omit the method when this freshness tier is unsupported. A present method
+   * returns `undefined` for an unpublished cold miss and `[]` for a published
+   * child-free projection.
+   */
+  listAcceptedProviderChildSessions?(
+    parentSessionId: string,
+  ): ProviderChildSessionSummary[] | undefined;
 
   /**
    * Get the file path for a session by ID.

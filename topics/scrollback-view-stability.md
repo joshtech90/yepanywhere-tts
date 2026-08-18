@@ -153,8 +153,16 @@ Consequences:
   the one path currently wired.
 - Following the tail ⇒ appended/current-turn growth re-pins to bottom; this is
   the only regime allowed to chase height.
+- The explicit **Follow** action also restores a full-pane composer to ordinary
+  size so the reclaimed transcript remains visible. Composer maximize/restore
+  and one-line collapse actions do not change transcript position or follow
+  intent.
 - The collapse/tidy trigger is a UX choice; jitter-safety is a separate,
   always-required property.
+- Committing in-session search (Enter on the highlighted match, or a click
+  jump to that same match) is explicit navigation: leave tail-follow, jump
+  to the selected row, and if search then unhides non-matches, pin that row
+  while the document height changes.
 
 ## Follow-engagement policy & proposed preferences
 

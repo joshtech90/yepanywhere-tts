@@ -40,8 +40,18 @@ export {
   ServerSettingsService,
   type ServerSettings,
   type ServerSettingsServiceOptions,
+  type ProjectDirectoryStorage,
+  type ToolResultMediaPreservation,
   DEFAULT_SERVER_SETTINGS,
+  PROJECT_DIRECTORY_STORAGE_VALUES,
+  TOOL_RESULT_MEDIA_PRESERVATION_VALUES,
 } from "./ServerSettingsService.js";
+export {
+  SessionWakeService,
+  loadOrCreateSessionWakeSecret,
+  type SessionWakeDeliveryResult,
+  type SessionWakeRequest,
+} from "./SessionWakeService.js";
 
 export {
   TtsService,
@@ -76,6 +86,12 @@ export {
   type SessionQueuePersistenceServiceOptions,
 } from "./SessionQueuePersistenceService.js";
 export {
+  DirtyFileEditorService,
+  type DirtyFileSnapshot,
+  type DirtyFileEditorProcessContext,
+  type DirtyFileEditorServiceOptions,
+} from "./DirtyFileEditorService.js";
+export {
   ProjectQueueScheduler,
   type ProjectIdleStatus,
   type ProjectQueueExternalTracker,
@@ -99,3 +115,12 @@ export {
 } from "./PublicShareService.js";
 
 export { ModelInfoService } from "./ModelInfoService.js";
+
+export {
+  SecurityClientService,
+  SecurityClientServiceError,
+  type PreparedSecurityClientRevocation,
+  type RegisterSecurityClientResult,
+  type SecurityClientServiceOptions,
+  type SrpAuditFacts,
+} from "./SecurityClientService.js";

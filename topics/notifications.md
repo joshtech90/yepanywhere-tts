@@ -12,7 +12,10 @@ delivery is only partially implemented.
 Related:
 
 - [Web Push troubleshooting](../docs/push-notifications.md)
+- [Notification delivery validation and native readiness](../docs/tactical/079-notification-delivery-validation-and-native-readiness.md)
 - [Android FCM push](android-fcm-push.md)
+- [Mobile server pairing](mobile-server-pairing.md)
+- [Security clients and authentication audit](security-client-audit.md)
 - [Android wrapper and notification integration](../docs/tactical/071-android-wrapper-notification-integration.md)
 - [Mobile companion app](../docs/project/mobile-companion-app.md)
 - [Browser-profile devices](browser-profile-devices.md)
@@ -54,8 +57,8 @@ decision.
 | Direct browser `Notification` API | No active UI or event path. A future deduplicated low-latency role remains possible. | N/A |
 | Browser Web Push/VAPID | Implemented for any supported desktop or mobile browser profile. The server owns VAPID keys and subscriptions; a push wakes the origin's service worker. | No YA tab is required |
 | Browser service worker | Receives Web Push, renders notifications, handles clicks/dismissal, and already contains focused-window/session suppression logic. It is event-driven and must not own a persistent YA secure connection. | No |
-| Native Android FCM | The credential-free broker exists and direct Firebase registration/receipt was proven on a Pixel. App/broker enrollment, YA-server subscription storage, live broker delivery, and user-visible native presentation remain unimplemented. | No WebView is required |
-| Android foreground service | Planned only. It would maintain an explicitly enabled headless summary/activity connection with a persistent status notification. | No visible UI, but a persistent notification is mandatory |
+| Native Android FCM | The broker is deployed. Android now owns notification permission/channel status and a Keystore-backed broker installation whose target follows FID replacement. YA-server subscription storage and user-visible native presentation remain unimplemented. | No WebView is required |
+| Android foreground service | Planned only. It would use the Kotlin native connection core to maintain an explicitly enabled headless summary/activity connection with a persistent status notification. | No visible UI, but a persistent notification is mandatory |
 | Native iOS push | Future adapter through FCM/APNs under the same provider-neutral device-subscription model. | No |
 
 VAPID is not a mobile-only transport. It is application-server identification
@@ -142,6 +145,29 @@ Event selection and presentation are separate controls:
   session details. Aligning browser/native privacy controls remains future
   product work rather than an assumed current guarantee.
 
+## Security-Client Alerts
+
+The unified security-client baseline adds an independently configurable **New
+security clients** event category. It is default-off until the owner opts in.
+A genuinely new key-verified client registration emits one semantic security
+intent to destinations that were already enrolled before that transaction.
+Registration retries, descriptor-only check-ins, owner-label changes, and the
+new client's later push enrollment do not resend it.
+
+Delivery is rate-bounded per destination without a retry timer: the first
+eligible new-client event in a 15-minute window sends immediately, while later
+registrations remain visible in the security ledger and do not schedule a
+deferred alert.
+
+Generic delivery says only that a new client signed in and carries opaque
+routing identity so the recipient can fetch the current audit record from the
+owner's YA server. Browser delivery may show the same bounded fixed copy;
+native delivery uses the provider-neutral `security_event` broker intent.
+Failed SRP and continuity attempts are retained in the bounded security ledger
+but do not generate v1 push alerts, because an unauthenticated attacker could
+otherwise create an alert flood. A broader security-alert policy is follow-up
+work requiring explicit coalescing and presentation UX.
+
 ## Browser Baseline And Manual Checkpoint
 
 The settings surface now presents Web Push as browser delivery on desktop and
@@ -149,14 +175,38 @@ mobile, organized as **This browser**, **Events from this server**, and
 **Devices and delivery**. Test-only display and transport priority controls are
 collapsed under **Testing and diagnostics**.
 
+The inventory must remain truthful across its browser/server boundary:
+
+- a push-provider hostname identifies browser family but never supplies
+  Android or iOS evidence on its own;
+- removing **This browser** revokes both its local PushManager subscription and
+  its server row, then every mounted browser-subscription control reflects the
+  disabled state without a reload; and
+- live counts represent browser WebSockets/tabs, not the number of activity
+  subscriptions multiplexed over a socket. Page exit releases the activity
+  lease immediately, while a cached document may establish one new lease on
+  `pageshow`.
+
+Browser permission enrollment must also remain recoverable. While the browser
+permission request is pending, YA disables the subscription control to prevent
+duplicate enrollment. If that browser promise has not settled after 60
+seconds, YA re-enables the control with guidance to check the site's browser
+permission and try again; a late result from the timed-out attempt must not
+silently subscribe. Returning focus or visibility to YA resynchronizes the
+displayed permission with browser settings.
+
 Automated contracts cover the complete subscribed server audience and these
 recipient decisions: no focused window displays, an unfocused window displays,
 a focused window suppresses by default, the focused-window opt-in displays for
 another session, and the session already visible stays suppressed.
 
+The live execution matrix and evidence ledger are maintained in
+[notification delivery validation and native readiness](../docs/tactical/079-notification-delivery-validation-and-native-readiness.md).
 Before release, manually verify a real subscribed desktop browser with no YA
 tab, a background tab, a focused unrelated session, and the notified session
 already visible. Safari and Firefox are useful follow-up spot checks. Mobile
 sleep/delivery delay is a separate longer-running measurement.
 
-Native FCM enrollment and presentation remain the next independent slice.
+Server-specific native FCM enrollment and presentation remain the next
+independent slices. Installation-level broker registration is native-owned and
+already independent of the WebView.

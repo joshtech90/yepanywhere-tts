@@ -1,16 +1,18 @@
 # Source Review → New Session
 
 > Source Review → New Session is the Source Control workflow that accumulates
-> line-anchored comments as persistent drafts, relocates them against current
-> source, and submits each chosen batch to a new or existing agent session.
+> line-anchored drafts, freezes each submitted reviewer entry with the exact
+> source projection it describes, and carries site history and agent outcomes
+> across submissions to new or existing sessions.
 
 Topic: source-review-to-session
 
 Parent topic: [Source Control](source-control.md).
 
-Status: **stages 1–3 implemented** (2026-07-26), including the P8 diff view
-mode. The pending set is browsable as a **Comments mode tab** (list, delete,
-jump-to-blame, submit) beside changes/commits/files. The first GitHub
+Status: **stages 1–7 implemented** (2026-08-01). The original stages 1–3
+landed 2026-07-26, including the P8 diff view mode. The pending set is
+browsable as a **Comments mode tab** (list, delete, jump-to-blame, submit)
+beside changes/commits/files. The first GitHub
 Desktop-inspired review-navigation slice is implemented (2026-07-27): Commits
 includes a shared dirty Working tree revision, source lists support keyboard
 traversal/search, and diff hunk navigation is symmetric. The follow-up
@@ -20,8 +22,37 @@ keyboard-accessible desktop pane splitters. The same refinement now includes
 independent Ignore whitespace and selected-revision-to-HEAD diff projections.
 Design owner: graehl.
 
+Live use of that flow (2026-08-01) exposed gaps now closed by the submission
+and comment-site implementation: the archive lacked a reader, pending comments
+could not be edited, destinations and comment composition were too constrained,
+and seeded turns pointed agents at the whole mutable draft store.
+**[Submissions and comment sites](#submissions-and-comment-sites--contract-2026-08-01)
+is the governing contract for the implemented replacement** and supersedes the
+older lifecycle and draft-location prose below.
+
+## Storage Policy Amendment — 2026-08-03
+
+The historical design below chose project-local `.yep` files and the Git ref
+`refs/yep/source-review/captures`. That location decision is superseded by
+[Project Directory Storage](project-directory-storage.md).
+
+In the default **App data only** mode, review drafts, submissions, response
+state, and exact-source captures live in central project-keyed storage. Source
+review must not create or modify `.yep`, `.git/info/exclude`, Git objects, or
+YA-owned refs. If a file-by-reference agent workflow truly requires a
+project-local artifact, it requires the global project-local storage opt-in;
+the source-review feature setting alone is not storage consent.
+
+Existing `.yep` state and `refs/yep/source-review/captures` may remain readable
+for compatibility but are not migrated, refreshed, or deleted during upgrade.
+The current post-`0.7.0` implementation is recorded in the parent topic's audit
+and awaits correction. Wherever later historical prose says the project-local
+home "stands" or is the established convention, this amendment wins.
+
 Related topics: [selection-comment-ui](selection-comment-ui.md) (the
 quote-comment ancestor — but see the gesture difference below),
+[source-review-followups](source-review-followups.md) (dormant agent-authored
+annotations for later review sweeps),
 [floating-new-session-composer](floating-new-session-composer.md) (the
 first-turn launch path), [local-file-source-highlighting](local-file-source-highlighting.md)
 (highlighted read-only file previews),
@@ -182,7 +213,9 @@ submit-time relocation below.
   so "did I already comment on this?" has an answer — and the next submit will
   not resend them. Comments added afterward form the next pending review. A
   visible pending count (like unsent Gerrit drafts) is the reviewer's cue to
-  what a submit would carry.
+  what a submit would carry. — Superseded 2026-08-01: a consumed comment does
+  not merely archive, it becomes a **site** carrying open/addressed/resolved
+  state and accumulated history.
 - **Submit target: recent review session by default.** When a review session
   was recently started from this surface, submit defaults to delivering the
   new batch to it as a **follow-up turn** — that agent already holds the
@@ -205,7 +238,9 @@ submit-time relocation below.
   the known risk that the agent settles for the snippet instead of reading the
   larger context, which the read-current-state instruction counters. Larger
   context stays by reference; for a non-current revision the agent views it
-  with git commands.
+  with git commands. — Superseded 2026-08-01: the turn references a frozen
+  per-submission directory, never the mutable draft store, and leads with the
+  submission name or first-comment excerpt.
 - **Where drafts live: server-owned, in the project's `.yep/` dir.**
   Relocation, blame, and submit composition all need server git access, so
   the server owns the drafts and is the single authority for
@@ -217,7 +252,378 @@ submit-time relocation below.
   checkout they annotate, and the file sits exactly where the seeded
   prompt's review file must live, so submit composes largely by reference.
   The client holds only UI state (the open comment window's in-progress text
-  may keep a localStorage backup, like message drafts).
+  may keep a localStorage backup, like message drafts). — Amended 2026-08-01:
+  server ownership and the `.yep/` home stand, but `review-comments.json` is
+  private draft state that no seeded prompt may reference; submissions get
+  their own frozen `.yep/source-review/<id>/` directories.
+
+## Submissions and comment sites — contract (2026-08-01)
+
+This section governs wherever it differs from the vision prose above and the
+historical records below, which are retained as the origin account. It was
+written from live use of the shipped flow, and each item below names a
+behavior that use found missing or wrong.
+
+### A submission freezes its request, not its whole directory
+
+A **submission** is one accepted submit attempt. YA creates
+`.yep/source-review/<submissionId>/request.json` before it can enqueue or
+deliver the turn. That versioned, server-authored file is immutable and
+contains the submission id, optional name, submit time, requested target, and
+one frozen entry per included comment: site and entry ids, reviewer text,
+anchor and relocation result, immediate snippet, and capture identity.
+
+The seeded turn references **only** that submission directory.
+`.yep/review-comments.json` remains private draft state and is never named to
+an agent. Resolved delivery state, the eventual canonical YA session id, unread
+watermarks, and cross-submission indexes are mutable server state outside
+`request.json`; a queued new-session request cannot truthfully freeze a session
+id that does not exist yet.
+
+The agent may create or replace `response.json` in the same directory. Thus the
+directory is intentionally mutable while the request snapshot is not. Two
+sessions cannot interfere because every submission has its own directory and
+response file, not because the directory is read-only.
+
+### A capture identifies the exact rendered source projection
+
+Every submitted reviewer entry records a `captureBlobId` for the exact file
+projection and side the reviewer saw. This is distinct from the anchor's
+provenance or relocation revision: a blame line's origin SHA is not necessarily
+the revision whose file content was rendered, and an old-side commit line may
+come from the comparison base or parent rather than the clicked commit.
+
+With project-local storage enabled, a committed projection resolves the
+already-existing git blob and a worktree or otherwise dirty projection writes
+the rendered bytes as a real git blob at **comment creation** (`git hash-object
+-w`). In the default app-data mode, the same exact bytes are stored centrally
+under their SHA-256 content id without writing Git objects or refs. Publication
+uses a fully written and fsynced temporary file followed by atomic rename;
+existing content is accepted only when its bytes match, and reads reject a
+SHA-256-named file whose content does not match. YA never waits for submit and
+never substitutes current bytes for a historical or removed side. The capture
+descriptor also records enough projection identity to reconstruct which side
+was shown without treating `captureBlobId` as provenance.
+
+All anchor and capture paths must be validated as repository-relative before
+any file read or git invocation. Absolute paths, `..` traversal, and symlink
+escapes outside the project root are rejected; a syntactically short string is
+not sufficient validation.
+
+**Captures must be pinned or git deletes them.** Verified 2026-08-01:
+`git gc --prune=now` prunes an unreferenced capture blob and retains a
+referenced one. YA retains every capture from the object database's single
+`refs/yep/source-review/captures` ref, whose target is a tree with entries named
+by blob id. Linked worktrees share the object database and therefore share this
+ref; it is not one independently writable ref per project directory.
+
+Adding a pin is an append-only compare-and-swap update: build the union of the
+current tree and the new blob ids, run `git update-ref` against the exact old
+object id, and retry if another writer won. Identical blobs intentionally share
+one entry. Resolution does **not** unpin anything: resolved sites and old
+submissions remain browsable. A future deletion feature must remove a blob only
+after proving that no surviving site or submission in the shared object
+database references it; until that reference accounting exists, the pin tree
+is append-only.
+
+The agent can read a capture with `git cat-file blob <id>` and YA can compare a
+captured file with current worktree state. A path-bearing diff invocation must
+still use an explicit path boundary; the blob id alone does not make an
+untrusted path safe.
+
+### Sites hold immutable submitted entries
+
+A **site** is the stable discussion location. It owns an ordered history of
+reviewer entries and agent outcomes:
+
+- A pending, unsubmitted entry may be edited in place. Its capture continues
+  to describe the source it was written against; changing its anchor creates a
+  fresh capture.
+- Once submitted, a reviewer entry is immutable history.
+- A reviewer follow-up creates a new entry at the same site with a fresh
+  comment-time capture. It does not reopen the old entry.
+- The site is **open** while its latest submitted reviewer entry has neither a
+  recorded outcome nor a non-whitespace change in the captured neighborhood.
+- It is **addressed** when either of those conditions becomes true.
+- It is **resolved** only by the reviewer. Resolution removes it from active
+  work surfaces but does not delete its history or captures.
+
+This per-entry rule matters: a code edit that addressed the first entry cannot
+automatically address a later follow-up, because the follow-up compares against
+its own fresh capture. A resend carries only the site's latest open reviewer
+entry.
+
+**Addressed and unchanged are different axes.** YA compares each entry's
+captured neighborhood with current state, ignoring whitespace-only changes. An
+entry can be addressed by a **No change** or **Question** outcome while its code
+is unchanged. The version-1 response schema stores No change under its legacy
+machine token, `wont_fix`; prompts and UI do not present that issue-tracker
+wording as the human disposition. Reviews and changed-file rows show both the
+open/addressed state and an independent unchanged indicator, so "the agent
+answered without editing" does not become the contradictory claim that the
+comment is unaddressed.
+
+### The persisted site model precedes submission persistence
+
+The existing version-1 store freezes comments as `pending` or `archived` and
+lets batches merely reference comment ids. That is not the site model and must
+not become the input to new immutable manifests. Introduce the versioned site,
+entry, submission-summary, and draft schemas first; all later submission and
+outcome work builds on those canonical entities.
+
+Migration preserves every version-1 draft, archived comment, and batch. Since
+the old format did not capture the exact rendered projection, migrated entries
+are marked `legacy-missing`, and the UI says that captured source is
+unavailable. Migration must never fabricate a comment-time capture from the
+current file. The existing lifetime cap also stops counting archived history:
+it bounds active drafts only, while submission summaries are paged and full
+history stays in per-site/per-submission records. Otherwise 2,000 lifetime
+comments permanently wedge comment creation even though the UI cannot delete
+archived comments.
+
+### Submission acceptance is idempotent
+
+The client supplies a stable submission id as the idempotency key. Submit
+reserves the included pending entries, writes and fsyncs the frozen
+`request.json`, and only then asks the session launcher to enqueue or deliver a
+turn carrying that same key. Acceptance archives the reserved entries even
+when a queued new session has no session id yet. Mutable server state later
+associates the submission with the canonical YA session id, including provider
+session-id remapping.
+
+Retrying the same submission id returns the same accepted result and cannot
+send a second turn. The launcher/input queue must enforce that invariant across
+the crash window between delivery and the server recording completion; a
+check-then-send route handler alone cannot. A failure before queue acceptance
+releases the reservation and leaves the comments pending. Startup recovery
+finishes or rolls back durable `prepared` submissions rather than silently
+resending them.
+
+Manifest publication is atomic and no-clobber: YA writes and fsyncs a unique
+temporary file, links the completed inode into the final `request.json` name,
+then fsyncs the submission directory. A crash before publication may leave only
+an ignored temporary file, never a truncated final manifest. If an older crash
+left an invalid manifest for an unaccepted `prepared` submission, retry removes
+that invalid reservation and rebuilds it from the still-pending entries. An
+invalid manifest already associated with accepted history remains an explicit
+conflict and is never overwritten.
+
+### The response file is a versioned atomic snapshot
+
+`response.json` contains `{ version, submissionId, outcomes,
+suggestedTitle? }`. Every outcome names an exact `{ siteId, entryId }`, one of
+the machine values `done`, `wont_fix`, or `question`, and bounded free text.
+The persisted `wont_fix` value is presented as **No change** and covers both
+"no source change was requested" and "a source change was considered but is
+not needed." Keeping the version-1 token preserves existing response files;
+its narrower name does not define the user-facing semantics.
+One valid response revision covers every entry in `request.json` exactly once.
+Unknown, missing, or duplicate ids; an incorrect submission id or version; an
+oversized file; or invalid/truncated JSON rejects the entire revision without
+changing previously ingested state.
+
+Ingestion is atomic and idempotent by content hash. Re-reading an identical
+file adds nothing. A later valid complete revision appends history only for
+outcomes whose disposition or text changed; omission never erases a prior
+outcome. A "why no change yet" explanation is the outcome text linked to the
+authoring session, not a reviewer comment and not another pending entry.
+
+Optional clarification, discussion, source-comment, and gap annotations are
+not part of this response contract. The dormant proposal in
+[Source review follow-ups](source-review-followups.md) keeps them orthogonal to
+the per-comment disposition and forbids adding them to review prompts until YA
+has a workflow that intends to receive and act on them.
+
+### Response observation is per delivery, bounded, and explicit
+
+YA does not watch the filesystem, poll response files, or scrape reply text.
+For each `(canonical YA session id, submission id)` association, it re-reads
+that submission's `response.json` after each of the first completed assistant
+turns following delivery. The server setting `sourceReviewResponseTurns`
+controls the bound from 1 through 32 and defaults to **eight**. A completed
+turn is the provider-neutral idle boundary after assistant activity advanced,
+not every streamed message. The counter and association survive restart, and
+provisional-to-canonical session id remapping moves them together. A later
+submission delivered to the same session gets its own observation window.
+After the window, an explicit Refresh in Reviews can ingest a late response
+without restoring background work.
+
+Unread state is a server-side outcome revision paired with an acknowledged
+revision. Listing or prefetching submissions never marks anything read; YA
+acknowledges only when the reviewer actually opens the outcome-bearing
+submission. A capability-gated `GET /api/review/inbox` supplies unread review
+outcomes to Inbox before Source Control opens, and acknowledging the visible
+submission uses
+`POST /api/projects/:projectId/review/submissions/:submissionId/acknowledge`.
+After a changed complete snapshot is durably ingested, the server emits
+`review-response-changed` on the activity stream so an already-open Inbox can
+refresh the optional feed only after ingestion finishes.
+
+The unread review Inbox is a retained compact projection, not an all-project
+read. Response ingestion, acknowledgment, deletion/migration, and project
+metadata changes update the exact submission row and publish a versioned
+delta. Reading or filtering Inbox performs no project listing, full
+`ReviewStoreFile` loading, Git work, response-file probing, provider work, or
+transcript work. The durable projection and any project manifest live under YA
+app data and must share the central-storage owner described by
+[project-directory-storage](project-directory-storage.md). The implementation
+handoff is
+[`docs/tactical/099-retained-source-review-inbox.md`](../docs/tactical/099-retained-source-review-inbox.md).
+
+### Turn composition
+
+Lead with the submission's name. An unnamed submission takes the excerpt YA
+derives from the first comment — the same text the name field shows
+grey-prefilled — so named and unnamed submissions yield the same kind of
+title. Then one or two lines: what this is, the pointer to the submission
+directory, and read-current-state. Then the comments grouped by file, each
+with location, snippet, and capture id. Then the instruction to record
+outcomes. The multi-paragraph preamble the first implementation shipped costs
+more attention than it buys and goes.
+
+### Naming a submission
+
+An optional short field beside the submit button — never a second click, a
+confirmation step, or a modal of its own. It shows the derived excerpt
+grey-prefilled; typing replaces it, and leaving it alone accepts the prefill.
+
+### The comment editor never covers its subject
+
+**The requested design is a vertical split into two views.** The upper view
+ends with the anchored visual row, the composer follows it, and the lower view
+starts with the next row. The anchored line therefore remains readable. This
+is a split of the client render model, not an insertion into generated DOM and
+not a second server render: unified mode slices the existing
+`parseDiffLineFragments` result, and side-by-side slices the existing
+`buildSideBySideRows` result. The outer render/controller changes; server-side
+highlight generation and generated DOM do not.
+
+**A column is an accepted initial fallback**, not the target. The composer
+takes a column beside the source, which then requires side-swipe scrolling on
+mobile. For unified diff this is the composer with a connector to a horizontal
+rule marking the spot in the diff.
+
+Either way the line under discussion stays readable in its real surroundings,
+and the popover's quoted snippet stops being the only way to know what is
+being commented on. Blame commenting shares this surface and gets the same
+treatment, not a second approximation.
+
+### Immediate-submit destination is chosen in the comment editor
+
+The comment editor's immediate-submit action always offers a destination,
+preferring the session with recorded edits to this file when provenance is
+known, else the project's recently active sessions in a dropdown, else a new
+session. **Add to review remains targetless**: the accumulator's destination
+is selected when the batch is submitted, so comments accumulated at different
+times never silently create a mixed-destination batch. Today the
+submit-to-session action renders only when Source Control was opened from a
+session Edit-block link. The recently-active dropdown satisfies this contract
+before dirty-file provenance lands.
+
+### Pending Comments and Reviews are separate Source Control modes
+
+**Pending Comments** is the accumulator: unsubmitted comments, editable in
+place. **Reviews** browses submissions — a submissions list column (phone: a
+selector), and the selected submission's comments shown against the source
+captured at comment time, each with its outcome and a link to its target
+session. Both navigate alike. Source Control therefore has four top-level
+modes: Changes, Files, Pending Comments, and Reviews. The existing
+`?tab=comments` URL continues to select Pending Comments; `?tab=reviews`
+selects Reviews. The selector's wrapping contract in
+[Source Control](source-control.md) must be re-verified at phone width rather
+than assumed to still fit.
+
+### Hosted compatibility is additive and separately gated
+
+The stable compatibility corpus for this optional feature is v0.7.0 and
+v0.6.2; neither advertises the existing `git-source-review` capability. The
+new server contract is owned by a permanent
+`git-source-review-submissions` capability, not by broadening
+`git-source-review` after it has shipped.
+
+The new capability covers:
+
+- paged `GET /api/projects/:projectId/review/submissions` and detail
+  `GET /api/projects/:projectId/review/submissions/:submissionId`;
+- `POST /api/projects/:projectId/review/submissions/:submissionId/acknowledge`
+  and
+  `POST /api/projects/:projectId/review/submissions/:submissionId/refresh-response`;
+- `POST /api/projects/:projectId/review/sites/:siteId/follow-ups` and
+  `POST /api/projects/:projectId/review/sites/:siteId/resolve`;
+- `GET /api/review/inbox`; and
+- `reviewComment.anchor.projection` on comment creation,
+  `reviewSubmit.submissionId` and `reviewSubmit.name`, and the server settings
+  `sourceReviewSubmissionsEnabled` and `sourceReviewResponseTurns`.
+
+Without `git-source-review`, the client keeps the established basic Source
+Control compatibility shell. With `git-source-review` but without the new
+capability, it keeps the shipped version-1 comment/submit behavior and may show
+the client-only editor split and destination picker, but it shows no Reviews
+mode and sends no capture, site, submission, acknowledgement, refresh, or
+outcome request. A new server preserves all old request shapes and response
+fields for old clients. This compatibility plan requires maintainer approval
+before any client/server contract edit.
+
+### Review visibility is on by default for new installs
+
+Submission directories, site/outcome history, the Reviews mode, and review
+outcome Inbox cards remain behind the server-persisted
+`sourceReviewSubmissionsEnabled` setting. The default is true for new installs
+so a user who submits a review can discover its history and eventual response.
+An explicit stored false remains authoritative. Existing installs whose
+persisted default is already false are not silently migrated because the file
+does not distinguish an untouched old default from an intentional choice.
+Missing setting data from an older server still means false in the client. The
+capability says the server can support the workflow; the setting controls its
+visibility, capture history, and outcome tracking. Fixing the existing editor
+overlay and offering a destination for an already-invoked immediate submit do
+not depend on this option.
+
+Enabling the option activates the new submit transaction and its associated UI
+as one contract. With no submitted review, enabling it starts no observation
+work. The default-on decision is recorded under
+[Vanilla Defaults](vanilla-defaults.md).
+
+### Relocation — deferred, but its contract is stated
+
+No relocation defect has been observed in use, so improving it is not
+scheduled. The contract it must meet when touched: relocation answers "does
+this text still appear, non-exactly, in the worktree — HEAD plus dirty
+state". Today it answers only the exact-line form, choosing the occurrence
+nearest the recorded line with no context scoring and no ambiguity signal.
+
+### Proposal, not contract: agent-authored title
+
+Leading the turn with comment content exists to make the session title
+meaningful. An alternative would remove that constraint: instruct the agent to
+emit a short recap-like title as the first thing in its reply, and have YA
+parse it from that session's next response when present. The turn could then
+open with the brief instructions and carry no content-first ordering at all.
+This is worth building only if compliance and extraction both prove reliable
+in practice; until they are measured, leading with content stays the contract.
+
+The response file's optional title field is the cheap variant of the same
+idea — a declared field beats parsing prose — but it arrives after the session
+already has a name, so it can only rename, not title at launch. graehl treats
+recap-style title suggestion as advanced/future either way; nothing here
+blocks on it.
+
+### Proposal, not contract: deleting old submissions
+
+A small `×` per entry in the Reviews list would delete that submission's
+record outright. It may remove capture pins only through the shared-object-
+database reference accounting required above; deleting or resolving one site
+does not prove that another site or worktree no longer needs an identical
+blob. graehl's condition for treating deletion as unimportant is that captures
+are not routinely pushed to a public remote by default.
+
+Verified 2026-08-01: they are not. `git push`, `git push --all`, and
+`git push --tags` carry no `refs/yep/*` ref, and a capture blob whose content
+appears in no commit stays local. `git push --mirror` does carry them, but
+that is a deliberate act rather than a default. Capture retention is
+therefore a local-disk concern only, which is what makes deletion a
+convenience rather than a requirement — and what keeps a growing capture set
+from becoming a repository-hygiene problem for anyone else.
 
 ## One-off diff-line comment → session (a fast path, not the vision)
 
@@ -338,6 +744,38 @@ Pull/Push actions:
 - Not a replacement for agent-driven git; not a full IDE or a second VS Code;
   not a general file manager (the #95 rename/delete items are intentionally
   unimplemented).
+
+## Inbox projection and store lifetime
+
+The unread-outcome Inbox is a derived projection, not a per-request scan of
+canonical state. One server-side owner builds it; concurrent mounts, manual
+refreshes, and repeated response events join that build rather than each
+starting an all-project store load. A project filter narrows the retained
+projection and never builds a separate one from canonical stores.
+
+The projection's source version is a monotonic review state revision that every
+accepted mutation bumps, because canonical state changes in memory before its
+save reaches disk. A project appearing with review state already on disk
+publishes no review event today, so a coarse time bucket bounds that staleness
+until exact per-row deltas exist. A projection build is accepted only while its
+observed revision and project-set bucket remain current. If they move during the
+build, neither a success nor a failure from that obsolete read is returned; the
+caller follows the newest build instead. A failure from the still-current source
+is returned, and bounded retargeting fails explicitly if the source never
+stabilizes.
+
+Retained project stores are a byte- and age-bounded cache, not process-lifetime
+state. A clean, inactive store may be released after its canonical state is
+durable and reloaded on exact project demand. Every mutation of one project is
+one serialized operation on one pinned store owner, from any source capture or
+manifest read through state mutation, durable save, and revision publication.
+A store with such a mutation, a save, or a load in flight is pinned: releasing
+it would strand the only copy of state the writer has not yet written. A rejected
+save poisons that in-memory owner because the filesystem outcome may be
+indeterminate after an atomic rename; queued mutations fail without running,
+and the owner is released when its active pins drain. The next operation reloads
+filesystem truth and applies the ordinary prepared-submission recovery rules.
+Budgets are enforced on access, so the newest store may briefly exceed them.
 
 ## Design decisions
 
@@ -929,7 +1367,12 @@ append/invalidate them from the prior git horizon. A cross-device server cache
 remains a possible later first-use accelerator, not part of the requested
 ownership boundary.
 
-## Open questions
+## Historical questions (superseded)
+
+This section is retained only as the decision trail from the first
+implementation. It is not a second contract or a list of current unknowns;
+the 2026-08-01 submissions-and-sites section above owns every question it
+resolves. The remaining genuinely open items are labeled as such.
 
 - **Provenance rendering.** Reuse the compose-time-context-anchors framing so
   each quote's SHA/age is legible to both the reader and the agent.
@@ -959,11 +1402,18 @@ ownership boundary.
   outcomes instead of silently choosing nearest; and tell the submitted
   session when the anchor moved, with original and current context when they
   differ. A project-local snapshot/blob keyed by content hash is the strongest
-  recoverable option, but is not yet chosen.
+  recoverable option, but is not yet chosen. — **Decided 2026-08-01**: the
+  capture is a real git blob written at comment time and pinned by
+  `refs/yep/source-review/captures`. The relocation half of this question is
+  deliberately *not* decided; no defect has been observed, and the contract it
+  must meet when touched is stated in the 2026-08-01 section.
 - **Review-file/draft-file split.** Whether the seeded prompt references
   `.yep/review-comments.json` directly or a per-submit snapshot beside it,
   and how a follow-up turn's update composes with the archive. How archived
-  comments are pruned.
+  comments are pruned. — **Decided 2026-08-01**: a frozen per-submission
+  `request.json` in a per-submission directory; the draft store is never
+  referenced by a prompt. The agent's `response.json` sibling remains mutable.
+  Resolving a site does not unpin captures.
 - **Relationship to forged-transcript-handoff.** A submitted review is a
   narrower, reviewer-authored cousin of that experiment — worth deciding whether
   they share the seeding path.
@@ -971,15 +1421,21 @@ ownership boundary.
   a batch archives its comments — "handled" from the reviewer's side — but
   the agent's actual outcomes never flow back. The seeded prompt already
   instructs the agent to report a per-comment disposition
-  (done / won't-fix / question) in its reply; nothing captures that onto the
-  archived comments. The aspiration: each archived comment shows a one-line
+  (done / no change / question; version 1 stores No change as `wont_fix`) in
+  its reply; nothing captures that onto the archived comments. The aspiration:
+  each archived comment shows a one-line
   disposition in the comments view, beside its batch/session link, so
   "submitted" and "actually resolved" stop being conflated. Feasible shape:
   the bundled review message additionally instructs the agent to emit an
   explicitly parseable per-comment-id disposition line (or call a small
   server endpoint/tool), and the server attaches what it sees to the archived
   comment. Nothing is committed — the prompt-side instruction, the capture
-  channel, and the rendering are all open.
+  channel, and the rendering are all open. — **Decided 2026-08-01**: the agent
+  writes an atomic outcome snapshot into `response.json`; YA reads it after
+  each of a configurable number of completed assistant turns for that exact
+  session/submission delivery. There is no transcript fallback. The governing
+  section defines the default bound, per-entry state, and Inbox acknowledgement
+  surface.
 
 ## Staged plan (historical)
 

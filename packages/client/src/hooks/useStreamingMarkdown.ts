@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  isBrowserDebugPerformanceRecording,
+  recordBrowserDebugPerformanceMetric,
+} from "../lib/browserDebugPerformance";
 
 const STREAMING_MARKDOWN_BASE_UPDATE_MS = 100;
 const STREAMING_MARKDOWN_MAX_UPDATE_MS = 750;
@@ -62,6 +66,10 @@ export interface PendingEvent {
   html: string;
 }
 
+export interface StreamingMarkdownOptions {
+  transformHtml?: (html: string) => string;
+}
+
 /**
  * Hook for consuming streaming markdown augments from the server.
  *
@@ -84,7 +92,9 @@ export interface PendingEvent {
  * onStreamEnd();
  * ```
  */
-export function useStreamingMarkdown(): StreamingMarkdownState & {
+export function useStreamingMarkdown(
+  options: StreamingMarkdownOptions = {},
+): StreamingMarkdownState & {
   onAugment: (augment: AugmentEvent) => void;
   onPending: (pending: PendingEvent) => void;
   onStreamEnd: () => void;
@@ -94,10 +104,14 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pendingRef = useRef<HTMLSpanElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const transformHtmlRef = useRef(options.transformHtml);
+  transformHtmlRef.current = options.transformHtml;
 
   // Track which block indices we've received to handle out-of-order augments
   // Maps blockIndex -> DOM element for that block
   const blocksRef = useRef<Map<number, HTMLElement>>(new Map());
+  const sourceAugmentsRef = useRef<Map<number, AugmentEvent>>(new Map());
+  const sourcePendingHtmlRef = useRef("");
 
   // Track the highest block index we've seen to maintain order
   const maxBlockIndexRef = useRef(-1);
@@ -139,6 +153,8 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
       markStreaming();
 
       const { blockIndex, html } = augment;
+      sourceAugmentsRef.current.set(blockIndex, augment);
+      const renderedHtml = transformHtmlRef.current?.(html) ?? html;
 
       // Check if we already have this block (dedupe)
       if (blocksRef.current.has(blockIndex)) {
@@ -146,7 +162,7 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
         const existingBlock = blocksRef.current.get(blockIndex);
         if (existingBlock) {
           debugLog("dom", "Updating existing block", { blockIndex });
-          existingBlock.innerHTML = html;
+          existingBlock.innerHTML = renderedHtml;
         }
         return;
       }
@@ -155,7 +171,7 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
       const blockElement = document.createElement("div");
       blockElement.className = "streaming-block";
       blockElement.dataset.blockIndex = String(blockIndex);
-      blockElement.innerHTML = html;
+      blockElement.innerHTML = renderedHtml;
 
       debugLog("dom", "Created new block element", {
         blockIndex,
@@ -231,7 +247,9 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
       // Mark as streaming on first pending update
       markStreaming();
 
-      pendingElement.innerHTML = pending.html;
+      sourcePendingHtmlRef.current = pending.html;
+      pendingElement.innerHTML =
+        transformHtmlRef.current?.(pending.html) ?? pending.html;
       debugLog("pending", "Updated pending element innerHTML");
     },
     [markStreaming],
@@ -270,6 +288,20 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
     }
 
     const durationMs = nowMs() - startMs;
+    if (isBrowserDebugPerformanceRecording()) {
+      recordBrowserDebugPerformanceMetric("streaming-markdown.flush", {
+        durationMs,
+      });
+      recordBrowserDebugPerformanceMetric("streaming-markdown.flushed-event", {
+        count: eventCount,
+        category:
+          augments.length > 0 && bufferedPendingHtml !== null
+            ? "augment-and-pending"
+            : augments.length > 0
+              ? "augment"
+              : "pending",
+      });
+    }
     if (
       durationMs > STREAMING_MARKDOWN_FLUSH_BUDGET_MS ||
       eventCount > STREAMING_MARKDOWN_BURST_EVENT_THRESHOLD
@@ -314,6 +346,12 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
    */
   const onAugment = useCallback(
     (augment: AugmentEvent) => {
+      if (isBrowserDebugPerformanceRecording()) {
+        recordBrowserDebugPerformanceMetric("streaming-markdown.event", {
+          category: "augment",
+          chars: augment.html.length,
+        });
+      }
       bufferedAugmentsRef.current.set(augment.blockIndex, augment);
       pendingEventCountRef.current += 1;
       scheduleBufferedFlush();
@@ -327,6 +365,12 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
    */
   const onPending = useCallback(
     (pending: PendingEvent) => {
+      if (isBrowserDebugPerformanceRecording()) {
+        recordBrowserDebugPerformanceMetric("streaming-markdown.event", {
+          category: "pending",
+          chars: pending.html.length,
+        });
+      }
       bufferedPendingHtmlRef.current = pending.html;
       pendingEventCountRef.current += 1;
       scheduleBufferedFlush();
@@ -343,6 +387,7 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
     flushBufferedUpdates();
 
     const pendingElement = pendingRef.current;
+    sourcePendingHtmlRef.current = "";
     if (pendingElement) {
       pendingElement.innerHTML = "";
       debugLog("event", "Cleared pending element");
@@ -360,6 +405,8 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
     clearScheduledFlush();
     bufferedAugmentsRef.current.clear();
     bufferedPendingHtmlRef.current = null;
+    sourceAugmentsRef.current.clear();
+    sourcePendingHtmlRef.current = "";
     pendingEventCountRef.current = 0;
     adaptiveFlushMsRef.current = STREAMING_MARKDOWN_BASE_UPDATE_MS;
 
@@ -392,12 +439,36 @@ export function useStreamingMarkdown(): StreamingMarkdownState & {
    */
   const captureHtml = useCallback((): string | null => {
     flushBufferedUpdates();
-    const container = containerRef.current;
-    if (!container) return null;
+    if (!containerRef.current) return null;
+    const container = document.createElement("div");
+    for (const augment of [...sourceAugmentsRef.current.values()].sort(
+      (left, right) => left.blockIndex - right.blockIndex,
+    )) {
+      const block = document.createElement("div");
+      block.className = "streaming-block";
+      block.dataset.blockIndex = String(augment.blockIndex);
+      block.innerHTML = augment.html;
+      container.append(block);
+    }
     const html = container.innerHTML;
     debugLog("event", "Captured HTML", { length: html.length });
     return html || null;
   }, [flushBufferedUpdates]);
+
+  useEffect(() => {
+    for (const [blockIndex, block] of blocksRef.current) {
+      const source = sourceAugmentsRef.current.get(blockIndex);
+      if (source) {
+        block.innerHTML = options.transformHtml?.(source.html) ?? source.html;
+      }
+    }
+    const pending = pendingRef.current;
+    if (pending && sourcePendingHtmlRef.current) {
+      pending.innerHTML =
+        options.transformHtml?.(sourcePendingHtmlRef.current) ??
+        sourcePendingHtmlRef.current;
+    }
+  }, [options.transformHtml]);
 
   useEffect(() => {
     return () => {

@@ -65,6 +65,64 @@ describe("CommittedRangeNumberInput", () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 
+  it("commits an empty number draft as explicit unset when enabled", () => {
+    const onEdit = vi.fn();
+    const onCommit = vi.fn();
+    render(
+      <CommittedRangeNumberInput
+        min={-1}
+        max={4}
+        numberMin={0}
+        value={2}
+        unsetSliderValue={-1}
+        ariaLabel="Subagent depth"
+        onEdit={onEdit}
+        onCommit={onCommit}
+      />,
+    );
+
+    const slider = screen.getByRole<HTMLInputElement>("slider", {
+      name: "Subagent depth",
+    });
+    const number = screen.getByRole<HTMLInputElement>("spinbutton", {
+      name: "Subagent depth",
+    });
+    fireEvent.change(number, { target: { value: "" } });
+    expect(onEdit).toHaveBeenCalledOnce();
+    fireEvent.blur(number);
+
+    expect(onCommit).toHaveBeenCalledWith(null);
+    expect(number.value).toBe("");
+    expect(slider.value).toBe("-1");
+  });
+
+  it("maps the explicit unset slider notch to a blank number", () => {
+    const onCommit = vi.fn();
+    render(
+      <CommittedRangeNumberInput
+        min={-1}
+        max={4}
+        numberMin={0}
+        value={2}
+        unsetSliderValue={-1}
+        ariaLabel="Subagent depth"
+        onCommit={onCommit}
+      />,
+    );
+
+    const slider = screen.getByRole<HTMLInputElement>("slider", {
+      name: "Subagent depth",
+    });
+    const number = screen.getByRole<HTMLInputElement>("spinbutton", {
+      name: "Subagent depth",
+    });
+    fireEvent.change(slider, { target: { value: "-1" } });
+    expect(number.value).toBe("");
+    fireEvent.pointerUp(slider);
+
+    expect(onCommit).toHaveBeenCalledWith(null);
+  });
+
   it("selects the edit path for valid number drafts and normalizes on blur", () => {
     const onEdit = vi.fn();
     const onCommit = vi.fn();
@@ -111,5 +169,45 @@ describe("CommittedRangeNumberInput", () => {
     fireEvent.blur(number);
 
     expect(onCommit).toHaveBeenCalledWith(75);
+  });
+
+  it("allows free number values beyond the slider range", () => {
+    const onCommit = vi.fn();
+    const { container } = render(
+      <CommittedRangeNumberInput
+        min={85}
+        max={130}
+        numberMin={50}
+        numberMax={300}
+        step={5}
+        list="scale-notches"
+        value={300}
+        unit="%"
+        ariaLabel="UI size"
+        snapTextToStep={false}
+        onCommit={onCommit}
+      />,
+    );
+
+    const slider = screen.getByRole<HTMLInputElement>("slider", {
+      name: "UI size",
+    });
+    const number = screen.getByRole<HTMLInputElement>("spinbutton", {
+      name: "UI size",
+    });
+    expect(slider.value).toBe("130");
+    expect(slider.getAttribute("list")).toBe("scale-notches");
+    expect(number.value).toBe("300");
+    expect(number.step).toBe("any");
+
+    fireEvent.change(number, { target: { value: "93.5" } });
+    fireEvent.blur(number);
+    expect(onCommit).toHaveBeenCalledWith(93.5);
+
+    fireEvent.change(number, { target: { value: "20" } });
+    fireEvent.blur(number);
+    expect(onCommit).toHaveBeenLastCalledWith(50);
+    expect(slider.value).toBe("85");
+    expect(container.textContent).toContain("%");
   });
 });

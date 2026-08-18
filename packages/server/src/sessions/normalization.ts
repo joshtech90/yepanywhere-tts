@@ -40,6 +40,7 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../codex/normalization.js";
+import { formatCodexSubagentActivity } from "../codex/subagentActivity.js";
 import { attachToolResultMediaCandidates } from "../media/inlineImageData.js";
 import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
 import {
@@ -98,6 +99,18 @@ const codexMessageCache = new WeakMap<
   }
 >();
 
+// Keyed by the reader's cache-stable entries array (claude-transcript-cache):
+// an unchanged transcript skips DAG rebuild + per-message conversion, and
+// eviction of the parsed transcript releases this copy via WeakMap semantics.
+const claudeMessageCache = new WeakMap<
+  ClaudeSessionEntry[],
+  {
+    length: number;
+    lastEntry: ClaudeSessionEntry | undefined;
+    messages: Message[];
+  }
+>();
+
 function normalizeClaudeQueueOperationContent(content: unknown): string {
   if (content === undefined) {
     return "";
@@ -146,12 +159,30 @@ export function normalizeSession(loaded: LoadedSession): Session {
     case "claude-gateway":
     case "claude-ollama": {
       const rawMessages = data.session.messages;
+      const lastEntry = rawMessages[rawMessages.length - 1];
+      const cached = claudeMessageCache.get(rawMessages);
+      if (
+        cached &&
+        cached.length === rawMessages.length &&
+        cached.lastEntry === lastEntry
+      ) {
+        return {
+          ...summary,
+          messages: cached.messages,
+        };
+      }
+
       const { entries, orphanedToolUses } =
         collectVisibleClaudeEntries(rawMessages);
       const messages: Message[] = entries.map((raw, index) =>
         convertClaudeMessage(raw, index, orphanedToolUses),
       );
 
+      claudeMessageCache.set(rawMessages, {
+        length: rawMessages.length,
+        lastEntry,
+        messages,
+      });
       return {
         ...summary,
         messages,
@@ -186,6 +217,14 @@ export function normalizeSession(loaded: LoadedSession): Session {
         messages: convertOpenCodeEntries(data.session.messages),
       };
   }
+}
+
+/**
+ * Detach the selected response window from provider-reader and normalization
+ * caches before route-specific augmentation mutates nested message blocks.
+ */
+export function detachSessionMessageProjection(messages: Message[]): Message[] {
+  return structuredClone(messages);
 }
 
 // --- Claude Conversion Logic ---
@@ -350,6 +389,8 @@ function convertCodexEntries(
         isCodexUserMessageEventEntry(entry) &&
         !userTurnProvenance.pairedUserEvents.has(entry);
       const shouldIncludeTurnAborted = entry.payload.type === "turn_aborted";
+      const shouldIncludeSubagentActivity =
+        entry.payload.type === "sub_agent_activity";
       const shouldIncludeContextCompacted =
         entry.payload.type === "context_compacted" &&
         !duplicateContextCompacted;
@@ -361,6 +402,7 @@ function convertCodexEntries(
       if (
         shouldIncludeUserMessage ||
         shouldIncludeTurnAborted ||
+        shouldIncludeSubagentActivity ||
         shouldIncludeContextCompacted ||
         shouldIncludeExecCommandEnd
       ) {
@@ -669,7 +711,17 @@ function convertCodexResponseItem(
         entry.timestamp,
       );
       toolCallContexts.set(converted.callId, converted.context);
-      return converted.message;
+      const turnId = getCodexResponseItemTurnId(payload);
+      return turnId
+        ? {
+            ...converted.message,
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "function_call",
+              turnId,
+              converted.callId,
+            ),
+          }
+        : converted.message;
     }
 
     case "function_call_output": {
@@ -690,7 +742,17 @@ function convertCodexResponseItem(
         toolCallContexts.delete(payload.call_id);
         closedToolResultIds.add(payload.call_id);
       }
-      return message;
+      const turnId = getCodexResponseItemTurnId(payload);
+      return turnId
+        ? {
+            ...message,
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "function_call",
+              turnId,
+              payload.call_id,
+            ),
+          }
+        : message;
     }
 
     case "custom_tool_call": {
@@ -1160,16 +1222,89 @@ function convertCodexExecCommandEndPayload(
   };
 }
 
+const CODEX_COMPACT_HISTORY_PREVIEW_MAX_ITEMS = 12;
+const CODEX_COMPACT_HISTORY_PREVIEW_MAX_CHARS = 4_000;
+
+/**
+ * Build a short, expandable preview of turns Codex kept after compaction.
+ * The full replacement_history can be huge; this is for the transcript chip.
+ */
+function formatCodexCompactReplacementHistory(
+  history: unknown[] | undefined,
+): string | undefined {
+  if (!history || history.length === 0) {
+    return undefined;
+  }
+  const lines: string[] = [];
+  for (const item of history) {
+    if (lines.length >= CODEX_COMPACT_HISTORY_PREVIEW_MAX_ITEMS) {
+      lines.push(
+        `…and ${history.length - CODEX_COMPACT_HISTORY_PREVIEW_MAX_ITEMS} more retained items`,
+      );
+      break;
+    }
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const role =
+      typeof record.role === "string"
+        ? record.role
+        : record.type === "message" && typeof record.role === "string"
+          ? record.role
+          : undefined;
+    const content = record.content;
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .map((block) => {
+          if (!block || typeof block !== "object") return "";
+          const b = block as Record<string, unknown>;
+          if (typeof b.text === "string") return b.text;
+          if (typeof b.input_text === "string") return b.input_text;
+          if (typeof b.output_text === "string") return b.output_text;
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    text = text.trim();
+    if (!text) continue;
+    const label =
+      role ?? (typeof record.type === "string" ? record.type : "item");
+    const clipped =
+      text.length > 500 ? `${text.slice(0, 500).trimEnd()}…` : text;
+    lines.push(`[${label}] ${clipped}`);
+  }
+  if (lines.length === 0) {
+    return undefined;
+  }
+  let body = `Preserved after compact (${history.length} history item${history.length === 1 ? "" : "s"}):\n\n${lines.join("\n\n")}`;
+  if (body.length > CODEX_COMPACT_HISTORY_PREVIEW_MAX_CHARS) {
+    body = `${body.slice(0, CODEX_COMPACT_HISTORY_PREVIEW_MAX_CHARS).trimEnd()}…`;
+  }
+  return body;
+}
+
 function convertCodexCompactedEntry(
   entry: CodexCompactedEntry,
   index: number,
 ): Message {
   const uuid = `codex-compacted-${index}-${entry.timestamp}`;
+  const providerMessage =
+    typeof entry.payload.message === "string"
+      ? entry.payload.message.trim()
+      : "";
+  const compactSummaryText =
+    providerMessage ||
+    formatCodexCompactReplacementHistory(entry.payload.replacement_history);
   return {
     uuid,
     type: "system",
     subtype: "compact_boundary",
-    content: entry.payload.message || "Context compacted",
+    // Short chip label; expandable body lives in compactSummaryText.
+    content: "Context compacted",
+    ...(compactSummaryText ? { compactSummaryText } : {}),
     timestamp: entry.timestamp,
   };
 }
@@ -1243,6 +1378,18 @@ function convertCodexEventMsg(
         type: "system",
         subtype: "turn_aborted",
         content: payload.reason ?? payload.message ?? "Turn aborted",
+        timestamp: entry.timestamp,
+      };
+
+    case "sub_agent_activity":
+      return {
+        uuid,
+        type: "system",
+        subtype: "subagent_activity",
+        content: formatCodexSubagentActivity(payload.kind, payload.agent_path),
+        codexSubagentKind: payload.kind,
+        codexSubagentThreadId: payload.agent_thread_id,
+        codexSubagentPath: payload.agent_path,
         timestamp: entry.timestamp,
       };
 
@@ -1330,13 +1477,18 @@ function convertGeminiMessages(
         for (const toolCall of assistantMsg.toolCalls) {
           if (toolCall.result && toolCall.result.length > 0) {
             for (const result of toolCall.result) {
+              const toolUseResult = {
+                tool_use_id: result.functionResponse.id,
+                content: result.functionResponse.response.output,
+              };
               messages.push({
                 uuid: `${assistantMsg.id}-result-${result.functionResponse.id}`,
-                type: "tool_result",
-                toolUseResult: {
-                  tool_use_id: result.functionResponse.id,
-                  content: result.functionResponse.response.output,
+                type: "user",
+                message: {
+                  role: "user",
+                  content: [{ type: "tool_result", ...toolUseResult }],
                 },
+                toolUseResult,
                 timestamp: toolCall.timestamp ?? assistantMsg.timestamp,
               });
             }

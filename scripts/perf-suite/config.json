@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "keepWorkDirectories": false,
+  "hostEligibility": {
+    "baselineSampleMs": 3000,
+    "maximumBaselineCpuBusyFraction": 0.8,
+    "maximumBaselineLoadPerEffectiveCpu": 2,
+    "maximumBaselineSwapGrowthMiB": 16,
+    "minimumEffectiveLogicalCpuCount": 2,
+    "minimumIdleLogicalCpuCount": {
+      "server": 1,
+      "browser": 1,
+      "built-client": 1,
+      "specialized": 1
+    },
+    "minimumEffectiveAvailableMemoryMiB": {
+      "server": 1024,
+      "browser": 2048,
+      "built-client": 2048,
+      "specialized": 2048
+    }
+  },
+  "fixture": {
+    "revision": "2f5e403e20fc5b96d5634a4b8f5a57704023d8da",
+    "providerCatalogFamilies": ["claude"],
+    "workingSetSessions": 3,
+    "cacheProofTimeoutMs": 1000,
+    "cacheDisabledObservationMs": 250
+  },
+  "server": {
+    "portBase": 4400,
+    "startupTimeoutMs": 60000,
+    "requestTimeoutMs": 30000,
+    "appendObservationMs": 1000
+  },
+  "scenarios": {
+    "smoke": {
+      "projects": 1,
+      "sessionsPerProject": 3,
+      "initialTurns": 2,
+      "newTurns": 1,
+      "concurrentClients": 2,
+      "browserCacheBudgetsMiB": [0, 24],
+      "payloadBytes": 512,
+      "repetitions": 1,
+      "settleMs": 250
+    },
+    "focused-append": {
+      "projects": 1,
+      "sessionsPerProject": 1,
+      "initialTurns": 8,
+      "newTurns": 1,
+      "concurrentClients": 1,
+      "browserCacheBudgetsMiB": [0],
+      "browserWorkingSetSessions": 1,
+      "payloadBytes": 8192,
+      "repetitions": 3,
+      "settleMs": 750
+    },
+    "specialized-contracts": {
+      "projects": 1,
+      "sessionsPerProject": 1,
+      "initialTurns": 12,
+      "newTurns": 1,
+      "concurrentClients": 8,
+      "browserWorkingSetSessions": 1,
+      "payloadBytes": 65536,
+      "repetitions": 3,
+      "settleMs": 250,
+      "streamChunks": 24,
+      "streamChunkBytes": 2048,
+      "streamDelayMs": 2,
+      "idleReapSeconds": 1
+    },
+    "fleet-small": {
+      "projects": 4,
+      "sessionsPerProject": 6,
+      "initialTurns": 8,
+      "newTurns": 4,
+      "concurrentClients": 4,
+      "browserCacheBudgetsMiB": [0, 24],
+      "payloadBytes": 8192,
+      "repetitions": 3,
+      "settleMs": 750
+    },
+    "large-session-cache": {
+      "projects": 2,
+      "sessionsPerProject": 4,
+      "initialTurns": 12,
+      "newTurns": 4,
+      "concurrentClients": 3,
+      "browserCacheBudgetsMiB": [0, 24],
+      "payloadBytes": 65536,
+      "repetitions": 3,
+      "settleMs": 1000
+    }
+  }
+}

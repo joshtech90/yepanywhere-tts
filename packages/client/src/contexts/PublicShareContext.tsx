@@ -15,6 +15,7 @@ export interface PublicShareContextValue {
   relayUrl: string;
   relayUsername: string;
   secret: string;
+  viewerId?: string;
 }
 
 export type PublicShareFileViewMode = "full" | "range";
@@ -76,12 +77,21 @@ function decodeURIComponentSafe(value: string): string | null {
   }
 }
 
+function isLikelyManagedAttachmentPath(filePath: string): boolean {
+  return /(?:^|[\\/])projects\/[a-f0-9]{32}\/attachments(?:[\\/]|$)/i.test(
+    filePath,
+  );
+}
+
 export function normalizePublicShareFilePath(
   filePath: string,
   projectId: string | null,
 ): { lineNumber?: number; path: string } | null {
   const parsed = parseLineColumn(filePath);
   const parsedPath = normalizePathSeparators(parsed.path);
+  if (isLikelyManagedAttachmentPath(parsedPath)) {
+    return { lineNumber: parsed.line, path: parsedPath };
+  }
   const projectRoot = getProjectRoot(projectId);
   const projectRelativePath = getProjectRelativePath(parsedPath, projectRoot);
   if (projectRelativePath === ".") {
@@ -129,6 +139,9 @@ export function buildPublicShareFileHref(
   url.searchParams.set("r", context.relayUrl);
   if (context.projectId) {
     url.searchParams.set("projectId", context.projectId);
+  }
+  if (context.viewerId) {
+    url.searchParams.set("viewerId", context.viewerId);
   }
   const lineNumber = options.lineNumber ?? normalized.lineNumber;
   if (lineNumber !== undefined) {
@@ -290,6 +303,7 @@ export function buildPublicShareRawFileApiPath(
     return null;
   }
   const params = new URLSearchParams({ path: normalized.path });
+  if (context.viewerId) params.set("viewerId", context.viewerId);
   return `/public-api/shares/${encodeURIComponent(context.secret)}/files/raw?${params}`;
 }
 

@@ -3,6 +3,11 @@ import type {
   ToolbarControlPresence,
   ToolbarNarrowingPriority,
 } from "@yep-anywhere/shared";
+import {
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { api } from "../api/client";
 import {
@@ -23,9 +28,8 @@ export type { ToolbarControlPresence, ToolbarNarrowingPriority };
 
 /**
  * One presence value per toolbar control: `hidden` keeps it off the toolbar;
- * a narrowing-priority tier shows it with that collapse behavior. This is the
- * single stored setting — there is no separate visibility boolean, and hiding
- * a control forgets its previous tier.
+ * a narrowing-priority tier shows it with that collapse behavior. `off` is
+ * reserved for controls whose underlying behavior can be disabled.
  */
 export interface SessionToolbarPresence {
   modeSelector: ToolbarControlPresence;
@@ -35,6 +39,7 @@ export interface SessionToolbarPresence {
   thinkingToggle: ToolbarControlPresence;
   renderMode: ToolbarControlPresence;
   conversationView: ToolbarControlPresence;
+  browserDebug: ToolbarControlPresence;
   microphone: ToolbarControlPresence;
   waveform: ToolbarControlPresence;
   shortcutsHelp: ToolbarControlPresence;
@@ -44,6 +49,7 @@ export interface SessionToolbarPresence {
   sessionStatus: ToolbarControlPresence;
   projectQueue: ToolbarControlPresence;
   projectQueueNewSessionShortcut: ToolbarControlPresence;
+  syntheticDone: ToolbarControlPresence;
   /**
    * Composer opener for the prior-turn recall drawer. Shown only in the mobile
    * keyboard action row, never on the toolbar proper, so it has no narrowing
@@ -72,6 +78,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRESENCE: SessionToolbarPresence = {
   thinkingToggle: "mid",
   renderMode: "hidden",
   conversationView: "last",
+  browserDebug: "hidden",
   microphone: "pin",
   waveform: "pin",
   shortcutsHelp: "last",
@@ -81,6 +88,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRESENCE: SessionToolbarPresence = {
   sessionStatus: "pin",
   projectQueue: "hidden",
   projectQueueNewSessionShortcut: "hidden",
+  syntheticDone: "off",
   composerRecall: "hidden",
 };
 
@@ -98,6 +106,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRIORITY: SessionToolbarPriority = {
   thinkingToggle: "mid",
   renderMode: "last",
   conversationView: "last",
+  browserDebug: "pin",
   microphone: "pin",
   waveform: "pin",
   shortcutsHelp: "last",
@@ -107,6 +116,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRIORITY: SessionToolbarPriority = {
   sessionStatus: "pin",
   projectQueue: "pin",
   projectQueueNewSessionShortcut: "pin",
+  syntheticDone: "pin",
   composerRecall: "pin",
 };
 
@@ -147,7 +157,9 @@ function isToolbarNarrowingPriority(
 function isToolbarControlPresence(
   value: unknown,
 ): value is ToolbarControlPresence {
-  return value === "hidden" || isToolbarNarrowingPriority(value);
+  return (
+    value === "off" || value === "hidden" || isToolbarNarrowingPriority(value)
+  );
 }
 
 function normalizeClientDefaultPresence(
@@ -159,7 +171,7 @@ function normalizeClientDefaultPresence(
   const normalized: SessionToolbarPresenceDefaults = {};
   const presenceRecord = value as Record<string, unknown>;
   for (const key of SESSION_TOOLBAR_CONTROL_KEYS) {
-    if (key === "conversationView") continue;
+    if (key === "conversationView" || key === "browserDebug") continue;
     const candidate = presenceRecord[key];
     if (isToolbarControlPresence(candidate)) {
       normalized[key] = candidate;
@@ -322,9 +334,9 @@ function saveClientDefaultPresence(
   key: SessionToolbarVisibilityKey,
   presence: ToolbarControlPresence,
 ): void {
-  // Conversation view is a client-only preference so stable servers never
-  // need to recognize its new toolbar key.
-  if (key === "conversationView") {
+  // These controls are client-only preferences so stable servers never need
+  // to recognize their new toolbar keys.
+  if (key === "conversationView" || key === "browserDebug") {
     return;
   }
   void api
@@ -354,6 +366,18 @@ export function useSessionToolbarPresence() {
         serverSupportsProjectQueueNewSessionShortcutSetting(version)
           ? presence.projectQueueNewSessionShortcut
           : "hidden",
+      syntheticDone: serverHasCapability(
+        version,
+        SYNTHETIC_DONE_COMMAND_CAPABILITY,
+      )
+        ? presence.syntheticDone
+        : "off",
+      browserDebug: serverHasCapability(
+        version,
+        REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+      )
+        ? presence.browserDebug
+        : "hidden",
     }),
     [presence, version],
   );
@@ -395,7 +419,7 @@ export function useSessionToolbarPresence() {
   const visibility = useMemo<SessionToolbarVisibility>(() => {
     const derived = {} as SessionToolbarVisibility;
     for (const key of SESSION_TOOLBAR_CONTROL_KEYS) {
-      derived[key] = effectivePresence[key] !== "hidden";
+      derived[key] = isToolbarNarrowingPriority(effectivePresence[key]);
     }
     return derived;
   }, [effectivePresence]);
@@ -404,8 +428,9 @@ export function useSessionToolbarPresence() {
     const derived = {} as SessionToolbarPriority;
     for (const key of SESSION_TOOLBAR_CONTROL_KEYS) {
       const value = effectivePresence[key];
-      derived[key] =
-        value === "hidden" ? DEFAULT_SESSION_TOOLBAR_PRIORITY[key] : value;
+      derived[key] = isToolbarNarrowingPriority(value)
+        ? value
+        : DEFAULT_SESSION_TOOLBAR_PRIORITY[key];
     }
     return derived;
   }, [effectivePresence]);

@@ -1,6 +1,7 @@
 import type {
   AgentActivity,
   PendingInputType,
+  ProviderChildSessionSummary,
   ProviderName,
   ProviderRuntimeStatus,
   ProjectQueueChangedEvent,
@@ -168,11 +169,13 @@ const REMAP_MERGE_GROUPS = {
     "model",
     "initialPrompt",
     "lastAgentText",
+    "providerChildren",
   ],
   metadataObservedAt: [
     "customTitle",
     "isArchived",
     "isStarred",
+    "autoResumeDisabled",
     "parentSessionId",
     "parentSessionKind",
     "forkedFromSessionId",
@@ -1159,6 +1162,7 @@ function withContentFields(
     model?: string;
     initialPrompt?: string;
     lastAgentText?: string;
+    providerChildren?: ProviderChildSessionSummary[];
   },
   observation: SessionCollectionObservation,
 ): SessionCollectionRecord {
@@ -1204,6 +1208,13 @@ function withContentFields(
     )
       ? { lastAgentText: fields.lastAgentText }
       : {}),
+    ...(canApplyObservedField(
+      record.providerChildren,
+      fields.providerChildren,
+      isFresh,
+    )
+      ? { providerChildren: fields.providerChildren }
+      : {}),
     ...(isFresh ? { contentObservedAt: observation.observedAt } : {}),
     observedAt: Math.max(record.observedAt, observation.observedAt),
   };
@@ -1215,6 +1226,7 @@ function withMetadataFields(
     customTitle?: string;
     isArchived?: boolean;
     isStarred?: boolean;
+    autoResumeDisabled?: boolean;
     parentSessionId?: string | null;
     parentSessionKind?: "btw-aside" | null;
     forkedFromSessionId?: string | null;
@@ -1237,6 +1249,13 @@ function withMetadataFields(
       : {}),
     ...(canApplyObservedField(record.isStarred, fields.isStarred, isFresh)
       ? { isStarred: fields.isStarred }
+      : {}),
+    ...(canApplyObservedField(
+      record.autoResumeDisabled,
+      fields.autoResumeDisabled,
+      isFresh,
+    )
+      ? { autoResumeDisabled: fields.autoResumeDisabled }
       : {}),
     ...(fields.parentSessionId === null
       ? isFresh
@@ -1414,6 +1433,7 @@ function upsertSnapshotRecord(
       model: row.model,
       initialPrompt: row.initialPrompt,
       lastAgentText: row.lastAgentText,
+      providerChildren: row.providerChildren,
     },
     observation,
   );
@@ -1424,6 +1444,7 @@ function upsertSnapshotRecord(
       customTitle: row.customTitle,
       isArchived: row.isArchived,
       isStarred: row.isStarred,
+      autoResumeDisabled: row.autoResumeDisabled,
       parentSessionId: row.parentSessionId,
       parentSessionKind: row.parentSessionKind,
       forkedFromSessionId: row.forkedFromSessionId,
@@ -1917,6 +1938,7 @@ export function applySessionCollectionCreated(
       model: session.model,
       initialPrompt: session.initialPrompt,
       lastAgentText: session.lastAgentText,
+      providerChildren: session.providerChildren,
     },
     observation,
   );

@@ -25,9 +25,67 @@ compromised, but the user has already installed or pinned a trusted client.
   local or extension origin rather than from a mutable hosted origin.
 - A signed-update flow downloads replacement client assets only after verifying
   a manifest and artifact hashes under pinned graehl/kzahel signing keys.
-- A first-run flow may still use full SRP with the Remote Access password, but
-  later reconnects should prefer key-bound resume without asking the hosted page
-  for the password again.
+- A first-run native flow uses full SRP with the Remote Access password; later
+  native reconnects use the Keystore-protected resume credential without
+  asking a hosted page for the password again. The bundled web client normally
+  consumes that authenticated native connection without receiving the
+  credential.
+
+The mobile ownership decision is recorded separately in
+[`mobile-server-pairing.md`](mobile-server-pairing.md): native Compose and
+background operation use a native secure connection core, while the bundled
+full web client acquires an isolated logical lease on the same core.
+
+## Current Mobile Packaging Checkpoint
+
+The first-class Android application has two explicit asset channels. Local
+debug and ordinary production builds bundle the current checkout's client
+assets through Android's HTTPS app-assets origin; a separate hosted-`latest`
+release channel loads a fixed YA HTTPS origin for Play internal or closed
+testing. Neither channel accepts an arbitrary runtime UI URL. Its native host
+is exact-origin and main-frame bound and exposes only declared high-level
+methods. The current methods are `host.describe`, `notifications.status`, and
+the explicitly user-triggered `notifications.requestPermission`; no method
+exports native credentials.
+
+The signed Android package also owns one platform-native launcher identity:
+YA's white Y over the established green gradient. Android 8 and later receive
+separate full-bleed background, foreground Y, and monochrome Y layers so each
+launcher can apply its own circle, squircle, themed tint, and motion effects.
+The artwork does not bake in a rounded tile, bevel, border, or shadow. Because
+the app's minimum SDK is 24, only Android 7 and 7.1 use density-specific legacy
+PNGs; those fallbacks precompose the same Y over a green circle. Google Play's
+512-pixel listing icon remains a separate full-bleed artifact rather than a
+launcher resource.
+
+The longer-term foreground choice has two permanent presentations. Android
+Compose, and later iOS SwiftUI, own the focused native companion and
+Conversation-view surfaces. The complete bundled web client remains a
+full-fidelity escape hatch for users who prefer it and for rich tools, settings,
+and unsupported native surfaces; it is not the primary mobile product surface.
+Hosted `latest` remains valuable for transitional testing, but it does not
+answer the stronger production trust requirement below.
+
+Bundled app-assets JavaScript is trusted application code: it is shipped under
+the APK signature, is isolated in the app WebView, and does not load ordinary
+browser extensions. It may legitimately read and modify YA application data.
+The native host still remains exact-origin and method-scoped as inexpensive
+defense in depth.
+
+The bundled client normally uses a native data-plane adapter so an already
+authenticated Android user is not asked to log in again merely to reach a
+setting or rich renderer missing from Compose. The adapter exposes high-level
+source operations over a bounded exact-origin channel; Kotlin keeps SRP and
+resume material private and arbitrates concurrent Compose, foreground-service,
+and WebView leases. Binary uploads remain chunked and flow-controlled rather
+than copied into one bridge message.
+
+Still unresolved are the stable public asset update/signing policy and the
+exact native secure storage/rotation model. An independently authenticated
+WebView remains a possible future performance or isolation mode, but it uses
+normal explicit SRP and its own browser-scoped resume session. The baseline
+does not mint or hand off a child credential. Native installation and
+push-management secrets remain app-private and are not web credentials.
 
 ## Deferred Verification Setup
 
@@ -75,9 +133,12 @@ threat requires signed or locally served client packaging.
 
 ## Open Questions
 
-- Which install shape should be first: Android WebView assets, a Trusted Web
-  Activity with signed asset pinning, a browser extension, or a local loopback
-  static-file launcher?
+- How are permanent bundled web assets updated and verified without making
+  live hosted JavaScript the credential trust root or waiting indefinitely for
+  fixes behind app-store review?
+- Do representative full-web workloads ever justify an independently
+  authenticated bundled-WebView mode despite the duplicate login and extra
+  server session?
 - Should graehl and kzahel use independent signing keys, a threshold policy, or
   a primary/backup-key policy with explicit rotation?
 - What is the minimum browser storage model that keeps local-file or

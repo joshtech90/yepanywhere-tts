@@ -1,4 +1,5 @@
 import type {
+  ProjectPathLinkTarget,
   ToolDisplayAction,
   ToolResultMedia,
   TranscriptDisplayObject,
@@ -68,12 +69,16 @@ export interface ToolResultData {
   structured?: unknown;
   /** Session-scoped media captured from the tool result. */
   media?: ToolResultMedia[];
+  /** Exact file targets confirmed by the serving project. */
+  projectPathLinks?: ProjectPathLinkTarget[];
 }
 
 export interface UserPromptItem extends RenderItemBase {
   type: "user_prompt";
   id: string;
   content: string | ContentBlock[];
+  /** Exact file targets confirmed by the serving project. */
+  projectPathLinks?: ProjectPathLinkTarget[];
 }
 
 /**
@@ -157,6 +162,12 @@ export interface ConversationThinkingPreview {
   slot: ConversationThinkingPreviewSlot;
   thinking: string;
   status: ThinkingItem["status"];
+  /**
+   * Latest observed source timestamp for this block, so a card can say how far
+   * back in the turn it sits. Null when the provider gave no timestamps; the
+   * card then shows no age rather than inventing one.
+   */
+  endedAtMs: number | null;
 }
 
 export type ConversationThinkingPreviewSlot = "latest" | "previous";

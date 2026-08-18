@@ -32,11 +32,28 @@ const modelSettings = vi.hoisted(() => {
 const speechCaptureSettings = vi.hoisted(() => ({
   keepMicWarm: false,
   setKeepMicWarm: vi.fn(),
+  reducePlayback: true,
+  setReducePlayback: vi.fn(),
+  unspokenPunctuation: false,
+  setUnspokenPunctuation: vi.fn(),
+  followUpListenMs: 0,
+  setFollowUpListenMs: vi.fn(),
+  asrAttributionMs: 0,
+  setAsrAttributionMs: vi.fn(),
+  speechMessagePrefixMode: "off" as const,
+  setSpeechMessagePrefixMode: vi.fn(),
+  speechMessageCustomPrefix: "",
+  setSpeechMessageCustomPrefix: vi.fn(),
+  speechMessagePrefix: null,
 }));
 const browserXaiKey = vi.hoisted(() => ({
   browserXaiSttApiKey: "",
   hasBrowserXaiSttApiKey: false,
   setBrowserXaiSttApiKey: vi.fn(),
+}));
+const speechSourceRuntime = vi.hoisted(() => ({
+  relayTransport: false,
+  relayedServerSpeechAvailable: false,
 }));
 const versionState = vi.hoisted(() => ({
   capabilities: [] as string[],
@@ -50,12 +67,18 @@ const versionState = vi.hoisted(() => ({
   }>,
 }));
 const prewarmYaServerSpeechBackend = vi.hoisted(() => vi.fn(async () => {}));
+const undoMocks = vi.hoisted(() => ({
+  useSettingsUndoBaseline: vi.fn(),
+}));
 
 vi.mock("../../../hooks/useModelSettings", () => ({
   useModelSettings: () => modelSettings,
 }));
 
 vi.mock("../../../hooks/useSpeechCaptureSettings", () => ({
+  MAX_SPEECH_FOLLOW_UP_LISTEN_MS: 30_000,
+  MAX_SPEECH_ASR_ATTRIBUTION_MS: 5_000,
+  MAX_SPEECH_MESSAGE_CUSTOM_PREFIX_LENGTH: 64,
   useSpeechCaptureSettings: () => speechCaptureSettings,
 }));
 
@@ -63,8 +86,8 @@ vi.mock("../../../hooks/useBrowserXaiSttApiKey", () => ({
   useBrowserXaiSttApiKey: () => browserXaiKey,
 }));
 
-vi.mock("../../../hooks/useRemoteBasePath", () => ({
-  useRemoteBasePath: () => "",
+vi.mock("../../../hooks/useSpeechSourceRuntime", () => ({
+  useSpeechSourceRuntime: () => speechSourceRuntime,
 }));
 
 vi.mock("../../../hooks/useVersion", () => ({
@@ -96,6 +119,8 @@ vi.mock("../../../lib/speechProviders/YaServerProvider", () => ({
   prewarmYaServerSpeechBackend,
 }));
 
+vi.mock("../SettingsUndoContext", () => undoMocks);
+
 describe("SpeechSettings", () => {
   beforeEach(() => {
     versionState.capabilities = [VOICE_INPUT_CAPABILITY];
@@ -107,10 +132,21 @@ describe("SpeechSettings", () => {
     modelSettings.parakeetSpeechModel = "nvidia/parakeet-tdt-0.6b-v3";
     versionState.voiceBackends = ["ya-grok", "ya-parakeet", "ya-nemo"];
     versionState.voiceBackendStatuses = [];
+    speechSourceRuntime.relayTransport = false;
+    speechSourceRuntime.relayedServerSpeechAvailable = false;
     modelSettings.setSpeechMethod.mockClear();
     modelSettings.setParakeetSpeechModel.mockClear();
     speechCaptureSettings.setKeepMicWarm.mockClear();
+    speechCaptureSettings.setReducePlayback.mockClear();
+    speechCaptureSettings.unspokenPunctuation = false;
+    speechCaptureSettings.setUnspokenPunctuation.mockClear();
+    speechCaptureSettings.setFollowUpListenMs.mockClear();
+    speechCaptureSettings.setAsrAttributionMs.mockClear();
+    speechCaptureSettings.setSpeechMessagePrefixMode.mockClear();
+    speechCaptureSettings.setSpeechMessageCustomPrefix.mockClear();
+    browserXaiKey.browserXaiSttApiKey = "";
     browserXaiKey.setBrowserXaiSttApiKey.mockClear();
+    undoMocks.useSettingsUndoBaseline.mockClear();
     prewarmYaServerSpeechBackend.mockClear();
   });
 
@@ -130,6 +166,58 @@ describe("SpeechSettings", () => {
     expect(prewarmYaServerSpeechBackend).toHaveBeenCalledWith(
       "ya-parakeet",
       "nvidia/parakeet-ctc-1.1b",
+    );
+  });
+
+  it("offers the default-off speech prefix selector", () => {
+    render(<SpeechSettings />);
+
+    const selector = screen.getByLabelText("speechSettingsMessagePrefixTitle");
+    expect((selector as HTMLSelectElement).value).toBe("off");
+    fireEvent.change(selector, { target: { value: "stt" } });
+    expect(
+      speechCaptureSettings.setSpeechMessagePrefixMode,
+    ).toHaveBeenCalledWith("stt");
+  });
+
+  it("offers default-off browser punctuation as an explicit opt-in", () => {
+    render(<SpeechSettings />);
+
+    const toggle = screen.getByRole("checkbox", {
+      name: "speechSettingsUnspokenPunctuationTitle",
+    }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+
+    expect(speechCaptureSettings.setUnspokenPunctuation).toHaveBeenCalledWith(
+      true,
+    );
+  });
+
+  it("keeps the browser xAI STT key out of saved-login autofill", () => {
+    render(<SpeechSettings />);
+
+    const apiKey = screen.getByLabelText(
+      "speechSettingsXaiKeyTitle",
+    ) as HTMLInputElement;
+
+    expect(apiKey.autocomplete).toBe("new-password");
+    expect(apiKey.name).toBe("xai-stt-api-key");
+  });
+
+  it("includes the browser xAI STT key in pane undo", () => {
+    browserXaiKey.browserXaiSttApiKey = "opening-key";
+    render(<SpeechSettings />);
+
+    const call = undoMocks.useSettingsUndoBaseline.mock.calls[0];
+    if (!call) throw new Error("Speech undo did not register");
+    const [snapshot, restore] = call;
+    expect(snapshot.browserXaiSttApiKey).toBe("opening-key");
+
+    restore({ ...snapshot, browserXaiSttApiKey: "restored-key" });
+    expect(browserXaiKey.setBrowserXaiSttApiKey).toHaveBeenCalledWith(
+      "restored-key",
     );
   });
 
@@ -158,7 +246,7 @@ describe("SpeechSettings", () => {
     );
 
     const option = screen.getByRole("button", {
-      name: /NeMo Parakeet STT speechSettingsBackendValidating/,
+      name: /NeMo Parakeet STT\s*speechSettingsBackendValidating/,
     }) as HTMLButtonElement;
     expect(option.disabled).toBe(true);
   });
@@ -234,5 +322,41 @@ describe("SpeechSettings", () => {
       "ya-parakeet",
       "nvidia/parakeet-tdt-0.6b-v3",
     );
+  });
+
+  it("shows a missing explicit backend as unavailable without switching", () => {
+    modelSettings.speechMethod = "ya-deepgram";
+    versionState.voiceBackends = ["ya-grok"];
+
+    render(<SpeechSettings />);
+
+    expect(screen.getByText("speechSettingsBackendUnavailable")).toBeTruthy();
+    expect(modelSettings.setSpeechMethod).not.toHaveBeenCalled();
+  });
+
+  it("uses the current relayed source speech channel for Smart Turn", () => {
+    modelSettings.speechMethod = "ya-grok";
+    speechSourceRuntime.relayTransport = true;
+    speechSourceRuntime.relayedServerSpeechAvailable = true;
+
+    render(<SpeechSettings />);
+
+    expect(screen.getByRole("checkbox", { name: "Smart Turn" })).toBeTruthy();
+    expect(
+      screen.queryByText("speechSettingsStreamingRelayUnavailable"),
+    ).toBeNull();
+  });
+
+  it("reports relayed streaming unavailable without a speech channel", () => {
+    modelSettings.speechMethod = "ya-grok";
+    speechSourceRuntime.relayTransport = true;
+    speechSourceRuntime.relayedServerSpeechAvailable = false;
+
+    render(<SpeechSettings />);
+
+    expect(screen.queryByRole("checkbox", { name: "Smart Turn" })).toBeNull();
+    expect(
+      screen.getAllByText("speechSettingsStreamingRelayUnavailable").length,
+    ).toBeGreaterThan(0);
   });
 });

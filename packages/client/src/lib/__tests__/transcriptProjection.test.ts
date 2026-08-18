@@ -27,6 +27,7 @@ describe("compileTranscriptProjection", () => {
             type: "tool_result",
             tool_use_id: "tool-1",
             content: "file contents",
+            _projectPathLinks: [{ filePath: "test.ts", text: "test.ts" }],
           },
         ],
         timestamp: "2024-01-01T00:00:01Z",
@@ -41,7 +42,11 @@ describe("compileTranscriptProjection", () => {
       id: "tool-1",
       toolName: "Read",
       status: "complete",
-      toolResult: { content: "file contents", isError: false },
+      toolResult: {
+        content: "file contents",
+        isError: false,
+        projectPathLinks: [{ filePath: "test.ts", text: "test.ts" }],
+      },
     });
   });
 
@@ -1122,6 +1127,34 @@ describe("compileTranscriptProjection", () => {
     });
   });
 
+  it("projects confirmed path links onto a user prompt", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-path-prompt",
+        type: "user",
+        content: "Please inspect topics/project-path-links.md",
+        _projectPathLinks: [
+          {
+            filePath: "topics/project-path-links.md",
+            text: "topics/project-path-links.md",
+          },
+        ],
+      },
+    ];
+
+    expect(compileTranscriptProjection(messages)).toMatchObject([
+      {
+        type: "user_prompt",
+        projectPathLinks: [
+          {
+            filePath: "topics/project-path-links.md",
+            text: "topics/project-path-links.md",
+          },
+        ],
+      },
+    ]);
+  });
+
   it("renders Claude local slash commands as system markers", () => {
     const messages: Message[] = [
       {
@@ -1168,6 +1201,31 @@ describe("compileTranscriptProjection", () => {
       subtype: "local_command",
       content: "Unknown command: /tend",
     });
+  });
+
+  it("preserves structured local-command details", () => {
+    const messages: Message[] = [
+      {
+        uuid: "codex-status",
+        type: "system",
+        subtype: "local_command",
+        content: "/status",
+        details: ["Model: gpt-5.6\nSession: thread-1", "Limits: 24% used"],
+        timestamp: "2026-08-10T00:00:00.000Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        type: "system",
+        id: "codex-status",
+        subtype: "local_command",
+        content: "/status",
+        details: ["Model: gpt-5.6\nSession: thread-1", "Limits: 24% used"],
+      }),
+    ]);
   });
 
   it("suppresses durable Claude compact local-command stdout rows", () => {
@@ -1321,9 +1379,10 @@ describe("compileTranscriptProjection", () => {
       ],
     });
     const compact = items[0];
+    // Human summary first, provider metadata second.
     expect(compact?.type === "system" ? compact.details : []).toEqual([
-      expect.stringContaining("compactMetadata"),
       expect.stringContaining("Summary:\n- prior work"),
+      expect.stringContaining("compactMetadata"),
     ]);
   });
 
@@ -1355,6 +1414,83 @@ describe("compileTranscriptProjection", () => {
     expect(compact?.type === "system" ? compact.details : []).toEqual([
       expect.stringContaining("Summary:\n- prior work"),
     ]);
+  });
+
+  it("classifies Claude compact preamble without isCompactSummary as system compact", () => {
+    // Live SDK stream can omit the durable flag; body opener is stable.
+    const messages: Message[] = [
+      {
+        id: "live-summary",
+        type: "user",
+        message: {
+          role: "user",
+          content:
+            "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n- prior work",
+        },
+        timestamp: "2024-01-01T00:00:03Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "system",
+      subtype: "compact_boundary",
+      content: "Context compacted",
+    });
+    expect(items.some((item) => item.type === "user_prompt")).toBe(false);
+  });
+
+  it("surfaces compactSummaryText and metadata as expandable details", () => {
+    const messages: Message[] = [
+      {
+        id: "boundary",
+        type: "system",
+        subtype: "compact_boundary",
+        content: "Context compacted",
+        compactSummaryText: "Kept: prior goal and last user turn",
+        compactMetadata: { trigger: "manual", preTokens: 1000 },
+        timestamp: "2024-01-01T00:00:02Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+    expect(items).toHaveLength(1);
+    const compact = items[0];
+    expect(compact?.type).toBe("system");
+    if (compact?.type !== "system") return;
+    expect(compact.details?.[0]).toEqual("Kept: prior goal and last user turn");
+    expect(String(compact.details?.[1] ?? "")).toContain("compactMetadata:");
+  });
+
+  it("classifies array-content compact summary as system compact", () => {
+    const messages: Message[] = [
+      {
+        id: "array-summary",
+        type: "user",
+        isCompactSummary: true,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n- blocks",
+            },
+          ],
+        },
+        timestamp: "2024-01-01T00:00:03Z",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "system",
+      subtype: "compact_boundary",
+    });
+    expect(items.some((item) => item.type === "user_prompt")).toBe(false);
   });
 
   it("unwraps non-compact local-command stdout as a system marker", () => {
@@ -1694,6 +1830,54 @@ describe("compileTranscriptProjection", () => {
       type: "tool_call",
       status: "error",
       toolResult: { content: "Command failed", isError: true },
+    });
+  });
+
+  it("normalizes Claude Bash failure envelopes into command metadata", () => {
+    const messages: Message[] = [
+      {
+        id: "msg-use",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "node scripts/perf-suite/run.mjs" },
+          },
+        ],
+      },
+      {
+        id: "msg-result",
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "Exit code 1\namended-working-tree/smoke: repetition 1/1",
+            is_error: true,
+          },
+        ],
+        toolUseResult:
+          "Error: Exit code 1\namended-working-tree/smoke: repetition 1/1",
+      },
+    ];
+
+    const items = compileTranscriptProjection(messages);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "tool_call",
+      status: "error",
+      toolResult: {
+        content: "Exit code 1\namended-working-tree/smoke: repetition 1/1",
+        isError: true,
+        structured: {
+          stdout: "amended-working-tree/smoke: repetition 1/1",
+          stderr: "",
+          exitCode: 1,
+        },
+      },
     });
   });
 
@@ -2723,6 +2907,90 @@ describe("compileTranscriptProjection", () => {
             content: `how should we render ${TASK_NOTIFICATION_XML}?`,
           },
           timestamp: "2024-01-01T00:00:00Z",
+        },
+      ];
+
+      const items = compileTranscriptProjection(messages);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.type).toBe("user_prompt");
+    });
+  });
+
+  describe("harness session continuation", () => {
+    // Claude Code restarts a session whose process is gone by injecting this
+    // meta prompt and answering it with a zero-token placeholder. Rendering the
+    // pair as a user bubble plus an assistant reply shows an exchange that
+    // never happened; both collapse into one system notice instead.
+    const continuationPair = (): Message[] => [
+      {
+        uuid: "aaaaaaaa-0000-0000-0000-000000000001",
+        type: "user",
+        isMeta: true,
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "Continue from where you left off." },
+          ],
+        },
+        timestamp: "2024-01-01T00:00:00Z",
+      },
+      {
+        uuid: "aaaaaaaa-0000-0000-0000-000000000002",
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: "No response requested." }],
+        },
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ];
+
+    it("collapses the injected prompt and its placeholder into one notice", () => {
+      const items = compileTranscriptProjection(continuationPair());
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        type: "system",
+        subtype: "no_model_turn",
+        content: "Session continued without running a turn",
+      });
+    });
+
+    it("keeps a real assistant turn that happens to use the same words", () => {
+      const messages: Message[] = [
+        {
+          uuid: "aaaaaaaa-0000-0000-0000-000000000003",
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-5",
+            content: [{ type: "text", text: "No response requested." }],
+          },
+          timestamp: "2024-01-01T00:00:02Z",
+        },
+      ];
+
+      const items = compileTranscriptProjection(messages);
+
+      expect(items).toHaveLength(1);
+      expect(items[0]?.type).toBe("text");
+    });
+
+    it("keeps a user-typed message with the continuation wording", () => {
+      const messages: Message[] = [
+        {
+          uuid: "aaaaaaaa-0000-0000-0000-000000000004",
+          type: "user",
+          // Not isMeta: the user actually typed this.
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "Continue from where you left off." },
+            ],
+          },
+          timestamp: "2024-01-01T00:00:03Z",
         },
       ];
 

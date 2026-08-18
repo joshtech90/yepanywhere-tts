@@ -37,8 +37,7 @@ vi.mock("../api/client", () => ({
     getGitCommit: (...args: unknown[]) => getGitCommit(...args),
     getGitCommitDiff: (...args: unknown[]) => getGitCommitDiff(...args),
     getGitComparison: (...args: unknown[]) => getGitComparison(...args),
-    getGitComparisonDiff: (...args: unknown[]) =>
-      getGitComparisonDiff(...args),
+    getGitComparisonDiff: (...args: unknown[]) => getGitComparisonDiff(...args),
     getGitDiff: (...args: unknown[]) => getGitDiff(...args),
     getGitUntrackedFolder: (...args: unknown[]) =>
       getGitUntrackedFolder(...args),
@@ -209,6 +208,59 @@ describe("CommitBrowser", () => {
     );
   });
 
+  it("opens a directly linked file within the selected commit", async () => {
+    primeApis();
+    getGitCommit.mockResolvedValue({
+      hash: SHA,
+      shortHash: "aaaaaaa",
+      subject: "first commit",
+      authorName: "Dev",
+      authorDate: "2026-07-26T00:00:00Z",
+      body: "",
+      files: [
+        {
+          path: "src/first.ts",
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+        {
+          path: "src/linked.ts",
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <CommitBrowser
+          projectId="p1"
+          isWideScreen={true}
+          initialSha={SHA}
+          initialPath="src/linked.ts"
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("src/linked.ts");
+    await waitFor(() =>
+      expect(
+        document.querySelector(".commit-file-item.selected")?.textContent,
+      ).toContain("src/linked.ts"),
+    );
+    await waitFor(() =>
+      expect(getGitCommitDiff).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ path: "src/linked.ts" }),
+      ),
+    );
+  });
+
   it("keeps a direct blame-hash revision selected beyond the recent page", async () => {
     primeApis();
     getGitCommit.mockResolvedValue({
@@ -253,7 +305,9 @@ describe("CommitBrowser", () => {
     );
 
     await screen.findByText("src/x.ts");
-    fireEvent.click(screen.getByRole("button", { name: "sourceCompareToHead" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sourceCompareToHead" }),
+    );
 
     expect(await screen.findByText("src/cumulative.ts")).toBeDefined();
     expect(getGitComparison).toHaveBeenCalledWith("p1", SHA);
@@ -290,7 +344,9 @@ describe("CommitBrowser", () => {
     );
 
     await screen.findByText("src/x.ts");
-    fireEvent.click(screen.getByRole("button", { name: "sourceCompareToHead" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sourceCompareToHead" }),
+    );
 
     expect(onProjectionUnavailable).toHaveBeenCalled();
     expect(getGitComparison).not.toHaveBeenCalled();
@@ -314,7 +370,9 @@ describe("CommitBrowser", () => {
     );
 
     await screen.findByText("src/x.ts");
-    fireEvent.click(screen.getByRole("button", { name: "sourceCompareToHead" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "sourceCompareToHead" }),
+    );
 
     await waitFor(() => expect(onProjectionUnavailable).toHaveBeenCalled());
     expect(screen.getAllByText("src/x.ts").length).toBeGreaterThan(0);
@@ -389,21 +447,41 @@ describe("CommitBrowser", () => {
     await waitFor(() =>
       expect(document.querySelector('[data-diff-line="0"]')).not.toBeNull(),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "sourceFilterFiles" }),
-    );
+    getGitCommitDiff.mockResolvedValueOnce({
+      diffHtml:
+        `<pre class="shiki"><code>` +
+        `<span class="line line-inserted" data-diff-line="0">+keep</span>` +
+        `</code></pre>`,
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 1,
+          lines: ["+keep"],
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "sourceFilterFiles" }));
     fireEvent.change(screen.getByPlaceholderText("sourceFilterFiles"), {
       target: { value: "legacy" },
     });
 
     expect(
-      screen.getByText("legacy/original.ts → src/keep.ts"),
-    ).toBeDefined();
+      document.querySelector(
+        '[data-source-path="legacy/original.ts → src/keep.ts"]',
+      ),
+    ).not.toBeNull();
     expect(screen.queryByText("test/drop.test.ts")).toBeNull();
     await waitFor(() =>
       expect(getGitCommitDiff).toHaveBeenCalledWith(
         "p1",
         expect.objectContaining({ path: "src/keep.ts" }),
+      ),
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-diff-line="0"]')?.textContent).toBe(
+        "+keep",
       ),
     );
   });
@@ -438,6 +516,9 @@ describe("CommitBrowser", () => {
     );
 
     expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    const workingTreeRow = document.querySelector(".commit-list-working-tree");
+    expect(workingTreeRow?.textContent).toContain("sourceUncommitted");
+    expect(workingTreeRow?.textContent).toContain("sourceChangedFileCount");
     await waitFor(() =>
       expect(getGitDiff).toHaveBeenCalledWith(
         "p1",
@@ -453,7 +534,7 @@ describe("CommitBrowser", () => {
     await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", SHA));
   });
 
-  it("keeps a clean Working tree selectable inside commit history", async () => {
+  it("opens the newest commit for a clean tree and keeps Working tree selectable", async () => {
     primeApis();
 
     render(
@@ -467,19 +548,63 @@ describe("CommitBrowser", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", SHA));
     const workingTreeRow = document.querySelector(
       ".commit-list-working-tree .commit-list-item",
     ) as HTMLButtonElement;
-    expect(workingTreeRow.classList.contains("selected")).toBe(true);
-    expect(getGitCommit).not.toHaveBeenCalled();
+    const commitRow = document.querySelector(
+      ".commit-list-row:not(.commit-list-working-tree) .commit-list-item",
+    ) as HTMLButtonElement;
+    expect(workingTreeRow.classList.contains("selected")).toBe(false);
+    expect(commitRow.classList.contains("selected")).toBe(true);
+    expect(screen.getByText("gitStatusClean")).toBeDefined();
+    expect(screen.getByText("sourceWorkingTreeCleanDescription")).toBeDefined();
+    expect(screen.queryByText("sourceUncommitted")).toBeNull();
+    expect(screen.queryByText("gitStatusWorkingTreeClean")).toBeNull();
 
-    fireEvent.click(await screen.findByText("first commit"));
-    await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", SHA));
     fireEvent.click(workingTreeRow);
     expect(workingTreeRow.classList.contains("selected")).toBe(true);
     expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    expect(await screen.findByText("gitStatusWorkingTreeClean")).toBeDefined();
     expect(screen.getByText("first commit")).toBeDefined();
+  });
+
+  it("opens the newest commit for a clean tree on phone", async () => {
+    primeApis();
+
+    render(
+      <MemoryRouter>
+        <CommitBrowser
+          projectId="p1"
+          status={cleanStatus()}
+          isWideScreen={false}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", SHA));
+    expect(screen.queryByText("gitStatusWorkingTreeClean")).toBeNull();
+    expect(document.querySelector(".commit-revisions-column")).toBeNull();
+  });
+
+  it("falls back to Working tree when a clean repository has no commits", async () => {
+    primeApis();
+    getGitCommits.mockResolvedValue({ commits: [], hasMore: false });
+
+    render(
+      <MemoryRouter>
+        <CommitBrowser
+          projectId="p1"
+          status={cleanStatus()}
+          isWideScreen={true}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("working-tree-browser")).toBeDefined();
+    expect(getGitCommit).not.toHaveBeenCalled();
   });
 
   it("uses arrow keys to move the focused revision selection", async () => {
@@ -535,9 +660,7 @@ describe("CommitBrowser", () => {
     });
 
     expect(document.activeElement).toBe(second);
-    await waitFor(() =>
-      expect(getGitCommit).toHaveBeenCalledWith("p1", older),
-    );
+    await waitFor(() => expect(getGitCommit).toHaveBeenCalledWith("p1", older));
   });
 
   it("opens revision actions by context key or right-click", async () => {
@@ -621,9 +744,7 @@ describe("CommitBrowser", () => {
       expect(getGitCommitSearchManifest).toHaveBeenCalledWith("p1"),
     );
     await waitFor(() =>
-      expect(
-        document.querySelector(".source-search-index-status"),
-      ).toBeNull(),
+      expect(document.querySelector(".source-search-index-status")).toBeNull(),
     );
   });
 
@@ -934,7 +1055,7 @@ describe("CommitBrowser", () => {
     expect(badges.some((badge) => badge.textContent === "1")).toBe(true);
   });
 
-  it("soft-reflows the compact body but opens the verbatim message", async () => {
+  it("repeats the subject, soft-reflows the body, and opens the verbatim message", async () => {
     const first =
       "Rendered commit prose is commonly hard-wrapped for a readable terminal";
     const second =
@@ -964,15 +1085,55 @@ describe("CommitBrowser", () => {
     );
 
     const compactBody = await screen.findByTitle("sourceShowFullMessage");
-    expect(compactBody.textContent).toBe(`${first} ${second}`);
-    fireEvent.click(compactBody);
-    await waitFor(() =>
-      expect(document.querySelector(".commit-message-full")).not.toBeNull(),
-    );
-    expect(document.querySelector(".commit-message-full")?.textContent).toBe(
-      `first commit\n\n${first}\n${second}`,
-    );
+    expect(compactBody.textContent).toBe(`first commit\n\n${first} ${second}`);
+    const getSelection = vi
+      .spyOn(window, "getSelection")
+      .mockReturnValue({ isCollapsed: false } as Selection);
+    try {
+      fireEvent.click(compactBody);
+      expect(document.querySelector(".commit-message-full")).toBeNull();
+
+      getSelection.mockReturnValue(null);
+      fireEvent.click(compactBody);
+      await waitFor(() =>
+        expect(document.querySelector(".commit-message-full")).not.toBeNull(),
+      );
+      expect(document.querySelector(".commit-message-full")?.textContent).toBe(
+        `first commit\n\n${first}\n${second}`,
+      );
+    } finally {
+      getSelection.mockRestore();
+    }
   });
+
+  it.each(["Enter", " "])(
+    "opens the commit message card with the %j key",
+    async (key) => {
+      primeApis();
+      getGitCommit.mockResolvedValue({
+        hash: SHA,
+        shortHash: "aaaaaaa",
+        subject: "first commit",
+        authorName: "Dev",
+        authorDate: "2026-07-26T00:00:00Z",
+        body: "message body",
+        files: [],
+      });
+      render(
+        <MemoryRouter>
+          <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.keyDown(await screen.findByTitle("sourceShowFullMessage"), {
+        key,
+      });
+
+      await waitFor(() =>
+        expect(document.querySelector(".commit-message-full")).not.toBeNull(),
+      );
+    },
+  );
 
   it("bridges a commit file to its blame view via onBlameFile", async () => {
     primeApis();

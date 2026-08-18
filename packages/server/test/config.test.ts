@@ -12,7 +12,9 @@ interface ConfigEnvReadReport {
 }
 
 function collectConfigEnvReads(): ConfigEnvReadReport {
-  const configPath = fileURLToPath(new URL("../src/config.ts", import.meta.url));
+  const configPath = fileURLToPath(
+    new URL("../src/config.ts", import.meta.url),
+  );
   const sourceText = fs.readFileSync(configPath, "utf8");
   const sourceFile = ts.createSourceFile(
     configPath,
@@ -43,10 +45,7 @@ function collectConfigEnvReads(): ConfigEnvReadReport {
   }
 
   function visit(node: ts.Node): void {
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      isProcessEnv(node.expression)
-    ) {
+    if (ts.isPropertyAccessExpression(node) && isProcessEnv(node.expression)) {
       names.add(node.name.text);
     } else if (
       ts.isElementAccessExpression(node) &&
@@ -273,13 +272,13 @@ describe("loadConfig codex paths", () => {
     expect(config.nemoDevice).toBe("cuda:1");
   });
 
-  it("defaults idle cleanup to 60 minutes", async () => {
+  it("defaults idle cleanup to 24 hours", async () => {
     vi.stubEnv("IDLE_TIMEOUT", "");
 
     const { loadConfig } = await import("../src/config.js");
     const config = loadConfig();
 
-    expect(config.idleTimeoutMs).toBe(60 * 60 * 1000);
+    expect(config.idleTimeoutMs).toBe(24 * 60 * 60 * 1000);
   });
 
   it("defaults session auto-archive off", async () => {
@@ -307,6 +306,16 @@ describe("loadConfig codex paths", () => {
     const config = loadConfig();
 
     expect(config.idleTimeoutMs).toBe(45 * 1000);
+  });
+
+  it("preserves a legacy idle timeout above Node's timer limit", async () => {
+    const thirtyDaysInSeconds = 30 * 24 * 60 * 60;
+    vi.stubEnv("IDLE_TIMEOUT", String(thirtyDaysInSeconds));
+
+    const { loadConfig } = await import("../src/config.js");
+    const config = loadConfig();
+
+    expect(config.idleTimeoutMs).toBe(thirtyDaysInSeconds * 1000);
   });
 
   it("reads the xAI STT key from YA-private module env", async () => {
@@ -350,5 +359,39 @@ describe("loadConfig codex paths", () => {
     const config = loadConfig();
 
     expect(config.shareXaiSttApiKeyWithClients).toBe(true);
+  });
+});
+
+describe("loadConfig session wake base URL", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("normalizes an explicitly reachable HTTP(S) base", async () => {
+    vi.stubEnv("YEP_SESSION_WAKE_BASE_URL", "https://ya.example/wake-root");
+    const { loadConfig } = await import("../src/config.js");
+
+    expect(loadConfig().sessionWakeBaseUrl).toBe(
+      "https://ya.example/wake-root/",
+    );
+  });
+
+  it("rejects a base URL containing credentials", async () => {
+    vi.stubEnv("YEP_SESSION_WAKE_BASE_URL", "https://token@ya.example/");
+    const { loadConfig } = await import("../src/config.js");
+
+    expect(() => loadConfig()).toThrow("YEP_SESSION_WAKE_BASE_URL");
+  });
+
+  it("strips inherited parent-session wake capabilities", async () => {
+    vi.stubEnv("YEP_SESSION_WAKE_URL", "http://parent.invalid/wake");
+    vi.stubEnv("YEP_SESSION_WAKE_TOKEN", "parent-token");
+    const { loadConfig } = await import("../src/config.js");
+
+    loadConfig();
+
+    expect(process.env.YEP_SESSION_WAKE_URL).toBeUndefined();
+    expect(process.env.YEP_SESSION_WAKE_TOKEN).toBeUndefined();
   });
 });

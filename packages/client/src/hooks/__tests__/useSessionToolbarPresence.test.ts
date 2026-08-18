@@ -2,6 +2,8 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import {
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY,
+  SYNTHETIC_DONE_COMMAND_CAPABILITY,
 } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_STORAGE_DEFAULT } from "../../lib/defaultedStorage";
@@ -66,6 +68,64 @@ describe("useSessionToolbarPresence", () => {
     expect(result.current.presence.conversationView).toBe("last");
     expect(result.current.visibility.conversationView).toBe(true);
     expect(conversation.result.current.conversationViewEnabled).toBe(true);
+    expect(DEFAULT_SESSION_TOOLBAR_PRESENCE.browserDebug).toBe("hidden");
+    expect(result.current.visibility.browserDebug).toBe(false);
+  });
+
+  it("reveals browser debugging only with capability and local opt-in", async () => {
+    stubToolbarLayout(false);
+    mocks.version = {
+      capabilities: [REMOTE_BROWSER_DIAGNOSTICS_CAPABILITY],
+    };
+    const { useSessionToolbarPresence } = await import(
+      "../useSessionToolbarPresence"
+    );
+    const { result } = renderHook(() => useSessionToolbarPresence());
+
+    for (const priority of ["first", "mid", "last", "pin"] as const) {
+      act(() => result.current.setControlPresence("browserDebug", priority));
+      expect(result.current.presence.browserDebug).toBe(priority);
+      expect(result.current.visibility.browserDebug).toBe(true);
+    }
+    expect(mocks.updateServerSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps synthetic done off by default and separates hidden from off", async () => {
+    stubToolbarLayout(false);
+    mocks.version = {
+      capabilities: [SYNTHETIC_DONE_COMMAND_CAPABILITY],
+    };
+    const { useSessionToolbarPresence } = await import(
+      "../useSessionToolbarPresence"
+    );
+    const { result } = renderHook(() => useSessionToolbarPresence());
+
+    expect(result.current.presence.syntheticDone).toBe("off");
+    expect(result.current.visibility.syntheticDone).toBe(false);
+
+    act(() => result.current.setControlPresence("syntheticDone", "hidden"));
+    expect(result.current.presence.syntheticDone).toBe("hidden");
+    expect(result.current.visibility.syntheticDone).toBe(false);
+
+    act(() => result.current.setControlPresence("syntheticDone", "pin"));
+    expect(result.current.presence.syntheticDone).toBe("pin");
+    expect(result.current.visibility.syntheticDone).toBe(true);
+  });
+
+  it("forces synthetic done off when the server lacks its contract", async () => {
+    stubToolbarLayout(false);
+    window.localStorage.setItem(
+      UI_KEYS.sessionToolbarPresence,
+      JSON.stringify({ syntheticDone: "pin" }),
+    );
+    mocks.version = { capabilities: [] };
+    const { useSessionToolbarPresence } = await import(
+      "../useSessionToolbarPresence"
+    );
+    const { result } = renderHook(() => useSessionToolbarPresence());
+
+    expect(result.current.presence.syntheticDone).toBe("off");
+    expect(result.current.visibility.syntheticDone).toBe(false);
   });
 
   it("activates Conversation view when its client-only control is enabled", async () => {

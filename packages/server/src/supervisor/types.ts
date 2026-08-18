@@ -12,6 +12,7 @@ import type {
   ProviderName,
   RecapMode,
   SessionSandboxEnforcement,
+  SessionQueuedYaCommand,
   ThinkingConfig,
   UrlProjectId,
   SessionLivenessSnapshot,
@@ -142,6 +143,8 @@ export interface SessionSummary {
   sandboxPolicy?: SessionSandboxPolicy;
   /** YA workstream lane for this session. Missing means the implicit main lane. */
   workstreamId?: WorkstreamId;
+  /** Provider-launched child work nested under this parent. Absent on older servers. */
+  providerChildren?: ProviderChildSessionSummary[];
 }
 
 /**
@@ -239,7 +242,7 @@ export interface ProcessInfo {
   provider: ProviderName; // which provider is running this process
   /** Thinking configuration (undefined = thinking disabled) */
   thinking?: ThinkingConfig;
-  /** Effort level for response quality (undefined = SDK default) */
+  /** Selected effort for the next response (undefined = provider default) */
   effort?: EffortLevel;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
@@ -288,6 +291,7 @@ export interface ProcessAbortResult {
 // Process events for subscribers
 export type ProcessEvent =
   | { type: "message"; message: SDKMessage }
+  | { type: "user-turn-accepted" }
   | { type: "state-change"; state: ProcessState }
   | { type: "liveness-update" }
   | {
@@ -296,6 +300,10 @@ export type ProcessEvent =
     }
   | { type: "mode-change"; mode: PermissionMode; version: number }
   | { type: "mode-applied"; mode: PermissionMode }
+  | {
+      type: "configuration-applied";
+      setting: "model" | "thinking" | "effort";
+    }
   | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
   | {
       type: "context-window-observed";
@@ -315,14 +323,9 @@ export type ProcessEvent =
   | { type: "terminated"; reason: string; error?: Error }
   | {
       type: "deferred-queue";
-      messages: {
-        tempId?: string;
-        content: string;
-        timestamp: string;
-        attachmentCount?: number;
-      }[];
       reason?: "queued" | "cancelled" | "promoted";
       tempId?: string;
+      yaCommand?: SessionQueuedYaCommand;
     }
   | {
       type: "recap-result";
@@ -345,7 +348,7 @@ export interface ProcessOptions {
    * and reactivate flows start idle; turn-bearing flows keep the default.
    */
   initialState?: "in-turn" | "idle";
-  idleTimeoutMs?: number; // default 60 minutes
+  idleTimeoutMs?: number; // default 24 hours; negative disables idle reaping
   permissionMode?: PermissionMode;
   provider: ProviderName; // which provider is running this process
   /** Thinking configuration (undefined = thinking disabled) */
@@ -356,6 +359,8 @@ export interface ProcessOptions {
   serviceTier?: string;
   /** Model used for this session (e.g., "claude-opus-4-5-20251101") */
   model?: string;
+  /** Exact YA model token selected at launch, including "default". */
+  requestedModel?: string;
   /** Configured per-model compaction threshold percentage, if any. */
   compactAtContextPercent?: number;
   /** Effective full context window used to derive the threshold. */

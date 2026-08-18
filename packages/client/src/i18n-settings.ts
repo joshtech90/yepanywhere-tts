@@ -1,4 +1,4 @@
-import type { FontSize } from "./hooks/useFontSize";
+import type { SidebarSpacing } from "./hooks/useSidebarSpacing";
 import type {
   OutputFixedFont,
   OutputProseFont,
@@ -24,19 +24,15 @@ export function getThemeLabel(
   }
 }
 
-export function getFontSizeLabel(
-  size: FontSize,
+export function getSidebarSpacingLabel(
+  spacing: SidebarSpacing,
   t: (key: string) => string,
 ): string {
-  switch (size) {
-    case "small":
-      return t("fontSizeSmall");
-    case "default":
-      return t("fontSizeDefault");
-    case "large":
-      return t("fontSizeLarge");
-    case "larger":
-      return t("fontSizeLarger");
+  switch (spacing) {
+    case "compact":
+      return t("sidebarSpacingCompact");
+    case "comfortable":
+      return t("sidebarSpacingComfortable");
   }
 }
 
@@ -126,6 +122,16 @@ export function getSettingsCategories(
       description: t("settingsMessageDeliveryDescription"),
     },
     {
+      id: "source-control",
+      label: t("settingsSourceControlTitle"),
+      description: t("settingsSourceControlDescription"),
+    },
+    {
+      id: "storage",
+      label: t("settingsStorageTitle"),
+      description: t("settingsStorageDescription"),
+    },
+    {
       id: "agent-context",
       label: t("settingsAgentContextTitle"),
       description: t("settingsAgentContextDescription"),
@@ -181,6 +187,11 @@ export function getSettingsCategories(
       description: t("settingsEnvironmentDescription"),
     },
     {
+      id: "development",
+      label: t("settingsDevelopmentTitle"),
+      description: t("settingsDevelopmentDescription"),
+    },
+    {
       id: "about",
       label: t("settingsAboutTitle"),
       description: t("settingsAboutDescription"),
@@ -195,15 +206,5 @@ export function getEmulatorCategory(
     id: "emulator",
     label: t("settingsEmulatorTitle"),
     description: t("settingsEmulatorDescription"),
-  };
-}
-
-export function getDevelopmentCategory(
-  t: (key: string) => string,
-): SettingsCategory {
-  return {
-    id: "development",
-    label: t("settingsDevelopmentTitle"),
-    description: t("settingsDevelopmentDescription"),
   };
 }

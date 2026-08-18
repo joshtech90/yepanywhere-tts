@@ -35,10 +35,14 @@ describe("speech waveform", () => {
     vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
     vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
 
+    const gradient = {
+      addColorStop: vi.fn(),
+    } as unknown as CanvasGradient;
     const context = {
       beginPath: vi.fn(),
       clearRect: vi.fn(),
       closePath: vi.fn(),
+      createLinearGradient: vi.fn(() => gradient),
       fill: vi.fn(),
       fillStyle: "",
       lineTo: vi.fn(),
@@ -92,6 +96,8 @@ describe("speech waveform", () => {
 
     renderNextFrame(0);
     expect(context.fill).toHaveBeenCalledTimes(1);
+    expect(context.createLinearGradient).toHaveBeenCalledWith(0, 0, 0, 36);
+    expect(gradient.addColorStop).toHaveBeenCalledTimes(5);
     // 120 CSS-pixel columns form 120 shared-edge trapezoids.
     expect(context.lineTo).toHaveBeenCalledTimes(241);
     expect(context.moveTo).toHaveBeenCalledWith(0, 0);
@@ -140,5 +146,61 @@ describe("speech waveform", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws a static settings preview without subscribing to live audio", () => {
+    const requestAnimationFrame = vi.fn(() => 1);
+    vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const gradient = {
+      addColorStop: vi.fn(),
+    } as unknown as CanvasGradient;
+    const lineTo = vi.fn();
+    const context = {
+      beginPath: vi.fn(),
+      clearRect: vi.fn(),
+      closePath: vi.fn(),
+      createLinearGradient: vi.fn(() => gradient),
+      fill: vi.fn(),
+      fillStyle: "",
+      lineTo,
+      moveTo: vi.fn(),
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      context,
+    );
+    vi.spyOn(
+      HTMLCanvasElement.prototype,
+      "getBoundingClientRect",
+    ).mockReturnValue({
+      bottom: 36,
+      height: 36,
+      left: 0,
+      right: 120,
+      top: 0,
+      width: 120,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    render(<SpeechWaveform preview />);
+    expect(context.fill).toHaveBeenCalledOnce();
+    expect(context.createLinearGradient).toHaveBeenCalledWith(0, 0, 0, 36);
+
+    const topEdgeHeights = lineTo.mock.calls
+      .slice(0, 120)
+      .map(([, y]) => (18 - Number(y)) / 18);
+    expect(Math.max(...topEdgeHeights)).toBeLessThan(0.7);
+    expect(
+      topEdgeHeights.filter((height) => height >= 0.6).length,
+    ).toBeLessThan(topEdgeHeights.length * 0.1);
+
+    act(() => {
+      publishSpeechWaveformSamples(Float32Array.from([0.8, -0.8]));
+    });
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(context.fill).toHaveBeenCalledOnce();
   });
 });

@@ -16,8 +16,10 @@ Topic: host-identity
 - The icon is default-off. An unset or cleared icon leaves the existing header
   and browser-tab presentation unchanged.
 - The Remote Access settings pane exposes a compact curated emoji palette plus
-  a custom entry. A saved custom entry must contain exactly one user-perceived
-  grapheme and remain within the server's bounded storage limit.
+  a custom entry. Presets save when selected; a valid custom entry saves on
+  blur or Enter. It must contain exactly one user-perceived grapheme and remain
+  within the server's bounded storage limit. Clearing remains an explicit
+  action.
 - When configured, the marker appears immediately after the leading
   sidebar/back control and before the current page or session title. It remains
   visible when the leading control is absent.
@@ -30,6 +32,10 @@ Topic: host-identity
 - Disconnected host-picker rows do not display the marker. Supporting that
   would require client caching or unauthenticated host metadata, both outside
   this feature's server-owned scope.
+- A connected native multi-host client may use the marker on source filters,
+  aggregate session/activity cards, and server settings rows. The username
+  remains the fallback and the source boundary remains visible. A cold offline
+  row still does not invent or persist a client-owned marker.
 
 ## Compatibility
 

@@ -39,6 +39,57 @@ linked docs when the details change.
   under `packages/push-broker/`. It stores revocable device-delivery
   capabilities and submits bounded generic notifications through an injected
   provider. It is not part of provider session routing or the encrypted relay.
+- **Mobile companions** use native platform shells and notification delivery.
+  Android is a first-class Gradle/Kotlin application with Compose as the first
+  native foreground target; its Android-owned WebView keeps the bundled client
+  as a permanent full-fidelity alternative for users and surfaces that prefer
+  the complete web interface. The Kotlin connection core owns native SRP,
+  direct/relay transport, and foreground-service subscriptions. The bundled
+  WebView should normally consume that connection through a bounded
+  `SourceTransport` adapter so opening the complete interface does not ask the
+  user to authenticate twice; Compose, background work, and the WebView hold
+  source-scoped logical leases on native-owned connections. Each paired profile
+  keeps independent SRP state and failure lifecycle; compatible relay profiles
+  may share one physical relay-mux socket below that boundary. Native
+  multi-host demand and mux ownership land before the WebView data adapter so
+  the adapter never bakes in a single global host. An independently
+  authenticated TypeScript WebView transport remains a valid future
+  alternative if measurements justify it, but no credential handoff or child
+  session is part of the baseline. Tauri Mobile has been removed and is
+  unrelated to the separate desktop Tauri application. iOS follows later with
+  SwiftUI.
+
+## Provider runtime ownership and reload
+
+On a capable Linux non-watch development launch, `scripts/dev.js` owns a shared
+provider host outside the replaceable Hono process. One worker per session owns
+the real provider adapter, SDK/TUI transport, message queue, callbacks, and
+sequenced output; Hono's `Process` talks to it through an `AgentSession` proxy.
+When that host is unavailable, provider ownership remains inside Hono and the
+ordinary safe-restart behavior applies.
+
+Shared-host use is capability-driven and automatic, not a user toggle. The
+former Codex-native setting remains accepted and stored for compatibility, but
+is inert and hidden; Codex uses the shared host like every other provider.
+
+**Safe Reload replaces Hono only.** Existing shared-host workers intentionally
+keep the provider code and launch facts they started with. A newly launched
+worker uses current provider code, a targeted worker relaunch updates that one
+session, and a provider-host reboot guarantees every provider worker adopted
+provider-layer changes (a full wrapper reboot does this when the wrapper owns
+the host). The UI's immediate reload is
+available only when each active blocker has a detachable hosted owner and no
+volatile queued input; **Reload When Safe** remains the fallback otherwise.
+
+The provider host listens on private mode-0600 Unix sockets using
+token-authenticated, versioned JSONL. Stable same-user discovery, foreground
+headless startup, attach-or-start recovery, bounded host-mediated session
+turns, and the authenticated Hono adapter are implemented. Worker sockets
+remain private; auxiliary clients submit through the incumbent worker queue,
+never acknowledge Hono's replay stream, and never become a second Hono
+controller. See
+[`topics/provider-host-api.md`](topics/provider-host-api.md) and
+[`topics/reload-safe-provider-runtimes.md`](topics/reload-safe-provider-runtimes.md).
 
 Single-user / small-team scale is assumed throughout — see the cleanups
 section below for what would have to change at higher fan-out.
@@ -59,6 +110,13 @@ section below for what would have to change at higher fan-out.
   — proposal for one canonical, single-writer YA session that can transfer a
   provider-specific portable bundle and active ownership between trusted YA
   peers while the client follows the same session identity.
+- [`topics/reload-safe-provider-runtimes.md`](topics/reload-safe-provider-runtimes.md)
+  — implemented wrapper-lifetime provider ownership, Hono reattachment,
+  replay, cleanup, availability gates, and verification matrix.
+- [`topics/provider-host-api.md`](topics/provider-host-api.md) — current private
+  host/worker protocols, stable same-user discovery, headless bootstrap,
+  attach-or-start recovery, bounded session turns, receipts, and the
+  authenticated Hono adapter.
 - [`topics/cross-host-delegation.md`](topics/cross-host-delegation.md) — broad
   product direction for browser-known hosts, directed server-to-server grants,
   and separate native worker sessions as a useful step before session
@@ -82,14 +140,44 @@ section below for what would have to change at higher fan-out.
   — approved direction for a stable server ingest kernel, bounded transcript
   windows with prefix facts, and a versioned presentation compiler shared by
   web, Android, and iOS while platform renderers remain native to each surface.
+- [`topics/conversation-view.md`](topics/conversation-view.md) — compact default
+  transcript projection that preserves user/agent text, media, and important
+  failures while summarizing routine per-turn activity; selected as the first
+  native session-detail presentation.
+- [`docs/project/mobile-companion-app.md`](docs/project/mobile-companion-app.md)
+  — Android-first native companion product shape, permanent bundled full-web
+  alternative, notification/inbox scope, and later SwiftUI iOS counterpart.
+- [`topics/mobile-server-pairing.md`](topics/mobile-server-pairing.md) —
+  approved boundary between app-local paired-server profiles, durable paired
+  devices, expiring SRP resume credentials, native Kotlin transport,
+  a bundled-web lease over that transport, resume-authenticated direct/relay
+  discovery, and push enrollment; an independent bundled-web session remains
+  a possible later optimization and public installation identity is deferred.
+- [`topics/security-client-audit.md`](topics/security-client-audit.md) —
+  unified cross-platform client registration, P-256 continuity keys,
+  recognizable audit fingerprints, bounded per-client history plus a
+  revocation-surviving server security ledger, legacy web projection,
+  cascading revocation, opt-in new-client alerts, native push ownership, and
+  future WebAuthn/platform-attestation assurance.
+- [`docs/tactical/080-first-class-android-shell.md`](docs/tactical/080-first-class-android-shell.md)
+  — removal of Tauri Mobile, first-class Gradle/Compose ownership, explicit
+  bundled/hosted WebView channels, and the exact-origin native-host message
+  contract.
 - [`topics/stream-persisted-render-parity.md`](topics/stream-persisted-render-parity.md)
   — graded convergence contract between the active live tail and the durable
   provider transcript: strong structural stability for paired tool calls,
   bounded optimistic/live-only detail near the tail, and no YA shadow
   transcript replacing provider persistence as source of truth.
+- [`topics/project-directory-storage.md`](topics/project-directory-storage.md)
+  — app-data-only default for YA-managed state, explicit global project-local
+  opt-in, the complete project/Git writer audit, and hosted capability rollout.
+- [`topics/storage-settings.md`](topics/storage-settings.md) — first-pass
+  Storage Settings contract: YA data directory vs. project `.yep`, lazy media
+  by default, and unbounded preservation of new managed-session images as a
+  separate opt-in.
 - [`topics/session-media-handles.md`](topics/session-media-handles.md) —
-  problem statement and latent proposal for replacing transcript inline
-  base64 image/blob payloads with authenticated server media handles.
+  authenticated lazy transcript media handles, default-off durable
+  preservation, and the correction to unconditional project materialization.
 - [`topics/disk-full-degraded-mode.md`](topics/disk-full-degraded-mode.md)
   — problem statement and latent proposal for keeping relay/local control
   paths alive when optional disk writers hit `ENOSPC`.

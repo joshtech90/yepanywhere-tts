@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Document the experimental Linux provider host as a separately usable layer,
+  including its foreground launch, stable same-user local protocol,
+  authenticated Hono adapter, and bounded single-worker turn semantics.
+
+### Changed
+- Classify Source Control as stable and complete its public description with
+  working-tree and commit navigation, tracked-file search and blame,
+  line-comment review bundles sent to agents, and the deliberately bounded
+  remote, pull, and push actions.
+- Give every green uppercase eyebrow label one platform-system sans rule with
+  real 700 weight and restrained tracking, while leaving the mixed-case Inter
+  headings unchanged.
+
 ## [site-v1.9.0] - 2026-08-01
 
 ### Fixed

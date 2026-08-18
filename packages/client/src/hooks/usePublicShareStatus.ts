@@ -5,6 +5,7 @@ import {
   createClientQueryKey,
   ensureClientQuery,
   type ClientQueryRequestContext,
+  type ClientQuerySettlement,
 } from "../lib/clientQueryController";
 import {
   type ClientSummarySourceKey,
@@ -103,9 +104,7 @@ function reportPublicShareStatusError(
   publicShareStatusSnapshotsBySource.set(sourceKey, {
     ...current,
     error:
-      error instanceof Error
-        ? error.message
-        : "Failed to load share status",
+      error instanceof Error ? error.message : "Failed to load share status",
   });
   emitPublicShareStatusSnapshotChange();
 }
@@ -128,7 +127,7 @@ function applyPublicShareStatusSnapshot(
 function ensurePublicShareStatus(
   sourceKey: ClientSummarySourceKey,
   force: boolean,
-): Promise<void> {
+): Promise<ClientQuerySettlement> {
   return ensureClientQuery({
     sourceKey,
     key: PUBLIC_SHARE_STATUS_QUERY_KEY,
@@ -225,6 +224,7 @@ export function usePublicShareStatus(
   const { loading, error, refetch } = useRetainedClientQuery({
     sourceKey,
     key: PUBLIC_SHARE_STATUS_QUERY_KEY,
+    bootstrapTier: "supplementary",
     ready,
     hasData: snapshot.observedAt !== undefined,
     revalidateOn: PUBLIC_SHARE_STATUS_REVALIDATE_EVENTS,
@@ -236,6 +236,8 @@ export function usePublicShareStatus(
     status: snapshot.status,
     loading,
     error: snapshot.error ?? (error ? error.message : null),
-    refresh: refetch,
+    refresh: async () => {
+      await refetch();
+    },
   };
 }

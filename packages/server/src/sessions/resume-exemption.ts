@@ -1,16 +1,32 @@
 /**
- * Resume exemption for explicitly killed sessions.
+ * Resume exemption for explicitly killed or locally completed sessions.
  *
  * When the user kills a session through YA's explicit Kill action, the
  * session must not come back through an automatic YA resume path. The durable
- * exemption lives in YA metadata and is checked by the unowned-session
- * heartbeat candidate gate. Provider transcripts remain untouched so history
- * stays readable and the user can deliberately continue the session.
+ * exemption lives in YA metadata and is checked by every automatic process-
+ * start path. Provider transcripts remain untouched so history stays readable
+ * and the user can deliberately continue the session.
  *
- * See topics/heartbeat.md ("Unowned resume exemptions").
+ * See topics/session-liveness.md and topics/heartbeat.md ("Unowned resume
+ * exemptions").
  */
 
 import type { SessionMetadata } from "../metadata/SessionMetadataService.js";
+
+/** Whether YA may start a provider process without a fresh user action. */
+export function isAutomaticSessionResumeAllowed(
+  metadata:
+    | Pick<
+        SessionMetadata,
+        "autoResumeDisabled" | "automationPausedUntilUserTurn"
+      >
+    | undefined,
+): boolean {
+  return (
+    metadata?.autoResumeDisabled !== true &&
+    metadata?.automationPausedUntilUserTurn !== true
+  );
+}
 
 /**
  * Whether an unowned session may be auto-resumed by the heartbeat candidate
@@ -20,13 +36,16 @@ import type { SessionMetadata } from "../metadata/SessionMetadataService.js";
 export function isUnownedHeartbeatResumeEligible(
   metadata: Pick<
     SessionMetadata,
-    "heartbeatTurnsEnabled" | "isArchived" | "autoResumeDisabled"
+    | "heartbeatTurnsEnabled"
+    | "isArchived"
+    | "autoResumeDisabled"
+    | "automationPausedUntilUserTurn"
   >,
 ): boolean {
   return (
     metadata.heartbeatTurnsEnabled === true &&
     metadata.isArchived !== true &&
-    metadata.autoResumeDisabled !== true
+    isAutomaticSessionResumeAllowed(metadata)
   );
 }
 

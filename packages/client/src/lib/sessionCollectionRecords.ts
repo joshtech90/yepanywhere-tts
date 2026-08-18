@@ -28,12 +28,14 @@ export function sessionCollectionRecordToGlobalSessionItem(
     customTitle: record.customTitle,
     isArchived: record.isArchived,
     isStarred: record.isStarred,
+    autoResumeDisabled: record.autoResumeDisabled,
     parentSessionId: record.parentSessionId,
     parentSessionKind: record.parentSessionKind,
     forkedFromSessionId: record.forkedFromSessionId,
     initialPrompt: record.initialPrompt,
     executor: record.executor,
     lastAgentText: record.lastAgentText,
+    providerChildren: record.providerChildren,
   };
 }
 

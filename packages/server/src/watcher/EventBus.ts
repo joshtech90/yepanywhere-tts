@@ -31,6 +31,9 @@ export interface FileChangeEvent {
   relativePath: string;
   changeType: FileChangeType;
   timestamp: string;
+  /** Exact source-file facts when the watcher observed an existing file. */
+  mtimeMs?: number;
+  size?: number;
   /** Parsed file type based on path */
   fileType:
     | "session"
@@ -111,6 +114,14 @@ export interface ProcessTerminatedEvent {
   processId: string;
   provider: string;
   reason: string;
+  timestamp: string;
+}
+
+/** A complete source-review response snapshot was durably incorporated. */
+export interface ReviewResponseChangedEvent {
+  type: "review-response-changed";
+  projectId: UrlProjectId;
+  submissionIds: string[];
   timestamp: string;
 }
 
@@ -300,6 +311,7 @@ export type BusEvent =
   | SessionSeenEvent
   | ProcessStateEvent
   | ProcessTerminatedEvent
+  | ReviewResponseChangedEvent
   | ProviderRuntimeStatusChangedEvent
   | QueueRequestAddedEvent
   | QueuePositionChangedEvent

@@ -1,10 +1,10 @@
 import {
-  type MarkdownAugment,
   type ContextUsage,
   type ProviderName,
   type ProviderRuntimeStatus,
   type RecapMode,
   type SessionQueuedMessageSummary,
+  type SessionQueuedYaCommand,
   type SessionLivenessSnapshot,
   type SlashCommand,
   type UploadedFile,
@@ -15,7 +15,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
+import {
+  isBrowserDebugPerformanceRecording,
+  recordBrowserDebugPerformanceMetric,
+} from "../lib/browserDebugPerformance";
 import { hasUnconfirmedSelfSends } from "../lib/deliveryState";
 import { getMessageId } from "../lib/mergeMessages";
 import { findPendingTasks } from "../lib/pendingTasks";
@@ -42,11 +47,16 @@ import {
   useFileActivity,
 } from "./useFileActivity";
 import {
+  type IncrementalFetchTrigger,
   type SessionLoadResult,
   useSessionMessages,
 } from "./useSessionMessages";
 import { useSessionStream } from "./useSessionStream";
-import { useSessionWatchStream } from "./useSessionWatchStream";
+import { stripQueuedTurnMarkers } from "../lib/queuedTurnMarkers";
+import {
+  type SessionWatchChangeEvent,
+  useSessionWatchStream,
+} from "./useSessionWatchStream";
 import {
   type StreamingMarkdownCallbacks,
   useStreamingContent,
@@ -59,6 +69,7 @@ export type ProcessState = "idle" | "in-turn" | "waiting-input";
 export type { AgentContent, AgentContentMap } from "./useSessionMessages";
 
 const THROTTLE_MS = 500;
+const FILE_CHANGE_FACT_DEDUPE_MS = 1000;
 const STREAM_ACTIVITY_TOKEN_UPDATE_MS = 500;
 const STREAM_LIVENESS_UPDATE_MS = 500;
 const FALLBACK_STREAM_LONG_SILENCE_THRESHOLD_MS = 300_000;
@@ -72,6 +83,47 @@ const FALLBACK_STREAM_LONG_SILENCE_THRESHOLD_MS = 300_000;
 // live processId is only a weak proxy for the provider context still being
 // warm, but it is the cheap, simple guard.)
 const awayRecapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+interface SessionFileChangeFact {
+  path?: string;
+  mtimeMs?: number;
+  size?: number;
+}
+
+type SessionFileChangeRoute = "broad-file-watch" | "focused-session-watch";
+
+function getSessionFileChangeFactKey(
+  event: SessionFileChangeFact,
+): string | null {
+  if (
+    typeof event.path !== "string" ||
+    typeof event.mtimeMs !== "number" ||
+    !Number.isFinite(event.mtimeMs) ||
+    typeof event.size !== "number" ||
+    !Number.isFinite(event.size)
+  ) {
+    return null;
+  }
+  return `${event.path}\0${event.mtimeMs}\0${event.size}`;
+}
+
+function buildSessionFileChangePerfDetail(
+  route: SessionFileChangeRoute,
+  event: FileChangeEvent | SessionWatchChangeEvent,
+): IncrementalFetchTrigger {
+  return {
+    route,
+    path: event.path,
+    mtimeMs: event.mtimeMs,
+    size: event.size,
+    eventTimestamp: event.timestamp,
+    ...(event.type === "session-watch-change" && {
+      eventSource: event.source,
+      changeVersion: event.changeVersion,
+      sourceObservedAt: event.sourceObservedAt,
+    }),
+  };
+}
 
 function scheduleAwayRecap(
   projectId: string,
@@ -164,6 +216,21 @@ function hasUserVisibleStreamProgress(
   }
 
   return false;
+}
+
+function getKnownStreamPayloadChars(data: Record<string, unknown>): number {
+  if (typeof data.html === "string") return data.html.length;
+  if (typeof data.suggestion === "string") return data.suggestion.length;
+  const event = data.event;
+  if (!event || typeof event !== "object") return 0;
+  const delta = (event as Record<string, unknown>).delta;
+  if (!delta || typeof delta !== "object") return 0;
+  const deltaRecord = delta as Record<string, unknown>;
+  if (typeof deltaRecord.text === "string") return deltaRecord.text.length;
+  if (typeof deltaRecord.thinking === "string") {
+    return deltaRecord.thinking.length;
+  }
+  return 0;
 }
 
 function getContextUsageFromTokenUsageMessage(
@@ -305,15 +372,11 @@ export type DeferredMessage = SessionQueuedMessageSummary;
 const CONCATENATED_USER_TURN_SEPARATOR = "\n\n--------\n\n";
 const USER_ECHO_CLOCK_SKEW_MS = 60_000;
 
-// Older transcripts can contain a leading relative-time marker on queued turns,
-// e.g. "(343s ago)" or "(13s later)" (optionally preceded by a "---" rule).
-// That prefix was never part of the user's typed text, so strip it before
-// matching a delivered turn against a persisted queued message.
-const QUEUED_TURN_TIME_MARKER = /^(?:-{2,}\s*)?\(\d+\w* (?:ago|later)\)\s*/;
-
-function stripQueuedTurnTimeMarker(text: string): string {
-  return text.replace(QUEUED_TURN_TIME_MARKER, "");
-}
+// Delivered turns can carry server-injected markers that were never part of
+// the user's typed text: compose-time anchors (optionally with a
+// `had seen: "…"` needle) and experimental `[sent <ISO>]` turn timestamps.
+// Strip them before matching a delivered turn against a persisted queued
+// message (lib/queuedTurnMarkers.ts).
 
 function parseMessageTimestampMs(value: unknown): number | null {
   if (typeof value !== "string") {
@@ -366,7 +429,7 @@ function userTextContainsDeferredContent(
   // equals the queued text or begins with it (a queued message may itself be
   // multi-paragraph, hence the trailing "\n\n" prefix form).
   const partMatches = (part: string): boolean => {
-    const normalizedPart = stripQueuedTurnTimeMarker(part.trim());
+    const normalizedPart = stripQueuedTurnMarkers(part.trim());
     return (
       normalizedPart === normalizedDeferredContent ||
       normalizedPart.startsWith(`${normalizedDeferredContent}\n\n`)
@@ -465,6 +528,7 @@ export function useSession(
     tailTurns?: number;
     tailFrom?: string;
     detailedLoadingProgress?: boolean;
+    backgroundEffectsPaused?: boolean;
     onConfigurationError?: (failure: {
       setting: "effort";
       requestedValue?: string;
@@ -481,6 +545,7 @@ export function useSession(
   const [processState, setProcessState] = useState<ProcessState>(
     initialStatus ? "in-turn" : "idle",
   );
+  const hasOptimisticInitialStatus = initialStatus !== undefined;
   const [pendingInputRequest, setPendingInputRequest] =
     useState<InputRequest | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -656,11 +721,6 @@ export function useSession(
   const [sessionLiveness, setSessionLiveness] =
     useState<SessionLivenessSnapshot | null>(null);
 
-  // Markdown augments loaded from REST response (keyed by message ID)
-  const [markdownAugments, setMarkdownAugments] = useState<
-    Record<string, MarkdownAugment>
-  >({});
-
   // Permission mode state: localMode is UI-selected, serverMode is confirmed by server.
   // A live process's mode (from initialStatus) stays authoritative; only when there
   // is no live-process mode do we restore the user's last choice from storage instead
@@ -800,6 +860,40 @@ export function useSession(
     [sessionId],
   );
 
+  const reconcileSessionRuntime = useCallback(
+    async (options?: { ignoreIfLiveSnapshotHandled?: boolean }) => {
+      const data = await api.getSessionMetadata(projectId, sessionId);
+      if (
+        options?.ignoreIfLiveSnapshotHandled &&
+        hasHandledConnectedEventRef.current
+      ) {
+        return;
+      }
+      reportProviderRuntimeStatus(sessionId, data.providerRuntimeStatus);
+      const metadataProcessState = parseProcessState(data.processState);
+      setStatus(data.ownership);
+      if (metadataProcessState) {
+        setProcessState(metadataProcessState);
+      }
+      if (data.ownership.owner === "none") {
+        setProcessState("idle");
+        setPendingInputRequest(null);
+      } else if (
+        metadataProcessState === "waiting-input" &&
+        data.pendingInputRequest
+      ) {
+        setPendingInputRequest(data.pendingInputRequest);
+      } else if (
+        metadataProcessState &&
+        metadataProcessState !== "waiting-input"
+      ) {
+        setPendingInputRequest(null);
+      }
+      setDeferredMessages(data.deferredMessages ?? []);
+    },
+    [projectId, reportProviderRuntimeStatus, sessionId, setDeferredMessages],
+  );
+
   // Handle initial load completion from useSessionMessages
   const handleLoadComplete = useCallback(
     (result: SessionLoadResult) => {
@@ -840,6 +934,17 @@ export function useSession(
       setSlashCommands(result.slashCommands ?? []);
       setDeferredMessages(result.deferredMessages ?? []);
 
+      // Navigation status is an optimistic seed for a newly started session.
+      // Browser history can later replay that same seed after the process has
+      // become idle, while the full session-detail response carries ownership
+      // but not process state. Reconcile through the lightweight runtime
+      // snapshot so a missed stream/activity event cannot leave false activity.
+      if (hasOptimisticInitialStatus && !hasHandledConnectedEventRef.current) {
+        void reconcileSessionRuntime({
+          ignoreIfLiveSnapshotHandled: true,
+        }).catch(() => {});
+      }
+
       // Focusing a non-running session: its list/hover preview gets no live
       // session-updated events, so recompute it once (the server pushes the
       // result). Owned/external sessions are tracked live. See
@@ -848,7 +953,14 @@ export function useSession(
         void api.refreshSessionPreview(projectId, sessionId).catch(() => {});
       }
     },
-    [applyServerModeUpdate, projectId, sessionId, setDeferredMessages],
+    [
+      applyServerModeUpdate,
+      hasOptimisticInitialStatus,
+      projectId,
+      reconcileSessionRuntime,
+      sessionId,
+      setDeferredMessages,
+    ],
   );
 
   // Handle initial load error
@@ -861,6 +973,8 @@ export function useSession(
     messages,
     agentContent,
     toolUseToAgent,
+    markdownAugments,
+    applyFinalMarkdownAugment,
     loading,
     sessionLoadProgress,
     session,
@@ -878,6 +992,7 @@ export function useSession(
     pagination,
     activeWindowTrimRevision,
     loadingOlder,
+    olderLoadContinuationRequired,
     loadOlderMessages,
     initialScrollSnapshot,
     updateRouteScrollSnapshot,
@@ -1027,7 +1142,34 @@ export function useSession(
   const throttleRef = useRef<{
     timer: ReturnType<typeof setTimeout> | null;
     pending: boolean;
+    pendingTrigger?: IncrementalFetchTrigger;
   }>({ timer: null, pending: false });
+  const recentSessionFileFactsRef = useRef(
+    new Map<string, { recordedAtMs: number; route: SessionFileChangeRoute }>(),
+  );
+
+  const recordSessionFileChangeFact = useCallback(
+    (event: SessionFileChangeFact, route: SessionFileChangeRoute): boolean => {
+      const key = getSessionFileChangeFactKey(event);
+      if (!key) return false;
+
+      const observedAtMs = Date.now();
+      const recentFacts = recentSessionFileFactsRef.current;
+      for (const [candidate, fact] of recentFacts) {
+        if (observedAtMs - fact.recordedAtMs > FILE_CHANGE_FACT_DEDUPE_MS) {
+          recentFacts.delete(candidate);
+        }
+      }
+      const previousFact = recentFacts.get(key);
+      recentFacts.set(key, { recordedAtMs: observedAtMs, route });
+      return (
+        previousFact !== undefined &&
+        previousFact.route !== route &&
+        observedAtMs - previousFact.recordedAtMs <= FILE_CHANGE_FACT_DEDUPE_MS
+      );
+    },
+    [],
+  );
 
   // Add a message to the pending queue
   // Generates a tempId that will be sent to the server and echoed back in stream
@@ -1137,35 +1279,54 @@ export function useSession(
   // Tasks are running by loading child content-so-far.
   useEffect(() => {
     // Only run once per session after initial load
-    if (loading || pendingAgentsLoadedRef.current === sessionId) return;
+    if (
+      options?.backgroundEffectsPaused ||
+      loading ||
+      pendingAgentsLoadedRef.current === sessionId
+    ) {
+      return;
+    }
     if (messages.length === 0) return;
 
     pendingAgentsLoadedRef.current = sessionId;
     void loadPendingAgents();
-  }, [loading, loadPendingAgents, messages, sessionId]);
+  }, [
+    loading,
+    loadPendingAgents,
+    messages,
+    options?.backgroundEffectsPaused,
+    sessionId,
+  ]);
 
   // Leading + trailing edge throttle:
   // - Leading: fires immediately on first call
   // - Trailing: fires again after timeout if events came during window
   // This ensures no updates are lost
-  const throttledFetch = useCallback(() => {
-    const ref = throttleRef.current;
+  const throttledFetch = useCallback(
+    (trigger?: IncrementalFetchTrigger) => {
+      const ref = throttleRef.current;
 
-    if (!ref.timer) {
-      // No active throttle - fire immediately (LEADING EDGE)
-      fetchNewMessages();
-      ref.timer = setTimeout(() => {
-        ref.timer = null;
-        if (ref.pending) {
-          ref.pending = false;
-          throttledFetch(); // Fire again (TRAILING EDGE)
-        }
-      }, THROTTLE_MS);
-    } else {
-      // Throttled - mark as pending for trailing edge
-      ref.pending = true;
-    }
-  }, [fetchNewMessages]);
+      if (!ref.timer) {
+        // No active throttle - fire immediately (LEADING EDGE)
+        markReloadPerfPhase("session_incremental_fetch_requested", trigger);
+        void fetchNewMessages(trigger);
+        ref.timer = setTimeout(() => {
+          ref.timer = null;
+          if (ref.pending) {
+            const pendingTrigger = ref.pendingTrigger;
+            ref.pending = false;
+            ref.pendingTrigger = undefined;
+            throttledFetch(pendingTrigger); // Fire again (TRAILING EDGE)
+          }
+        }, THROTTLE_MS);
+      } else {
+        // Throttled - mark as pending for trailing edge
+        ref.pending = true;
+        ref.pendingTrigger = trigger;
+      }
+    },
+    [fetchNewMessages],
+  );
 
   // Handle file changes - for non-owned sessions only
   // For owned sessions, stream provides real-time messages and session-updated events
@@ -1207,10 +1368,27 @@ export function useSession(
         return;
       }
 
+      const perfDetail = buildSessionFileChangePerfDetail(
+        "broad-file-watch",
+        event,
+      );
+      const deduped = recordSessionFileChangeFact(event, "broad-file-watch");
+      markReloadPerfPhase("session_file_change_received", {
+        ...perfDetail,
+        deduped,
+      });
+      if (deduped) return;
+
       // For external/idle sessions: fetch both messages and metadata via API
-      throttledFetch();
+      throttledFetch(perfDetail);
     },
-    [loadPendingAgents, sessionId, status.owner, throttledFetch],
+    [
+      loadPendingAgents,
+      recordSessionFileChangeFact,
+      sessionId,
+      status.owner,
+      throttledFetch,
+    ],
   );
 
   // Handle session content updates via stream (title, messageCount, updatedAt, contextUsage)
@@ -1358,6 +1536,16 @@ export function useSession(
           pendingInputType: event.pendingInputType ?? null,
         });
         setProcessState(event.activity);
+
+        // Activity and session content travel over separate subscriptions. An
+        // idle event therefore cannot prove that the client received the final
+        // assistant message. Reconcile against the durable transcript at this
+        // boundary, with a trailing pass for providers that finish persistence
+        // just after reporting idle.
+        if (event.activity === "idle") {
+          throttledFetch();
+          throttledFetch();
+        }
       }
 
       // If activity bus says waiting-input but we don't have the request,
@@ -1387,6 +1575,7 @@ export function useSession(
       reportProviderRuntimeStatus,
       sessionId,
       setDeferredMessages,
+      throttledFetch,
     ],
   );
 
@@ -1398,38 +1587,11 @@ export function useSession(
   const handleActivityReconnect = useCallback(async () => {
     fetchNewMessages();
     try {
-      const data = await api.getSessionMetadata(projectId, sessionId);
-      reportProviderRuntimeStatus(sessionId, data.providerRuntimeStatus);
-      const metadataProcessState = parseProcessState(data.processState);
-      setStatus(data.ownership);
-      if (metadataProcessState) {
-        setProcessState(metadataProcessState);
-      }
-      if (data.ownership.owner === "none") {
-        setProcessState("idle");
-        setPendingInputRequest(null);
-      } else if (
-        metadataProcessState === "waiting-input" &&
-        data.pendingInputRequest
-      ) {
-        setPendingInputRequest(data.pendingInputRequest);
-      } else if (
-        metadataProcessState &&
-        metadataProcessState !== "waiting-input"
-      ) {
-        setPendingInputRequest(null);
-      }
-      setDeferredMessages(data.deferredMessages ?? []);
+      await reconcileSessionRuntime();
     } catch {
       // Silent fail - non-critical
     }
-  }, [
-    projectId,
-    sessionId,
-    fetchNewMessages,
-    reportProviderRuntimeStatus,
-    setDeferredMessages,
-  ]);
+  }, [fetchNewMessages, reconcileSessionRuntime]);
 
   useFileActivity({
     onSessionStatusChange: handleSessionStatusChange,
@@ -1443,10 +1605,26 @@ export function useSession(
   // Focused watch stream for non-owned sessions.
   // This is a targeted server-side watch of the currently viewed session file,
   // independent from broad global activity-tree watch behavior.
-  const handleSessionWatchChange = useCallback(() => {
-    if (status.owner === "self") return;
-    throttledFetch();
-  }, [status.owner, throttledFetch]);
+  const handleSessionWatchChange = useCallback(
+    (event: SessionWatchChangeEvent) => {
+      if (status.owner === "self") return;
+      const perfDetail = buildSessionFileChangePerfDetail(
+        "focused-session-watch",
+        event,
+      );
+      const deduped = recordSessionFileChangeFact(
+        event,
+        "focused-session-watch",
+      );
+      markReloadPerfPhase("session_file_change_received", {
+        ...perfDetail,
+        deduped,
+      });
+      if (deduped) return;
+      throttledFetch(perfDetail);
+    },
+    [recordSessionFileChangeFact, status.owner, throttledFetch],
+  );
 
   const { connected: sessionWatchConnected } = useSessionWatchStream(
     status.owner !== "self"
@@ -1501,6 +1679,12 @@ export function useSession(
   // Subscribe to live updates
   const handleStreamMessage = useCallback(
     (data: { eventType: string; [key: string]: unknown }) => {
+      if (isBrowserDebugPerformanceRecording()) {
+        recordBrowserDebugPerformanceMetric("session-stream.event", {
+          category: data.eventType,
+          chars: getKnownStreamPayloadChars(data),
+        });
+      }
       logSessionUiTrace("session-stream-dispatch", {
         sessionId,
         eventType: data.eventType,
@@ -1797,11 +1981,13 @@ export function useSession(
           messages: DeferredMessage[];
           reason?: "queued" | "cancelled" | "edited" | "promoted";
           tempId?: string;
+          yaCommand?: SessionQueuedYaCommand;
         };
         logSessionUiTrace("stream-deferred-queue", {
           sessionId,
           reason: deferredData.reason ?? null,
           tempId: deferredData.tempId ?? null,
+          yaCommand: deferredData.yaCommand ?? null,
           count: deferredData.messages?.length ?? 0,
         });
         // Mirror the server's authoritative queue wholesale.
@@ -1809,9 +1995,10 @@ export function useSession(
         const sessionProvider = session?.provider;
         const needsDeferredPromotionCatchUp =
           deferredData.reason === "promoted" &&
-          (deferredData.messages?.length ?? 0) === 0 &&
-          sessionProvider !== "codex" &&
-          sessionProvider !== "codex-oss";
+          (deferredData.yaCommand === "done" ||
+            ((deferredData.messages?.length ?? 0) === 0 &&
+              sessionProvider !== "codex" &&
+              sessionProvider !== "codex-oss"));
         if (needsDeferredPromotionCatchUp) {
           throttledFetch();
           // A second call asks the existing throttle for a trailing catch-up in
@@ -1872,8 +2059,7 @@ export function useSession(
           serverSessionId: serverSessionId ?? null,
           state: connectedData.state ?? null,
           permissionMode: connectedData.permissionMode ?? null,
-          appliedPermissionMode:
-            connectedData.appliedPermissionMode ?? null,
+          appliedPermissionMode: connectedData.appliedPermissionMode ?? null,
           modeVersion: connectedData.modeVersion ?? null,
           provider: connectedData.provider ?? null,
           model: connectedData.model ?? null,
@@ -2012,11 +2198,7 @@ export function useSession(
           augmentData.blockIndex === undefined &&
           augmentData.html
         ) {
-          // Final message augment - store in markdownAugments
-          setMarkdownAugments((prev) => ({
-            ...prev,
-            [augmentData.messageId as string]: { html: augmentData.html },
-          }));
+          applyFinalMarkdownAugment(augmentData.messageId, augmentData.html);
         } else if (
           augmentData.blockIndex !== undefined &&
           getStreamingEnabled()
@@ -2063,6 +2245,7 @@ export function useSession(
       }
     },
     [
+      applyFinalMarkdownAugment,
       applyServerModeUpdate,
       sessionId,
       handleStreamEvent,
@@ -2121,12 +2304,7 @@ export function useSession(
       setProcessState("idle");
       setPendingInputRequest(null);
     }
-  }, [
-    projectId,
-    sessionId,
-    reportProviderRuntimeStatus,
-    setDeferredMessages,
-  ]);
+  }, [projectId, sessionId, reportProviderRuntimeStatus, setDeferredMessages]);
 
   // Only connect to session stream when we own the session
   // External sessions are tracked via the activity stream instead
@@ -2216,11 +2394,13 @@ export function useSession(
     pagination, // Compact-boundary pagination metadata
     activeWindowTrimRevision, // Ephemeral accepted auto-trim render signal
     loadingOlder, // Whether older messages are being loaded
-    loadOlderMessages, // Load next chunk of older messages
+    olderLoadContinuationRequired, // Safety pause before the preceding user turn
+    loadOlderMessages, // Load through older chunks to a user-turn boundary
     initialScrollSnapshot, // Retained same-tab route scroll anchor
     updateRouteScrollSnapshot, // Update retained same-tab route scroll anchor
     updateActiveWindowFollowingBottom, // Immediate active-window follow intent
     restoredFromSnapshot, // Initial render came from retained same-tab data
     reconnectStream, // Force session stream reconnection (e.g., after process restart)
+    fetchNewMessages, // Fetch durable YA/provider rows added since the visible tail
   };
 }

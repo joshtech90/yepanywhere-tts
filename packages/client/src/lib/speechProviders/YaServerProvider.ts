@@ -449,6 +449,8 @@ function describeAudioTrackSettings(stream: MediaStream): string | null {
       : undefined;
   const settings = track?.getSettings?.();
   if (!settings) return null;
+  const latency = (settings as MediaTrackSettings & { latency?: number })
+    .latency;
   const part = (label: string, value: unknown): string =>
     `${label}=${value ?? "?"}`;
   return [
@@ -456,6 +458,7 @@ function describeAudioTrackSettings(stream: MediaStream): string | null {
     part("rate", settings.sampleRate),
     part("channels", settings.channelCount),
     part("sampleSize", settings.sampleSize),
+    part("latency", latency),
     part("ec", settings.echoCancellation),
     part("ns", settings.noiseSuppression),
     part("agc", settings.autoGainControl),
@@ -502,8 +505,10 @@ export class YaServerProvider implements SpeechProvider {
   private streamingCommittedGroups: StreamingCommittedGroup[] = [];
   private streamingCurrentPreviewTranscript = "";
   private streamingStopRequested = false;
+  private streamingStartMessageSent = false;
   private pendingStreamingFinalPartials: PendingStreamingFinalPartial[] = [];
   private pendingSmartTurnCommand: PendingSmartTurnCommand | null = null;
+  private smartTurnGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private audioFlowWatchdog: ReturnType<typeof setTimeout> | null = null;
   private audioProcessorActive = false;
   private startToken = 0;
@@ -556,24 +561,37 @@ export class YaServerProvider implements SpeechProvider {
     for (const sub of this.subscribers) sub(this.state);
   }
 
+  private shouldKeepMicWarm(): boolean {
+    return (
+      this.options.keepMicWarm === true ||
+      this.options.temporarilyKeepMicWarm?.() === true
+    );
+  }
+
   private getWarmMicStream(): Promise<MediaStream> {
     return getSpeechMicStream({
-      keepWarm: this.options.keepMicWarm === true,
+      keepWarm: this.shouldKeepMicWarm(),
+      retainWhenIdle: this.options.keepMicWarm === true,
       micDeviceId: this.options.micDeviceId,
+      reducePlayback: this.options.reducePlayback !== false,
     });
   }
 
   private getActiveMicStream(): Promise<MediaStream> {
-    let acquiredActiveLease = false;
-    if (
-      this.options.keepMicWarm === true &&
-      this.releaseSharedMicActiveLease === null
-    ) {
-      this.releaseSharedMicActiveLease = acquireSharedSpeechMicActiveLease();
-      acquiredActiveLease = true;
+    const lease = this.shouldKeepMicWarm()
+      ? acquireSharedSpeechMicActiveLease()
+      : null;
+    if (lease) {
+      this.releaseSharedMicActiveLease = () => lease.release();
     }
-    return this.getWarmMicStream().catch((err: unknown) => {
-      if (acquiredActiveLease) this.releaseSharedMicActive();
+    return getSpeechMicStream({
+      keepWarm: lease !== null,
+      retainWhenIdle: this.options.keepMicWarm === true,
+      activeLease: lease,
+      micDeviceId: this.options.micDeviceId,
+      reducePlayback: this.options.reducePlayback !== false,
+    }).catch((err: unknown) => {
+      this.releaseSharedMicActive();
       throw err;
     });
   }
@@ -593,7 +611,7 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   prewarm(): void {
-    if (this.options.keepMicWarm !== true || !this.isSupported) return;
+    if (!this.shouldKeepMicWarm() || !this.isSupported) return;
     if (
       this.state.isListening ||
       this.state.status === "starting" ||
@@ -735,6 +753,7 @@ export class YaServerProvider implements SpeechProvider {
     if (!AudioContextCtor || typeof WebSocket === "undefined") {
       throw new Error("Streaming speech capture is not supported");
     }
+    this.streamingStartMessageSent = false;
 
     // Greppable startup timing so a multi-second "connecting" window can be
     // localized to a specific step (mic acquisition vs. socket vs. resume vs.
@@ -916,6 +935,7 @@ export class YaServerProvider implements SpeechProvider {
               : undefined,
         }),
       );
+      this.streamingStartMessageSent = true;
       socketReady = true;
       for (const frame of pendingFrames) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -959,6 +979,10 @@ export class YaServerProvider implements SpeechProvider {
         (this.state.status === "receiving" ||
           this.state.status === "finalizing")
       ) {
+        // A close during the command grace window ends the turn as a plain
+        // salvage, never as the held automatic send.
+        this.clearSmartTurnGrace();
+        this.pendingSmartTurnCommand = null;
         const message = "Speech streaming connection closed before final text";
         const salvaged = this.commitStreamingTranscript(
           this.getUncommittedStreamingPreviewText(
@@ -1033,6 +1057,13 @@ export class YaServerProvider implements SpeechProvider {
       const transcript = message.text ?? "";
       const finalPartial =
         message.isFinal === true || message.speechFinal === true;
+      if (this.smartTurnGraceTimer !== null && transcript.trim()) {
+        // Speech resumed inside the command grace window: abandon the pending
+        // automatic send and let the turn continue. A late spoken command
+        // needs no special handling here — the next endpoint re-decides.
+        this.clearSmartTurnGrace();
+        this.pendingSmartTurnCommand = null;
+      }
       if (this.streamingStopRequested && !finalPartial) return;
       const span = getStreamingMessageSpan(message);
       const groupStart = getStreamingMessageGroupStart(message);
@@ -1254,6 +1285,20 @@ export class YaServerProvider implements SpeechProvider {
           : words,
     });
 
+    const graceMs = decision.recognizedCommand
+      ? 0
+      : Math.max(0, this.options.smartTurn?.graceMs ?? 0);
+    if (graceMs > 0) {
+      // Automatic endpoint send (no spoken command): hold the stop while
+      // capture stays live, so resumed speech — including a late spoken
+      // command — can reclaim the turn instead of racing the submit.
+      this.armSmartTurnGrace(graceMs);
+      return;
+    }
+    this.finishSmartTurnStop();
+  }
+
+  private finishSmartTurnStop(): void {
     this.streamingStopRequested = true;
     this.cleanupStreamingMedia();
     this.setState({ status: "finalizing", isListening: false, error: null });
@@ -1262,6 +1307,23 @@ export class YaServerProvider implements SpeechProvider {
     } else {
       this.ws?.close();
       this.ws = null;
+    }
+  }
+
+  private armSmartTurnGrace(graceMs: number): void {
+    this.clearSmartTurnGrace();
+    const token = this.startToken;
+    this.smartTurnGraceTimer = setTimeout(() => {
+      this.smartTurnGraceTimer = null;
+      if (this.disposed || token !== this.startToken) return;
+      this.finishSmartTurnStop();
+    }, graceMs);
+  }
+
+  private clearSmartTurnGrace(): void {
+    if (this.smartTurnGraceTimer !== null) {
+      clearTimeout(this.smartTurnGraceTimer);
+      this.smartTurnGraceTimer = null;
     }
   }
 
@@ -1649,10 +1711,16 @@ export class YaServerProvider implements SpeechProvider {
 
   stop(): void {
     if (this.disposed) return;
+    const streamingStartupPending =
+      this.options.serverStreaming === true &&
+      !this.streamingStartMessageSent &&
+      this.state.status !== "idle" &&
+      this.state.status !== "error";
     if (
       this.state.status === "starting" ||
       (this.state.status === "receiving" && this.state.isListening) ||
-      this.state.status === "reconnecting"
+      this.state.status === "reconnecting" ||
+      streamingStartupPending
     ) {
       this.startToken += 1;
       this.cleanupMedia(false);
@@ -1754,6 +1822,7 @@ export class YaServerProvider implements SpeechProvider {
   private cleanupStreamingMedia(): void {
     this.stopWaveformMonitor?.();
     this.stopWaveformMonitor = null;
+    this.clearSmartTurnGrace();
     this.clearAudioFlowWatchdog();
     this.processor?.disconnect();
     this.audioSource?.disconnect();

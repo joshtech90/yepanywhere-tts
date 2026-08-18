@@ -36,9 +36,11 @@ currently selected provider lacks the feature.
   override it before process creation. The control is rendered and sent only
   when the server reports a currently available host backend; see
   [session-sandboxing](session-sandboxing.md).
-- **Recaps** — recap mode and away threshold belong together. They are
-  presented above AI Provider because they are standing session-helper choices,
-  not properties of whichever provider button happens to be selected.
+- **Recaps** — recap mode and away threshold belong together. They are standing
+  session-helper choices, not properties of whichever provider button happens
+  to be selected. In New Session's linear control stack, they follow the core
+  launch choices so an infrequently changed helper does not sit next to the
+  composer.
 - **Prompt suggestions** — expose `Off` / `Native` unconditionally. Launch code
   only enables native provider suggestions when supported, but the default UI
   must not show provider-specific "unsupported" copy in the all-provider area.
@@ -76,28 +78,69 @@ The first authenticated or remotely connected YA visit in a browser tab primes
 provider status and model catalogs through the same source-scoped request/cache
 used by New Session, settings, and restart surfaces. A consumer mounted during
 that primer joins its in-flight request rather than repeating provider probes.
-Catalogs and in-flight work from one local or remote host must never satisfy a
+Catalogs and in-flight work from one local or remote host never satisfy a
 consumer viewing another host. Primer failure remains advisory: the first
 consumer retries through its normal loading/error path.
 
 Readiness is client-presence-driven. YA does not periodically probe provider
-catalogs while no browser is visiting it; the existing bounded client and server
-cache lifetimes govern freshness during active use, and explicit refresh actions
-retain their stronger semantics. When a primer overlaps a later explicit
-refresh or reload for the same source, only the later request may update the
-shared cache or mounted consumer state, regardless of response order.
+catalogs while no browser is visiting it. The standing provider/model choice is
+durable settings state, not a dynamic catalog answer: New Session renders the
+exact saved provider and provider-local model in its final control region, then
+revalidates installation, authentication, alternatives, and capabilities in
+place. An unselected provider's discovery does not delay or clear that choice.
 
-Selecting a configured provider whose model list is authoritative but dynamic
-triggers a background explicit refresh, even when a cached empty catalog made
-the provider eligible to select. The current provider list remains visible
-while that refresh runs. When Claude Gateway still advertises no models, New
-Session shows a retryable unavailable state and blocks fresh launch instead of
-submitting without a model. When models arrive, the selection reconciles to a
-provider-scoped saved model or the first advertised row and capability-driven
-controls appear. An exact saved model that is absent from an authoritative
-Gateway catalog is neither displayed nor submitted; this applies equally to
-the New Session picker and its informational floating-composer badge. Providers
-whose contracts permit exact unlisted ids retain their existing behavior.
+The dynamic catalog keeps the existing two request shapes:
+
+- `GET /api/providers` returns the exposed provider-card collection and remains
+  the complete-response compatibility path.
+- `GET /api/providers/:name` resolves and refreshes one selected provider without
+  probing unrelated providers.
+
+The server retains provider rows through one byte-bounded,
+source-versioned owner. Ordinary callers join current work, concurrent forced
+callers coalesce, forced work supersedes older ordinary work, and late old
+success or failure cannot replace or delete the newer row. The provider's model
+catalog key participates in generation identity. Aggregate `Promise.all`
+failure behavior is unchanged.
+
+The client persists a versioned, source-scoped browser snapshot for seven days.
+An explicit allowlist retains provider/model display metadata and capabilities;
+identity, expiry, login commands, credentials, authorization material, raw
+provider output, and unknown configuration are excluded. Hydration marks the
+snapshot expired immediately: it is an opening guess, never a probe result.
+Consumers still report loading, the rendered group stays busy, and current
+server rows replace the snapshot in place. Aggregate and named rows share one
+request-admission sequence and publish accepted responses to every mounted
+source consumer: a later aggregate settings reload supersedes an older named
+cache entry, while a late older aggregate cannot displace newer named facts or
+reintroduce an old error.
+
+Display validity and launch authority are separate. A stale selected row may
+remain visible while a named probe is pending or failed. Claude Gateway starts
+a forced named probe after the selection becomes current; Start and Project
+Queue launch remain blocked until that successful response advertises the
+required model. Actual new-session process creation repeats the Gateway-only
+advertised-model check, so deferred Project Queue and internal worker-queue
+launches cannot reuse enqueue-time authority. A Project Queue item held by the
+worker queue remains in durable `dispatching` state until launch starts; a
+validation failure moves it to `failed` with the catalog error rather than
+removing its prompt. At worker capacity, a direct Gateway caller without that
+durable failure channel receives the existing `queue_full` response instead of
+a queued acceptance whose later failure would discard its prompt. Retry
+refreshes Gateway alone. Other providers retain ordinary five-minute row reuse
+and exact unlisted model-id behavior.
+
+New Session's initial subscription-usage read is admitted as supplementary
+startup work after earlier route tiers. Direct-demand usage consumers and every
+explicit Refresh remain immediate.
+
+There is no persisted server provider/model snapshot, so a clean browser on a
+fresh server still awaits the aggregate for provider cards. Generic Gateway
+model discovery can still start its configured runtime, and aggregate failure
+is not isolated by row. The measured aggregate median crosses the threshold for
+reconsidering descriptor/model-refresh separation; those wire changes still
+require the compatibility review in
+[`docs/tactical/094-new-session-provider-catalog-readiness.md`](../docs/tactical/094-new-session-provider-catalog-readiness.md).
 
 ## Recap fallback semantics
 
@@ -115,52 +158,81 @@ a provider capability makes it real.
 The rest of this doc is about *defaults that seed a new session*. A separate
 concern is what happens when a user changes model/effort/thinking **inside an
 existing session** and then reloads or the server process is torn down: the live
-pick should survive as a per-session choice, not silently reset or leak to every
-other session. This is the same contract [permission-mode](permission-mode.md)
-already meets — a per-session UI choice persisted in `localStorage`
-(`permission-mode-{sessionId}` in `useSession`) so a reload restores it instead
-of dropping to `default`.
+pick must survive as a server-owned per-session choice, not silently reset or
+depend on one browser's storage.
 
-- **Model — per session (as of this note).** A session's model pick persists to
-  `localStorage` keyed by session id (`session-model-{sessionId}`,
-  `lib/sessionModelStorage.ts`), saved in `useSession`'s `setSessionModel` and
-  restored on load for an idle (non-self-owned) session. This closes the gap
-  where a model change — which only reaches the server at the next turn — was
-  lost if the tab closed before sending. A live self-owned process's model stays
-  authoritative (its config arrives via the stream); the stored pick only
-  overlays when idle.
+`SessionMetadata.effectiveLaunchSettings` stores the last successfully applied
+permission mode, exact requested-model token, service tier, thinking mode, and
+effort with a session-local monotonic revision. A process lifetime is not a
+settings lifetime: every replacement process for an existing session starts
+from that record. A replacement process resolves an explicit validated request
+first, then this complete durable record (including intentional null/provider-
+default values), then applicable pre-snapshot evidence, and finally the
+conservative server/provider default. Existing YA requested-model metadata
+precedes provider transcript inference because it records the user's exact YA
+selection token.
 
-- **Effort / thinking mode — still global, and that seems unintended.** Unlike
-  model and permission mode, effort level and thinking mode persist only
-  *globally* via `useModelSettings` (`BROWSER_LOCAL_KEYS.thinkingLevel` /
-  `.thinkingMode`). Changing effort inside one session therefore rewrites the
-  effort used by *every* session, and reopening a session shows the global value
-  rather than what was last chosen for that session. The idle `ModelSwitchModal`
-  reads these same global values (`getEffortLevel()` / `getThinkingMode()`), and
-  `applyConfig` writes them back globally (`setEffortLevel` / `setThinkingMode`).
+For a Codex session that predates the complete snapshot, the first later cold
+launch lazily reads the latest valid transcript `turn_context`. Its non-empty
+model and supported effort are recoverable. `none` recovers disabled thinking;
+a supported named effort recovers adaptive summarized thinking with that
+effort. Exact `never` plus danger-full-access recovers Bypass, and exact
+`on-request` plus read-only recovers Plan. Ask and Accept Edits both produce
+`on-request` plus workspace-write, so that pair and every incomplete or unknown
+pair recover as conservative Ask. Legacy absence or ambiguity never grants
+Bypass. Unsupported/absent effort remains unknown rather than being coerced.
 
-  **Intent:** make effort and thinking-mode changes per-session too, mirroring
-  the model/permission-mode persistence above (a `session-effort-{sessionId}` /
-  `session-thinking-{sessionId}` pair, or a single per-session config record),
-  so a live pick sticks to its own session instead of the whole browser. Keep
-  **show-thinking** display policy all-provider/per-install (it is a render
-  preference, not a spend control) — only effort and thinking *mode* move
-  per-session. The global values become the seed for a session's first pick,
-  preserving today's behavior for sessions the user never touches. This is
-  deferred, not yet built; the model change is the first step of the pattern.
+Recovery is read-only until process launch succeeds. The complete effective
+settings actually used by a successful launch then become authoritative and
+are written as revision 1 through the ordinary snapshot path; failure or
+cancellation writes nothing, and later cold launches use the snapshot instead
+of reinterpreting the transcript. Merely listing, rendering, scanning, or
+indexing old sessions does not migrate them.
+
+A live configuration response is successful only after the provider applies
+the selection and the metadata writer flushes a snapshot containing it.
+Explicit reactivation metadata changes for provider, executor, recap, prompt
+suggestion, and sandbox selection flush in that same serialized transaction.
+If a write fails, YA retains the actual live state as pending and retries it
+without repeating an already-applied provider change.
+
+Browser-local permission/model state remains useful for immediate stopped-row
+presentation and compatibility with older servers, while global thinking and
+effort values remain defaults for new or legacy sessions. Once Activate owns a
+process, the existing process-info request and live stream are authoritative;
+the composer and model panel adopt that process's restored configuration. An
+older server that omits newer state therefore retains its established fallback
+instead of causing the client to clear durable server state.
+
+An effort selection accepted while a turn is active is authoritative pending
+state: process info reports the selected next-turn effort so a browser refresh
+does not replace it with the last provider-observed value. The durable launch
+snapshot continues to report the last applied effort until the provider reaches
+the idle boundary and accepts the pending selection.
+
+**Show thinking** remains a browser display preference. It is deliberately not
+part of the provider launch snapshot and does not move with a session.
 
 ## UI placement
 
-In the session-defaults panel and the new-session form:
+The session-defaults settings panel follows the new-session decision order:
+AI Provider, model, thinking/effort, permission mode, sandboxing, show-thinking
+display policy, recaps, the conditional **Tailed Recap Model**, then prompt
+suggestions. A **Related behavior** divider follows that core launch sequence;
+fork-opening, compaction, and prompt-cache keepalive controls live below it.
+The visible order is for comprehension and does not change persistence scope:
+provider/model economics remain provider-specific, while permission, sandbox,
+recap, suggestions, show-thinking, and fork-opening keep their established
+all-provider or client-local ownership.
 
-1. All-provider defaults: recaps; prompt suggestions; permission mode; the
-   sandbox-new-sessions toggle; show-thinking display policy; and
-   forked-session behavior.
-2. AI Provider. The selector is the boundary between all-provider defaults above
-   and provider-specific defaults below.
-3. Provider-specific defaults for the selected provider: model, service tier,
-   thinking mode, effort, **Tailed Recap Model**, prompt-cache keepalive,
-   compaction threshold, and other model economics controls.
+New Session instead prioritizes the choices most likely to change before a
+launch. Its linear reading order is AI Provider, model and thinking, permission
+mode and sandboxing, show-thinking display policy, then recaps, the conditional
+**Tailed Recap Model**, and prompt suggestions. This is also the narrow-viewport
+visual order, keeping optional helper behavior away from the composer. Desktop
+uses the same DOM order so visual, keyboard, and screen-reader traversal do not
+disagree. Placement does not change a setting's all-provider or provider-local
+persistence scope.
 
 Permission-mode cards are equal-sized by design. Their captions should fit the
 card grid with short explanatory text:
@@ -209,9 +281,9 @@ UI/storage sequence below.
 
 1. **Pin this contract.** Create this topic, add the glossary/topic index row,
    and use it as the commit topic for the UI/storage changes.
-2. **Recap UI.** Move recap controls above AI Provider; keep **Tailed Recap
-   Model** in provider-specific defaults after thinking effort; make `Forked`
-   available whenever the provider can generate recaps.
+2. **Recap UI.** Group recap controls with all-provider defaults in the settings
+   panel; keep **Tailed Recap Model** provider-specific; make `Forked` available
+   whenever the provider can generate recaps.
 3. **Prompt suggestions.** Show `Off` / `Native` unconditionally in the
    all-provider defaults area; remove provider-specific unsupported copy; keep
    launch-time native enablement capability-gated.
@@ -219,10 +291,11 @@ UI/storage sequence below.
    selected-provider model, thinking mode, effort, and tailed recap model
    through it. Preserve legacy fields and existing saved preferences by seeding
    the selected provider on read/next save.
-5. **All-provider placement.** Move permission mode, show-thinking display
-   policy, and forked-session behavior out of the AI-provider-specific region.
-   Keep show-thinking all-provider/per-install and separate from thinking mode +
-   effort spend controls.
+5. **All-provider placement.** Keep permission mode, show-thinking display
+   policy, and forked-session behavior outside provider-scoped persistence.
+   Session Defaults and New Session may interleave these controls with
+   provider-specific choices by launch relevance without changing their
+   storage scope.
 6. **Permission captions.** Shorten equal-width permission-mode card captions to
    the text above.
 7. **Tests.** Cover provider switch persistence, all-provider recap/suggestion

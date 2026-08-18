@@ -49,8 +49,21 @@ cancellation on activity) and the current trigger/threshold gaps.
   anything new to summarize. Because the request is keyed by session, not
   process, it survives a server restart: a *displayed* fork-mode session whose
   process died is revived and recapped from its transcript (never preempting a
-  live worker). See [fork-recap.md](fork-recap.md) for the revive/no-preempt
-  lifecycle.
+  live worker). A session explicitly terminated with automatic resume disabled
+  is never revived for a recap; Activate, Send, and equivalent user actions
+  remain deliberate continuation paths. See [fork-recap.md](fork-recap.md) for
+  the revive/no-preempt lifecycle.
+- Stop/Interrupt and Terminate are explicit recap boundaries. Either action
+  cancels a recap deferred behind the active turn, aborts an in-flight forked
+  recap, and durably rejects later time-based recap requests until YA accepts a
+  fresh user-authored turn for that session. The pause survives provider
+  process replacement and server restart; hidden/internal and automatic
+  heartbeat turns do not clear it. This recap pause is separate from heartbeat
+  policy: Interrupt leaves
+  heartbeat eligibility unchanged, while Terminate's existing resume exemption
+  disables heartbeat turns and automatic resume. A fresh user turn clears the
+  recap pause after either action; it does not implicitly re-enable heartbeat
+  turns disabled by Terminate. See [heartbeat.md](heartbeat.md).
 - Recap configuration is durable. `recapAfterSeconds` and `recapMode` are
   persisted in session metadata, so a session's recap preference survives a
   process death / reactivation and is what tells a cold session whether and how
@@ -110,11 +123,19 @@ Common side-query configuration lives in
 [side-session-config.md](side-session-config.md); next-turn prediction lives in
 [prompt-suggestions.md](prompt-suggestions.md).
 
-New sessions should not start with YA-simulated recaps enabled by
-default. A provider with native recap support may default to native recaps
-because YA does not need to spawn a side session, but the UI must still expose
-`Off`: native recaps are not free, and the user must be able to disable them
-for a new or existing session.
+New sessions should not start with YA-simulated recaps enabled by default.
+`Native` is an observation and rendering policy: YA expects and surfaces a
+provider `away_summary` row if one appears. It does not configure the provider
+to generate recap turns. Provider-owned recap generation is a separate
+provider-session option, defaults off at the provider boundary, and requires an
+explicit caller opt-in plus an adapter result showing whether the provider can
+apply it. No current YA provider adapter supports that opt-in.
+
+This separation matters even where a provider has native recap functionality.
+Surfacing an already-emitted provider row is cheap; asking the provider to run
+an unsolicited recap inference is not. `Off` suppresses YA recap behavior,
+while the provider-session default prevents YA from enabling the upstream
+generator implicitly.
 
 For simulated recaps, YA needs an explicit configuration surface rather
 than a hard-coded model choice. The side model is shared for the parent
@@ -132,9 +153,9 @@ the UI does not need to hard-code provider model names.
 The UI locations are:
 
 - New-session form: a `Recaps` control in the all-provider defaults above the
-  AI Provider boundary. It chooses `Off`, provider-native recaps when supported,
-  or simulated recaps through the shared helper side session or forked fallback
-  path.
+  AI Provider boundary. It chooses `Off`, observation of provider-native recap
+  rows when supported, or simulated recaps through the shared helper side
+  session or forked fallback path.
 - Settings -> Providers: the default recap mode for future sessions and the
   shared helper side model, including `Same as main session`. The helper model
   selector is labeled `Tailed Recap Model` and appears for both direct tailed
@@ -144,13 +165,14 @@ The UI locations are:
   future away-return triggers without restarting the parent session and without
   rewriting prior recap messages.
 
-This mirrors native prompt suggestions. The current Claude path already
-exposes native prompt suggestions (`promptSuggestions: true`) and the
-client renders `prompt_suggestion` messages. If YA later simulates
-prompt suggestions for providers without native support, it should use
-the same side-session configuration as simulated recaps: both are
-non-steering side queries over recent context, and both need the same
-bounded lifecycle, session-level model choice, and restart behavior.
+This mirrors native prompt suggestions. `Native` is also an observation policy
+there; it does not set `sessionOptions.promptSuggestions`. A caller can
+separately opt into Claude's provider generator, and the client renders any
+resulting `prompt_suggestion` messages. If YA later simulates prompt suggestions
+for providers without native support, it should use the same side-session
+configuration as simulated recaps: both are non-steering side queries over
+recent context, and both need the same bounded lifecycle, session-level model
+choice, and restart behavior.
 
 Hot or cold YA restarts can already reduce normal-workflow reliability
 because providers do not all resume cleanly. Side-session features must
@@ -248,6 +270,12 @@ Remaining probes:
   since the user left does not surface in the message list.
 - A second return event with no assistant output since the last emitted
   recap does not generate or surface a second recap.
+- Stop/Interrupt and Terminate drop a recap deferred behind the active turn and
+  reject later away-timer requests until a fresh visible user turn is accepted,
+  including after process replacement or server restart. Hidden control and
+  automatic heartbeat turns do not clear the pause.
+- Interrupt does not change heartbeat eligibility. Terminate clears heartbeat
+  opt-in and blocks automatic resume through its separate durable exemption.
 - Two persisted overlay recaps with no provider content between them
   render as one row (the newest); with provider content between them,
   both render, the older inline at the point it covered.

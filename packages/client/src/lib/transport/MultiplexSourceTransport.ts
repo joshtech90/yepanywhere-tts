@@ -78,7 +78,9 @@ class MultiplexTransportStatus implements SourceTransportStatus {
   private readonly listeners = new Set<() => void>();
   private readonly visibilityRestoredListeners = new Set<() => void>();
 
-  constructor(private readonly getSnapshotFn: () => SourceTransportStatusSnapshot) {}
+  constructor(
+    private readonly getSnapshotFn: () => SourceTransportStatusSnapshot,
+  ) {}
 
   getSnapshot(): SourceTransportStatusSnapshot {
     return this.getSnapshotFn();
@@ -281,6 +283,12 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
   subscribeActivity(handlers: StreamHandlers): Subscription {
     return this.subscribeNow(handlers, (connection, wrappedHandlers) =>
       connection.subscribeActivity(wrappedHandlers),
+    );
+  }
+
+  subscribeGlossary(projectId: string, handlers: StreamHandlers): Subscription {
+    return this.subscribeNow(handlers, (connection, wrappedHandlers) =>
+      connection.subscribeGlossary(projectId, wrappedHandlers),
     );
   }
 

@@ -17,6 +17,9 @@
     "i18n:prune": "node scripts/prune-i18n-placeholders.mjs --write",
     "i18n:scan": "node scripts/find-raw-i18n-copy.mjs",
     "agent:monitor": "node scripts/monitor-agent-process.mjs",
+    "android:interop:check": "tsx --conditions source scripts/android-secure-interop-fixture.ts",
+    "android:interop:write": "tsx scripts/android-secure-interop-fixture.ts --write",
+    "android:probe-server": "pnpm --filter @yep-anywhere/server exec tsx --conditions source scripts/android-native-secure-probe-server.ts",
     "css:check": "node scripts/check-css-architecture.mjs",
     "css:health": "tsx scripts/css-health.ts",
     "css:inventory": "tsx scripts/css-inventory.ts",
@@ -26,7 +29,11 @@
     "capabilities:audit": "tsx scripts/audit-server-capabilities.ts",
     "console:scan": "node scripts/find-console-chatter.mjs",
     "console:volume": "node scripts/report-client-log-volume.mjs",
+    "perf:regression:server": "node scripts/perf-suite/run.mjs --checkout . --scenario fleet-small --driver server --label working-tree",
+    "perf:regression:browser": "node scripts/perf-suite/run.mjs --checkout . --scenario fleet-small --driver browser --label working-tree",
+    "perf:regression:specialized": "node scripts/perf-suite/run.mjs --checkout . --scenario specialized-contracts --driver specialized --label working-tree",
     "dev": "node scripts/dev.js",
+    "provider-host": "node scripts/provider-runtime-host.mjs --headless",
     "staging": "node scripts/staging.js",
     "dev:auto": "pnpm --filter server dev & pnpm --filter client dev",
     "dev-tailscale": "tailscale serve --bg 3400 && pnpm dev",
@@ -34,8 +41,8 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "build:stable": "pnpm --filter client build:stable",
-    "typecheck": "pnpm --filter shared build && pnpm -r --filter '!@yep-anywhere/mobile' exec tsc --noEmit",
-    "test": "pnpm -r test",
+    "typecheck": "pnpm --filter shared build && pnpm -r --filter '!@yep-anywhere/android' exec tsc --noEmit",
+    "test": "pnpm -r --filter '!@yep-anywhere/android' test",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
     "test:e2e:android": "pnpm --filter client test:e2e:android",
@@ -49,6 +56,7 @@
     "test:e2e:sdk:local:quality": "pnpm --filter server test:e2e:local:quality",
     "lint": "node scripts/check-css-architecture.mjs && pnpm css:modules:check && node scripts/biome.cjs lint .",
     "format": "node scripts/biome.cjs format --write .",
+    "format:check": "node scripts/biome.cjs format .",
     "prepare": "husky",
     "site:dev": "node scripts/run-site-npm.mjs dev",
     "site:build": "node scripts/run-site-npm.mjs build"
@@ -57,31 +65,50 @@
     "@biomejs/biome": "2.5.6",
     "husky": "^9.1.7",
     "postcss": "^8.5.23",
+    "postcss-selector-parser": "7.1.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@9.15.1",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=20.12"
   },
   "pnpm": {
     "overrides": {
+      "@mdit/helper@1.0.1>markdown-it": "15.0.0",
+      "@mdit/plugin-katex@1.0.2>katex": "0.16.45",
+      "@mdit/plugin-katex@1.0.2>markdown-it": "15.0.0",
+      "@mdit/plugin-tex@1.0.2>markdown-it": "15.0.0",
       "bn.js": "5.2.3",
-      "fast-uri": "3.1.4",
+      "fast-uri": "3.1.5",
       "postcss": "^8.5.23"
+    },
+    "onlyBuiltDependencies": [
+      "bcrypt",
+      "better-sqlite3"
+    ],
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-qwww-vcr4-c8h2",
+        "GHSA-frvp-7c67-39w9",
+        "GHSA-w5hq-g745-h8pq"
+      ]
     }
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.145.0",
-      "compatibleThroughVersion": "0.145.0"
+      "expectedVersion": "0.147.0",
+      "compatibleThroughVersion": "0.147.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.220",
-      "claudeAgentSdkVersion": "0.3.220"
+      "compatibleThroughVersion": "2.1.223",
+      "claudeAgentSdkVersion": "0.3.223"
     },
     "piCli": {
       "compatibleThroughVersion": "0.82.1"
+    },
+    "grokCli": {
+      "compatibleThroughVersion": "1.0.4"
     }
   },
   "dependencies": {

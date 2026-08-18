@@ -24,6 +24,19 @@ export const XAI_DIRECT_BATCH_SPEECH_METHOD: SpeechMethodId =
 const SERVER_BACKEND_PREFERENCE = ["ya-grok", "ya-deepgram"] as const;
 const YA_GROK_BACKEND_ID = "ya-grok";
 
+const COMPACT_SPEECH_METHOD_LABELS: Record<string, string> = {
+  [DEFAULT_SPEECH_METHOD]: "Web",
+  [YA_GROK_STREAMING_SPEECH_METHOD]: "Grok",
+  [YA_GROK_BATCH_SPEECH_METHOD]: "Grok",
+  [XAI_DIRECT_STREAMING_SPEECH_METHOD]: "Grok",
+  [XAI_DIRECT_BATCH_SPEECH_METHOD]: "Grok",
+  "ya-deepgram": "Deep",
+  "ya-whisper": "Whsp",
+  "ya-parakeet": "Para",
+  "ya-nemo": "NeMo",
+  "ya-dummy": "Test",
+};
+
 const SERVER_BACKEND_LABELS: Record<
   string,
   { label: string; description: string }
@@ -72,6 +85,8 @@ export interface SpeechMethodCapabilities {
 export interface SpeechMethodAvailability {
   /** Browser-local xAI key configured, so direct Grok can run without YA key. */
   directXaiAvailable?: boolean;
+  /** The current browser context exposes a usable Web Speech recognizer. */
+  browserNativeAvailable?: boolean;
 }
 
 const DIRECT_XAI_STREAMING_METHOD: SpeechMethodDescriptor = {
@@ -111,9 +126,23 @@ export function describeBrowserNative(
   };
 }
 
+export function isBrowserNativeSpeechAvailable(userAgent?: string): boolean {
+  return describeBrowserNative(userAgent).clientSupported;
+}
+
 function normalizeBackendLabelPart(part: string): string {
   if (!part) return part;
   return `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`;
+}
+
+/** A stable, narrow label for the speech backend shown inside the mic chip. */
+export function getCompactSpeechMethodLabel(methodId: SpeechMethodId): string {
+  const knownLabel = COMPACT_SPEECH_METHOD_LABELS[methodId];
+  if (knownLabel) return knownLabel;
+
+  const backendName = methodId.trim().replace(/^ya-/, "").split(/[-_]+/)[0];
+  if (!backendName) return "STT";
+  return normalizeBackendLabelPart(backendName).slice(0, 5);
 }
 
 function formatServerBackendLabel(id: string): string {
@@ -256,12 +285,15 @@ function directXaiAvailable(
 export function getPreferredSpeechMethod(
   serverBackends: readonly string[] = [],
   availability: SpeechMethodAvailability = {},
-): SpeechMethodId {
+): SpeechMethodId | null {
   const orderedServerBackends = getOrderedServerSpeechBackends(serverBackends);
   if (directXaiAvailable(orderedServerBackends, availability)) {
     return XAI_DIRECT_STREAMING_SPEECH_METHOD;
   }
-  return orderedServerBackends[0] ?? DEFAULT_SPEECH_METHOD;
+  if (orderedServerBackends[0]) return orderedServerBackends[0];
+  return availability.browserNativeAvailable === false
+    ? null
+    : DEFAULT_SPEECH_METHOD;
 }
 
 export function resolveSpeechMethod(
@@ -269,36 +301,49 @@ export function resolveSpeechMethod(
   serverBackends: readonly string[] | undefined,
   hasStoredMethod: boolean,
   availability: SpeechMethodAvailability = {},
-): SpeechMethodId {
+): SpeechMethodId | null {
   if (serverBackends === undefined) {
-    return hasStoredMethod ? storedMethod : DEFAULT_SPEECH_METHOD;
+    if (!hasStoredMethod) {
+      return availability.browserNativeAvailable === false
+        ? null
+        : DEFAULT_SPEECH_METHOD;
+    }
+    if (
+      storedMethod === DEFAULT_SPEECH_METHOD &&
+      availability.browserNativeAvailable === false
+    ) {
+      return null;
+    }
+    return storedMethod;
   }
 
   const activeServerBackends = getOrderedServerSpeechBackends(serverBackends);
   if (!hasStoredMethod) {
-    return getPreferredSpeechMethod(serverBackends, availability);
+    return getPreferredSpeechMethod(activeServerBackends, availability);
   }
 
   if (storedMethod === DEFAULT_SPEECH_METHOD) {
-    return DEFAULT_SPEECH_METHOD;
+    return availability.browserNativeAvailable === false
+      ? null
+      : DEFAULT_SPEECH_METHOD;
   }
 
   if (storedMethod === XAI_DIRECT_STREAMING_SPEECH_METHOD) {
     return directXaiAvailable(activeServerBackends, availability)
       ? storedMethod
-      : DEFAULT_SPEECH_METHOD;
+      : null;
   }
 
   if (storedMethod === XAI_DIRECT_BATCH_SPEECH_METHOD) {
     return directXaiAvailable(activeServerBackends, availability)
       ? XAI_DIRECT_STREAMING_SPEECH_METHOD
-      : DEFAULT_SPEECH_METHOD;
+      : null;
   }
 
   if (storedMethod === YA_GROK_BATCH_SPEECH_METHOD) {
     return activeServerBackends.includes(YA_GROK_BACKEND_ID)
       ? getPreferredSpeechMethod(activeServerBackends, availability)
-      : DEFAULT_SPEECH_METHOD;
+      : null;
   }
 
   return getAvailableSpeechMethodIds(
@@ -306,7 +351,7 @@ export function resolveSpeechMethod(
     availability,
   ).includes(storedMethod)
     ? storedMethod
-    : DEFAULT_SPEECH_METHOD;
+    : null;
 }
 
 /**

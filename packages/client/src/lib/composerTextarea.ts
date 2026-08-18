@@ -1,5 +1,28 @@
 const EXPANDED_COMPOSER_MAX_VIEWPORT_RATIO = 0.5;
 const FALLBACK_TEXTAREA_LINE_HEIGHT_PX = 20;
+const FULL_PANE_COMPOSER_RESERVE_LINES = 1;
+
+export const FULL_PANE_COMPOSER_SHORTCUT = "Ctrl+U";
+
+interface ComposerShortcutEvent {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}
+
+export function isFullPaneComposerShortcut(
+  event: ComposerShortcutEvent,
+): boolean {
+  return (
+    event.key.toLowerCase() === "u" &&
+    event.ctrlKey &&
+    !event.shiftKey &&
+    !event.metaKey &&
+    !event.altKey
+  );
+}
 
 export function clearTextareaContentsUndoably(
   textarea: HTMLTextAreaElement,
@@ -82,12 +105,54 @@ function getTextareaMinimumHeight(textarea: HTMLTextAreaElement): number {
 }
 
 function getComposerChromeHeight(textarea: HTMLTextAreaElement): number {
-  const composer = textarea.closest(".message-input");
+  const composer = textarea.closest(
+    '[data-composer-shell="true"], .message-input',
+  );
   if (!(composer instanceof HTMLElement)) return 0;
   return Math.max(
     0,
     composer.getBoundingClientRect().height -
       textarea.getBoundingClientRect().height,
+  );
+}
+
+function getFullPaneComposerMaxTextareaHeight(
+  textarea: HTMLTextAreaElement,
+  minimumHeight: number,
+): number {
+  const host = textarea.closest('[data-composer-full-pane="true"]');
+  const sessionSplit = textarea.closest(".session-split");
+  const layoutHost = sessionSplit ?? host;
+  const layoutHeight =
+    layoutHost instanceof HTMLElement
+      ? layoutHost.getBoundingClientRect().height
+      : 0;
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const availableHeight =
+    Number.isFinite(layoutHeight) && layoutHeight > 0
+      ? layoutHeight
+      : viewportHeight;
+  if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const sessionInput = textarea.closest(".session-input");
+  const surroundingChromeHeight =
+    sessionSplit instanceof HTMLElement &&
+    sessionInput instanceof HTMLElement &&
+    host instanceof HTMLElement
+      ? Math.max(
+          0,
+          sessionInput.getBoundingClientRect().height -
+            host.getBoundingClientRect().height,
+        )
+      : 0;
+  return Math.max(
+    minimumHeight,
+    Math.floor(
+      availableHeight -
+        getComposerChromeHeight(textarea) -
+        surroundingChromeHeight,
+    ),
   );
 }
 
@@ -111,23 +176,30 @@ function getExpandedComposerMaxTextareaHeight(
 export function resizeComposerTextarea(
   textarea: HTMLTextAreaElement,
   collapsed: boolean | undefined,
-): void {
+  fullPane = false,
+): { overflowed: boolean } {
   if (collapsed) {
     textarea.style.height = "";
     textarea.style.overflowY = "";
-    return;
+    return { overflowed: false };
   }
 
   const minimumHeight = getTextareaMinimumHeight(textarea);
   textarea.style.height = "auto";
-  const contentHeight = Math.max(textarea.scrollHeight, minimumHeight);
-  const maxHeight = getExpandedComposerMaxTextareaHeight(
-    textarea,
+  const reserveHeight = fullPane
+    ? getTextareaLineHeightPx(textarea) * FULL_PANE_COMPOSER_RESERVE_LINES
+    : 0;
+  const contentHeight = Math.max(
+    textarea.scrollHeight + reserveHeight,
     minimumHeight,
   );
+  const maxHeight = fullPane
+    ? getFullPaneComposerMaxTextareaHeight(textarea, minimumHeight)
+    : getExpandedComposerMaxTextareaHeight(textarea, minimumHeight);
   const nextHeight = Math.min(contentHeight, maxHeight);
   textarea.style.height = `${nextHeight}px`;
   textarea.style.overflowY = contentHeight > nextHeight + 1 ? "auto" : "hidden";
+  return { overflowed: contentHeight > nextHeight + 1 };
 }
 
 export function countDraftLines(text: string): number {

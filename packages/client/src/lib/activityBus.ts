@@ -44,6 +44,8 @@ export interface FileChangeEvent {
   relativePath: string;
   changeType: FileChangeType;
   timestamp: string;
+  mtimeMs?: number;
+  size?: number;
   fileType: FileType;
 }
 
@@ -85,6 +87,13 @@ export interface ProcessStateEvent {
   activity: AgentActivity;
   /** Type of pending input (only set when activity is "waiting-input") */
   pendingInputType?: PendingInputType;
+  timestamp: string;
+}
+
+export interface ReviewResponseChangedEvent {
+  type: "review-response-changed";
+  projectId: UrlProjectId;
+  submissionIds: string[];
   timestamp: string;
 }
 
@@ -229,6 +238,7 @@ export interface ActivityEventMap {
   "session-updated": SessionUpdatedEvent;
   "session-seen": SessionSeenEvent;
   "process-state-changed": ProcessStateEvent;
+  "review-response-changed": ReviewResponseChangedEvent;
   "provider-runtime-status-changed": ProviderRuntimeStatusChangedEvent;
   "project-queue-changed": ProjectQueueChangedEvent;
   "workstreams-changed": WorkstreamsChangedEvent;
@@ -255,8 +265,8 @@ type SourceKey = string;
 interface ActivityStreamRecord {
   sourceKey: SourceKey;
   transport: SourceTransport;
-  stream: ManagedStream;
-  unsubscribeStream: () => void;
+  stream: ManagedStream | null;
+  unsubscribeStream: (() => void) | null;
   unsubscribeVisibilityRestored: (() => void) | null;
   retainCount: number;
   connected: boolean;
@@ -288,6 +298,33 @@ class ActivityBus {
   >();
   private streamRecords = new Map<SourceKey, ActivityStreamRecord>();
   private bridgeRetainCounts = new Map<SourceKey, number>();
+  private streamsSuspended = false;
+  private connectedListeners = new Set<() => void>();
+  private lastNotifiedConnected = false;
+
+  constructor() {
+    if (typeof window === "undefined") return;
+    window.addEventListener("pagehide", this.handlePageHide);
+    window.addEventListener("pageshow", this.handlePageShow);
+  }
+
+  private handlePageHide = (): void => {
+    if (this.streamsSuspended) return;
+    this.streamsSuspended = true;
+    for (const record of this.streamRecords.values()) {
+      this.detachStream(record);
+    }
+  };
+
+  private handlePageShow = (): void => {
+    if (!this.streamsSuspended) return;
+    this.streamsSuspended = false;
+    for (const record of this.streamRecords.values()) {
+      if (record.retainCount > 0) {
+        this.attachStream(record);
+      }
+    }
+  };
   private get debugEnabled(): boolean {
     return isActivityDebugEnabled();
   }
@@ -299,6 +336,29 @@ class ActivityBus {
       }
     }
     return false;
+  }
+
+  /**
+   * Observe `connected`. Without this every consumer polls the getter on its
+   * own interval — the connection state is derived from stream records that
+   * only change on open, error, close, and retain changes, so an interval is
+   * pure overhead that also delays the answer by up to its period.
+   */
+  subscribeConnected(listener: () => void): () => void {
+    this.connectedListeners.add(listener);
+    return () => {
+      this.connectedListeners.delete(listener);
+    };
+  }
+
+  /** Call after anything that can change `connected`. Notifies only on change. */
+  private notifyConnectedChanged(): void {
+    const connected = this.connected;
+    if (connected === this.lastNotifiedConnected) return;
+    this.lastNotifiedConnected = connected;
+    for (const listener of Array.from(this.connectedListeners)) {
+      listener();
+    }
   }
 
   /**
@@ -339,6 +399,7 @@ class ActivityBus {
       sourceKey,
       (this.bridgeRetainCounts.get(sourceKey) ?? 0) + 1,
     );
+    this.notifyConnectedChanged();
 
     let released = false;
     return () => {
@@ -354,6 +415,7 @@ class ActivityBus {
         this.bridgeRetainCounts.set(sourceKey, retainCount);
       }
       releaseStream();
+      this.notifyConnectedChanged();
     };
   }
 
@@ -383,13 +445,29 @@ class ActivityBus {
       console.log("[ActivityBus] Retaining source activity stream", sourceKey);
     }
 
-    let record: ActivityStreamRecord;
-
-    const stream = createManagedStream(
+    const record: ActivityStreamRecord = {
+      sourceKey,
       transport,
+      stream: null,
+      unsubscribeStream: null,
+      unsubscribeVisibilityRestored: null,
+      retainCount: 0,
+      connected: false,
+      hasConnected: false,
+    };
+    if (!this.streamsSuspended) {
+      this.attachStream(record);
+    }
+    return record;
+  }
+
+  private attachStream(record: ActivityStreamRecord): void {
+    if (record.stream) return;
+    const stream = createManagedStream(
+      record.transport,
       {
-        subscribe: ({ transport, handlers }) =>
-          transport.subscribeActivity(handlers),
+        subscribe: ({ transport: activeTransport, handlers }) =>
+          activeTransport.subscribeActivity(handlers),
         captureEventId: () => undefined,
         onEvent: (event) => this.handleStreamEvent(record, event),
         onOpen: () => this.handleStreamOpen(record),
@@ -398,38 +476,36 @@ class ActivityBus {
       },
       { autoStart: false },
     );
-    record = {
-      sourceKey,
-      transport,
-      stream,
-      unsubscribeStream: () => {},
-      unsubscribeVisibilityRestored: null,
-      retainCount: 0,
-      connected: false,
-      hasConnected: false,
-    };
+    record.stream = stream;
     record.unsubscribeStream = stream.subscribe(() => {
       record.connected = stream.getSnapshot().connected;
+      this.notifyConnectedChanged();
     });
     record.unsubscribeVisibilityRestored =
-      transport.status.subscribeVisibilityRestored?.(() => {
+      record.transport.status.subscribeVisibilityRestored?.(() => {
         if (record.connected) {
           this.emitFromSource(record.sourceKey, "refresh", undefined);
         }
       }) ?? null;
     stream.start();
-    return record;
+  }
+
+  private detachStream(record: ActivityStreamRecord): void {
+    record.unsubscribeVisibilityRestored?.();
+    record.unsubscribeVisibilityRestored = null;
+    record.unsubscribeStream?.();
+    record.unsubscribeStream = null;
+    record.stream?.close();
+    record.stream = null;
+    record.connected = false;
+    this.notifyConnectedChanged();
   }
 
   private closeStreamRecord(
     sourceKey: SourceKey,
     record: ActivityStreamRecord,
   ): void {
-    record.unsubscribeVisibilityRestored?.();
-    record.unsubscribeVisibilityRestored = null;
-    record.unsubscribeStream();
-    record.stream.close();
-    record.connected = false;
+    this.detachStream(record);
     this.streamRecords.delete(sourceKey);
   }
 
@@ -470,6 +546,7 @@ class ActivityBus {
 
   private handleStreamOpen(record: ActivityStreamRecord): void {
     record.connected = true;
+    this.notifyConnectedChanged();
     if (this.debugEnabled) {
       console.log(
         "[ActivityBus] Source activity stream opened",
@@ -485,7 +562,9 @@ class ActivityBus {
 
   private handleStreamError(record: ActivityStreamRecord, error: Error): void {
     record.connected = false;
-    const isExpectedReconnectError = error.message === "Connection reconnecting";
+    this.notifyConnectedChanged();
+    const isExpectedReconnectError =
+      error.message === "Connection reconnecting";
     if (!isExpectedReconnectError) {
       console.error("[ActivityBus] Connection error:", error);
     } else if (this.debugEnabled) {
@@ -498,6 +577,7 @@ class ActivityBus {
     error: Error | undefined,
   ): void {
     record.connected = false;
+    this.notifyConnectedChanged();
     if (this.debugEnabled) {
       console.log("[ActivityBus] Source activity stream closed", {
         sourceKey: record.sourceKey,
@@ -518,6 +598,7 @@ class ActivityBus {
       "session-updated",
       "session-seen",
       "process-state-changed",
+      "review-response-changed",
       "provider-runtime-status-changed",
       "project-queue-changed",
       "workstreams-changed",
@@ -642,6 +723,7 @@ class ActivityBus {
     this.listeners.clear();
     this.sourceListeners.clear();
     this.bridgeRetainCounts.clear();
+    this.streamsSuspended = false;
   }
 }
 

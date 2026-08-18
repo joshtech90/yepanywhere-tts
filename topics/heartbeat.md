@@ -20,9 +20,17 @@ language, but they do not share ownership or evidence semantics.
   and provider probes. They are not derived from the last React render, DOM
   change, spinner tick, relative-time update, or other UI-visible movement.
 - Synthetic heartbeat turns are currently server-owned. The client owns the
-  settings UI and local optimistic state, but `Supervisor.queueHeartbeatTurns()`
+  settings UI and local optimistic state, but `Supervisor.runHeartbeatSweep()`
   decides whether to queue the configured user-message text for an opted-in
   idle session.
+- New sessions snapshot their heartbeat interval and message from the first
+  available tier: project override, global setting, then the built-in default.
+  Project defaults seed only missing session metadata; they do not rewrite an
+  existing session and do not opt a session into heartbeat turns.
+- Heartbeat messages are bounded to 2,000 characters at every settings and
+  session-metadata write boundary. The shared editor starts at one line and
+  grows through four lines before scrolling, so a multi-line message remains
+  practical without dominating either settings surface.
 - Synthetic heartbeat turns must use the shared session-liveness contract:
   queue for `verified-idle`, and also for deliberately supported doubtful
   liveness states where YA cannot verify that the agent is making progress but
@@ -68,8 +76,32 @@ language, but they do not share ownership or evidence semantics.
 - When the server confirms activity or inactivity, the client should display
   that server snapshot instead of replacing it with a locally inferred status.
 - Server-owned synthetic heartbeat turn scheduling does not depend on an open
-  session UI. It runs on the server supervisor interval and reads current
-  heartbeat settings plus the process liveness snapshot.
+  session UI. One process-wide timer wakes at the earliest deadline any source
+  reports, then reads current heartbeat settings plus the process liveness
+  snapshot.
+- A source that cannot prove a later deadline — queued work draining, liveness
+  YA has not verified, a patient entry waiting on a state change — asks for the
+  fallback recheck instead. That recheck is the fixed interval this scheduler
+  replaced, so no situation is visited more often than it used to be.
+- A heartbeat opt-in or a shorter global quiet period must announce itself to
+  the supervisor (`notifyHeartbeatScheduleChanged`). With deadlines rather than
+  a poll, an already-quiet session that becomes eligible would otherwise wait
+  for some unrelated event to re-plan the timer.
+- Unowned heartbeat candidates are retained, exact session projections rather
+  than the result of a recurring project/provider search. Metadata and provider
+  catalog reconciliation establish provider/transcript project identity; file,
+  ownership, liveness, and metadata events update that row.
+- Whether an unowned candidate ends in a pending tool call is a compact fact
+  tied to an observed transcript source version. Unchanged negative results do
+  not require another full transcript read, while append/replacement/truncation
+  invalidates the fact.
+- Candidate deadlines are scheduled by one process-wide owner. The next due
+  timer compares wall-clock time with the latest real activity anchor; it does
+  not run one interval per session or search all projects on a fixed tick.
+- Older metadata missing exact transcript location is repaired once through
+  bounded provider-catalog reconciliation. An unresolved candidate cannot
+  authorize automatic resume and must not retry by repeatedly scanning every
+  project/provider.
 
 ## Unowned Resume Exemptions
 
@@ -83,15 +115,18 @@ auto-resumed from its rollout three times in one day):
 - **Archived sessions are never candidates.** Archiving says the user is done;
   the candidate filter uses `isUnownedHeartbeatResumeEligible`
   (`sessions/resume-exemption.ts`), which excludes `isArchived` metadata.
-- **Explicit Kill blocks all auto-resume.** The Agents-page Kill button sends
-  `blockResume: true` on `POST /api/processes/:id/abort`. After the shutdown is
+- **Explicit Kill or Terminate blocks all auto-resume.** The Agents-page Kill
+  button and the session menu's deliberate Terminate action send
+  `blockResume: true` on `POST /api/processes/:id/abort`. After shutdown is
   verified, the server clears the session's heartbeat opt-in and persists an
-  `autoResumeDisabled` YA metadata marker checked by the unowned-candidate gate.
-  Provider transcripts are never renamed or hidden: the session remains in
-  history and can be deliberately continued. Explicitly re-enabling heartbeat
-  turns clears the marker because that fresh opt-in authorizes automatic turns.
-  If persisting the exemption fails, the abort response and Agents page report
-  that the process stopped but automatic resume was not disabled.
+  `autoResumeDisabled` YA metadata marker checked by the shared automatic-
+  resume gate. The unowned heartbeat candidate scan and cold fork-recap route
+  both obey it. Provider transcripts are never renamed or hidden: the session
+  remains in history and can be deliberately continued through its full
+  session page. Explicitly re-enabling heartbeat turns clears the marker
+  because that fresh opt-in authorizes automatic turns. If persisting the
+  exemption fails, the abort response reports that the process stopped but
+  automatic resume was not disabled.
 - The session-page Stop fallback abort, btw-aside cleanup aborts, and internal
   process-rotation aborts do **not** block resume; only the explicit Kill
   gesture opts in.
@@ -115,9 +150,21 @@ auto-resumed from its rollout three times in one day):
 - A synthetic heartbeat turn queues for a steering-capable session in a
   doubtful long-silent state once the quiet period has elapsed without recent
   real PTY output.
+- One eligible unowned session among many projects performs only an exact
+  candidate/tail lookup at its deadline; unchanged negative pending-tool state
+  and unresolved location do not create fixed-interval corpus reads.
+- A server with nothing opted in and no patient entries arms no heartbeat timer
+  at all, and an opted-in idle session is visited at its threshold rather than
+  on every fixed tick in between.
+- A settled unowned candidate is rechecked no more often than one idle
+  threshold, and a fresh opt-in still schedules without waiting for unrelated
+  activity.
 - If the client handles the PTY exception, it uses server-reported PTY output
   timing and still treats a quiet foreground PTY as non-progress.
 - A client relative-time or stale callback still fires when no new events have
   updated the stored liveness timestamp.
 - Client UI movement alone does not refresh provider progress or reset the
   synthetic heartbeat quiet-period anchor.
+- Explicit Kill/Terminate clears heartbeat opt-in and persists the automatic-
+  resume exemption, so neither a live nor unowned heartbeat turn can follow.
+  Session-page Stop/Interrupt does not change heartbeat eligibility.

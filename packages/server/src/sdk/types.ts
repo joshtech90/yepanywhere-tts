@@ -3,6 +3,7 @@
 // Re-export PermissionMode from shared
 export type { PermissionMode } from "@yep-anywhere/shared";
 import type {
+  ClaudeSteerBackgroundBashSettings,
   PermissionMode,
   SlashCommand,
   SessionLivenessProbeStatus,
@@ -12,6 +13,10 @@ import type {
   UserMessageMetadata,
 } from "@yep-anywhere/shared";
 import type { SessionSandboxRuntime } from "../session-sandbox.js";
+import type {
+  ProviderSessionOptions,
+  ProviderSessionOptionsUpdateResult,
+} from "./providers/types.js";
 
 export interface ContentBlock {
   type: "text" | "tool_use" | "tool_result" | "image" | "thinking";
@@ -72,6 +77,8 @@ export interface SDKMessage {
     type: "tool-approval" | "question" | "choice";
     prompt: string;
     options?: string[];
+    toolName?: string;
+    toolInput?: unknown;
   };
   // Result metadata
   duration_ms?: number;
@@ -92,6 +99,10 @@ export type TimestampedSDKMessage<T extends SDKMessage = SDKMessage> = T & {
 
 export interface UserMessage {
   text: string;
+  /** YA-internal automatic-turn source; never treated as fresh user intent. */
+  automaticSource?: "heartbeat" | "project-queue" | "wake";
+  /** YA-internal guard so deferred/recovered delivery is not re-accepted. */
+  recapResumeHandled?: true;
   images?: string[]; // base64 or file paths
   documents?: string[];
   /** File attachments with paths for agent to access via Read tool */
@@ -129,7 +140,7 @@ export interface ClaudeSDK {
 }
 
 // New interface for real SDK with full features
-import type { MessageQueue } from "./messageQueue.js";
+import type { AgentMessageQueue } from "./messageQueue.js";
 
 export interface ToolApprovalResult {
   behavior: "allow" | "deny";
@@ -198,15 +209,22 @@ export interface StartSessionOptions {
    * window. Omitted leaves its environment/default unchanged.
    */
   launchCompactPercentOverride?: number;
+  /** Claude-only policy for making matching foreground Bash calls resumable. */
+  claudeSteerBackgroundBash?: ClaudeSteerBackgroundBashSettings;
   onToolApproval?: CanUseTool;
   /** SSH host for remote execution (undefined = local) */
   executor?: string;
   /** Environment variables to set on remote (for testing: CLAUDE_SESSIONS_DIR) */
   remoteEnv?: Record<string, string>;
+  /** Session-scoped environment resolved for the canonical id and executor. */
+  getSessionChildEnv?: (
+    sessionId: string,
+    executor?: string,
+  ) => Record<string, string>;
   /** Global instructions to append to system prompt (from server settings) */
   globalInstructions?: string;
-  /** Native prompt-suggestion protocol opt-in for providers that support it. */
-  promptSuggestions?: boolean;
+  /** Explicit provider-owned generation controls; omission means all off. */
+  sessionOptions?: ProviderSessionOptions;
   /** Called when provider-owned retention evidence changes. */
   onProviderRetentionChange?: () => void;
   /** Prepared YA host sandbox applied to every provider child for this session. */
@@ -215,8 +233,10 @@ export interface StartSessionOptions {
 
 export interface StartSessionResult {
   iterator: AsyncIterableIterator<SDKMessage>;
-  queue: MessageQueue;
+  queue: AgentMessageQueue;
   abort: () => void | Promise<void>;
+  /** Release only this server's client while a reload-safe provider survives. */
+  detachForServerReload?: () => void | Promise<void>;
   /** Check if the underlying CLI process is still alive (undefined = not available) */
   isProcessAlive?: () => boolean;
   /** OS PID of the spawned agent child process (undefined if not available) */
@@ -227,6 +247,13 @@ export interface StartSessionResult {
   getProviderActivity?: () => ProviderActivitySnapshot;
   /** Provider-owned work that should retain an otherwise idle process. */
   getProviderRetention?: () => ProviderRetentionSnapshot;
+  /** No-viewer period retained by a reload-safe runtime owner. */
+  getRuntimeUnviewedSince?: () => Date | undefined;
+  /**
+   * Persist a viewer transition with a reload-safe runtime owner. Completion
+   * acknowledges that exact state; failures reject for caller-owned retry.
+   */
+  setRuntimeViewerPresence?: (hasViewers: boolean) => void | Promise<void>;
   /**
    * Change max thinking tokens without restarting the session.
    * Pass null to disable thinking mode.
@@ -240,6 +267,10 @@ export interface StartSessionResult {
   setEffort?: (
     effort?: import("@yep-anywhere/shared").EffortLevel,
   ) => Promise<void>;
+  /** Request provider-owned generation changes for this live session. */
+  setSessionOptions?: (
+    options: ProviderSessionOptions,
+  ) => Promise<ProviderSessionOptionsUpdateResult>;
   /**
    * Interrupt the current turn gracefully without killing the process.
    * Only supported by Claude SDK 0.2.7+.
@@ -266,7 +297,17 @@ export interface StartSessionResult {
    * Publish the provider's canonical session id into any child-process
    * environment bridge the provider installed before startup.
    */
-  publishAgentctlSessionId?: (sessionId: string) => void | Promise<void>;
+  publishAgentctlSessionId?: (
+    sessionId: string,
+    browserDebugEnvironment?: Record<string, string>,
+  ) => void | Promise<void>;
+}
+
+export interface ProviderCommandOutput {
+  /** Collapsed local-command row label. */
+  summary: string;
+  /** Expandable preformatted result sections. */
+  details?: string[];
 }
 
 export interface ProviderCommandResult {
@@ -278,6 +319,8 @@ export interface ProviderCommandResult {
   handled: boolean;
   /** Set when `handled` is true but the native dispatch failed. */
   error?: string;
+  /** Optional YA-local result to publish without creating a provider turn. */
+  output?: ProviderCommandOutput;
 }
 
 export interface RealClaudeSDKInterface {

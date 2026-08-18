@@ -36,11 +36,15 @@ they can reach a control.
   space. Avoid mobile-only absolute positioning or `display: contents` wrappers
   for row participants such as shortcut help (`?`) and context percentage,
   because they can overlap while the responsive model thinks space remains.
-- While microphone capture is active, an enabled live waveform should occupy
-  the measured free interval between the bottom row's left- and right-aligned
-  control groups. The waveform is elastic, opportunistic content rather than
-  another anchor: it may use any available center width, but must shrink and
-  disappear before displacing, reordering, or overlapping anchored controls.
+- While microphone capture is active, an enabled live waveform should fill the
+  backdrop behind the bottom row's left controls and free center interval. It
+  is elastic, non-interactive content rather than another anchor: it never
+  reserves required or highest-priority width and must not displace, reorder,
+  or cover right-side status and delivery controls. Empty gaps above it remain
+  clear. Only actual control backgrounds use the configured waveform opacity;
+  their foregrounds, borders, focus indicators, and hit targets stay solid.
+  The stored `pin` value for this non-priority-editable control means that the
+  waveform is enabled, not that the allocator must protect its rendered width.
   When capture is inactive it occupies no row space. It is configurable with
   the other session-toolbar elements and defaults on by deliberate product
   decision: while active it is ordinary microphone feedback, not a new
@@ -48,6 +52,11 @@ they can reach a control.
 - Use a stable, tappable overflow (`...`) affordance, likely near the middle of
   the composer bottom row.
 - Tapping `...` opens a popup/fold-out row; tapping `...` again dismisses it.
+- Panels opened from a bottom-row control stay inside the current visual
+  viewport with a 12 px inline gutter, whether the control is in the ordinary
+  row or a copy in the opened overflow strip. Their box width includes padding
+  and borders, and their inline position is remeasured while open when the
+  trigger, panel, or visual viewport changes.
 - The opened state is still one bottom-row control strip, not a detached
   explanatory panel: the `...` affordance remains selected at its stable anchor,
   and hidden icon buttons unfold next to it. Use the available side space around
@@ -78,8 +87,10 @@ they can reach a control.
   Conversation view, heartbeat/pulse, shortcut help, session status, context
   usage, `/btw`, Steer Now, and Project Queue may all collapse when the user
   assigns a non-`pin` priority. Conversation view defaults to the `last` tier
-  once enabled. Send, Stop, pending approvals/questions, microphone, and the
-  active waveform remain inline/pinned by their own contracts.
+  once enabled. Send, Stop, pending approvals/questions, and microphone remain
+  inline/pinned by their own contracts. An active waveform may stay rendered
+  underneath or between controls, but its elastic width does not protect space
+  from them.
 - At squeeze widths, permission mode should use a pure icon/dot presentation
   rather than carrying text such as `Bypass` inline.
 - Overflow priority does not require arbitrary reshuffling of the normal
@@ -184,6 +195,12 @@ with slack**. Two latch/oscillation traps live here:
   controls stay directly discoverable. Once the draft has submittable text or
   attachments and the viewport is below 80% of its pre-keyboard height, the
   normal toolbar yields to a 48px-high compact action row.
+- While any enabled text entry is focused on a mobile layout and the visual
+  viewport contracts below 80% of the layout viewport, the session shell keeps
+  its bottom chrome above the obscured portion of the layout viewport. It
+  follows visual-viewport resize and pan changes, including a keyboard that
+  hides for voice transcription and then returns. A browser that already
+  resizes the layout viewport receives no second inset.
 - The compact row keeps a stable More affordance so attachments, Stop, and the
   user's other enabled toolbar controls remain discoverable without first
   knowing to dismiss the keyboard. Project Queue is the exception: when the
@@ -255,12 +272,14 @@ with slack**. Two latch/oscillation traps live here:
   context percentage, `/btw`, Steer Now, and Project Queue. Their defaults
   remain `pin`; assigning `first`/`mid`/`last` makes them participate in the
   same measured tier engine as the existing left-side controls. Send, Stop,
-  pending approval/question, microphone, and the active waveform stay pinned.
+  pending approval/question, and microphone stay pinned. The active waveform
+  stays enabled but remains elastic and contributes no required width.
 - Active-microphone waveform landed on 2026-06-19 as a configurable,
-  default-on session-toolbar element. It is an elastic child of the
-  measured left control list: real YA-controlled capture samples fill whatever
-  center width remains, while measurement excludes the elastic width and the
-  fully collapsed child consumes no extra control gap. Its client renderer
+  default-on session-toolbar element. On 2026-08-11 it became the backdrop for
+  the left and center toolbar span, with browser-local control-background
+  opacity from 0–100% and a 70% default. Real YA-controlled capture samples
+  fill that span without adding measured demand; the ordinary controls remain
+  measured in flow and the inactive waveform consumes no space. Its renderer
   derives sample-vertex count from the measured pixel width and uses the full
   toolbar control height. Canvas drawing is browser-paint-paced, capped at
   60 fps, and coalesces intermediate audio updates instead of accumulating

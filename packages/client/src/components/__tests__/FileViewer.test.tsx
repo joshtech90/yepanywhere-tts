@@ -13,6 +13,19 @@ import { extractMarkdownSnippetsFromSelection } from "../../lib/markdownSelectio
 import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import { FileViewer, type FileViewerSource } from "../FileViewer";
 
+const mocks = vi.hoisted(() => ({
+  useFileVersionControl: vi.fn(),
+}));
+
+vi.mock("../../hooks/useFileVersionControl", () => ({
+  useFileVersionControl: mocks.useFileVersionControl,
+}));
+vi.mock("../../pages/GitStatusDiffPreview", () => ({
+  GitDiffBody: ({ source }: { source: unknown }) => (
+    <div data-testid="file-diff-body">{JSON.stringify(source)}</div>
+  ),
+}));
+
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 const originalGetBoundingClientRect =
   HTMLElement.prototype.getBoundingClientRect;
@@ -66,6 +79,14 @@ function restoreObjectProperty(
 
 describe("FileViewer", () => {
   beforeEach(() => {
+    mocks.useFileVersionControl.mockReset();
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile: null,
+      loading: false,
+      relativePath: null,
+      supported: false,
+      worktreeFile: null,
+    });
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
@@ -74,6 +95,73 @@ describe("FileViewer", () => {
       callback(0);
       return 1;
     });
+  });
+
+  it("makes cumulative diff override source line ranges", async () => {
+    const cumulativeFile = {
+      path: "src/App.ts",
+      status: "M",
+      staged: false,
+      linesAdded: 3,
+      linesDeleted: 1,
+    };
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile,
+      loading: false,
+      relativePath: "src/App.ts",
+      supported: true,
+      worktreeFile: null,
+    });
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "src/App.ts",
+          size: 12,
+          mimeType: "text/typescript",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "source\n",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="src/App.ts"
+          lineNumber={12}
+          lineEnd={16}
+          viewMode="range"
+          diffMode="cumulative"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    expect((await screen.findByTestId("file-diff-body")).textContent).toContain(
+      '"mode":"cumulative"',
+    );
+    expect(source.loadFile).not.toHaveBeenCalled();
+    const cumulative = screen.getByRole("link", {
+      name: "View cumulative HEAD^1 to working tree diff for src/App.ts",
+    });
+    expect(cumulative.getAttribute("href")).toBe(
+      "/projects/project-id/file?path=src%2FApp.ts&diff=cumulative",
+    );
+    expect(cumulative.getAttribute("aria-current")).toBe("page");
+
+    fireEvent.click(screen.getByRole("link", { name: "Source" }));
+    await waitFor(() =>
+      expect(source.loadFile).toHaveBeenCalledWith(
+        "project-id",
+        "src/App.ts",
+        true,
+        12,
+        16,
+        "range",
+      ),
+    );
   });
 
   afterEach(() => {
@@ -187,6 +275,60 @@ describe("FileViewer", () => {
     expect(window.location.search).toBe("?projectId=project-id");
   });
 
+  it("prefills a new session from a selected standalone file line", async () => {
+    const projectRoot = "/work/project";
+    const projectId = toUrlProjectId(projectRoot);
+    const filePath = `${projectRoot}/src/App.ts`;
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: filePath,
+        size: 30,
+        mimeType: "text/typescript",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "first line\nselected line\nthird line",
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId={projectId}
+          filePath={filePath}
+          source={source}
+          standalone
+        />
+      </I18nProvider>,
+    );
+
+    const selectedLine = await screen.findByText("selected line");
+    const range = document.createRange();
+    range.selectNodeContents(selectedLine);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent.contextMenu(screen.getByText("src/App.ts"));
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Copy text" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss file menu" }));
+
+    fireEvent.contextMenu(selectedLine, { clientX: 0, clientY: 0 });
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Copy text", "Copy source", "New session"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "New session" }));
+
+    expect(getNewSessionPrefill(LOCAL_CLIENT_SUMMARY_SOURCE_KEY)).toBe(
+      "src/App.ts:2\n\n> selected line",
+    );
+    expect(window.location.pathname).toBe("/new-session");
+    expect(window.location.search).toBe(`?projectId=${projectId}`);
+  });
+
   it("marks and scrolls a line range 10% below the viewer top", async () => {
     let scrollTop = 0;
     Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -279,6 +421,28 @@ describe("FileViewer", () => {
       ),
     ).toBe(false);
     expect(container.querySelector(".highlighted-line")).toBeNull();
+    const sourceLines = container.querySelectorAll<HTMLElement>(
+      ".shiki-container .line",
+    );
+    expect(sourceLines[1]?.dataset.yaSourceStart).toBe("4");
+    expect(sourceLines[1]?.dataset.yaSourceEnd).toBe("7");
+    const selectedRange = document.createRange();
+    selectedRange.setStart(sourceLines[1]?.firstChild as Node, 0);
+    selectedRange.setEnd(sourceLines[2]?.firstChild as Node, "three".length);
+    const sourceSelection = document.getSelection();
+    sourceSelection?.removeAllRanges();
+    sourceSelection?.addRange(selectedRange);
+    const viewerBody =
+      container.querySelector<HTMLElement>(".file-viewer-body");
+    expect(extractMarkdownSnippetsFromSelection(viewerBody!)).toMatchObject([
+      {
+        markdown: "two\nthree",
+        selectedText: "two\nthree",
+        sourceStart: 4,
+        sourceEnd: 13,
+      },
+    ]);
+    sourceSelection?.removeAllRanges();
     expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(
@@ -397,7 +561,7 @@ describe("FileViewer", () => {
     ]);
   });
 
-  it("keeps Markdown preview toggleable in range views", async () => {
+  it("opens Markdown range views rendered and keeps source toggleable", async () => {
     const fileResponse: FileContentResponse = {
       metadata: {
         path: "notes.md",
@@ -435,15 +599,16 @@ describe("FileViewer", () => {
       expect(screen.getByRole("button", { name: "Preview" })).toBeTruthy();
     });
 
-    expect(container.querySelector(".shiki-container")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-
-    const heading = await screen.findByRole("heading", { name: "Title" });
-    expect(heading).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Title" })).toBeTruthy();
     expect(
       container.querySelector(".markdown-preview-span-start"),
     ).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    expect(container.querySelector(".shiki-container")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    const heading = await screen.findByRole("heading", { name: "Title" });
     const headingText = heading.firstChild;
     expect(headingText).toBeTruthy();
     const range = document.createRange();
@@ -460,6 +625,138 @@ describe("FileViewer", () => {
         selectedText: "Title",
       },
     ]);
+  });
+
+  it("opens Quarto files rendered and maps include selections to source", async () => {
+    const sourceMarkdown = "{{< include _introduction.qmd >}}";
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "report.qmd",
+        size: sourceMarkdown.length,
+        mimeType: "text/markdown",
+        isText: true,
+      },
+      rawUrl: "",
+      content: sourceMarkdown,
+      highlightedHtml:
+        '<pre class="shiki"><code><span class="line">{{&lt; include _introduction.qmd &gt;}}</span></code></pre>',
+      renderedMarkdownHtml:
+        '<p>Include: <a href="/projects/project-id/file?path=_introduction.qmd" data-ya-resource="project-file" data-ya-project-id="project-id" data-ya-path="_introduction.qmd"><code>_introduction.qmd</code></a></p>',
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="report.qmd"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    const includePath = await screen.findByText("_introduction.qmd");
+    const range = document.createRange();
+    range.selectNodeContents(includePath);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const viewerBody =
+      container.querySelector<HTMLElement>(".file-viewer-body");
+    expect(extractMarkdownSnippetsFromSelection(viewerBody!)).toMatchObject([
+      {
+        markdown: "_introduction.qmd",
+        selectedText: "_introduction.qmd",
+      },
+    ]);
+
+    range.selectNodeContents(includePath.closest("p")!);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    expect(extractMarkdownSnippetsFromSelection(viewerBody!)).toMatchObject([
+      {
+        markdown: sourceMarkdown,
+        selectedText: "Include: _introduction.qmd",
+      },
+    ]);
+  });
+
+  it("keeps HTML source-first and confines an explicit static preview", async () => {
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "reports/demo.html",
+        size: 96,
+        mimeType: "text/html",
+        isText: true,
+      },
+      rawUrl: "",
+      content:
+        '<h1>Preview heading</h1><script>parent.document.body.dataset.pwned="1"</script>',
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="reports/demo.html"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Preview" })).toBeTruthy();
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(screen.getByText(/Preview heading/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const frame = container.querySelector<HTMLIFrameElement>("iframe");
+    expect(frame).toBeTruthy();
+    expect(frame?.getAttribute("sandbox")).toBe("");
+    expect(frame?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(frame?.srcdoc).toContain("Content-Security-Policy");
+    expect(frame?.srcdoc).toContain("default-src 'none'");
+    expect(document.body.dataset.pwned).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("honors an HTML preview selected before the project viewer opens", async () => {
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "reports/demo.html",
+        size: 32,
+        mimeType: "text/html",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "<p>Chosen preview</p>",
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="reports/demo.html"
+          initialPresentation="preview"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(container.querySelector("iframe")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Preview" }).classList).toContain(
+      "active",
+    );
   });
 
   it("opens image previews as raw image tabs", async () => {
@@ -514,6 +811,18 @@ describe("FileViewer", () => {
     expect(
       screen.getByRole("img", { name: "result.png" }).getAttribute("src"),
     ).toBe("blob:file-viewer-image");
+    fireEvent.contextMenu(screen.getByRole("img", { name: "result.png" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual([
+      "Open",
+      "Download",
+      "Copy image",
+      "Copy project-relative path",
+      "Copy absolute file path",
+      "Copy viewer link",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss image menu" }));
 
     const openButton = container.querySelector<HTMLButtonElement>(
       '.file-viewer-actions .file-viewer-action[title="Open image in new tab"]',

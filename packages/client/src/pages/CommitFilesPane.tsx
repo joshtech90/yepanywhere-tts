@@ -2,14 +2,22 @@ import type {
   GitCommitDetail,
   GitFileChange,
   GitRecentCommit,
+  ReviewSiteStateSummary,
 } from "@yep-anywhere/shared";
-import { type ReactNode, type RefObject, useEffect, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useState,
+} from "react";
 import { ChangesetFileFilter } from "../components/ChangesetFileFilter";
 import { CopyButton } from "../components/CopyButton";
 import {
   SourceFilePath,
   SourceFileRowButton,
   SourceFileStatusBadge,
+  SourceReviewStateBadges,
 } from "../components/SourceFileRow";
 import {
   SourceRowMenuTrigger,
@@ -26,6 +34,9 @@ import { writeClipboardText } from "../lib/clipboard";
 import { reflowCommitMessage } from "../lib/reflowCommitMessage";
 import type { TranslationFn } from "../i18n";
 import { CommitHistoryParentLink } from "./CommitHistoryParentLink";
+import styles from "./CommitFilesPane.module.css";
+
+const EMPTY_REVIEW_STATES = new Map<string, ReviewSiteStateSummary[]>();
 
 /**
  * Selected revision's files pane. It owns the revision banner, changed-file
@@ -44,6 +55,7 @@ export function CommitFilesPane({
   selectedFiles,
   selectedPath,
   fileCommentCount,
+  reviewStatesByPath = EMPTY_REVIEW_STATES,
   revisionNavigation,
   onBack,
   onToggleComparison,
@@ -68,6 +80,7 @@ export function CommitFilesPane({
   selectedFiles: GitFileChange[];
   selectedPath: string | null;
   fileCommentCount: ReadonlyMap<string, number>;
+  reviewStatesByPath?: ReadonlyMap<string, ReviewSiteStateSummary[]>;
   revisionNavigation: ReactNode;
   onBack?: () => void;
   onToggleComparison: () => void;
@@ -90,18 +103,15 @@ export function CommitFilesPane({
       (file) => !file.path.endsWith("/"),
     );
     const nextFile =
-      selectableFiles.find((file) => file.path === selectedPath) ??
+      selectableFiles.find(
+        (file) => file.path === selectedPath || file.origPath === selectedPath,
+      ) ??
       selectableFiles[0] ??
       null;
     if ((nextFile?.path ?? null) !== selectedPath) {
       onFilteredSelectionChange(nextFile);
     }
-  }, [
-    filteredFiles,
-    isWideScreen,
-    onFilteredSelectionChange,
-    selectedPath,
-  ]);
+  }, [filteredFiles, isWideScreen, onFilteredSelectionChange, selectedPath]);
 
   const fileMenuActions = (file: GitFileChange): SourceContextMenuAction[] => [
     {
@@ -119,6 +129,17 @@ export function CommitFilesPane({
         ]
       : []),
   ];
+
+  const showMessageUnlessSelecting = () => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    onShowMessage();
+  };
+  const handleMessageKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onShowMessage();
+  };
 
   return (
     <>
@@ -206,18 +227,27 @@ export function CommitFilesPane({
         ) : detail ? (
           <>
             {detail.body && (
-              <button
-                type="button"
-                className={`commit-body ${
-                  !isWideScreen ? "commit-body-mobile" : ""
-                } ${messageView ? "selected" : ""}`}
+              <div
+                className={[
+                  styles.body,
+                  !isWideScreen ? styles.mobile : "",
+                  messageView ? styles.selected : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                role="button"
+                tabIndex={0}
+                aria-pressed={messageView}
                 title={t("sourceShowFullMessage")}
-                onClick={onShowMessage}
+                onClick={showMessageUnlessSelecting}
+                onKeyDown={handleMessageKeyDown}
               >
+                <strong>{detail.subject}</strong>
+                {"\n\n"}
                 {isWideScreen
                   ? reflowCommitMessage(detail.body)
                   : t("sourceShowFullMessage")}
-              </button>
+              </div>
             )}
             <ul
               className="commit-file-list"
@@ -249,7 +279,9 @@ export function CommitFilesPane({
                       })}
                     >
                       <SourceFileStatusBadge status={file.status} t={t} />
-                      <SourceFilePath>{displayPath}</SourceFilePath>
+                      <SourceFilePath query={fileQuery}>
+                        {displayPath}
+                      </SourceFilePath>
                       {(file.linesAdded !== null ||
                         file.linesDeleted !== null) && (
                         <span className="git-line-counts">
@@ -273,6 +305,10 @@ export function CommitFilesPane({
                           {count}
                         </span>
                       )}
+                      <SourceReviewStateBadges
+                        states={reviewStatesByPath.get(file.path) ?? []}
+                        t={t}
+                      />
                     </SourceFileRowButton>
                     {!isFolder && (
                       <SourceRowMenuTrigger

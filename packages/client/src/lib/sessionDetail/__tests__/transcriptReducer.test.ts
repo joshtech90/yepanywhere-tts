@@ -97,6 +97,9 @@ describe("transcriptReducer", () => {
       ],
       session: sessionMetadata(),
       agentContent: {},
+      markdownAugments: {
+        "jsonl-assistant-1": { html: "<p>persisted</p>" },
+      },
       toolUseToAgentEntries: [],
       lastMessageId: "jsonl-assistant-1",
       maxPersistedTimestampMs: Date.parse("2026-07-01T12:00:01.000Z"),
@@ -111,6 +114,9 @@ describe("transcriptReducer", () => {
       "jsonl",
     ]);
     expect(state.lastMessageId).toBe("jsonl-assistant-1");
+    expect(state.markdownAugments).toEqual({
+      "jsonl-assistant-1": { html: "<p>persisted</p>" },
+    });
     expect(state.maxPersistedTimestampMs).toBe(
       Date.parse("2026-07-01T12:00:01.000Z"),
     );
@@ -1154,5 +1160,65 @@ describe("codex steer echo dedup", () => {
     expect(state.messages[0]?._source).toBe("jsonl");
     expect(state.messages[0]?.uuid).toBe("codex-durable-user");
     expect(state.messages[0]?.tempId).toBe("temp-steer");
+  });
+
+  it("keeps a sent steer across a stale tail replacement", () => {
+    const beforeReplacement = reduceSessionDetailActions(
+      [
+        {
+          type: "loadPersistedTranscript",
+          session: sessionMetadata("codex"),
+          messages: [
+            userMessage("user-1", "start", "2026-07-23T03:09:00.000Z"),
+          ],
+        },
+        {
+          type: "applyStreamMessage",
+          message: steerEcho("2026-07-23T03:10:00.000Z"),
+        },
+      ],
+      createInitialSessionDetailState(),
+    );
+
+    const staleReplacement = reduceSessionDetailState(beforeReplacement, {
+      type: "replaceTailWindow",
+      session: sessionMetadata("codex"),
+      messages: [
+        userMessage("user-1", "start", "2026-07-23T03:09:00.000Z"),
+        assistantMessage(
+          "assistant-1",
+          "still working",
+          "2026-07-23T03:09:01.000Z",
+        ),
+      ],
+    });
+
+    expect(staleReplacement.messages).toHaveLength(3);
+    expect(staleReplacement.messages.at(-1)).toMatchObject({
+      uuid: "ya-steer-uuid",
+      tempId: "temp-steer",
+      _source: "sdk",
+    });
+
+    const confirmed = reduceSessionDetailState(staleReplacement, {
+      type: "replaceTailWindow",
+      session: sessionMetadata("codex"),
+      messages: [
+        userMessage("user-1", "start", "2026-07-23T03:09:00.000Z"),
+        assistantMessage(
+          "assistant-1",
+          "still working",
+          "2026-07-23T03:09:01.000Z",
+        ),
+        durableRow("2026-07-23T03:19:08.210Z"),
+      ],
+    });
+
+    expect(confirmed.messages).toHaveLength(3);
+    expect(confirmed.messages.at(-1)).toMatchObject({
+      uuid: "codex-durable-user",
+      tempId: "temp-steer",
+      _source: "jsonl",
+    });
   });
 });

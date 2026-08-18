@@ -7,6 +7,11 @@
  * - Other irrelevant development/build-time variables
  *
  * We keep essential system variables that Claude might need.
+ *
+ * A marker meant for the agent to read must not be named `YEP_*` or `YA_*`:
+ * those are YA's own configuration and are dropped here. Publish it under the
+ * unprefixed `AGENT_` namespace instead, as the provider host does for
+ * `AGENT_LAUNCHER` and `AGENT_LAUNCH_*`. See topics/ya-env-vars.md.
  */
 
 /** Prefixes to exclude from child process environment */
@@ -75,6 +80,10 @@ const ALWAYS_KEEP = new Set([
   "SSH_AGENT_PID",
   // API keys Claude might need
   "ANTHROPIC_API_KEY",
+  // Short-lived browser diagnostic broker credentials. These are generated
+  // per YA server boot and are useful only with a separately pasted tab grant.
+  "YEP_BROWSER_DEBUG_AGENT_URL",
+  "YEP_BROWSER_DEBUG_CALLER_TOKEN",
   // XDG directories
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",

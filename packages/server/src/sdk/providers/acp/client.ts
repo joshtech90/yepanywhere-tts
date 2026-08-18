@@ -269,19 +269,29 @@ export class ACPClient {
   }
 
   /**
-   * Load an existing session by ID.
-   * Note: This uses session/load which may not be supported by all agents.
+   * Load an existing session by ID, the stable ACP continuation method. Agents
+   * advertise it as `agentCapabilities.loadSession`; check that before calling.
+   *
+   * `meta` rides along as the request's `_meta`, which ACP reserves for
+   * agent-specific extensions. It stays provider-neutral here: the caller
+   * decides which keys its agent understands.
    */
-  async loadSession(sessionId: string, cwd: string): Promise<void> {
+  async loadSession(
+    sessionId: string,
+    cwd: string,
+    meta?: Record<string, unknown>,
+  ): Promise<void> {
     if (!this.connection) {
       throw new Error("ACPClient not connected. Call connect() first.");
     }
 
-    this.log.debug({ sessionId, cwd }, "Loading existing ACP session");
+    this.log.debug({ sessionId, cwd, meta }, "Loading existing ACP session");
 
     await this.connection.loadSession({
       sessionId,
       cwd,
+      mcpServers: [],
+      ...(meta ? { _meta: meta } : {}),
     });
   }
 
@@ -331,6 +341,21 @@ export class ACPClient {
 
     this.log.debug({ result }, "ACP prompt complete");
     return result;
+  }
+
+  /**
+   * Send a provider-specific ACP extension request to the agent.
+   * The SDK prefixes `_` on the wire (`x.ai/interject` → `_x.ai/interject`).
+   */
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!this.connection) {
+      throw new Error("ACPClient not connected. Call connect() first.");
+    }
+    this.log.debug({ method }, "Sending ACP extension method");
+    return this.connection.extMethod(method, params);
   }
 
   /**

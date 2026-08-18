@@ -21,6 +21,7 @@ import {
   type SDKMessage as AgentSDKMessage,
   type Query,
   type CanUseTool as SDKCanUseTool,
+  type Options,
   type SessionStore,
   type SessionStoreEntry,
   type Settings,
@@ -29,7 +30,9 @@ import {
   query,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
+  DEFAULT_SUBAGENT_MAX_DEPTH,
   HELPER_SIDE_MODEL_CHEAPEST,
   type ClaudeAdditionalModelSelection,
   type EffortLevel,
@@ -37,6 +40,7 @@ import {
   type PromptCacheKeepaliveProviderInfo,
   type ProviderSubscriptionUsage,
   type SlashCommand,
+  type SubagentMaxDepth,
   getModelContextWindow,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
@@ -53,6 +57,7 @@ import {
   projectClaudeAdditionalModels,
 } from "./claude-additional-models.js";
 import { ClaudeProviderRetentionTracker } from "./claude-retention.js";
+import { ClaudeSteerBackgroundController } from "./claude-steer-background.js";
 import {
   checkRemotePath,
   createRemoteSpawn,
@@ -74,11 +79,17 @@ import type {
   AgentSession,
   AuthStatus,
   PromptCacheRefreshResult,
+  ProviderSessionOptions,
+  ProviderSessionOptionsUpdateResult,
   ProviderName,
   ProviderForkBoundary,
   StartSessionOptions,
   SummaryGenerationRequest,
   SummaryGenerationResult,
+} from "./types.js";
+import {
+  PROVIDER_SESSION_OPTION_KEYS,
+  resolveProviderSessionOptions,
 } from "./types.js";
 import type { SessionSandboxRuntime } from "../../session-sandbox.js";
 
@@ -96,14 +107,14 @@ type ClaudeSdkSlashCommand = Awaited<
 const USE_SPAWN_WRAPPER = true;
 const CLAUDE_LIVENESS_PROBE_TIMEOUT_MS = 5000;
 const CLAUDE_LIVENESS_PROBE_SOURCE = "claude:control/mcp_status";
-const CLAUDE_PROMPT_CACHE_KEEPALIVE_TIMEOUT_MS = 60_000;
 /** One-shot helper query budgets. Both are non-persisted, single-turn calls. */
 const SIDE_SESSION_RECAP_TIMEOUT_MS = 20_000;
 const SIDE_SESSION_TITLE_TIMEOUT_MS = 30_000;
+const CLAUDE_PROMPT_CACHE_KEEPALIVE_TIMEOUT_MS = 60_000;
 const CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD = 0.02;
 const DEFAULT_CLAUDE_LOGIN_COMMAND = "claude auth login --claudeai";
-const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE =
-  "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
+const PROVIDER_MANAGED_SESSION_TITLE = "Yep Anywhere Session";
+const CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 const CLAUDE_EFFORT_LEVELS: EffortLevel[] = [
   "low",
   "medium",
@@ -113,6 +124,94 @@ const CLAUDE_EFFORT_LEVELS: EffortLevel[] = [
 ];
 const execFileAsync = promisify(execFile);
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+
+export function getClaudeSessionLaunchOptions(
+  options?: ProviderSessionOptions,
+): {
+  resolved: Required<ProviderSessionOptions>;
+  sdk: {
+    title: string | undefined;
+    promptSuggestions: boolean;
+    agentProgressSummaries: boolean;
+  };
+} {
+  const resolved = resolveProviderSessionOptions(options);
+  if (resolved.automaticRecaps) {
+    throw new Error(
+      "Claude Agent SDK does not support provider-native automatic recaps",
+    );
+  }
+  return {
+    resolved,
+    sdk: {
+      title: resolved.automaticTitle
+        ? undefined
+        : PROVIDER_MANAGED_SESSION_TITLE,
+      promptSuggestions: resolved.promptSuggestions,
+      agentProgressSummaries: resolved.agentProgressSummaries,
+    },
+  };
+}
+
+export function evaluateClaudeSessionOptionsUpdate(
+  launched: Required<ProviderSessionOptions>,
+  requested: ProviderSessionOptions,
+): ProviderSessionOptionsUpdateResult {
+  const result: ProviderSessionOptionsUpdateResult = {};
+  for (const key of PROVIDER_SESSION_OPTION_KEYS) {
+    const value = requested[key];
+    if (value === undefined) continue;
+    if (key === "automaticRecaps") {
+      result[key] = {
+        requested: value,
+        status: value ? "unsupported" : "inactive",
+        detail: "Claude Agent SDK does not emit provider-native recap turns",
+      };
+      continue;
+    }
+    result[key] = {
+      requested: value,
+      status: value === launched[key] ? "applied" : "restart-required",
+      detail:
+        value === launched[key]
+          ? "The Claude session was launched with this option"
+          : "Claude exposes this option only during session initialization",
+    };
+  }
+  return result;
+}
+
+const DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS =
+  getClaudeSessionLaunchOptions().sdk;
+
+function waitForMessageYield(
+  queue: MessageQueue,
+  message: import("../types.js").UserMessage,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const finish = (yielded: boolean) => {
+      unsubscribeYielded();
+      unsubscribeRemoved();
+      signal.removeEventListener("abort", onAbort);
+      resolve(yielded);
+    };
+    const onAbort = () => finish(false);
+    const unsubscribeYielded = queue.subscribeYielded((messages) => {
+      if (messages.includes(message)) finish(true);
+    });
+    const unsubscribeRemoved = queue.subscribeRemoved((messages) => {
+      if (messages.includes(message)) finish(false);
+    });
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function nextEventLoopTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 export function getClaudeAutoCompactOverrideEnv(
   percent: number | undefined,
@@ -877,6 +976,12 @@ export class ClaudeProvider implements AgentProvider {
   private getAdditionalModelSelections: () =>
     | readonly ClaudeAdditionalModelSelection[]
     | undefined = () => [];
+  private getConfiguredSubagentMaxDepth: () => SubagentMaxDepth = () =>
+    DEFAULT_SUBAGENT_MAX_DEPTH;
+
+  setSubagentMaxDepthGetter(getter: () => SubagentMaxDepth): void {
+    this.getConfiguredSubagentMaxDepth = getter;
+  }
 
   setAdditionalModelsGetter(
     getter: () => readonly ClaudeAdditionalModelSelection[] | undefined,
@@ -1134,8 +1239,24 @@ export class ClaudeProvider implements AgentProvider {
    * Get filtered environment variables for child processes.
    * Subclasses can override to inject custom env vars (e.g., ANTHROPIC_BASE_URL).
    */
+  protected getSubagentDepthEnvironment(): Record<string, string> {
+    const operatorValue = process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    if (operatorValue !== undefined) {
+      return { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: operatorValue };
+    }
+    const configuredValue = this.getConfiguredSubagentMaxDepth();
+    return configuredValue === null
+      ? {}
+      : {
+          CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(configuredValue),
+        };
+  }
+
   protected getEnv(_model?: string): Record<string, string | undefined> {
-    return filterEnvForChildProcess();
+    return {
+      ...filterEnvForChildProcess(),
+      ...this.getSubagentDepthEnvironment(),
+    };
   }
 
   /**
@@ -1144,6 +1265,18 @@ export class ClaudeProvider implements AgentProvider {
    */
   protected getSettings(_model?: string): Settings | undefined {
     return undefined;
+  }
+
+  /** Built-in tools removed from this Claude launch before model context. */
+  protected getDisallowedTools(_model?: string): string[] | undefined {
+    return undefined;
+  }
+
+  protected getDisallowedToolOptions(
+    model?: string,
+  ): Pick<Options, "disallowedTools"> {
+    const disallowedTools = this.getDisallowedTools(model);
+    return disallowedTools ? { disallowedTools } : {};
   }
 
   /**
@@ -1200,6 +1333,7 @@ export class ClaudeProvider implements AgentProvider {
       const sdkQuery = query({
         prompt: waitForever(),
         options: {
+          ...DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS,
           cwd: homedir(),
           abortController,
           permissionMode: "default",
@@ -1207,6 +1341,7 @@ export class ClaudeProvider implements AgentProvider {
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
           env: this.getEnv(),
           settings: this.getSettings(),
+          ...this.getDisallowedToolOptions(),
         },
       });
 
@@ -1314,85 +1449,6 @@ export class ClaudeProvider implements AgentProvider {
     return cleaned;
   }
 
-  /**
-   * Run a one-shot, non-persisted helper query and return its assistant text.
-   *
-   * `persistSession: false` keeps the helper turn out of every transcript, and
-   * `maxTurns: 1` keeps it to a single reply. The `cheapest` helper token maps
-   * to Haiku for Claude.
-   */
-  private async runSideSessionHelper(args: {
-    userPrompt: string;
-    systemPrompt: string;
-    model?: string;
-    timeoutMs: number;
-    signal?: AbortSignal;
-  }): Promise<string> {
-    const abortController = new AbortController();
-    const abortFromCaller = () => abortController.abort();
-    if (args.signal?.aborted) {
-      abortController.abort();
-    } else {
-      args.signal?.addEventListener("abort", abortFromCaller, { once: true });
-    }
-    const timeout = setTimeout(() => abortController.abort(), args.timeoutMs);
-    timeout.unref?.();
-
-    const userPrompt = args.userPrompt;
-    async function* singlePrompt(): AsyncGenerator<{
-      type: "user";
-      message: { role: "user"; content: string };
-      parent_tool_use_id: null;
-      session_id: string;
-    }> {
-      yield {
-        type: "user",
-        message: { role: "user", content: userPrompt },
-        parent_tool_use_id: null,
-        session_id: "",
-      };
-    }
-
-    const helperModel =
-      args.model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : args.model;
-
-    try {
-      const sdkQuery = query({
-        prompt: singlePrompt(),
-        options: {
-          cwd: homedir(),
-          abortController,
-          permissionMode: "default",
-          persistSession: false,
-          pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
-          env: this.getEnv(helperModel),
-          settings: this.getSettings(helperModel),
-          model: helperModel,
-          maxTurns: 1,
-          systemPrompt: args.systemPrompt,
-        },
-      });
-
-      let text = "";
-      for await (const message of sdkQuery as AsyncIterable<AgentSDKMessage>) {
-        if (
-          message.type === "assistant" &&
-          typeof message.message?.content !== "undefined"
-        ) {
-          text += extractClaudeAssistantText(message.message.content);
-        }
-        if (message.type === "result") {
-          break;
-        }
-      }
-      return text;
-    } finally {
-      clearTimeout(timeout);
-      abortController.abort();
-      args.signal?.removeEventListener("abort", abortFromCaller);
-    }
-  }
-
   private async generateSideSessionRecap(
     recentAssistantText: string[],
     model?: string,
@@ -1454,6 +1510,87 @@ export class ClaudeProvider implements AgentProvider {
     return cleaned;
   }
 
+  /**
+   * Run a one-shot, non-persisted helper query and return its assistant text.
+   *
+   * `persistSession: false` keeps the helper turn out of every transcript, and
+   * `maxTurns: 1` keeps it to a single reply. The `cheapest` helper token maps
+   * to Haiku for Claude.
+   */
+  private async runSideSessionHelper(args: {
+    userPrompt: string;
+    systemPrompt: string;
+    model?: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const abortController = new AbortController();
+    const abortFromCaller = () => abortController.abort();
+    if (args.signal?.aborted) {
+      abortController.abort();
+    } else {
+      args.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
+    const timeout = setTimeout(() => abortController.abort(), args.timeoutMs);
+    timeout.unref?.();
+
+    const userPrompt = args.userPrompt;
+    async function* singlePrompt(): AsyncGenerator<{
+      type: "user";
+      message: { role: "user"; content: string };
+      parent_tool_use_id: null;
+      session_id: string;
+    }> {
+      yield {
+        type: "user",
+        message: { role: "user", content: userPrompt },
+        parent_tool_use_id: null,
+        session_id: "",
+      };
+    }
+
+    const helperModel =
+      args.model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : args.model;
+
+    try {
+      const sdkQuery = query({
+        prompt: singlePrompt(),
+        options: {
+          ...DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS,
+          cwd: homedir(),
+          abortController,
+          permissionMode: "default",
+          persistSession: false,
+          pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
+          env: this.getEnv(helperModel),
+          settings: this.getSettings(helperModel),
+          ...this.getDisallowedToolOptions(helperModel),
+          model: helperModel,
+          maxTurns: 1,
+          systemPrompt: args.systemPrompt,
+        },
+      });
+
+      let text = "";
+      for await (const message of sdkQuery as AsyncIterable<AgentSDKMessage>) {
+        if (
+          message.type === "assistant" &&
+          typeof message.message?.content !== "undefined"
+        ) {
+          text += extractClaudeAssistantText(message.message.content);
+        }
+        if (message.type === "result") {
+          break;
+        }
+      }
+      return text;
+    } finally {
+      clearTimeout(timeout);
+      abortController.abort();
+      args.signal?.removeEventListener("abort", abortFromCaller);
+    }
+  }
+
   private async generateForkBackedSummary(
     request: Extract<SummaryGenerationRequest, { strategy: "fork" }>,
   ): Promise<SummaryGenerationResult> {
@@ -1495,12 +1632,15 @@ export class ClaudeProvider implements AgentProvider {
       const sdkQuery = query({
         prompt: singlePrompt(),
         options: {
+          ...DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS,
           cwd: request.cwd,
           abortController,
           permissionMode: "default",
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
-          env: this.getEnv(),
-          settings: this.getSettings(),
+          env: this.getEnv(request.model),
+          settings: this.getSettings(request.model),
+          ...this.getDisallowedToolOptions(request.model),
+          model: normalizeClaudeLaunchModel(request.model),
           resume: request.generatorSessionId,
           maxTurns: 1,
           spawnClaudeCodeProcess: request.sessionSandbox
@@ -1645,6 +1785,7 @@ export class ClaudeProvider implements AgentProvider {
       const sdkQuery = query({
         prompt: singlePrompt(),
         options: {
+          ...DEFAULT_CLAUDE_PROVIDER_GENERATION_OPTIONS,
           cwd: options.cwd,
           resume: options.sessionId,
           abortController,
@@ -1666,6 +1807,7 @@ export class ClaudeProvider implements AgentProvider {
           pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
           env: options.env,
           settings: this.getSettings(options.model),
+          ...this.getDisallowedToolOptions(options.model),
           spawnClaudeCodeProcess,
         },
       });
@@ -1738,9 +1880,15 @@ export class ClaudeProvider implements AgentProvider {
     const log = getLogger();
     const queue = new MessageQueue();
     const abortController = new AbortController();
+    const providerSessionOptions = getClaudeSessionLaunchOptions(
+      options.sessionOptions,
+    );
     const agentctlSessionEnvBridge = options.executor
       ? null
-      : createAgentctlSessionEnvBridge(options.resumeSessionId);
+      : createAgentctlSessionEnvBridge(
+          options.resumeSessionId,
+          options.getSessionChildEnv,
+        );
     const autoCompactOverrideEnv = getClaudeAutoCompactOverrideEnv(
       options.launchCompactPercentOverride,
     );
@@ -1762,6 +1910,7 @@ export class ClaudeProvider implements AgentProvider {
         ? {
             ...configuredRemoteEnv,
             AGENTCTL_SESSION_ID: options.resumeSessionId,
+            ...options.getSessionChildEnv?.(options.resumeSessionId),
           }
         : configuredRemoteEnv;
 
@@ -2019,8 +2168,8 @@ export class ClaudeProvider implements AgentProvider {
           abortController,
           // Pass permission mode to SDK for system prompt configuration.
           // However, for "bypassPermissions" we pass "default" to the SDK so it always
-          // calls our canUseTool callback - we handle the bypass logic ourselves to
-          // allow exceptions (e.g., always prompting for AskUserQuestion/ExitPlanMode).
+          // calls our canUseTool callback - we handle the bypass logic ourselves so
+          // user questions still surface instead of being silently answered.
           permissionMode:
             options.permissionMode === "bypassPermissions"
               ? "default"
@@ -2029,7 +2178,10 @@ export class ClaudeProvider implements AgentProvider {
           systemPrompt: this.getSystemPrompt(options.globalInstructions),
           settingSources: ["user", "project", "local"],
           includePartialMessages: true,
-          promptSuggestions: options.promptSuggestions === true,
+          title: providerSessionOptions.sdk.title,
+          promptSuggestions: providerSessionOptions.sdk.promptSuggestions,
+          agentProgressSummaries:
+            providerSessionOptions.sdk.agentProgressSummaries,
           // Model, thinking, and effort options
           model: normalizeClaudeLaunchModel(options.model),
           thinking: options.thinking,
@@ -2038,6 +2190,7 @@ export class ClaudeProvider implements AgentProvider {
           // Filter env to exclude npm_*, yep-anywhere specific, and other irrelevant vars
           env: claudeEnv,
           settings: this.getSettings(options.model),
+          ...this.getDisallowedToolOptions(options.model),
           hooks: {
             Stop: [
               {
@@ -2075,6 +2228,14 @@ export class ClaudeProvider implements AgentProvider {
       throw error;
     }
 
+    const steerBackgroundController = new ClaudeSteerBackgroundController({
+      settings:
+        options.claudeSteerBackgroundBash ??
+        DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
+      backgroundTask: (toolUseId) => sdkQuery.backgroundTasks(toolUseId),
+      signal: abortController.signal,
+    });
+
     // Wrap the iterator to convert SDK message types to our internal types
     // Pass executor info for session sync after result messages
     // Use effectiveCwd (the translated remote path) so sync uses the correct project dir
@@ -2083,6 +2244,7 @@ export class ClaudeProvider implements AgentProvider {
       cwd: effectiveCwd,
       remoteEnv,
       providerRetention,
+      onMessage: (message) => steerBackgroundController.observe(message),
     });
     const iterator = agentctlSessionEnvBridge
       ? withCleanup(wrappedIterator, () => agentctlSessionEnvBridge.cleanup())
@@ -2103,7 +2265,29 @@ export class ClaudeProvider implements AgentProvider {
         agentctlSessionEnvBridge?.cleanup();
       },
       steer: async (message) => {
+        const yielded = waitForMessageYield(
+          queue,
+          message,
+          abortController.signal,
+        );
         queue.push(message);
+        void yielded
+          .then(async (wasYielded) => {
+            if (!wasYielded) return;
+            // MessageQueue resolves the SDK's pending next() first. One event
+            // loop turn lets the SDK write that steer before the control call.
+            await nextEventLoopTurn();
+            await steerBackgroundController.backgroundEligible();
+          })
+          .catch((error) => {
+            log.warn(
+              {
+                event: "claude_steer_background_bash_failed",
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "Failed to background a foreground Claude Bash after steering",
+            );
+          });
         return true;
       },
       isProcessAlive: isCapturedProcessAlive,
@@ -2129,13 +2313,26 @@ export class ClaudeProvider implements AgentProvider {
           env: claudeEnv,
           sessionSandbox: options.sessionSandbox,
         }),
-      publishAgentctlSessionId: (sessionId: string) => {
-        agentctlSessionEnvBridge?.publishSessionId(sessionId);
+      publishAgentctlSessionId: (
+        sessionId: string,
+        browserDebugEnvironment?: Record<string, string>,
+      ) => {
+        agentctlSessionEnvBridge?.publishSessionId(
+          sessionId,
+          browserDebugEnvironment,
+        );
       },
       setMaxThinkingTokens: (tokens: number | null) =>
         sdkQuery.setMaxThinkingTokens(tokens),
       setEffort: (effort?: EffortLevel) =>
         sdkQuery.applyFlagSettings({ effortLevel: effort ?? null }),
+      setSessionOptions: (requested) =>
+        Promise.resolve(
+          evaluateClaudeSessionOptionsUpdate(
+            providerSessionOptions.resolved,
+            requested,
+          ),
+        ),
       interrupt: async () => {
         await sdkQuery.interrupt();
         return true;
@@ -2166,6 +2363,7 @@ export class ClaudeProvider implements AgentProvider {
       cwd: string;
       remoteEnv?: Record<string, string>;
       providerRetention?: ClaudeProviderRetentionTracker;
+      onMessage?: (message: SDKMessage) => void;
     },
   ): AsyncIterableIterator<SDKMessage> {
     const log = getLogger();
@@ -2180,6 +2378,7 @@ export class ClaudeProvider implements AgentProvider {
 
         const converted = this.convertMessage(message);
         remoteOptions?.providerRetention?.observeMessage(converted);
+        remoteOptions?.onMessage?.(converted);
         yield converted;
 
         // For remote sessions, sync session files after result messages

@@ -37,8 +37,23 @@ jobs:
           cache: "pnpm"
       - run: pnpm install
       - run: pnpm lint
+      - run: pnpm format:check
       - run: pnpm capabilities:audit
       - run: pnpm console:scan
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20.12
+      # Advisories triaged as unreachable are listed in pnpm.auditConfig.ignoreGhsas
+      # (package.json) with rationale in CLAUDE.md "Known-unreachable advisories".
+      # A failure here means a new, untriaged advisory: fix it or triage it in both
+      # places — never ignore without a table entry.
+      - run: pnpm audit --prod
 
   typecheck:
     runs-on: ubuntu-latest
@@ -54,6 +69,7 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -66,6 +82,19 @@ jobs:
       - run: pnpm -F @yep-anywhere/client exec playwright install chromium
       - run: pnpm test
 
+  markdown-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20.12
+          cache: "pnpm"
+      - run: pnpm install
+      - run: pnpm --filter @yep-anywhere/server benchmark:markdown
+
   windows-host-awake-smoke:
     runs-on: windows-latest
     steps:
@@ -77,7 +106,12 @@ jobs:
           cache: "pnpm"
       - run: pnpm install
       - run: pnpm --filter @yep-anywhere/shared build
-      - run: pnpm --filter @yep-anywhere/server exec vitest run test/services/WindowsHostAwakeBackend.test.ts
+      # A hosted runner can rarely spend the full production startup bound in
+      # cold PowerShell/Add-Type setup. One isolated-test retry distinguishes
+      # that host jitter without extending YA's bounded 20-second probe.
+      - run: >-
+          pnpm --filter @yep-anywhere/server exec vitest run
+          test/services/WindowsHostAwakeBackend.test.ts --retry=1
 
   e2e-tests:
     runs-on: ubuntu-latest

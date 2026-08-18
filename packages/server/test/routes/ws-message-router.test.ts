@@ -1,11 +1,12 @@
 import type { RemoteClientMessage } from "@yep-anywhere/shared";
 import { BinaryFormat } from "@yep-anywhere/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deriveTransportKey,
   encryptBytesToBinaryEnvelope,
   encryptToBinaryEnvelopeWithCompression,
 } from "../../src/crypto/index.js";
+import { getLogger } from "../../src/logging/logger.js";
 import {
   decodeFrameToParsedMessage,
   routeClientMessageSafely,
@@ -30,6 +31,10 @@ function createDecodeDeps() {
   };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("WebSocket Message Router", () => {
   it("decodes text JSON frames", async () => {
     const connState = createConnectionState();
@@ -46,6 +51,31 @@ describe("WebSocket Message Router", () => {
     );
 
     expect(parsed).toEqual({ type: "ping", id: "p1" });
+  });
+
+  it("does not log bearer content from malformed plaintext frames", async () => {
+    const connState = createConnectionState();
+    const ws = createMockWs();
+    const deps = createDecodeDeps();
+    const bearer = "never-log-this-public-share-secret";
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+
+    const parsed = await decodeFrameToParsedMessage(
+      ws,
+      `{"type":"request","path":"/public-api/shares/${bearer}`,
+      {},
+      connState,
+      true,
+      deps,
+    );
+
+    expect(parsed).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to parse text frame: characters=\d+/),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(bearer);
   });
 
   it("decodes plaintext binary JSON frames (phase 0)", async () => {
@@ -175,6 +205,9 @@ describe("WebSocket Message Router", () => {
   });
 
   it("rejects base-key encrypted binary envelopes", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
     const connState = createConnectionState();
     connState.authState = "authenticated";
     connState.baseSessionKey = new Uint8Array(32).fill(6);
@@ -206,9 +239,15 @@ describe("WebSocket Message Router", () => {
     expect(deps.routeClientMessage).not.toHaveBeenCalled();
     expect(connState.supportedFormats).toEqual(new Set([BinaryFormat.JSON]));
     expect(ws.close).toHaveBeenCalledWith(4004, "Decryption failed");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Failed to decrypt binary envelope",
+    );
   });
 
   it("closes unknown plaintext binary formats with code 4002", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
     const connState = createConnectionState();
     const ws = createMockWs();
     const deps = createDecodeDeps();
@@ -228,11 +267,19 @@ describe("WebSocket Message Router", () => {
       4002,
       expect.stringContaining("0x7f"),
     );
+    expect(warn).toHaveBeenCalledWith(
+      { code: "UNKNOWN_FORMAT", error: "Unknown format byte: 0x7f" },
+      "[WS Relay] Binary frame error",
+    );
   });
 
   it("routes message handlers and returns 500 response on handler failure", async () => {
+    const errorLog = vi
+      .spyOn(getLogger(), "error")
+      .mockImplementation(() => undefined);
     const send = vi.fn();
     const handlers = {
+      onClientCapabilities: vi.fn(async () => undefined),
       onRequest: vi.fn(async () => {
         throw new Error("boom");
       }),
@@ -260,12 +307,46 @@ describe("WebSocket Message Router", () => {
       status: 500,
       body: { error: "Internal server error" },
     });
+    expect(errorLog).toHaveBeenCalledWith(
+      {
+        err: expect.objectContaining({ message: "boom" }),
+        type: "request",
+        messageId: "req-1",
+      },
+      "[WS Relay] Unhandled error in routeMessage",
+    );
+  });
+
+  it("routes a versioned client capability notification", async () => {
+    const onClientCapabilities = vi.fn(async () => undefined);
+    const handlers = {
+      onClientCapabilities,
+      onRequest: vi.fn(async () => undefined),
+      onSubscribe: vi.fn(async () => undefined),
+      onUnsubscribe: vi.fn(async () => undefined),
+      onUploadStart: vi.fn(async () => undefined),
+      onStagedUploadStart: vi.fn(async () => undefined),
+      onUploadChunk: vi.fn(async () => undefined),
+      onUploadEnd: vi.fn(async () => undefined),
+      onPing: vi.fn(async () => undefined),
+    };
+    const message: RemoteClientMessage = {
+      type: "client_capabilities",
+      version: "0.7.1",
+      capabilityBits: [],
+      formats: [BinaryFormat.JSON, BinaryFormat.TRANSPORT_CHUNK],
+    };
+
+    await routeClientMessageSafely(message, vi.fn(), handlers);
+
+    expect(onClientCapabilities).toHaveBeenCalledWith(message);
   });
 
   it("routes emulator signaling messages to onDeviceMessage", async () => {
     const send = vi.fn();
     const onDeviceMessage = vi.fn(async () => undefined);
     const handlers = {
+      onClientCapabilities: vi.fn(async () => undefined),
       onRequest: vi.fn(async () => undefined),
       onSubscribe: vi.fn(async () => undefined),
       onUnsubscribe: vi.fn(async () => undefined),

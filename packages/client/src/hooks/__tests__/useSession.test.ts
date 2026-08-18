@@ -6,12 +6,16 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_KEYS } from "../../lib/storageKeys";
 import type {
+  FileChangeEvent,
+  ProcessStateEvent,
   SessionStatusEvent,
   SessionUpdatedEvent,
 } from "../../lib/activityBus";
 import { sessionModelPick } from "../../lib/sessionPickStorage";
 import type { SessionStatus } from "../../types";
 import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
+import type { SessionLoadResult } from "../useSessionMessages";
+import type { SessionWatchChangeEvent } from "../useSessionWatchStream";
 
 const apiMocks = vi.hoisted(() => ({
   getAgentMappings: vi.fn(),
@@ -35,13 +39,22 @@ const mergeLoadedAgentContent = vi.fn();
 const updateAgentContextUsage = vi.fn();
 const clearAgentStreamingPlaceholders = vi.fn();
 const clearStreamingPlaceholders = vi.fn();
+const applyFinalMarkdownAugment = vi.fn();
 const updateSession = vi.fn();
 
 let fileActivityOptions:
   | {
       onSessionStatusChange?: (event: SessionStatusEvent) => void;
       onSessionUpdated?: (event: SessionUpdatedEvent) => void;
+      onFileChange?: (event: FileChangeEvent) => void;
+      onProcessStateChange?: (event: ProcessStateEvent) => void;
       onReconnect?: () => void | Promise<void>;
+    }
+  | undefined;
+
+let sessionWatchOptions:
+  | {
+      onChange?: (event: SessionWatchChangeEvent) => void;
     }
   | undefined;
 
@@ -55,6 +68,12 @@ let streamingContentOptions:
         agentId: string,
         usage: { inputTokens: number; percentage: number },
       ) => void;
+    }
+  | undefined;
+
+let sessionMessagesOptions:
+  | {
+      onLoadComplete?: (result: SessionLoadResult) => void;
     }
   | undefined;
 
@@ -136,38 +155,44 @@ function installVisibilityStateMock(initial: DocumentVisibilityState) {
 }
 
 vi.mock("../useSessionMessages", () => ({
-  useSessionMessages: vi.fn(() => ({
-    messages: sessionMessagesMock.messages,
-    agentContent: {},
-    toolUseToAgent: new Map(),
-    loading: false,
-    sessionLoadProgress: {
-      stage: "complete",
-      messageCount: sessionMessagesMock.messages.length,
-      updatedAtMs: 0,
-    },
-    session: {
-      id: "sess-1",
-      projectId: "proj-1",
-      provider: sessionMessagesMock.provider,
-      model: "gpt-5.4",
-      messages: [],
-    },
-    updateSession,
-    handleStreamingUpdate: vi.fn(),
-    handleStreamMessageEvent: vi.fn(),
-    handleStreamSubagentMessage,
-    registerToolUseAgent,
-    mergeLoadedAgentContent,
-    updateAgentContextUsage,
-    clearAgentStreamingPlaceholders,
-    clearStreamingPlaceholders,
-    fetchNewMessages,
-    fetchSessionMetadata,
-    pagination: undefined,
-    loadingOlder: false,
-    loadOlderMessages: vi.fn(async () => {}),
-  })),
+  useSessionMessages: vi.fn((options) => {
+    sessionMessagesOptions = options;
+    return {
+      messages: sessionMessagesMock.messages,
+      agentContent: {},
+      toolUseToAgent: new Map(),
+      markdownAugments: {},
+      applyFinalMarkdownAugment,
+      loading: false,
+      sessionLoadProgress: {
+        stage: "complete",
+        messageCount: sessionMessagesMock.messages.length,
+        updatedAtMs: 0,
+      },
+      session: {
+        id: "sess-1",
+        projectId: "proj-1",
+        provider: sessionMessagesMock.provider,
+        model: "gpt-5.4",
+        messages: [],
+      },
+      updateSession,
+      handleStreamingUpdate: vi.fn(),
+      handleStreamMessageEvent: vi.fn(),
+      handleStreamSubagentMessage,
+      registerToolUseAgent,
+      mergeLoadedAgentContent,
+      updateAgentContextUsage,
+      clearAgentStreamingPlaceholders,
+      clearStreamingPlaceholders,
+      fetchNewMessages,
+      fetchSessionMetadata,
+      pagination: undefined,
+      loadingOlder: false,
+      olderLoadContinuationRequired: false,
+      loadOlderMessages: vi.fn(async () => {}),
+    };
+  }),
 }));
 
 vi.mock("../../api/client", () => ({
@@ -188,7 +213,10 @@ vi.mock("../useSessionStream", () => ({
 }));
 
 vi.mock("../useSessionWatchStream", () => ({
-  useSessionWatchStream: vi.fn(() => ({ connected: false })),
+  useSessionWatchStream: vi.fn((_target, options) => {
+    sessionWatchOptions = options;
+    return { connected: false };
+  }),
 }));
 
 vi.mock("../useStreamingContent", () => ({
@@ -227,6 +255,8 @@ describe("useSession completion reconciliation", () => {
     });
     installLocalStorageMock();
     fileActivityOptions = undefined;
+    sessionWatchOptions = undefined;
+    sessionMessagesOptions = undefined;
     sessionStreamHandler = null;
     streamingContentOptions = undefined;
     sessionMessagesMock.messages = [];
@@ -254,6 +284,122 @@ describe("useSession completion reconciliation", () => {
     expect(result.current.processState).toBe("idle");
     expect(result.current.status).toEqual({ owner: "none" });
     expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("catches up Codex persistence after the stream reconnects", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "connected",
+        sessionId: "sess-1",
+        state: "in-turn",
+        provider: "codex",
+      });
+    });
+    expect(fetchNewMessages).not.toHaveBeenCalled();
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "connected",
+        sessionId: "sess-1",
+        state: "in-turn",
+        provider: "codex",
+      });
+    });
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("catches up durable messages when activity reports the turn idle", () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      fileActivityOptions?.onProcessStateChange?.({
+        type: "process-state-changed",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        activity: "idle",
+        timestamp: "2026-08-10T08:06:29.513Z",
+      });
+    });
+
+    expect(result.current.processState).toBe("idle");
+    expect(result.current.status).toMatchObject({ owner: "self" });
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("deduplicates exact broad and focused file facts", () => {
+    renderHook(() => useSession(PROJECT_ID, "sess-1", undefined));
+
+    const path = "/tmp/sess-1.jsonl";
+    act(() => {
+      fileActivityOptions?.onFileChange?.({
+        type: "file-change",
+        provider: "codex",
+        path,
+        relativePath: "sess-1.jsonl",
+        changeType: "modify",
+        timestamp: "2026-08-08T17:00:00.010Z",
+        mtimeMs: 1234.5,
+        size: 100,
+        fileType: "session",
+      });
+      sessionWatchOptions?.onChange?.({
+        type: "session-watch-change",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        provider: "codex",
+        path,
+        source: "fs-watch",
+        changeVersion: 7,
+        sourceObservedAt: "2026-08-08T17:00:00.000Z",
+        mtimeMs: 1234.5,
+        size: 100,
+        timestamp: "2026-08-08T17:00:00.012Z",
+      });
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+      sessionWatchOptions?.onChange?.({
+        type: "session-watch-change",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        provider: "codex",
+        path,
+        source: "fs-watch",
+        changeVersion: 8,
+        sourceObservedAt: "2026-08-08T17:00:00.100Z",
+        mtimeMs: 1235.5,
+        size: 120,
+        timestamp: "2026-08-08T17:00:00.112Z",
+      });
+      vi.advanceTimersByTime(400);
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(2);
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(fetchNewMessages).toHaveBeenCalledTimes(2);
   });
 
   it("surfaces deferred effort configuration failures", () => {
@@ -445,6 +591,47 @@ describe("useSession completion reconciliation", () => {
     );
   });
 
+  it("defers pending-agent backfill while the session DOM is parked", async () => {
+    sessionMessagesMock.messages = [
+      {
+        id: "msg-parked",
+        type: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu-parked",
+            name: "Task",
+            input: { description: "Background research" },
+          },
+        ],
+      },
+    ];
+
+    const { rerender } = renderHook(
+      ({ paused }) =>
+        useSession(
+          PROJECT_ID,
+          "sess-1",
+          { owner: "self", processId: "proc-1" },
+          undefined,
+          { backgroundEffectsPaused: paused },
+        ),
+      { initialProps: { paused: true } },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(apiMocks.getAgentMappings).not.toHaveBeenCalled();
+
+    rerender({ paused: false });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(apiMocks.getAgentMappings).toHaveBeenCalledTimes(1);
+  });
+
   it("routes agent context usage through the action wrapper", () => {
     renderHook(() =>
       useSession(PROJECT_ID, "sess-1", {
@@ -607,6 +794,108 @@ describe("useSession completion reconciliation", () => {
     expect(fetchNewMessages).toHaveBeenCalledTimes(1);
   });
 
+  it("reconciles a replayed busy navigation hint with retained idle state", async () => {
+    apiMocks.getSessionMetadata.mockResolvedValue({
+      session: {},
+      ownership: {
+        owner: "self",
+        processId: "proc-1",
+      },
+      processState: "idle",
+      pendingInputRequest: null,
+    });
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    expect(result.current.processState).toBe("in-turn");
+
+    await act(async () => {
+      sessionMessagesOptions?.onLoadComplete?.({
+        session: {
+          id: "sess-1",
+          projectId: PROJECT_ID,
+          title: null,
+          fullTitle: null,
+          createdAt: "2026-04-23T23:00:00.000Z",
+          updatedAt: "2026-04-24T00:00:00.000Z",
+          messageCount: 1,
+          ownership: { owner: "self", processId: "proc-1" },
+          provider: "codex",
+        },
+        status: { owner: "self", processId: "proc-1" },
+      });
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.getSessionMetadata).toHaveBeenCalledWith(
+      PROJECT_ID,
+      "sess-1",
+    );
+    expect(result.current.processState).toBe("idle");
+  });
+
+  it("keeps a newer live snapshot over initial runtime reconciliation", async () => {
+    let resolveMetadata:
+      | ((value: {
+          session: Record<string, never>;
+          ownership: { owner: "self"; processId: string };
+          processState: "idle";
+          pendingInputRequest: null;
+        }) => void)
+      | undefined;
+    apiMocks.getSessionMetadata.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMetadata = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionMessagesOptions?.onLoadComplete?.({
+        session: {
+          id: "sess-1",
+          projectId: PROJECT_ID,
+          title: null,
+          fullTitle: null,
+          createdAt: "2026-04-23T23:00:00.000Z",
+          updatedAt: "2026-04-24T00:00:00.000Z",
+          messageCount: 1,
+          ownership: { owner: "self", processId: "proc-1" },
+          provider: "codex",
+        },
+        status: { owner: "self", processId: "proc-1" },
+      });
+    });
+
+    await act(async () => {
+      sessionStreamHandler?.({
+        eventType: "connected",
+        sessionId: "sess-1",
+        state: "in-turn",
+        provider: "codex",
+      });
+      resolveMetadata?.({
+        session: {},
+        ownership: { owner: "self", processId: "proc-1" },
+        processState: "idle",
+        pendingInputRequest: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.processState).toBe("in-turn");
+  });
+
   it("clears compacting state when reconnect reports no owner", async () => {
     apiMocks.getSessionMetadata.mockResolvedValue({
       session: {},
@@ -735,6 +1024,27 @@ describe("useSession completion reconciliation", () => {
       { tempId: "temp-a", content: "alpha message" },
       { tempId: "temp-b", content: "beta message" },
     ]);
+  });
+
+  it("fetches the durable row when a queued YA command completes", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "deferred-queue",
+        reason: "promoted",
+        tempId: "ya-done-queued",
+        yaCommand: "done",
+        messages: [],
+      });
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
   });
 
   it("replaces the deferred mirror wholesale on each server event", () => {
@@ -1158,9 +1468,11 @@ describe("useSession completion reconciliation", () => {
 
     expect(streamingMarkdownCallbacks.onAugment).not.toHaveBeenCalled();
     expect(streamingMarkdownCallbacks.onPending).not.toHaveBeenCalled();
-    expect(result.current.markdownAugments).toEqual({
-      "assistant-1": { html: "<p>complete</p>" },
-    });
+    expect(applyFinalMarkdownAugment).toHaveBeenCalledWith(
+      "assistant-1",
+      "<p>complete</p>",
+    );
+    expect(result.current.markdownAugments).toEqual({});
   });
 
   it("does not load permission mode from localStorage on session view mount", () => {

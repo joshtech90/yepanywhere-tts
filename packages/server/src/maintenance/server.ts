@@ -24,7 +24,9 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as inspector from "node:inspector";
+import { getHeapSpaceStatistics, getHeapStatistics } from "node:v8";
 
+import { requestDevWrapperReload } from "../dev-wrapper-client.js";
 import { markDevReloadRequested } from "../dev-reload-signal.js";
 import {
   LOG_LEVELS,
@@ -82,6 +84,8 @@ export interface MaintenanceServerOptions {
   host?: string;
   /** Optional: main server reference for status reporting */
   mainServerPort?: number;
+  /** Fixed-cost application cache diagnostics. */
+  getDiagnostics?: () => Record<string, unknown>;
 }
 
 /**
@@ -92,7 +96,13 @@ export function startMaintenanceServer(options: MaintenanceServerOptions): {
   stop: () => void;
   server: http.Server;
 } {
-  const { port, portFile, host = "localhost", mainServerPort } = options;
+  const {
+    port,
+    portFile,
+    host = "localhost",
+    mainServerPort,
+    getDiagnostics,
+  } = options;
   let actualPort = port;
   const startTime = Date.now();
 
@@ -166,7 +176,7 @@ export function startMaintenanceServer(options: MaintenanceServerOptions): {
       if (path === "/health" && method === "GET") {
         handleHealth(res);
       } else if (path === "/status" && method === "GET") {
-        handleStatus(res, startTime, mainServerPort);
+        handleStatus(res, startTime, mainServerPort, getDiagnostics);
       } else if (path === "/log/level" && method === "GET") {
         handleGetLogLevel(res);
       } else if (path === "/log/level" && method === "PUT") {
@@ -182,7 +192,7 @@ export function startMaintenanceServer(options: MaintenanceServerOptions): {
       } else if (path === "/inspector/close" && method === "POST") {
         handleCloseInspector(res);
       } else if (path === "/reload" && method === "POST") {
-        handleReload(res);
+        await handleReload(res);
       } else {
         sendJson(res, 404, {
           error: "Not found",
@@ -292,8 +302,21 @@ function handleStatus(
   res: http.ServerResponse,
   startTime: number,
   mainServerPort?: number,
+  getDiagnostics?: () => Record<string, unknown>,
 ): void {
   const memUsage = process.memoryUsage();
+  const heapStatistics = getHeapStatistics();
+  const heapSpaces = Object.fromEntries(
+    getHeapSpaceStatistics().map((space) => [
+      space.space_name,
+      {
+        availableBytes: space.space_available_size,
+        physicalBytes: space.physical_space_size,
+        sizeBytes: space.space_size,
+        usedBytes: space.space_used_size,
+      },
+    ]),
+  );
 
   sendJson(res, 200, {
     uptime: {
@@ -306,7 +329,16 @@ function handleStatus(
       heapTotal: formatBytes(memUsage.heapTotal),
       external: formatBytes(memUsage.external),
       raw: memUsage,
+      v8: {
+        heapSizeLimitBytes: heapStatistics.heap_size_limit,
+        mallocedMemoryBytes: heapStatistics.malloced_memory,
+        peakMallocedMemoryBytes: heapStatistics.peak_malloced_memory,
+        totalAvailableBytes: heapStatistics.total_available_size,
+        totalPhysicalBytes: heapStatistics.total_physical_size,
+        heapSpaces,
+      },
     },
+    diagnostics: getDiagnostics?.() ?? null,
     connections: connectionStats,
     mainServerPort,
     nodeVersion: process.version,
@@ -437,8 +469,15 @@ async function handleSetProxyDebug(
 }
 
 /** POST /reload */
-function handleReload(res: http.ServerResponse): void {
-  console.log("[Maintenance] Reload requested, exiting...");
+async function handleReload(res: http.ServerResponse): Promise<void> {
+  console.log("[Maintenance] Reload requested...");
+  if (await requestDevWrapperReload()) {
+    sendJson(res, 200, {
+      message: "Server reload requested...",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
   markDevReloadRequested();
 
   sendJson(res, 200, {

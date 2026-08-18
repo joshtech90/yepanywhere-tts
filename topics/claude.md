@@ -1,7 +1,8 @@
 # Claude Provider Control
 
-> YA's Claude-specific control surface distinguishes sessions YA can actively
-> configure from sessions it can only observe through provider transcript files.
+> Claude-specific behavior is YA behavior that applies only to its Claude Code
+> integration: process ownership and control, transcript and resume handling,
+> model and settings surfaces, and gateway routing.
 
 Topic: claude
 
@@ -114,12 +115,57 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   an existing saved selection. Preserve its exact provider id and saved label
   as an unlisted/custom entry until the user removes it. Never silently replace
   a rejected, retired, or provider-remapped model with a newer one.
+- The server-wide **Subagent nesting limit** applies per newly started or
+  resumed plain Claude, Claude Gateway, and Claude Ollama process. A numeric
+  value sets `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` only in the launch's child
+  environment (and Gateway flag-settings environment); `0` disables subagents
+  and `1` through `4` set the maximum nesting depth. YA defaults this setting to
+  `1`. **Provider default** stores `null` and adds no YA value. An explicit value
+  already present in YA's own environment takes precedence. This mechanism
+  never mutates Claude user, project, or local settings files.
 - `claude-gateway` is a separate, default-off provider for an
   Anthropic-compatible LLM gateway. Configuring it must not reroute the regular
   `claude` provider or mutate `~/.claude/settings.json`: every Gateway launch
-  supplies `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and
-  `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` in the Claude SDK's per-launch
-  flag-settings layer and in that child process's environment only.
+  supplies `YEP_CLAUDE_GATEWAY=1`, `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` in
+  the Claude SDK's per-launch flag-settings layer and in that child process's
+  environment only. The YA marker identifies the Gateway provider route, not
+  the implementation behind its generic Anthropic-compatible endpoint.
+  YA-owned process identity and persisted session metadata remain authoritative
+  when displaying that route; transcript model-name inference must not recast a
+  Gateway session as `claude-ollama`.
+- A gateway that returns `X-Copilot-API: 1` from `/v1/models` explicitly
+  identifies that implementation. After observing that header, YA adds
+  `YEP_COPILOT_API=1` to the Claude flag-settings and child environments for
+  launches against the same configured URL. Changing the URL clears the
+  identity. YA must not infer this marker from a port, model id, vendor row, or
+  other catalog content.
+- Gateway launches narrow several Claude Code defaults.
+  Claude Gateway denies the `Agent` tool by default through
+  `permissions.deny: ["Agent"]` in the per-launch flag-settings layer. This
+  blocks built-in Explore and Plan delegation, general-purpose subagents, and
+  custom subagents without changing regular Claude sessions or user settings
+  files. The server-wide **Disable Agent tool** setting may omit YA's rule for
+  processes started or resumed afterward; it does not override a deny from
+  Claude's user, project, or local settings.
+  Claude Gateway also removes `EnterPlanMode` and `ExitPlanMode` from model
+  context by default through the Agent SDK's `disallowedTools` launch option.
+  The server-wide **Disable plan mode** setting may omit that list for processes
+  started or resumed afterward. It does not remove `TaskCreate` or any other
+  task-tracking tool, affect regular Claude, or rewrite copilot-api HTTP
+  requests. Already-running Gateway processes retain their launch configuration
+  until they restart or resume.
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is retained deliberately, but
+  it is a privacy/traffic choice and not a token or quota saver, and it has a
+  cost worth knowing: it puts the CLI in essential-traffic mode, which
+  disables GrowthBook, so `getFeatureValue` returns each flag's compiled
+  default and the session loses every flag-gated feature — the Monitor tool
+  (`tengu_amber_sentinel`) and hosted push (`tengu_kairos_push_notifications`)
+  among them. The visible signature: a native Claude session blocks foreground
+  `sleep` loops and points at Monitor, while a gateway session does neither.
+  `DISABLE_NON_ESSENTIAL_MODEL_CALLS=1` is inert on current Claude Code —
+  absent from 2.1.220's env registry, with no replacement knob for spinner
+  flavor text or automatic title generation — and is kept only for older CLIs.
 - A Claude Gateway's `/v1/models` response is the authoritative selection
   catalog. YA must not merge Claude Code's first-party `supportedModels()`
   result or static Claude fallbacks into it, because those can advertise

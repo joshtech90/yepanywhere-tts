@@ -32,6 +32,12 @@ Two surfaces render "devices", both keyed by `browserProfileId`:
   `mergeDevices`) merges push subscriptions with live connections. Only the
   push-subscribed rows persist and get a Remove button.
 
+Push endpoint domains identify the browser delivery provider, not the device
+operating system. The Notifications inventory combines the endpoint with the
+server-inferred `deviceType`: Google's endpoint is **Chrome** on desktop and
+**Android/Chrome** only with Android evidence; Apple's endpoint is **Safari**
+on desktop and **iOS/Safari** only with iOS evidence.
+
 The persistent pollution is **`browser-profiles.json` only**. The in-memory
 `ConnectedBrowsersService` self-cleans on disconnect, and `push-subscriptions.json`
 would only grow if automation subscribed to push (it doesn't).
@@ -64,6 +70,19 @@ would only grow if automation subscribed to push (it doesn't).
    - At most 20 non-subscribed profiles are retained; oldest excess profiles are
      pruned.
    - Manual "Forget" still calls `deleteProfile` for explicit removal.
+5. One physical WebSocket contributes at most one live tab registration.
+   Overlapping activity streams on that socket share the registration, and
+   the final activity-stream cleanup releases it. On `pagehide`, the client
+   closes retained activity streams before the document is discarded or
+   cached; a retained document that receives `pageshow` installs one fresh
+   stream. Full reloads and tab close therefore do not accumulate logical tab
+   rows while waiting for transport-level dead-peer detection.
+6. Removing the current browser from Notifications uses the local
+   `PushManager.unsubscribe()` path and then revokes the server row. Other
+   device rows use server-only deletion because one browser cannot revoke
+   another browser's local PushManager state. All mounted push controls
+   reconcile from the browser-local subscription-change event, so the row and
+   **Browser notifications** toggle converge without a reload.
 
 **The invariant:** a browser profile should represent a durable device identity
 worth showing the user. Automation gets one stable identity, and unknown clients
@@ -141,3 +160,26 @@ and #2 bounds+self-heals every other client that presents fresh UUIDs. **#2 is
 kept deliberately even though #1 prevents most new contamination**: it is the
 only option that cleans old junk over time and survives incognito windows,
 cleared storage, new harnesses, or third-party clients.
+
+## Security-Client Migration Follow-Ups
+
+The unified security-client audit initially projects these browser profiles,
+connections, resume sessions, and Web Push subscriptions without changing
+their ownership. Capable SRP web clients additionally register an
+origin-scoped non-extractable WebCrypto key. IndexedDB/WebCrypto isolation means
+one physical browser reaching the same server through different origins may
+correctly appear as several key-verified web clients.
+
+Later compatibility-reviewed work may:
+
+- move Web Push ownership from the body-supplied `browserProfileId` to the
+  authenticated security-client relationship;
+- remove optional profile/origin metadata from plaintext `srp_hello` after the
+  encrypted check-in is sufficient; and
+- prune stale, session-less, push-less web security clients using the same
+  30-day/oldest-first shape as this service while preserving a compact event in
+  the server-global security ledger.
+
+None of those migrations may invent continuity proof for a legacy profile,
+change old-client behavior without its exact capability gate, or auto-prune a
+key-verified native or push-holding client.

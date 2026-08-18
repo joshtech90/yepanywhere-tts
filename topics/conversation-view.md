@@ -63,8 +63,11 @@ provider-history rewrite and not deletion.
   images stay associated with the agent turn's text.
 - Routine tool calls (pending, complete, or aborted), Thinking rows,
   non-failing task notifications, and subagent-activity notices condense.
+  Provider plan-checklist updates rendered through the canonical `UpdatePlan`
+  tool remain top-level at their transcript position: they are supervision
+  state rather than routine execution and do not count as hidden activity.
   Tool errors, incomplete calls, and task notifications whose structured
-  status is `failed` or `error` retain their ordinary rows because their
+  status is `failed` or `error` also retain their ordinary rows because their
   summary or output path may be the only human-readable failure detail.
   Notifications without a structured failure status remain routine activity;
   YA does not infer failure from unconstrained summary prose.
@@ -74,6 +77,9 @@ provider-history rewrite and not deletion.
   unavailable, the label keeps the activity count without inventing a time.
   Durations below 10 seconds retain one decimal place; durations from 10
   seconds onward use whole seconds (or the existing compact minute/hour form).
+  Its disclosure triangle stays legible at the compact text size and is
+  optically centered beside the live-status dot in both directions without
+  changing the button's hit target.
 - Clicking the summary restores every condensed row in its original transcript
   position. The summary remains at the turn end as the one-click collapse
   control. While reading above the live edge, direct expansion or collapse
@@ -83,9 +89,27 @@ provider-history rewrite and not deletion.
 - Switching the whole mode preserves bottom-follow when already at the live
   edge; otherwise it restores the visible render-row anchor (with height-delta
   fallback) so the reader does not jump to an unrelated passage.
+- Switching the whole mode also preserves manual disclosure state for ordinary
+  tool rows, tool-result media previews, and explored-tool outline groups while
+  the session view remains mounted. The state records explicit per-control
+  intent separately from each control's computed default. Returning a control
+  to its current default removes its entry, but a later default change that
+  happens to match the remembered value does not: reads never rewrite intent.
+  Presentation-only hiding, including Conversation view and ordinary scrolling,
+  does not discard an entry. An explored group is owned by its first semantic
+  tool parent, so appending adjacent exploration cannot reset its disclosure.
+  Active-window trimming prunes entries only when that semantic owner has left
+  the loaded transcript; revealing an older still-loaded turn through **Load
+  earlier** therefore retains its state, while refetching an evicted turn starts
+  from the normal default.
 - Search follows the currently projected transcript. Condensed tool/thinking
   text does not produce hidden matches; expanding its turn makes those rows
-  searchable again.
+  searchable again. Arrowing to a match and pressing Enter jumps to the same
+  render row as clicking that highlighted preview. Enter then closes search
+  while pinning that row, so unhiding non-matches — including conversation
+  activity, recap, and other synthetic rows that change height — cannot leave
+  the reader at the pre-search place. Opening search leaves tail-follow.
+  Closing search does not restart progressive reveal.
 - The thinking-transcript visibility control composes with Conversation View
   instead of being shadowed by it. When thinking is visible, a compact preview
   follows the final activity summary on the same wrapping row. A completed turn
@@ -103,8 +127,48 @@ provider-history rewrite and not deletion.
   may claim more vertical space than the current thinking block requests, and
   the previous preview's height is `min(natural, current)`, growing with the
   current block as it streams. Because the current block thus owns the row
-  height, the previous preview (and the activity names) disappearing at turn
-  completion causes no shrink — and so no main-conversation autofollow flicker.
+  height, the previous preview disappearing at turn completion causes no
+  shrink — and so no main-conversation autofollow flicker. The same cap covers
+  the activity names, which shorten at turn completion as the bound below moves
+  to the newly completed block.
+- **The row keeps its high-water height for a cooling-off period.** The cap
+  above stops the row growing past the current thinking block, but says nothing
+  about shrinking: a long streamed block followed by a short one hands the
+  height straight back, and under follow mode that drags the passage the reader
+  is on down the viewport. So the row claims its tallest measured height as a
+  `min-height` and gives it up only after wanting less continuously for
+  `CONVERSATION_ACTIVITY_RESERVE_HOLD_MS` (30s). The hold is anchored at the
+  moment content *first* fell below the reserve, so content that grows back
+  into the reserve restarts the wait rather than spending it — a turn that
+  alternates thinking and activity never releases mid-stream. Policy lives in
+  `packages/client/src/lib/sessionDetail/activityHeightReserve.ts` as a pure
+  reducer; `RenderItemComponent` publishes the result on the row as
+  `--conversation-activity-reserved-height` and a `ResizeObserver` re-measures.
+  Two invariants make it safe:
+  - **Measure the children, never the row.** The reserve is applied to the
+    row's own box, so measuring that box would feed the reserve back into
+    itself and the row could never shrink. The natural height is the greatest
+    child bottom relative to the row's top. For the same reason the observer
+    watches the children as well as the row: while the reserve holds, the row's
+    box is pinned, and only a child's resize reveals that content wants less.
+  - **Reader gestures release it at once.** Collapsing a card (chevron) or
+    dismissing the last card — which hides thinking entirely — is a request for
+    the space back, so the reserve resets instead of leaving a 30s hole.
+    Dismissing a non-final card gets no special handling: under rapid
+    alternation a dismissal would not have saved the space anyway.
+- A thinking card carries its **placement in the turn** beside its controls:
+  how far before the turn's end that block last spoke, in the same compact
+  form as the activity summary's elapsed time (`4.7s ago` against a
+  `34s · 8 activities hidden` summary). This is placement, not duration — the
+  summary already says how long the turn took, and this says where in that
+  span the thought happened. The turn's end is the reference, which is the
+  live clock while the turn runs, so the age advances on an active turn.
+  A streaming block gets none: it is happening now. Sub-second ages are
+  omitted, since the pulsing dot already carries recency at that scale, and a
+  block whose provider gave no timestamps shows none rather than inventing
+  one — the same rule the activity summary follows.
+  The card label is what yields when the header is tight; the age and controls
+  are fixed-size and carry state.
 - Each thinking-preview slot can be collapsed or dismissed independently.
   Streaming updates to the block occupying a slot do not reopen a collapsed
   card. Dismissing the final visible card switches the thinking-transcript
@@ -113,21 +177,38 @@ provider-history rewrite and not deletion.
   follow for that logical block while it grows; when a new block replaces it
   in the same slot, that new block starts at its own live edge. A lone remaining
   card may use the width released by its dismissed peer.
-- While the latest assistant turn is active and at least one thinking preview
-  is expanded, the activity column may show the newest concrete activity kinds
-  below its count. The visible count is decided by layout, not a fixed number:
-  the list is newest-first and fills the height the current thinking block
-  requests, so a short thinking block shows few names and a tall one shows more.
-  The newest row stays whole at the top; when the list overflows, the oldest
-  rows clip at the bottom behind a fade rather than a hard cut. File operations
-  may add a basename and commands may add a bounded
+- When at least one thinking preview is expanded, the activity column may show
+  concrete activity kinds below its count. The visible count is decided by
+  layout, not a fixed number: the list is newest-first and fills the height the
+  current thinking block requests, so a short thinking block shows few names and
+  a tall one shows more. The newest row stays whole at the top; when the list
+  overflows, the oldest rows clip at the bottom behind a fade rather than a hard
+  cut. File operations may add a basename and commands may add a bounded
   description or verb-first command fragment. These previews remain whole single
   lines and may truncate; by default they cannot widen the activity column. The
-  complete ordinary tool summary remains available as a tooltip. The activity
-  names never persist past the active turn: turn completion removes them while
-  preserving the expandable activity summary and latest-thinking preview.
+  complete ordinary tool summary remains available as a tooltip. Shell
+  separators divide a command preview only outside quoted or escaped text, so a
+  quoted regular-expression alternation or semicolon remains part of its
+  argument while a real pipeline still supplies separate command segments.
   Because the names cap to the current/latest card's rendered height, collapsing
   that card clips them away; they never reserve vertical space.
+- **The last complete thinking block bounds the list.** The names answer "what
+  has happened since the thought I just read", so only activities after that
+  block are named; everything earlier is already accounted for by the thought
+  and stays folded into the count. The bound is deliberately the last
+  *complete* block rather than the last block: while a new one streams the
+  reader is still working out of the previous completed thought, so the
+  activities that thought led to must remain visible rather than vanishing the
+  moment new thinking begins.
+  The bound is global rather than per-turn, so a turn that did no thinking of
+  its own still measures from the thought the reader last saw. With no complete
+  thinking block anywhere, nothing bounds the list and every activity in the
+  turn qualifies; with no thinking at all there is no preview to attach to, so
+  the turn shows only its count.
+  Turn completion does **not** clear the names — an earlier revision hid them
+  at turn end, which discarded exactly the activities the reader had not yet
+  accounted for. Because the names cap to the current/latest card's height, a
+  finished turn keeping them cannot grow the row.
 - **Appearance → Wider activity previews** is a browser-local, default-off
   option included in browser-settings backup. In Conversation view it lets the
   activity column consume otherwise unused inline space and aligns thinking

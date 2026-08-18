@@ -53,16 +53,16 @@ describe("RepoStatusBar", () => {
   it("marks a dirty or out-of-sync repository with the warn variant", () => {
     const { rerender } = render(<RepoStatusBar status={gitStatus()} t={t} />);
     expect(
-      screen.getByTestId("repo-status-bar").classList.contains(
-        repoStyles.warn as string,
-      ),
+      screen
+        .getByTestId("repo-status-bar")
+        .classList.contains(repoStyles.warn as string),
     ).toBe(false);
 
     rerender(<RepoStatusBar status={gitStatus({ ahead: 2 })} t={t} />);
     expect(
-      screen.getByTestId("repo-status-bar").classList.contains(
-        repoStyles.warn as string,
-      ),
+      screen
+        .getByTestId("repo-status-bar")
+        .classList.contains(repoStyles.warn as string),
     ).toBe(true);
   });
 
@@ -74,6 +74,72 @@ describe("RepoStatusBar", () => {
     // bar only supplies its own class through the documented pass-through.
     expect(copy.classList.contains("copy-button")).toBe(true);
     expect(copy.classList.contains(repoStyles.copyButton as string)).toBe(true);
+  });
+
+  it("opens the branch tip as a real link that left-clicks in place", () => {
+    const onOpenHeadCommit = vi.fn();
+    render(
+      <RepoStatusBar
+        status={gitStatus({
+          recentCommits: [
+            {
+              hash: "0123456789abcdef0123456789abcdef01234567",
+              shortHash: "0123456",
+              subject: "Latest",
+              authorName: "graehl",
+              authorDate: "2026-08-18T00:00:00Z",
+            },
+          ],
+        })}
+        headCommitHref="/git-status?projectId=p1&rev=0123456789abcdef0123456789abcdef01234567"
+        onOpenHeadCommit={onOpenHeadCommit}
+        t={t}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "main" });
+    expect(link.getAttribute("href")).toContain(
+      "rev=0123456789abcdef0123456789abcdef01234567",
+    );
+
+    fireEvent.click(link, { button: 0 });
+    expect(onOpenHeadCommit).toHaveBeenCalledTimes(1);
+
+    // A modifier click belongs to the browser: the app must not intercept it.
+    // jsdom would then try the real navigation, so swallow only that default.
+    const swallowNavigation = (event: Event) => event.preventDefault();
+    document.addEventListener("click", swallowNavigation);
+    fireEvent.click(link, { button: 0, ctrlKey: true });
+    document.removeEventListener("click", swallowNavigation);
+    expect(onOpenHeadCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the branch inert without a commit target, and copies a detached tip", () => {
+    const { rerender } = render(<RepoStatusBar status={gitStatus()} t={t} />);
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("main")).toBeDefined();
+
+    rerender(
+      <RepoStatusBar
+        status={gitStatus({
+          branch: null,
+          recentCommits: [
+            {
+              hash: "fedcba9876543210fedcba9876543210fedcba98",
+              shortHash: "fedcba9",
+              subject: "Detached",
+              authorName: "graehl",
+              authorDate: "2026-08-18T00:00:00Z",
+            },
+          ],
+        })}
+        t={t}
+      />,
+    );
+    expect(screen.getByText("gitStatusDetachedHead")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "sourceCopyCommitHash" }),
+    ).toBeDefined();
   });
 
   it("offers the dirty badge as a button only when it can open Changes", () => {
@@ -101,9 +167,11 @@ describe("SourceModeTabs", () => {
 
     const tabs = screen.getAllByRole("tab");
     expect(tabs).toHaveLength(3);
-    expect(
-      tabs.map((tab) => tab.getAttribute("aria-selected")),
-    ).toEqual(["false", "true", "false"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual([
+      "false",
+      "true",
+      "false",
+    ]);
 
     fireEvent.click(tabs[0] as HTMLElement);
     expect(onSelect).toHaveBeenCalledWith("changes");
@@ -125,6 +193,23 @@ describe("SourceModeTabs", () => {
     expect(counts[0]?.textContent).toBe("3");
   });
 
+  it("supports a fourth Reviews mode without changing the tab contract", () => {
+    const onSelect = vi.fn();
+    render(
+      <SourceModeTabs
+        tab="reviews"
+        tabs={[...TABS, "reviews"]}
+        onSelect={onSelect}
+        t={t}
+      />,
+    );
+
+    const reviews = screen.getByRole("tab", { name: "sourceTabReviews" });
+    expect(reviews.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "sourceTabComments" }));
+    expect(onSelect).toHaveBeenCalledWith("comments");
+  });
+
   it("selects the stacked phone layout by variant rather than by caller CSS", () => {
     const { rerender } = render(
       <SourceModeTabs tab="changes" tabs={TABS} onSelect={vi.fn()} t={t} />,
@@ -143,9 +228,9 @@ describe("SourceModeTabs", () => {
       />,
     );
     expect(
-      screen.getByRole("tablist").classList.contains(
-        tabStyles.stacked as string,
-      ),
+      screen
+        .getByRole("tablist")
+        .classList.contains(tabStyles.stacked as string),
     ).toBe(true);
   });
 });
@@ -158,7 +243,11 @@ describe("SourceRowMenuTrigger", () => {
     const onOpen = vi.fn();
     render(
       <li className={`commit-file-row ${sourceRowMenuSurface}`}>
-        <SourceRowMenuTrigger actions={[]} label="sourceRowActions" onOpen={onOpen} />
+        <SourceRowMenuTrigger
+          actions={[]}
+          label="sourceRowActions"
+          onOpen={onOpen}
+        />
       </li>,
     );
 

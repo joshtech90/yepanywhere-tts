@@ -15,10 +15,22 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createDevInstanceProvenance,
+  devBindKey,
+  reapObsoleteDevInstances,
+} from "./dev-instance-provenance.mjs";
+import {
+  createProviderHostSourceIdentity,
+  discoverProviderHost,
+  recoverProviderHost,
+  resolveProviderHostPaths,
+} from "./provider-runtime-discovery.mjs";
 import { exitIfUnsafeHome } from "./safe-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -124,16 +136,21 @@ const basePort = process.env.PORT
 const vitePort = process.env.VITE_PORT
   ? Number.parseInt(process.env.VITE_PORT, 10)
   : basePort + 2;
-const reloadSignalFile = join(
-  tmpdir(),
-  `yep-anywhere-dev-reload-${process.pid}-${basePort}.json`,
-);
 const protocol = process.env.HTTPS_SELF_SIGNED === "true" ? "https" : "http";
 const configuredHost = process.env.HOST?.trim();
+// The primary Hono listener is always loopback. HOST may describe an explicit
+// additional network listener (or merely be an ambient shell variable), so it
+// cannot identify the bind whose successful acquisition authorizes cleanup.
+const primaryBindHost = "127.0.0.1";
 const displayHost =
   configuredHost && configuredHost !== "0.0.0.0" && configuredHost !== "::"
     ? configuredHost
     : "localhost";
+const devInstanceProvenance = createDevInstanceProvenance({
+  host: primaryBindHost,
+  port: basePort,
+  sourceRoot: realpathSync(rootDir),
+});
 
 console.log("Starting dev server...");
 console.log(`  Access at: ${protocol}://${displayHost}:${basePort}`);
@@ -151,56 +168,638 @@ if (!backendWatch && !noFrontendReload)
 // Build environment for child processes
 const env = {
   ...process.env,
+  ...devInstanceProvenance.env,
   // When not using --watch, enable manual reload mode (shows banner on file changes)
   NO_BACKEND_RELOAD: backendWatch ? "" : "true",
   NO_FRONTEND_RELOAD: noFrontendReload ? "true" : "",
-  // Explicit one-shot marker written by the server before a requested restart.
-  // Windows .cmd/shell layers do not always preserve the inner process exit
-  // shape, so the wrapper should not rely only on code === 0.
-  YEP_DEV_RELOAD_SIGNAL_FILE: backendWatch ? "" : reloadSignalFile,
   // Pass vite port to both server and client for consistency
   VITE_PORT: String(vitePort),
 };
 
-function clearReloadSignalFile() {
-  if (!existsSync(reloadSignalFile)) return false;
-
-  try {
-    unlinkSync(reloadSignalFile);
-    return true;
-  } catch (err) {
-    console.warn(
-      `Could not clear reload signal file ${reloadSignalFile}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+const reloadSafeRuntimeHostsEnabled =
+  process.platform === "linux" && !backendWatch;
+const providerHostPaths = reloadSafeRuntimeHostsEnabled
+  ? resolveProviderHostPaths(env)
+  : null;
+const providerHostEntrypoint = join(__dirname, "provider-runtime-host.mjs");
+const providerRuntimeWorkerPath = env.YEP_PROVIDER_RUNTIME_WORKER_PATH?.trim()
+  ? resolve(env.YEP_PROVIDER_RUNTIME_WORKER_PATH)
+  : join(
+      rootDir,
+      "packages/server/src/sdk/providers/provider-runtime-worker.ts",
     );
-    return false;
+const expectedProviderHostIdentity = providerHostPaths
+  ? createProviderHostSourceIdentity({
+      projectRoot: rootDir,
+      launcherPath: fileURLToPath(import.meta.url),
+      hostPath: providerHostEntrypoint,
+      workerPath: providerRuntimeWorkerPath,
+      env,
+    })
+  : null;
+const wrapperToken = randomBytes(32).toString("base64url");
+
+let wrapperState = "starting";
+let serverChild = null;
+let clientChild = null;
+let providerRuntimeHostChild = null;
+let wrapperControlServer = null;
+const wrapperControlSockets = new Set();
+const providerRuntimeProcessGroups = new Map();
+let serverGeneration = 0;
+let unexpectedRecoveryUsed = false;
+let shutdownPromise = null;
+let obsoleteInstanceReapPromise = null;
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function processTargetAlive(target) {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
   }
 }
 
-// Ignore a stale marker left behind by an earlier wrapper process.
-clearReloadSignalFile();
+function readProcessStartTime(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) return null;
+    const fields = stat
+      .slice(commandEnd + 1)
+      .trim()
+      .split(/\s+/);
+    return fields[19] ?? null;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ESRCH") return null;
+    throw error;
+  }
+}
 
-// Track child processes for cleanup
-const children = [];
+function reportedProcessGroups(message) {
+  if (Array.isArray(message?.processGroups)) {
+    return message.processGroups.filter(
+      (target) =>
+        Number.isInteger(target?.processGroupId) &&
+        target.processGroupId > 1 &&
+        typeof target.leaderStartTime === "string" &&
+        target.leaderStartTime,
+    );
+  }
+  return (message?.processGroupIds ?? [])
+    .filter(
+      (processGroupId) =>
+        Number.isInteger(processGroupId) && processGroupId > 1,
+    )
+    .map((processGroupId) => ({ processGroupId }));
+}
 
-function cleanup() {
-  for (const child of children) {
-    if (child && !child.killed) {
-      child.kill("SIGTERM");
+function runtimeProcessGroupAlive(target) {
+  if (!processTargetAlive(-target.processGroupId)) return false;
+  if (!target.leaderStartTime) return true;
+  const currentStartTime = readProcessStartTime(target.processGroupId);
+  return (
+    currentStartTime === null || currentStartTime === target.leaderStartTime
+  );
+}
+
+async function waitForRuntimeProcessGroupExit(target, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (runtimeProcessGroupAlive(target)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(25, remaining)),
+    );
+  }
+  return true;
+}
+
+function managedTarget(child) {
+  if (!child?.pid) return null;
+  return isWindows ? child.pid : -child.pid;
+}
+
+function managedTargets(child) {
+  const targets = new Set();
+  const launcherTarget = managedTarget(child);
+  if (launcherTarget !== null) targets.add(launcherTarget);
+  if (Number.isInteger(child?.backendPid) && child.backendPid > 1) {
+    targets.add(child.backendPid);
+  }
+  return [...targets];
+}
+
+function signalManagedChild(child, signal) {
+  let signaled = false;
+  for (const target of managedTargets(child)) {
+    if (!processTargetAlive(target)) continue;
+    try {
+      process.kill(target, signal);
+      signaled = true;
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
     }
   }
+  return signaled;
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function stopManagedChild(child, name, firstWaitMs = 3_000) {
+  const targets = managedTargets(child);
+  if (!targets.some(processTargetAlive)) return;
+  signalManagedChild(child, "SIGTERM");
+  if (await waitForProcessTargetsExit(targets, firstWaitMs)) return;
+  console.warn(`[Shutdown] ${name} did not stop after SIGTERM; forcing it`);
+  for (const target of targets) {
+    if (!processTargetAlive(target)) continue;
+    try {
+      process.kill(target, "SIGKILL");
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
+  if (!(await waitForProcessTargetsExit(targets, 1_500))) {
+    throw new Error(`${name} process target survived SIGKILL`);
+  }
+}
+
+async function waitForProcessTargetsExit(targets, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (targets.some(processTargetAlive)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(25, remaining)),
+    );
+  }
+  return true;
+}
+
+async function reapRuntimeProcessGroup(reportedTarget) {
+  const target =
+    typeof reportedTarget === "number"
+      ? { processGroupId: reportedTarget }
+      : reportedTarget;
+  const signalTarget = -target.processGroupId;
+  if (!runtimeProcessGroupAlive(target)) return;
+  process.kill(signalTarget, "SIGTERM");
+  if (await waitForRuntimeProcessGroupExit(target, 1_500)) return;
+  if (!runtimeProcessGroupAlive(target)) return;
+  process.kill(signalTarget, "SIGTERM");
+  if (await waitForRuntimeProcessGroupExit(target, 500)) return;
+  if (!runtimeProcessGroupAlive(target)) return;
+  process.kill(signalTarget, "SIGKILL");
+  if (!(await waitForRuntimeProcessGroupExit(target, 1_000))) {
+    throw new Error(
+      `Runtime process group ${target.processGroupId} survived SIGKILL`,
+    );
+  }
+}
+
+function spawnManaged(command, childArgs, options) {
+  return spawn(command, childArgs, {
+    ...options,
+    detached: !isWindows,
+  });
+}
+
+function configureProviderHostEnvironment(connection) {
+  if (!providerHostPaths) return;
+  env.YEP_PROVIDER_RUNTIME_DIR = providerHostPaths.runtimeDir;
+  env.YEP_PROVIDER_RUNTIME_SOCKET = connection.descriptor.controlSocketPath;
+  env.YEP_PROVIDER_RUNTIME_TOKEN = connection.token;
+  env.YEP_PROVIDER_RUNTIME_DESCRIPTOR = providerHostPaths.descriptorPath;
+  env.YEP_PROVIDER_RUNTIME_TOKEN_FILE = providerHostPaths.tokenPath;
+  env.YEP_PROVIDER_RUNTIME_RECEIPTS = providerHostPaths.receiptPath;
+}
+
+function discoverCompatibleProviderHost(options) {
+  if (!expectedProviderHostIdentity) {
+    throw new Error("Provider host source identity is unavailable");
+  }
+  return discoverProviderHost(providerHostPaths, {
+    ...options,
+    expectedIdentity: expectedProviderHostIdentity,
+  });
+}
+
+async function waitForProviderHost(timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  let discovery = await discoverCompatibleProviderHost();
+  while (
+    (discovery.state === "absent" || discovery.state === "unresponsive") &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    discovery = await discoverCompatibleProviderHost();
+  }
+  return discovery;
+}
+
+async function startProviderRuntimeHost() {
+  if (!providerHostPaths) return;
+  let discovery = await discoverCompatibleProviderHost();
+  if (discovery.state === "available") {
+    configureProviderHostEnvironment(discovery);
+    console.log("[ProviderRuntimeHost] Attached to the existing host");
+    return;
+  }
+  if (discovery.state === "unresponsive") {
+    const recovery = await recoverProviderHost(
+      providerHostPaths,
+      discovery.descriptor,
+    );
+    console.error(
+      `[ProviderRuntimeHost] ${recovery.outcome}: replaced ${recovery.descriptorId}; interrupted submissions=${recovery.interruptedSubmissionIds.length}`,
+    );
+    discovery = await discoverCompatibleProviderHost();
+  }
+  if (discovery.state !== "absent") {
+    throw new Error(
+      `Provider runtime host is ${discovery.state}${discovery.error ? `: ${discovery.error}` : ""}`,
+    );
+  }
+
+  const hostEnvironment = {
+    ...env,
+    YEP_PROVIDER_HOST_RUNTIME_DIR: providerHostPaths.runtimeDir,
+    YEP_PROVIDER_RUNTIME_DIR: providerHostPaths.runtimeDir,
+    YEP_PROVIDER_RUNTIME_SOCKET: providerHostPaths.controlSocketPath,
+    YEP_PROVIDER_RUNTIME_DESCRIPTOR: providerHostPaths.descriptorPath,
+    YEP_PROVIDER_RUNTIME_TOKEN_FILE: providerHostPaths.tokenPath,
+    YEP_PROVIDER_RUNTIME_LOCK: providerHostPaths.lockPath,
+    YEP_PROVIDER_RUNTIME_RECOVERY_LOCK: providerHostPaths.recoveryLockPath,
+    YEP_PROVIDER_RUNTIME_RECEIPTS: providerHostPaths.receiptPath,
+  };
+  delete hostEnvironment.YEP_PROVIDER_RUNTIME_TOKEN;
+  const host = spawn(process.execPath, [providerHostEntrypoint], {
+    cwd: rootDir,
+    env: hostEnvironment,
+    detached: !isWindows,
+    stdio: ["ignore", "inherit", "inherit", "ipc"],
+  });
+  providerRuntimeHostChild = host;
+
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        host.off("message", onMessage);
+        host.off("error", onError);
+        host.off("exit", onExitBeforeReady);
+        fn();
+      };
+      const onMessage = (message) => {
+        if (message?.type === "ready") finish(resolve);
+      };
+      const onError = (error) => finish(() => reject(error));
+      const onExitBeforeReady = (code, signal) =>
+        finish(() =>
+          reject(
+            new Error(
+              `Provider runtime host exited before ready (code=${code}, signal=${signal})`,
+            ),
+          ),
+        );
+      const timeout = setTimeout(
+        () =>
+          finish(() =>
+            reject(new Error("Provider runtime host startup timed out")),
+          ),
+        5_000,
+      );
+      host.on("message", onMessage);
+      host.once("error", onError);
+      host.once("exit", onExitBeforeReady);
+    });
+  } catch (error) {
+    if (providerRuntimeHostChild === host) providerRuntimeHostChild = null;
+    const concurrentHost = await waitForProviderHost();
+    if (concurrentHost.state === "available") {
+      configureProviderHostEnvironment(concurrentHost);
+      console.log("[ProviderRuntimeHost] Attached after a concurrent start");
+      return;
+    }
+    throw error;
+  }
+
+  discovery = await waitForProviderHost();
+  if (discovery.state !== "available") {
+    throw new Error(
+      `Provider runtime host did not publish a usable descriptor (${discovery.state})`,
+    );
+  }
+  configureProviderHostEnvironment(discovery);
+
+  host.on("message", (message) => {
+    if (message?.type === "runtimeLaunched") {
+      const targets = reportedProcessGroups(message);
+      providerRuntimeProcessGroups.set(
+        message.runtimeId,
+        new Map(targets.map((target) => [target.processGroupId, target])),
+      );
+    } else if (message?.type === "runtimeTargets") {
+      const targets = reportedProcessGroups(message);
+      providerRuntimeProcessGroups.set(
+        message.runtimeId,
+        new Map(targets.map((target) => [target.processGroupId, target])),
+      );
+    } else if (message?.type === "runtimeExited") {
+      providerRuntimeProcessGroups.delete(message.runtimeId);
+    }
+  });
+  host.on("exit", (code, signal) => {
+    if (providerRuntimeHostChild === host) providerRuntimeHostChild = null;
+    if (wrapperState === "shutting-down") return;
+    console.error(
+      `[ProviderRuntimeHost] Exited unexpectedly (code=${code}, signal=${signal})`,
+    );
+    void shutdownWrapper("Provider runtime host exited unexpectedly", 1);
+  });
+}
+
+async function stopProviderRuntimeHost() {
+  const host = providerRuntimeHostChild;
+  if (host && host.exitCode === null && host.signalCode === null) {
+    try {
+      host.send({ type: "shutdown", reason: "dev wrapper shutdown" });
+    } catch {
+      // The fallback process-group sweep below remains authoritative.
+    }
+    if (!(await waitForChildExit(host, 7_000))) {
+      host.kill("SIGTERM");
+      if (!(await waitForChildExit(host, 1_500))) {
+        host.kill("SIGKILL");
+        if (!(await waitForChildExit(host, 1_000))) {
+          throw new Error("Provider runtime host survived SIGKILL");
+        }
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (const targets of providerRuntimeProcessGroups.values()) {
+    for (const [processGroupId, target] of targets) {
+      groups.set(processGroupId, target);
+    }
+  }
+  const results = await Promise.allSettled(
+    [...groups.values()].map(reapRuntimeProcessGroup),
+  );
+  providerRuntimeProcessGroups.clear();
+  const failures = results.filter((result) => result.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(
+      `Failed to reap ${failures.length} provider runtime process group(s)`,
+    );
+  }
+}
+
+async function startWrapperControlServer() {
+  const server = createNetServer((socket) => {
+    wrapperControlSockets.add(socket);
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        let request;
+        try {
+          request = JSON.parse(line);
+        } catch {
+          socket.end(
+            `${JSON.stringify({ ok: false, error: "invalid JSON" })}\n`,
+          );
+          return;
+        }
+        if (request.token !== wrapperToken) {
+          socket.end(
+            `${JSON.stringify({ ok: false, error: "unauthorized" })}\n`,
+          );
+          return;
+        }
+        if (request.op === "registerBackend") {
+          if (
+            request.generation !== serverChild?.yaGeneration ||
+            !Number.isInteger(request.pid) ||
+            request.pid <= 1
+          ) {
+            socket.end(
+              `${JSON.stringify({ ok: false, error: "invalid backend registration" })}\n`,
+            );
+            return;
+          }
+          serverChild.backendPid = request.pid;
+          socket.end(`${JSON.stringify({ ok: true })}\n`);
+          continue;
+        }
+        if (request.op === "backendListening") {
+          if (
+            request.generation !== serverChild?.yaGeneration ||
+            request.pid !== serverChild.backendPid ||
+            typeof request.host !== "string" ||
+            !Number.isInteger(request.port)
+          ) {
+            socket.end(
+              `${JSON.stringify({ ok: false, error: "invalid listening registration" })}\n`,
+            );
+            return;
+          }
+          let acquiredBindKey;
+          try {
+            acquiredBindKey = devBindKey(request.host, request.port);
+          } catch (error) {
+            socket.end(
+              `${JSON.stringify({ ok: false, error: errorMessage(error) })}\n`,
+            );
+            return;
+          }
+          if (acquiredBindKey !== devInstanceProvenance.bindKey) {
+            socket.end(
+              `${JSON.stringify({ ok: false, error: "listening bind differs from launch provenance" })}\n`,
+            );
+            return;
+          }
+          if (!obsoleteInstanceReapPromise && process.platform === "linux") {
+            obsoleteInstanceReapPromise = reapObsoleteDevInstances({
+              bindKey: acquiredBindKey,
+              currentInstanceId: devInstanceProvenance.instanceId,
+              currentSourceRoot: devInstanceProvenance.env.YEP_DEV_SOURCE_ROOT,
+            }).catch((error) => {
+              console.error(
+                `[Startup] Failed to reap prior YA dev instance: ${errorMessage(error)}`,
+              );
+            });
+          }
+          socket.end(`${JSON.stringify({ ok: true })}\n`);
+          continue;
+        }
+        if (request.op !== "reload") {
+          socket.end(
+            `${JSON.stringify({ ok: false, error: "unknown operation" })}\n`,
+          );
+          return;
+        }
+        if (wrapperState === "shutting-down") {
+          socket.end(
+            `${JSON.stringify({ ok: false, error: "wrapper is shutting down" })}\n`,
+          );
+          return;
+        }
+        socket.end(`${JSON.stringify({ ok: true, state: wrapperState })}\n`);
+        setTimeout(() => {
+          void requestServerReload("API request");
+        }, 100);
+      }
+    });
+    socket.on("close", () => wrapperControlSockets.delete(socket));
+    socket.on("error", () => wrapperControlSockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  wrapperControlServer = server;
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Dev wrapper control server did not bind a TCP port");
+  }
+  env.YEP_DEV_WRAPPER_PORT = String(address.port);
+  env.YEP_DEV_WRAPPER_TOKEN = wrapperToken;
+}
+
+async function closeWrapperControlServer() {
+  for (const socket of wrapperControlSockets) socket.destroy();
+  wrapperControlSockets.clear();
+  const server = wrapperControlServer;
+  wrapperControlServer = null;
+  if (!server) return;
+  await new Promise((resolve) => server.close(() => resolve()));
+}
+
+async function requestServerReload(source) {
+  if (wrapperState === "shutting-down") return;
+  if (wrapperState === "reloading") {
+    console.log(`[Reload] Coalesced ${source}`);
+    return;
+  }
+  const server = serverChild;
+  if (!server || server.exitCode !== null || server.signalCode !== null) {
+    console.error(`[Reload] ${source} arrived without a live server`);
+    return;
+  }
+  wrapperState = "reloading";
+  console.log(`\n[Reload] Replacing backend after ${source}...`);
+  signalManagedChild(server, isWindows ? "SIGTERM" : "SIGHUP");
+  void completeServerReload(server);
+}
+
+async function completeServerReload(server) {
+  try {
+    if (!(await waitForProcessTargetsExit(managedTargets(server), 10_000))) {
+      console.warn("[Reload] Backend did not stop after SIGHUP; escalating");
+      await stopManagedChild(server, "backend reload", 2_000);
+    }
+  } catch (error) {
+    console.error(`[Reload] ${errorMessage(error)}`);
+    await shutdownWrapper("Backend reload cleanup failed", 1);
+    return;
+  }
+
+  if (wrapperState !== "reloading") return;
+  if (serverChild === server) serverChild = null;
+  console.log("[Reload] Starting replacement backend");
+  startServer();
+  wrapperState = "running";
+}
+
+async function recoverUnexpectedServer(server, code) {
+  try {
+    await stopManagedChild(server, "backend recovery", 2_000);
+  } catch (error) {
+    console.error(`[Recovery] ${errorMessage(error)}`);
+    await shutdownWrapper("Backend recovery cleanup failed", 1);
+    return;
+  }
+  if (wrapperState !== "running") return;
+  if (serverChild === server) serverChild = null;
+  console.error(`[Recovery] Backend exited with code ${code}; retrying once`);
+  startServer();
+}
+
+async function shutdownWrapper(reason, exitCode = 0) {
+  if (shutdownPromise) return await shutdownPromise;
+  wrapperState = "shutting-down";
+  shutdownPromise = (async () => {
+    console.log(`[Shutdown] ${reason}`);
+    const failures = [];
+    await closeWrapperControlServer().catch((error) => failures.push(error));
+
+    await stopManagedChild(serverChild, "backend", 7_000).catch((error) =>
+      failures.push(error),
+    );
+    await stopProviderRuntimeHost().catch((error) => failures.push(error));
+    await stopManagedChild(clientChild, "Vite").catch((error) =>
+      failures.push(error),
+    );
+
+    for (const failure of failures) {
+      console.error(`[Shutdown] ${errorMessage(failure)}`);
+    }
+    const finalExitCode = failures.length > 0 ? 1 : exitCode;
+    console.log(
+      failures.length > 0
+        ? "[Shutdown] Cleanup failed"
+        : "[Shutdown] Cleanup complete",
+    );
+    process.exit(finalExitCode);
+  })();
+  return await shutdownPromise;
 }
 
 process.on("SIGINT", () => {
-  cleanup();
-  process.exit(0);
+  void shutdownWrapper("Received SIGINT");
 });
-
 process.on("SIGTERM", () => {
-  cleanup();
-  process.exit(0);
+  void shutdownWrapper("Received SIGTERM");
 });
+if (!isWindows) {
+  process.on("SIGHUP", () => {
+    void requestServerReload("SIGHUP");
+  });
+}
 
 /**
  * Spawn a server process
@@ -209,30 +808,31 @@ function startServer() {
   // Use dev:watch for auto-reload, dev for no-reload (default)
   const serverScript = backendWatch ? "dev:watch" : "dev";
 
-  const server = spawn(pnpmBin, ["--filter", "server", serverScript], {
+  serverGeneration += 1;
+  const generation = `${process.pid}-${serverGeneration}`;
+  const server = spawnManaged(pnpmBin, ["--filter", "server", serverScript], {
     cwd: rootDir,
-    env,
+    env: { ...env, YEP_SERVER_GENERATION: generation },
     stdio: "inherit",
     ...shellOption,
   });
-
-  children.push(server);
+  server.yaGeneration = generation;
+  serverChild = server;
 
   server.on("exit", (code, signal) => {
-    // Remove from children list
-    const idx = children.indexOf(server);
-    if (idx !== -1) children.splice(idx, 1);
-
-    const reloadRequested = !backendWatch && clearReloadSignalFile();
-
-    // If server exited cleanly (code 0) and we're in manual reload mode,
-    // it was a reload request - restart it
-    if (!backendWatch && (reloadRequested || (code === 0 && signal === null))) {
-      console.log("\nRestarting server...");
-      startServer();
-    } else if (code !== null && code !== 0) {
-      console.error(`Server exited with code ${code}`);
+    if (wrapperState === "shutting-down") return;
+    if (wrapperState === "reloading") {
+      return;
     }
+    if (code !== null && code !== 0 && !unexpectedRecoveryUsed) {
+      unexpectedRecoveryUsed = true;
+      void recoverUnexpectedServer(server, code);
+      return;
+    }
+    void shutdownWrapper(
+      `Backend exited without reload intent (code=${code}, signal=${signal})`,
+      code === 0 ? 0 : 1,
+    );
   });
 
   return server;
@@ -242,7 +842,7 @@ function startServer() {
  * Start the client dev server
  */
 function startClient() {
-  const client = spawn(pnpmBin, ["--filter", "client", "dev"], {
+  const client = spawnManaged(pnpmBin, ["--filter", "client", "dev"], {
     cwd: rootDir,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -260,17 +860,29 @@ function startClient() {
     isSuppressedViteBannerLine,
   );
 
-  children.push(client);
+  clientChild = client;
 
-  client.on("exit", (code) => {
+  client.on("exit", (code, signal) => {
+    if (wrapperState === "shutting-down") return;
     if (code !== null && code !== 0) {
       console.error(`Client exited with code ${code}`);
     }
+    void shutdownWrapper(
+      `Vite exited unexpectedly (code=${code}, signal=${signal})`,
+      code === 0 ? 0 : 1,
+    );
   });
 
   return client;
 }
 
-// Start both processes
-startServer();
-startClient();
+try {
+  await startProviderRuntimeHost();
+  await startWrapperControlServer();
+  startServer();
+  startClient();
+  wrapperState = "running";
+} catch (error) {
+  console.error(`[Startup] ${errorMessage(error)}`);
+  await shutdownWrapper("Startup failed", 1);
+}

@@ -50,6 +50,62 @@ describe("FocusedSessionWatchManager", () => {
     tempDirs.length = 0;
   });
 
+  it("checks on the leading edge and keeps a trailing validation", () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new FocusedSessionWatchManager({
+        scanner: {
+          getProject: async () => null,
+          getOrCreateProject: async () => null,
+        },
+        codexScanner: {
+          getSessionsForProject: async () => [],
+        },
+        geminiScanner: {
+          getSessionsForProject: async () => [],
+        },
+        debounceMs: 200,
+      });
+      const internals = manager as unknown as {
+        createTarget(request: {
+          sessionId: string;
+          projectId: UrlProjectId;
+        }): unknown;
+        requestCheck(target: unknown, source: "fs-watch" | "poll"): void;
+        scheduleDebouncedCheck(
+          target: unknown,
+          source: "fs-watch" | "poll",
+        ): void;
+        checkForChanges(
+          target: unknown,
+          request: {
+            source: "fs-watch" | "poll";
+            sourceObservedAtMs: number;
+          },
+        ): Promise<void>;
+      };
+      const target = internals.createTarget({
+        sessionId: "session-leading",
+        projectId: "project-leading" as UrlProjectId,
+      }) as {
+        subscribers: Map<number, (event: FocusedSessionWatchEvent) => void>;
+      };
+      target.subscribers.set(1, vi.fn());
+      const check = vi.spyOn(internals, "checkForChanges").mockResolvedValue();
+
+      internals.requestCheck(target, "fs-watch");
+      internals.scheduleDebouncedCheck(target, "fs-watch");
+
+      expect(check).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(199);
+      expect(check).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      expect(check).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["claude", "claude-gateway"] as const)(
     "emits change events for a watched %s session file",
     async (provider) => {
@@ -91,9 +147,8 @@ describe("FocusedSessionWatchManager", () => {
       });
 
       const events: FocusedSessionWatchEvent[] = [];
-      const unsubscribe = manager.subscribe(
-        { sessionId, projectId },
-        (event) => events.push(event),
+      const unsubscribe = manager.subscribe({ sessionId, projectId }, (event) =>
+        events.push(event),
       );
 
       await delay(250);
@@ -105,11 +160,135 @@ describe("FocusedSessionWatchManager", () => {
       expect(event.projectId).toBe(projectId);
       expect(event.provider).toBe("claude");
       expect(event.path).toBe(filePath);
+      expect(event.changeVersion).toBeGreaterThan(0);
+      expect(event.sourceObservedAt).toEqual(expect.any(String));
+      expect(event.mtimeMs).toEqual(expect.any(Number));
+      expect(event.size).toBeGreaterThan(0);
 
       unsubscribe();
       manager.dispose();
     },
   );
+
+  it("shares one directory watcher across focused session targets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "focused-watch-shared-"));
+    tempDirs.push(root);
+    const sessionDir = join(root, "projects", "demo");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionIds = ["session-shared-1", "session-shared-2"];
+    const filePaths = sessionIds.map((sessionId) =>
+      join(sessionDir, `${sessionId}.jsonl`),
+    );
+    await Promise.all(
+      filePaths.map((filePath) =>
+        writeFile(filePath, '{"type":"user","message":"hello"}\n'),
+      ),
+    );
+
+    const projectId = "L3RtcC9kZW1vLXNoYXJlZA" as UrlProjectId;
+    const project: Project = {
+      id: projectId,
+      path: "/tmp/demo-shared",
+      name: "demo-shared",
+      sessionCount: 2,
+      sessionDir,
+      activeOwnedCount: 0,
+      activeExternalCount: 0,
+      lastActivity: null,
+      provider: "claude",
+    };
+    const manager = new FocusedSessionWatchManager({
+      scanner: {
+        getProject: async () => project,
+        getOrCreateProject: async () => project,
+      },
+      codexScanner: { getSessionsForProject: async () => [] },
+      geminiScanner: { getSessionsForProject: async () => [] },
+      pollMs: 100,
+      debounceMs: 30,
+    });
+    const firstEvents: FocusedSessionWatchEvent[] = [];
+    const secondEvents: FocusedSessionWatchEvent[] = [];
+    const unsubscribeFirst = manager.subscribe(
+      { sessionId: sessionIds[0], projectId },
+      (event) => firstEvents.push(event),
+    );
+    const unsubscribeSecond = manager.subscribe(
+      { sessionId: sessionIds[1], projectId },
+      (event) => secondEvents.push(event),
+    );
+    const directoryWatches = (
+      manager as unknown as {
+        directoryWatches: Map<string, { targets: Set<unknown> }>;
+      }
+    ).directoryWatches;
+
+    await vi.waitFor(() => {
+      expect(directoryWatches.size).toBe(1);
+      expect(directoryWatches.get(sessionDir)?.targets.size).toBe(2);
+    });
+
+    await appendFile(filePaths[0], '{"type":"assistant","message":"world"}\n');
+    const event = await waitForChange(firstEvents);
+    expect(event.sessionId).toBe(sessionIds[0]);
+    await delay(150);
+    expect(secondEvents).toEqual([]);
+
+    unsubscribeFirst();
+    expect(directoryWatches.get(sessionDir)?.targets.size).toBe(1);
+    unsubscribeSecond();
+    expect(directoryWatches.size).toBe(0);
+    manager.dispose();
+  });
+
+  it("does not attach a watcher after the last subscriber leaves", async () => {
+    const root = await mkdtemp(join(tmpdir(), "focused-watch-cancelled-"));
+    tempDirs.push(root);
+    const sessionDir = join(root, "projects", "demo");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionId = "session-cancelled";
+    await writeFile(
+      join(sessionDir, `${sessionId}.jsonl`),
+      '{"type":"user","message":"hello"}\n',
+    );
+    const projectId = "L3RtcC9kZW1vLWNhbmNlbGxlZA" as UrlProjectId;
+    const project: Project = {
+      id: projectId,
+      path: "/tmp/demo-cancelled",
+      name: "demo-cancelled",
+      sessionCount: 1,
+      sessionDir,
+      activeOwnedCount: 0,
+      activeExternalCount: 0,
+      lastActivity: null,
+      provider: "claude",
+    };
+    let releaseProject: ((project: Project) => void) | undefined;
+    const projectPromise = new Promise<Project>((resolve) => {
+      releaseProject = resolve;
+    });
+    const manager = new FocusedSessionWatchManager({
+      scanner: {
+        getProject: async () => await projectPromise,
+        getOrCreateProject: async () => project,
+      },
+      codexScanner: { getSessionsForProject: async () => [] },
+      geminiScanner: { getSessionsForProject: async () => [] },
+    });
+    const internals = manager as unknown as {
+      directoryWatches: Map<string, unknown>;
+      targets: Map<string, unknown>;
+    };
+
+    const unsubscribe = manager.subscribe({ sessionId, projectId }, () => {});
+    unsubscribe();
+    releaseProject?.(project);
+    await delay(25);
+
+    expect(internals.targets.size).toBe(0);
+    expect(internals.directoryWatches.size).toBe(0);
+    manager.dispose();
+  });
 
   it("uses providerHint=codex to resolve codex session files", async () => {
     const root = await mkdtemp(join(tmpdir(), "focused-watch-codex-"));

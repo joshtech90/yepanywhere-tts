@@ -1,7 +1,9 @@
 # Client Query Controller
 
 Status: In progress; retained query controller and Sidebar starred projection
-landed through 2026-06-29.
+landed through 2026-06-29. A 2026-08-05 new-session audit triggered the next
+slice: retain one source-scoped version/capability snapshot and stop repeated
+route-local `/api/version` work.
 
 This note tracks the next data-fetching cleanup after the client summary store
 work. The immediate forcing bug is Sidebar session coverage: after a browser
@@ -91,6 +93,41 @@ reconnect, or session metadata changes. That belongs here, not in a separate
   pagination, and server reconciliation. This fixes the metadata-toggle window
   where a row left Last 24 Hours before the server-owned starred membership had
   refetched.
+- 2026-08-05: A fresh production New Session request census found 21 initial
+  fetches. Most have distinct owners, but selected-page readiness competes with
+  global sessions, Inbox, processes, queue, usage, and development-status work.
+  Added a scheduling handoff and located one direct duplicate
+  `useReloadNotifications` status read.
+- 2026-08-05: The follow-on timer audit found that retaining a query still does
+  not retain its revalidation owner. Sidebar mounts four feed hooks for two
+  query keys, and Project Queue adds one five-second poll per mounted consumer
+  while backlog exists. Added the query-entry ownership correction below.
+- 2026-08-05: The server observer/catalog contract added coherent catalog
+  epochs/generations and short-lived client interest. Added a browser reuse
+  slice that prevents sequential mounts and capable sibling tabs from
+  requesting an unchanged generation while keeping server dedupe authoritative.
+- 2026-08-05: Moved activity subscriptions and the revalidation debounce out of
+  hook instances into one owner per `(sourceKey, queryKey)`
+  (`lib/clientQueryRevalidation.ts`). The owner unions its subscribers' events,
+  keeps one timer, and revalidates with the widest coverage among them so a
+  50-row consumer is satisfied by the 100-row consumer's refetch. This removes
+  the fast-response duplicate recorded below: one `reconnect` across two
+  consumers now costs one request rather than two.
+- 2026-08-05: Replaced Project Queue's per-consumer five-second interval with
+  one source-level backstop owner that arms a single timer for the earliest
+  instant the server reported (`nextAttemptAt` / `quietEligibleAt`), falls back
+  to five seconds only while a project is `ready` or `dispatching`, and arms
+  nothing for a blocked or paused backlog whose transitions arrive as events.
+  Measured 480 -> 8 reads over ten minutes with four mounted consumers, and the
+  deadline-aware owner is also more punctual than the interval it replaced.
+- 2026-08-05: Moved `useVersion` onto a source-keyed retained query with a
+  small shared version snapshot store, completing step 9. All 34 consumers
+  subscribe to one snapshot, the pending speech-backend follow-up is retained
+  once per source instead of once per mounted hook, and `freshOnMount` became a
+  `{ fresh: true }` coverage query so an update check cannot be answered by an
+  ordinary read. Requests now wait for remote secure-connection readiness and
+  accept snapshots by request-started time, neither of which the previous hook
+  did.
 
 ## Context
 
@@ -140,12 +177,12 @@ Audited 2026-06-28. This is the starting map for migration priority.
 | `useProject` | `/api/projects/:id` | Source-scoped detail snapshot reporting plus retained query lifecycle. Refresh/reconnect revalidate the retained detail query; process/session events revalidate only when they match the selected project. | Completed retained-revalidation target. |
 | `InboxContext` | `/api/inbox` | App-scoped singleton feed owner. Stable tier ordering and source-scoped snapshot reporting stay provider-owned; readiness, retained query lifecycle, and wake/reconnect/activity refetch now go through `useRetainedClientQuery`. Locally patchable `session-updated` rows patch through the summary store without a full inbox snapshot; unknown content updates and unread-tier promotions still revalidate so membership can be discovered. | Completed second retained-revalidation target. Keep tier-order policy local. |
 | `useProcesses` | `/api/processes?includeTerminated=true` | Source-keyed process snapshot plus retained controller query. Revalidates on readiness, refresh/reconnect, process/session events, and patches metadata titles locally. Previously used hook-local rows plus a fixed 30s poll. | Completed first retained-revalidation target. A process summary store slice can wait. |
-| `useProjectQueues` | `/api/project-queue` for the global queue feed; `/api/projects/:id/queue` for mutations | Source-scoped global queue snapshots plus per-project mutation reporting. Retained query lifecycle now owns wake/reconnect refetches, so Projects does not fan out across every project. | Completed adjacent retained-revalidation target. Keep mutations project-scoped. |
+| `useProjectQueues` | `/api/project-queue` for the global queue feed; `/api/projects/:id/queue` for mutations | Source-scoped global queue snapshots plus per-project mutation reporting. Retained lifecycle owns wake/reconnect/events, but every mounted hook also starts a five-second forced poll while relevant queue/recovery rows exist. | Retained feed landed; query-entry revalidation/poll removal remains in step 11. Keep mutations project-scoped. |
 | `useServerSettings` | `/api/settings` | Source-keyed retained query plus a small shared settings snapshot store. Initial GETs and reconnect/refresh revalidation share in-flight work; successful PUT responses update the shared snapshot. | Completed config-feed target. Keep mutations hook-local. |
-| `useVersion` | `/api/version` | Module-level shared in-flight promise for non-fresh requests, but no source scoping and no retained cache entry. Pending speech backend polling is bespoke. | Maybe later. Existing dedupe is useful but source-blind in hosted remote scenarios. |
-| `useProviders` | `/api/providers` | Module-level TTL cache and shared in-flight promise. No source scoping. | Maybe later. Existing shape is close to a generic query entry but must become source-aware first. |
+| `useVersion` | `/api/version` | Source-keyed retained snapshot plus a small shared version snapshot store. Every consumer subscribes; a mount after the snapshot resolves issues no request. One retained follow-up owner per source re-reads while a speech backend is validating. `freshOnMount` retains a `{ fresh: true }` coverage query so an update check never settles for an in-flight ordinary read. | Completed config/capability target. Per-hook debounce timers remain until step 11. |
+| `useProviders` | `/api/providers` | Five-minute provider/model snapshots and in-flight work are source-keyed, but one aggregate response still waits for every provider and survives neither browser nor server restart. | Provider-local/durable catalog redesign belongs to tactical 094; reuse query-controller lifecycle without flattening provider freshness into one flag. |
 | `usePublicShareStatus` | `/api/public-shares/status` | Source-keyed retained query plus a small shared status snapshot store. Initial reads and wake/reconnect refreshes share in-flight work; `poll: true` now retains one source-level poll owner instead of one timer per hook. | Completed config/live-status target. A server activity event could later replace the remaining single poll owner. |
-| `useRecentSessions` | `/api/recents` plus mutations | Hook-local rows with optimistic local move/clear. Not currently normalized into `clientSummaryStore`. | Maybe later as a recent-visits membership slice; not needed for Sidebar bug. |
+| `useRecentSessions` | `/api/recents` plus mutations | Hook-local rows with optimistic local move/clear. New Session consumes only project ids, but the server sequentially resolves a provider-aware summary for every recent visit; live `limit=30` took 6.496 s. | Triggered narrow recent-project/source-scoped membership work in tactical 095; do not normalize transcript detail. |
 | `useSessionMessages` / `useSession` | `/api/projects/:projectId/sessions/:sessionId` plus stream endpoints | Specialized transcript logic: source-scoped dev warm cache, JSONL cursoring, stream buffering, replay dedupe, incremental message merge, older-page loading, pending-input/session metadata integration. | Deliberately not a controller target. Keep specialized. |
 
 Findings:
@@ -161,14 +198,87 @@ Findings:
 - Several hooks already solve one query-cache concern locally, but each solves a
   different subset: in-flight dedupe, TTL, debounce, stale response protection,
   or background revalidation.
-- Some module-level caches (`useVersion`, `useProviders`) are not source-keyed.
-  They are not the first bug, but a shared controller should avoid repeating
-  that source-blind shape.
+- `useVersion` remains source-blind and request-only. `useProviders` has since
+  become source-keyed, but its all-provider server barrier and restart lifetime
+  are catalog-ownership faults rather than reasons to copy its cache shape.
 - Inbox remains the reference for feed-local policies that should not move into
   the generic controller: stable tier ordering, accepted-snapshot shaping, and
   manual refresh semantics.
 - Transcript/session detail loading is intentionally outside the scope. Its
   merge and stream rules are endpoint-specific and load-bearing.
+
+## Fresh New Session request census
+
+An isolated production server with fresh browser context issued 21 fetches
+during the first roughly 650 ms of an ordinary New Session load:
+
+| Owner group | Requests observed |
+|---|---|
+| New Session | `/api/providers`, `/api/settings/remote-executors`, `/api/recents?limit=30`, selected `/api/projects/:id`, provider subscription usage |
+| Shared configuration/capabilities | `/api/version`, `/api/auth/status`, `/api/onboarding`, `/api/settings`, `/api/public-shares/status` |
+| Navigation/summary feeds | `/api/sessions?limit=50`, starred sessions, `/api/projects`, `/api/inbox`, `/api/project-queue`, incremental sessions |
+| Process/development shell | `/api/processes?includeTerminated=true`, two `/api/dev/status` reads, `/api/status/workers`, `/api/dev/safe-restart` |
+
+This is not a claim of 21 duplicate queries. Most requests return different
+facts and several retained feeds deliberately outlive the current route. It is
+a scheduling finding: a selected page competes immediately with global
+collection and diagnostic work even when the selected controls need only
+settings plus the selected provider/project facts.
+
+The cold disposable-data sample made that competition visible. The provider
+request took about 5.21 seconds, both initial session-list requests about 3.56
+seconds, and Inbox about 0.50 seconds; provider controls appeared at about 5.50
+seconds. Tactical 094 owns provider readiness, tactical 095 owns recent-project
+defaulting, and tactical 093 owns server-side asynchronous Inbox/session-corpus
+reconciliation. This tactical owns client request retention, coalescing, and
+start priority.
+
+One request is directly redundant. `useReloadNotifications()` calls
+`/api/dev/status` to determine the mode, then manual mode calls
+`syncFromServer()`, which calls `/api/dev/status` again before requesting
+workers and safe-restart state. Each hook instance also owns its own one-second
+connection-state interval. The app mounts the hook globally; Settings and the
+Development pane can add consumers. The isolated production build still had
+`noFrontendReload: true`, so the development-status family was present in the
+ordinary page census.
+
+Retained app-shell feeds should begin from one source-level coordinator and
+yield the first scheduling turn to the selected route's minimum facts. This is
+not permission to make Sidebar coverage visual-state-dependent again: the
+global/starred retainers stay app-shell-owned, but can start after the first
+stable page/shell commit and reconcile in place. Process, Inbox, and usage work
+likewise follows its owning urgency instead of racing all selected-route
+prerequisites at mount time.
+
+## Retention currently duplicates revalidation owners
+
+`NavigationLayout` calls `useRetainSidebarSessionFeeds()`, which mounts global
+and starred `useGlobalSessionsFeed()` hooks. The rendered `Sidebar` then mounts
+the same two feeds again to obtain controls. The default app shell therefore
+has four hook-local event subscriptions, debounce timers, connection polls, and
+loading states for two controller query keys.
+
+Initial requests share in-flight work. Forced revalidation has a subtler stale
+generation defect: every `useGlobalSessionsFeed` caller first calls
+`invalidateClientQuery()`, then `ensureClientQuery({ force: true })`. The first
+caller starts the shared request; a duplicate caller advances `staleVersion`
+before joining that in-flight promise. The completed request sees a newer stale
+generation and deliberately cannot clear `stale`, so an otherwise accepted
+shared result remains eligible for another fetch.
+
+`useRetainedClientQuery` avoids that exact invalidation order, but still
+installs one activity listener/debounce owner per hook call. In-flight sharing
+contains simultaneous requests; it does not make event/timer ownership
+source/query-scoped.
+
+Project Queue demonstrates the cost when hooks add their own recovery loop.
+Sidebar plus New Session, Session, Projects, Inbox, or Global Sessions can
+mount several `useProjectQueues()` consumers. When any relevant queue or
+recovered-session row exists, every instance force-refetches the same global
+route every five seconds. The route then recomputes project status and resolves
+existing-session titles through provider/session summary lookup. Activity
+events already invalidate the retained query; any missed-event backstop must be
+one source/query owner with an exact deadline, not one interval per component.
 
 ## Session Observation Semantics
 
@@ -433,6 +543,12 @@ Local reducers still remain the fast path. For example, a
 immediately when it contains enough data, then invalidate retained server-owned
 memberships only when membership or denormalized row fields may have changed.
 
+Retained collection entries also carry the server's catalog epoch/generation.
+That value is a conditional reconciliation token, not a substitute for query
+coverage or field-group fidelity. Multiple filters can read the same server
+generation while retaining different memberships, and a newer partial event
+can patch one field without proving the full query current.
+
 ## Mutations
 
 Shared mutation helpers remain a separate but related track from
@@ -653,12 +769,291 @@ Acceptance:
 - existing store snapshot reporting remains source-scoped;
 - no transcript/session-stream code moves into the query controller.
 
+### 9. Retain One Version and Capability Snapshot Per Source
+
+Status: Completed 2026-08-05. Ordinary `/api/version` assembly no longer
+launches a subprocess, and the 34 `useVersion()` call sites now share one
+source-keyed retained snapshot with one pending-validation follow-up owner.
+
+Measured: the install version, development `git describe` name, package root,
+and install source cannot change while the process runs, so they are computed
+once and shared, with concurrent first callers joining one probe and a failed
+probe clearing itself for retry. Over 20 requests across five samples, the
+previous per-request shape ran 20 probes at a 307.75 ms median (15.39 ms per
+request); the retained snapshot ran 1 probe at a 17.01 ms median (0.85 ms per
+request) — 95.00% of probes avoided, 18.09x. `fresh=1` deliberately does not
+clear it, since its contract promises a fresh check of the dynamic
+sandbox/device facts, which read from their owning services. Run `pnpm --filter
+@yep-anywhere/server benchmark:version-route` to repeat the measurement.
+
+There are currently 34 `useVersion()` call sites. The hook shares only a
+request that is concurrently in flight; after it resolves, a later mount starts
+another `/api/version`. On the live development server, ordinary calls ranged
+from 45 ms to 680 ms. Twenty sequential calls caused about 989 kB of server
+logical reads. The server recomputes `getCurrentVersionInfo()` on every request,
+which runs `git describe` in a source checkout, while sandbox/device/update
+subsystems separately apply their own caches.
+
+The same hook-local shape multiplies pending validation: every mounted
+`useVersion()` whose speech backend is pending schedules its own one-second
+timer. Concurrent timers may happen to share one in-flight request, but the
+contract should have one source-level revalidation owner rather than relying on
+timer alignment.
+
+Move the resolved version response into a source-keyed retained snapshot and
+use `useRetainedClientQuery` for readiness, reconnect, and explicit refresh.
+All 34 consumers subscribe; none owns an initial request or pending-state poll.
+Keep `freshOnMount` as a deliberate force-refresh request for the About/update
+surface, coalesced with another compatible fresh request for that source.
+
+On the server, cache process-generation facts such as current version,
+development `git describe`, package root, and install source. Continue to read
+dynamic sandbox/device/voice state from their owning service snapshots; do not
+introduce a second cache that can contradict them. Ordinary `/api/version`
+response assembly launches no subprocess. `fresh=1` explicitly refreshes only
+the dynamic facts whose public contract promises a fresh check.
+
+Measured (client): over one 58-second session in which the app's 34 consumers
+mount as routes and settings panes open, against a server that reports a
+validating speech backend for its first three seconds, the previous hook issued
+25 requests (1.18 MB) and armed 39 retry timers; the retained snapshot issues 4
+requests (189 kB) and arms 3. Consumers needing to wait for a response fell
+from 34 to 12, and total consumer wait from 8,076 ms to 540 ms (14.96x) — the
+22 consumers mounting after the snapshot resolves now render with it already in
+hand. Both arms end with every consumer holding a snapshot and with validation
+followed until it settles; the benchmark asserts both. Run `pnpm --filter
+@yep-anywhere/client benchmark:version-snapshot` to repeat it.
+
+The measured arm-B dedupe is the real `ensureClientQuery`, not a restatement of
+it, so the benchmark cannot drift from the shipped controller. What it does
+model is the React layer: the mount effect and the 500 ms revalidation debounce.
+
+Acceptance:
+
+- [x] one connected source has at most one ordinary version request in flight and
+  one retained resolved snapshot, independent of mounted consumer count;
+- [x] source switches never expose another host's capabilities, version, voice
+  backends, sandbox state, device bridge, or client defaults;
+- [x] mounting New Session, Sidebar, Message Input, Settings, and usage telemetry
+  after the snapshot resolves issues zero additional ordinary version requests;
+- [x] a pending speech backend schedules one source-level follow-up and stops when
+  the snapshot is no longer pending;
+- [x] ordinary server reads run no Git, npm, sandbox, bridge, or provider child;
+- [x] reconnect and explicit/fresh refresh preserve their current semantics and
+  stale-response ordering; and
+- [x] tests cover multiple consumers, sequential mounts, source transitions,
+  pending-to-ready polling, reconnect, and a forced About refresh.
+
+One deliberate semantic change: because the About surface retains a
+`{ fresh: true }` coverage query rather than issuing a one-off check, *every*
+acquisition it owns is an update check — including its reconnect revalidation,
+which previously was an ordinary read. That keeps About from showing a stale
+update verdict after a reconnect, and it is scoped to the one mounted surface
+that asked for fresh data. Every other consumer's reconnect stays ordinary.
+
+### 10 — stage app-shell feeds after selected-page readiness
+
+Status: Complete 2026-08-05. The reload-status family moved onto one shared
+per-source snapshot (`lib/devReloadStatusStore.ts`), and
+`lib/clientQueryBootstrap.ts` gives each source the bootstrap coordinator, wired
+through a `bootstrapTier` option on `useRetainedClientQuery` plus a direct slot
+in `useGlobalSessionsFeed`. Contract and the properties that are easy to lose:
+`topics/client-global-store.md` § Startup ordering.
+
+Measured: `benchmark:reload-status-shared-snapshot` — 20 mounted consumers, 2
+query keys, 10 reconnects: 440 to 22 acquisitions (95.00%, 20.00x).
+`benchmark:query-bootstrap-order` — 18 startup acquisitions across 3 tiers: 13
+competing with the selected route's 5 facts, now 0.
+
+Two acceptance items are not closed by this step. The fresh-browser request
+census for local, remote, and production-static modes has not been re-run
+against the coordinator, so the recorded start order is the benchmark's rather
+than a browser's. And requests that never went through the retained controller
+— `/api/providers`, `/api/recents`, `/api/auth/status`, `/api/onboarding`, and
+provider subscription usage — are still unordered; tiering them means moving
+them onto the controller first.
+
+Give each retained source one bootstrap coordinator that schedules selected
+route requirements, stable navigation counts/coverage, and supplementary
+diagnostic/usage work in that order. Reuse the existing query keys and retained
+owners; do not create a second cache or route-local copy of global feeds.
+
+Fold reload notification status/workers/safe-restart into one source-level
+snapshot/acquisition. Determine the mode from that result once, remove the
+second `/api/dev/status` read, and replace hook-instance connection intervals
+with the shared connection/activity signal already used for retained-query
+revalidation. Production/static deployments with no development reload work
+should not request worker or safe-restart detail merely because the hook is
+globally mounted.
+
+Acceptance:
+
+- one source generation performs at most one initial request for each exact
+  retained query key, independent of StrictMode or mounted consumer count;
+- New Session's settings/provider/project minimum facts are scheduled before
+  global sessions, Inbox, process enrichment, and subscription telemetry;
+- Sidebar global/starred coverage remains app-shell-retained and appears in
+  place after its query settles, without waiting for a route visit;
+- app-shell scheduling never starts a second server-owned global reconciliation
+  already in progress under tactical 093;
+- reload notifications issue one mode/status acquisition, no hook-local
+  one-second connection intervals, and no inapplicable worker/safe-restart
+  detail requests; and
+- a fresh-browser request census records start order, exact-key duplicates,
+  first page/control readiness, and final navigation/inbox reconciliation for
+  local, remote, and production-static modes.
+
+### 11 — make revalidation owned by the retained query entry
+
+Status: Mostly complete 2026-08-05. The Project Queue deadline backstop landed,
+and activity subscriptions plus debounce timers now belong to a per-`(sourceKey,
+queryKey)` owner in `lib/clientQueryRevalidation.ts`. The Sidebar
+duplicate-retainer fix (four hook instances for two query keys) remains, as does
+consuming forced-generation transitions through the owner.
+
+Measured: 26 mounted consumers across 8 retained queries over 15 activity
+events — 64 `activityBus` listeners become 21 (67.19%), 165 debounce timers
+become 54, and 165 revalidation requests become 54 (3.06x). The request figure
+is arm A's fast-response case; when a response outlives the gap between consumer
+timers its extra requests join the open one, and both arms issue one per event.
+Run `pnpm --filter @yep-anywhere/client benchmark:query-revalidation-owner`.
+The measured arm drives the real owner and the real `activityBus`.
+
+Move activity subscriptions, debounce/deadline timers, reconnect/refresh
+handling, and forced-generation transitions from hook instances into the
+`(sourceKey, queryKey)` retained controller entry.
+
+The general migration has a constraint worth knowing before starting it: one
+`(sourceKey, queryKey)` entry can have subscribers with *different* coverage
+and different `fetcher`/`applySnapshot` closures — `useGlobalSessionsFeed` at
+50 rows and at 100 rows is the live example. So the owner cannot simply adopt
+the first subscriber's callbacks; it needs the merged coverage (`mergeCoverage`
+already exists for this) and a rule for which subscriber's fetcher runs. Until
+that is settled, moving the timers alone would silently narrow coverage. Subscribers declare coverage
+and revalidation policy; one compatible owner schedules/acquires the result and
+publishes controller state to all hooks.
+
+Make the Sidebar visual component select retained membership and invoke shared
+query controls without mounting the same two acquisition hooks already owned
+by `NavigationLayout`. Keep the retainer independent of expanded/collapsed or
+mobile-open state.
+
+Step 9 pinned down what the per-hook timer actually costs. Two mounted
+`useVersion()` consumers each arm their own 500 ms debounce on `reconnect`. If
+the first hook's revalidation is still open when the second timer fires, the
+second joins it and the event costs one request. If the response landed first —
+which is the common case for a fast endpoint — the entry has no in-flight
+request to join, and the second hook's forced revalidation starts a second
+round trip for the same event. So the duplicate is real but latency-dependent,
+which is why it is invisible in tests that use a deferred response and shows up
+under a fast one. `useVersion.test.tsx` documents that boundary.
+
+Remove `useProjectQueues()`'s per-consumer five-second interval. Consume
+`project-queue-changed`, session-queue persistence, process/session, reconnect,
+and refresh events through one query owner. If server scheduler status needs a
+time backstop, arm one source-level timeout for the earliest reported
+`nextAttemptAt`; tactical 040 owns making title/status response assembly a
+retained projection rather than a provider read.
+
+Acceptance:
+
+- [x] two or twenty hooks retaining the same source/query install one event-policy
+  owner and at most one debounce/deadline timer;
+- a duplicate forced revalidation joins the in-flight generation without
+  advancing its stale version, and successful completion makes the entry fresh;
+- Sidebar has exactly two retained feed acquisitions (global and starred), not
+  separate retainer and visual copies;
+- component unmount removes its retention need but does not tear down a query
+  still retained elsewhere; the last release clears owner timers/listeners;
+- [x] Project Queue with backlog performs no five-second per-component polling and
+  remains current through events plus one exact source-level deadline backstop;
+  and
+- tests vary mount order, StrictMode, Sidebar visibility, simultaneous events,
+  source switch, reconnect, one rejected request, and last-subscriber release.
+
+### 12 — reuse catalog generations across browser clients
+
+Status: Conditional reads complete 2026-08-05, on both sides. The server
+answers a matching `knownGeneration` on `GET /api/sessions` with
+`{ unchanged: true, generation }` and walks no project
+(`sessions/sessionCollectionGeneration.ts`); `useGlobalSessionsFeed` offers the
+generation it last accepted rows for and treats `unchanged` as keeping those
+rows. Contract and the caller obligations: `topics/server-capabilities.md`
+§ Session-catalog gate.
+
+Three rules carry the correctness, and only the first is obvious:
+
+- the token is per query, never across filters, and never on a cursor page;
+- offering it claims the client still holds those rows, so it is gated on
+  retained *coverage* as well as a retained token — `unchanged` is a truthful
+  and useless answer to a consumer that just widened its window, and would
+  leave it permanently short of rows. `knownGenerationToSend` is that predicate;
+- an explicit user refresh sends no token. A refresh is a fidelity request; a
+  user who presses it is entitled to rows rather than to being told the server
+  agrees with what they are looking at.
+
+What makes local event patching safe alongside a retained token is that every
+event this feed patches from also advances the server's generation, so a
+patched client is told `changed` on its next conditional read and re-reads the
+rows it guessed at.
+
+Measured: `benchmark:global-sessions-conditional-read` — 20 tabs, 11 reads
+each, collection actually changed twice: 220 walks become 60 (72.73%, 3.67x),
+and 22,000 returned rows become 6,000. The client arm drives the real
+predicate. The server-side herd figure is separate and multiplies with this
+one: `pnpm --filter @yep-anywhere/server benchmark:session-collection-generation`.
+
+Not built: bounded deltas, and the IndexedDB persistence plus cross-tab
+generation advertisement described below. Inbox has the herd half only — its
+walk is single-flighted on the same generation
+(`benchmark:inbox-collection-walk`), but it has no conditional read, which
+would need its own capability gate rather than a broadened
+`progressive-session-catalog`.
+
+Consume tactical 093's approved catalog epoch/generation on collection
+snapshots and deltas. A retained query sends its known generation on
+revalidation; the server may answer no-change, bounded deltas, or a replacement
+snapshot. Sequential component mounts therefore reuse both the client entry
+and accepted server generation instead of re-fetching unchanged rows. Falling
+outside the server's bounded delta window cleanly requests a replacement.
+
+Add optional source/auth/schema-scoped compact snapshot persistence in
+IndexedDB, with byte/age eviction. `BroadcastChannel` or a small local-storage
+notice advertises the newest stored generation to same-origin tabs. Where the
+browser supports it, Web Locks or a short renewable lease may elect one tab to
+perform a cold acquisition while followers load the accepted snapshot and
+observe publication. Owner loss, private/evicted storage, unsupported APIs,
+and another device fall back to the ordinary server path.
+
+Do not persist transcripts, provider payloads, credentials, or component-local
+selection/scroll state. Do not make browser election the herd-control boundary:
+all devices and fallback requests must still join tactical 093's server-side
+single-flight computation. Interest messages carry only debounced stable
+session/query-window identities with TTL; one tab's hidden stale viewport must
+not keep a server lease alive.
+
+Acceptance:
+
+- sequential mounts with an accepted generation issue no replacement snapshot
+  request unless coverage, source, epoch, freshness, or fidelity requires it;
+- capable sibling tabs perform at most one cold acquisition for one
+  source/query generation and all accept the same published snapshot;
+- loss, corruption, eviction, quota failure, or lack of browser coordination
+  APIs falls back without correctness loss or retry storms;
+- persisted compact data is source/auth/schema scoped, byte/age bounded, and
+  contains no transcript/provider payload;
+- visible/hover interest is debounced, expiring, and unionable by the server;
+  and
+- multiple devices requesting the same stale projection still cause one
+  server-side derivation.
+
 ## Non-Goals
 
 - Do not replace `clientSummaryStore`.
 - Do not store full transcripts, stream deltas, rendered markdown, or composer
   state in the controller.
 - Do not introduce polling loops as part of this cleanup.
+- Do not require browser storage or cross-tab locking for correctness.
 - Do not adopt React Query/SWR/RTK Query in the first patch.
 - Do not make the controller understand every endpoint on day one.
 - Do not treat a short paginated response as proof that unrelated entities do
@@ -685,6 +1080,17 @@ Acceptance:
   than one request per project on the Projects page.
 - Verify project list/detail feeds use retained refresh while preserving shared
   project record updates and detail-event filtering.
+- Verify later `useVersion` consumers reuse one source-scoped resolved snapshot
+  and that pending capability validation has one follow-up owner.
+- Verify selected-route facts start before retained global/diagnostic feeds,
+  without making Sidebar coverage depend on whether Sidebar is visible.
+- Verify reload notifications perform one source-level status acquisition and
+  no per-consumer connection interval or inapplicable worker-detail request.
+- Verify duplicate query retainers share one event/debounce owner, successful
+  forced revalidation clears stale state, and Project Queue has no
+  per-component five-second poll.
+- Verify catalog generation reuse across sequential mounts and sibling tabs,
+  including storage eviction/owner-loss fallback and source/epoch changes.
 - Verify star/archive/read mutations update store-backed surfaces immediately
   and invalidate retained server-owned memberships.
 - Verify StrictMode or multiple mounted consumers do not double-fetch the same

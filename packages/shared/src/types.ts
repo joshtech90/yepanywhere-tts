@@ -67,6 +67,21 @@ export function isClaudeProviderName(
  */
 export const DEFAULT_PROVIDER: ProviderName = "claude";
 
+export const CODEX_REASONING_SUMMARIES = [
+  "auto",
+  "concise",
+  "detailed",
+  "none",
+] as const;
+export type CodexReasoningSummary = (typeof CODEX_REASONING_SUMMARIES)[number];
+export const DEFAULT_CODEX_REASONING_SUMMARY: CodexReasoningSummary = "auto";
+
+export function isCodexReasoningSummary(
+  value: unknown,
+): value is CodexReasoningSummary {
+  return CODEX_REASONING_SUMMARIES.some((summary) => summary === value);
+}
+
 /**
  * Model information for a provider.
  */
@@ -178,19 +193,34 @@ export const DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES: Partial<
   claude: 60,
   codex: 10,
 };
-export const DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS = 50_000;
+/**
+ * Wasted tokens below this are treated as measurement noise, not a miss. A
+ * continuing turn is *expected* to pay for the content appended since the
+ * cached prefix, so this threshold applies to the excess over that
+ * expectation — never to the expectation itself.
+ */
+export const DEFAULT_CACHE_MISS_BILLING_MINIMUM_WASTED_TOKENS = 10_000;
+/**
+ * Misses this soon after the previous turn are recorded but never flagged as
+ * exceptions: a provider-side shard or serving migration can drop a prompt
+ * cache through no fault of YA's, and the point of recording them is to see
+ * that distribution rather than to alarm about it.
+ */
+export const DEFAULT_CACHE_MISS_BILLING_RECENT_ACTIVITY_MINUTES = 10;
 
 export interface CacheMissBillingSettings {
   /** Enable usage-accounting detection and durable server-side evidence logs. */
   enabled?: boolean;
-  /** Show an in-app popup when an unexpected recompute is recorded. */
+  /** Show an in-app popup when a flagged recompute is recorded. */
   showToasts?: boolean;
   /** Fallback freshness window when a provider has no explicit override. */
   freshWindowMinutes?: number;
-  /** Provider-specific windows where YA expects zero uncached prefix cost. */
+  /** Provider-specific windows where YA expects a warm provider cache. */
   providerFreshWindowMinutes?: Partial<Record<ProviderName, number>>;
-  /** Minimum uncached input size before YA records a billing-relevant recompute. */
-  minimumInputTokens?: number;
+  /** Wasted-token floor, measured as excess over the expected new content. */
+  minimumWastedTokens?: number;
+  /** Gap below which a miss is recorded as data but never flagged. */
+  recentActivityMinutes?: number;
 }
 
 export type CacheMissBillingReason =
@@ -204,22 +234,33 @@ export type CacheMissBillingOutcome =
   | "expected-cache-hit";
 
 export interface ExpectedInputCostState {
-  /** YA's best provider-specific expectation before reading usage accounting. */
-  state: "expected-free";
-  /** Expected normal-price uncached tokens for the retained context prefix. */
-  expectedUncachedPrefixTokens: 0;
+  /**
+   * `expected-free` is a fork's first turn, where the whole prefix should
+   * already be cached. `expected-new-content` is an ordinary continuing turn,
+   * which is expected to pay for the tokens appended since that prefix.
+   */
+  state: "expected-free" | "expected-new-content";
+  /**
+   * Tokens YA expects to be billed above the cache-read rate on this turn: the
+   * content appended since the cached prefix, measured as the growth in total
+   * prompt size. Undefined when YA has no previous turn to measure against
+   * (session boot), which is why boot turns are never flagged.
+   */
+  expectedUncachedPrefixTokens?: number;
   source: "fork" | "warm-session";
-  /** True when YA believes the retained/cacheable prefix is byte-identical. */
-  prefixByteIdentical: true;
   /** Why YA believes the cacheable prefix matches a recent provider prefix. */
   prefixBasis: "provider-fork-byte-identical" | "same-session-prefix";
   /** True when the provider cache should still be inside its freshness window. */
-  freshEnough: true;
+  freshEnough: boolean;
   providerFreshWindowMinutes: number;
 }
 
 export interface CacheMissBillingUsage {
-  /** Provider-reported uncached input tokens for the observed turn. */
+  /**
+   * Provider-reported input tokens as the provider counts them. Claude
+   * excludes cached reads and cache writes from this; Codex includes cached
+   * reads in it. Use `uncachedInputTokens` for cross-provider comparison.
+   */
   inputTokens: number;
   /** Provider-reported cached-read input tokens, when visible. */
   cacheReadTokens?: number;
@@ -227,7 +268,9 @@ export interface CacheMissBillingUsage {
   cacheCreationTokens?: number;
   /** Provider-reported output tokens, when visible. */
   outputTokens?: number;
-  /** Input tokens YA believes were billed at normal input cost. */
+  /** Whole prompt size for the turn, cached and uncached parts together. */
+  totalContextTokens: number;
+  /** Prompt tokens billed above the cache-read rate, normalized per provider. */
   uncachedInputTokens: number;
 }
 
@@ -244,11 +287,24 @@ export interface CacheMissBillingRecord {
   forkedFromSessionId?: string;
   reason: CacheMissBillingReason;
   outcome: CacheMissBillingOutcome;
+  /**
+   * Whether this miss is worth an operator's attention. A miss inside the
+   * recent-activity window is recorded with `exception: false`: it is a data
+   * point for the inactivity distribution, not something YA can act on.
+   */
+  exception: boolean;
   messageId?: string;
   messageIndex?: number;
   observedUsage: CacheMissBillingUsage;
   expectedInputCost: ExpectedInputCostState;
+  /**
+   * Tokens re-read at full price that a warm cache should have served —
+   * observed uncached input minus the expected new content, floored at zero.
+   * This is the quantity the inactivity histogram sums per bucket.
+   */
+  wastedInputTokens: number;
   freshWindowMinutes: number;
+  /** Gap since the previous turn of this session, the histogram's x axis. */
   elapsedSinceExpectedCacheMs?: number;
   expectedCacheSource: "fork" | "warm-session";
 }
@@ -260,7 +316,8 @@ export const DEFAULT_CACHE_MISS_BILLING_SETTINGS: Required<CacheMissBillingSetti
     freshWindowMinutes: DEFAULT_CACHE_MISS_BILLING_FRESH_WINDOW_MINUTES,
     providerFreshWindowMinutes:
       DEFAULT_CACHE_MISS_BILLING_PROVIDER_FRESH_WINDOW_MINUTES,
-    minimumInputTokens: DEFAULT_CACHE_MISS_BILLING_MINIMUM_INPUT_TOKENS,
+    minimumWastedTokens: DEFAULT_CACHE_MISS_BILLING_MINIMUM_WASTED_TOKENS,
+    recentActivityMinutes: DEFAULT_CACHE_MISS_BILLING_RECENT_ACTIVITY_MINUTES,
   };
 
 export interface PromptCacheKeepaliveProviderInfo {
@@ -521,6 +578,8 @@ export interface SpeechSmartTurnClientDefault {
   enabled: boolean;
   threshold: number;
   timeoutMs: number;
+  /** Post-endpoint command grace window; optional for pre-grace servers. */
+  graceMs?: number;
 }
 
 export interface GrokSpeechAudioClientDefault {
@@ -543,12 +602,15 @@ export interface SpeechClientDefaults {
 export type ToolbarNarrowingPriority = "pin" | "last" | "mid" | "first";
 
 /**
- * A session-toolbar control's single presence setting: `hidden` keeps it off
- * the toolbar entirely; any narrowing-priority tier shows it with that
- * collapse behavior. There is no separate visibility boolean — hiding a
- * control forgets its previous tier.
+ * A session-toolbar control's single presence setting: `off` disables the
+ * control, `hidden` keeps an enabled control off the toolbar, and any
+ * narrowing-priority tier shows it with that collapse behavior. Controls
+ * without a disabled behavior should not offer `off` in their settings UI.
  */
-export type ToolbarControlPresence = "hidden" | ToolbarNarrowingPriority;
+export type ToolbarControlPresence =
+  | "off"
+  | "hidden"
+  | ToolbarNarrowingPriority;
 
 /** Per-control presence defaults for controls with no local override. */
 export interface SessionToolbarPresenceClientDefaults {
@@ -567,6 +629,7 @@ export interface SessionToolbarPresenceClientDefaults {
   sessionStatus?: ToolbarControlPresence;
   projectQueue?: ToolbarControlPresence;
   projectQueueNewSessionShortcut?: ToolbarControlPresence;
+  syntheticDone?: ToolbarControlPresence;
   composerRecall?: ToolbarControlPresence;
 }
 
@@ -578,6 +641,7 @@ export type CollapsedComposerButtonPreference =
   | "microphone";
 
 export const DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED = true;
+export const DEFAULT_STEER_NOW_ENABLED = true;
 
 export interface ClientDefaults {
   /** Defaults used by browser clients when local storage has no explicit value. */
@@ -599,7 +663,8 @@ export interface ClientDefaults {
   collapsedComposerButton?: CollapsedComposerButtonPreference;
   /**
    * Initial state of the per-turn "now" steering toggle for providers with a
-   * "now" lane (currently Claude). The toggle itself stays per-turn.
+   * "now" lane (currently Claude). The toggle itself stays per-turn. When
+   * absent, clients use DEFAULT_STEER_NOW_ENABLED.
    */
   steerNowDefault?: boolean;
   /**
@@ -823,7 +888,7 @@ export interface FileContentResponse {
   highlightedLanguage?: string;
   /** Whether the file was truncated for highlighting */
   highlightedTruncated?: boolean;
-  /** Rendered markdown HTML (for .md files when highlight=true) */
+  /** Rendered Markdown HTML (for supported Markdown files when highlight=true) */
   renderedMarkdownHtml?: string;
 }
 

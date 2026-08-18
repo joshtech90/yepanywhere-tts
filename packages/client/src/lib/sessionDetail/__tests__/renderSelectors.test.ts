@@ -109,6 +109,47 @@ describe("session detail render selectors", () => {
     expect(second[2]).toBe(first[2]);
   });
 
+  it("hides only Claude Gateway empty-summary thinking placeholders", () => {
+    const messages: Message[] = [
+      {
+        id: "assistant-1",
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Thinking...",
+              signature: "encrypted-1@reasoning-1",
+            },
+            {
+              type: "thinking",
+              thinking: "Detailed reasoning summary",
+              signature: "encrypted-2@reasoning-2",
+            },
+          ],
+        },
+      },
+    ];
+
+    expect(
+      buildSessionDetailRenderItems({
+        messages,
+        provider: "claude-gateway",
+      }).map((item) => (item.type === "thinking" ? item.thinking : item.type)),
+    ).toEqual(["Detailed reasoning summary"]);
+    expect(
+      buildSessionDetailRenderItems({
+        messages,
+        provider: "claude",
+      }).map((item) => (item.type === "thinking" ? item.thinking : item.type)),
+    ).toEqual(["Thinking...", "Detailed reasoning summary"]);
+    expect(messages[0]?.message?.content).toMatchObject([
+      { signature: "encrypted-1@reasoning-1" },
+      { signature: "encrypted-2@reasoning-2" },
+    ]);
+  });
+
   it("selects render items from session detail state with markdown augments", () => {
     const messages: Message[] = [
       {
@@ -541,6 +582,39 @@ describe("session detail render selectors", () => {
       queuedProjectRow?.kind === "project-queue" &&
         queuedProjectRow.allowsCancel,
     ).toBe(true);
+  });
+
+  it("keeps queued YA commands out of provider-delivery lanes", () => {
+    const rows = buildComposerTailDisplayRows({
+      deferredMessages: [
+        {
+          tempId: "ya-done-queued",
+          timestamp: "2026-08-16T10:00:00.000Z",
+          kind: "ya-command",
+          yaCommand: "done",
+        },
+        {
+          tempId: "regular-after-command",
+          timestamp: "2026-08-16T10:00:01.000Z",
+        },
+      ],
+      latestVisibleTimestampMs: null,
+      nowMs: Date.parse("2026-08-16T10:00:02.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    const doneRow = rows.find((row) => row.key === "ya-done-queued");
+    const regularRow = rows.find((row) => row.key === "regular-after-command");
+
+    expect(doneRow?.kind === "deferred" && doneRow.isYaCommand).toBe(true);
+    expect(doneRow?.kind === "deferred" && doneRow.allowsDeferredCancel).toBe(
+      false,
+    );
+    expect(
+      doneRow?.kind === "deferred" && doneRow.lanePosition,
+    ).toBeUndefined();
+    expect(regularRow?.kind === "deferred" && regularRow.lanePosition).toEqual({
+      regularIndex: 0,
+    });
   });
 
   it("derives user navigation anchors from searchable user turns", () => {

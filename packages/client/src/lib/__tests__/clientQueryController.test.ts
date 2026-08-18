@@ -241,8 +241,10 @@ describe("clientQueryController", () => {
     const secondRequest = deferred<string>();
     const fetcherA = vi.fn(() => firstRequest.promise);
     const fetcherB = vi.fn(() => secondRequest.promise);
-    const applied: Array<{ sourceKey: ClientSummarySourceKey; result: string }> =
-      [];
+    const applied: Array<{
+      sourceKey: ClientSummarySourceKey;
+      result: string;
+    }> = [];
 
     const first = ensureClientQuery({
       sourceKey: SOURCE_A,
@@ -304,26 +306,366 @@ describe("clientQueryController", () => {
     expect(getClientQueryState(SOURCE_A, "global")?.retainedCount).toBe(0);
   });
 
-  it("keeps a query stale when an older request settles after invalidation", async () => {
-    const firstRequest = deferred<string>();
+  it("starts post-invalidation demand separately when the old request finishes first", async () => {
+    const oldRequest = deferred<string>();
+    const newRequest = deferred<string>();
     const fetcher = vi
       .fn<() => Promise<string>>()
-      .mockReturnValueOnce(firstRequest.promise)
-      .mockResolvedValueOnce("fresh");
+      .mockReturnValueOnce(oldRequest.promise)
+      .mockReturnValueOnce(newRequest.promise);
+    const applied: string[] = [];
 
-    const first = ensureClientQuery({
+    const old = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 100 },
+      fetcher,
+      applySnapshot: (result) => {
+        applied.push(result);
+      },
+    });
+    await Promise.resolve();
+
+    invalidateClientQuery(SOURCE_A, "global");
+    const current = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 50 },
+      fetcher,
+      applySnapshot: (result) => {
+        applied.push(result);
+      },
+    });
+    expect(current).not.toBe(old);
+    await Promise.resolve();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    oldRequest.resolve("old");
+    await old;
+    expect(applied).toEqual([]);
+    expect(getClientQueryState(SOURCE_A, "global")).toMatchObject({
+      inFlight: true,
+      stale: true,
+    });
+
+    newRequest.resolve("current");
+    await current;
+    expect(applied).toEqual(["current"]);
+    expect(getClientQueryState(SOURCE_A, "global")).toMatchObject({
+      coverage: { minRows: 50 },
+      inFlight: false,
+      stale: false,
+    });
+  });
+
+  it("does not let an old completion widen newer-generation coverage", async () => {
+    const oldRequest = deferred<string>();
+    const newRequest = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockReturnValueOnce(oldRequest.promise)
+      .mockReturnValueOnce(newRequest.promise);
+    const applied: string[] = [];
+
+    const old = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 100 },
+      fetcher,
+      applySnapshot: (result) => {
+        applied.push(result);
+      },
+    });
+    await Promise.resolve();
+    invalidateClientQuery(SOURCE_A, "global");
+    const current = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 50 },
+      fetcher,
+      applySnapshot: (result) => {
+        applied.push(result);
+      },
+    });
+    await Promise.resolve();
+
+    newRequest.resolve("current");
+    await current;
+    expect(getClientQueryState(SOURCE_A, "global")).toMatchObject({
+      coverage: { minRows: 50 },
+      inFlight: true,
+      stale: false,
+    });
+
+    oldRequest.resolve("old");
+    await old;
+    expect(applied).toEqual(["current"]);
+    expect(getClientQueryState(SOURCE_A, "global")).toMatchObject({
+      coverage: { minRows: 50 },
+      inFlight: false,
+      stale: false,
+    });
+  });
+
+  it("shares forced callers admitted to the same generation", async () => {
+    const revalidation = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("initial")
+      .mockReturnValueOnce(revalidation.promise);
+    await ensureClientQuery({
       sourceKey: SOURCE_A,
       key: "global",
       coverage: { minRows: 50 },
       fetcher,
     });
+
+    const refetches = Array.from({ length: 4 }, () =>
+      ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key: "global",
+        coverage: { minRows: 50 },
+        force: true,
+        fetcher,
+      }),
+    );
+    expect(new Set(refetches).size).toBe(1);
+    await Promise.resolve();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    revalidation.resolve("current");
+    await Promise.all(refetches);
+    expect(getClientQueryState(SOURCE_A, "global")?.stale).toBe(false);
+  });
+
+  it("keeps forced concurrent snapshots and coverage correct in either completion order", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-08-05T00:00:00.000Z"));
+
+    for (const completionOrder of ["large-first", "small-first"] as const) {
+      const key = `global:${completionOrder}`;
+      const smallRequest = deferred<string>();
+      const largeRequest = deferred<string>();
+      const fetcher = vi
+        .fn<() => Promise<string>>()
+        .mockResolvedValueOnce("initial")
+        .mockReturnValueOnce(smallRequest.promise)
+        .mockReturnValueOnce(largeRequest.promise);
+      let snapshot = "initial";
+
+      await ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key,
+        coverage: { minRows: 100 },
+        fetcher,
+      });
+
+      const applySnapshot = (result: string) => {
+        snapshot = result;
+      };
+      const small = ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key,
+        coverage: { minRows: 50 },
+        force: true,
+        fetcher,
+        applySnapshot,
+      });
+      const large = ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key,
+        coverage: { minRows: 100 },
+        force: true,
+        fetcher,
+        applySnapshot,
+      });
+      const medium = ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key,
+        coverage: { minRows: 75 },
+        force: true,
+        fetcher,
+        applySnapshot,
+      });
+
+      expect(medium).toBe(large);
+      expect(small).not.toBe(large);
+      await Promise.resolve();
+      expect(fetcher).toHaveBeenCalledTimes(3);
+
+      if (completionOrder === "large-first") {
+        largeRequest.resolve("large");
+        await large;
+        smallRequest.resolve("small");
+        await small;
+      } else {
+        smallRequest.resolve("small");
+        await small;
+        largeRequest.resolve("large");
+        await large;
+      }
+
+      expect(snapshot).toBe("large");
+      expect(getClientQueryState(SOURCE_A, key)).toMatchObject({
+        coverage: { minRows: 100 },
+        inFlight: false,
+        stale: false,
+      });
+    }
+  });
+
+  it("does not let a dominated late failure overwrite query state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-08-05T00:00:00.000Z"));
+
+    const smallRequest = deferred<string>();
+    const largeRequest = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("initial")
+      .mockReturnValueOnce(smallRequest.promise)
+      .mockReturnValueOnce(largeRequest.promise);
+    let snapshot = "initial";
+
+    await ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "dominated-error",
+      coverage: { minRows: 100 },
+      fetcher,
+    });
+    const applySnapshot = (result: string) => {
+      snapshot = result;
+    };
+    const small = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "dominated-error",
+      coverage: { minRows: 50 },
+      force: true,
+      fetcher,
+      applySnapshot,
+    });
+    const large = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "dominated-error",
+      coverage: { minRows: 100 },
+      force: true,
+      fetcher,
+      applySnapshot,
+    });
     await Promise.resolve();
 
-    invalidateClientQuery(SOURCE_A, "global");
-    firstRequest.resolve("old");
-    await first;
+    largeRequest.resolve("large");
+    await large;
+    smallRequest.reject(new Error("late narrow failure"));
+    await expect(small).resolves.toEqual({ status: "covered" });
 
-    expect(getClientQueryState(SOURCE_A, "global")?.stale).toBe(true);
+    expect(snapshot).toBe("large");
+    expect(getClientQueryState(SOURCE_A, "dominated-error")).toMatchObject({
+      coverage: { minRows: 100 },
+      stale: false,
+      error: undefined,
+    });
+  });
+
+  it("still propagates current and incomparable same-generation failures", async () => {
+    const currentError = new Error("current failure");
+    await expect(
+      ensureClientQuery({
+        sourceKey: SOURCE_A,
+        key: "current-error",
+        fetcher: async () => {
+          throw currentError;
+        },
+      }),
+    ).rejects.toBe(currentError);
+    expect(getClientQueryState(SOURCE_A, "current-error")?.error).toBe(
+      currentError,
+    );
+
+    const rowsRequest = deferred<string>();
+    const statsRequest = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockReturnValueOnce(rowsRequest.promise)
+      .mockReturnValueOnce(statsRequest.promise);
+    const rows = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "incomparable-error",
+      coverage: { minRows: 100 },
+      fetcher,
+    });
+    const stats = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "incomparable-error",
+      coverage: { includeStats: true },
+      fetcher,
+    });
+    await Promise.resolve();
+
+    statsRequest.resolve("stats");
+    await stats;
+    const rowsError = new Error("incomparable rows failure");
+    rowsRequest.reject(rowsError);
+    await expect(rows).rejects.toBe(rowsError);
+    expect(getClientQueryState(SOURCE_A, "incomparable-error")?.error).toBe(
+      rowsError,
+    );
+  });
+
+  it("applies incomparable same-generation coverage independently", async () => {
+    const rowsRequest = deferred<string>();
+    const statsRequest = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("initial")
+      .mockReturnValueOnce(rowsRequest.promise)
+      .mockReturnValueOnce(statsRequest.promise);
+    const applied: string[] = [];
+
+    await ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "incomparable",
+      fetcher,
+    });
+    const applySnapshot = (result: string) => {
+      applied.push(result);
+    };
+    const rows = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "incomparable",
+      coverage: { minRows: 100 },
+      force: true,
+      fetcher,
+      applySnapshot,
+    });
+    const stats = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "incomparable",
+      coverage: { includeStats: true },
+      force: true,
+      fetcher,
+      applySnapshot,
+    });
+    await Promise.resolve();
+
+    statsRequest.resolve("stats");
+    await stats;
+    rowsRequest.resolve("rows");
+    await rows;
+
+    expect(applied).toEqual(["stats", "rows"]);
+    expect(getClientQueryState(SOURCE_A, "incomparable")).toMatchObject({
+      coverage: { minRows: 100, includeStats: true },
+      stale: false,
+    });
+  });
+
+  it("keeps a query stale when an unforced invalidation races a joined force", async () => {
+    const revalidation = deferred<string>();
+    const fetcher = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("first")
+      .mockReturnValueOnce(revalidation.promise);
 
     await ensureClientQuery({
       sourceKey: SOURCE_A,
@@ -332,8 +674,30 @@ describe("clientQueryController", () => {
       fetcher,
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(getClientQueryState(SOURCE_A, "global")?.stale).toBe(false);
+    invalidateClientQuery(SOURCE_A, "global");
+    const forced = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 50 },
+      force: true,
+      fetcher,
+    });
+    const joined = ensureClientQuery({
+      sourceKey: SOURCE_A,
+      key: "global",
+      coverage: { minRows: 50 },
+      force: true,
+      fetcher,
+    });
+    expect(joined).toBe(forced);
+
+    // Not a joining consumer: a real change landed while the request was open,
+    // so its response is already behind.
+    invalidateClientQuery(SOURCE_A, "global");
+    revalidation.resolve("second");
+    await forced;
+
+    expect(getClientQueryState(SOURCE_A, "global")?.stale).toBe(true);
   });
 
   it("invalidates matching queries with a predicate", async () => {

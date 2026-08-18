@@ -1,4 +1,8 @@
-import { parseToonDocument } from "@yep-anywhere/shared";
+import {
+  findProjectPathTokens,
+  parseToonDocument,
+  type ProjectPathLinkTarget,
+} from "@yep-anywhere/shared";
 import katex from "katex";
 import {
   type ClipboardEventHandler,
@@ -14,6 +18,7 @@ import {
   type PublicShareContextValue,
   usePublicShareContext,
 } from "../../contexts/PublicShareContext";
+import { useGlossaryArtifact } from "../../contexts/GlossaryContext";
 import {
   type RenderMode,
   useRenderModeToggle,
@@ -23,6 +28,7 @@ import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useTooltipMode } from "../../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../../lib/appHref";
 import { profileRenderWork } from "../../lib/diagnostics/renderProfiler";
+import { annotateGlossaryHtml } from "../../lib/glossary/annotateGlossaryHtml";
 import {
   extractMarkdownSnippetsFromSelection,
   registerMarkdownCopySource,
@@ -43,6 +49,7 @@ interface FixedFontMathToggleProps {
   baseFilePath?: string;
   precomputedRendered?: RenderedMathResult;
   renderMode?: FixedFontRenderMode;
+  projectPathLinks?: readonly ProjectPathLinkTarget[];
 }
 
 export interface RenderedMathResult {
@@ -64,6 +71,7 @@ interface RenderOptions {
   basePath?: string;
   projectPath?: string;
   publicShare?: PublicShareContextValue | null;
+  projectPathLinks?: readonly ProjectPathLinkTarget[];
 }
 
 interface MathRenderOptions {
@@ -208,6 +216,49 @@ function renderMarkdownFileLink(
     html: `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}" data-tooltip="${escapeHtmlAttribute(titlePath)}">${labelHtml}</a>`,
     changed: true,
   };
+}
+
+function renderConfirmedProjectPathText(
+  text: string,
+  options: RenderOptions,
+): RenderedMathResult {
+  if (
+    options.publicShare ||
+    !options.projectId ||
+    !options.projectPathLinks?.length
+  ) {
+    return { html: escapeHtml(text), changed: false };
+  }
+
+  const targets = new Map(
+    options.projectPathLinks.map((target) => [target.text, target.filePath]),
+  );
+  const matches = findProjectPathTokens(text).filter((token) =>
+    targets.has(token.text),
+  );
+  if (matches.length === 0) {
+    return { html: escapeHtml(text), changed: false };
+  }
+
+  let html = "";
+  let cursor = 0;
+  for (const match of matches) {
+    html += escapeHtml(text.slice(cursor, match.start));
+    const filePath = targets.get(match.text)!;
+    const rawUrl =
+      options.publicShare &&
+      buildPublicShareFileHref(options.publicShare, { filePath });
+    const fileUrl =
+      rawUrl ??
+      toBrowserAppHref(
+        `${options.basePath ?? ""}/projects/${encodeURIComponent(options.projectId)}/file?path=${encodeURIComponent(filePath)}`,
+      );
+    const titlePath = makeDisplayPath(filePath, options.projectPath);
+    html += `<a class="fixed-font-file-link" href="${escapeHtmlAttribute(fileUrl)}" data-fixed-font-file-path="${escapeHtmlAttribute(filePath)}" data-tooltip="${escapeHtmlAttribute(titlePath)}">${escapeHtml(match.text)}</a>`;
+    cursor = match.end;
+  }
+  html += escapeHtml(text.slice(cursor));
+  return { html, changed: true };
 }
 
 function renderKatexHtml(tex: string, displayMode: boolean): string {
@@ -495,7 +546,12 @@ function renderInlineFixedFontContent(
 
   const flushPlain = (end: number) => {
     if (end > plainStart) {
-      html += escapeHtml(sourceText.slice(plainStart, end));
+      const rendered = renderConfirmedProjectPathText(
+        sourceText.slice(plainStart, end),
+        options,
+      );
+      html += rendered.html;
+      if (rendered.changed) changed = true;
     }
   };
 
@@ -506,7 +562,11 @@ function renderInlineFixedFontContent(
       const end = sourceText.indexOf("`", cursor + 1);
       if (end > cursor + 1) {
         flushPlain(cursor);
-        html += `<code>${escapeHtml(sourceText.slice(cursor + 1, end))}</code>`;
+        const rendered = renderConfirmedProjectPathText(
+          sourceText.slice(cursor + 1, end),
+          options,
+        );
+        html += `<code>${rendered.html}</code>`;
         changed = true;
         cursor = end + 1;
         plainStart = cursor;
@@ -1001,11 +1061,13 @@ export function FixedFontMathToggle({
   initialMode,
   precomputedRendered,
   renderMode = "rich",
+  projectPathLinks,
 }: FixedFontMathToggleProps) {
   const sessionMetadata = useOptionalSessionMetadata();
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const tooltipMode = useTooltipMode();
+  const glossary = useGlossaryArtifact(baseFilePath);
   const [viewerLink, setViewerLink] = useState<{
     filePath: string;
     href: string | null;
@@ -1032,6 +1094,7 @@ export function FixedFontMathToggle({
             baseFilePath,
             basePath,
             publicShare,
+            projectPathLinks,
           })),
     [
       precomputedRendered,
@@ -1043,6 +1106,7 @@ export function FixedFontMathToggle({
       baseFilePath,
       basePath,
       publicShare,
+      projectPathLinks,
     ],
   );
   const { showRendered, toggleLocalMode } = useRenderModeToggle(
@@ -1055,10 +1119,15 @@ export function FixedFontMathToggle({
   );
   const { btnRef: toggleBtnRef, handleClick: handleToggleClick } =
     useScrollPreservingToggle(showRendered, toggleLocalMode);
-  const presentedHtml = useMemo(
-    () => applyRenderedTooltipMode(rendered.html, tooltipMode),
-    [rendered.html, tooltipMode],
-  );
+  const presentedHtml = useMemo(() => {
+    const tooltipHtml = applyRenderedTooltipMode(rendered.html, tooltipMode);
+    return annotateGlossaryHtml(
+      tooltipHtml,
+      glossary.state === "ready" && glossary.result?.status === "ready"
+        ? glossary.result.artifact
+        : undefined,
+    ).html;
+  }, [glossary, rendered.html, tooltipMode]);
 
   useEffect(() => {
     const element = copySourceRef.current;
@@ -1119,7 +1188,9 @@ export function FixedFontMathToggle({
     <div
       ref={copySourceRef}
       className="fixed-font-render-toggle"
-      data-render-mode={showRendered && rendered.changed ? "rendered" : "source"}
+      data-render-mode={
+        showRendered && rendered.changed ? "rendered" : "source"
+      }
     >
       {showRendered && rendered.changed ? (
         // biome-ignore lint/a11y/noStaticElementInteractions: click is delegated to rendered file links inside the HTML

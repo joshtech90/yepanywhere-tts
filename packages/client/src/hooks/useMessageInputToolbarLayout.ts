@@ -58,7 +58,9 @@ export interface ComposerToolbarOverflowLayoutSignatureInput {
   thinkingToggle: ComposerToolbarOverflowPriorityInput;
   renderMode: ComposerToolbarOverflowPriorityInput;
   conversationView: ComposerToolbarOverflowPriorityInput;
+  browserDebug: ComposerToolbarOverflowPriorityInput;
   nudge: ComposerToolbarOverflowPriorityInput;
+  syntheticDone: ComposerToolbarOverflowPriorityInput;
   sessionStatus: ComposerToolbarOverflowPriorityInput;
   shortcutsHelp: ComposerToolbarOverflowPriorityInput;
   contextUsage: ComposerToolbarOverflowPriorityInput;
@@ -85,7 +87,9 @@ export function getComposerToolbarOverflowLayoutSignature(
     `thinkingToggle:${input.thinkingToggle}`,
     `renderMode:${input.renderMode}`,
     `conversationView:${input.conversationView}`,
+    `browserDebug:${input.browserDebug}`,
     `nudge:${input.nudge}`,
+    `syntheticDone:${input.syntheticDone}`,
     `sessionStatus:${input.sessionStatus}`,
     `shortcutsHelp:${input.shortcutsHelp}`,
     `contextUsage:${input.contextUsage}`,
@@ -170,13 +174,22 @@ export function useMeasuredComposerOverflow({
       const overflow = toolbar.querySelector(".composer-bottom-overflow");
       const overflowWidth =
         overflow instanceof HTMLElement ? getVisibleControlWidth(overflow) : 0;
+      const fileViewerSlot = toolbar.querySelector(
+        '[data-file-viewer-controller-slot="true"]',
+      );
+      const fileViewerMinWidth =
+        fileViewerSlot instanceof HTMLElement
+          ? Number.parseFloat(getComputedStyle(fileViewerSlot).minWidth) || 0
+          : 0;
       const visibleSectionCount = [
         leftWidth,
+        fileViewerMinWidth,
         overflowWidth,
         actionsWidth,
       ].filter((width) => width > 0).length;
       const totalWidth =
         leftWidth +
+        fileViewerMinWidth +
         overflowWidth +
         actionsWidth +
         getFlexGapPx(toolbar) * Math.max(0, visibleSectionCount - 1);

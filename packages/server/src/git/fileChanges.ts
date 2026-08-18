@@ -1,4 +1,5 @@
 import type { GitFileChange } from "@yep-anywhere/shared";
+import { GIT_DECODE_PATHS_ARGS, runGit } from "./gitExec.js";
 
 interface NameStatusEntry {
   status: string;
@@ -28,6 +29,20 @@ export function buildGitFileChanges(
     if (entry.origPath) file.origPath = entry.origPath;
     return file;
   });
+}
+
+/** Read one exact Git diff's file corpus with rename and line-count metadata. */
+export async function readGitDiffFileChanges(
+  cwd: string,
+  revisions: readonly string[],
+  options?: { maxBuffer?: number },
+): Promise<GitFileChange[]> {
+  const args = [...GIT_DECODE_PATHS_ARGS, "diff", "--no-ext-diff", "-M"];
+  const [nameStatus, numstat] = await Promise.all([
+    runGit(cwd, [...args, "--name-status", "-z", ...revisions], options),
+    runGit(cwd, [...args, "--numstat", "-z", ...revisions], options),
+  ]);
+  return buildGitFileChanges(nameStatus.stdout, numstat.stdout);
 }
 
 function parseNameStatus(stdout: string): NameStatusEntry[] {
@@ -60,8 +75,7 @@ function parseNumstatCounts(
     const record = tokens[index++];
     if (!record) continue;
     const firstTab = record.indexOf("\t");
-    const secondTab =
-      firstTab < 0 ? -1 : record.indexOf("\t", firstTab + 1);
+    const secondTab = firstTab < 0 ? -1 : record.indexOf("\t", firstTab + 1);
     if (firstTab < 0 || secondTab < 0) continue;
     const added = record.slice(0, firstTab);
     const deleted = record.slice(firstTab + 1, secondTab);

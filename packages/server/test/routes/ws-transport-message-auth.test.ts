@@ -1,6 +1,7 @@
 import { MIN_BINARY_ENVELOPE_LENGTH } from "@yep-anywhere/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveTransportKey, encrypt } from "../../src/crypto/index.js";
+import { getLogger } from "../../src/logging/logger.js";
 import { createConnectionState } from "../../src/routes/ws-relay-handlers.js";
 import {
   isBinaryEncryptedEnvelope,
@@ -14,6 +15,16 @@ function createMockWs() {
     send: vi.fn(),
   };
 }
+
+const publicShareSecret = "A".repeat(22);
+
+function captureWarning() {
+  return vi.spyOn(getLogger(), "warn").mockImplementation(() => undefined);
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("WebSocket Transport Message Auth Helpers", () => {
   it("does not treat pre-auth bytes as encrypted envelope", () => {
@@ -35,6 +46,7 @@ describe("WebSocket Transport Message Auth Helpers", () => {
   });
 
   it("rejects plaintext binary when encrypted messages are required", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     connState.authState = "authenticated";
     connState.sessionKey = new Uint8Array(32);
@@ -49,9 +61,13 @@ describe("WebSocket Transport Message Auth Helpers", () => {
 
     expect(rejected).toBe(true);
     expect(ws.close).toHaveBeenCalledWith(4005, "Encrypted message required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received plaintext binary frame after authentication",
+    );
   });
 
   it("rejects plaintext application message when SRP policy requires auth", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     const ws = createMockWs();
     const parsed = { type: "ping", id: "p1" };
@@ -60,9 +76,13 @@ describe("WebSocket Transport Message Auth Helpers", () => {
 
     expect(msg).toBeNull();
     expect(ws.close).toHaveBeenCalledWith(4001, "Authentication required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received plaintext message but auth required",
+    );
   });
 
   it("rejects pre-auth public-share attempts to reach speech credit routes", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     const ws = createMockWs();
     const parsed = {
@@ -76,6 +96,117 @@ describe("WebSocket Transport Message Auth Helpers", () => {
 
     expect(msg).toBeNull();
     expect(ws.close).toHaveBeenCalledWith(4001, "Authentication required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received plaintext message but auth required",
+    );
+  });
+
+  it.each([
+    `/public-api/shares/${publicShareSecret}?wire=raw-json`,
+    `/public-api/shares/${publicShareSecret}/metadata?viewerId=viewer-1234`,
+    `/public-api/shares/${publicShareSecret}/session-chunks?viewerId=viewer-1234&cursor=opaque-next`,
+    `/public-api/shares/${publicShareSecret}/files/raw?path=note.md`,
+  ])("accepts one canonical pre-auth public-share GET target: %s", (path) => {
+    const connState = createConnectionState();
+    const ws = createMockWs();
+    const parsed = {
+      type: "request",
+      id: "public-share-read",
+      method: "GET",
+      path,
+    } as const;
+
+    const msg = parseApplicationClientMessage(ws, connState, true, parsed);
+
+    expect(msg).toEqual(parsed);
+    expect(connState.connectionMode).toBe("public_read_only");
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it("accepts sequential public reads after public mode is selected", () => {
+    const connState = createConnectionState();
+    const ws = createMockWs();
+    const parsed = {
+      type: "request",
+      id: "public-share-read",
+      method: "GET",
+      path: `/public-api/shares/${publicShareSecret}/metadata`,
+    } as const;
+
+    expect(parseApplicationClientMessage(ws, connState, true, parsed)).toEqual(
+      parsed,
+    );
+    expect(
+      parseApplicationClientMessage(ws, connState, true, {
+        ...parsed,
+        id: "public-share-read-2",
+      }),
+    ).toMatchObject({ id: "public-share-read-2" });
+    expect(connState.connectionMode).toBe("public_read_only");
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it("rejects a public read after SRP mode is selected", () => {
+    const warn = captureWarning();
+    const connState = createConnectionState();
+    connState.connectionMode = "srp";
+    const ws = createMockWs();
+
+    expect(
+      parseApplicationClientMessage(ws, connState, true, {
+        type: "request",
+        id: "public-after-srp",
+        method: "GET",
+        path: `/public-api/shares/${publicShareSecret}/metadata`,
+      }),
+    ).toBeNull();
+    expect(connState.connectionMode).toBe("srp");
+    expect(ws.close).toHaveBeenCalledWith(4001, "Authentication required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received plaintext message but auth required",
+    );
+  });
+
+  it.each([
+    [
+      "dot segments",
+      `/public-api/shares/${publicShareSecret}/../../../api/settings`,
+    ],
+    [
+      "encoded dot segments",
+      `/public-api/shares/${publicShareSecret}/%2e%2e/%2e%2e/api/settings`,
+    ],
+    [
+      "backslashes",
+      `/public-api/shares/${publicShareSecret}\\..\\..\\api\\settings`,
+    ],
+    [
+      "authority target",
+      `//relay.invalid/public-api/shares/${publicShareSecret}`,
+    ],
+    [
+      "encoded path separator",
+      `/public-api/shares/${publicShareSecret}%2Fmetadata`,
+    ],
+    ["fragment", `/public-api/shares/${publicShareSecret}#metadata`],
+    ["reserved authenticated route", "/api/settings"],
+  ])("rejects ambiguous pre-auth request target with %s", (_label, path) => {
+    const warn = captureWarning();
+    const connState = createConnectionState();
+    const ws = createMockWs();
+
+    const msg = parseApplicationClientMessage(ws, connState, true, {
+      type: "request",
+      id: "ambiguous-public-share",
+      method: "GET",
+      path,
+    });
+
+    expect(msg).toBeNull();
+    expect(ws.close).toHaveBeenCalledWith(4001, "Authentication required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received plaintext message but auth required",
+    );
   });
 
   it("accepts plaintext application message when SRP is not required", () => {
@@ -90,6 +221,7 @@ describe("WebSocket Transport Message Auth Helpers", () => {
   });
 
   it("rejects obsolete encrypted JSON envelope when SRP transport is established", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     connState.authState = "authenticated";
     connState.sessionKey = new Uint8Array(32).fill(7);
@@ -109,9 +241,13 @@ describe("WebSocket Transport Message Auth Helpers", () => {
       4005,
       "Binary encrypted message required",
     );
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received obsolete encrypted text envelope",
+    );
   });
 
   it("rejects pre-auth encrypted JSON envelope", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     const ws = createMockWs();
     const envelope = encrypt(
@@ -127,9 +263,13 @@ describe("WebSocket Transport Message Auth Helpers", () => {
       }),
     ).toBeNull();
     expect(ws.close).toHaveBeenCalledWith(4001, "Authentication required");
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received encrypted message but not authenticated",
+    );
   });
 
   it("rejects obsolete base-key encrypted JSON envelope", () => {
+    const warn = captureWarning();
     const connState = createConnectionState();
     connState.authState = "authenticated";
     connState.baseSessionKey = new Uint8Array(32).fill(9);
@@ -157,6 +297,9 @@ describe("WebSocket Transport Message Auth Helpers", () => {
     expect(ws.close).toHaveBeenCalledWith(
       4005,
       "Binary encrypted message required",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[WS Relay] Received obsolete encrypted text envelope",
     );
   });
 });

@@ -11,25 +11,38 @@ export const GIT_DECODE_PATHS_ARGS = ["-c", "core.quotePath=false"];
 
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 
+/** Add the process-wide Source Control invariant to arbitrary Git arguments. */
+export function buildGitProcessArgs(args: readonly string[]): string[] {
+  return ["--no-optional-locks", ...args];
+}
+
+/** Build Git arguments scoped to one working tree without optional locks. */
+export function buildGitArgs(cwd: string, args: readonly string[]): string[] {
+  return buildGitProcessArgs(["-C", cwd, ...args]);
+}
+
 /**
- * Run `git -C <cwd> <args>` and resolve its `{ stdout, stderr }`. The shared
- * git exec primitive for the read-only git surfaces (status + browse). No
- * shell — args are passed as an array, so there is no quoting/injection
- * surface. stdout is NOT trimmed; callers trim as needed.
+ * Run `git --no-optional-locks -C <cwd> <args>` and resolve its
+ * `{ stdout, stderr }`. The shared git exec primitive disables opportunistic
+ * index refreshes and maintenance so observation never briefly locks a
+ * project against concurrent user or agent Git work. Explicit mutations still
+ * take their required locks. No shell — args are passed as an array, so there
+ * is no quoting/injection surface. stdout is NOT trimmed; callers trim as
+ * needed.
  *
  * `maxBuffer` defaults to 1 MB (fine for status/diff); pass a larger value for
  * `log`/`blame`/`show` whose output can exceed it.
  */
 export async function runGit(
   cwd: string,
-  args: string[],
+  args: readonly string[],
   options?: {
     timeout?: number;
     disableTerminalPrompt?: boolean;
     maxBuffer?: number;
   },
 ): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("git", ["-C", cwd, ...args], {
+  return execFileAsync("git", buildGitArgs(cwd, args), {
     maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
     timeout: options?.timeout ?? 10_000,
     ...(options?.disableTerminalPrompt
@@ -44,14 +57,14 @@ export async function runGit(
  */
 export async function runGitBytes(
   cwd: string,
-  args: string[],
+  args: readonly string[],
   options?: {
     timeout?: number;
     disableTerminalPrompt?: boolean;
     maxBuffer?: number;
   },
 ): Promise<{ stdout: Buffer; stderr: Buffer }> {
-  return (await execFileAsync("git", ["-C", cwd, ...args], {
+  return (await execFileAsync("git", buildGitArgs(cwd, args), {
     encoding: "buffer",
     maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
     timeout: options?.timeout ?? 10_000,

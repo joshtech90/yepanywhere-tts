@@ -1,0 +1,35 @@
+.page {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.header {
+  flex-shrink: 0;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.back {
+  display: inline-flex;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.back:hover,
+.back:focus-visible {
+  color: var(--text-primary);
+}
+
+.main {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.status {
+  margin: var(--space-4);
+  color: var(--text-muted);
+}

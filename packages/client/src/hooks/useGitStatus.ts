@@ -76,7 +76,10 @@ function useGitStatusSnapshot(
   );
 }
 
-export function useGitStatus(projectId: string | undefined) {
+export function useGitStatus(
+  projectId: string | undefined,
+  options: { poll?: boolean } = {},
+) {
   const sourceKey = useClientSummarySourceKey();
   const ready = useRemoteReady();
   const gitStatus = useGitStatusSnapshot(sourceKey, projectId);
@@ -162,7 +165,7 @@ export function useGitStatus(projectId: string | undefined) {
       };
 
       try {
-        await ensureClientQuery({
+        const settlement = await ensureClientQuery({
           sourceKey,
           key: queryKey,
           staleTimeMs: GIT_STATUS_STALE_MS,
@@ -174,7 +177,9 @@ export function useGitStatus(projectId: string | undefined) {
         if (!mountedRef.current || requestId !== requestSequenceRef.current) {
           return;
         }
-        setError(null);
+        if (settlement.status !== "obsolete") {
+          setError(null);
+        }
       } catch (err) {
         if (!mountedRef.current || requestId !== requestSequenceRef.current) {
           return;
@@ -200,7 +205,7 @@ export function useGitStatus(projectId: string | undefined) {
 
   // Poll while visible.
   useEffect(() => {
-    if (!projectId || !ready) return;
+    if (!projectId || !ready || options.poll === false) return;
 
     let intervalId: ReturnType<typeof setInterval> | null = null;
 
@@ -239,7 +244,7 @@ export function useGitStatus(projectId: string | undefined) {
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetchStatus, projectId, ready]);
+  }, [fetchStatus, options.poll, projectId, ready]);
 
   const refetch = useCallback(async () => {
     await fetchStatus({

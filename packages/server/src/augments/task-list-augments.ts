@@ -101,7 +101,10 @@ function normalizeTaskStatus(value: unknown): TaskListStatus | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
   switch (normalized) {
     case "todo":
     case "open":
@@ -187,7 +190,10 @@ function resultTaskId(result: unknown): string | undefined {
   );
 }
 
-function parseCreatedTaskId(result: unknown, content: unknown): string | undefined {
+function parseCreatedTaskId(
+  result: unknown,
+  content: unknown,
+): string | undefined {
   const structuredId = resultTaskId(result);
   if (structuredId) {
     return structuredId;
@@ -302,7 +308,8 @@ function collectSnapshotHolders(messages: Message[]): SnapshotHolder[] {
       ) {
         holders.push({
           toolUseId: block.id,
-          deleteSnapshot: () => deleteSnapshot(block.input as Record<string, unknown>),
+          deleteSnapshot: () =>
+            deleteSnapshot(block.input as Record<string, unknown>),
         });
       }
 
@@ -313,7 +320,8 @@ function collectSnapshotHolders(messages: Message[]): SnapshotHolder[] {
       ) {
         holders.push({
           toolUseId: block.tool_use_id,
-          deleteSnapshot: () => deleteSnapshot(block as Record<string, unknown>),
+          deleteSnapshot: () =>
+            deleteSnapshot(block as Record<string, unknown>),
         });
       }
     }
@@ -339,6 +347,7 @@ export interface TaskListAugmenter {
 }
 
 export function createTaskListAugmenter(): TaskListAugmenter {
+  const processedMessages = new WeakSet<Record<string, unknown>>();
   const pendingEvents = new Map<string, PendingTaskEvent>();
   const tasks = new Map<string, TaskState>();
   let nextOrder = 0;
@@ -404,7 +413,9 @@ export function createTaskListAugmenter(): TaskListAugmenter {
 
     const fallbackSubject =
       parseSubjectFromCreateResult(block.content) ??
-      (typeof payload === "string" ? parseSubjectFromCreateResult(payload) : undefined);
+      (typeof payload === "string"
+        ? parseSubjectFromCreateResult(payload)
+        : undefined);
     const existing = tasks.get(taskId);
     tasks.set(taskId, {
       id: taskId,
@@ -476,6 +487,11 @@ export function createTaskListAugmenter(): TaskListAugmenter {
 
   return {
     processMessage(message) {
+      if (processedMessages.has(message)) {
+        return;
+      }
+      processedMessages.add(message);
+
       const role = messageRole(message);
       for (const block of contentBlocks(message)) {
         if (role === "assistant" && block.type === "tool_use") {
@@ -495,6 +511,44 @@ export function augmentTaskListSnapshots(messages: Message[]): void {
   for (const message of messages) {
     augmenter.processMessage(message as Record<string, unknown>);
   }
+}
+
+/**
+ * Build task snapshots without mutating cache-shared normalized messages.
+ *
+ * Task state still folds over the complete transcript, but only messages that
+ * can receive a task snapshot are cloned. The response window is detached as
+ * a whole later, after pagination has selected it.
+ */
+export function projectTaskListSnapshots(messages: Message[]): Message[] {
+  const taskToolUseIds = new Set<string>();
+  for (const message of messages) {
+    for (const block of contentBlocks(message as Record<string, unknown>)) {
+      if (
+        block.type === "tool_use" &&
+        (block.name === "TaskCreate" || block.name === "TaskUpdate") &&
+        typeof block.id === "string"
+      ) {
+        taskToolUseIds.add(block.id);
+      }
+    }
+  }
+  if (taskToolUseIds.size === 0) return messages;
+
+  const projected = messages.map((message) => {
+    const touchesTask = contentBlocks(message as Record<string, unknown>).some(
+      (block) =>
+        (block.type === "tool_use" &&
+          typeof block.id === "string" &&
+          taskToolUseIds.has(block.id)) ||
+        (block.type === "tool_result" &&
+          typeof block.tool_use_id === "string" &&
+          taskToolUseIds.has(block.tool_use_id)),
+    );
+    return touchesTask ? structuredClone(message) : message;
+  });
+  augmentTaskListSnapshots(projected);
+  return projected;
 }
 
 export function pruneTaskListSnapshotsToLatest(messages: Message[]): void {

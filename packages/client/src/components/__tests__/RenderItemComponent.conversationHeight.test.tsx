@@ -3,7 +3,11 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
-import type { RenderItem } from "../../types/renderItems";
+import { CONVERSATION_ACTIVITY_RESERVE_HOLD_MS } from "../../lib/sessionDetail/activityHeightReserve";
+import type {
+  ConversationThinkingPreviewSlot,
+  RenderItem,
+} from "../../types/renderItems";
 import { RenderItemComponent } from "../RenderItemComponent";
 
 // jsdom has no ResizeObserver and reports offsetHeight 0, so drive the
@@ -39,6 +43,7 @@ function conversationActivityItem(): RenderItem {
         slot: "latest",
         thinking: "current reasoning tail",
         status: "streaming",
+        endedAtMs: 2000,
       },
       {
         id: "thinking-previous",
@@ -46,6 +51,7 @@ function conversationActivityItem(): RenderItem {
         slot: "previous",
         thinking: "previous reasoning block",
         status: "complete",
+        endedAtMs: 1400,
       },
     ],
     recentActivities: [
@@ -225,5 +231,219 @@ describe("conversation thinking preview height publication", () => {
         .querySelector(".conversation-activity-row")
         ?.classList.contains("is-wide-activity-previews"),
     ).toBe(true);
+  });
+});
+
+describe("conversation thinking preview age", () => {
+  afterEach(() => {
+    observers = [];
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  function renderPreviews(item: RenderItem) {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    return render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={item}
+          isStreaming
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+    );
+  }
+
+  function headerText(container: HTMLElement, slot: string): string {
+    return (
+      container.querySelector(
+        `.conversation-thinking-preview[data-preview-slot="${slot}"] .conversation-thinking-preview-header`,
+      )?.textContent ?? ""
+    );
+  }
+
+  it("places a completed block by how far it sits before the turn's end", () => {
+    const base = conversationActivityItem() as Extract<
+      RenderItem,
+      { type: "conversation_activity" }
+    >;
+    // The turn runs to 4000; the previous block last spoke at 1400.
+    const { container } = renderPreviews({ ...base, endedAtMs: 4_000 });
+
+    expect(headerText(container as HTMLElement, "previous")).toContain(
+      "2.6s ago",
+    );
+  });
+
+  it("gives the streaming block no age, since it is happening now", () => {
+    const { container } = renderPreviews(conversationActivityItem());
+
+    expect(headerText(container as HTMLElement, "latest")).not.toContain("ago");
+  });
+
+  it("shows no age when the provider supplied no timestamps", () => {
+    const base = conversationActivityItem() as Extract<
+      RenderItem,
+      { type: "conversation_activity" }
+    >;
+    const item = {
+      ...base,
+      thinkingPreviews: base.thinkingPreviews?.map((preview) => ({
+        ...preview,
+        endedAtMs: null,
+      })),
+    };
+    const { container } = renderPreviews(item);
+
+    expect(headerText(container as HTMLElement, "previous")).not.toContain(
+      "ago",
+    );
+  });
+});
+
+describe("conversation activity height reserve", () => {
+  afterEach(() => {
+    observers = [];
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const RESERVE_VAR = "--conversation-activity-reserved-height";
+
+  /**
+   * jsdom lays nothing out, so give the row a top of 0 and every child the
+   * natural height under test. The row's own rect is deliberately left flat:
+   * the measurement must read the children, or the applied reserve would feed
+   * back into itself.
+   */
+  function stubRowMetrics(row: HTMLElement, naturalHeightPx: () => number) {
+    row.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 0 }) as unknown as DOMRect;
+    for (const child of Array.from(row.children)) {
+      (child as HTMLElement).getBoundingClientRect = () =>
+        ({ top: 0, bottom: naturalHeightPx() }) as unknown as DOMRect;
+    }
+  }
+
+  function fireRowObservers(row: HTMLElement) {
+    act(() => {
+      for (const observer of observers.filter((candidate) =>
+        candidate.targets.includes(row),
+      )) {
+        observer.cb([], observer as unknown as ResizeObserver);
+      }
+    });
+  }
+
+  function reservedHeight(row: HTMLElement): string {
+    return row.style.getPropertyValue(RESERVE_VAR);
+  }
+
+  function renderActivity(
+    item = conversationActivityItem(),
+    collapsed?: Set<ConversationThinkingPreviewSlot>,
+  ) {
+    return (
+      <I18nProvider>
+        <RenderItemComponent
+          item={item}
+          isStreaming
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+          collapsedConversationThinkingPreviewSlots={collapsed}
+        />
+      </I18nProvider>
+    );
+  }
+
+  it("holds the row's height across the cooling-off period, then releases it", () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    vi.useFakeTimers();
+
+    const { container } = render(renderActivity());
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    ) as HTMLElement;
+    let naturalHeightPx = 400;
+    stubRowMetrics(row, () => naturalHeightPx);
+
+    fireRowObservers(row);
+    expect(reservedHeight(row)).toBe("400px");
+
+    // A shorter block replaces the long one: the space stays, so the transcript
+    // above it does not slide down under follow mode.
+    naturalHeightPx = 90;
+    fireRowObservers(row);
+    expect(reservedHeight(row)).toBe("400px");
+
+    act(() => {
+      vi.advanceTimersByTime(CONVERSATION_ACTIVITY_RESERVE_HOLD_MS - 1);
+    });
+    expect(reservedHeight(row)).toBe("400px");
+
+    act(() => {
+      vi.advanceTimersByTime(2);
+    });
+    expect(reservedHeight(row)).toBe("90px");
+  });
+
+  it("gives the space back at once when the reader collapses a card", () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    vi.useFakeTimers();
+
+    const { container, rerender } = render(renderActivity());
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    ) as HTMLElement;
+    let naturalHeightPx = 400;
+    stubRowMetrics(row, () => naturalHeightPx);
+    fireRowObservers(row);
+    expect(reservedHeight(row)).toBe("400px");
+
+    // The chevron asks for a shorter row and keeps the card collapsed as later
+    // blocks stream into the slot, so there is nothing to hold the space for.
+    naturalHeightPx = 90;
+    rerender(renderActivity(conversationActivityItem(), new Set(["latest"])));
+    stubRowMetrics(row, () => naturalHeightPx);
+    expect(reservedHeight(row)).toBe("90px");
+  });
+
+  it("holds through a dismissal, but not the one that hides thinking", () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    vi.useFakeTimers();
+
+    const base = conversationActivityItem() as Extract<
+      RenderItem,
+      { type: "conversation_activity" }
+    >;
+    const { container, rerender } = render(renderActivity(base));
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    ) as HTMLElement;
+    let naturalHeightPx = 400;
+    stubRowMetrics(row, () => naturalHeightPx);
+    fireRowObservers(row);
+    expect(reservedHeight(row)).toBe("400px");
+
+    // ✕ on one of two cards: thinking stays visible and the freed space is
+    // about to be used by the next block, so the hold still applies.
+    naturalHeightPx = 90;
+    rerender(
+      renderActivity({
+        ...base,
+        thinkingPreviews: base.thinkingPreviews?.slice(0, 1),
+      }),
+    );
+    stubRowMetrics(row, () => naturalHeightPx);
+    fireRowObservers(row);
+    expect(reservedHeight(row)).toBe("400px");
+
+    // ✕ on the last card hides thinking entirely — that space is not coming
+    // back, so holding it would just leave a gap.
+    rerender(renderActivity({ ...base, thinkingPreviews: [] }));
+    stubRowMetrics(row, () => naturalHeightPx);
+    expect(reservedHeight(row)).toBe("90px");
   });
 });

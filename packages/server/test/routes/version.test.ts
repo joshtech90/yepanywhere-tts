@@ -5,17 +5,32 @@ import {
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+  GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+  GLOSSARY_TOOLTIPS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
+  IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PROVIDER_HOST_CONTROL_CAPABILITY,
+  RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
+  SIDEBAR_SESSION_RESUME_CAPABILITY,
+  SECURITY_CLIENT_AUDIT_CAPABILITY,
 } from "@yep-anywhere/shared";
 import { getServerCapabilities } from "../../src/routes/version.js";
 
 describe("Version Routes", () => {
+  it("advertises compiled glossary artifacts", () => {
+    expect(getServerCapabilities()).toContain(GLOSSARY_TOOLTIPS_CAPABILITY);
+  });
+
   it("advertises approval audit log control", () => {
     expect(getServerCapabilities()).toContain(APPROVAL_AUDIT_LOG_CAPABILITY);
   });
@@ -33,6 +48,15 @@ describe("Version Routes", () => {
     );
   });
 
+  it("advertises security-client audit only when its routes are mounted", () => {
+    expect(
+      getServerCapabilities({ securityClientAuditAvailable: true }),
+    ).toContain(SECURITY_CLIENT_AUDIT_CAPABILITY);
+    expect(getServerCapabilities()).not.toContain(
+      SECURITY_CLIENT_AUDIT_CAPABILITY,
+    );
+  });
+
   it("advertises host identity persistence", () => {
     expect(getServerCapabilities()).toContain(HOST_IDENTITY_CAPABILITY);
   });
@@ -41,15 +65,43 @@ describe("Version Routes", () => {
     expect(getServerCapabilities()).toContain(HOST_AWAKE_CONTROL_CAPABILITY);
   });
 
+  it("advertises configurable idle provider reaping", () => {
+    expect(getServerCapabilities()).toContain(
+      IDLE_REAP_HOURS_SETTING_CAPABILITY,
+    );
+  });
+
   it("advertises isolated Claude gateway configuration", () => {
     expect(getServerCapabilities()).toContain(CLAUDE_GATEWAY_CAPABILITY);
     expect(getServerCapabilities()).toContain(
       CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
     );
+    expect(getServerCapabilities()).toContain(
+      CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+    );
+    expect(getServerCapabilities()).toContain(
+      CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+    );
+  });
+
+  it("retains the reload-safe Codex settings compatibility schema", () => {
+    expect(getServerCapabilities()).toContain(
+      RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
+    );
+  });
+
+  it("advertises the Codex reasoning-summary setting", () => {
+    expect(getServerCapabilities()).toContain(
+      CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+    );
   });
 
   it("advertises the complete source browser and review contract", () => {
     expect(getServerCapabilities()).toContain(GIT_SOURCE_REVIEW_CAPABILITY);
+  });
+
+  it("advertises dirty-file editor attribution", () => {
+    expect(getServerCapabilities()).toContain(GIT_DIRTY_FILE_EDITOR_CAPABILITY);
   });
 
   it("advertises Source Control diff projections", () => {
@@ -81,5 +133,26 @@ describe("Version Routes", () => {
     expect(getServerCapabilities()).toContain(
       SESSION_FORK_TURN_INTENTS_CAPABILITY,
     );
+  });
+
+  it("advertises sidebar-safe session resume summaries", () => {
+    expect(getServerCapabilities()).toContain(
+      SIDEBAR_SESSION_RESUME_CAPABILITY,
+    );
+  });
+
+  it("advertises project-scoped session defaults", () => {
+    expect(getServerCapabilities()).toContain(
+      PROJECT_SESSION_DEFAULTS_CAPABILITY,
+    );
+  });
+
+  it("advertises provider-host control only while registered", () => {
+    expect(getServerCapabilities()).not.toContain(
+      PROVIDER_HOST_CONTROL_CAPABILITY,
+    );
+    expect(
+      getServerCapabilities({ providerHostControlAvailable: true }),
+    ).toContain(PROVIDER_HOST_CONTROL_CAPABILITY);
   });
 });

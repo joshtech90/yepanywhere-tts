@@ -1,19 +1,37 @@
 import { fromUrlProjectId, isUrlProjectId } from "@yep-anywhere/shared";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import {
   buildPublicShareFileHref,
   usePublicShareContext,
 } from "../contexts/PublicShareContext";
+import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../lib/appHref";
 import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
 import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../lib/markdownSelectionCopy";
+import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
+import { useFileViewerController } from "../lib/fileViewerController";
 import {
+  clearSessionViewer,
+  minimizeSessionViewer,
+  presentSessionViewer,
+} from "../lib/sessionViewerController";
+import {
+  getAbsoluteFilePath,
   getPathBasename,
   getProjectRelativePath,
+  isAbsoluteLikePath,
   normalizePathSeparators,
   stripTrailingPathSeparators,
 } from "../lib/text";
@@ -23,12 +41,21 @@ import {
   type FileViewerSource,
 } from "./FileViewer";
 import {
+  buildProjectFileViewUrl,
+  FileVersionControlLinks,
+} from "./FileDiffViewLinks";
+import {
   FilePathContextMenu,
+  type FileViewPresentation,
+  supportsSourceAndPreview,
   useStartNewSessionFromFile,
 } from "./FileResourceActions";
 import { createPublicShareFileViewerSource } from "./publicShareFileViewerSource";
 import { CopyTextButton } from "./ui/CopyTextButton";
 import { useModalBackGesture } from "./ui/Modal";
+import styles from "./FilePathLink.module.css";
+
+export { FileVersionControlLinks } from "./FileDiffViewLinks";
 
 /**
  * Faint copy-to-clipboard affordance rendered after a pathname. Copies the
@@ -70,27 +97,8 @@ interface FilePathLinkProps {
   viewMode?: FileViewerMode;
   /** Whether to render the faint copy-path button after the link */
   showCopyButton?: boolean;
-}
-
-function getProjectFileViewUrl(
-  projectId: string,
-  filePath: string,
-  lineNumber?: number,
-  lineEnd?: number,
-  viewMode?: FileViewerMode,
-  basePath = "",
-): string {
-  const params = new URLSearchParams({ path: filePath });
-  if (lineNumber !== undefined) {
-    params.set("line", String(lineNumber));
-  }
-  if (lineEnd !== undefined) {
-    params.set("lineEnd", String(lineEnd));
-  }
-  if (viewMode === "range") {
-    params.set("view", "range");
-  }
-  return `${basePath}/projects/${projectId}/file?${params.toString()}`;
+  /** Whether to append source-control affordances after the path. */
+  showVersionControlLinks?: boolean;
 }
 
 function getProjectPath(projectId: string): string | null {
@@ -105,7 +113,10 @@ function getProjectPath(projectId: string): string | null {
   }
 }
 
-function getProjectViewerFilePath(projectId: string, filePath: string): string {
+export function getProjectViewerFilePath(
+  projectId: string,
+  filePath: string,
+): string {
   const projectPath = getProjectPath(projectId);
   const projectRelativePath = getProjectRelativePath(filePath, projectPath);
   if (projectRelativePath !== null) {
@@ -145,10 +156,13 @@ export const FilePathLink = memo(function FilePathLink({
   showFullPath = false,
   viewMode = "full",
   showCopyButton = true,
+  showVersionControlLinks = true,
 }: FilePathLinkProps) {
   const publicShareContext = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const [showModal, setShowModal] = useState(false);
+  const [modalPresentation, setModalPresentation] =
+    useState<FileViewPresentation>();
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -158,6 +172,21 @@ export const FilePathLink = memo(function FilePathLink({
     [projectId, filePath],
   );
   const startNewSession = useStartNewSessionFromFile(projectId, viewerFilePath);
+  const projectPath = useMemo(() => getProjectPath(projectId), [projectId]);
+  const projectRelativeCopyPath = useMemo(
+    () =>
+      isAbsoluteLikePath(viewerFilePath)
+        ? getProjectRelativePath(viewerFilePath, projectPath)
+        : normalizePathSeparators(viewerFilePath).replace(/^\.\/+/, ""),
+    [projectPath, viewerFilePath],
+  );
+  const absoluteCopyPath = useMemo(() => {
+    return getAbsoluteFilePath(
+      isAbsoluteLikePath(filePath) ? filePath : viewerFilePath,
+      projectPath,
+    );
+  }, [filePath, projectPath, viewerFilePath]);
+  const hasPresentationChoice = supportsSourceAndPreview(viewerFilePath);
   const publicShareFileViewUrl = publicShareContext
     ? buildPublicShareFileHref(publicShareContext, {
         columnNumber,
@@ -171,14 +200,14 @@ export const FilePathLink = memo(function FilePathLink({
     publicShareContext !== null
       ? publicShareFileViewUrl
       : toBrowserAppHref(
-          getProjectFileViewUrl(
-            projectId,
-            viewerFilePath,
-            lineNumber,
-            lineEnd,
-            viewMode,
+          buildProjectFileViewUrl({
             basePath,
-          ),
+            filePath: viewerFilePath,
+            lineEnd,
+            lineNumber,
+            projectId,
+            viewMode,
+          }),
         );
   const publicShareFileViewerSource = useMemo(
     () =>
@@ -199,6 +228,7 @@ export const FilePathLink = memo(function FilePathLink({
         return;
       }
       e.preventDefault();
+      setModalPresentation(undefined);
       setShowModal(true);
     },
     [publicShareContext, publicShareFileViewUrl],
@@ -213,11 +243,11 @@ export const FilePathLink = memo(function FilePathLink({
     setContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
-  const handleViewFromMenu = useCallback(() => setShowModal(true), []);
-  const handleCopyPathFromMenu = useCallback(() => {
-    void writeClipboardText(viewerFilePath);
-  }, [viewerFilePath]);
-  const handleCopyUrlFromMenu = useCallback(() => {
+  const openFromMenu = useCallback((presentation?: FileViewPresentation) => {
+    setModalPresentation(presentation);
+    setShowModal(true);
+  }, []);
+  const handleCopyViewerLinkFromMenu = useCallback(() => {
     if (!fileViewUrl) return;
     void writeClipboardText(new URL(fileViewUrl, window.location.href).href);
   }, [fileViewUrl]);
@@ -243,29 +273,60 @@ export const FilePathLink = memo(function FilePathLink({
 
   return (
     <>
-      <a
-        href={fileViewUrl ?? "#"}
-        className="file-path-link"
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-        {...tooltipAttributes}
-      >
-        <span className="file-path-link-name">{text}</span>
-        {visibleSuffix && (
-          <span className="file-path-link-line">{visibleSuffix}</span>
+      <span className={styles.linkCluster}>
+        <a
+          href={fileViewUrl ?? "#"}
+          className="file-path-link"
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          {...tooltipAttributes}
+        >
+          <span className="file-path-link-name">{text}</span>
+          {visibleSuffix && (
+            <span className="file-path-link-line">{visibleSuffix}</span>
+          )}
+        </a>
+        {showCopyButton && <FilePathCopyButton filePath={viewerFilePath} />}
+        {publicShareContext === null && showVersionControlLinks && (
+          <FileVersionControlLinks
+            className={styles.inlineDiffLinks}
+            projectId={projectId}
+            filePath={viewerFilePath}
+          />
         )}
-      </a>
-      {showCopyButton && <FilePathCopyButton filePath={viewerFilePath} />}
+      </span>
       {contextMenu && (
         <FilePathContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
           canStartNewSession={publicShareContext === null}
           onClose={closeContextMenu}
-          onView={handleViewFromMenu}
+          onOpen={() => openFromMenu()}
+          onOpenSource={
+            hasPresentationChoice ? () => openFromMenu("source") : undefined
+          }
+          onOpenPreview={
+            hasPresentationChoice ? () => openFromMenu("preview") : undefined
+          }
           onStartNewSession={startNewSession}
-          onCopyUrl={fileViewUrl ? handleCopyUrlFromMenu : undefined}
-          onCopyPath={handleCopyPathFromMenu}
+          onCopyProjectRelativePath={
+            projectRelativeCopyPath
+              ? () => void writeClipboardText(projectRelativeCopyPath)
+              : undefined
+          }
+          onCopyAbsolutePath={
+            publicShareContext === null && absoluteCopyPath
+              ? () => void writeClipboardText(absoluteCopyPath)
+              : undefined
+          }
+          onCopyFilePath={
+            !projectRelativeCopyPath && !absoluteCopyPath
+              ? () => void writeClipboardText(viewerFilePath)
+              : undefined
+          }
+          onCopyViewerLink={
+            fileViewUrl ? handleCopyViewerLinkFromMenu : undefined
+          }
           onCopyContents={handleCopyContentsFromMenu}
         />
       )}
@@ -276,6 +337,7 @@ export const FilePathLink = memo(function FilePathLink({
           lineNumber={lineNumber}
           lineEnd={lineEnd}
           viewMode={viewMode}
+          initialPresentation={modalPresentation}
           source={publicShareFileViewerSource}
           openInNewTabUrl={fileViewUrl}
           onClose={handleClose}
@@ -294,6 +356,7 @@ export function FileViewerModal({
   lineNumber,
   lineEnd,
   viewMode = "full",
+  initialPresentation,
   source,
   openInNewTabUrl,
   onClose,
@@ -303,51 +366,97 @@ export function FileViewerModal({
   lineNumber?: number;
   lineEnd?: number;
   viewMode?: FileViewerMode;
+  initialPresentation?: FileViewPresentation;
   source?: FileViewerSource;
   openInNewTabUrl?: string | null;
   onClose: () => void;
 }) {
+  const publicShareContext = usePublicShareContext();
+  const sessionMetadata = useOptionalSessionMetadata();
+  const minimizedViewerId = useId();
+  const publishedViewer = useFileViewerController();
+  const minimized =
+    publishedViewer?.id === minimizedViewerId && publishedViewer.minimized;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const close = useCallback(() => {
+    clearSessionViewer(minimizedViewerId);
+    onCloseRef.current();
+  }, [minimizedViewerId]);
+  const minimize = useCallback(
+    () => minimizeSessionViewer(minimizedViewerId),
+    [minimizedViewerId],
+  );
+  useEffect(() => {
+    if (publicShareContext !== null) return;
+    const lineSuffix = formatLineSuffix(lineNumber, lineEnd);
+    presentSessionViewer({
+      id: minimizedViewerId,
+      kind: "file",
+      sessionId: sessionMetadata?.sessionId ?? "",
+      label: `${filePath}${lineSuffix}`,
+      briefLabel: getPathBasename(filePath),
+      onClose: close,
+      filePath,
+      lineSuffix,
+    });
+  }, [
+    close,
+    filePath,
+    lineEnd,
+    lineNumber,
+    minimizedViewerId,
+    publicShareContext,
+    sessionMetadata?.sessionId,
+  ]);
+  useEffect(
+    () => () => clearSessionViewer(minimizedViewerId),
+    [minimizedViewerId],
+  );
   const handleOverlayClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
-      onClose();
+      close();
     }
   };
 
   // Close on Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !minimized) {
         e.preventDefault();
         e.stopPropagation();
-        onClose();
+        close();
       }
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [onClose]);
+  }, [close, minimized]);
 
-  useModalBackGesture(onClose, true, "__fileViewerModal");
+  useModalBackGesture(close, !minimized, "__fileViewerModal");
 
   // Prevent body scroll when modal is open
   useEffect(() => {
+    if (minimized) return;
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = "";
     };
-  }, []);
+  }, [minimized]);
 
   const modalContent = (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click dismisses the modal; Escape is handled globally
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Escape key handled in useEffect, click is for overlay dismiss
     <div
       className="modal-overlay"
+      aria-hidden={minimized || undefined}
+      style={minimized ? { display: "none" } : undefined}
       onClick={handleOverlayClick}
       onMouseDown={(e) => e.stopPropagation()}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click only stops propagation, keyboard handled globally */}
       <dialog
-        className={`modal file-viewer-modal ${
-          viewMode === "range" ? "file-viewer-modal-compact" : ""
+        className={`modal file-viewer-modal ${styles.fileViewerModal} ${
+          viewMode === "range"
+            ? `file-viewer-modal-compact ${styles.fileViewerModalCompact}`
+            : ""
         }`}
         {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
         open
@@ -359,13 +468,31 @@ export function FileViewerModal({
           lineNumber={lineNumber}
           lineEnd={lineEnd}
           viewMode={viewMode}
+          initialPresentation={initialPresentation}
           source={source}
           openInNewTabUrl={openInNewTabUrl}
-          onClose={onClose}
+          onClose={close}
+          onMinimize={publicShareContext === null ? minimize : undefined}
         />
       </dialog>
     </div>
   );
 
-  return createPortal(modalContent, document.body);
+  const portalHost =
+    publicShareContext === null
+      ? (document.querySelector<HTMLElement>(
+          ".navigation-route-layer.is-active .session-page",
+        ) ?? document.querySelector<HTMLElement>(".session-page"))
+      : null;
+
+  return createPortal(
+    publicShareContext ? (
+      modalContent
+    ) : (
+      <GlossaryProjectBoundary projectId={projectId}>
+        {modalContent}
+      </GlossaryProjectBoundary>
+    ),
+    portalHost ?? document.body,
+  );
 }

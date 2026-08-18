@@ -2,6 +2,8 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitBlameLine, GitBlameResult } from "@yep-anywhere/shared";
 import { highlightFile } from "../highlighting/index.js";
+import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
+import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import { getGitAuthorIdentity, getGitAuthorPalette } from "./authorPalette.js";
 import { GIT_DECODE_PATHS_ARGS, runGit } from "./gitExec.js";
 
@@ -45,7 +47,7 @@ interface BlameCacheEntry {
 }
 
 /** Insertion order is LRU order: hits reinsert their key. */
-const blameCache = new Map<string, BlameCacheEntry>();
+const blameCache = createLruMap<string, BlameCacheEntry>();
 let blameCacheBytes = 0;
 let blameCacheHits = 0;
 
@@ -53,6 +55,7 @@ export async function getBlame(
   cwd: string,
   path: string,
   rev: string | undefined,
+  storagePolicy?: ProjectStoragePolicy,
 ): Promise<GitBlameResult> {
   // Resolving covers "HEAD" and short shas, so equivalent revs share a key.
   const resolved = rev ? await resolveCommit(cwd, rev) : null;
@@ -69,8 +72,7 @@ export async function getBlame(
     (resolved ? true : validator !== null) &&
     cached.validator === validator
   ) {
-    blameCache.delete(key);
-    blameCache.set(key, cached);
+    refreshLruMap(blameCache, key, cached);
     blameCacheHits++;
     // Callers only serialize the result; the cached object is shared, not cloned.
     return cached.result;
@@ -93,7 +95,7 @@ export async function getBlame(
       maxBuffer: BLAME_MAX_BUFFER,
       timeout: BLAME_TIMEOUT_MS,
     }),
-    getGitAuthorPalette(cwd),
+    getGitAuthorPalette(cwd, storagePolicy),
   ]);
   let parsedLines = parseBlamePorcelain(stdout);
 

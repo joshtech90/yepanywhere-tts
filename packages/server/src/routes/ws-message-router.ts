@@ -1,4 +1,7 @@
-import type { RemoteClientMessage } from "@yep-anywhere/shared";
+import type {
+  ClientCapabilities,
+  RemoteClientMessage,
+} from "@yep-anywhere/shared";
 import {
   BinaryEnvelopeError,
   BinaryFormat,
@@ -7,6 +10,7 @@ import {
   isClientCapabilities,
 } from "@yep-anywhere/shared";
 import { decompressGzip, decryptBinaryEnvelopeRaw } from "../crypto/index.js";
+import { getLogger } from "../logging/logger.js";
 import type { UploadManager } from "../uploads/manager.js";
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import type {
@@ -88,7 +92,7 @@ export async function decodeFrameToParsedMessage(
           ? decryptBinaryEnvelopeRaw(bytes, connState.sessionKey)
           : null;
         if (!result) {
-          console.warn("[WS Relay] Failed to decrypt binary envelope");
+          getLogger().warn("[WS Relay] Failed to decrypt binary envelope");
           ws.close(4004, "Decryption failed");
           return null;
         }
@@ -150,14 +154,6 @@ export async function decodeFrameToParsedMessage(
           const parsed = JSON.parse(jsonStr);
           const msg = unwrapSequencedClientMessage(ws, connState, parsed);
           if (!msg) {
-            return null;
-          }
-
-          if (isClientCapabilities(msg)) {
-            connState.supportedFormats = new Set(msg.formats);
-            console.log(
-              `[WS Relay] Client capabilities: formats=${[...connState.supportedFormats].map((f) => `0x${f.toString(16).padStart(2, "0")}`).join(", ")}`,
-            );
             return null;
           }
 
@@ -252,9 +248,9 @@ export async function decodeFrameToParsedMessage(
       return JSON.parse(json);
     } catch (err) {
       if (err instanceof BinaryFrameError) {
-        console.warn(
-          `[WS Relay] Binary frame error (${err.code}):`,
-          err.message,
+        getLogger().warn(
+          { code: err.code, error: err.message },
+          "[WS Relay] Binary frame error",
         );
         if (err.code === "UNKNOWN_FORMAT") {
           ws.close(4002, err.message);
@@ -279,12 +275,15 @@ export async function decodeFrameToParsedMessage(
   try {
     return JSON.parse(textData);
   } catch {
-    console.warn("[WS Relay] Failed to parse message:", textData);
+    getLogger().warn(
+      `[WS Relay] Failed to parse text frame: characters=${textData.length}`,
+    );
     return null;
   }
 }
 
 interface MessageRouteHandlers {
+  onClientCapabilities: (msg: ClientCapabilities) => Promise<void> | void;
   onRequest: (msg: RemoteClientMessage & { type: "request" }) => Promise<void>;
   onSubscribe: (
     msg: RemoteClientMessage & { type: "subscribe" },
@@ -343,6 +342,13 @@ export async function routeClientMessageSafely(
 ): Promise<void> {
   try {
     switch (msg.type) {
+      case "client_capabilities":
+        if (!isClientCapabilities(msg)) {
+          console.warn("[WS Relay] Invalid client capabilities message");
+          break;
+        }
+        await handlers.onClientCapabilities(msg);
+        break;
       case "request":
         await handlers.onRequest(msg);
         break;
@@ -392,9 +398,9 @@ export async function routeClientMessageSafely(
     }
   } catch (err) {
     const messageId = getMessageId(msg);
-    console.error(
-      `[WS Relay] Unhandled error in routeMessage (type=${msg.type}, id=${messageId}):`,
-      err,
+    getLogger().error(
+      { err, type: msg.type, messageId },
+      "[WS Relay] Unhandled error in routeMessage",
     );
     if (messageId) {
       try {

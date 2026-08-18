@@ -20,7 +20,10 @@ See also:
   — an observed process working directory must not silently reclassify a
   session's effective project.
 - [`architecture-mandates.md`](architecture-mandates.md) — sampling must stop
-  when no visible client owns it.
+  when no visible client owns it, except for the bounded process-existence
+  inventory used by session-catalog observation.
+- [`session-catalog-observation.md`](session-catalog-observation.md) — the
+  process inventory may remain fresh without turning into transcript polling.
 - [`server-capabilities.md`](server-capabilities.md) and
   [`remote-hosted-compatibility.md`](remote-hosted-compatibility.md) — a new
   host-process route requires an exact capability gate.
@@ -55,7 +58,7 @@ control semantics.
 | Surface | Primary question | Source of truth |
 | --- | --- | --- |
 | Inbox | Which sessions need attention, are active, recent, or unread? | Session, pending-input, queue, and notification state. |
-| Agents | Which agent processes exist on this YA host, who supervises them, and what resources are they using? | YA Supervisor state plus a request-driven host process snapshot. |
+| Agents | Which agent processes exist on this YA host, who supervises them, and what resources are they using? | YA Supervisor state plus the retained process-existence inventory and request-driven metric samples. |
 | Agents activity preview | What is each YA-supervised agent doing now? | Bounded normalized provider activity, when explicitly enabled. |
 | Session detail | What happened in this conversation, and what can I do next? | Provider transcript and live session control state. |
 
@@ -70,11 +73,17 @@ The server-owned **Agents process metrics** option is default-on and can be
 disabled under Settings > Performance. This is an explicit product exception
 to [`vanilla-defaults.md`](vanilla-defaults.md), authorized by graehl on
 2026-07-28: a user who does not want the feature can disable it, while someone
-who never opens Agents causes no host-process sampling. With it off:
+who never opens Agents causes no CPU/RSS metric sampling. With it off:
 
 - Agents remains observably unchanged;
 - no host-process route is requested by the client; and
 - YA does not enumerate foreign processes or retain CPU samples.
+
+With the option on, the compact process-existence/classification inventory may
+continue under one bounded server owner even when Agents is closed. It retains
+only the minimized identity needed for provider/root/session correlation and
+diffs later snapshots. CPU rate and expanded tree metrics remain request-owned
+by visible Agents consumers and stop when their last owner leaves.
 
 With it on:
 
@@ -142,6 +151,30 @@ descriptor count, or graphs to the first slice. They can follow when a concrete
 diagnostic question needs them; the three requested signals above already
 cover footprint, recent work, and lifetime.
 
+### Local development process tree
+
+`pstree.sh` is the Linux operator view for attributing local development
+processes; it is not part of the client route or its wire contract. Each run
+discovers live YA roots from an exact `scripts/dev.js` argv token in a
+`yep-anywhere` working tree, so it survives PID changes and does not trust a
+saved PID. It samples `/proc` over the requested interval (one second by
+default) and prints:
+
+- PID and `/proc/<pid>/comm`, the same short `COMMAND` name shown by `top`;
+- a sanitized YA/provider owner such as `YA server`, `YA host: Codex`,
+  `Codex harness`, `YA parser worker`, Vite, or esbuild;
+- direct process CPU, virtual allocation, and RSS to the left of `|`; and
+- descendant-inclusive `ΣCPU`, `ΣVIRT`, and `ΣRSS` to the right.
+
+`MainThread` is a generic Node process name, not a YA role. PID plus the tree
+and owner column supplies the attribution. `100%` sampled CPU is one fully used
+core. Direct RSS is resident physical memory for that process; direct VIRT is
+its reserved/mapped address space, not physical consumption. Tree sums are
+attribution totals: shared pages and mappings may be counted once per process,
+so `ΣRSS` is not unique proportional-set memory and `ΣVIRT` is not a host
+commitment. The script excludes its own observer process and never prints argv,
+environment values, or raw paths.
+
 ## Host Discovery And Identity
 
 Discovery is isolated in the server sampler, not embedded in the route or
@@ -186,6 +219,34 @@ Process discovery and session correlation are separate:
 The current `ExternalSessionTracker` may decorate a future exact join, but its
 30-second write window cannot create one. The initial host sampler neither
 reads nor returns cwd.
+
+### Continuous inventory extension
+
+Accepted 2026-08-05; not yet implemented. When Agents process metrics are
+enabled, YA takes one same-user process snapshot after retained provider
+runtimes reattach. It classifies every known provider harness root, subtracts
+exact Supervisor/runtime-host ownership, and retains the unmatched external
+inventory before any client route asks for it. On the measured Linux host, the
+underlying whole-table `ps` snapshot took 0.01 seconds and about 4.1 MiB maximum
+RSS.
+
+One process-wide bounded cadence keeps that existence inventory current. Each
+pass diffs PID plus OS start identity and targets changed recognized roots; it
+does not open provider transcript stores or create a loop per session. It
+supplies process existence, provider, and exact association when available.
+Opening Agents may continue the existing five-second request-owned CPU/RSS tree
+sampling, and leaving Agents stops that richer sampler.
+
+Process discovery does not open provider transcript stores. Command/entrypoint
+classification and exact native session-id extraction belong to the provider
+adapter described in [provider-abstraction](provider-abstraction.md). A
+recognized root is correlated to a session only when its provider exposes the
+id through argv, a pid/lock record, or another exact contract. The raw command
+text is discarded immediately. A provider never used to start a YA session may
+still appear as an uncorrelated external process; its native session store
+remains excluded from boot Inbox discovery until first successful YA use.
+Implementation is handed off in
+[`docs/tactical/093-provider-session-reconciliation.md`](../docs/tactical/093-provider-session-reconciliation.md).
 
 ## Data And Route Boundary
 
@@ -240,6 +301,8 @@ capability meanings and older capable behavior remain unchanged.
 Recent CPU needs two samples, but it does not need a permanent server timer.
 Lifecycle:
 
+- once after retained-runtime reattach, the server takes one boot snapshot
+  when host process observability is enabled;
 - while Agents is visible, the client requests one lightweight host snapshot
   about every five seconds;
 - pause when the page is unmounted or the document is hidden;
@@ -303,6 +366,9 @@ minimization rule.
   memory.
 - Session links and titles appear only after exact process/session
   correlation.
+- With host process observability enabled, one post-reattach boot snapshot
+  exists before Agents first opens; it starts no repeating sampler and opens no
+  provider transcript store.
 - On touch layouts, a non-control tap on an External row toggles its metric
   details; controls are never intercepted and an outside tap dismisses them.
 - Leaving or hiding Agents stops client sampling; no stale page leaves a

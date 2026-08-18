@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encrypt } from "../../src/crypto/nacl-wrapper.js";
 import { RemoteSessionService } from "../../src/remote-access/RemoteSessionService.js";
 
@@ -140,6 +140,7 @@ describe("RemoteSessionService", () => {
     });
 
     it("rejects proof with old timestamp", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const sessionKey = new Uint8Array(32).fill(0x42);
       const sessionId = await service.createSession("testuser", sessionKey);
       const challenge = "test-challenge";
@@ -160,6 +161,10 @@ describe("RemoteSessionService", () => {
         challenge,
       );
       expect(validatedSession).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Resume proof rejected due to timestamp skew"),
+      );
+      warn.mockRestore();
     });
 
     it("accepts proof within the 5 minute skew window", async () => {
@@ -286,6 +291,68 @@ describe("RemoteSessionService", () => {
     });
   });
 
+  describe("security client ownership", () => {
+    it("binds a session once to the authenticated client", async () => {
+      const sessionId = await service.createSession(
+        "testuser",
+        new Uint8Array(32).fill(0x42),
+      );
+
+      await expect(
+        service.attachSecurityClient(sessionId, "testuser", "client-a"),
+      ).resolves.toBe(true);
+      await expect(
+        service.attachSecurityClient(sessionId, "testuser", "client-a"),
+      ).resolves.toBe(true);
+      await expect(
+        service.attachSecurityClient(sessionId, "testuser", "client-b"),
+      ).resolves.toBe(false);
+      await expect(
+        service.attachSecurityClient(sessionId, "otheruser", "client-a"),
+      ).resolves.toBe(false);
+      expect(service.getSession(sessionId)?.securityClientId).toBe("client-a");
+    });
+
+    it("invalidates only sessions owned by the revoked client", async () => {
+      const key = new Uint8Array(32).fill(0x42);
+      const ownedA = await service.createSession("testuser", key);
+      const ownedB = await service.createSession("testuser", key);
+      const other = await service.createSession("testuser", key);
+      await service.attachSecurityClient(ownedA, "testuser", "client-a");
+      await service.attachSecurityClient(ownedB, "testuser", "client-a");
+      await service.attachSecurityClient(other, "testuser", "client-b");
+
+      await expect(
+        service.invalidateSecurityClientSessions("client-a"),
+      ).resolves.toBe(2);
+      expect(service.getSession(ownedA)).toBeNull();
+      expect(service.getSession(ownedB)).toBeNull();
+      expect(service.getSession(other)).not.toBeNull();
+    });
+
+    it("reports the security client when the session cap evicts it", async () => {
+      const evicted: Array<{ sessionId: string; securityClientId?: string }> =
+        [];
+      service.setEvictionListener((session) => {
+        evicted.push(session);
+      });
+      const key = new Uint8Array(32).fill(0x42);
+      const oldest = await service.createSession("testuser", key);
+      await service.attachSecurityClient(oldest, "testuser", "client-a");
+      for (let i = 0; i < 5; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await service.createSession("testuser", key);
+      }
+
+      expect(evicted).toContainEqual(
+        expect.objectContaining({
+          sessionId: oldest,
+          securityClientId: "client-a",
+        }),
+      );
+    });
+  });
+
   describe("invalidateUserSessions", () => {
     it("invalidates all sessions for a user", async () => {
       const sessionKey = new Uint8Array(32).fill(0x42);
@@ -326,9 +393,32 @@ describe("RemoteSessionService", () => {
   });
 
   describe("persistence", () => {
-    it("does not persist sessions to disk by default", async () => {
+    it("never writes session credentials in default in-memory mode", async () => {
       const sessionKey = new Uint8Array(32).fill(0x42);
       const sessionId = await service.createSession("testuser", sessionKey);
+      const filePath = path.join(testDir, "remote-sessions.json");
+
+      await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const challenge = "in-memory-persistence-check";
+      const proofData = JSON.stringify({
+        timestamp: Date.now(),
+        sessionId,
+        challenge,
+      });
+      const { nonce, ciphertext } = encrypt(proofData, sessionKey);
+      await service.validateProof(
+        sessionId,
+        JSON.stringify({ nonce, ciphertext }),
+        challenge,
+      );
+      await service.updateLastConnected(sessionId);
+
+      await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+
+      await service.deleteSession(sessionId);
+
+      await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
 
       // Shutdown current service
       service.shutdown();

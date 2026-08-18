@@ -24,6 +24,7 @@ export function useCommitBrowserModel({
   status,
   isWideScreen,
   initialSha,
+  initialPath,
   supportsProjections,
   onProjectionUnavailable,
   t,
@@ -32,6 +33,7 @@ export function useCommitBrowserModel({
   status?: GitStatusInfo;
   isWideScreen: boolean;
   initialSha?: string;
+  initialPath?: string;
   supportsProjections: boolean;
   onProjectionUnavailable: () => void;
   t: TranslationFn;
@@ -46,10 +48,13 @@ export function useCommitBrowserModel({
   const [detail, setDetail] = useState<GitCommitDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(
+    initialPath ?? null,
+  );
   const [compareToHead, setCompareToHead] = useState(false);
-  const [comparison, setComparison] =
-    useState<GitRevisionComparison | null>(null);
+  const [comparison, setComparison] = useState<GitRevisionComparison | null>(
+    null,
+  );
   const [loadingComparison, setLoadingComparison] = useState(false);
   const [messageView, setMessageView] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -78,8 +83,9 @@ export function useCommitBrowserModel({
     // different recent commit.
     return [detail, ...searchedOrRecentCommits];
   }, [detail, searchedOrRecentCommits, selectedSha]);
-  // Working tree is a real selectable revision even when its diff is empty.
-  // A clean tree must never fall through to selecting the newest commit.
+  // Working tree remains a real selectable revision even when its diff is
+  // empty. A clean landing prefers the newest commit while retaining that
+  // pinned revision as the explicit way back to the clean state.
   const showWorkingTreeRevision = status !== undefined;
   const displayedKeys = useMemo(
     () => [
@@ -119,20 +125,24 @@ export function useCommitBrowserModel({
     };
   }, [initialSha, projectId, t]);
 
-  // Desktop opens the first available revision. Unified Source Control always
-  // supplies status, so that revision is Working tree even when it is clean.
-  // An explicit blame-hash selection remains authoritative while detail loads.
+  const defaultKey = status?.isClean
+    ? (displayedCommits[0]?.hash ??
+      (!loadingList ? WORKING_TREE_KEY : undefined))
+    : displayedKeys[0];
+
+  // Desktop opens the preferred revision. A clean Source Control landing does
+  // the same on phone so it reaches the useful newest commit instead of an
+  // empty state. Explicit and user-selected revisions remain authoritative.
   useEffect(() => {
-    const first = displayedKeys[0];
-    if (!isWideScreen || !first) return;
+    if ((!isWideScreen && !status?.isClean) || !defaultKey) return;
     setSelectedKey((current) =>
       current &&
       (displayedKeys.includes(current) ||
         (initialSha !== undefined && current === initialSha))
         ? current
-        : first,
+        : defaultKey,
     );
-  }, [displayedKeys, initialSha, isWideScreen]);
+  }, [defaultKey, displayedKeys, initialSha, isWideScreen, status?.isClean]);
 
   const loadMore = useCallback(async () => {
     try {
@@ -191,7 +201,7 @@ export function useCommitBrowserModel({
     setLoadingDetail(true);
     setDetailError(null);
     setDetail(null);
-    setSelectedPath(null);
+    setSelectedPath(initialPath ?? null);
     setMessageView(false);
     api
       .getGitCommit(projectId, selectedSha)
@@ -210,7 +220,7 @@ export function useCommitBrowserModel({
     return () => {
       cancelled = true;
     };
-  }, [projectId, selectedSha, t]);
+  }, [initialPath, projectId, selectedSha, t]);
 
   useEffect(() => {
     if (!compareToHead || !selectedSha || !supportsProjections) {
@@ -247,19 +257,25 @@ export function useCommitBrowserModel({
   ]);
 
   const selectedFiles = useMemo(
-    () =>
-      compareToHead ? (comparison?.files ?? []) : (detail?.files ?? []),
+    () => (compareToHead ? (comparison?.files ?? []) : (detail?.files ?? [])),
     [compareToHead, comparison?.files, detail?.files],
   );
 
   useEffect(() => {
-    if (!isWideScreen) return;
+    const linkedFile = initialPath
+      ? selectedFiles.find(
+          (file) => file.path === initialPath || file.origPath === initialPath,
+        )
+      : undefined;
+    if (!isWideScreen && !linkedFile) return;
     setSelectedPath((current) =>
-      current && selectedFiles.some((file) => file.path === current)
-        ? current
-        : (selectedFiles[0]?.path ?? null),
+      linkedFile
+        ? linkedFile.path
+        : current && selectedFiles.some((file) => file.path === current)
+          ? current
+          : (selectedFiles[0]?.path ?? null),
     );
-  }, [isWideScreen, selectedFiles]);
+  }, [initialPath, isWideScreen, selectedFiles]);
 
   const selectedFile: GitFileChange | null = selectedPath
     ? (selectedFiles.find((file) => file.path === selectedPath) ?? null)

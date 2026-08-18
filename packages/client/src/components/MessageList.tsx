@@ -6,8 +6,10 @@ import type {
   UploadedFile,
 } from "@yep-anywhere/shared";
 import {
+  createElement,
   memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -28,11 +30,20 @@ import { useMessageListIsearch } from "../hooks/useMessageListIsearch";
 import { useMessageListSelectionQuote } from "../hooks/useMessageListSelectionQuote";
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useI18n } from "../i18n";
+import {
+  createRememberedDisclosureStateRegistry,
+  RememberedDisclosureStateProvider,
+} from "../contexts/RememberedDisclosureStateContext";
 import type {
   ComposerDraftSignal,
   ComposerEditAvailabilityStore,
 } from "../lib/composerDraftSignal";
+import {
+  isBrowserDebugPerformanceRecording,
+  recordBrowserDebugPerformanceMetric,
+} from "../lib/browserDebugPerformance";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
+import { getMessageId } from "../lib/mergeMessages";
 import {
   formatCompactRelativeAge,
   getEarliestMessageTimestampMs,
@@ -97,6 +108,7 @@ import { RenderItemComponent } from "./RenderItemComponent";
 import { AssistantTurnImageGallery } from "./TurnImageGallery";
 import {
   UserTurnNavigator,
+  type UserTurnNavAnchor,
   type UserTurnNavMotionCue,
 } from "./UserTurnNavigator";
 import { CopyTextButton } from "./ui/CopyTextButton";
@@ -146,9 +158,9 @@ function getSessionIsearchShortcutScope(
 }
 
 function getVisibleTurnEndTimestampMs(
-  messageList: HTMLDivElement,
   scrollContainer: HTMLElement,
   groups: readonly RenderTurnGroup[],
+  rowsById: ReadonlyMap<string, HTMLElement>,
 ): number | null {
   const containerRect = scrollContainer.getBoundingClientRect();
   let timestampMs: number | null = null;
@@ -162,7 +174,7 @@ function getVisibleTurnEndTimestampMs(
     if (!item) {
       continue;
     }
-    const row = findRenderRow(messageList, item.id);
+    const row = rowsById.get(item.id);
     if (!row) {
       continue;
     }
@@ -179,9 +191,9 @@ function getVisibleTurnEndTimestampMs(
 }
 
 function getMiddleVisibleTimestampMs(
-  messageList: HTMLDivElement,
   scrollContainer: HTMLElement,
   items: readonly RenderItem[],
+  rows: readonly HTMLElement[],
 ): number | null {
   const containerRect = scrollContainer.getBoundingClientRect();
   const middleY = containerRect.top + containerRect.height / 2;
@@ -195,9 +207,7 @@ function getMiddleVisibleTimestampMs(
   }
 
   let best: { distance: number; timestampMs: number } | null = null;
-  for (const row of messageList.querySelectorAll<HTMLElement>(
-    "[data-render-id]",
-  )) {
+  for (const row of rows) {
     const id = row.dataset.renderId;
     if (!id) {
       continue;
@@ -234,9 +244,19 @@ function getTranscriptPositionTimestampMs(
   groups: readonly RenderTurnGroup[],
   items: readonly RenderItem[],
 ): number | null {
+  const rows = Array.from(
+    messageList.querySelectorAll<HTMLElement>("[data-render-id]"),
+  );
+  const rowsById = new Map<string, HTMLElement>();
+  for (const row of rows) {
+    const id = row.dataset.renderId;
+    if (id && !rowsById.has(id)) {
+      rowsById.set(id, row);
+    }
+  }
   return (
-    getVisibleTurnEndTimestampMs(messageList, scrollContainer, groups) ??
-    getMiddleVisibleTimestampMs(messageList, scrollContainer, items)
+    getVisibleTurnEndTimestampMs(scrollContainer, groups, rowsById) ??
+    getMiddleVisibleTimestampMs(scrollContainer, items, rows)
   );
 }
 
@@ -247,8 +267,12 @@ const BOTTOM_FOLLOW_VIEWPORT_FRACTION = 0.45;
 const FOLLOW_CATCH_UP_DELAYS_MS = [50, 120, 240, 480, 960, 1600, 2400];
 const SEND_CATCH_UP_DELAYS_MS = [80, 240, 640];
 const TOUCH_SCROLL_CANCEL_THRESHOLD_PX = 6;
+const USER_TURN_NAV_SCROLL_OFFSET_PX = 12;
+const USER_TURN_NAV_VISIBILITY_TOLERANCE_PX = 1;
 const INTERACTIVE_SCROLL_TARGET_SELECTOR =
   "button, input, textarea, select, a[href], [contenteditable='true']";
+const EDITABLE_KEYBOARD_TARGET_SELECTOR =
+  "input, textarea, select, [contenteditable='true']";
 
 function highResolutionNowMs(): number {
   return typeof performance !== "undefined" &&
@@ -326,6 +350,84 @@ function isInteractiveScrollTarget(target: EventTarget | null): boolean {
     target instanceof Element &&
     target.closest(INTERACTIVE_SCROLL_TARGET_SELECTOR) !== null
   );
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest(EDITABLE_KEYBOARD_TARGET_SELECTOR) !== null
+  );
+}
+
+function getAdjacentHiddenUserTurnTarget(
+  anchors: readonly UserTurnNavAnchor[],
+  messageList: HTMLDivElement,
+  scrollContainer: HTMLElement,
+  direction: "previous" | "next",
+): string | null {
+  const viewport = scrollContainer.getBoundingClientRect();
+  const alignmentTop = viewport.top + USER_TURN_NAV_SCROLL_OFFSET_PX;
+  let candidate: { id: string; top: number } | null = null;
+
+  for (const anchor of anchors) {
+    const targetId = anchor.targetId ?? anchor.id;
+    const row = findRenderRow(messageList, targetId);
+    if (!row) continue;
+    const rect = row.getBoundingClientRect();
+    const fullyVisible =
+      rect.top >= viewport.top - USER_TURN_NAV_VISIBILITY_TOLERANCE_PX &&
+      rect.bottom <= viewport.bottom + USER_TURN_NAV_VISIBILITY_TOLERANCE_PX;
+    if (fullyVisible) continue;
+
+    if (
+      direction === "previous" &&
+      rect.top < alignmentTop - USER_TURN_NAV_VISIBILITY_TOLERANCE_PX &&
+      (!candidate || rect.top > candidate.top)
+    ) {
+      candidate = { id: targetId, top: rect.top };
+    }
+    if (
+      direction === "next" &&
+      rect.top > alignmentTop + USER_TURN_NAV_VISIBILITY_TOLERANCE_PX &&
+      (!candidate || rect.top < candidate.top)
+    ) {
+      candidate = { id: targetId, top: rect.top };
+    }
+  }
+
+  return candidate?.id ?? null;
+}
+
+function getUserTurnNavigationDirection(
+  event: KeyboardEvent,
+): "previous" | "next" | null {
+  const plainTurnKey =
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !isEditableKeyboardTarget(event.target);
+  if (plainTurnKey && (event.key === "Home" || event.code === "Home")) {
+    return "previous";
+  }
+  if (plainTurnKey && (event.key === "End" || event.code === "End")) {
+    return "next";
+  }
+  if (
+    event.altKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.getModifierState("AltGraph")
+  ) {
+    if (event.key === "ArrowUp" || event.code === "ArrowUp") {
+      return "previous";
+    }
+    if (event.key === "ArrowDown" || event.code === "ArrowDown") {
+      return "next";
+    }
+  }
+  return null;
 }
 
 function loadSessionThinkingVisible(): boolean {
@@ -507,6 +609,8 @@ interface Props {
   onTransferBtwAsideTurn?: (text: string) => void;
   /** Append quoted assistant output to the composer. */
   onQuoteSelection?: (quotedText: string) => string | null;
+  /** Open a same-project new-session composer seeded from selected output. */
+  onStartNewSessionFromSelection?: (prefill: string) => void;
   /** Stable draft-change stream for quote tint reconciliation. */
   composerDraftSignal?: ComposerDraftSignal;
   /** Leaf-subscribed availability for moving queued text into the composer. */
@@ -555,12 +659,16 @@ interface Props {
   activeToolApproval?: ActiveToolApproval;
   /** Whether there are older messages not yet loaded */
   hasOlderMessages?: boolean;
+  /** Cursor identifying the next older transcript page */
+  olderMessagesCursor?: string | null;
   /** Ephemeral signal incremented after an accepted active-window prefix trim. */
   activeWindowTrimRevision?: number;
   /** Whether older messages are currently being loaded */
   loadingOlder?: boolean;
-  /** Callback to load the next chunk of older messages */
-  onLoadOlderMessages?: () => void;
+  /** Whether older loading paused at its safety boundary before a user turn */
+  olderLoadContinuationRequired?: boolean;
+  /** Callback to load through older chunks to a user-turn boundary */
+  onLoadOlderMessages?: () => void | Promise<void>;
   /** Whether the client transcript is intentionally loaded from a recent tail */
   clientTailActive?: boolean;
   /** Render the recent transcript tail first, then hydrate older rows in batches. */
@@ -577,6 +685,8 @@ interface Props {
   showFollowButton?: boolean;
   /** Optional floating container for the shared Follow affordance. */
   followButtonPortalTarget?: HTMLElement | null;
+  /** Restore transient session chrome when Follow explicitly rejoins the tail. */
+  onFollowCurrent?: () => void;
   initialScrollSnapshot?: SessionRouteScrollSnapshot | null;
   onScrollSnapshotChange?: (snapshot: SessionRouteScrollSnapshot) => void;
   /** Immediate live-tail intent; unlike route snapshots, this is not debounced. */
@@ -812,7 +922,6 @@ function QueuedMessageActions({
           disabled={disabled}
           onClick={onResume}
           aria-label={t("projectQueueResume")}
-          title={t("projectQueueResume")}
         >
           <PlayIcon />
           <span>{t("projectQueueResume")}</span>
@@ -884,6 +993,7 @@ export const MessageList = memo(function MessageList({
   onToggleBtwAsideExpanded,
   onTransferBtwAsideTurn,
   onQuoteSelection,
+  onStartNewSessionFromSelection,
   composerDraftSignal,
   composerEditAvailabilityStore,
   quoteClearSignal = 0,
@@ -908,8 +1018,10 @@ export const MessageList = memo(function MessageList({
   markdownAugments,
   activeToolApproval,
   hasOlderMessages = false,
+  olderMessagesCursor = null,
   activeWindowTrimRevision = 0,
   loadingOlder = false,
+  olderLoadContinuationRequired = false,
   onLoadOlderMessages,
   clientTailActive = false,
   progressiveRenderEnabled = false,
@@ -919,6 +1031,7 @@ export const MessageList = memo(function MessageList({
   conversationViewEnabledOverride,
   showFollowButton = true,
   followButtonPortalTarget,
+  onFollowCurrent,
   initialScrollSnapshot = null,
   onScrollSnapshotChange,
   onFollowingBottomChange,
@@ -932,7 +1045,39 @@ export const MessageList = memo(function MessageList({
   onFollowForkSummary,
   bangCommandHandlers,
 }: Props) {
+  const transcriptRenderStartedAtMs = isBrowserDebugPerformanceRecording()
+    ? highResolutionNowMs()
+    : null;
+  const firstMessageId = messages[0] ? getMessageId(messages[0]) : null;
+  const transcriptSnapshot = useMemo(
+    () => ({
+      activeWindowTrimRevision,
+      firstMessageId,
+      messages,
+      olderMessagesCursor,
+    }),
+    [activeWindowTrimRevision, firstMessageId, messages, olderMessagesCursor],
+  );
+  const deferredTranscriptSnapshot = useDeferredValue(transcriptSnapshot);
+  const renderedTranscriptMessages =
+    deferredTranscriptSnapshot.activeWindowTrimRevision ===
+      activeWindowTrimRevision &&
+    deferredTranscriptSnapshot.firstMessageId === firstMessageId &&
+    deferredTranscriptSnapshot.olderMessagesCursor === olderMessagesCursor
+      ? deferredTranscriptSnapshot.messages
+      : messages;
   const containerRef = useRef<HTMLDivElement>(null);
+  const loadOlderBoundaryRef = useRef<HTMLDivElement>(null);
+  const automaticOlderLoadAttemptRef = useRef<string | null>(null);
+  const automaticOlderLoadRequiresExitRef = useRef(false);
+  const loadOlderOnDemandRef = useRef<() => void>(() => {});
+  const keyboardOlderLoadFrameRef = useRef<number | null>(null);
+  const pendingOlderPageScrollRef = useRef<{
+    wasAtBottom: boolean;
+    scrollTop: number;
+    scrollHeight: number;
+    anchor: ReturnType<typeof getFirstVisibleRenderAnchor>;
+  } | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const previousInertRef = useRef(inert);
   const isInitialLoadRef = useRef(true);
@@ -961,6 +1106,7 @@ export const MessageList = memo(function MessageList({
     typeof setTimeout
   > | null>(null);
   const previousProgressiveRevealActiveRef = useRef(false);
+  const settleSearchJumpFrameRef = useRef<number | null>(null);
   const scrollSnapshotWritesSuppressedRef = useRef(false);
   const previousScrollSnapshotWritesSuppressedRef = useRef(false);
   const previousActiveWindowTrimRevisionRef = useRef(activeWindowTrimRevision);
@@ -975,6 +1121,8 @@ export const MessageList = memo(function MessageList({
     if (showThinking === "off") return false;
     return loadSessionThinkingVisible();
   });
+  const [olderPageLoadCompletionRevision, setOlderPageLoadCompletionRevision] =
+    useState(0);
   const [conversationViewEnabled, setConversationViewEnabled] = useState(
     getConversationViewPreference,
   );
@@ -1028,6 +1176,14 @@ export const MessageList = memo(function MessageList({
   >(null);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
   const [newOutputBelowVisible, setNewOutputBelowVisible] = useState(false);
+  const rememberedDisclosureStateRegistry = useMemo(() => {
+    // The registry belongs to one mounted session view, even though its
+    // contents need no session key once that lifetime has been established.
+    void conversationViewStateKey;
+    return createRememberedDisclosureStateRegistry();
+  }, [conversationViewStateKey]);
+  const previousDisclosureOwnerCountRef = useRef<number | null>(null);
+  const previousDisclosureTrimRevisionRef = useRef(activeWindowTrimRevision);
   const { t } = useI18n();
   const { widerConversationActivityPreviews } =
     useWiderConversationActivityPreviews();
@@ -1233,25 +1389,34 @@ export const MessageList = memo(function MessageList({
   const renderItems = useMemo(() => {
     const startedAt = highResolutionNowMs();
     markReloadPerfPhase("message_list_preprocess_start", {
-      messages: messages.length,
+      messages: renderedTranscriptMessages.length,
       markdownAugments: Object.keys(markdownAugments ?? {}).length,
       hasActiveToolApproval: !!activeToolApproval,
     });
     const nextRenderItems = buildSessionDetailRenderItems({
-      messages,
+      messages: renderedTranscriptMessages,
+      provider,
       markdownAugments,
       activeToolApproval,
       transcriptDisplayObjects,
       previousRenderItems: previousRenderItemsRef.current,
     });
+    const durationMs = highResolutionNowMs() - startedAt;
     markReloadPerfPhase("message_list_preprocess_end", {
-      messages: messages.length,
+      messages: renderedTranscriptMessages.length,
       renderItems: nextRenderItems.length,
-      durationMs: highResolutionNowMs() - startedAt,
+      durationMs,
     });
+    if (isBrowserDebugPerformanceRecording()) {
+      recordBrowserDebugPerformanceMetric("message-list.preprocess", {
+        durationMs,
+        count: 1,
+      });
+    }
     return nextRenderItems;
   }, [
-    messages,
+    renderedTranscriptMessages,
+    provider,
     markdownAugments,
     activeToolApproval,
     transcriptDisplayObjects,
@@ -1259,6 +1424,30 @@ export const MessageList = memo(function MessageList({
   useEffect(() => {
     previousRenderItemsRef.current = renderItems;
   }, [renderItems]);
+  useEffect(() => {
+    const previousOwnerCount = previousDisclosureOwnerCountRef.current;
+    const trimRevisionChanged =
+      previousDisclosureTrimRevisionRef.current !== activeWindowTrimRevision;
+    previousDisclosureOwnerCountRef.current = renderItems.length;
+    previousDisclosureTrimRevisionRef.current = activeWindowTrimRevision;
+
+    if (
+      rememberedDisclosureStateRegistry.size === 0 ||
+      (!trimRevisionChanged &&
+        previousOwnerCount !== null &&
+        renderItems.length >= previousOwnerCount)
+    ) {
+      return;
+    }
+
+    rememberedDisclosureStateRegistry.pruneOwners(
+      new Set(renderItems.map((item) => item.id)),
+    );
+  }, [
+    activeWindowTrimRevision,
+    rememberedDisclosureStateRegistry,
+    renderItems,
+  ]);
   const thinkingItemCount = useMemo(
     () => countThinkingItems(renderItems),
     [renderItems],
@@ -1319,28 +1508,35 @@ export const MessageList = memo(function MessageList({
       fullDisplayRenderItems,
     ],
   );
-  const displayRenderItems = useMemo(
-    () =>
-      effectiveConversationViewEnabled
-        ? projectConversationView(conversationWindow.items, {
-            active: isProcessing || isStreaming,
-            dismissedThinkingPreviewSlots:
-              dismissedConversationThinkingPreviewSlots,
-            expandedActivityIds: expandedConversationActivityIds,
-            nowMs,
-          })
-        : fullDisplayRenderItems,
-    [
-      conversationWindow.items,
-      dismissedConversationThinkingPreviewSlots,
-      effectiveConversationViewEnabled,
-      expandedConversationActivityIds,
-      fullDisplayRenderItems,
-      isProcessing,
-      isStreaming,
+  const displayRenderItems = useMemo(() => {
+    if (!effectiveConversationViewEnabled) return fullDisplayRenderItems;
+    const startedAt = highResolutionNowMs();
+    const projected = projectConversationView(conversationWindow.items, {
+      active: isProcessing || isStreaming,
+      dismissedThinkingPreviewSlots: dismissedConversationThinkingPreviewSlots,
+      expandedActivityIds: expandedConversationActivityIds,
       nowMs,
-    ],
-  );
+    });
+    if (isBrowserDebugPerformanceRecording()) {
+      recordBrowserDebugPerformanceMetric(
+        "message-list.conversation-projection",
+        {
+          durationMs: highResolutionNowMs() - startedAt,
+          category: isProcessing || isStreaming ? "active" : "idle",
+        },
+      );
+    }
+    return projected;
+  }, [
+    conversationWindow.items,
+    dismissedConversationThinkingPreviewSlots,
+    effectiveConversationViewEnabled,
+    expandedConversationActivityIds,
+    fullDisplayRenderItems,
+    isProcessing,
+    isStreaming,
+    nowMs,
+  ]);
   const visibleConversationThinkingPreviewSlots = useMemo(() => {
     const slots = new Set<ConversationThinkingPreviewSlot>();
     for (const item of displayRenderItems) {
@@ -1396,20 +1592,37 @@ export const MessageList = memo(function MessageList({
   const turnGroups = useMemo(() => {
     const startedAt = highResolutionNowMs();
     const grouped = groupRenderItemsIntoTurns(displayRenderItems);
+    const durationMs = highResolutionNowMs() - startedAt;
     markReloadPerfPhase("message_list_group_end", {
       renderItems: displayRenderItems.length,
       turnGroups: grouped.length,
-      durationMs: highResolutionNowMs() - startedAt,
+      durationMs,
     });
+    if (isBrowserDebugPerformanceRecording()) {
+      recordBrowserDebugPerformanceMetric("message-list.group", {
+        durationMs,
+      });
+    }
     return grouped;
   }, [displayRenderItems]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     markReloadPerfPhase("message_list_commit_effect", {
-      messages: messages.length,
+      messages: renderedTranscriptMessages.length,
       renderItems: displayRenderItems.length,
       turnGroups: turnGroups.length,
     });
-  }, [messages.length, displayRenderItems.length, turnGroups.length]);
+    if (isBrowserDebugPerformanceRecording()) {
+      recordBrowserDebugPerformanceMetric("message-list.commit", {
+        durationMs:
+          transcriptRenderStartedAtMs === null
+            ? 0
+            : highResolutionNowMs() - transcriptRenderStartedAtMs,
+        category: effectiveConversationViewEnabled
+          ? "conversation-view"
+          : "full-transcript",
+      });
+    }
+  });
   const {
     active: searchActive,
     scope: searchScope,
@@ -1430,35 +1643,37 @@ export const MessageList = memo(function MessageList({
     inert,
     turnGroups,
   });
-  const updateScrollPositionTimestamp = useCallback(
-    (options: { atBottom?: boolean } = {}) => {
-      const content = containerRef.current;
-      const container = content?.parentElement;
-      if (!content || !container || options.atBottom) {
-        setScrollPositionTimestampMs(null);
-        return;
-      }
-      setScrollPositionTimestampMs(
-        getTranscriptPositionTimestampMs(
-          content,
-          container,
-          turnGroups,
-          displayRenderItems,
-        ),
-      );
-    },
-    [displayRenderItems, turnGroups],
-  );
-
-  // Latest render data for scroll-time reads: the capture callback stays
-  // identity-stable so the scroll listener does not re-attach on every
-  // transcript change.
+  // Latest render data for settled scroll reads. Scrolling only schedules one
+  // trailing measurement; it never scans the transcript DOM on the hot path.
   const displayRenderItemsRef = useRef(displayRenderItems);
   displayRenderItemsRef.current = displayRenderItems;
-  const updateScrollPositionTimestampRef = useRef(
-    updateScrollPositionTimestamp,
-  );
-  updateScrollPositionTimestampRef.current = updateScrollPositionTimestamp;
+  const turnGroupsRef = useRef(turnGroups);
+  turnGroupsRef.current = turnGroups;
+  const updateScrollPositionTimestamp = useCallback(() => {
+    const content = containerRef.current;
+    const container = content?.parentElement;
+    if (!content || !container) return;
+    if (isAtScrollBottom(container, content)) {
+      setScrollPositionTimestampMs(null);
+      return;
+    }
+    const startedAtMs = isBrowserDebugPerformanceRecording()
+      ? highResolutionNowMs()
+      : null;
+    const timestampMs = getTranscriptPositionTimestampMs(
+      content,
+      container,
+      turnGroupsRef.current,
+      displayRenderItemsRef.current,
+    );
+    if (startedAtMs !== null) {
+      recordBrowserDebugPerformanceMetric("message-list.scroll-position", {
+        durationMs: highResolutionNowMs() - startedAtMs,
+        category: "settled",
+      });
+    }
+    setScrollPositionTimestampMs(timestampMs);
+  }, []);
 
   const captureScrollSnapshot = useCallback(
     (container: HTMLElement, content: HTMLDivElement) => {
@@ -1482,8 +1697,10 @@ export const MessageList = memo(function MessageList({
   );
 
   useEffect(() => {
-    updateScrollPositionTimestamp({ atBottom: isScrolledToBottom });
-  }, [isScrolledToBottom, updateScrollPositionTimestamp]);
+    if (isScrolledToBottom) {
+      setScrollPositionTimestampMs(null);
+    }
+  }, [isScrolledToBottom]);
 
   // Row-start times for the transcript hover override: hovering a row (or a
   // turn-rail marker, which wins) retargets the composer "at N ago" from the
@@ -1555,15 +1772,16 @@ export const MessageList = memo(function MessageList({
     alwaysShowQuoteCircles,
     paragraphQuoteCirclesEnabled,
     handleQuoteTextBlock,
-    mobileSelectionQuoteButton,
-    floatingSelectionQuoteButton,
+    mobileSelectionActions,
+    floatingSelectionActions,
+    selectionContextMenu,
   } = useMessageListSelectionQuote({
     containerRef,
     inert,
     onQuoteSelection,
+    onStartNewSessionFromSelection,
     composerDraftSignal,
     quoteClearSignal,
-    followButtonVisible: !isScrolledToBottom,
     isInteractiveTarget: isInteractiveScrollTarget,
   });
   const latestVisibleTimestampMs = useMemo(
@@ -1710,6 +1928,12 @@ export const MessageList = memo(function MessageList({
   );
   useEffect(() => {
     if (!progressiveRenderAllowed) {
+      // Isearch temporarily shows its filtered rows. Do not reset the
+      // progressive cycle here: closing search used to restart from the tail,
+      // unmounting the selected match before Enter could jump to it.
+      if (searchActive) {
+        return;
+      }
       progressiveActiveRenderKeyRef.current = null;
       setProgressiveRenderStateKey(null);
       setProgressiveEntryCount(null);
@@ -1739,6 +1963,7 @@ export const MessageList = memo(function MessageList({
     progressiveInitialEntryCount,
     progressiveRenderAllowed,
     progressiveRenderCycleKey,
+    searchActive,
     visibleTimelineEntries.length,
   ]);
   useEffect(() => {
@@ -1829,13 +2054,17 @@ export const MessageList = memo(function MessageList({
       scrollSnapshotPublishTimerRef.current = null;
     }
   }, []);
-  const schedulePublishScrollSnapshot = useCallback(() => {
+  const publishSettledScrollState = useCallback(() => {
+    updateScrollPositionTimestamp();
+    publishScrollSnapshot();
+  }, [publishScrollSnapshot, updateScrollPositionTimestamp]);
+  const scheduleSettledScrollState = useCallback(() => {
     clearScrollSnapshotPublishTimer();
     scrollSnapshotPublishTimerRef.current = setTimeout(() => {
       scrollSnapshotPublishTimerRef.current = null;
-      publishScrollSnapshot();
+      publishSettledScrollState();
     }, SCROLL_SNAPSHOT_PUBLISH_DEBOUNCE_MS);
-  }, [clearScrollSnapshotPublishTimer, publishScrollSnapshot]);
+  }, [clearScrollSnapshotPublishTimer, publishSettledScrollState]);
 
   // Leave-time capture: flush the pending trailing capture and publish once
   // on unmount or on becoming inert — not on listener re-attachment.
@@ -2188,6 +2417,9 @@ export const MessageList = memo(function MessageList({
         0,
         scrollContainer.scrollTop + rowRect.top - scrollRect.top - offset,
       );
+      if (Math.abs(nextTop - scrollContainer.scrollTop) < 1) {
+        return;
+      }
       if (showMotionCue) {
         showNavMotionCue(nextTop < scrollContainer.scrollTop ? "up" : "down");
       }
@@ -2199,12 +2431,117 @@ export const MessageList = memo(function MessageList({
     [showNavMotionCue],
   );
 
+  const beginTurnNavigation = useCallback(() => {
+    shouldAutoScrollRef.current = false;
+    setIsScrolledToBottom(false);
+    reportFollowingBottom(false);
+    scheduleSettledScrollState();
+  }, [reportFollowingBottom, scheduleSettledScrollState]);
+
+  const jumpToSearchTarget = useCallback(
+    (targetId: string, settle = true) => {
+      beginTurnNavigation();
+      scrollToRenderId(targetId, "auto", "center", true);
+      if (!settle) {
+        return;
+      }
+      if (settleSearchJumpFrameRef.current !== null) {
+        cancelAnimationFrame(settleSearchJumpFrameRef.current);
+      }
+      settleSearchJumpFrameRef.current = requestAnimationFrame(() => {
+        settleSearchJumpFrameRef.current = requestAnimationFrame(() => {
+          settleSearchJumpFrameRef.current = null;
+          // Recap/activity/synthetic rows often reflow after the first
+          // geometry read. Re-center once on settled heights so the rail
+          // preview and the landed viewport agree.
+          scrollToRenderId(targetId, "auto", "center", false);
+        });
+      });
+    },
+    [beginTurnNavigation, scrollToRenderId],
+  );
+  useEffect(
+    () => () => {
+      if (settleSearchJumpFrameRef.current !== null) {
+        cancelAnimationFrame(settleSearchJumpFrameRef.current);
+        settleSearchJumpFrameRef.current = null;
+      }
+    },
+    [],
+  );
+
+  const completeProgressiveReveal = useCallback(() => {
+    progressiveCompletedRenderKeyRef.current = progressiveRenderCycleKey;
+    progressiveActiveRenderKeyRef.current = null;
+  }, [progressiveRenderCycleKey]);
+
+  const commitSearchJump = useCallback(
+    (targetId: string) => {
+      completeProgressiveReveal();
+      jumpToSearchTarget(targetId, false);
+      preserveScrollAfterTranscriptHeightChange(() => {
+        closeSearch(false);
+      }, targetId);
+    },
+    [
+      closeSearch,
+      completeProgressiveReveal,
+      jumpToSearchTarget,
+      preserveScrollAfterTranscriptHeightChange,
+    ],
+  );
+
+  const startSearch = useCallback(
+    (scope: SessionIsearchScope) => {
+      beginTurnNavigation();
+      openSearch(scope);
+    },
+    [beginTurnNavigation, openSearch],
+  );
+
+  const handleSearchMatchSelect = useCallback(
+    (id: string, targetId: string) => {
+      selectSearchMatch(id, targetId);
+      jumpToSearchTarget(targetId);
+    },
+    [jumpToSearchTarget, selectSearchMatch],
+  );
+
   const scrollToCurrent = useCallback(() => {
     setNewOutputBelowVisible(false);
     forceScrollToCurrent(FOLLOW_CATCH_UP_DELAYS_MS, {
       allowThinkingDeltas: true,
     });
   }, [forceScrollToCurrent]);
+
+  const navigateToAdjacentHiddenUserTurn = useCallback(
+    (direction: "previous" | "next", requestOlderWhenMissing = true) => {
+      const messageList = containerRef.current;
+      const scrollContainer = messageList?.parentElement;
+      if (!messageList || !scrollContainer) return;
+      const targetId = getAdjacentHiddenUserTurnTarget(
+        getNavigatorAnchors(),
+        messageList,
+        scrollContainer,
+        direction,
+      );
+      if (!targetId) {
+        if (direction === "previous" && requestOlderWhenMissing) {
+          loadOlderOnDemandRef.current();
+        }
+        return;
+      }
+      reportFollowingBottom(false);
+      scrollToRenderId(targetId, "auto", "start", true);
+      scheduleSettledScrollState();
+    },
+    [
+      getNavigatorAnchors,
+      reportFollowingBottom,
+      scheduleSettledScrollState,
+      scrollToRenderId,
+    ],
+  );
 
   useEffect(() => {
     if (inert) {
@@ -2230,6 +2567,18 @@ export const MessageList = memo(function MessageList({
         scrollToCurrent();
         return;
       }
+      const turnNavigationDirection = searchActive
+        ? null
+        : getUserTurnNavigationDirection(event);
+      if (turnNavigationDirection) {
+        event.preventDefault();
+        event.stopPropagation();
+        navigateToAdjacentHiddenUserTurn(
+          turnNavigationDirection,
+          !event.repeat,
+        );
+        return;
+      }
       if (isCtrlKeyShortcut(event, "o", "KeyO")) {
         event.preventDefault();
         event.stopPropagation();
@@ -2243,7 +2592,7 @@ export const MessageList = memo(function MessageList({
         if (searchActive && searchScope === requestedScope) {
           moveSearchSelection("previous");
         } else {
-          openSearch(requestedScope);
+          startSearch(requestedScope);
         }
         return;
       }
@@ -2269,11 +2618,12 @@ export const MessageList = memo(function MessageList({
         event.stopPropagation();
         const selectedId = getSelectedSearchTargetId();
         stopSearchArrowRepeat();
-        closeSearch(false);
         if (selectedId) {
-          requestAnimationFrame(() =>
-            scrollToRenderId(selectedId, "auto", "center", true),
-          );
+          // Same jump as clicking the highlighted match; then close while
+          // pinning that row so unhiding non-matches cannot move it.
+          commitSearchJump(selectedId);
+        } else {
+          closeSearch(false);
         }
       }
     };
@@ -2292,14 +2642,15 @@ export const MessageList = memo(function MessageList({
     };
   }, [
     closeSearch,
+    commitSearchJump,
     getSelectedSearchTargetId,
     handleSearchArrowKey,
     moveSearchSelection,
-    openSearch,
+    navigateToAdjacentHiddenUserTurn,
     scrollToCurrent,
-    scrollToRenderId,
     searchActive,
     searchScope,
+    startSearch,
     stopSearchArrowRepeat,
     toggleThinkingItemsVisible,
     inert,
@@ -2320,6 +2671,20 @@ export const MessageList = memo(function MessageList({
       return;
     }
 
+    if (fetchesOlderMessages) {
+      const messageList = containerRef.current;
+      const scrollContainer = messageList?.parentElement;
+      pendingOlderPageScrollRef.current =
+        messageList && scrollContainer
+          ? {
+              wasAtBottom: isNearScrollBottom(scrollContainer),
+              scrollTop: scrollContainer.scrollTop,
+              scrollHeight: scrollContainer.scrollHeight,
+              anchor: getFirstVisibleRenderAnchor(messageList, scrollContainer),
+            }
+          : null;
+    }
+
     preserveScrollAfterTranscriptHeightChange(() => {
       if (revealsLoadedTurns) {
         setConversationWindowExpansion((previous) => ({
@@ -2332,7 +2697,20 @@ export const MessageList = memo(function MessageList({
         }));
       }
       if (fetchesOlderMessages) {
-        onLoadOlderMessages();
+        try {
+          const completion = onLoadOlderMessages();
+          if (completion) {
+            const finishOlderPageLoad = () => {
+              setOlderPageLoadCompletionRevision((previous) => previous + 1);
+            };
+            void completion.then(finishOlderPageLoad, finishOlderPageLoad);
+          } else {
+            pendingOlderPageScrollRef.current = null;
+          }
+        } catch (error) {
+          pendingOlderPageScrollRef.current = null;
+          throw error;
+        }
       }
     });
   }, [
@@ -2345,6 +2723,106 @@ export const MessageList = memo(function MessageList({
     onLoadOlderMessages,
     preserveScrollAfterTranscriptHeightChange,
   ]);
+  loadOlderOnDemandRef.current = () => {
+    if (!pendingOlderPageScrollRef.current) {
+      handleLoadOlder();
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (olderPageLoadCompletionRevision === 0) return;
+    const pending = pendingOlderPageScrollRef.current;
+    pendingOlderPageScrollRef.current = null;
+    if (!pending) return;
+
+    const messageList = containerRef.current;
+    const scrollContainer = messageList?.parentElement;
+    if (!messageList || !scrollContainer) return;
+    isProgrammaticScrollRef.current = true;
+
+    if (pending.wasAtBottom) {
+      scrollToBottom(scrollContainer);
+    } else {
+      const anchorRow = pending.anchor
+        ? findRenderRow(messageList, pending.anchor.id)
+        : null;
+      if (anchorRow && pending.anchor) {
+        restoreScrollToAnchorRow(
+          scrollContainer,
+          anchorRow,
+          pending.anchor.topOffset,
+        );
+      } else {
+        scrollContainer.scrollTop = Math.max(
+          0,
+          pending.scrollTop +
+            scrollContainer.scrollHeight -
+            pending.scrollHeight,
+        );
+      }
+    }
+    lastHeightRef.current = scrollContainer.scrollHeight;
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
+  }, [olderPageLoadCompletionRevision, scrollToBottom]);
+
+  const automaticOlderLoadKey = useMemo(() => {
+    const keys: string[] = [];
+    if (
+      effectiveConversationViewEnabled &&
+      conversationWindow.hiddenTurnCount > 0
+    ) {
+      keys.push(
+        `conversation:${conversationViewStateKey ?? "default"}:${conversationWindow.hiddenTurnCount}`,
+      );
+    }
+    if (hasOlderMessages) {
+      keys.push(`page:${olderMessagesCursor ?? "unkeyed"}`);
+    }
+    return keys.length > 0 ? keys.join("|") : null;
+  }, [
+    conversationViewStateKey,
+    conversationWindow.hiddenTurnCount,
+    effectiveConversationViewEnabled,
+    hasOlderMessages,
+    olderMessagesCursor,
+  ]);
+
+  useEffect(() => {
+    if (inert || loadingOlder || !automaticOlderLoadKey) return;
+    const boundary = loadOlderBoundaryRef.current;
+    const scrollContainer = containerRef.current?.parentElement;
+    const Observer = window.IntersectionObserver;
+    if (!boundary || !scrollContainer || !Observer) return;
+
+    const observer = new Observer(
+      (entries) => {
+        const entry = entries.find(
+          (candidate) => candidate.target === boundary,
+        );
+        if (!entry) return;
+        if (pendingOlderPageScrollRef.current) return;
+        if (!entry.isIntersecting) {
+          automaticOlderLoadRequiresExitRef.current = false;
+          if (automaticOlderLoadAttemptRef.current === automaticOlderLoadKey) {
+            automaticOlderLoadAttemptRef.current = null;
+          }
+          return;
+        }
+        if (automaticOlderLoadRequiresExitRef.current) return;
+        if (automaticOlderLoadAttemptRef.current === automaticOlderLoadKey) {
+          return;
+        }
+        automaticOlderLoadAttemptRef.current = automaticOlderLoadKey;
+        automaticOlderLoadRequiresExitRef.current = true;
+        handleLoadOlder();
+      },
+      { root: scrollContainer },
+    );
+    observer.observe(boundary);
+    return () => observer.disconnect();
+  }, [automaticOlderLoadKey, handleLoadOlder, inert, loadingOlder]);
 
   // Track scroll position to determine if user is near bottom.
   // Ignore programmatic scrolls - only user-initiated scrolls should affect auto-scroll state.
@@ -2366,12 +2844,11 @@ export const MessageList = memo(function MessageList({
     }
     setIsScrolledToBottom(atBottom);
     reportFollowingBottom(atBottom);
-    updateScrollPositionTimestampRef.current({ atBottom });
-    schedulePublishScrollSnapshot();
+    scheduleSettledScrollState();
   }, [
     clearForcedCurrentScrollTimers,
     reportFollowingBottom,
-    schedulePublishScrollSnapshot,
+    scheduleSettledScrollState,
   ]);
 
   // Attach scroll listener to parent container
@@ -2437,6 +2914,10 @@ export const MessageList = memo(function MessageList({
       const rect = container.getBoundingClientRect();
       if (event.clientX >= rect.right - scrollbarWidth) {
         stopFollowingForUserScroll(container);
+        // Native scrollbar focus differs across browser/platform pairs. Make
+        // the explicit transcript gesture own subsequent native page keys
+        // instead of leaving them attached to the composer or document body.
+        container.focus({ preventScroll: true });
       }
     };
 
@@ -2466,6 +2947,18 @@ export const MessageList = memo(function MessageList({
       ) {
         stopFollowingForUserScroll(container);
       }
+      if (
+        !event.repeat &&
+        (event.key === "PageUp" || event.code === "PageUp") &&
+        keyboardOlderLoadFrameRef.current === null
+      ) {
+        keyboardOlderLoadFrameRef.current = requestAnimationFrame(() => {
+          keyboardOlderLoadFrameRef.current = null;
+          if (container.scrollTop <= 1) {
+            loadOlderOnDemandRef.current();
+          }
+        });
+      }
     };
 
     container.addEventListener("wheel", handleWheel, { passive: true });
@@ -2490,6 +2983,10 @@ export const MessageList = memo(function MessageList({
       container.removeEventListener("touchcancel", handleTouchEnd);
       container.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown, true);
+      if (keyboardOlderLoadFrameRef.current !== null) {
+        cancelAnimationFrame(keyboardOlderLoadFrameRef.current);
+        keyboardOlderLoadFrameRef.current = null;
+      }
     };
   }, [inert, stopFollowingForUserScroll]);
 
@@ -2607,7 +3104,9 @@ export const MessageList = memo(function MessageList({
   // Force scroll to bottom when scrollTrigger changes (user sent a message)
   useEffect(() => {
     if (scrollTrigger > 0) {
-      forceScrollToCurrent(SEND_CATCH_UP_DELAYS_MS);
+      forceScrollToCurrent(SEND_CATCH_UP_DELAYS_MS, {
+        allowThinkingDeltas: true,
+      });
     }
   }, [forceScrollToCurrent, scrollTrigger]);
 
@@ -2708,7 +3207,6 @@ export const MessageList = memo(function MessageList({
       shouldAutoScrollRef.current = false;
       setIsScrolledToBottom(false);
       reportFollowingBottom(false);
-      updateScrollPositionTimestamp({ atBottom: false });
       setNewOutputBelowVisible(
         initialScrollSnapshot.atBottom &&
           container.scrollHeight >
@@ -2720,6 +3218,7 @@ export const MessageList = memo(function MessageList({
     isInitialLoadRef.current = false;
     requestAnimationFrame(() => {
       isProgrammaticScrollRef.current = false;
+      updateScrollPositionTimestamp();
       publishScrollSnapshot();
     });
   }, [
@@ -2752,6 +3251,11 @@ export const MessageList = memo(function MessageList({
     shouldWaitForInitialAnchorRestore,
   ]);
 
+  const handleFollowClick = useCallback(() => {
+    onFollowCurrent?.();
+    scrollToCurrent();
+  }, [onFollowCurrent, scrollToCurrent]);
+
   const followButtonTarget =
     !isScrolledToBottom && typeof document !== "undefined"
       ? followButtonPortalTarget === undefined
@@ -2771,7 +3275,7 @@ export const MessageList = memo(function MessageList({
         className={`message-follow-toggle${
           newOutputBelowVisible ? " is-new-output" : ""
         }`}
-        onClick={scrollToCurrent}
+        onClick={handleFollowClick}
         aria-label={followButtonTitle}
         title={followButtonTitle}
       >
@@ -2792,19 +3296,16 @@ export const MessageList = memo(function MessageList({
         <span>{followButtonLabel}</span>
       </button>
     ) : null;
-  return (
+  return createElement(
+    RememberedDisclosureStateProvider,
+    { registry: rememberedDisclosureStateRegistry },
     <>
       <UserTurnNavigator
         getAnchors={getNavigatorAnchors}
         messageListRef={containerRef}
         motionCue={navMotionCue}
-        onNavigateStart={() => {
-          shouldAutoScrollRef.current = false;
-          setIsScrolledToBottom(false);
-          reportFollowingBottom(false);
-          updateScrollPositionTimestamp({ atBottom: false });
-        }}
-        onSearchMatchSelect={selectSearchMatch}
+        onNavigateStart={beginTurnNavigation}
+        onSearchMatchSelect={handleSearchMatchSelect}
         onTrimAnchor={onTrimBeforeUserMessage}
         onForkBeforeAnchor={onForkBeforeUserMessage}
         onForkAfterAnchor={onForkAfterUserMessage}
@@ -2818,7 +3319,8 @@ export const MessageList = memo(function MessageList({
       {followButtonTarget && followButton
         ? createPortal(followButton, followButtonTarget)
         : followButton}
-      {mobileSelectionQuoteButton}
+      {mobileSelectionActions}
+      {selectionContextMenu}
       <div
         className={[
           "message-list",
@@ -2834,7 +3336,7 @@ export const MessageList = memo(function MessageList({
         onPointerOver={handleTranscriptPointerOver}
         onPointerLeave={handleTranscriptPointerLeave}
       >
-        {floatingSelectionQuoteButton}
+        {floatingSelectionActions}
         {progressiveRevealActive && (
           <div className="session-render-progress loading" role="status">
             <div>{t("sessionLoading")}</div>
@@ -2865,7 +3367,7 @@ export const MessageList = memo(function MessageList({
         {(hasOlderMessages ||
           clientTailActive ||
           conversationWindow.hiddenTurnCount > 0) && (
-          <div className="load-older-messages">
+          <div className="load-older-messages" ref={loadOlderBoundaryRef}>
             {effectiveConversationViewEnabled &&
             conversationWindow.hiddenTurnCount > 0 ? (
               <span className="load-older-status">
@@ -2876,6 +3378,11 @@ export const MessageList = memo(function MessageList({
             ) : clientTailActive ? (
               <span className="load-older-status">
                 {t("sessionRecentTranscriptLoaded")}
+              </span>
+            ) : null}
+            {olderLoadContinuationRequired && !loadingOlder ? (
+              <span className="load-older-status" role="status">
+                {t("sessionOlderLoadContinuationRequired")}
               </span>
             ) : null}
             {(hasOlderMessages || conversationWindow.hiddenTurnCount > 0) && (
@@ -3253,12 +3760,14 @@ export const MessageList = memo(function MessageList({
           const recoveredQueueId = tailRow.recoveredQueueId;
           const deferredStatus = tailRow.isRecovered
             ? t("sessionRecoveredQueuedPaused")
-            : getDeferredMessageStatus({
-                isPatient: tailRow.isPatient,
-                lanePosition: tailRow.lanePosition,
-                timestampMs,
-                nowMs,
-              });
+            : tailRow.isYaCommand
+              ? t("sessionQueuedYaCommandAfterTurn")
+              : getDeferredMessageStatus({
+                  isPatient: tailRow.isPatient,
+                  lanePosition: tailRow.lanePosition,
+                  timestampMs,
+                  nowMs,
+                });
           const earlierPatientCount = tailRow.lanePosition?.patientIndex ?? 0;
           const steerQueuedLabel =
             earlierPatientCount > 0
@@ -3398,7 +3907,9 @@ export const MessageList = memo(function MessageList({
                         composerEditAvailabilityStore
                       }
                       onEdit={
-                        deferred.tempId && onEditDeferred
+                        !tailRow.isYaCommand &&
+                        deferred.tempId &&
+                        onEditDeferred
                           ? () => onEditDeferred(deferred.tempId as string)
                           : undefined
                       }
@@ -3437,6 +3948,6 @@ export const MessageList = memo(function MessageList({
           onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
         />
       </div>
-    </>
+    </>,
   );
 });

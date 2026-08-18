@@ -1,7 +1,7 @@
 /**
  * AugmentGenerator - Renders completed markdown blocks to HTML
  *
- * Uses shiki for syntax highlighting of code blocks and marked for
+ * Uses shiki for syntax highlighting of code blocks and markdown-it for
  * rendering other markdown blocks. Also provides lightweight inline
  * formatting for pending/incomplete text during streaming.
  */
@@ -300,7 +300,7 @@ function renderInlineFormatting(text: string): string {
         return renderLocalMediaLink(href, label, ext);
       }
       return renderLocalFileLink(href, label, {
-        renderMarkdown: ext === "md" || ext === "markdown",
+        renderMarkdown: ext === "md" || ext === "markdown" || ext === "qmd",
       });
     }
     const safeHref = sanitizeUrl(href);

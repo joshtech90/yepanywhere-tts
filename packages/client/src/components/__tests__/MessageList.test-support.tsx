@@ -25,6 +25,7 @@ vi.mock("../../i18n", () => ({
         sessionSteerQueuedMessageThrough:
           "Steer this and {count} earlier patient message{suffix} now",
         sessionQueuedCopy: "Copy queued message",
+        sessionQueuedYaCommandAfterTurn: "Queued (after current turn)",
         sessionQueuedEdit: "Edit queued message",
         sessionQueuedCancel: "Cancel queued message",
         sessionQueuedInlineEditLabel: "Edit queued message text",
@@ -42,11 +43,21 @@ vi.mock("../../i18n", () => ({
         sessionRecentTranscriptLoaded: "Recent transcript loaded",
         sessionLoadOlderMessages: "Load older messages",
         sessionLoadingOlderMessages: "Loading...",
+        sessionOlderLoadContinuationRequired:
+          "Loaded a large history span without reaching an earlier user turn. Load older messages again to continue.",
         sessionSearchHelpNavigate:
           "{shortcutKeys} prev · ↑↓ matches · click jumps",
         sessionSearchHelpClose: "Enter jump+close · Esc cancel · Aa case",
-        sessionQuoteSelection: "Quote selection",
+        sessionQuoteSelection: "Quote reply",
         sessionQuoteSelectionShort: "Quote",
+        sessionCopySelectionText: "Copy text",
+        sessionCopySelectionSource: "Copy source",
+        sessionCopySelectionRich: "Copy selection as rich text",
+        sessionNewSessionFromSelection: "New session",
+        sessionSelectionActionMenu: "Selected text actions",
+        sessionDismissSelectionActions: "Dismiss selected text actions",
+        sourceActionMenu: "Source actions",
+        sourceDismissActions: "Dismiss source actions",
         projectQueueAttachmentOnly: "Attachment-only message",
         projectQueueInlineStatusQueued: "Project Queue (#{position})",
         projectQueueInlineStatusDispatching:
@@ -117,6 +128,7 @@ vi.mock("../../i18n", () => ({
 }));
 
 const originalClipboard = navigator.clipboard;
+const originalClipboardItem = globalThis.ClipboardItem;
 const originalMatchMedia = window.matchMedia;
 
 export function userMessage(
@@ -302,6 +314,11 @@ export function installMessageListTestEnvironment() {
     document.querySelectorAll(".session-input-inner").forEach((node) => {
       node.remove();
     });
+    document
+      .querySelectorAll("[data-selection-actions-mobile-slot]")
+      .forEach((node) => {
+        node.remove();
+      });
     document.querySelectorAll("textarea").forEach((node) => {
       node.remove();
     });
@@ -309,6 +326,14 @@ export function installMessageListTestEnvironment() {
       configurable: true,
       value: originalClipboard,
     });
+    if (originalClipboardItem === undefined) {
+      Reflect.deleteProperty(globalThis, "ClipboardItem");
+    } else {
+      Object.defineProperty(globalThis, "ClipboardItem", {
+        configurable: true,
+        value: originalClipboardItem,
+      });
+    }
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       value: originalMatchMedia,

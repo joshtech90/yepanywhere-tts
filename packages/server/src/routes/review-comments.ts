@@ -12,25 +12,29 @@
 import {
   ALL_PROVIDERS,
   MAX_REVIEW_COMMENT_TEXT_LENGTH,
+  MAX_REVIEW_SUBMISSION_NAME_LENGTH,
   type EffortLevel,
+  type ReviewCommentAnchor,
   type ReviewNewSessionOptions,
   type ThinkingConfig,
   parseReviewCommentAnchor,
+  isReviewSubmissionId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { ReviewCommentService } from "../review/ReviewCommentService.js";
-import { composeReviewTurn } from "../review/composeReviewTurn.js";
+import {
+  composeReviewTurn,
+  composeSubmissionReviewTurn,
+} from "../review/composeReviewTurn.js";
 import {
   type AnchorRelocation,
   relocateAnchors,
 } from "../review/relocateAnchors.js";
 import { structuredErrorHandler } from "../middleware/error-handler.js";
 import type { ReviewSessionLauncher } from "../review/reviewSessionLauncher.js";
+import { repositoryRelativePath } from "../review/repositoryPath.js";
 import { resolveProjectPath } from "./projectParam.js";
-
-/** Repo-relative path of the drafts file the seeded turn references. */
-const REVIEW_COMMENTS_REL_PATH = ".yep/review-comments.json";
 
 export interface ReviewCommentsDeps {
   scanner: ProjectScanner;
@@ -38,6 +42,10 @@ export interface ReviewCommentsDeps {
   service?: ReviewCommentService;
   /** Launches/continues the review session on submit. Absent → submit 501s. */
   launcher?: ReviewSessionLauncher;
+  /** Gates the version-2 capture/submission contract; default-off in app. */
+  isSubmissionsEnabled?: () => boolean;
+  /** Frozen onto each accepted delivery; defaults to the product value. */
+  getResponseTurnLimit?: () => number;
 }
 
 export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
@@ -69,12 +77,15 @@ export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
 
     const anchor = parseReviewCommentAnchor(body.anchor);
     if (!anchor) return c.json({ error: "Invalid comment anchor" }, 400);
+    if (!validateAnchorPaths(anchor)) {
+      return c.json({ error: "Invalid comment anchor path" }, 400);
+    }
 
     const textError = validateText(body.text, { required: true });
     if (textError) return c.json({ error: textError }, 400);
 
     const comment = await service.addComment(projectPath, {
-      anchor,
+      anchor: reviewAnchorForConfiguredWorkflow(anchor, deps),
       text: body.text as string,
     });
     return c.json({ comment }, 201);
@@ -100,7 +111,10 @@ export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
     if (body.anchor !== undefined) {
       const anchor = parseReviewCommentAnchor(body.anchor);
       if (!anchor) return c.json({ error: "Invalid comment anchor" }, 400);
-      patch.anchor = anchor;
+      if (!validateAnchorPaths(anchor)) {
+        return c.json({ error: "Invalid comment anchor path" }, 400);
+      }
+      patch.anchor = reviewAnchorForConfiguredWorkflow(anchor, deps);
     }
 
     const comment = await service.updateComment(
@@ -185,6 +199,29 @@ export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
       );
     }
 
+    const submissionsWorkflow =
+      deps.isSubmissionsEnabled?.() === true && body.submissionId !== undefined;
+    if (submissionsWorkflow && !isReviewSubmissionId(body.submissionId)) {
+      return c.json({ error: "Invalid submissionId" }, 400);
+    }
+    const name = parseSubmissionName(body.name);
+    if (name === null) {
+      return c.json({ error: "Invalid submission name" }, 400);
+    }
+    if (!submissionsWorkflow && body.name !== undefined) {
+      return c.json({ error: "name requires submissionId" }, 400);
+    }
+
+    if (submissionsWorkflow) {
+      const submissionId = body.submissionId as string;
+      const existing = (
+        await service.getStoreFile(projectPath)
+      ).submissions.find(
+        (item) => item.id === submissionId && item.status === "accepted",
+      );
+      if (existing) return acceptedSubmissionResponse(c, existing);
+    }
+
     const pending = await service.listPending(projectPath);
     const includeSet = new Set(include);
     const included = pending.filter((comment) => includeSet.has(comment.id));
@@ -201,48 +238,120 @@ export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
       relocationMap.set(comment.id, relocations[index] as AnchorRelocation);
     });
 
-    const turn = composeReviewTurn({
-      comments: included,
-      relocations: relocationMap,
-      reviewFileRelPath: REVIEW_COMMENTS_REL_PATH,
-      followUp: target !== "new",
-    });
+    const request = submissionsWorkflow
+      ? await service.prepareSubmission(projectPath, {
+          submissionId: body.submissionId as string,
+          ...(name ? { name } : {}),
+          commentIds: included.map((comment) => comment.id),
+          requestedTarget: target,
+          relocations: relocationMap,
+        })
+      : null;
+    const turn = request
+      ? composeSubmissionReviewTurn({
+          request,
+          submissionDirectoryRelPath:
+            await service.existingSubmissionDirectoryFor(
+              projectPath,
+              request.submissionId,
+            ),
+          followUp: target !== "new",
+        })
+      : composeReviewTurn({
+          comments: included,
+          relocations: relocationMap,
+          reviewFileRelPath: service.filePathFor(projectPath),
+          followUp: target !== "new",
+        });
 
     let sessionId: string;
     if (target === "new") {
-      const result = await deps.launcher.startReviewSession(
-        projectPath,
-        turn,
-        newSession,
-      );
+      const result = await deps.launcher
+        .startReviewSession(
+          projectPath,
+          turn,
+          newSession,
+          request?.submissionId,
+        )
+        .catch(async (error: unknown) => {
+          if (request) {
+            await service.releaseSubmission(projectPath, request.submissionId);
+          }
+          throw error;
+        });
       if (result.status === "queue-full") {
+        if (request) {
+          await service.releaseSubmission(projectPath, request.submissionId);
+        }
         return c.json(
           { error: "Queue is full", maxQueueSize: result.maxQueueSize },
           503,
         );
       }
       if (result.status === "queued") {
-        // Enqueued but no session id yet; leave the comments pending to retry.
+        if (request) {
+          const accepted = await service.acceptSubmission(projectPath, {
+            submissionId: request.submissionId,
+            deliveryStatus: "queued",
+            responseTurnLimit: deps.getResponseTurnLimit?.() ?? 8,
+          });
+          if (!accepted) {
+            return c.json({ error: "Submission reservation was lost" }, 409);
+          }
+          return acceptedSubmissionResponse(c, accepted);
+        }
+        // Version-1 behavior: queued but no session id keeps drafts pending.
         return c.json({ status: "queued" }, 202);
       }
       sessionId = result.sessionId;
     } else {
-      const result = await deps.launcher.deliverFollowUp(
-        projectPath,
-        target,
-        turn,
-      );
+      const result = await deps.launcher
+        .deliverFollowUp(projectPath, target, turn, request?.submissionId)
+        .catch(async (error: unknown) => {
+          if (request) {
+            await service.releaseSubmission(projectPath, request.submissionId);
+          }
+          throw error;
+        });
       if (result.status === "queue-full") {
+        if (request) {
+          await service.releaseSubmission(projectPath, request.submissionId);
+        }
         return c.json(
           { error: "Queue is full", maxQueueSize: result.maxQueueSize },
           503,
         );
       }
       if (result.status === "queued") {
-        // Enqueued but not yet delivered; leave the comments pending to retry.
+        if (request) {
+          const accepted = await service.acceptSubmission(projectPath, {
+            submissionId: request.submissionId,
+            targetSessionId: target,
+            deliveryStatus: "queued",
+            responseTurnLimit: deps.getResponseTurnLimit?.() ?? 8,
+          });
+          if (!accepted) {
+            return c.json({ error: "Submission reservation was lost" }, 409);
+          }
+          return acceptedSubmissionResponse(c, accepted);
+        }
+        // Version-1 behavior keeps drafts pending until delivery.
         return c.json({ status: "queued" }, 202);
       }
       sessionId = target;
+    }
+
+    if (request) {
+      const accepted = await service.acceptSubmission(projectPath, {
+        submissionId: request.submissionId,
+        targetSessionId: sessionId,
+        deliveryStatus: "delivered",
+        responseTurnLimit: deps.getResponseTurnLimit?.() ?? 8,
+      });
+      if (!accepted) {
+        return c.json({ error: "Submission reservation was lost" }, 409);
+      }
+      return acceptedSubmissionResponse(c, accepted);
     }
 
     const batch = await service.archiveComments(projectPath, {
@@ -253,6 +362,49 @@ export function createReviewCommentsRoutes(deps: ReviewCommentsDeps): Hono {
   });
 
   return routes;
+}
+
+function parseSubmissionName(value: unknown): string | undefined | null {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_REVIEW_SUBMISSION_NAME_LENGTH) {
+    return null;
+  }
+  return trimmed;
+}
+
+function acceptedSubmissionResponse(
+  c: { json: (body: unknown, status?: 200 | 202) => Response },
+  submission: {
+    id: string;
+    targetSessionId?: string;
+    entryRefs: Array<{ entryId: string }>;
+    deliveryStatus?: "queued" | "delivered";
+  },
+): Response {
+  const body = {
+    submissionId: submission.id,
+    batchId: submission.id,
+    consumed: submission.entryRefs.map((ref) => ref.entryId),
+    ...(submission.targetSessionId
+      ? { sessionId: submission.targetSessionId }
+      : {}),
+    ...(submission.deliveryStatus === "queued" ? { status: "queued" } : {}),
+  };
+  return submission.deliveryStatus === "queued"
+    ? c.json(body, 202)
+    : c.json(body, 200);
+}
+
+function reviewAnchorForConfiguredWorkflow(
+  anchor: ReviewCommentAnchor,
+  deps: ReviewCommentsDeps,
+): ReviewCommentAnchor {
+  if (deps.isSubmissionsEnabled?.() && anchor.projection) return anchor;
+  const legacyAnchor = { ...anchor };
+  delete legacyAnchor.projection;
+  return legacyAnchor;
 }
 
 function parseNewSessionOptions(
@@ -387,4 +539,17 @@ function validateText(
     return "Comment text is too long";
   }
   return null;
+}
+
+function validateAnchorPaths(anchor: {
+  path: string;
+  projection?: { path: string };
+}): boolean {
+  try {
+    repositoryRelativePath(anchor.path);
+    if (anchor.projection) repositoryRelativePath(anchor.projection.path);
+    return true;
+  } catch {
+    return false;
+  }
 }

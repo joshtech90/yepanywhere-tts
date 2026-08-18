@@ -23,6 +23,7 @@ const getGitBlame = vi.fn();
 const getFile = vi.fn();
 const listReviewComments = vi.fn();
 const addReviewComment = vi.fn();
+const getGlobalSessions = vi.fn();
 const writeClipboardText = vi.fn();
 vi.mock("../api/client", () => ({
   api: {
@@ -30,6 +31,7 @@ vi.mock("../api/client", () => ({
     getGitBlame: (...args: unknown[]) => getGitBlame(...args),
     listReviewComments: (...args: unknown[]) => listReviewComments(...args),
     addReviewComment: (...args: unknown[]) => addReviewComment(...args),
+    getGlobalSessions: (...args: unknown[]) => getGlobalSessions(...args),
   },
 }));
 vi.mock("../lib/clipboard", () => ({
@@ -42,6 +44,7 @@ const COMMITTED_SHA = "b".repeat(40);
 const t = (key: string) => key;
 
 function primeBlame() {
+  getGlobalSessions.mockResolvedValue({ sessions: [], hasMore: false });
   getFile.mockResolvedValue({
     metadata: {
       path: "src/x.ts",
@@ -109,6 +112,7 @@ async function commentOnRow(rowIndex: number, text: string) {
     side: string;
     oldLine: number | null;
     newLine: number | null;
+    projection?: { kind: string; path: string; side: string };
   };
 }
 
@@ -131,6 +135,50 @@ describe("BlameView", () => {
     expect(anchor.side).toBe("new");
     expect(anchor.oldLine).toBeNull();
     expect(anchor.newLine).toBe(1);
+  });
+
+  it("captures the rendered worktree separately from blame provenance", async () => {
+    primeBlame();
+    render(
+      <MemoryRouter>
+        <BlameView
+          projectId="p1"
+          path="src/x.ts"
+          captureReviewProjections
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    const anchor = await commentOnRow(0, "review the rendered line");
+    expect(anchor.revision).toEqual({ kind: "sha", sha: COMMITTED_SHA });
+    expect(anchor.projection).toEqual({
+      kind: "worktree",
+      path: "src/x.ts",
+      side: "new",
+    });
+  });
+
+  it("splits blame after the selected row", async () => {
+    primeBlame();
+    render(
+      <MemoryRouter>
+        <BlameView projectId="p1" path="src/x.ts" t={t} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(document.querySelectorAll("[data-blame-row]").length).toBe(2),
+    );
+    fireEvent.click(document.querySelectorAll(".blame-line-target")[0]!);
+    await screen.findByRole("textbox");
+
+    const before = document.querySelector("[data-review-comment-before]");
+    const after = document.querySelector("[data-review-comment-after]");
+    expect(before?.querySelectorAll("[data-blame-row]")).toHaveLength(1);
+    expect(after?.querySelectorAll("[data-blame-row]")).toHaveLength(1);
+    expect(before?.textContent).toContain("const a = 1;");
+    expect(after?.textContent).toContain("const b = 2;");
   });
 
   it("anchors a not-yet-committed blame line as uncommitted", async () => {
@@ -226,7 +274,9 @@ describe("BlameView", () => {
     expect(await screen.findByText("const fast = 1;")).toBeTruthy();
     expect(getFile).toHaveBeenCalledWith("p1", "src/x.ts", false);
     expect(onContentWidthChange).toHaveBeenCalledWith("src/x.ts", 320);
-    expect(document.querySelector('[data-blame-gutter="loading"]')).toBeTruthy();
+    expect(
+      document.querySelector('[data-blame-gutter="loading"]'),
+    ).toBeTruthy();
     expect(document.querySelector('[data-blame-gutter="commit"]')).toBeNull();
 
     await act(async () => {

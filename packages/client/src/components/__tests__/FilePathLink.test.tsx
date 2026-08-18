@@ -7,16 +7,58 @@ import {
 } from "@testing-library/react";
 import { toUrlProjectId } from "@yep-anywhere/shared";
 import { StrictMode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicShareProvider } from "../../contexts/PublicShareContext";
 import { I18nProvider } from "../../i18n";
 import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
 import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
+import { useFileViewerController } from "../../lib/fileViewerController";
 import { UI_KEYS } from "../../lib/storageKeys";
 import type { FileViewerSource } from "../FileViewer";
 import { FilePathLink, FileViewerModal } from "../FilePathLink";
 
+const mocks = vi.hoisted(() => ({
+  useFileVersionControl: vi.fn(),
+}));
+
+function FileViewerControllerProbe() {
+  const viewer = useFileViewerController();
+  if (!viewer) return null;
+  const location = `${viewer.filePath}${viewer.lineSuffix}`;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={viewer.minimized ? viewer.restore : viewer.minimize}
+      >
+        {viewer.minimized ? `Restore ${location}` : `Park ${location}`}
+      </button>
+      <button type="button" onClick={viewer.close}>
+        {`Close ${location}`}
+      </button>
+    </>
+  );
+}
+
+vi.mock("../../hooks/useFileVersionControl", () => ({
+  useFileVersionControl: mocks.useFileVersionControl,
+}));
+
 describe("FilePathLink", () => {
+  beforeEach(() => {
+    mocks.useFileVersionControl.mockReset();
+    mocks.useFileVersionControl.mockImplementation(
+      (_projectId: string, filePath: string) => ({
+        cumulativeFile: null,
+        loading: false,
+        relativePath: filePath,
+        supported: false,
+        worktreeFile: null,
+      }),
+    );
+  });
+
   afterEach(() => {
     cleanup();
     sessionStorage.clear();
@@ -26,6 +68,7 @@ describe("FilePathLink", () => {
   });
 
   it("renders a native link to the standalone file viewer", () => {
+    window.localStorage.setItem(UI_KEYS.tooltipMode, "native");
     render(
       <FilePathLink
         projectId="project-id"
@@ -61,7 +104,7 @@ describe("FilePathLink", () => {
     fireEvent.contextMenu(
       screen.getByRole("link", { name: /guide\.md\s*:12/ }),
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy viewer link" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
@@ -96,6 +139,91 @@ describe("FilePathLink", () => {
 
     unmount();
     await waitFor(() => expect(historyBack).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a minimized viewer mounted and restores it", async () => {
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        content: "# Guide",
+        metadata: {
+          isText: true,
+          mimeType: "text/markdown",
+          path: "docs/guide.md",
+          size: 7,
+        },
+        rawUrl: "/api/projects/project-id/files/raw?path=docs%2Fguide.md",
+        renderedMarkdownHtml: "<h1>Guide</h1>",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewerModal
+          projectId="project-id"
+          filePath="docs/guide.md"
+          lineNumber={12}
+          source={source}
+          onClose={() => {}}
+        />
+        <FileViewerControllerProbe />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Minimize file viewer" }),
+    );
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore docs/guide.md:12" }),
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(source.loadFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish viewer controls from a public share", async () => {
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        content: "# Guide",
+        metadata: {
+          isText: true,
+          mimeType: "text/markdown",
+          path: "docs/guide.md",
+          size: 7,
+        },
+        rawUrl: "/share/share-secret/file/raw?path=docs%2Fguide.md",
+        renderedMarkdownHtml: "<h1>Guide</h1>",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <PublicShareProvider
+          value={{
+            projectId: "project-id",
+            relayUrl: "wss://relay.example/ws",
+            relayUsername: "viewer",
+            secret: "share-secret",
+          }}
+        >
+          <FileViewerModal
+            projectId="project-id"
+            filePath="docs/guide.md"
+            source={source}
+            onClose={() => {}}
+          />
+          <FileViewerControllerProbe />
+        </PublicShareProvider>
+      </I18nProvider>,
+    );
+
+    await screen.findByRole("dialog");
+    expect(
+      screen.queryByRole("button", { name: "Minimize file viewer" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Park docs\/guide\.md/ }),
+    ).toBeNull();
   });
 
   it("uses only the concise native path hint in native tooltip mode", () => {
@@ -233,9 +361,7 @@ describe("FilePathLink", () => {
     const copyButton = screen.getByRole("button", { name: "Copy path" });
     fireEvent.click(copyButton);
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: "Copied path" }),
-      ).toBeDefined();
+      expect(screen.getByRole("button", { name: "Copied path" })).toBeDefined();
     });
 
     expect(writeText).toHaveBeenCalledWith("docs/guide.md");
@@ -257,9 +383,7 @@ describe("FilePathLink", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy path" }));
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: "Copied path" }),
-      ).toBeDefined();
+      expect(screen.getByRole("button", { name: "Copied path" })).toBeDefined();
     });
 
     expect(writeText).toHaveBeenCalledWith("ui-report/README.md");
@@ -280,9 +404,7 @@ describe("FilePathLink", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy path" }));
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: "Copied path" }),
-      ).toBeDefined();
+      expect(screen.getByRole("button", { name: "Copied path" })).toBeDefined();
     });
 
     expect(writeText).toHaveBeenCalledWith("/home/graehl/.claude/CLAUDE.md");
@@ -299,6 +421,84 @@ describe("FilePathLink", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Copy path" })).toBeNull();
+  });
+
+  it("links files to exact worktree and cumulative viewer diffs", () => {
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile: {
+        path: "docs/guide.md",
+        status: "M",
+        staged: false,
+        linesAdded: 2,
+        linesDeleted: 1,
+      },
+      loading: false,
+      relativePath: "docs/guide.md",
+      supported: true,
+      worktreeFile: {
+        path: "docs/guide.md",
+        status: "M",
+        staged: false,
+        linesAdded: 1,
+        linesDeleted: 0,
+      },
+    });
+    const containerClick = vi.fn();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: asserts non-bubbling */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: test-only wrapper */}
+          <div onClick={containerClick}>
+            <FilePathLink
+              projectId="project-id"
+              filePath="docs/guide.md"
+              displayText="guide.md"
+            />
+          </div>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const worktree = screen.getByRole("link", {
+      name: "View HEAD to working tree diff for docs/guide.md",
+    });
+    const cumulative = screen.getByRole("link", {
+      name: "View cumulative HEAD^1 to working tree diff for docs/guide.md",
+    });
+    expect(worktree.getAttribute("href")).toBe(
+      "/projects/project-id/file?path=docs%2Fguide.md&diff=worktree",
+    );
+    expect(cumulative.getAttribute("href")).toBe(
+      "/projects/project-id/file?path=docs%2Fguide.md&diff=cumulative",
+    );
+
+    worktree.addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(worktree);
+    expect(containerClick).not.toHaveBeenCalled();
+  });
+
+  it("omits viewer diff links when the exact corpus has no path", () => {
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile: null,
+      loading: false,
+      relativePath: "docs/guide.md",
+      supported: true,
+      worktreeFile: null,
+    });
+
+    render(
+      <I18nProvider>
+        <FilePathLink
+          projectId="project-id"
+          filePath="docs/guide.md"
+          displayText="guide.md"
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByLabelText("File versions")).toBeNull();
   });
 
   it("opens a context menu that can prefill a new session from the path", () => {
@@ -323,6 +523,49 @@ describe("FilePathLink", () => {
     );
     expect(window.location.pathname).toBe("/new-session");
     expect(window.location.search).toBe("?projectId=project-id");
+  });
+
+  it("opens the selected HTML presentation from the context menu", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            metadata: {
+              path: "reports/demo.html",
+              size: 24,
+              mimeType: "text/html",
+              isText: true,
+            },
+            rawUrl: "",
+            content: "<h1>Selected preview</h1>",
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: 200,
+          },
+        );
+      }),
+    );
+
+    render(
+      <I18nProvider>
+        <FilePathLink
+          projectId="project-id"
+          filePath="reports/demo.html"
+          displayText="demo.html"
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: "demo.html" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Preview" }));
+
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    expect(
+      document.querySelector<HTMLIFrameElement>("iframe")?.srcdoc,
+    ).toContain("Selected preview");
   });
 
   it("copies file contents from the context menu", async () => {
@@ -397,5 +640,6 @@ describe("FilePathLink", () => {
     expect(link.getAttribute("href")).toBe(
       `/share/share-secret/file?path=ui-report%2FREADME.md&h=ygraehl&r=wss%3A%2F%2Frelay.graehl.org%2Fws&projectId=${projectId}&line=8&lineEnd=12&view=range`,
     );
+    expect(mocks.useFileVersionControl).not.toHaveBeenCalled();
   });
 });

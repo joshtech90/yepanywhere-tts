@@ -67,9 +67,11 @@ const SESSION_TOOLBAR_PRESENCE_CLIENT_DEFAULT_KEYS = [
   "sessionStatus",
   "projectQueue",
   "projectQueueNewSessionShortcut",
+  "syntheticDone",
   "composerRecall",
 ] as const satisfies readonly (keyof SessionToolbarPresenceClientDefaults)[];
 const TOOLBAR_CONTROL_PRESENCES = [
+  "off",
   "hidden",
   "pin",
   "last",
@@ -116,6 +118,7 @@ const EFFORT_LEVELS = [
   "max",
 ] as const satisfies readonly EffortLevel[];
 const MAX_SPEECH_SMART_TURN_TIMEOUT_MS = 10000;
+const MAX_SPEECH_SMART_TURN_GRACE_MS = 1500;
 
 export function parseHostAliasList(rawHosts: unknown[]): {
   hosts: string[];
@@ -653,11 +656,25 @@ function parseSpeechSmartTurnClientDefault(
   ) {
     return null;
   }
-  return {
+  const parsed: SpeechSmartTurnClientDefault = {
     enabled: raw.enabled,
     threshold: raw.threshold,
     timeoutMs: Math.round(raw.timeoutMs),
   };
+  // Optional so pre-grace clients' payloads still parse; absent means the
+  // client-side default (0).
+  if (raw.graceMs !== undefined) {
+    if (
+      typeof raw.graceMs !== "number" ||
+      !Number.isFinite(raw.graceMs) ||
+      raw.graceMs < 0 ||
+      raw.graceMs > MAX_SPEECH_SMART_TURN_GRACE_MS
+    ) {
+      return null;
+    }
+    parsed.graceMs = Math.round(raw.graceMs);
+  }
+  return parsed;
 }
 
 function parseGrokSpeechAudioClientDefault(
@@ -874,8 +891,7 @@ export function parseClientDefaults(
     } else if (typeof raw.forceYaOrchestratedCompaction !== "boolean") {
       return null;
     } else {
-      parsed.forceYaOrchestratedCompaction =
-        raw.forceYaOrchestratedCompaction;
+      parsed.forceYaOrchestratedCompaction = raw.forceYaOrchestratedCompaction;
     }
   }
 
@@ -1142,22 +1158,40 @@ export function parseCacheMissBilling(
       parsed.providerFreshWindowMinutes = providerFreshWindowMinutes;
     }
   }
-  if ("minimumInputTokens" in raw) {
+  if ("minimumWastedTokens" in raw) {
     if (
-      raw.minimumInputTokens === undefined ||
-      raw.minimumInputTokens === null
+      raw.minimumWastedTokens === undefined ||
+      raw.minimumWastedTokens === null
     ) {
-      parsed.minimumInputTokens =
-        DEFAULT_CACHE_MISS_BILLING_SETTINGS.minimumInputTokens;
+      parsed.minimumWastedTokens =
+        DEFAULT_CACHE_MISS_BILLING_SETTINGS.minimumWastedTokens;
     } else if (
-      typeof raw.minimumInputTokens !== "number" ||
-      !Number.isInteger(raw.minimumInputTokens) ||
-      raw.minimumInputTokens < 1 ||
-      raw.minimumInputTokens > 5_000_000
+      typeof raw.minimumWastedTokens !== "number" ||
+      !Number.isInteger(raw.minimumWastedTokens) ||
+      raw.minimumWastedTokens < 1 ||
+      raw.minimumWastedTokens > 5_000_000
     ) {
       return null;
     } else {
-      parsed.minimumInputTokens = raw.minimumInputTokens;
+      parsed.minimumWastedTokens = raw.minimumWastedTokens;
+    }
+  }
+  if ("recentActivityMinutes" in raw) {
+    if (
+      raw.recentActivityMinutes === undefined ||
+      raw.recentActivityMinutes === null
+    ) {
+      parsed.recentActivityMinutes =
+        DEFAULT_CACHE_MISS_BILLING_SETTINGS.recentActivityMinutes;
+    } else if (
+      typeof raw.recentActivityMinutes !== "number" ||
+      !Number.isInteger(raw.recentActivityMinutes) ||
+      raw.recentActivityMinutes < 0 ||
+      raw.recentActivityMinutes > 1440
+    ) {
+      return null;
+    } else {
+      parsed.recentActivityMinutes = raw.recentActivityMinutes;
     }
   }
 

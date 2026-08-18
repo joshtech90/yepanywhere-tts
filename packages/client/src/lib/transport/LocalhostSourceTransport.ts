@@ -1,8 +1,5 @@
 import type { StagedAttachmentRef, UploadedFile } from "@yep-anywhere/shared";
-import {
-  fetchPlainBlob,
-  fetchPlainJSON,
-} from "../../api/plainFetch";
+import { fetchPlainBlob, fetchPlainJSON } from "../../api/plainFetch";
 import {
   uploadFile,
   uploadStagedFile,
@@ -41,7 +38,9 @@ export interface LocalhostSourceTransportOptions {
 }
 
 class LocalhostTransportStatus implements SourceTransportStatus {
-  constructor(private readonly getSnapshotFn: () => SourceTransportStatusSnapshot) {}
+  constructor(
+    private readonly getSnapshotFn: () => SourceTransportStatusSnapshot,
+  ) {}
   private listeners = new Set<() => void>();
   private visibilityRestoredListeners = new Set<() => void>();
 
@@ -199,6 +198,12 @@ export class LocalhostSourceTransport implements SourceTransport {
     )(handlers);
   }
 
+  subscribeGlossary(projectId: string, handlers: StreamHandlers): Subscription {
+    return this.trackStreamSubscription((wrappedHandlers) =>
+      this.streamConnection.subscribeGlossary(projectId, wrappedHandlers),
+    )(handlers);
+  }
+
   async reconnect(): Promise<void> {
     this.assertNotDisposed();
     // Localhost source-level readiness is same-origin HTTP and always ready.
@@ -221,8 +226,7 @@ export class LocalhostSourceTransport implements SourceTransport {
 
   private handleStreamSocketState(state: WebSocketConnectionSocketState): void {
     if (this.disposed) return;
-    this.streamSocketState =
-      state === "connected" ? "connected" : state;
+    this.streamSocketState = state === "connected" ? "connected" : state;
     if (state === "connected") {
       this.lastStreamError = undefined;
       this.startStreamManager();
@@ -237,9 +241,8 @@ export class LocalhostSourceTransport implements SourceTransport {
     }
 
     this.streamManagerStarted = true;
-    this.removeManagerStateListener = this.streamManager.on(
-      "stateChange",
-      () => this.mutableStatus.emit(),
+    this.removeManagerStateListener = this.streamManager.on("stateChange", () =>
+      this.mutableStatus.emit(),
     );
     this.removeManagerFailureListener = this.streamManager.on(
       "reconnectFailed",

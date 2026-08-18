@@ -5,8 +5,20 @@ import {
   getMarkdownSnippetForSubElement,
   registerMarkdownCopySource,
 } from "../markdownSelectionCopy";
+import { annotateShikiSourceOffsets } from "../shikiHtml";
 
 describe("getMarkdownForVisibleSelection", () => {
+  it("maps Quarto include labels and paths back to their source", () => {
+    const source = "{{< include _introduction.qmd >}}";
+
+    expect(getMarkdownForVisibleSelection(source, "_introduction.qmd")).toBe(
+      "_introduction.qmd",
+    );
+    expect(
+      getMarkdownForVisibleSelection(source, "Include: _introduction.qmd"),
+    ).toBe(source);
+  });
+
   it("preserves original ordered-list markers for rendered selections", () => {
     expect(
       getMarkdownForVisibleSelection(
@@ -40,9 +52,9 @@ describe("getMarkdownForVisibleSelection", () => {
         "MCLONE_UI_V2_HIT_DEBUG=1",
       ),
     ).toBe("MCLONE_UI_V2_HIT_DEBUG=1");
-    expect(
-      getMarkdownForVisibleSelection("## Debug switches", "Debug"),
-    ).toBe("Debug");
+    expect(getMarkdownForVisibleSelection("## Debug switches", "Debug")).toBe(
+      "Debug",
+    );
   });
 
   it("preserves block markers for whole rendered line selections", () => {
@@ -70,9 +82,69 @@ describe("getMarkdownForVisibleSelection", () => {
       }),
     ).toBe("**bold**");
   });
+
+  it("recovers original math delimiters from a rendered expression", () => {
+    expect(
+      getMarkdownForVisibleSelection("Value $x^2$.", "x^2", {
+        preferRenderedSource: true,
+      }),
+    ).toBe("$x^2$");
+    expect(
+      getMarkdownForVisibleSelection("Display \\[x^2\\].", "x^2", {
+        preferRenderedSource: true,
+      }),
+    ).toBe("\\[x^2\\]");
+  });
 });
 
 describe("extractMarkdownSnippetsFromSelection", () => {
+  it("restores reading-order newlines from tokenized Shiki selections", () => {
+    const registeredSource = "alpha beta gamma\ndelta epsilon";
+    const root = document.createElement("div");
+    const source = document.createElement("div");
+    source.innerHTML =
+      annotateShikiSourceOffsets(
+        '<pre class="shiki"><code><span class="line"><span>alpha </span><span>beta gamma</span></span><span class="line"><span>delta</span><span> epsilon</span></span></code></pre>',
+        registeredSource,
+      ) ?? "";
+    root.append(source);
+    document.body.append(root);
+    const unregister = registerMarkdownCopySource(source, registeredSource, {
+      projectId: "project-1",
+      filePath: "src/example.ts",
+      contentStartLine: 10,
+    });
+    const beta = source.querySelectorAll(".line > span")[1]?.firstChild;
+    const delta = source.querySelectorAll(".line > span")[2]?.firstChild;
+    expect(beta).toBeTruthy();
+    expect(delta).toBeTruthy();
+    const range = document.createRange();
+    range.setStart(beta as Node, 0);
+    range.setEnd(delta as Node, "delta".length);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    expect(extractMarkdownSnippetsFromSelection(root)).toMatchObject([
+      {
+        markdown: "beta gamma\ndelta",
+        selectedText: "beta gamma\ndelta",
+        sourceStart: 6,
+        sourceEnd: 22,
+        sourceLocation: {
+          projectId: "project-1",
+          filePath: "src/example.ts",
+          lineStart: 10,
+          lineEnd: 11,
+        },
+      },
+    ]);
+
+    selection?.removeAllRanges();
+    unregister();
+    root.remove();
+  });
+
   it("returns per-source markdown snippets for a covered selection", () => {
     const root = document.createElement("div");
     const source = document.createElement("div");
@@ -174,6 +246,78 @@ describe("extractMarkdownSnippetsFromSelection", () => {
         sourceElement: source,
       },
     ]);
+
+    selection?.removeAllRanges();
+    unregister();
+    root.remove();
+  });
+
+  it("attaches file lines only for an unambiguous source span", () => {
+    const root = document.createElement("div");
+    const source = document.createElement("div");
+    source.textContent = "selected line";
+    root.append(source);
+    document.body.append(root);
+    const unregister = registerMarkdownCopySource(
+      source,
+      "before\nselected line\nafter",
+      {
+        projectId: "project-1",
+        filePath: "src/example.ts",
+        contentStartLine: 40,
+      },
+    );
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    expect(
+      extractMarkdownSnippetsFromSelection(root)[0]?.sourceLocation,
+    ).toEqual({
+      projectId: "project-1",
+      filePath: "src/example.ts",
+      lineStart: 41,
+      lineEnd: 41,
+    });
+
+    unregister();
+    const unregisterAmbiguous = registerMarkdownCopySource(
+      source,
+      "selected line\nselected line",
+      {
+        projectId: "project-1",
+        filePath: "src/example.ts",
+      },
+    );
+    expect(
+      extractMarkdownSnippetsFromSelection(root)[0]?.sourceLocation,
+    ).toBeUndefined();
+
+    selection?.removeAllRanges();
+    unregisterAmbiguous();
+    root.remove();
+  });
+
+  it("maps a rendered KaTeX selection back to its original source", () => {
+    const root = document.createElement("div");
+    const source = document.createElement("div");
+    source.innerHTML = `<span class="katex"><span class="katex-mathml"><math><semantics><annotation encoding="application/x-tex">x^2</annotation></semantics></math></span><span class="katex-html"><span>rendered x²</span></span></span>`;
+    root.append(source);
+    document.body.append(root);
+    const unregister = registerMarkdownCopySource(source, "Value $x^2$.");
+    const visibleMath = source.querySelector(".katex-html span")?.firstChild;
+    expect(visibleMath).toBeTruthy();
+    const range = document.createRange();
+    range.selectNodeContents(visibleMath as Node);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    expect(extractMarkdownSnippetsFromSelection(root)[0]?.markdown).toBe(
+      "$x^2$",
+    );
 
     selection?.removeAllRanges();
     unregister();

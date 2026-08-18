@@ -228,7 +228,17 @@ export function normalizeCodexToolOutputWithContext(
   const backgroundTaskId = extractCodexBackgroundTaskId(content);
   const interrupted = isCodexInterruptedToolOutput(content);
 
-  if (context?.toolName === "Grep") {
+  if (
+    context?.toolName === "UpdatePlan" &&
+    !isError &&
+    extractCodexShellOutputContent(content).trim() === "{}"
+  ) {
+    // Code-mode update_plan returns only an empty nested-tool result. The
+    // checklist itself lives in the recovered tool input, so normalize the
+    // empty provider acknowledgement to the canonical renderer contract.
+    content = "Plan updated";
+    structured = { message: content };
+  } else if (context?.toolName === "Grep") {
     const grepContent = extractCodexShellOutputContent(content);
     const grepResult = normalizeRipgrepOutput(
       grepContent,
@@ -275,7 +285,6 @@ export function normalizeCodexToolOutputWithContext(
     }
     structured = createBashToolResult(
       interrupted ? "" : bashContent,
-      isError,
       backgroundTaskId,
       interrupted,
       // Carry a recoverable exit code so reloaded (function_call_output-only)
@@ -396,7 +405,6 @@ export function normalizeCodexCommandExecutionOutput(
   } else if (context?.toolName === "Bash" && execution.status !== "declined") {
     structured = createBashToolResult(
       baseOutput,
-      isError,
       undefined,
       false,
       execution.exitCode,
@@ -564,7 +572,7 @@ function hasFailedStatus(record: Record<string, unknown>): boolean {
 
 function extractExitCodeFromText(output: string): number | undefined {
   const match = output.match(
-    /(?:^|\n)\s*(?:Exit code:|Process exited with code)\s*(-?\d+)\b/i,
+    /(?:^|\n)\s*(?:Error:\s*)?(?:Exit code:?|Process exited with code)\s*(-?\d+)\b/i,
   );
   if (!match?.[1]) {
     return undefined;
@@ -800,7 +808,6 @@ function extractCodexShellOutputContent(content: string): string {
 
 function createBashToolResult(
   output: string,
-  isError: boolean,
   backgroundTaskId?: string,
   interrupted = false,
   exitCode?: number,
@@ -815,8 +822,8 @@ function createBashToolResult(
   durationSeconds?: number;
 } {
   return {
-    stdout: interrupted || isError ? "" : output,
-    stderr: interrupted ? "" : isError ? output : "",
+    stdout: interrupted ? "" : output,
+    stderr: "",
     interrupted,
     isImage: false,
     ...(backgroundTaskId ? { backgroundTaskId } : {}),

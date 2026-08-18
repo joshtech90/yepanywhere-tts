@@ -53,6 +53,11 @@ Related:
 - The README stays concise and links to the public catalog/docs rather than
   maintaining another exhaustive inventory.
 
+Green uppercase eyebrow labels use the platform system sans at real 700 weight
+with one shared restrained-tracking rule. Individual pages may own their local
+spacing around the label but do not redefine its face, size, weight, tracking,
+case, or color. Mixed-case display headings remain in the site's Inter face.
+
 ## Registry contract
 
 The site has three editorial registries with distinct meanings:
@@ -73,10 +78,26 @@ These registries are editorial release claims, not runtime negotiation. They
 must not replace server capability gates, provider adapter contracts, or
 hosted-client compatibility checks.
 
+Source Control is a stable feature. Its entry and guide present an inspection
+and agent-direction workbench: working-tree and commit diffs, tracked-file
+search and blame, and persistent line comments submitted as coherent
+agent-session reviews. Its only direct repository mutations are explicit
+fast-forward Pull and Push; Check remote updates observation without modifying
+the working tree. Do not imply a general-purpose Git client with staging,
+commit, branch surgery, integration, conflict resolution, discard, or recovery
+controls.
+
 Every registry entry has a stable id, concise public copy, an owning docs path,
 and repository source references for review. A build fails on duplicate ids,
-unknown relationships, missing docs destinations, or an invalid status. A
-development-only distribution must not have a download URL.
+unknown relationships, missing docs destinations, nonexistent repository
+source references, or an invalid status. A development-only distribution must
+not have a download URL.
+
+Repository source references are checked by a dedicated source-time validation
+step before Astro bundles and prerenders the catalog. Rendered catalog modules
+must not derive repository paths from their output location; bundling may move
+them under `dist/`, while the validation script retains a stable repository
+anchor.
 
 Every server runtime provider id must map to one public provider entry, including
 runtime aliases grouped under a single public integration. This build-time

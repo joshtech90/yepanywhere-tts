@@ -1,36 +1,114 @@
-import { Fragment, StrictMode } from "react";
+import { Fragment, lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 // Toggle to disable StrictMode for easier debugging (avoids double renders)
 const STRICT_MODE = false;
 const Wrapper = STRICT_MODE ? StrictMode : Fragment;
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { App } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { RouteModule, routeModule } from "./components/RouteModule";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
 import { initializeFontSize } from "./hooks/useFontSize";
+import { initializeSidebarSpacing } from "./hooks/useSidebarSpacing";
 import { initializeContentMaxWidth } from "./hooks/useContentMaxWidth";
 import { initializeOutputAppearance } from "./hooks/useOutputAppearance";
 import { initializeTabSize } from "./hooks/useTabSize";
 import { initializeTheme } from "./hooks/useTheme";
 import { initializeTooltipAppearance } from "./hooks/useTooltipAppearance";
-import { registerServiceWorkerAtStartup } from "./lib/registerServiceWorker";
-import { NavigationLayout, SessionDomLingerRouteMarker } from "./layouts";
-import { ActivityPage } from "./pages/ActivityPage";
-import { AgentsPage } from "./pages/AgentsPage";
-import { BangCommandsPage } from "./pages/BangCommandsPage";
-import { EmulatorPage } from "./pages/EmulatorPage";
-import { FilePage } from "./pages/FilePage";
-import { GitStatusPage } from "./pages/GitStatusPage";
-import { GlobalSessionsPage } from "./pages/GlobalSessionsPage";
-import { InboxPage } from "./pages/InboxPage";
-import { LoginPage } from "./pages/LoginPage";
-import { NewSessionPage } from "./pages/NewSessionPage";
-import { ProjectsPage } from "./pages/ProjectsPage";
-import { SessionPage } from "./pages/SessionPage";
-import { SettingsLayout } from "./pages/settings";
-import { WorkstreamsPage } from "./pages/WorkstreamsPage";
+import { I18nProvider } from "./i18n";
 import "./styles/index.css";
+
+const App = lazy(() => import("./App").then(({ App }) => ({ default: App })));
+const NavigationLayout = lazy(() =>
+  import("./layouts").then(({ NavigationLayout }) => ({
+    default: NavigationLayout,
+  })),
+);
+const SessionDomLingerRouteMarker = lazy(() =>
+  import("./layouts").then(({ SessionDomLingerRouteMarker }) => ({
+    default: SessionDomLingerRouteMarker,
+  })),
+);
+const ActivityPage = lazy(() =>
+  import("./pages/ActivityPage").then(({ ActivityPage }) => ({
+    default: ActivityPage,
+  })),
+);
+const AgentsPage = lazy(() =>
+  import("./pages/AgentsPage").then(({ AgentsPage }) => ({
+    default: AgentsPage,
+  })),
+);
+const BangCommandsPage = lazy(() =>
+  import("./pages/BangCommandsPage").then(({ BangCommandsPage }) => ({
+    default: BangCommandsPage,
+  })),
+);
+const EmulatorPage = lazy(() =>
+  import("./pages/EmulatorPage").then(({ EmulatorPage }) => ({
+    default: EmulatorPage,
+  })),
+);
+const FilePage = lazy(() =>
+  import("./pages/FilePage").then(({ FilePage }) => ({ default: FilePage })),
+);
+const GitStatusPage = lazy(() =>
+  import("./pages/GitStatusPage").then(({ GitStatusPage }) => ({
+    default: GitStatusPage,
+  })),
+);
+const GlobalSessionsPage = lazy(() =>
+  import("./pages/GlobalSessionsPage").then(({ GlobalSessionsPage }) => ({
+    default: GlobalSessionsPage,
+  })),
+);
+const HostsRoute = lazy(() =>
+  import("./pages/HostsPage").then(({ HostsRoute }) => ({
+    default: HostsRoute,
+  })),
+);
+const InboxPage = lazy(() =>
+  import("./pages/InboxPage").then(({ InboxPage }) => ({
+    default: InboxPage,
+  })),
+);
+const LoginPage = lazy(() =>
+  import("./pages/LoginPage").then(({ LoginPage }) => ({
+    default: LoginPage,
+  })),
+);
+const NewSessionPage = lazy(() =>
+  import("./pages/NewSessionPage").then(({ NewSessionPage }) => ({
+    default: NewSessionPage,
+  })),
+);
+const ProjectsPage = lazy(() =>
+  import("./pages/ProjectsPage").then(({ ProjectsPage }) => ({
+    default: ProjectsPage,
+  })),
+);
+const SessionPage = lazy(() =>
+  import("./pages/SessionPage").then(({ SessionPage }) => ({
+    default: SessionPage,
+  })),
+);
+const ProviderChildSessionPage = lazy(() =>
+  import("./pages/ProviderChildSessionPage").then(
+    ({ ProviderChildSessionPage }) => ({
+      default: ProviderChildSessionPage,
+    }),
+  ),
+);
+const SettingsLayout = lazy(() =>
+  import("./pages/settings").then(({ SettingsLayout }) => ({
+    default: SettingsLayout,
+  })),
+);
+const WorkstreamsPage = lazy(() =>
+  import("./pages/WorkstreamsPage").then(({ WorkstreamsPage }) => ({
+    default: WorkstreamsPage,
+  })),
+);
 
 /**
  * Dev-only notice shown when the app is loaded directly from the Vite dev port
@@ -86,9 +164,9 @@ function WrongPortNotice({ backendUrl }: { backendUrl: string }) {
             color: "#b6bcc8",
           }}
         >
-          You've hit the internal HMR / asset server on port {__VITE_DEV_PORT__},
-          which has no backend. The Yep Anywhere UI runs on the main server — open
-          the link below instead.
+          You've hit the internal HMR / asset server on port {__VITE_DEV_PORT__}
+          , which has no backend. The Yep Anywhere UI runs on the main server —
+          open the link below instead.
         </p>
         <a
           href={backendUrl}
@@ -138,13 +216,16 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   // Apply saved preferences before React renders to avoid flash
   initializeTheme();
   initializeFontSize();
+  initializeSidebarSpacing();
   initializeOutputAppearance();
   initializeTabSize();
   initializeContentMaxWidth();
   initializeTooltipAppearance();
 
   // Register SW at startup so PWA install is available without visiting settings
-  registerServiceWorkerAtStartup();
+  void import("./lib/registerServiceWorker").then(
+    ({ registerServiceWorkerAtStartup }) => registerServiceWorkerAtStartup(),
+  );
 
   if (import.meta.env.VITE_E2E_SOURCE_TRANSPORT_SMOKE === "true") {
     void import("./lib/e2e/sourceTransportCoexistenceSmoke").then(
@@ -166,57 +247,111 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
       <ErrorBoundary>
         <TooltipLayer />
         <BrowserRouter basename={basename}>
-          <App>
-            <Routes>
-              <Route path="/" element={<Navigate to="/projects" replace />} />
-              {/* Login page (no layout wrapper) */}
-              <Route path="/login" element={<LoginPage />} />
-              {/* IMPORTANT: Keep routes in sync with remote-main.tsx — adding a route here? Add it there too! */}
-              <Route
-                element={
-                  <NavigationLayout
-                    sessionElement={(route, { parked }) => (
-                      <SessionPage
-                        key={route.key}
-                        projectId={route.projectId}
-                        sessionId={route.sessionId}
-                        routeLocation={route.location}
-                        isDomLingerParked={parked}
-                      />
-                    )}
+          <I18nProvider>
+            <RouteModule>
+              <App>
+                <Routes>
+                  <Route
+                    path="/"
+                    element={<Navigate to="/projects" replace />}
                   />
-                }
-              >
-                <Route path="/projects" element={<ProjectsPage />} />
-                <Route path="/sessions" element={<GlobalSessionsPage />} />
-                <Route path="/agents" element={<AgentsPage />} />
-                <Route path="/inbox" element={<InboxPage />} />
-                <Route path="/settings" element={<SettingsLayout />} />
-                <Route path="/settings/:category" element={<SettingsLayout />} />
-                {/* Project-scoped pages */}
-                <Route
-                  path="/projects/:projectId/workstreams"
-                  element={<WorkstreamsPage />}
-                />
-                <Route
-                  path="/projects/:projectId"
-                  element={<Navigate to="/sessions" replace />}
-                />
-                <Route path="/git-status" element={<GitStatusPage />} />
-                <Route path="/bang-commands" element={<BangCommandsPage />} />
-                <Route path="/devices" element={<EmulatorPage />} />
-                <Route path="/devices/:deviceId" element={<EmulatorPage />} />
-                <Route path="/new-session" element={<NewSessionPage />} />
-                <Route path="/projects/:projectId/file" element={<FilePage />} />
-                <Route
-                  path="/projects/:projectId/sessions/:sessionId"
-                  element={<SessionDomLingerRouteMarker />}
-                />
-              </Route>
-              {/* Activity page has its own layout */}
-              <Route path="/activity" element={<ActivityPage />} />
-            </Routes>
-          </App>
+                  {/* Login page (no layout wrapper) */}
+                  <Route path="/login" element={routeModule(<LoginPage />)} />
+                  {/* IMPORTANT: Keep routes in sync with remote-main.tsx — adding a route here? Add it there too! */}
+                  <Route
+                    element={
+                      <RouteModule>
+                        <NavigationLayout
+                          sessionElement={(route, { parked }) => (
+                            <RouteModule key={route.key}>
+                              <SessionPage
+                                projectId={route.projectId}
+                                sessionId={route.sessionId}
+                                routeLocation={route.location}
+                                isDomLingerParked={parked}
+                              />
+                            </RouteModule>
+                          )}
+                        />
+                      </RouteModule>
+                    }
+                  >
+                    <Route
+                      path="/projects"
+                      element={routeModule(<ProjectsPage />)}
+                    />
+                    <Route
+                      path="/sessions"
+                      element={routeModule(<GlobalSessionsPage />)}
+                    />
+                    <Route
+                      path="/agents"
+                      element={routeModule(<AgentsPage />)}
+                    />
+                    <Route path="/inbox" element={routeModule(<InboxPage />)} />
+                    <Route
+                      path="/-/hosts"
+                      element={routeModule(<HostsRoute />)}
+                    />
+                    <Route
+                      path="/settings"
+                      element={routeModule(<SettingsLayout />)}
+                    />
+                    <Route
+                      path="/settings/:category"
+                      element={routeModule(<SettingsLayout />)}
+                    />
+                    {/* Project-scoped pages */}
+                    <Route
+                      path="/projects/:projectId/workstreams"
+                      element={routeModule(<WorkstreamsPage />)}
+                    />
+                    <Route
+                      path="/projects/:projectId"
+                      element={<Navigate to="/sessions" replace />}
+                    />
+                    <Route
+                      path="/git-status"
+                      element={routeModule(<GitStatusPage />)}
+                    />
+                    <Route
+                      path="/bang-commands"
+                      element={routeModule(<BangCommandsPage />)}
+                    />
+                    <Route
+                      path="/devices"
+                      element={routeModule(<EmulatorPage />)}
+                    />
+                    <Route
+                      path="/devices/:deviceId"
+                      element={routeModule(<EmulatorPage />)}
+                    />
+                    <Route
+                      path="/new-session"
+                      element={routeModule(<NewSessionPage />)}
+                    />
+                    <Route
+                      path="/projects/:projectId/file"
+                      element={routeModule(<FilePage />)}
+                    />
+                    <Route
+                      path="/projects/:projectId/sessions/:sessionId"
+                      element={routeModule(<SessionDomLingerRouteMarker />)}
+                    />
+                    <Route
+                      path="/projects/:projectId/sessions/:sessionId/agents/:agentId"
+                      element={routeModule(<ProviderChildSessionPage />)}
+                    />
+                  </Route>
+                  {/* Activity page has its own layout */}
+                  <Route
+                    path="/activity"
+                    element={routeModule(<ActivityPage />)}
+                  />
+                </Routes>
+              </App>
+            </RouteModule>
+          </I18nProvider>
         </BrowserRouter>
       </ErrorBoundary>
     </Wrapper>,

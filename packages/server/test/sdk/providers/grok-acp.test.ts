@@ -69,7 +69,7 @@ describe("GrokACPProvider", () => {
       expect(provider.supportsThinkingToggle).toBe(true);
     });
 
-    it("should report supportsSteering true", () => {
+    it("should report supportsSteering true (x.ai/interject)", () => {
       expect(provider.supportsSteering).toBe(true);
     });
 
@@ -139,6 +139,76 @@ describe("GrokACPProvider", () => {
           ],
           defaultEffortLevel: "high",
           defaultReasoningEffort: "high",
+        },
+      ]);
+    });
+
+    it("defaults to grok-4.6 extra-high effort when the listing marks it default", () => {
+      expect(
+        normalizeGrokModels(
+          {
+            models: {
+              "grok-4.6": {
+                info: {
+                  id: "grok-4.6",
+                  name: "Grok 4.6",
+                  description: "SpaceXAI's latest frontier model",
+                  context_window: 500_000,
+                  supports_reasoning_effort: true,
+                  reasoning_effort: "high",
+                  reasoning_efforts: [
+                    {
+                      id: "xhigh",
+                      value: "xhigh",
+                      description: "Highest effort and reasoning level",
+                      default: true,
+                    },
+                    {
+                      id: "high",
+                      value: "high",
+                      description: "Higher implementation quality",
+                      default: true,
+                    },
+                    { id: "medium", value: "medium", default: false },
+                    { id: "low", value: "low", default: false },
+                  ],
+                },
+              },
+              "grok-4.5": {
+                info: {
+                  id: "grok-4.5",
+                  name: "Grok 4.5",
+                  context_window: 500_000,
+                  supports_reasoning_effort: true,
+                  reasoning_effort: "high",
+                  reasoning_efforts: [
+                    { id: "high", value: "high", default: true },
+                    { id: "low", value: "low" },
+                  ],
+                },
+              },
+            },
+          },
+          [
+            "Default model: grok-4.6",
+            "Available models:",
+            "  * grok-4.6 (default)",
+            "  - grok-4.5",
+          ].join("\n"),
+        ),
+      ).toMatchObject([
+        {
+          id: "grok-4.6",
+          name: "Grok 4.6",
+          isDefault: true,
+          defaultEffortLevel: "xhigh",
+          defaultReasoningEffort: "xhigh",
+          supportedEffortLevels: ["xhigh", "high", "medium", "low"],
+        },
+        {
+          id: "grok-4.5",
+          name: "Grok 4.5",
+          defaultEffortLevel: "high",
         },
       ]);
     });
@@ -340,13 +410,23 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
   let acpClientMock: unknown;
   let connectCalls: ACPClientConfig[] = [];
   let promptCalls: Array<{ sessionId: string; text: string }> = [];
+  let extMethodCalls: Array<{
+    method: string;
+    params: Record<string, unknown>;
+  }> = [];
   let sessionCalls: Array<
     | { type: "new"; cwd: string; id: string }
     | { type: "resume"; cwd: string; id: string }
+    | {
+        type: "load";
+        cwd: string;
+        id: string;
+        meta?: Record<string, unknown>;
+      }
   > = [];
   let holdFirstPrompt = false;
   let releaseHeldPrompt: (() => void) | null = null;
-  let failResume = false;
+  let failLoad = false;
   let extensionMethodCallback: ExtensionMethodCallback | null = null;
   let promptUpdates: Array<Record<string, unknown>> = [];
 
@@ -404,13 +484,24 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
       this.emitCommandInventory(id);
       return id;
     }
+    // Grok 0.2.118 answers `session/resume` with "Method not found", so the
+    // fake refuses it outright: reaching for the unstable method is the bug
+    // this suite exists to catch, not a fallback worth exercising.
     async resumeSession(id: string, cwd: string) {
       sessionCalls.push({ type: "resume", id, cwd });
-      if (failResume) {
-        throw new Error("mock resume failed");
+      throw new Error("Method not found");
+    }
+    async loadSession(id: string, cwd: string, meta?: Record<string, unknown>) {
+      sessionCalls.push({ type: "load", id, cwd, meta });
+      if (failLoad) {
+        throw new Error("mock load failed");
       }
       this.emitCommandInventory(id);
-      return id;
+    }
+    async extMethod(method: string, params: Record<string, unknown>) {
+      extMethodCalls.push({ method, params });
+      // Real Grok ACP wraps the payload in ExtMethodResult.
+      return { result: { status: "queued" } };
     }
     async prompt(_sessionId: string, _text: string) {
       promptCalls.push({ sessionId: _sessionId, text: _text });
@@ -444,10 +535,11 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
   beforeEach(async () => {
     connectCalls = [];
     promptCalls = [];
+    extMethodCalls = [];
     sessionCalls = [];
     holdFirstPrompt = false;
     releaseHeldPrompt = null;
-    failResume = false;
+    failLoad = false;
     extensionMethodCallback = null;
     promptUpdates = [];
     acpClientMock = vi.fn(() => new FakeACPClient());
@@ -724,7 +816,66 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     });
     const argsNone = connectCalls[0].args;
     expect(argsNone).not.toContain("--effort");
-    expect(argsNone).toEqual(["agent", "stdio"]);
+    expect(argsNone).toEqual(["agent", "--no-leader", "stdio"]);
+    expect(argsLow?.indexOf("agent")).toBeLessThan(
+      argsLow?.indexOf("--effort") ?? -1,
+    );
+    expect(argsLow?.indexOf("--effort")).toBeLessThan(
+      argsLow?.indexOf("stdio") ?? -1,
+    );
+  });
+
+  it("disables Grok subagents only when YA depth is 0", async () => {
+    const previous = process.env.GROK_SUBAGENTS;
+    delete process.env.GROK_SUBAGENTS;
+    try {
+      const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
+
+      await startAndReadInit(provider, {
+        cwd: "/tmp",
+        initialMessage: { text: "hi" },
+      });
+      expect(connectCalls[0].env?.GROK_SUBAGENTS).toBeUndefined();
+
+      connectCalls.length = 0;
+      provider.setSubagentMaxDepthGetter(() => 0);
+      await startAndReadInit(provider, {
+        cwd: "/tmp",
+        initialMessage: { text: "hi" },
+      });
+      expect(connectCalls[0].env).toMatchObject({ GROK_SUBAGENTS: "0" });
+
+      connectCalls.length = 0;
+      provider.setSubagentMaxDepthGetter(() => 4);
+      await startAndReadInit(provider, {
+        cwd: "/tmp",
+        initialMessage: { text: "hi" },
+      });
+      expect(connectCalls[0].env?.GROK_SUBAGENTS).toBeUndefined();
+
+      connectCalls.length = 0;
+      provider.setSubagentMaxDepthGetter(() => null);
+      await startAndReadInit(provider, {
+        cwd: "/tmp",
+        initialMessage: { text: "hi" },
+      });
+      expect(connectCalls[0].env?.GROK_SUBAGENTS).toBeUndefined();
+
+      process.env.GROK_SUBAGENTS = "1";
+      connectCalls.length = 0;
+      provider.setSubagentMaxDepthGetter(() => 0);
+      await startAndReadInit(provider, {
+        cwd: "/tmp",
+        initialMessage: { text: "hi" },
+      });
+      expect(connectCalls[0].env?.GROK_SUBAGENTS).toBeUndefined();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GROK_SUBAGENTS;
+      } else {
+        process.env.GROK_SUBAGENTS = previous;
+      }
+    }
   });
 
   it("strips xAI API-key env vars from the spawned grok child", async () => {
@@ -797,7 +948,7 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     expect(argsCustom).toContain("other-model");
   });
 
-  it("uses resumeSessionId path", async () => {
+  it("continues a session through stable session/load, not unstable resume", async () => {
     const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
 
     const session = await provider.startSession({
@@ -805,23 +956,34 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
       resumeSessionId: "existing_ses_123",
     });
 
-    // First message should be init (resume path succeeds in fake)
     const first = await session.iterator.next();
     expect(first.value).toMatchObject({
       type: "system",
       subtype: "init",
+      // The loaded session keeps its exact native id.
       session_id: "existing_ses_123",
     });
 
-    expect(
-      sessionCalls.some(
-        (c) => c.type === "resume" && c.id === "existing_ses_123",
-      ),
-    ).toBe(true);
+    // One load, with the original id, the session cwd, and the replay
+    // suppression Grok honors (GrokSessionReader already owns the history).
+    expect(sessionCalls).toEqual([
+      {
+        type: "load",
+        id: "existing_ses_123",
+        cwd: "/tmp",
+        meta: { noReplay: true },
+      },
+    ]);
+    expect(sessionCalls.some((c) => c.type === "resume")).toBe(false);
+    expect(sessionCalls.some((c) => c.type === "new")).toBe(false);
   });
 
-  it("surfaces resume failures without creating a new native session", async () => {
-    failResume = true;
+  it("surfaces load failures without creating a new native session", async () => {
+    failLoad = true;
+    const { getLogger } = await import("../../../src/logging/logger.js");
+    const errorLog = vi
+      .spyOn(getLogger(), "error")
+      .mockImplementation(() => undefined);
     const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
 
     const session = await provider.startSession({
@@ -834,14 +996,33 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
       const error = await session.iterator.next();
       expect(error.value).toMatchObject({ type: "error" });
       expect(String(error.value.error)).toContain(
-        "Failed to resume Grok session missing-session: mock resume failed",
+        "Failed to load Grok session missing-session: mock load failed",
       );
       expect(
         sessionCalls.some(
-          (c) => c.type === "resume" && c.id === "missing-session",
+          (c) => c.type === "load" && c.id === "missing-session",
         ),
       ).toBe(true);
+      // Fail closed: a lost session must not silently become a fresh one.
       expect(sessionCalls.some((c) => c.type === "new")).toBe(false);
+      expect(errorLog).toHaveBeenNthCalledWith(
+        1,
+        {
+          err: expect.objectContaining({ message: "mock load failed" }),
+          resumeSessionId: "missing-session",
+        },
+        "Failed to load Grok ACP session",
+      );
+      expect(errorLog).toHaveBeenNthCalledWith(
+        2,
+        {
+          err: expect.objectContaining({
+            message:
+              "Failed to load Grok session missing-session: mock load failed",
+          }),
+        },
+        "Grok ACP session error",
+      );
     } finally {
       session.abort();
     }
@@ -1029,7 +1210,7 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     }
   });
 
-  it("steers an active Grok prompt with a second ACP prompt", async () => {
+  it("steers a running turn through x.ai/interject, not a second prompt", async () => {
     holdFirstPrompt = true;
     const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
 
@@ -1056,12 +1237,20 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
         expect(promptCalls).toHaveLength(1);
       });
 
-      const steered = await session.steer?.({ text: "mid turn interject" });
-      expect(steered).toBe(true);
-      expect(promptCalls).toEqual([
-        { sessionId: init.value.session_id, text: "hold the first prompt" },
-        { sessionId: init.value.session_id, text: "mid turn interject" },
+      expect(session.steer).toBeTypeOf("function");
+      await expect(
+        session.steer?.({ text: "stop and fix the test" }),
+      ).resolves.toBe(true);
+      expect(extMethodCalls).toEqual([
+        {
+          method: "x.ai/interject",
+          params: {
+            sessionId: expect.stringMatching(/^grok_ses_new_/),
+            text: "stop and fix the test",
+          },
+        },
       ]);
+      expect(promptCalls).toHaveLength(1);
 
       releaseHeldPrompt?.();
       const firstAssistant = await firstAssistantPromise;

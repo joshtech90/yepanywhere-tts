@@ -1,5 +1,6 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { FileViewer } from "../components/FileViewer";
+import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 
@@ -15,6 +16,7 @@ export function FilePage() {
   const filePath = searchParams.get("path");
   const lineNumber = parsePositiveInteger(searchParams.get("line"));
   const lineEnd = parsePositiveInteger(searchParams.get("lineEnd"));
+  const diffMode = parseFileDiffMode(searchParams.get("diff"));
   const viewMode =
     searchParams.get("view") === "range" ? ("range" as const) : "full";
 
@@ -50,29 +52,36 @@ export function FilePage() {
   }
 
   return (
-    <div className="file-page">
-      <div className="file-page-nav">
-        <Link
-          to={`${basePath}/projects/${projectId}`}
-          className="file-page-back-link"
-          title={t("fileBackToProject" as never)}
-        >
-          <BackIcon />
-          <span>{t("fileBackToProject" as never)}</span>
-        </Link>
+    <GlossaryProjectBoundary projectId={projectId}>
+      <div className="file-page">
+        <div className="file-page-nav">
+          <Link
+            to={`${basePath}/projects/${projectId}`}
+            className="file-page-back-link"
+            title={t("fileBackToProject" as never)}
+          >
+            <BackIcon />
+            <span>{t("fileBackToProject" as never)}</span>
+          </Link>
+        </div>
+        <div className="file-page-content">
+          <FileViewer
+            projectId={projectId}
+            filePath={filePath}
+            lineNumber={lineNumber}
+            lineEnd={lineEnd}
+            viewMode={viewMode}
+            diffMode={diffMode}
+            standalone
+          />
+        </div>
       </div>
-      <div className="file-page-content">
-        <FileViewer
-          projectId={projectId}
-          filePath={filePath}
-          lineNumber={lineNumber}
-          lineEnd={lineEnd}
-          viewMode={viewMode}
-          standalone
-        />
-      </div>
-    </div>
+    </GlossaryProjectBoundary>
   );
+}
+
+function parseFileDiffMode(value: string | null) {
+  return value === "worktree" || value === "cumulative" ? value : undefined;
 }
 
 function parsePositiveInteger(value: string | null): number | undefined {

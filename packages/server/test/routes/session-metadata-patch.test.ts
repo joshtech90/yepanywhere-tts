@@ -17,8 +17,9 @@ describe("parseSessionMetadataPatch", () => {
       starred: false,
       parentSessionId: " parent ",
       heartbeatTurnsEnabled: true,
+      wakeTurnsEnabled: false,
       heartbeatTurnsAfterMinutes: 0,
-      heartbeatTurnText: "x".repeat(250),
+      heartbeatTurnText: "x".repeat(2050),
       heartbeatForceAfterMinutes: 5,
       promptSuggestionMode: "native",
       recapAfterSeconds: 42,
@@ -32,8 +33,9 @@ describe("parseSessionMetadataPatch", () => {
         starred: false,
         parentSessionId: "parent",
         heartbeatTurnsEnabled: true,
+        wakeTurnsEnabled: false,
         heartbeatTurnsAfterMinutes: null,
-        heartbeatTurnText: "x".repeat(200),
+        heartbeatTurnText: "x".repeat(2000),
         heartbeatForceAfterMinutes: 5,
         promptSuggestionMode: "native",
         recapAfterSeconds: 42,
@@ -45,6 +47,7 @@ describe("parseSessionMetadataPatch", () => {
     expect(
       parseSessionMetadataPatch({
         parentSessionId: "",
+        wakeTurnsEnabled: null,
         heartbeatTurnsAfterMinutes: null,
         heartbeatTurnText: "",
         heartbeatForceAfterMinutes: 0,
@@ -55,6 +58,7 @@ describe("parseSessionMetadataPatch", () => {
       ok: true,
       patch: {
         parentSessionId: null,
+        wakeTurnsEnabled: null,
         heartbeatTurnsAfterMinutes: null,
         heartbeatTurnText: null,
         heartbeatForceAfterMinutes: null,
@@ -94,13 +98,18 @@ describe("parseSessionMetadataPatch", () => {
       status: 400,
       error: "parentSessionId must be a string or null",
     });
-    expect(parseSessionMetadataPatch({ promptSuggestionMode: "helper" })).toEqual(
-      {
-        ok: false,
-        status: 400,
-        error: "promptSuggestionMode must be one of: off, native",
-      },
-    );
+    expect(parseSessionMetadataPatch({ wakeTurnsEnabled: "yes" })).toEqual({
+      ok: false,
+      status: 400,
+      error: "wakeTurnsEnabled must be a boolean or null",
+    });
+    expect(
+      parseSessionMetadataPatch({ promptSuggestionMode: "helper" }),
+    ).toEqual({
+      ok: false,
+      status: 400,
+      error: "promptSuggestionMode must be one of: off, native",
+    });
     expect(parseSessionMetadataPatch({ recapAfterSeconds: "soon" })).toEqual({
       ok: false,
       status: 400,

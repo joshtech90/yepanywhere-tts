@@ -16,16 +16,18 @@ import {
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_KEYS } from "../../lib/storageKeys";
+import { SWITCH_HOST_RELOAD_STORAGE_KEY } from "../../lib/switchHostReload";
 import { Sidebar } from "../Sidebar";
 
 const {
   globalSessionsState,
   mockGlobalLoadMore,
+  mockMoveItemToTop,
   mockPromoteNow,
   mockRemoteConnectionState,
   mockStarredLoadMore,
   mockToggleExpanded,
-  mockWindowOpen,
+  mockShowToast,
   newSessionDraftState,
   projectQueueSidebarCountState,
   projectQueuesState,
@@ -46,13 +48,14 @@ const {
     loadMore: vi.fn(),
   },
   mockGlobalLoadMore: vi.fn(),
+  mockMoveItemToTop: vi.fn(),
   mockPromoteNow: vi.fn(),
   mockRemoteConnectionState: {
     value: null as null | { disconnect: ReturnType<typeof vi.fn> },
   },
   mockStarredLoadMore: vi.fn(),
   mockToggleExpanded: vi.fn(),
-  mockWindowOpen: vi.fn(),
+  mockShowToast: vi.fn(),
   newSessionDraftState: {
     hasDraft: false,
   },
@@ -61,6 +64,7 @@ const {
   },
   projectQueuesState: {
     queuesByProject: {} as Record<string, ProjectQueueItemSummary[]>,
+    dispatchState: { status: "running" } as { status: "running" | "paused" },
   },
   projectsState: {
     projects: [] as Array<Record<string, unknown>>,
@@ -68,6 +72,10 @@ const {
   versionState: {
     capabilities: [] as string[],
   },
+}));
+
+vi.mock("../../contexts/ToastContext", () => ({
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 vi.mock("../../contexts/RemoteConnectionContext", () => ({
@@ -89,7 +97,7 @@ vi.mock("../../hooks/useProjectQueues", () => ({
     mutatingItemId: null,
     mutatingDispatchState: false,
     mutatingPromoteItemId: null,
-    dispatchState: { status: "running" },
+    dispatchState: projectQueuesState.dispatchState,
     refetch: vi.fn(),
     pauseDispatch: vi.fn(),
     resumeDispatch: vi.fn(),
@@ -97,7 +105,7 @@ vi.mock("../../hooks/useProjectQueues", () => ({
     updateItem: vi.fn(),
     deleteItem: vi.fn(),
     retryItem: vi.fn(),
-    moveItemToTop: vi.fn(),
+    moveItemToTop: mockMoveItemToTop,
   }),
 }));
 
@@ -230,6 +238,11 @@ vi.mock("../../i18n", () => ({
         projectQueueStatusFailed: "Failed",
         projectQueueTargetNewSession: "New session",
         projectQueueUnknownProject: "Unknown project",
+        sidebarSessionResume: "Resume",
+        sidebarPendingSessionResumeTitle:
+          "Resume Project Queue dispatch with this pending session first",
+        sidebarPendingSessionResumeFailed:
+          "Failed to resume pending session: {message}",
       } as Record<string, string>;
       let text = messages[key] ?? key;
       if (vars) {
@@ -354,8 +367,10 @@ describe("Sidebar collapsed toggle", () => {
       },
     });
     mockToggleExpanded.mockReset();
-    mockWindowOpen.mockReset();
+    mockMoveItemToTop.mockReset();
+    mockMoveItemToTop.mockResolvedValue(undefined);
     mockPromoteNow.mockReset();
+    mockShowToast.mockReset();
     mockRemoteConnectionState.value = null;
     mockGlobalLoadMore.mockReset();
     mockStarredLoadMore.mockReset();
@@ -369,14 +384,15 @@ describe("Sidebar collapsed toggle", () => {
     starredSessionsState.loadMore = mockStarredLoadMore;
     newSessionDraftState.hasDraft = false;
     projectQueuesState.queuesByProject = {};
+    projectQueuesState.dispatchState = { status: "running" };
     projectQueueSidebarCountState.count = 0;
     projectsState.projects = [];
     versionState.capabilities = [];
-    vi.stubGlobal("open", mockWindowOpen);
   });
 
   afterEach(() => {
     cleanup();
+    sessionStorage.removeItem(SWITCH_HOST_RELOAD_STORAGE_KEY);
     vi.unstubAllGlobals();
   });
 
@@ -401,28 +417,29 @@ describe("Sidebar collapsed toggle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
 
     expect(mockToggleExpanded).toHaveBeenCalledTimes(1);
-    expect(mockWindowOpen).not.toHaveBeenCalled();
   });
 
-  it("opens a new-session window on middle click", () => {
+  it("exposes the expanded new-session target to native middle click", () => {
     renderSidebar();
 
     const toggle = screen.getByRole("button", { name: "Expand sidebar" });
-    fireEvent.mouseDown(toggle, { button: 1 });
-    toggle.dispatchEvent(
-      new MouseEvent("auxclick", {
-        bubbles: true,
-        cancelable: true,
-        button: 1,
-      }),
+    expect(toggle.getAttribute("href")).toBe(
+      "/remote/test/new-session?sidebar=expanded",
+    );
+    expect(toggle.getAttribute("target")).toBe("_blank");
+    expect(toggle.getAttribute("rel")).toBe("noopener");
+    expect(toggle.getAttribute("title")).toBe(
+      "Expand sidebar / [Shift] New Session",
     );
 
+    const auxClick = new MouseEvent("auxclick", {
+      bubbles: true,
+      cancelable: true,
+      button: 1,
+    });
+    expect(toggle.dispatchEvent(auxClick)).toBe(true);
+    expect(auxClick.defaultPrevented).toBe(false);
     expect(mockToggleExpanded).not.toHaveBeenCalled();
-    expect(mockWindowOpen).toHaveBeenCalledWith(
-      "/remote/test/new-session?sidebar=expanded",
-      "_blank",
-      "noopener",
-    );
   });
 
   it("renders the relay Switch Host with the standard nav-item representation", () => {
@@ -439,6 +456,37 @@ describe("Sidebar collapsed toggle", () => {
     expect(switchHost.classList.contains("sidebar-nav-item")).toBe(true);
     const label = switchHost.querySelector(".sidebar-nav-text");
     expect(label?.textContent).toBe("Switch Host");
+  });
+
+  it("reloads the host picker when switching hosts", () => {
+    const originalLocation = window.location;
+    const replace = vi.fn();
+    const disconnect = vi.fn();
+    mockRemoteConnectionState.value = { disconnect };
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        href: "https://ya.example/remote/current/session",
+        replace,
+      },
+    });
+
+    try {
+      renderSidebar();
+      fireEvent.click(screen.getByRole("button", { name: "Switch Host" }));
+
+      expect(disconnect).toHaveBeenCalledOnce();
+      expect(replace).toHaveBeenCalledOnce();
+      expect(sessionStorage.getItem(SWITCH_HOST_RELOAD_STORAGE_KEY)).toBe("1");
+      const reloadUrl = new URL(String(replace.mock.calls[0]?.[0]));
+      expect(reloadUrl.pathname).toBe("/remote/current/session");
+      expect(reloadUrl.searchParams.get("__ya_reload")).toMatch(/^\d+$/);
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it("renders loaded sidebar sessions without a show-more gate", () => {
@@ -676,6 +724,44 @@ describe("Sidebar collapsed toggle", () => {
     expect(link.getAttribute("href")).toBe(
       "/remote/test/projects?queueItem=queue-new-session",
     );
+  });
+
+  it("resumes restart-paused dispatch with the selected pending item first", async () => {
+    versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
+    projectsState.projects = [
+      {
+        id: "project-1",
+        name: "Alpha",
+        projectQueueCount: 2,
+      },
+    ];
+    projectQueuesState.dispatchState = { status: "paused" };
+    projectQueuesState.queuesByProject = {
+      "project-1": [
+        makeProjectQueueItem("queue-first"),
+        makeProjectQueueItem("queue-selected", {
+          target: { type: "new-session", title: "Selected pending session" },
+        }),
+      ],
+    };
+
+    renderSidebar();
+    const selectedLink = screen.getByRole("link", {
+      name: /Selected pending session/i,
+    });
+    const row = selectedLink.closest("li");
+    const resume = row?.querySelector("button");
+    expect(resume?.textContent).toBe("Resume");
+
+    fireEvent.click(resume as Element);
+
+    await waitFor(() =>
+      expect(mockMoveItemToTop).toHaveBeenCalledWith(
+        "project-1",
+        "queue-selected",
+      ),
+    );
+    expect(mockPromoteNow).not.toHaveBeenCalled();
   });
 
   it("starts queued new-session sidebar rows before navigating", async () => {
@@ -997,7 +1083,14 @@ describe("Sidebar collapsed toggle", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("link", { name: /New Session/i })).toBeDefined();
+    const newSessionLink = screen.getByRole("link", { name: /New Session/i });
+    const newSessionIcon = newSessionLink.querySelector(
+      ".sidebar-new-session-icon",
+    );
+    expect(newSessionIcon?.getAttribute("width")).toBe("16");
+    expect(newSessionIcon?.getAttribute("height")).toBe("16");
+    expect(newSessionIcon?.querySelector("circle")).toBeTruthy();
+    expect(newSessionIcon?.querySelectorAll("line")).toHaveLength(2);
     expect(screen.getByText("Draft")).toBeDefined();
   });
 

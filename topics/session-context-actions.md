@@ -25,12 +25,17 @@ revises the handoff decision below
 Nothing semantically owned by the conversation is discarded by
 inactivity; what dies is the *process* and the *cache warmth*.
 
-- YA reaps an idle provider process after `IDLE_TIMEOUT` seconds
-  (default 60 minutes, matching the prompt-cache window;
-  `DEFAULT_IDLE_TIMEOUT_MS`/`DEFAULT_IDLE_TIMEOUT_SECONDS` in
-  `packages/server/src/defaults.ts`, env parsing in `config.ts`). The
-  supervisor `Process` tracks this as an intentional idle reap, distinct
-  from a crash.
+- YA may reap a verified-idle, unretained provider process after the
+  server-wide `idleReapHours` grace (default 24 hours). A mounted view of that
+  session suspends its own process's deadline; global app activity and views of
+  other sessions do not. The final viewer release or a later verified-idle
+  transition starts a fresh full grace. Active and waiting-input sessions have
+  no viewer-absence deadline. Negative hours disable idle reaping. Until the
+  setting is first saved, legacy `IDLE_TIMEOUT` seconds remain authoritative
+  (`DEFAULT_IDLE_TIMEOUT_MS`/`DEFAULT_IDLE_TIMEOUT_SECONDS` in
+  `packages/server/src/defaults.ts`, env parsing in `config.ts`). The supervisor
+  `Process` tracks an actual expiry as an intentional idle reap, distinct from
+  a crash.
 - The transcript persists on disk independently of the process: Claude
   writes jsonl under `{CLAUDE_CONFIG_DIR}/projects/`, Codex writes
   rollout files under its own sessions dir. These survive server
@@ -96,8 +101,11 @@ a new session with the same project/provider/model and navigate to it.
 YA exposes one provider-native copy family for Claude, Codex, and Pi. A direct
 **Clone** keeps the latest completed response; **Fork before/after** keeps a
 server-resolved prefix at a real user-turn boundary. Both create a cold session
-with no new provider turn and leave the source unchanged. **Handoff** remains a
-separate replacement/continuation workflow.
+with no new provider turn and leave the source unchanged. The child persists
+the source model for its first cold resume; a source launched through
+`default` is pinned to the provider-reported model rather than re-evaluating a
+possibly changed default. Effort remains an independent launch setting.
+**Handoff** remains a separate replacement/continuation workflow.
 
 Claude's underlying SDK 0.3.170 surface is:
 
@@ -216,6 +224,78 @@ compact command on an idle process, show the `Compacting` busy state
 per [provider-state-machine](provider-state-machine.md), and surface
 failure without retry loops.
 
+## Synthetic done and archive
+
+YA's optional `/done` command and typed `/archive` command are local session
+boundaries, not provider commands. When enabled, an exact attachment-free
+submission persists a synthetic user row in YA metadata, marks the session
+read, and sends no provider turn. `/archive` additionally archives the session
+in the same metadata mutation. The row is merged into session history by
+timestamp without mutating the provider transcript, so it remains visible on a
+later visit.
+
+During an active turn (including provider-retained background work), the action
+first persists `automationPausedUntilUserTurn` and then appears in the
+canonical queued-message projection as a `ya-command` chip. `/archive` persists
+archive and pause together before the chip appears. The same Process-local done
+lane owns both actions, but its visible content is `/done` or `/archive`; there
+is no second scheduler or provider queue. It never enters the deferred,
+patient, direct, or provider queues and does not interrupt the current turn.
+The pause and archive state are session metadata, so a restart or reap before
+idle finalize preserves the requested effect. At the first unretained idle
+boundary, YA records the matching durable synthetic row before removing the
+chip; only then may already-accepted ordinary queued turns resume their normal
+delivery. A failed metadata persist fails the request without queuing a chip. A
+later synthetic-row or read-state failure leaves the already-persisted state in
+force and the command visibly queued for an explicit retry, and still sends no
+provider input.
+
+Both durable boundaries pause YA-driven provider work until a later real user
+turn. They block automatic compaction, recaps (including forked and cold
+recaps), heartbeat/session-wake turns, prompt-cache keepalive, patient queue
+promotion, and automatic Project Queue revival for that session. They do not
+interrupt current provider work, retract already accepted turns, or block
+message-less Activate. A real user Send clears the pause; automatically sourced
+heartbeat, wake, and Project Queue messages do not. If that real Send is
+accepted while either boundary is still queued, its later intent wins after the
+synthetic row commits, so the already-accepted user turn does not leave
+automation paused.
+
+`/done` and `/archive` are consumed on submit, including while they sit queued.
+The composer clears the text optimistically and the settled request drops the
+localStorage recovery copy, so the session shows no "Draft" badge and a later
+visit does not restore a command already consumed; a failed request restores it
+for retry. The aside-closing `/done` variant clears the same way. `/archive` is
+a Mother-session operation and fails visibly instead of reaching a focused
+`/btw` aside.
+
+Because the user has declared the session finished, either queued boundary also
+stops that session from blocking Project Queue promotion for its project, even
+while the agent completes a final action. See
+[project-queue](project-queue.md) § Project Idle Predicate.
+
+The `/done` feature is server-capability gated (`synthetic-done-command`) and
+defaults to `off`, preserving provider-owned `/done` skills. `hidden` enables
+typed local `/done` without a toolbar button; the ordinary narrowing tiers
+enable the command and show the circle-check button. `/done` follows its
+composer: an aside-routed composer closes that aside, while the Mother composer
+keeps this synthetic session behavior even when a side pane is open. With the
+setting Off, Mother passes `/done` through to the provider.
+
+`/archive` has its own permanent `synthetic-archive-command` capability and
+route because older done-capable servers cannot atomically archive with the
+boundary. When that capability is absent but `synthetic-done-command` is
+present, the client immediately canonicalizes exact typed `/archive` to the
+ordinary `/done` operation: the queued chip and durable row both read `/done`,
+and no archive request is made. When neither capability is present, the
+existing provider-command fallback remains. Stable `v0.7.0` and `v0.6.2` lack
+the archive capability and route; neither existing capability's meaning is
+broadened.
+
+A source-ahead server with the original immediate done route may omit the
+additive `queued` and `deferredMessages` response fields; the client treats both
+as optional and retains the immediate local-done behavior.
+
 ## Action set
 
 Session kebab menu, capability-gated per provider, hidden or
@@ -228,6 +308,8 @@ configurable per [session-ui-customization](session-ui-customization.md):
 | Fork | Provider-native prefix fork at a real user-turn boundary | claude, codex, pi |
 | Handoff to agent | Existing restart-handoff with provider/model picker | all |
 | Compact now | Queue advertised compact command; busy state | claude, codex |
+| Done | YA-only transcript overlay plus durable automation pause | all |
+| Archive | Done boundary plus atomic session archive | all |
 
 The fork point lives in the inline menu on each real user prompt; the right-side
 turn rail is an accelerator for the same actions. Remaining questions are

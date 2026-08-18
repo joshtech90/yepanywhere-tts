@@ -31,6 +31,25 @@ on the Claude file shape: `docs/research/archive/claude-session-jsonl-structure.
 a *liveness* signal: it cannot see processes, pids, or locks. This is the root
 limitation behind every caveat below.
 
+**Boot process presence is a separate projection.** After retained runtime
+reattach, YA can state exactly which sessions have a known YA process and which
+do not. One bounded same-user harness inventory at boot and on a single
+process-wide cadence may additionally find external provider processes. It may
+associate one with a session only through an exact provider-native session id,
+pid/lock record, or protocol fact. Until such a join exists, “no YA process” is
+not “no process”: an uncorrelated external harness or a process outside the
+observable namespace may still exist. Do not weaken the mtime ownership wording
+or upgrade `owner: "none"` into proven process absence.
+
+Command-name recognition, native session-id extraction, and bounded
+total/recent activity reads belong to provider adapters. The generic boot
+coordinator joins those facts with Supervisor ownership and does not infer from
+cwd, mtime proximity, CPU, or candidate count. See
+[provider-abstraction](provider-abstraction.md) and
+[agents-process-observability](agents-process-observability.md). The bounded
+inventory and its prohibition on unrelated transcript scans are in
+[session-catalog-observation](session-catalog-observation.md).
+
 **YA never concurrently appends to a live shared transcript.** It reads these
 files read-only, and the one write path — fork — writes a *new*
 `<targetId>.jsonl` with rewritten ids rather than appending to the shared file

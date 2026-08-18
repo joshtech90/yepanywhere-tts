@@ -1,13 +1,16 @@
 import {
+  CAPABILITY_ID_ENCODING_VERSION,
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROJECT_SESSION_DEFAULTS_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
+  serverHasCapability,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -278,6 +281,103 @@ describe("GET /version", () => {
     expect(json.voiceBackendCapabilities).toEqual({ "ya-dummy": {} });
   });
 
+  it("negotiates version-implied and optional-bit capabilities", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "darwin",
+      }),
+    });
+    const response = await routes.request("/?capabilities=compact-v1");
+    const version = await response.json();
+
+    expect(version.capabilities).toBeUndefined();
+    expect(version.optionalCapabilityBits).toEqual([[0, 1]]);
+    expect(serverHasCapability(version, PROJECT_QUEUE_CAPABILITY)).toBe(true);
+    expect(serverHasCapability(version, VOICE_INPUT_CAPABILITY)).toBe(true);
+    expect(serverHasCapability(version, DEVICE_BRIDGE_CAPABILITY)).toBe(false);
+  });
+
+  it("selects ID capabilities from the client semantic version", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      getCurrentVersionInfo: async () => ({
+        version: "0.7.1",
+        installSource: "source",
+      }),
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "darwin",
+      }),
+    });
+    const response = await routes.request("/", {
+      headers: { "X-Yep-Client-Version": "0.7.1" },
+    });
+    const version = await response.json();
+
+    expect(version.capabilities).toBeUndefined();
+    expect(version.capabilityEncoding).toBe(CAPABILITY_ID_ENCODING_VERSION);
+    expect(Array.isArray(version.capabilityBits)).toBe(true);
+    expect(serverHasCapability(version, PROJECT_QUEUE_CAPABILITY)).toBe(true);
+    expect(serverHasCapability(version, VOICE_INPUT_CAPABILITY)).toBe(true);
+    expect(serverHasCapability(version, DEVICE_BRIDGE_CAPABILITY)).toBe(false);
+  });
+
+  it("sends negative IDs for withdrawn version-implied contracts", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      deniedCapabilities: [PROJECT_SESSION_DEFAULTS_CAPABILITY],
+      getCurrentVersionInfo: async () => ({
+        version: "0.7.1",
+        installSource: "source",
+      }),
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "darwin",
+      }),
+    });
+    const encodedResponse = await routes.request("/", {
+      headers: { "X-Yep-Client-Version": "0.7.1" },
+    });
+    const encodedVersion = await encodedResponse.json();
+
+    expect(encodedVersion.deniedCapabilityBits).toBeDefined();
+    expect(
+      serverHasCapability(encodedVersion, PROJECT_SESSION_DEFAULTS_CAPABILITY),
+    ).toBe(false);
+
+    const legacyResponse = await routes.request("/", {
+      headers: { "X-Yep-Client-Version": "0.7.0" },
+    });
+    const legacyVersion = await legacyResponse.json();
+    expect(legacyVersion.deniedCapabilityBits).toBeUndefined();
+    expect(legacyVersion.capabilities).not.toContain(
+      PROJECT_SESSION_DEFAULTS_CAPABILITY,
+    );
+  });
+
+  it("keeps legacy names for a pre-ID client version", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes();
+    const response = await routes.request("/", {
+      headers: { "X-Yep-Client-Version": "0.7.0" },
+    });
+    const version = await response.json();
+
+    expect(version.capabilityEncoding).toBeUndefined();
+    expect(version.capabilityBits).toBeUndefined();
+    expect(version.capabilities).toContain(PROJECT_QUEUE_CAPABILITY);
+  });
+
   it("reports configured speech backends while validation is pending", async () => {
     mockFetch(() => new Response(null, { status: 204 }));
 
@@ -413,5 +513,47 @@ describe("GET /version", () => {
 
     expect(capabilities).toContain(DEVICE_BRIDGE_DOWNLOAD_CAPABILITY);
     expect(capabilities).not.toContain(DEVICE_BRIDGE_UPDATE_CAPABILITY);
+  });
+});
+
+describe("process-generation version facts", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("probes the install once no matter how many requests arrive", async () => {
+    const { createVersionRoutes, getCurrentVersionInfoComputations } =
+      await importVersion();
+    const app = createVersionRoutes();
+
+    for (let request = 0; request < 20; request += 1) {
+      const response = await app.request("/");
+      expect(response.status).toBe(200);
+    }
+
+    expect(getCurrentVersionInfoComputations()).toBe(1);
+  });
+
+  it("shares one probe across concurrent first requests", async () => {
+    const { createVersionRoutes, getCurrentVersionInfoComputations } =
+      await importVersion();
+    const app = createVersionRoutes();
+
+    await Promise.all(Array.from({ length: 10 }, () => app.request("/")));
+
+    expect(getCurrentVersionInfoComputations()).toBe(1);
+  });
+
+  it("keeps the version snapshot across an explicit fresh request", async () => {
+    const { createVersionRoutes, getCurrentVersionInfoComputations } =
+      await importVersion();
+    const app = createVersionRoutes();
+
+    const first = await (await app.request("/")).json();
+    const fresh = await (await app.request("/?fresh=1")).json();
+
+    // fresh=1 promises a fresh check of dynamic sandbox/device facts only.
+    expect(fresh.version).toBe(first.version);
+    expect(getCurrentVersionInfoComputations()).toBe(1);
   });
 });

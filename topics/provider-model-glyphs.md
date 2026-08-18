@@ -62,6 +62,13 @@ Replace the unicode glyphs with 2–3 letter provider abbreviations rendered
 in `color: var(--provider-X)`. The color carries the brand; the text
 disambiguates within-color cases.
 
+Provider hues are theme-dependent. Dark and light themes keep the same
+provider identity but may shift lightness (and hue if needed) so badge
+text meets 4.5:1 contrast against that theme's `--bg-surface`. A single
+mid-gray for every provider is not the contract. Grok on dark themes is
+warm stone, not near-black: `#111827` on `#2f2f2f` is why `Gk 4.6` was
+highlightable but looked like only the thinking-colored status dot.
+
 | Provider       | Abbrev | Color var              | Notes |
 |----------------|--------|------------------------|-------|
 | `claude`       | `Cl`   | `--provider-claude`    | Anthropic orange |
@@ -70,6 +77,7 @@ disambiguates within-color cases.
 | `codex-oss`    | `Cd↓`  | `--provider-codex`     | OSS / local |
 | `gemini`       | `✦`    | `--provider-gemini`    | Keep brand mark |
 | `gemini-acp`   | `✦↓`   | `--provider-gemini`    | ACP = local transport |
+| `grok`         | `Gk`   | `--provider-grok`      | xAI Grok |
 | `opencode`     | `OC`   | `--provider-opencode`  | OpenCode purple |
 
 Model sub-family abbreviations (appended after provider abbrev):
@@ -91,6 +99,9 @@ Model sub-family abbreviations (appended after provider abbrev):
 | gpt-4        | `4`   | `Cd 4`                    |
 | 2.5-flash    | `2.5f`| `✦ 2.5f`                  |
 | 2.5-pro      | `2.5p`| `✦ 2.5p`                  |
+| grok-4.6     | `4.6` | `Gk 4.6`                  |
+| grok-4.5     | `4.5` | `Gk 4.5`                  |
+| grok-build   | —     | `Gk`                      |
 
 The pattern is: provider abbrev + space + model short. Fits in ~6–8 chars
 for all common cases. Tooltip shows the raw full model ID (already wired).

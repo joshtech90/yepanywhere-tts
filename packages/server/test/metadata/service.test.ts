@@ -189,6 +189,135 @@ describe("SessionMetadataService", () => {
     });
   });
 
+  describe("provider persistence", () => {
+    it("does not save when the provider is already current", async () => {
+      await service.initialize();
+      await service.setProvider("session-1", "codex");
+      const saveSpy = vi.spyOn(
+        service as unknown as { doSave(): Promise<void> },
+        "doSave",
+      );
+
+      await service.setProvider("session-1", "codex");
+
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(service.getMetadata("session-1")?.provider).toBe("codex");
+    });
+
+    it("returns distinct providers without copying all metadata", async () => {
+      await service.initialize();
+      await service.setProvider("session-1", "codex");
+      await service.setProvider("session-2", "codex");
+      await service.setProvider("session-3", "claude-gateway");
+
+      expect(service.getRecordedProviders()).toEqual([
+        "codex",
+        "claude-gateway",
+      ]);
+    });
+  });
+
+  describe("effective launch settings", () => {
+    it("persists complete settings and preserves exact default model tokens", async () => {
+      await service.initialize();
+
+      await service.recordEffectiveLaunchSettings("session-1", {
+        permissionMode: "bypassPermissions",
+        requestedModel: "default",
+        serviceTier: "priority",
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      });
+
+      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      await reloaded.initialize();
+      expect(reloaded.getEffectiveLaunchSettings("session-1")).toEqual({
+        schemaVersion: 1,
+        revision: 1,
+        permissionMode: "bypassPermissions",
+        requestedModel: "default",
+        serviceTier: "priority",
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      });
+      expect(reloaded.getRequestedModel("session-1")).toBe("default");
+    });
+
+    it("advances revisions only when the applied snapshot changes", async () => {
+      await service.initialize();
+      const value = {
+        permissionMode: "plan" as const,
+        requestedModel: "opus",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      };
+
+      const first = await service.recordEffectiveLaunchSettings(
+        "session-1",
+        value,
+      );
+      const duplicate = await service.recordEffectiveLaunchSettings(
+        "session-1",
+        value,
+      );
+      const changed = await service.recordEffectiveLaunchSettings("session-1", {
+        ...value,
+        effort: "max",
+      });
+
+      expect(first.revision).toBe(1);
+      expect(duplicate.revision).toBe(1);
+      expect(changed.revision).toBe(2);
+    });
+
+    it("retries an identical snapshot after its first save fails", async () => {
+      await service.initialize();
+      const saveSpy = vi
+        .spyOn(service as unknown as { doSave(): Promise<void> }, "doSave")
+        .mockRejectedValueOnce(new Error("disk full"));
+      const value = {
+        permissionMode: "plan" as const,
+        requestedModel: "opus",
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      };
+
+      await expect(
+        service.recordEffectiveLaunchSettings("session-1", value),
+      ).rejects.toThrow("disk full");
+      await expect(
+        service.recordEffectiveLaunchSettings("session-1", value),
+      ).resolves.toMatchObject({ revision: 1, requestedModel: "opus" });
+      expect(saveSpy).toHaveBeenCalledTimes(2);
+
+      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      await reloaded.initialize();
+      expect(reloaded.getEffectiveLaunchSettings("session-1")).toMatchObject({
+        revision: 1,
+        requestedModel: "opus",
+      });
+    });
+
+    it("uses legacy requestedModel only when no durable record exists", async () => {
+      await service.initialize();
+      await service.setRequestedModel("legacy", "sonnet");
+      expect(service.getRequestedModel("legacy")).toBe("sonnet");
+
+      await service.recordEffectiveLaunchSettings("legacy", {
+        permissionMode: "default",
+        requestedModel: null,
+        serviceTier: null,
+        thinking: null,
+        effort: null,
+      });
+
+      expect(service.getRequestedModel("legacy")).toBeUndefined();
+      expect(service.getMetadata("legacy")?.requestedModel).toBeUndefined();
+    });
+  });
+
   describe("setTitle", () => {
     it("sets custom title for a session", async () => {
       await service.initialize();
@@ -427,6 +556,23 @@ describe("SessionMetadataService", () => {
       });
     });
 
+    it("persists both session-wake override values and clears to inheritance", async () => {
+      await service.initialize();
+
+      await service.updateMetadata("session-1", { wakeTurnsEnabled: false });
+      expect(service.getMetadata("session-1")).toEqual({
+        wakeTurnsEnabled: false,
+      });
+
+      await service.updateMetadata("session-1", { wakeTurnsEnabled: true });
+      expect(service.getMetadata("session-1")).toEqual({
+        wakeTurnsEnabled: true,
+      });
+
+      await service.updateMetadata("session-1", { wakeTurnsEnabled: null });
+      expect(service.getMetadata("session-1")).toBeUndefined();
+    });
+
     it("persists an automatic-resume block until heartbeat is re-enabled", async () => {
       await service.initialize();
       await service.updateMetadata("session-1", {
@@ -555,6 +701,25 @@ describe("SessionMetadataService", () => {
 
       expect(newService.getRecapMode("session-1")).toBe("fork");
     });
+
+    it("persists and clears the recap pause across restarts", async () => {
+      await service.initialize();
+      await service.updateMetadata("session-1", {
+        recapPausedUntilUserTurn: true,
+      });
+
+      const newService = new SessionMetadataService({ dataDir: testDir });
+      await newService.initialize();
+
+      expect(newService.getMetadata("session-1")).toEqual({
+        recapPausedUntilUserTurn: true,
+      });
+
+      await newService.updateMetadata("session-1", {
+        recapPausedUntilUserTurn: false,
+      });
+      expect(newService.getMetadata("session-1")).toBeUndefined();
+    });
   });
 
   describe("recapMessages", () => {
@@ -612,6 +777,69 @@ describe("SessionMetadataService", () => {
           uuid: "recap-1",
         }),
       ]);
+    });
+  });
+
+  describe("synthetic done messages", () => {
+    it("persists the overlay and automation pause atomically", async () => {
+      await service.initialize();
+      const message = {
+        type: "user" as const,
+        content: "/done" as const,
+        message: { role: "user" as const, content: "/done" as const },
+        timestamp: "2026-08-16T12:00:00.000Z",
+        uuid: "done-1",
+        id: "done-1",
+        isSynthetic: true as const,
+        yaSyntheticSource: "done" as const,
+      };
+
+      await service.recordSyntheticDone("session-1", message);
+
+      expect(service.getSyntheticDoneMessages("session-1")).toEqual([message]);
+      expect(service.getMetadata("session-1")).toMatchObject({
+        syntheticDoneMessages: [message],
+        automationPausedUntilUserTurn: true,
+      });
+
+      const reloaded = new SessionMetadataService({ dataDir: testDir });
+      await reloaded.initialize();
+      expect(reloaded.getMetadata("session-1")).toMatchObject({
+        syntheticDoneMessages: [message],
+        automationPausedUntilUserTurn: true,
+      });
+
+      await reloaded.updateMetadata("session-1", {
+        automationPausedUntilUserTurn: false,
+      });
+      expect(
+        reloaded.getMetadata("session-1")?.automationPausedUntilUserTurn,
+      ).toBeUndefined();
+      expect(reloaded.getSyntheticDoneMessages("session-1")).toEqual([message]);
+    });
+
+    it("persists archive with the boundary row in one mutation", async () => {
+      await service.initialize();
+      const message = {
+        type: "user" as const,
+        content: "/archive" as const,
+        message: { role: "user" as const, content: "/archive" as const },
+        timestamp: "2026-08-17T12:00:00.000Z",
+        uuid: "archive-1",
+        id: "archive-1",
+        isSynthetic: true as const,
+        yaSyntheticSource: "done" as const,
+      };
+
+      await service.recordSyntheticDone("session-1", message, {
+        archived: true,
+      });
+
+      expect(service.getMetadata("session-1")).toMatchObject({
+        syntheticDoneMessages: [message],
+        automationPausedUntilUserTurn: true,
+        isArchived: true,
+      });
     });
   });
 

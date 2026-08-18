@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../../src/app.js";
+import { createApp } from "../setup/create-app.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 
@@ -119,8 +119,9 @@ describe("session detail compact-tail pagination", () => {
 
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.messages.map((message: { uuid?: string }) => message.uuid))
-      .toEqual(["cb1", "u2", "a2", "cb2", "u3"]);
+    expect(
+      json.messages.map((message: { uuid?: string }) => message.uuid),
+    ).toEqual(["cb1", "u2", "a2", "cb2", "u3"]);
     expect(json.pagination).toMatchObject({
       hasOlderMessages: true,
       returnedMessageCount: 5,

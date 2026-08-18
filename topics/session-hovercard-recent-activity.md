@@ -1,7 +1,7 @@
 # Session Hover Card: Recent Activity
 
-> The session hover card (the tooltip-like pane that replaces the row's
-> `title=` tooltip) shows the **opening user request** today. This adds the
+> The session hover card (the rich Themed-mode pane used instead of a clipped
+> row's ordinary title hint) shows the **opening user request** today. This adds the
 > **most recent regular agent turn** as a second excerpt so a glance answers
 > "where did this land?", and fires the same card on the all-sessions page
 > and its search box — not just the sidebar. Records the content/layout/data
@@ -18,6 +18,8 @@ annotates),
 `waiting-input`, which gates the phase-2 live tail),
 [provider-abstraction](provider-abstraction.md) (per-provider readers must each
 populate the new snippet; absence degrades gracefully),
+[session-catalog-observation](session-catalog-observation.md) (the server
+observer, interest, generation, and cold-row freshness hierarchy),
 [recaps](recaps.md) (the away-summary that overrides the excerpt when it is the
 freshest agent line).
 
@@ -30,7 +32,10 @@ read, without opening the session, both ends of the conversation:
 - **Where it is now** — the most recent regular agent turn (new).
 
 "Regular agent turn" = the last assistant message with visible prose. Skip
-pure tool-call turns, thinking-only turns, and `<synthetic>` error turns; if
+pure tool-call turns, thinking-only turns, and `<synthetic>` turns — entries
+Claude Code shapes like an assistant reply but no model produced, identified by
+`isSyntheticNoResponseTurn` (`packages/shared/src/claude-sdk-schema/guards.ts`).
+Quoting one reports words the agent never said and hides its real last turn. If
 the latest turn *ends* on a tool call with no trailing prose, fall back to the
 prior text block or a short tool label (see Content below).
 
@@ -38,8 +43,9 @@ prior text block or a short tool label (see Content below).
 
 - **The pane** — `packages/client/src/components/SessionHoverCard.tsx`.
   Portaled, `position: fixed`, pointer-selectable, self-positioning from the
-  row geometry + cursor x (below the row / right of cursor, flipping above when
-  it would not fit). A column flexbox:
+  row geometry (below/above vertically and beyond the right/left row edge when
+  horizontal room permits, with cursor-relative clamping as the fallback). A
+  column flexbox:
   - `styles.turn` — the opening request, styled like a user
     message, `white-space: pre-wrap`, line-clamped via an inline
     `-webkit-line-clamp` (`maxLines`) computed from available vertical space.
@@ -56,12 +62,11 @@ prior text block or a short tool label (see Content below).
 - **Body source** — `SessionListItem.tsx`:
   `hoverPrompt = (initialPrompt || fullTitle || displayTitle || "").trim()`
   (the *first* user turn). No agent-turn text reaches the client today.
-- **Firing surface** — gated to the sidebar only:
-  `showCompactPreview = mode === "compact" && !!provider`
-  (`SessionListItem.tsx:398`). The all-sessions page
-  (`GlobalSessionsPage.tsx:977,1051`) renders `mode="card"`, so the card is
-  off there; its search box filters the same rows, so "all-sessions + search"
-  is one surface.
+- **Firing surface** — every provider-backed `SessionListItem` in Themed mode:
+  sidebar compact rows plus All Sessions/search card rows. Native mode mounts
+  no rich card or refresh handler on session-list rows; it exposes the ordinary
+  browser title only when the visible row title is clipped. Explicit non-list
+  confirmation targets may retain the shared custom card in either mode.
 - **Data cost is near-zero server-side.** `reader.ts:getSessionSummaryFromDir`
   already reads the whole jsonl, builds the DAG, and holds the active-branch
   `conversationMessages` in memory; it already scans assistant messages
@@ -79,8 +84,33 @@ prior text block or a short tool label (see Content below).
 | Width | **Same treatment as the request.** The card is `max-content`; the request already forces the width, the reply wraps in it. `--wide` (880px) applies to both. No special narrowing, no one-line-beside-badges. |
 | Vertical budget | **Equal small caps**, not greedy. Cap the now-greedy opening body (≈4–5 lines) and clamp the reply (≈3 lines); the reply must not exceed the opening request's allocation. |
 | Surfaces | Sidebar (compact) already fires. **Also fire in card mode** so all-sessions + search get it. |
+| Appearance ownership | **Themed session-list rows only.** Native rows stay free of rich hover panes and use an ellipsis-aware native title fallback. Non-list confirmation targets remain explicit exceptions. |
+| Timing | **Pointer rest, not entry.** First reveal waits 3× the configured tooltip delay; warm row-to-row reveals retain the 1× base delay rather than becoming instant. |
+| Horizontal placement | **Prefer outside the target row.** Use the open right or left side before falling back to cursor-relative viewport clamping. |
 | Providers | **Excerpt is provider-independent** via the on-demand refresh (normalized `Message[]`). Claude additionally populates it in the cheap summary/live path; other providers populate on focus/hover. Recaps stay Claude-only. |
-| Freshness | **Rides the existing live `session-updated` event** (same channel that already updates title/messageCount/contextUsage), not a mouseover-repoll. |
+| Freshness | **Rides live `session-updated` events for owned/observed sessions; an explicitly requested stale unowned card gets one exact coalesced refresh.** Never poll every visible or neighboring row. |
+
+### Requested-card loading contract
+
+Accepted 2026-08-05. Neither desktop pointer movement nor tablet sidebar
+adjacency justifies transcript scanning before a particular preview is
+requested. Desktop refresh begins only after the pointer has rested and that
+row's card is due to display; Native-mode list hover never requests a rich
+preview. Touch refresh begins only when the user explicitly opens that row's preview.
+Pointer-velocity and adjacent-row prefetch remain deferred until measurement of
+requested-card update delay shows a need.
+
+The card opens immediately from compact list fields. Its opening user request
+and metadata occupy their final coordinates and do not jitter, flash, or repaint
+when the recent-agent excerpt arrives. Allocate the bounded reply region below
+that stable top before asynchronous content is applied, including when the card
+is flipped above its trigger. The later reply fills only that region; failure or
+absence leaves it empty without moving the opening block.
+
+This is distinct from Inbox reconciliation. Inbox starts a provider-wide scan
+eagerly at server boot and publishes progressive count/tier deltas because it
+must observe outside-YA activity. Hovercards have no corpus-wide requirement
+and may never trigger an adjacent or all-row transcript pass.
 
 ## Proposals considered
 
@@ -173,17 +203,18 @@ Client:
 - Drop the `mode === "compact"` gate on `showCompactPreview` (or widen it to
   card mode) so all-sessions + search rows fire the card.
 
-## Freshness: how the excerpt stays current
+## Freshness: live updates plus exact requested refresh
 
-The list is **not** poll-on-visible. `useGlobalSessions` fetches once on mount
+The list is **not** all-visible or fixed-interval polling.
+`useGlobalSessions` fetches once on mount
 (and on filter change / WS reconnect via `onReconnect: fetch`), then YA keeps it
 live through pushed events from `useFileActivity`: `session-status`,
 `process-state`, `session-created`, `session-metadata-changed`, `session-seen`,
 and `session-updated`. The last already updates `title` / `messageCount` /
 `updatedAt` / `contextUsage` / `model` in place.
 
-`lastAgentText` is therefore wired onto that **same live channel** rather than a
-bespoke refresh:
+For owned/live-observed sessions, `lastAgentText` is wired onto that **same live
+channel** rather than a bespoke refresh:
 
 - Server builds `SessionUpdatedEvent` from a freshly re-read `SessionSummary`
   (`Supervisor.emitReconciledSessionUpdate`, and the two
@@ -196,10 +227,11 @@ bespoke refresh:
   agent turn reliably moves messageCount/contextUsage).
 - Client `handleSessionUpdated` applies `event.lastAgentText` to the row.
 
-This makes the hover excerpt exactly as live as the context-usage chip already
-is — which is why a mouseover-exit repoll or a sidebar-visible recompute was
-**not** added: those would be a parallel mechanism for a freshness path that
-already exists. Reconnect already triggers a full refetch.
+This makes an owned/live-observed hover excerpt exactly as live as the
+context-usage chip already is. A mouseover-exit repoll or sidebar-visible
+recompute is still unnecessary. An unowned cold row follows the exact on-demand
+path below; reconnect conditionally reconciles the retained catalog generation
+rather than granting every old row a transcript read.
 
 **Latency floor.** The remaining lag is not a YA poll interval. For sessions YA
 runs (owned), updates come off the live SDK stream. For sessions an external TUI
@@ -269,22 +301,24 @@ when the user expresses interest:
   (`reader.ts`), the Claude fast scan, and the normalized path, so all three
   produce identical output.
 - **Triggers:** opening a non-running session (`useSession` `handleLoadComplete`
-  when `owner === "none"`) and hovering a non-running row (`SessionListItem`,
-  debounced, once per row) with a non-touch pointer. Touch entry and its
-  compatibility mouse events neither show the card nor refresh its data.
+  when `owner === "none"`) and resting a non-touch pointer on a Themed-mode
+  non-running row until its card is due. Native list hover, touch entry, and
+  touch compatibility mouse events neither show the card nor refresh its data.
   Owned/external sessions are skipped — they already update live, and
   refreshing them could clobber a fresh recap with the JSONL's last turn.
 - **One hover controller:** list rows and non-list destinations share one hook
-  for refresh deduplication, delay/warmth, global visibility ownership,
-  anchoring, suppression, pointer intent, and departure into the card. A caller
+  for refresh deduplication, pointer-rest delay/warmth, global visibility
+  ownership, anchoring, suppression, pointer intent, and departure into the card. A caller
   owns only policy specific to its surface: list menu suppression and
   scroll-ancestor dismissal remain in `SessionListItem`; a non-list target may
   dismiss on any scroll.
 
-This deliberately does not persist (no index write), so it does not survive
-reyep; the cold-cache excerpt repopulates on the next focus/hover or when the
-file next changes. That matches the accepted "old sessions blank until touched"
-tradeoff.
+The current exact refresh deliberately does not persist (no index write), so it
+does not survive reyep; the cold-cache excerpt repopulates on the next
+focus/hover or when the file next changes. Tactical 093 may later retain the
+bounded excerpt with its source version in the compact catalog. Either form
+preserves the accepted "old sessions may be stale until touched" tradeoff and
+never reparses unrelated rows.
 
 ## Mobile preview access via the row menu (proposal — not built)
 

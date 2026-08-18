@@ -1,5 +1,6 @@
 import {
   VOICE_INPUT_CAPABILITY,
+  hasServerCapabilityAdvertisement,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
@@ -13,16 +14,18 @@ import {
   type FilterOption,
 } from "../../components/FilterDropdown";
 import { SpeechSmartTurnControls } from "../../components/SpeechSmartTurnControls";
+import { SpeechMessagePrefixControls } from "../../components/SpeechMessagePrefixControls";
 import { useModelSettings } from "../../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../../hooks/useBrowserXaiSttApiKey";
-import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useSpeechCaptureSettings } from "../../hooks/useSpeechCaptureSettings";
+import { useSpeechSourceRuntime } from "../../hooks/useSpeechSourceRuntime";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import {
   canSpeechMethodStream,
   getSpeechMethodCapabilities,
   getSpeechMethods,
+  isBrowserNativeSpeechAvailable,
   isServerRoutedSpeechMethod,
   resolveSpeechMethod,
   type SpeechMethodId,
@@ -59,13 +62,29 @@ export function SpeechSettings() {
   } = useModelSettings();
   const parakeetModelPresetId = useId();
   const parakeetModelInputId = useId();
-  const { keepMicWarm, setKeepMicWarm } = useSpeechCaptureSettings();
+  const {
+    keepMicWarm,
+    setKeepMicWarm,
+    reducePlayback,
+    setReducePlayback,
+    unspokenPunctuation,
+    setUnspokenPunctuation,
+    followUpListenMs,
+    setFollowUpListenMs,
+    asrAttributionMs,
+    setAsrAttributionMs,
+    speechMessagePrefixMode,
+    setSpeechMessagePrefixMode,
+    speechMessageCustomPrefix,
+    setSpeechMessageCustomPrefix,
+  } = useSpeechCaptureSettings();
   const {
     browserXaiSttApiKey,
     hasBrowserXaiSttApiKey,
     setBrowserXaiSttApiKey,
   } = useBrowserXaiSttApiKey();
-  const relayTransport = useRemoteBasePath() !== "";
+  const { relayTransport, relayedServerSpeechAvailable } =
+    useSpeechSourceRuntime();
   const { version: versionInfo, loading: versionLoading } = useVersion();
   const undoState = useMemo(
     () => ({
@@ -73,14 +92,28 @@ export function SpeechSettings() {
       speechMethod,
       speechSmartTurnSettings,
       keepMicWarm,
+      reducePlayback,
+      unspokenPunctuation,
+      followUpListenMs,
+      asrAttributionMs,
+      speechMessagePrefixMode,
+      speechMessageCustomPrefix,
       parakeetSpeechModel,
+      browserXaiSttApiKey,
     }),
     [
       voiceInputEnabled,
       speechMethod,
       speechSmartTurnSettings,
       keepMicWarm,
+      reducePlayback,
+      unspokenPunctuation,
+      followUpListenMs,
+      asrAttributionMs,
+      speechMessagePrefixMode,
+      speechMessageCustomPrefix,
       parakeetSpeechModel,
+      browserXaiSttApiKey,
     ],
   );
   const restoreUndoState = useCallback(
@@ -89,21 +122,34 @@ export function SpeechSettings() {
       setSpeechMethod(snapshot.speechMethod);
       setSpeechSmartTurnSettings(snapshot.speechSmartTurnSettings);
       setKeepMicWarm(snapshot.keepMicWarm);
+      setReducePlayback(snapshot.reducePlayback);
+      setUnspokenPunctuation(snapshot.unspokenPunctuation);
+      setFollowUpListenMs(snapshot.followUpListenMs);
+      setAsrAttributionMs(snapshot.asrAttributionMs);
+      setSpeechMessagePrefixMode(snapshot.speechMessagePrefixMode);
+      setSpeechMessageCustomPrefix(snapshot.speechMessageCustomPrefix);
       setParakeetSpeechModel(snapshot.parakeetSpeechModel);
+      setBrowserXaiSttApiKey(snapshot.browserXaiSttApiKey);
     },
     [
       setVoiceInputEnabled,
       setSpeechMethod,
       setSpeechSmartTurnSettings,
       setKeepMicWarm,
+      setReducePlayback,
+      setUnspokenPunctuation,
+      setFollowUpListenMs,
+      setAsrAttributionMs,
+      setSpeechMessagePrefixMode,
+      setSpeechMessageCustomPrefix,
       setParakeetSpeechModel,
+      setBrowserXaiSttApiKey,
     ],
   );
   useSettingsUndoBaseline(undoState, restoreUndoState);
   const serverVoiceEnabled =
-    versionInfo?.capabilities === undefined
-      ? true
-      : serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
+    !hasServerCapabilityAdvertisement(versionInfo) ||
+    serverHasCapability(versionInfo, VOICE_INPUT_CAPABILITY);
   const serverBackends = versionInfo?.voiceBackends ?? [];
   const backendStatuses = versionInfo?.voiceBackendStatuses ?? [];
   const discoverableServerBackends =
@@ -126,25 +172,33 @@ export function SpeechSettings() {
         : unavailable
           ? backend.disabledReason || t("speechSettingsBackendUnavailable")
           : method.description,
-      disabled: validating || unavailable,
+      disabled: !method.clientSupported || validating || unavailable,
     };
   });
   const selectedBackend = resolveSpeechMethod(
     speechMethod,
     serverBackends,
     hasStoredSpeechMethod,
-    { directXaiAvailable: hasBrowserXaiSttApiKey },
+    {
+      directXaiAvailable: hasBrowserXaiSttApiKey,
+      browserNativeAvailable: isBrowserNativeSpeechAvailable(),
+    },
   );
   const selectedBackendLabel =
     backendOptions.find((option) => option.value === selectedBackend)?.label ??
-    selectedBackend;
-  const selectedBackendCapabilities = getSpeechMethodCapabilities(
-    selectedBackend,
-    versionInfo?.voiceBackendCapabilities,
-  );
+    selectedBackend ??
+    t("speechSettingsBackendUnavailable");
+  const selectedBackendCapabilities =
+    selectedBackend === null
+      ? {}
+      : getSpeechMethodCapabilities(
+          selectedBackend,
+          versionInfo?.voiceBackendCapabilities,
+        );
   const selectedBackendServerRouted =
-    isServerRoutedSpeechMethod(selectedBackend);
-  const showParakeetModelControls = isParakeetModelBackend(selectedBackend);
+    selectedBackend !== null && isServerRoutedSpeechMethod(selectedBackend);
+  const showParakeetModelControls =
+    selectedBackend !== null && isParakeetModelBackend(selectedBackend);
   const selectedParakeetPreset =
     getParakeetSpeechPresetValue(parakeetSpeechModel);
   const enabledParakeetBackends = useMemo(() => {
@@ -154,31 +208,38 @@ export function SpeechSettings() {
         backends.push(backendId);
       }
     };
-    addBackend(selectedBackend);
+    if (selectedBackend !== null) addBackend(selectedBackend);
     for (const backendId of serverBackends) {
       addBackend(backendId);
     }
     return backends;
   }, [selectedBackend, serverBackends]);
-  const selectedBackendCanStream = canSpeechMethodStream({
-    methodId: selectedBackend,
-    serverCapabilities: versionInfo?.voiceBackendCapabilities,
-    relayTransport,
-    relayedServerSpeechAvailable: !selectedBackendServerRouted,
-  });
+  const selectedBackendCanStream =
+    selectedBackend !== null &&
+    canSpeechMethodStream({
+      methodId: selectedBackend,
+      serverCapabilities: versionInfo?.voiceBackendCapabilities,
+      relayTransport,
+      relayedServerSpeechAvailable,
+    });
   const supportsSelectedSmartTurn =
     selectedBackendCanStream && selectedBackendCapabilities.smartTurn === true;
   const smartTurnUnavailableHint =
-    relayTransport && selectedBackend !== "browser-native"
+    relayTransport &&
+    selectedBackendServerRouted &&
+    !relayedServerSpeechAvailable
       ? t("speechSettingsStreamingRelayUnavailable")
       : t("speechSettingsSmartTurnUnavailable", {
           backend: selectedBackendLabel,
         });
   const prewarmParakeetModel = useCallback(
-    (modelValue: string, backendId: SpeechMethodId = selectedBackend) => {
-      if (!isParakeetModelBackend(backendId)) return;
+    (modelValue: string, backendId?: SpeechMethodId) => {
+      const targetBackend = backendId ?? selectedBackend;
+      if (targetBackend === null || !isParakeetModelBackend(targetBackend)) {
+        return;
+      }
       const model = cleanParakeetSpeechModel(modelValue);
-      void prewarmYaServerSpeechBackend(backendId, model).catch(
+      void prewarmYaServerSpeechBackend(targetBackend, model).catch(
         (err: unknown) => {
           console.warn(
             "[YaSTT] Speech model prewarm failed",
@@ -199,6 +260,7 @@ export function SpeechSettings() {
   );
   const selectParakeetPreset = useCallback(
     (modelValue: string) => {
+      if (selectedBackend === null) return;
       const model = cleanParakeetSpeechModel(modelValue);
       const backendId = resolveParakeetModelBackend(
         model,
@@ -341,6 +403,7 @@ export function SpeechSettings() {
           className="model-settings-item"
           after={
             relayTransport &&
+            !relayedServerSpeechAvailable &&
             selectedBackend === "ya-grok" && (
               <p className="settings-hint">
                 {t("speechSettingsStreamingRelayUnavailable")}
@@ -352,7 +415,7 @@ export function SpeechSettings() {
             <FilterDropdown
               label={t("speechSettingsBackendTitle")}
               options={backendOptions}
-              selected={[selectedBackend]}
+              selected={selectedBackend === null ? [] : [selectedBackend]}
               onChange={(selected) => {
                 const nextBackend = selected[0];
                 if (!nextBackend) return;
@@ -362,7 +425,11 @@ export function SpeechSettings() {
                 setSpeechMethod(nextBackend);
               }}
               multiSelect={false}
-              placeholder={t("speechSettingsBackendPlaceholder")}
+              placeholder={
+                selectedBackend === null
+                  ? t("speechSettingsBackendUnavailable")
+                  : t("speechSettingsBackendPlaceholder")
+              }
               fullWidth
             />
             {serverBackends.length === 0 && (
@@ -380,16 +447,33 @@ export function SpeechSettings() {
         >
           <input
             type="password"
+            id="xai-stt-api-key"
+            name="xai-stt-api-key"
             className="settings-input"
             value={browserXaiSttApiKey}
             placeholder={t("speechSettingsXaiKeyPlaceholder")}
-            autoComplete="off"
+            autoComplete="new-password"
             spellCheck={false}
             onChange={(event) => {
               setBrowserXaiSttApiKey(event.currentTarget.value);
             }}
             aria-label={t("speechSettingsXaiKeyTitle")}
           />
+        </SettingsItem>
+
+        <SettingsItem
+          label={t("speechSettingsUnspokenPunctuationTitle")}
+          description={t("speechSettingsUnspokenPunctuationDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={unspokenPunctuation}
+              onChange={(event) => setUnspokenPunctuation(event.target.checked)}
+              aria-label={t("speechSettingsUnspokenPunctuationTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
         </SettingsItem>
 
         <SettingsItem
@@ -402,6 +486,21 @@ export function SpeechSettings() {
               checked={keepMicWarm}
               onChange={(event) => setKeepMicWarm(event.target.checked)}
               aria-label={t("speechSettingsKeepMicWarmTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+
+        <SettingsItem
+          label={t("speechSettingsReducePlaybackTitle")}
+          description={t("speechSettingsReducePlaybackDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={reducePlayback}
+              onChange={(event) => setReducePlayback(event.target.checked)}
+              aria-label={t("speechSettingsReducePlaybackTitle")}
             />
             <span className="toggle-slider" />
           </label>
@@ -422,6 +521,14 @@ export function SpeechSettings() {
           ) : (
             <p className="settings-hint">{smartTurnUnavailableHint}</p>
           )}
+        </SettingsItem>
+
+        <SettingsItem
+          label={t("speechSettingsMessagePrefixTitle")}
+          description={t("speechSettingsMessagePrefixDescription")}
+          className="model-settings-item"
+        >
+          <SpeechMessagePrefixControls showDescription={false} />
         </SettingsItem>
       </div>
     </SettingsSection>

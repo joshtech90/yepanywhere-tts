@@ -8,15 +8,19 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { DEFAULT_HOVERCARD_SHOW_DELAY_MS } from "../../hooks/useHoverCardAppearance";
-import { clearTooltipWarmth } from "../../hooks/useTooltipAppearance";
+import {
+  clearTooltipWarmth,
+  DEFAULT_TOOLTIP_DELAY_MS,
+} from "../../hooks/useTooltipAppearance";
 import { I18nProvider } from "../../i18n";
 import { activityBus } from "../../lib/activityBus";
 import { UI_KEYS } from "../../lib/storageKeys";
 import "../../../test/pointerEventShim";
+import styles from "../SessionListItem.module.css";
 import { SessionListItem } from "../SessionListItem";
 
 const mockWindowOpen = vi.fn();
@@ -116,6 +120,8 @@ describe("SessionListItem links", () => {
             <SessionListItem
               sessionId="aside-1"
               projectId="project-1"
+              parentSessionId="source-1"
+              parentSessionKind="btw-aside"
               title="/btw check the side path"
               mode="compact"
             />
@@ -301,7 +307,8 @@ describe("SessionListItem links", () => {
     );
   });
 
-  it("uses custom titles for native row tooltips", () => {
+  it("attaches a measured native hint to the visible title owner", () => {
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
     render(
       <I18nProvider>
         <MemoryRouter>
@@ -319,9 +326,44 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    expect(
-      screen.getByRole("link", { name: /Custom title/ }).getAttribute("title"),
-    ).toBe("Custom title");
+    const link = screen.getByRole("link", { name: /Custom title/ });
+    const title = link.querySelector<HTMLElement>(
+      ".session-list-item__title-text",
+    );
+    expect(title).toBeTruthy();
+    expect(link.getAttribute("title")).toBeNull();
+    expect(title?.getAttribute("title")).toBeNull();
+
+    fireEvent.pointerEnter(title!, { pointerType: "mouse", clientX: 20 });
+    expect(title?.getAttribute("title")).toBe("Custom title");
+  });
+
+  it("exposes a known truncated card title in native mode", () => {
+    localStorage.setItem(UI_KEYS.tooltipMode, "native");
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="A visibly shortened title..."
+              fullTitle="A visibly shortened title with its omitted ending"
+              provider="claude"
+              mode="card"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const title = screen
+      .getByText("A visibly shortened title...")
+      .closest("strong");
+    expect(title?.getAttribute("title")).toBe(
+      "A visibly shortened title with its omitted ending",
+    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
   it("shows a card-mode thinking dot when requested for active rows", () => {
@@ -342,9 +384,9 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    const title = screen.getByRole("link", { name: "Active row" }).querySelector(
-      "strong",
-    );
+    const title = screen
+      .getByRole("link", { name: "Active row" })
+      .querySelector("strong");
     expect(title?.firstElementChild?.firstElementChild).not.toBeNull();
   });
 
@@ -365,10 +407,10 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    const title = screen.getByRole("link", { name: "Active row" }).querySelector(
-      "strong",
-    );
-    expect(title?.firstElementChild).toBeNull();
+    const title = screen
+      .getByRole("link", { name: "Active row" })
+      .querySelector("strong");
+    expect(title?.children).toHaveLength(1);
   });
 
   it("uses custom titles for session hover previews", () => {
@@ -449,6 +491,48 @@ describe("SessionListItem links", () => {
     expect(screen.getByText("Delayed hover prompt")).toBeTruthy();
   });
 
+  it("restarts the session preview delay until the pointer rests", () => {
+    vi.useFakeTimers();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Rested hover"
+              initialPrompt="Rested hover prompt"
+              provider="claude"
+              status={{ owner: "self", processId: "pid-1" }}
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const item = screen
+      .getByRole("link", { name: /Rested hover/ })
+      .closest("li");
+    expect(item).toBeTruthy();
+
+    fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS - 1);
+    });
+    fireEvent.pointerMove(item!, { pointerType: "mouse", clientX: 24 });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS - 1);
+    });
+    expect(screen.queryByText("Rested hover prompt")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("Rested hover prompt")).toBeTruthy();
+  });
+
   it("ignores touch compatibility mouse events for session hover previews", () => {
     vi.useFakeTimers();
 
@@ -484,10 +568,12 @@ describe("SessionListItem links", () => {
     expect(screen.queryByText("Touch navigation prompt")).toBeNull();
   });
 
-  it("preserves the stored hover-card delay in native tooltip mode", () => {
+  it("uses only an ellipsis-aware title hint in native tooltip mode", () => {
     vi.useFakeTimers();
     localStorage.setItem(UI_KEYS.tooltipMode, "native");
-    localStorage.setItem(UI_KEYS.sessionHoverCardShowDelayMs, "300");
+    const refreshSpy = vi
+      .spyOn(api, "refreshSessionPreview")
+      .mockResolvedValue(undefined as never);
 
     render(
       <I18nProvider>
@@ -511,10 +597,40 @@ describe("SessionListItem links", () => {
       .getByRole("link", { name: /Native delay/ })
       .closest("li");
     fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
-    act(() => vi.advanceTimersByTime(299));
+    act(() => vi.advanceTimersByTime(1_000));
     expect(screen.queryByText("Native delay prompt")).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
-    expect(screen.getByText("Native delay prompt")).toBeTruthy();
+    expect(refreshSpy).not.toHaveBeenCalled();
+
+    const title = item?.querySelector<HTMLElement>(
+      ".session-list-item__title-text",
+    );
+    expect(title).toBeTruthy();
+    let scrollWidth = 100;
+    Object.defineProperties(title!, {
+      clientHeight: { configurable: true, value: 20 },
+      clientWidth: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 20 },
+      scrollWidth: { configurable: true, get: () => scrollWidth },
+    });
+    title!.getBoundingClientRect = () =>
+      ({
+        bottom: 30,
+        height: 20,
+        left: 10,
+        right: 110,
+        top: 10,
+        width: 100,
+      }) as DOMRect;
+
+    fireEvent.pointerEnter(title!, { pointerType: "mouse", clientX: 20 });
+    expect(title?.getAttribute("title")).toBeNull();
+
+    scrollWidth = 200;
+    fireEvent.pointerEnter(title!, { pointerType: "mouse", clientX: 20 });
+    expect(title?.getAttribute("title")).toBe("Native delay");
+    expect(title?.getAttribute("data-tooltip")).toBeNull();
+
+    refreshSpy.mockRestore();
   });
 
   it("keeps a session hover preview open while the pointer is over the card", () => {
@@ -563,7 +679,7 @@ describe("SessionListItem links", () => {
     expect(screen.queryByText("Selectable recap text")).toBeNull();
   });
 
-  it("switches immediately between session previews after the first opens", () => {
+  it("retains the configured delay between warm session previews", () => {
     vi.useFakeTimers();
 
     render(
@@ -620,9 +736,13 @@ describe("SessionListItem links", () => {
       clientX: 20,
     });
     act(() => {
-      vi.advanceTimersByTime(0);
+      vi.advanceTimersByTime(DEFAULT_TOOLTIP_DELAY_MS - 1);
     });
     expect(screen.queryByText("First session prompt")).toBeNull();
+    expect(screen.queryByText("Second session prompt")).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(screen.getByText("Second session prompt")).toBeTruthy();
   });
 
@@ -767,7 +887,7 @@ describe("SessionListItem links", () => {
     emitSpy.mockRestore();
   });
 
-  it("refreshes the preview on hover, before the show delay elapses", () => {
+  it("refreshes an idle preview only when the rested card is due", () => {
     vi.useFakeTimers();
     const refreshSpy = vi
       .spyOn(api, "refreshSessionPreview")
@@ -793,13 +913,348 @@ describe("SessionListItem links", () => {
     const item = screen.getByRole("link", { name: /Idle row/ }).closest("li");
     fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
 
-    // Fires immediately on hover, not gated behind the show delay.
+    expect(refreshSpy).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS - 1);
+    });
+    expect(refreshSpy).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(refreshSpy).toHaveBeenCalledWith("project-1", "session-1");
 
     refreshSpy.mockRestore();
   });
 
+  it("opens the capable session-filtered share manager from the menu", async () => {
+    const getPublicShares = vi.spyOn(api, "getPublicShares").mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      totalCount: 0,
+    });
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Managed session"
+              provider="claude"
+              mode="compact"
+              publicShareManagementAvailable
+              publicShareCreationReady={false}
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+
+    expect(screen.getByText("Manage Public Shares")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /Create and copy/ }),
+    ).toBeNull();
+    await waitFor(() => {
+      expect(getPublicShares).toHaveBeenCalledWith({
+        projectId: "project-1",
+        sessionId: "session-1",
+        mode: undefined,
+      });
+    });
+    getPublicShares.mockRestore();
+  });
+
+  it("preserves the legacy share popup without management capability", async () => {
+    const getStatus = vi
+      .spyOn(api, "getPublicSessionShareStatus")
+      .mockResolvedValue({
+        activeCount: 0,
+        frozenCount: 0,
+        liveCount: 0,
+        activeViewerCount: 0,
+        viewers: [],
+      });
+    const getPublicShares = vi.spyOn(api, "getPublicShares");
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Legacy session"
+              provider="claude"
+              mode="compact"
+              publicShareCreationReady
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+
+    expect(screen.getByText("Public Session Share")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Copy Frozen Snapshot Link/ }),
+    ).toBeTruthy();
+    await waitFor(() => expect(getStatus).toHaveBeenCalled());
+    expect(getPublicShares).not.toHaveBeenCalled();
+    getStatus.mockRestore();
+    getPublicShares.mockRestore();
+  });
+
+  it("hides the share menu action when neither path is available", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="No sharing"
+              provider="claude"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+  });
+
   it("shows provider child work inside its parent session row", () => {
+    function LocationProbe() {
+      const location = useLocation();
+      return <div data-testid="location">{location.pathname}</div>;
+    }
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <LocationProbe />
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <ul>
+                  <SessionListItem
+                    sessionId="session-parent"
+                    projectId="project-1"
+                    title="Parent session"
+                    provider="claude"
+                    mode="card"
+                    providerChildren={[
+                      {
+                        id: "child-native-1",
+                        parentSessionId: "session-parent",
+                        title: "Audit the child-session API",
+                        agentType: "general-purpose",
+                        updatedAt: "2026-07-19T12:00:00.000Z",
+                      },
+                    ]}
+                  />
+                </ul>
+              }
+            />
+            <Route
+              path="/projects/:projectId/sessions/:sessionId/agents/:agentId"
+              element={<div>opened child</div>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("Audit the child-session API")).toBeTruthy();
+    expect(screen.getByText("general-purpose")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("link", { name: /Audit the child-session API/ }),
+    );
+    expect(screen.getByText("opened child")).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/projects/project-1/sessions/session-parent/agents/child-native-1",
+    );
+  });
+
+  it("shows number-only child counts with read and unread emphasis", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-parent"
+              projectId="project-1"
+              projectName="yepanywhere"
+              showProjectName
+              title="Parent session"
+              provider="claude"
+              mode="compact"
+              providerChildren={[
+                {
+                  id: "child-native-1",
+                  parentSessionId: "session-parent",
+                  title: "First delegated task",
+                  updatedAt: "2026-07-19T12:00:00.000Z",
+                },
+                {
+                  id: "child-native-2",
+                  parentSessionId: "session-parent",
+                  title: "Second delegated task",
+                  updatedAt: "2026-07-19T12:01:00.000Z",
+                },
+              ]}
+            />
+            <SessionListItem
+              sessionId="session-unread"
+              projectId="project-1"
+              projectName="another-project"
+              showProjectName
+              hasUnread
+              title="Unread parent session"
+              provider="claude"
+              mode="compact"
+              providerChildren={[
+                {
+                  id: "child-native-3",
+                  parentSessionId: "session-unread",
+                  title: "New delegated task",
+                  updatedAt: "2026-07-19T12:02:00.000Z",
+                },
+              ]}
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const readBadge = screen.getByRole("img", {
+      name: "2 provider subagents",
+    });
+    const unreadBadge = screen.getByRole("img", {
+      name: "1 provider subagent",
+    });
+
+    expect(readBadge.textContent).toBe("2");
+    expect(readBadge.className).not.toContain(
+      styles.providerChildrenBadgeUnread,
+    );
+    expect(readBadge.getAttribute("title")).toBe(
+      "2 provider subagents\nFirst delegated task\nSecond delegated task",
+    );
+    expect(unreadBadge.textContent).toBe("1");
+    expect(unreadBadge.className).toContain(styles.providerChildrenBadgeUnread);
+    expect(unreadBadge.getAttribute("title")).toBe(
+      "1 provider subagent\nNew delegated task",
+    );
+    expect(screen.getByText("yepanywhere")).toBeTruthy();
+  });
+
+  it("discloses compact provider children without opening the parent", () => {
+    const onNavigate = vi.fn();
+    render(
+      <I18nProvider>
+        <MemoryRouter initialEntries={["/"]}>
+          <LocationProbe />
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <ul>
+                  <SessionListItem
+                    sessionId="session-parent"
+                    projectId="project-1"
+                    title="Parent session"
+                    provider="claude"
+                    mode="compact"
+                    onNavigate={onNavigate}
+                    providerChildren={[
+                      {
+                        id: "child-native-1",
+                        parentSessionId: "session-parent",
+                        title: "Audit the child-session API",
+                        agentType: "general-purpose",
+                        updatedAt: "2026-07-19T12:00:00.000Z",
+                      },
+                    ]}
+                  />
+                  <SessionListItem
+                    sessionId="session-empty"
+                    projectId="project-1"
+                    title="No subagents"
+                    provider="claude"
+                    mode="compact"
+                  />
+                </ul>
+              }
+            />
+            <Route
+              path="/projects/:projectId/sessions/:sessionId/agents/:agentId"
+              element={<div>opened compact child</div>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const disclosure = screen.getByRole("button", {
+      name: "Show subagents for Parent session",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      screen.queryByRole("button", {
+        name: "Show subagents for No subagents",
+      }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /Audit the child-session API/ }),
+    ).toBeNull();
+
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("location").textContent).toBe("/");
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(
+      screen
+        .getByRole("button", {
+          name: "Hide subagents for Parent session",
+        })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.getByText("general-purpose")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Hide subagents for Parent session",
+      }),
+    );
+    expect(
+      screen.queryByRole("link", { name: /Audit the child-session API/ }),
+    ).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show subagents for Parent session",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("link", { name: /Audit the child-session API/ }),
+    );
+    expect(screen.getByText("opened compact child")).toBeTruthy();
+    expect(screen.getByLabelText("location").textContent).toBe(
+      "/projects/project-1/sessions/session-parent/agents/child-native-1",
+    );
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the most recently active subagent in the outline gutter", () => {
     render(
       <I18nProvider>
         <MemoryRouter>
@@ -809,14 +1264,25 @@ describe("SessionListItem links", () => {
               projectId="project-1"
               title="Parent session"
               provider="claude"
-              mode="card"
+              mode="compact"
               providerChildren={[
                 {
-                  id: "child-native-1",
+                  id: "child-newest",
                   parentSessionId: "session-parent",
-                  title: "Audit the child-session API",
-                  agentType: "general-purpose",
+                  title: "Newest child",
                   updatedAt: "2026-07-19T12:00:00.000Z",
+                },
+                {
+                  id: "child-nearby",
+                  parentSessionId: "session-parent",
+                  title: "Nearby child",
+                  updatedAt: "2026-07-19T11:58:00.000Z",
+                },
+                {
+                  id: "child-stale",
+                  parentSessionId: "session-parent",
+                  title: "Stale child",
+                  updatedAt: "2026-07-19T09:00:00.000Z",
                 },
               ]}
             />
@@ -825,7 +1291,46 @@ describe("SessionListItem links", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getByText("Audit the child-session API")).toBeTruthy();
-    expect(screen.getByText("general-purpose")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show subagents for Parent session" }),
+    );
+
+    const levelFor = (childTitle: string) =>
+      screen
+        .getByRole("link", { name: new RegExp(childTitle) })
+        .querySelector("[data-activity]")
+        ?.getAttribute("data-activity");
+
+    expect(levelFor("Newest child")).toBe("latest");
+    expect(levelFor("Nearby child")).toBe("recent");
+    expect(levelFor("Stale child")).toBe("older");
+  });
+
+  it("keeps compact session rows free of Resume actions", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-interrupted"
+              projectId="project-1"
+              projectName="yepanywhere"
+              showProjectName
+              title="Interrupted session"
+              provider="claude"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const project = screen.getByText("yepanywhere");
+    const sessionLink = screen.getByRole("link", {
+      name: /Interrupted session/i,
+    });
+
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(sessionLink.contains(project)).toBe(true);
   });
 });

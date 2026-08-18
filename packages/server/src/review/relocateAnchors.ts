@@ -14,17 +14,17 @@
  * endpoint (P5) is thin glue over this. Tested against a fixture repo.
  */
 
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   DEFAULT_SNIPPET_CONTEXT_RADIUS,
   MAX_REVIEW_SNIPPET_LENGTH,
   type ReviewCommentAnchor,
 } from "@yep-anywhere/shared";
-
-const execFileAsync = promisify(execFile);
+import { runGit } from "../git/gitExec.js";
+import {
+  repositoryFilePathIfExists,
+  repositoryRelativePath,
+} from "./repositoryPath.js";
 
 export interface RelocatedAnchor {
   status: "relocated";
@@ -63,6 +63,7 @@ export async function relocateAnchor(
   projectPath: string,
   anchor: ReviewCommentAnchor,
 ): Promise<AnchorRelocation> {
+  const safePath = repositoryRelativePath(anchor.path);
   const citeSha = anchorSha(anchor);
 
   // A `-`-side line is about code no longer in the new tree — gone by
@@ -70,19 +71,28 @@ export async function relocateAnchor(
   if (anchor.newLine === null) {
     return {
       status: "gone",
-      path: anchor.path,
+      path: safePath,
       citeSha,
       snippet: anchor.snippet,
     };
   }
 
+  const filePath = await repositoryFilePathIfExists(projectPath, safePath);
+  if (!filePath) {
+    return {
+      status: "gone",
+      path: safePath,
+      citeSha,
+      snippet: anchor.snippet,
+    };
+  }
   let content: string;
   try {
-    content = await readFile(resolve(projectPath, anchor.path), "utf-8");
+    content = await readFile(filePath, "utf-8");
   } catch {
     return {
       status: "gone",
-      path: anchor.path,
+      path: safePath,
       citeSha,
       snippet: anchor.snippet,
     };
@@ -119,10 +129,10 @@ export async function relocateAnchor(
 
   return {
     status: "relocated",
-    path: anchor.path,
+    path: safePath,
     line: best,
     snippet: refreshSnippet(lines, best),
-    currentSha: await blameSha(projectPath, anchor.path, best),
+    currentSha: await blameSha(projectPath, safePath, best),
     moved: best !== recorded,
   };
 }
@@ -176,18 +186,9 @@ async function blameSha(
   line: number,
 ): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      [
-        "-C",
-        projectPath,
-        "blame",
-        "-L",
-        `${line},${line}`,
-        "--porcelain",
-        "--",
-        path,
-      ],
+    const { stdout } = await runGit(
+      projectPath,
+      ["blame", "-L", `${line},${line}`, "--porcelain", "--", path],
       { timeout: 5000 },
     );
     const sha = stdout.split(/\s/u)[0] ?? "";

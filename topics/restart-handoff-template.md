@@ -19,6 +19,20 @@ Related: [`compact-and-handoff`](compact-and-handoff.md),
 [`session-context-actions`](session-context-actions.md),
 [`session-reactivation`](session-reactivation.md).
 
+## Launch-settings inheritance
+
+A same-provider restart may inherit the source session's durable model, service
+tier, thinking, and effort settings. A cross-provider handoff does not: those
+fields describe the source provider's catalog and controls, so omitted values
+use the destination provider's defaults. Explicit destination values still
+apply. Provider-neutral policy—including permission mode, executor, and sandbox
+ownership—continues across the handoff unless the request supplies a valid
+override.
+
+Compact-window inference follows the same boundary. A cross-provider handoff
+uses only explicit destination-model candidates; it never treats the source
+provider's reported model as a destination model when resolving context policy.
+
 ## Why lean matters here
 
 At handoff time the user often **cannot compact** (over provider quota), so no
@@ -56,6 +70,11 @@ Code: `summarizeToolUse` (shell-only), `renderRestartActivityContent`
 divider), `shellCommandFromInput`. Size budgets remain the `RESTART_HANDOFF_*`
 constants (40k total); slimming frees room within the same caps.
 
+An edited draft is accepted only as a string no longer than that same 40,000
+character total budget. The restart route rejects malformed or oversized
+drafts before attempting compaction or interrupting the source process, so an
+invalid replacement request cannot sacrifice the live session.
+
 ## Source Session block (implemented)
 
 ```
@@ -79,6 +98,16 @@ constants (40k total); slimming frees room within the same caps.
 - **Transcript pointer** (see below) identifies both the YA host and the
   host-local path. When the successor uses an SSH executor, the line also
   names that executor so the host boundary is explicit.
+- **session-turn consult line** (`formatRestartSessionTurnHint`): when the
+  source provider is a claude or codex family, one line offers
+  `echo '<question>' | session-turn <harness> <session-id>` — a live
+  alternative to grepping the transcript. The helper (an external tool over
+  YA's provider-host protocol, `topics/provider-host-api.md`) submits the
+  turn through the incumbent worker's own queue, or resumes an absent
+  worker atomically, so the source session is consulted without a second
+  writer or transcript fork. The line renders unconditionally for those
+  providers and says the helper is optional; hosts without it lose nothing
+  but the hint. Other providers get no line.
 - **Dropped:** the `- Provider-native compact: …` status line (the compaction
   *attempt* still runs for its boundary effect — `tryRestartCompact` — its
   status is just no longer echoed) and the `- Restart reason:` line (always

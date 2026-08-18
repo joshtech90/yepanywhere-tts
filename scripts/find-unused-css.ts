@@ -31,6 +31,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import postcss from "postcss";
+import selectorParser from "postcss-selector-parser";
 import * as ts from "typescript";
 
 export interface Options {
@@ -263,13 +264,61 @@ export function isModuleStylesheet(file: string): boolean {
   return file.endsWith(".module.css");
 }
 
-/** Match class selectors like .foo, .foo-bar, .foo_bar. */
-export const CLASS_REGEX = /\.([a-zA-Z_][a-zA-Z0-9_-]*)/g;
+interface SelectorClassBranch {
+  selector: string;
+  localClassNames: string[];
+  globalClassNames: string[];
+}
 
-function isLikelyClassName(name: string): boolean {
-  if (name.match(/^[0-9]/)) return false; // .5em etc
-  if (name.length < 2) return false; // Single char classes
-  return true;
+interface SelectorClassAnalysis {
+  branches: SelectorClassBranch[];
+  globalClassNames: string[];
+  scoped: string;
+}
+
+function analyzeSelectorClasses(selector: string): SelectorClassAnalysis {
+  const root = selectorParser().astSync(selector);
+  const globalClassNames = new Set<string>();
+  const branches = root.nodes.map((branch) => {
+    const local = new Set<string>();
+    const global = new Set<string>();
+    branch.walkClasses((node) => {
+      let parent = node.parent;
+      let globalClass = false;
+      while (parent && parent !== branch) {
+        if (parent.type === "pseudo" && parent.value === ":global") {
+          globalClass = true;
+          break;
+        }
+        parent = parent.parent;
+      }
+      (globalClass ? global : local).add(node.value);
+    });
+    for (const name of global) globalClassNames.add(name);
+    return {
+      selector: branch.toString().trim(),
+      localClassNames: Array.from(local),
+      globalClassNames: Array.from(global),
+    };
+  });
+  root.walkPseudos((pseudo) => {
+    if (pseudo.value === ":global") pseudo.remove();
+  });
+  return {
+    branches,
+    globalClassNames: Array.from(globalClassNames),
+    scoped: root.toString(),
+  };
+}
+
+/** Extract decoded class-selector nodes, excluding dots in strings and values. */
+export function extractSelectorClassNames(selector: string): string[] {
+  const names = new Set<string>();
+  for (const branch of analyzeSelectorClasses(selector).branches) {
+    for (const name of branch.localClassNames) names.add(name);
+    for (const name of branch.globalClassNames) names.add(name);
+  }
+  return Array.from(names);
 }
 
 export function extractClassSelectors(
@@ -280,9 +329,7 @@ export function extractClassSelectors(
   const seen = new Set<string>();
 
   postcss.parse(cssContent, { from: filename }).walkRules((rule) => {
-    for (const match of rule.selector.matchAll(CLASS_REGEX)) {
-      const className = match[1];
-      if (!isLikelyClassName(className)) continue;
+    for (const className of extractSelectorClassNames(rule.selector)) {
       if (seen.has(className)) continue;
       seen.add(className);
       classes.push({
@@ -310,50 +357,11 @@ export function splitGlobalReferences(line: string): {
   scoped: string;
   globalRefs: string[];
 } {
-  const globalRefs: string[] = [];
-  let scoped = "";
-  let index = 0;
-
-  while (index < line.length) {
-    const start = line.indexOf(":global(", index);
-    if (start === -1) {
-      scoped += line.slice(index);
-      break;
-    }
-
-    scoped += line.slice(index, start);
-
-    let depth = 0;
-    let end = -1;
-    for (let i = start + ":global".length; i < line.length; i++) {
-      if (line[i] === "(") depth++;
-      else if (line[i] === ")") {
-        depth--;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
-      }
-    }
-
-    if (end === -1) {
-      // Unbalanced (selector continues on the next line); treat the remainder
-      // as global so its classes are not claimed as module-owned.
-      const rest = line.slice(start);
-      for (const match of rest.matchAll(CLASS_REGEX)) {
-        if (isLikelyClassName(match[1])) globalRefs.push(match[1]);
-      }
-      break;
-    }
-
-    const inner = line.slice(start + ":global(".length, end);
-    for (const match of inner.matchAll(CLASS_REGEX)) {
-      if (isLikelyClassName(match[1])) globalRefs.push(match[1]);
-    }
-    index = end + 1;
-  }
-
-  return { scoped, globalRefs };
+  const analysis = analyzeSelectorClasses(line);
+  return {
+    scoped: analysis.scoped,
+    globalRefs: analysis.globalClassNames,
+  };
 }
 
 export interface ComposesReference {
@@ -408,36 +416,31 @@ export function extractModuleSelectors(
 
   const root = postcss.parse(cssContent, { from: filename });
   root.walkRules((rule) => {
-    const { scoped, globalRefs: lineGlobals } = splitGlobalReferences(
-      rule.selector,
-    );
-    const localAnchors = Array.from(
-      new Set(Array.from(scoped.matchAll(CLASS_REGEX), (match) => match[1])),
-    ).filter(isLikelyClassName);
-    for (const name of lineGlobals) {
-      globalRefs.add(name);
-      globalUses.push({
-        name,
-        line: rule.source?.start?.line ?? 1,
-        selector: rule.selector,
-        localAnchors,
-        kind: "selector",
-      });
-    }
+    const analysis = analyzeSelectorClasses(rule.selector);
+    for (const branch of analysis.branches) {
+      for (const name of branch.globalClassNames) {
+        globalRefs.add(name);
+        globalUses.push({
+          name,
+          line: rule.source?.start?.line ?? 1,
+          selector: branch.selector,
+          localAnchors: branch.localClassNames,
+          kind: "selector",
+        });
+      }
 
-    for (const match of scoped.matchAll(CLASS_REGEX)) {
-      const className = match[1];
-      if (!isLikelyClassName(className)) continue;
-      if (seen.has(className)) continue;
-      seen.add(className);
-      selectors.push({
-        name: className,
-        cssFile: filename,
-        line: rule.source?.start?.line ?? 1,
-        usedIn: [],
-        productionUsedIn: [],
-        testUsedIn: [],
-      });
+      for (const className of branch.localClassNames) {
+        if (seen.has(className)) continue;
+        seen.add(className);
+        selectors.push({
+          name: className,
+          cssFile: filename,
+          line: rule.source?.start?.line ?? 1,
+          usedIn: [],
+          productionUsedIn: [],
+          testUsedIn: [],
+        });
+      }
     }
   });
 
@@ -446,19 +449,27 @@ export function extractModuleSelectors(
     if (!match) return;
     const rule = declaration.parent;
     const selector = rule?.type === "rule" ? rule.selector : "<declaration>";
-    const { scoped } = splitGlobalReferences(selector);
-    const localAnchors = Array.from(
-      new Set(Array.from(scoped.matchAll(CLASS_REGEX), (item) => item[1])),
-    ).filter(isLikelyClassName);
+    const branches =
+      rule?.type === "rule"
+        ? analyzeSelectorClasses(rule.selector).branches
+        : [
+            {
+              selector,
+              localClassNames: [],
+              globalClassNames: [],
+            },
+          ];
     for (const name of match[1].split(/\s+/).filter(Boolean)) {
       globalRefs.add(name);
-      globalUses.push({
-        name,
-        line: declaration.source?.start?.line ?? 1,
-        selector,
-        localAnchors,
-        kind: "composes",
-      });
+      for (const branch of branches) {
+        globalUses.push({
+          name,
+          line: declaration.source?.start?.line ?? 1,
+          selector: branch.selector,
+          localAnchors: branch.localClassNames,
+          kind: "composes",
+        });
+      }
     }
   });
 
@@ -582,8 +593,8 @@ export function extractBindingUsage(
 
 export interface SourceUsageIndex {
   /**
-   * Complete class-like tokens found in source string literals, plus the
-   * escaped-dot class selectors spelled out in regular-expression literals.
+   * Complete whitespace-delimited source tokens, plus decoded classes from
+   * selector strings, generated markup attributes, and regex literals.
    */
   exact: Map<string, Set<string>>;
   /** Template-literal prefixes such as `status-` in `status-${tone}`. */
@@ -617,9 +628,47 @@ function addExactTokens(
   value: string,
   filename: string,
 ): void {
-  for (const match of value.matchAll(/[a-zA-Z_][a-zA-Z0-9_-]*/g)) {
-    addSourceFact(exact, match[0], filename);
+  for (const token of value.split(/\s+/u)) {
+    if (token) addSourceFact(exact, token, filename);
   }
+}
+
+function addSelectorStringTokens(
+  exact: Map<string, Set<string>>,
+  value: string,
+  filename: string,
+): void {
+  const selector = value.trim();
+  if (!selector.startsWith(".")) return;
+  try {
+    for (const token of extractSelectorClassNames(selector)) {
+      addSourceFact(exact, token, filename);
+    }
+  } catch {
+    // Most source strings are not selectors; their exact tokens still count.
+  }
+}
+
+function addMarkupClassTokens(
+  exact: Map<string, Set<string>>,
+  value: string,
+  filename: string,
+): void {
+  for (const match of value.matchAll(
+    /\bclass(?:Name)?\s*=\s*(?:"([^"]*)"|'([^']*)')/gu,
+  )) {
+    addExactTokens(exact, match[1] ?? match[2] ?? "", filename);
+  }
+}
+
+function addSourceStringTokens(
+  exact: Map<string, Set<string>>,
+  value: string,
+  filename: string,
+): void {
+  addExactTokens(exact, value, filename);
+  addSelectorStringTokens(exact, value, filename);
+  addMarkupClassTokens(exact, value, filename);
 }
 
 function addDynamicPrefix(
@@ -627,7 +676,7 @@ function addDynamicPrefix(
   value: string,
   filename: string,
 ): void {
-  const match = /(?:^|[^a-zA-Z0-9_-])([a-zA-Z_][a-zA-Z0-9_-]*-)$/.exec(value);
+  const match = /(?:^|\s)(\S*-)$/.exec(value);
   if (match) addSourceFact(dynamic, match[1], filename);
 }
 
@@ -683,7 +732,7 @@ export function buildSourceUsageIndex(
 
     function visit(node: ts.Node): void {
       if (ts.isStringLiteralLike(node)) {
-        addExactTokens(exact, node.text, filename);
+        addSourceStringTokens(exact, node.text, filename);
       }
       if (ts.isRegularExpressionLiteral(node)) {
         // Selector-only vocabulary; a regex builds no class, so it never
@@ -691,11 +740,11 @@ export function buildSourceUsageIndex(
         addRegexClassTokens(exact, node.text, filename);
       }
       if (ts.isTemplateExpression(node)) {
-        addExactTokens(exact, node.head.text, filename);
+        addSourceStringTokens(exact, node.head.text, filename);
         addDynamicPrefix(dynamic, node.head.text, filename);
         for (let index = 0; index < node.templateSpans.length; index++) {
           const literal = node.templateSpans[index].literal.text;
-          addExactTokens(exact, literal, filename);
+          addSourceStringTokens(exact, literal, filename);
           if (index < node.templateSpans.length - 1) {
             addDynamicPrefix(dynamic, literal, filename);
           }
@@ -724,47 +773,138 @@ export function buildClassProducerUsageIndex(
 ): SourceUsageIndex {
   const exact = new Map<string, Set<string>>();
   const dynamic = new Map<string, Set<string>>();
-
-  for (const [filename, content] of srcFiles) {
-    const sourceFile = ts.createSourceFile(
-      filename,
+  const contentsByPath = new Map(
+    Array.from(srcFiles, ([filename, content]) => [
+      path.resolve(filename),
       content,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKind(filename),
-    );
-    const declarations = new Map<string, ts.Expression>();
+    ]),
+  );
+  const compilerOptions: ts.CompilerOptions = {
+    allowJs: true,
+    jsx: ts.JsxEmit.Preserve,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const host = ts.createCompilerHost(compilerOptions);
+  host.fileExists = (filename) => contentsByPath.has(path.resolve(filename));
+  host.readFile = (filename) => contentsByPath.get(path.resolve(filename));
+  host.getSourceFile = (filename, languageVersion) => {
+    const content = contentsByPath.get(path.resolve(filename));
+    return content === undefined
+      ? undefined
+      : ts.createSourceFile(
+          path.resolve(filename),
+          content,
+          languageVersion,
+          true,
+          scriptKind(filename),
+        );
+  };
+  const program = ts.createProgram({
+    rootNames: Array.from(contentsByPath.keys()),
+    options: compilerOptions,
+    host,
+  });
+  const checker = program.getTypeChecker();
 
-    function collectDeclarations(node: ts.Node): void {
-      if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer
-      ) {
-        declarations.set(node.name.text, node.initializer);
-      }
-      ts.forEachChild(node, collectDeclarations);
+  for (const filename of srcFiles.keys()) {
+    const sourceFile = program.getSourceFile(path.resolve(filename));
+    if (!sourceFile) {
+      throw new Error(`Could not parse source file: ${filename}`);
     }
 
-    collectDeclarations(sourceFile);
+    const transparentClassHelpers = new Set(["classNames", "clsx", "cn", "cx"]);
+
+    function resolveIdentifierInitializer(
+      node: ts.Identifier,
+      seenDeclarations: Set<ts.Symbol>,
+    ): { initializer: ts.Expression; symbol: ts.Symbol } | undefined {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (!symbol || seenDeclarations.has(symbol)) return undefined;
+      const declaration = symbol.valueDeclaration;
+      if (!declaration || !ts.isVariableDeclaration(declaration)) {
+        return undefined;
+      }
+      if (!declaration.initializer) return undefined;
+      return { initializer: declaration.initializer, symbol };
+    }
+
+    function resolveObjectLiteral(
+      node: ts.Expression,
+      seenDeclarations: Set<ts.Symbol>,
+    ): ts.ObjectLiteralExpression | undefined {
+      if (ts.isObjectLiteralExpression(node)) return node;
+      if (!ts.isIdentifier(node)) return undefined;
+      const binding = resolveIdentifierInitializer(node, seenDeclarations);
+      if (!binding) return undefined;
+      const nextSeen = new Set(seenDeclarations);
+      nextSeen.add(binding.symbol);
+      return resolveObjectLiteral(binding.initializer, nextSeen);
+    }
+
+    function collectObjectValue(
+      object: ts.ObjectLiteralExpression,
+      propertyName: string | undefined,
+      seenDeclarations: Set<ts.Symbol>,
+    ): void {
+      for (const property of object.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          const spreadObject = resolveObjectLiteral(
+            property.expression,
+            seenDeclarations,
+          );
+          if (spreadObject) {
+            collectObjectValue(spreadObject, propertyName, seenDeclarations);
+          }
+          continue;
+        }
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = propertyNameText(property.name);
+        if (propertyName === undefined || name === propertyName) {
+          collectClassExpression(property.initializer, seenDeclarations);
+        }
+      }
+    }
+
+    function collectClassHelperArgument(
+      node: ts.Expression,
+      seenDeclarations: Set<ts.Symbol>,
+    ): void {
+      const object = resolveObjectLiteral(node, seenDeclarations);
+      if (object) {
+        for (const property of object.properties) {
+          if (ts.isPropertyAssignment(property)) {
+            const name = propertyNameText(property.name);
+            if (name) addExactTokens(exact, name, filename);
+          } else if (ts.isShorthandPropertyAssignment(property)) {
+            addExactTokens(exact, property.name.text, filename);
+          } else if (ts.isSpreadAssignment(property)) {
+            collectClassHelperArgument(property.expression, seenDeclarations);
+          }
+        }
+        return;
+      }
+      collectClassExpression(node, seenDeclarations);
+    }
 
     function collectClassExpression(
-      node: ts.Node,
-      seenDeclarations = new Set<string>(),
+      node: ts.Expression,
+      seenDeclarations = new Set<ts.Symbol>(),
     ): void {
       if (ts.isTemplateExpression(node)) {
         addExactTokens(exact, node.head.text, filename);
         addDynamicPrefix(dynamic, node.head.text, filename);
         for (let index = 0; index < node.templateSpans.length; index++) {
+          collectClassExpression(
+            node.templateSpans[index].expression,
+            seenDeclarations,
+          );
           const literal = node.templateSpans[index].literal.text;
           addExactTokens(exact, literal, filename);
           if (index < node.templateSpans.length - 1) {
             addDynamicPrefix(dynamic, literal, filename);
           }
-          collectClassExpression(
-            node.templateSpans[index].expression,
-            seenDeclarations,
-          );
         }
         return;
       }
@@ -773,28 +913,98 @@ export function buildClassProducerUsageIndex(
         return;
       }
       if (ts.isIdentifier(node)) {
-        const initializer = declarations.get(node.text);
-        if (initializer && !seenDeclarations.has(node.text)) {
+        const binding = resolveIdentifierInitializer(node, seenDeclarations);
+        if (binding) {
           const nextSeen = new Set(seenDeclarations);
-          nextSeen.add(node.text);
-          collectClassExpression(initializer, nextSeen);
+          nextSeen.add(binding.symbol);
+          collectClassExpression(binding.initializer, nextSeen);
         }
         return;
       }
-      if (ts.isPropertyAssignment(node)) {
-        const name = propertyNameText(node.name);
-        if (name) addExactTokens(exact, name, filename);
-        collectClassExpression(node.initializer, seenDeclarations);
+      if (ts.isConditionalExpression(node)) {
+        collectClassExpression(node.whenTrue, seenDeclarations);
+        collectClassExpression(node.whenFalse, seenDeclarations);
         return;
       }
-      if (ts.isShorthandPropertyAssignment(node)) {
-        addExactTokens(exact, node.name.text, filename);
-        collectClassExpression(node.name, seenDeclarations);
+      if (ts.isBinaryExpression(node)) {
+        const operator = node.operatorToken.kind;
+        if (operator === ts.SyntaxKind.AmpersandAmpersandToken) {
+          collectClassExpression(node.right, seenDeclarations);
+        } else if (
+          operator === ts.SyntaxKind.BarBarToken ||
+          operator === ts.SyntaxKind.QuestionQuestionToken ||
+          operator === ts.SyntaxKind.PlusToken
+        ) {
+          collectClassExpression(node.left, seenDeclarations);
+          collectClassExpression(node.right, seenDeclarations);
+        } else if (operator === ts.SyntaxKind.CommaToken) {
+          collectClassExpression(node.right, seenDeclarations);
+        }
         return;
       }
-      ts.forEachChild(node, (child) =>
-        collectClassExpression(child, seenDeclarations),
-      );
+      if (ts.isParenthesizedExpression(node)) {
+        collectClassExpression(node.expression, seenDeclarations);
+        return;
+      }
+      if (
+        ts.isAsExpression(node) ||
+        ts.isTypeAssertionExpression(node) ||
+        ts.isNonNullExpression(node) ||
+        ts.isSatisfiesExpression(node) ||
+        ts.isAwaitExpression(node)
+      ) {
+        collectClassExpression(node.expression, seenDeclarations);
+        return;
+      }
+      if (ts.isArrayLiteralExpression(node)) {
+        for (const element of node.elements) {
+          if (ts.isSpreadElement(element)) {
+            collectClassExpression(element.expression, seenDeclarations);
+          } else if (!ts.isOmittedExpression(element)) {
+            collectClassExpression(element, seenDeclarations);
+          }
+        }
+        return;
+      }
+      if (ts.isPropertyAccessExpression(node)) {
+        const object = resolveObjectLiteral(node.expression, seenDeclarations);
+        if (object) {
+          collectObjectValue(object, node.name.text, seenDeclarations);
+        }
+        return;
+      }
+      if (ts.isElementAccessExpression(node)) {
+        const object = resolveObjectLiteral(node.expression, seenDeclarations);
+        if (object) {
+          const propertyName =
+            node.argumentExpression &&
+            ts.isStringLiteralLike(node.argumentExpression)
+              ? node.argumentExpression.text
+              : undefined;
+          collectObjectValue(object, propertyName, seenDeclarations);
+        }
+        return;
+      }
+      if (ts.isCallExpression(node)) {
+        if (
+          ts.isIdentifier(node.expression) &&
+          transparentClassHelpers.has(node.expression.text)
+        ) {
+          for (const argument of node.arguments) {
+            collectClassHelperArgument(argument, seenDeclarations);
+          }
+          return;
+        }
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          const method = node.expression.name.text;
+          if (method === "join" || method === "filter") {
+            collectClassExpression(
+              node.expression.expression,
+              seenDeclarations,
+            );
+          }
+        }
+      }
     }
 
     function visit(node: ts.Node): void {
@@ -805,7 +1015,7 @@ export function buildClassProducerUsageIndex(
             if (node.initializer.expression) {
               collectClassExpression(node.initializer.expression);
             }
-          } else {
+          } else if (ts.isStringLiteralLike(node.initializer)) {
             collectClassExpression(node.initializer);
           }
         }

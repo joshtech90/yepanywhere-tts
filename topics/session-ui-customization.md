@@ -56,6 +56,15 @@ explicitly switches Conversation view on; a view that opens already active
 condenses all loaded turns. Revealing earlier turns changes only the mounted
 transcript view, not this default. See
 [conversation-view.md](conversation-view.md).
+The **Live Microphone Waveform** control defaults shown and includes a nested,
+browser-local **Button background opacity over waveform** slider. It covers
+0–100% in 5% steps and defaults to 70%. The live toolbar preview paints a static
+waveform at the current value, including when no microphone capture is active,
+so the effect is visible before the user dictates. The opacity preference is
+included in **Transfer browser settings** backups. It stays beside the waveform
+presence control rather than moving to Appearance because it has no effect
+without that specific toolbar element and the combined preview is the useful
+editing surface.
 Narrowing priority is derived by `useSessionToolbarPresence` and is editable
 for controls the runtime overflow menu can actually reveal: the left-side
 controls, shortcut help, `sessionStatus`, `contextUsage`, `btw`, `steerNow`,
@@ -130,6 +139,63 @@ Relative to the landed surface:
   possible.
 - Controls disabled by upstream preference should be candidates for
   configurable default-off restoration before the implementation is removed.
+
+### Sidebar launcher gestures
+
+The page-header Open/Toggle sidebar control and the collapsed-rail Expand
+sidebar control share one launcher contract. A normal click opens or toggles
+the sidebar in the current tab. Middle-click and browser-modified clicks open
+New Session in a separate browsing context, preserve the direct or relay base
+path, and add `sidebar=expanded` without changing the source tab. Their
+tooltips expose the discoverable Shift-click form as
+`<ordinary action> / [Shift] New Session`.
+
+### Sidebar spacing
+
+Sidebar spacing is a portable browser preference with two modes. Comfortable
+is the default and keeps the intentionally enlarged 34px desktop session rows;
+Compact uses the earlier density plus one pixel of separation: a
+`calc(1.5rem + 1px)` minimum, 2px block padding, and 1.2 line height. Coarse
+pointers keep at least 40px rows with 6px block padding in both modes, so
+desktop density does not reduce phone and tablet tap reliability.
+
+Both modes keep the YepAnywhere sidebar wordmark and the same navigation type
+size. New session uses the green circular plus in expanded and collapsed
+sidebars so the create action stays recognizable. It uses the same 16px footprint
+as the other top-level navigation icons; the green fill supplies emphasis without
+making the action geometrically larger. Sidebar density never changes branding,
+action meaning, or type size. The mobile close control and collapsed desktop
+rail remain available in both modes.
+
+The same preference controls navigation-row padding and the gaps between
+sidebar sections. For top-level navigation, one metric controls both the
+leading edge inset and the icon-to-label gap: `0.75rem` in Comfortable and
+`0.5rem` in Compact. This keeps icons visually balanced between the viewport
+edge and their labels. Nested session and queue rows retain their `1ch` inset.
+Compact leaves a 1px top breathing gap above New session and starts the
+scrolling navigation immediately below that row instead of retaining
+Comfortable's separate 0.25rem inset.
+
+The persisted preference remains `comfortable` / `compact`, but its visible
+label is **Sidebar density**. It appears with the main Appearance layout
+controls beside Content width, not inside Typography, because it changes row
+and section spacing rather than text rendering.
+
+Sidebar session rows in both Compact and Comfortable density modes reserve no
+permanent lane for their hover-only overflow menu. The menu is vertically
+centered over its own row and may temporarily cover trailing project/status
+metadata; resting rows keep that width available to the session title.
+
+### UI size
+
+UI size is stored as a numeric percentage. Its slider covers 85–130% in 5%
+steps, with notches every 15% at 85, 100, 115, and 130. The adjacent numeric
+field accepts values between steps and clamps only to 50–300%, preserving an
+escape route when the slider range is too narrow. For a numeric value outside
+the slider range, the slider thumb stays at the nearest end while the field
+remains authoritative. Existing `small`, `default`, `large`, and `larger`
+stored values load as 85, 100, 115, and 130% respectively; the default remains
+115%.
 
 ## Mockup Requirements
 

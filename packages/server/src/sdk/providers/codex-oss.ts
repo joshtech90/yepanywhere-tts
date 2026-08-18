@@ -30,6 +30,7 @@ import type {
   AuthStatus,
   StartSessionOptions,
 } from "./types.js";
+import { inactiveProviderSessionOptionsResult } from "./types.js";
 
 const log = getLogger().child({ component: "codex-oss-provider" });
 const execAsync = promisify(exec);
@@ -299,6 +300,11 @@ export class CodexOSSProvider implements AgentProvider {
       iterator,
       queue,
       abort: () => abortController.abort(),
+      setSessionOptions: async (requested) =>
+        inactiveProviderSessionOptionsResult(
+          requested,
+          "The Codex OSS CLI adapter exposes no automatic title, recap, progress-summary, or prompt-suggestion generator",
+        ),
       get pid() {
         return pidRef.value;
       },
@@ -882,6 +888,9 @@ export class CodexOSSProvider implements AgentProvider {
                       {
                         type: "tool_result",
                         tool_use_id: item.id,
+                        ...(item.status !== "completed"
+                          ? { is_error: true }
+                          : {}),
                         content:
                           item.status === "completed"
                             ? `File changes applied:\n${changesSummary}`

@@ -718,27 +718,6 @@
   position: relative;
 }
 
-.selection-quote-button {
-  position: absolute;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--app-yep-green) 55%, #333);
-  background: color-mix(in srgb, var(--app-yep-green) 22%, var(--bg-secondary));
-  color: var(--text-primary);
-  box-shadow: var(--shadow-md);
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.selection-quote-button:hover {
-  background: color-mix(in srgb, var(--app-yep-green) 32%, var(--bg-secondary));
-}
-
 .text-block-copy.copied {
   color: #4a4;
   opacity: 1;
@@ -1682,7 +1661,7 @@ details[open] .collapsible__icon {
 }
 
 .bash-preview-output.bash-preview-error pre {
-  color: var(--error-color);
+  color: color-mix(in srgb, var(--error-color) 70%, var(--text-primary));
 }
 
 .bash-preview-more {
@@ -1821,7 +1800,7 @@ details[open] .collapsible__icon {
 /* Inline file link for interactive summary */
 .file-link-inline {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.5rem;
   background: transparent;
   border: none;
@@ -1839,19 +1818,6 @@ details[open] .collapsible__icon {
   text-decoration-color: currentColor;
 }
 
-.source-review-edit-link {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.1rem 0.35rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--vscode-textLink-foreground, #3794ff);
-  font-size: 0.78em;
-  line-height: 1.2;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
 .source-review-edit-summary {
   display: inline-flex;
   align-items: center;
@@ -1859,10 +1825,6 @@ details[open] .collapsible__icon {
   gap: 0.25rem 0.5rem;
   max-width: 100%;
   white-space: normal;
-}
-
-.source-review-edit-link:hover {
-  background: var(--bg-hover);
 }
 
 .file-line-count-inline {
@@ -4619,37 +4581,6 @@ pre.code-highlighter-plain code {
 }
 
 /* ==========================================================================
-   File Viewer Modal - extends base modal styles
-   ========================================================================== */
-
-.file-viewer-modal .file-viewer {
-  height: 100%;
-}
-
-.file-viewer-modal {
-  height: min(92vh, calc(100dvh - 0.75rem));
-  max-height: min(92vh, calc(100dvh - 0.75rem));
-  min-height: 0;
-  overflow: hidden;
-  padding: 0;
-}
-
-.file-viewer-modal-compact {
-  height: auto;
-  max-height: min(92vh, calc(100dvh - 0.75rem));
-}
-
-.file-viewer-modal-compact .file-viewer {
-  height: auto;
-  max-height: inherit;
-}
-
-.file-viewer-modal-compact .file-viewer-body {
-  flex: 0 1 auto;
-  max-height: calc(92vh - 3.25rem);
-}
-
-/* ==========================================================================
    File Page (Standalone)
    ========================================================================== */
 
@@ -4716,34 +4647,7 @@ pre.code-highlighter-plain code {
 }
 
 /* Mobile adjustments */
-@media (max-width: 600px) {
-  .file-viewer-modal {
-    height: 100vh;
-    height: 100dvh;
-    max-height: 100vh;
-    max-height: 100dvh;
-  }
-
-  .file-viewer-modal-compact {
-    height: auto;
-    max-height: 100dvh;
-  }
-
-  .file-viewer-modal-compact .file-viewer-body {
-    max-height: calc(100dvh - 3.75rem);
-  }
-
-  .file-viewer-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
-    padding: 0.25rem 0.5rem;
-  }
-
-  .file-viewer-actions {
-    align-self: flex-end;
-  }
-
+@media (max-width: 800px) {
   .file-viewer-code {
     min-width: max-content;
     width: max-content;
@@ -5080,10 +4984,6 @@ pre.code-highlighter-plain,
   font-size: inherit;
 }
 
-/* Note: When "Show full context" is clicked in the diff modal, JS automatically
-   scrolls to the first .line-deleted or .line-inserted element. This uses
-   scrollIntoView({ block: "center" }) in EditRenderer.tsx. */
-
 /* Source-review commenting over a diff (topic: source-review-to-session). */
 .diff-modal-content {
   position: relative;
@@ -5114,132 +5014,6 @@ pre.code-highlighter-plain,
 /* Source-review submit modal + tray (topic: source-review-to-session, P7). */
 .review-tray-button {
   font-weight: 600;
-}
-
-.review-submit-modal {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3, 12px);
-  min-width: min(560px, 90vw);
-}
-
-.review-submit-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2, 8px);
-  max-height: 50vh;
-  overflow: auto;
-}
-
-.review-submit-row {
-  padding: var(--space-2, 8px);
-  border: 1px solid var(--border-subtle, #21262d);
-  border-radius: var(--radius-sm, 4px);
-}
-
-.review-submit-row.is-stale {
-  opacity: 0.75;
-  border-color: var(--color-warning, #d29922);
-}
-
-.review-submit-row-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2, 8px);
-}
-
-.review-submit-row-loc {
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-sm, 0.85em);
-}
-
-.review-submit-row-stale {
-  color: var(--color-warning, #d29922);
-  font-size: var(--font-size-sm, 0.8em);
-}
-
-.review-submit-row-moved {
-  color: var(--text-muted, #8b949e);
-  font-size: var(--font-size-sm, 0.8em);
-}
-
-.review-submit-row-text {
-  margin-top: var(--space-1, 4px);
-  white-space: pre-wrap;
-}
-
-.review-submit-destination {
-  display: grid;
-  gap: var(--space-2, 8px);
-  padding: var(--space-3, 12px);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle, #21262d);
-  border-radius: var(--radius-md, 8px);
-}
-
-.review-submit-field {
-  display: grid;
-  grid-template-columns: 5rem minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-2, 8px);
-  color: var(--text-secondary, #8b949e);
-  font-size: 0.82rem;
-}
-
-.review-submit-field select {
-  min-width: 0;
-  width: 100%;
-  padding: 5px 8px;
-  color: var(--text-primary, #e6edf3);
-  background: var(--bg-input, var(--bg-primary));
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm, 4px);
-}
-
-.review-submit-new-session {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2, 8px);
-}
-
-.review-submit-target-error {
-  color: var(--color-error, #f85149);
-  font-size: 0.78rem;
-}
-
-.review-submit-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2, 8px);
-}
-
-.review-submit-go {
-  background: var(--accent-color, #3fb950);
-  color: var(--accent-contrast, #06120a);
-  border: none;
-  border-radius: var(--radius-sm, 4px);
-  padding: var(--space-1, 4px) var(--space-3, 12px);
-}
-
-.review-submit-go:disabled {
-  opacity: 0.5;
-}
-
-.review-submit-error {
-  color: var(--color-error, #f85149);
-}
-
-@media (max-width: 600px) {
-  .review-submit-modal {
-    min-width: 0;
-  }
-
-  .review-submit-new-session {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* Side-by-side diff (topic: source-review-to-session, P8). */
@@ -5362,32 +5136,6 @@ pre.code-highlighter-plain,
 
 .diff-gutter-aligned .fixed-font-rendered-line {
   color: var(--diff-shiki-foreground);
-}
-
-.source-diff-line-menu-trigger {
-  position: absolute;
-  z-index: 3;
-  right: 6px;
-  display: grid;
-  width: 26px;
-  height: 20px;
-  place-items: center;
-  padding: 0;
-  color: var(--text-secondary, #8b949e);
-  line-height: 1;
-  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
-  border: 1px solid var(--border-color);
-  border-radius: 5px;
-  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.22);
-  cursor: pointer;
-}
-
-.source-diff-line-menu-trigger:hover,
-.source-diff-line-menu-trigger:focus-visible {
-  color: var(--text-primary, #e6edf3);
-  background: var(--bg-hover);
-  border-color: var(--accent-color);
-  outline: none;
 }
 
 .source-diff-pane [data-diff-line]:focus-visible {
@@ -5557,49 +5305,14 @@ pre.code-highlighter-plain,
   border-bottom: 1px solid var(--border-color);
 }
 
-.repo-status-action-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.source-control-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2, 8px);
-}
-
 .source-control-action-row {
   display: flex;
   min-width: 0;
   align-items: center;
 }
 
-.source-control-action-row .repo-status-action-group {
-  width: 100%;
-}
-
-.source-control-action-row .review-tray-button {
-  margin-left: auto;
-}
-
-@media (max-width: 759px) {
-  .source-control-action-row .repo-status-action-group > button {
-    padding-inline: 6px;
-  }
-
-  /* Only the longest label yields when the row is tight. */
-  .source-control-action-row .git-status-check-remote,
-  .source-control-action-row .git-status-check-remote .git-status-action-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-}
-
 /* Copy affordance shared by status bar, commit rows, file rows. */
-.copy-button {
+.copy-button:not(.diff-context-toggle) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5611,7 +5324,7 @@ pre.code-highlighter-plain,
   cursor: pointer;
 }
 
-.copy-button:hover {
+.copy-button:not(.diff-context-toggle):hover {
   color: var(--text-primary, #e6edf3);
   background: var(--bg-hover, rgba(255, 255, 255, 0.06));
 }
@@ -5861,27 +5574,6 @@ pre.code-highlighter-plain,
   border-radius: 999px;
 }
 
-.source-history-parent-link {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: var(--space-2, 8px);
-  padding: 7px 10px;
-  color: var(--text-secondary, #8b949e);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle, #21262d);
-  border-radius: 6px;
-  font-size: 0.82rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.source-history-parent-link:hover {
-  color: var(--text-primary, #e6edf3);
-  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
-}
-
 .source-detail-action {
   padding: 2px 8px;
   font-size: 0.75rem;
@@ -6024,20 +5716,6 @@ pre.code-highlighter-plain,
   outline-offset: -2px;
 }
 
-.commit-list-item.working-tree {
-  border-left: 2px solid var(--warning-color);
-  background: color-mix(in srgb, var(--warning-color) 6%, transparent);
-}
-
-.commit-list-item.working-tree.selected {
-  background: color-mix(in srgb, var(--warning-color) 13%, transparent);
-}
-
-.working-tree-label {
-  color: var(--warning-color);
-  font-weight: 600;
-}
-
 .worktree-file-state {
   flex-shrink: 0;
   padding: 1px 4px;
@@ -6140,40 +5818,6 @@ pre.code-highlighter-plain,
 .commit-jump-btn:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* Compact commit body — likely manual prose wraps are folded in the display
-   projection, then this pane wraps them to its own width. Click opens the
-   verbatim message view (with exact time) in the detail pane. */
-.commit-body {
-  display: block;
-  width: 100%;
-  margin: 0 0 var(--space-2, 8px);
-  padding: 8px;
-  font-family: inherit;
-  font-size: 0.8rem;
-  text-align: left;
-  white-space: pre-wrap;
-  color: var(--text-secondary, #8b949e);
-  background: var(--bg-secondary);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.commit-body:hover {
-  color: var(--text-primary, #e6edf3);
-}
-
-.commit-body.selected {
-  border-color: var(--border-subtle, #21262d);
-  background: var(--bg-selected, rgba(56, 139, 253, 0.15));
-}
-
-.commit-body-mobile {
-  padding-block: 6px;
-  color: var(--text-secondary, #8b949e);
-  white-space: normal;
 }
 
 .commit-message-time {
@@ -6362,11 +6006,9 @@ pre.code-highlighter-plain,
     padding: 0;
   }
 
-  /* Touch has no hover title recovery. Let long source identities use a
+  /* Touch has no hover title recovery. Let long commit subjects use a
      second line instead of clipping them at an arbitrary character. */
-  .commit-subject,
-  .commit-file-item .git-file-path,
-  .blame-file-item .git-file-path {
+  .commit-subject {
     display: -webkit-box;
     overflow: hidden;
     overflow-wrap: anywhere;

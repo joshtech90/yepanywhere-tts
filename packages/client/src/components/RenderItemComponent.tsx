@@ -29,6 +29,11 @@ import type {
 import { formatCommandDuration } from "../lib/shellToolOutput";
 import { useStickToBottom } from "../lib/stickToBottom";
 import {
+  type ActivityHeightReserve,
+  activityHeightReserveReleaseDelayMs,
+  updateActivityHeightReserve,
+} from "../lib/sessionDetail/activityHeightReserve";
+import {
   THINKING_PREVIEW_DEFAULT_WIDTH_PX,
   type ThinkingPreviewWidthState,
   updateThinkingPreviewWidth,
@@ -47,6 +52,7 @@ import { ThinkingBlock } from "./blocks/ThinkingBlock";
 import { ToolCallRow } from "./blocks/ToolCallRow";
 import { UserPromptBlock } from "./blocks/UserPromptBlock";
 import { LinkifiedText } from "./ui/LinkifiedText";
+import styles from "./RenderItemComponent.module.css";
 
 interface Props {
   item: RenderItem;
@@ -208,6 +214,9 @@ function systemDetailToText(detail: string | ContentBlock[]): string {
     .join("\n");
 }
 
+const COMPACT_EMPTY_DETAIL =
+  "No provider summary was retained for this compaction.";
+
 function CollapsibleSystemMessage({
   item,
   icon,
@@ -219,16 +228,18 @@ function CollapsibleSystemMessage({
     .map(systemDetailToText)
     .map((text) => text.trim())
     .filter(Boolean);
-  const variantClass =
-    item.subtype === "compact_boundary"
-      ? "system-message-compact-boundary"
-      : "system-message-local-command";
-  const summaryClass =
-    item.subtype === "compact_boundary"
-      ? "system-message-summary system-message-compact-summary"
-      : "system-message-summary system-message-local-command-summary";
+  const isCompactBoundary = item.subtype === "compact_boundary";
+  const variantClass = isCompactBoundary
+    ? "system-message-compact-boundary"
+    : "system-message-local-command";
+  const summaryClass = isCompactBoundary
+    ? "system-message-summary system-message-compact-summary"
+    : "system-message-summary system-message-local-command-summary";
 
-  if (details.length === 0) {
+  // All compact boundaries stay outline-expandable so users can inspect what
+  // was kept/summarized; local-command rows still collapse to a flat chip when
+  // they have no detail body.
+  if (!isCompactBoundary && details.length === 0) {
     return (
       <div className={`system-message ${variantClass}`}>
         <span className="system-message-icon">{icon}</span>
@@ -239,9 +250,13 @@ function CollapsibleSystemMessage({
     );
   }
 
+  const resolvedDetails = details.length > 0 ? details : [COMPACT_EMPTY_DETAIL];
+
   return (
     <details
-      className={`system-message ${variantClass} ${variantClass}--details system-message--details`}
+      className={`system-message ${variantClass} ${variantClass}--details system-message--details${
+        isCompactBoundary ? ` ${styles.compactBoundaryOutline}` : ""
+      }`}
     >
       <summary className={summaryClass}>
         <span className="collapsible__icon" aria-hidden="true">
@@ -253,7 +268,7 @@ function CollapsibleSystemMessage({
         </span>
       </summary>
       <div className="system-message-details">
-        {details.map((detail, index) => (
+        {resolvedDetails.map((detail, index) => (
           <pre
             className="system-message-detail"
             key={`${item.id}-system-detail-${index}`}
@@ -264,6 +279,55 @@ function CollapsibleSystemMessage({
       </div>
     </details>
   );
+}
+
+interface ActivityHeightReserveController {
+  reserve: ActivityHeightReserve | null;
+  timer: number | null;
+}
+
+/**
+ * Apply the row's held height and re-arm the release.
+ *
+ * The natural height is measured from the children's bottoms rather than the
+ * row's own box: the reserve is applied as the row's `min-height`, so measuring
+ * the row would feed the reserve back into itself and it could never fall.
+ */
+function syncActivityHeightReserve(
+  row: HTMLElement,
+  controller: ActivityHeightReserveController,
+): void {
+  const rowTop = row.getBoundingClientRect().top;
+  let naturalHeightPx = 0;
+  for (const child of Array.from(row.children)) {
+    naturalHeightPx = Math.max(
+      naturalHeightPx,
+      child.getBoundingClientRect().bottom - rowTop,
+    );
+  }
+  const nowMs = Date.now();
+  const reserve = updateActivityHeightReserve(
+    controller.reserve,
+    naturalHeightPx,
+    nowMs,
+  );
+  controller.reserve = reserve;
+  row.style.setProperty(
+    "--conversation-activity-reserved-height",
+    `${reserve.heightPx}px`,
+  );
+  if (controller.timer !== null) {
+    window.clearTimeout(controller.timer);
+    controller.timer = null;
+  }
+  const delayMs = activityHeightReserveReleaseDelayMs(reserve, nowMs);
+  if (delayMs === null) return;
+  // Content changes re-measure on their own; this wake-up is only for the case
+  // where nothing else happens before the hold expires.
+  controller.timer = window.setTimeout(() => {
+    controller.timer = null;
+    syncActivityHeightReserve(row, controller);
+  }, delayMs);
 }
 
 function formatConversationActivityDuration(seconds: number): string {
@@ -357,6 +421,69 @@ function ConversationActivitySummary({
     observer.observe(content);
     return () => observer.disconnect();
   }, [previewLayoutKey, syncActivityClip]);
+  // Hold the row's vertical space across shrinks. A long streaming thinking
+  // block grows this row, and when a shorter block replaces it the row would
+  // hand that height straight back — in follow mode that drags everything the
+  // reader was reading down the viewport. Instead the row keeps its high-water
+  // height and releases it only after a hold spent continuously wanting less,
+  // so a turn alternating thinking and activity never spends the wait out.
+  const reserveRef = useRef<ActivityHeightReserveController>({
+    reserve: null,
+    timer: null,
+  });
+  const syncHeightReserve = useCallback(() => {
+    const row = rowRef.current;
+    if (row) syncActivityHeightReserve(row, reserveRef.current);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: previewLayoutKey re-attaches the observers when the measured children mount/unmount
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    syncHeightReserve();
+    // Watch the children, not just the row: while the reserve holds, the row's
+    // own box stays put and only a child's resize reveals the shrink.
+    const observer = new ResizeObserver(syncHeightReserve);
+    observer.observe(row);
+    for (const child of Array.from(row.children)) observer.observe(child);
+    const controller = reserveRef.current;
+    return () => {
+      observer.disconnect();
+      if (controller.timer !== null) {
+        window.clearTimeout(controller.timer);
+        controller.timer = null;
+      }
+    };
+  }, [previewLayoutKey, syncHeightReserve]);
+  // The hold is for space the reader still needs; two gestures say otherwise
+  // and release it at once. Collapsing a card with its chevron asks for a
+  // shorter row and keeps that card collapsed as later blocks stream into the
+  // slot, so the space really is freed. Dismissing one card of two does not:
+  // thinking stays visible and the space is about to be used again. Dismissing
+  // the last card hides thinking entirely, which does.
+  const previewCount = item.thinkingPreviews?.length ?? 0;
+  const collapsedSlotsKey = (item.thinkingPreviews ?? [])
+    .filter((preview) => collapsedThinkingPreviewSlots.has(preview.slot))
+    .map((preview) => preview.slot)
+    .join("|");
+  const previousCollapsedSlotsRef = useRef(collapsedSlotsKey);
+  const previousPreviewCountRef = useRef(previewCount);
+  useLayoutEffect(() => {
+    const wasCollapsed = new Set(
+      previousCollapsedSlotsRef.current.split("|").filter(Boolean),
+    );
+    const readerCollapsedACard = collapsedSlotsKey
+      .split("|")
+      .filter(Boolean)
+      .some((slot) => !wasCollapsed.has(slot));
+    const thinkingJustHidden =
+      previewCount === 0 && previousPreviewCountRef.current > 0;
+    previousCollapsedSlotsRef.current = collapsedSlotsKey;
+    previousPreviewCountRef.current = previewCount;
+    if (readerCollapsedACard || thinkingJustHidden) {
+      reserveRef.current.reserve = null;
+      syncHeightReserve();
+    }
+  }, [collapsedSlotsKey, previewCount, syncHeightReserve]);
   // Re-evaluate the bottom fade when the rendered activity rows change (new
   // rows can start overflowing the cap without the thinking height moving).
   // biome-ignore lint/correctness/useExhaustiveDependencies: recentActivities identity is the render-changed trigger
@@ -409,7 +536,7 @@ function ConversationActivitySummary({
 
   return (
     <div
-      className={`conversation-activity-row${
+      className={`conversation-activity-row ${styles.activityHeightReserve}${
         widerActivityPreviews ? " is-wide-activity-previews" : ""
       }`}
       ref={rowRef}
@@ -424,13 +551,18 @@ function ConversationActivitySummary({
           aria-expanded={item.expanded}
           title={title}
         >
-          <span className="conversation-activity-chevron" aria-hidden="true">
+          <span
+            className={`${styles.activityChevron}${
+              item.expanded ? ` ${styles.activityChevronExpanded}` : ""
+            }`}
+            aria-hidden="true"
+          >
             {item.expanded ? "▾" : "▸"}
           </span>
           {item.active ? (
-            <span className="conversation-activity-pulse" aria-hidden="true" />
+            <span className={styles.activityPulse} aria-hidden="true" />
           ) : null}
-          <span>{label}</span>
+          <span className={styles.activityLabel}>{label}</span>
         </button>
         {hasExpandedThinkingPreview && item.recentActivities ? (
           <ul
@@ -451,6 +583,7 @@ function ConversationActivitySummary({
         <ConversationThinkingPreview
           collapsed={collapsedThinkingPreviewSlots.has(preview.slot)}
           key={preview.slot}
+          turnEndedAtMs={item.endedAtMs}
           onDismiss={onDismissThinkingPreview}
           onToggle={onToggleThinkingPreview}
           preview={preview}
@@ -488,16 +621,40 @@ function estimateThinkingPreviewWidth(text: string): number {
   return longestLineLength * 8;
 }
 
+/**
+ * How far back in the turn a thinking block sits, measured to the turn's end
+ * (the live clock while the turn runs). This is placement, not duration: the
+ * summary beside it already says how long the whole turn took, so an age here
+ * says where in that span the thought happened.
+ *
+ * A streaming block is happening now, so it gets no age. Sub-second ages are
+ * omitted too — "0.4s ago" on a thought that just landed is noise, and the
+ * pulsing dot already carries recency at that scale.
+ */
+function formatThinkingPreviewAge(
+  preview: ConversationThinkingPreviewData,
+  turnEndedAtMs: number | null,
+): string {
+  if (preview.status === "streaming") return "";
+  if (preview.endedAtMs === null || turnEndedAtMs === null) return "";
+  const seconds = (turnEndedAtMs - preview.endedAtMs) / 1000;
+  if (!Number.isFinite(seconds) || seconds < 1) return "";
+  return formatConversationActivityDuration(seconds);
+}
+
 function ConversationThinkingPreview({
   preview,
   collapsed,
   onToggle,
   onDismiss,
+  turnEndedAtMs,
 }: {
   preview: ConversationThinkingPreviewData;
   collapsed: boolean;
   onToggle?: (slot: ConversationThinkingPreviewSlot) => void;
   onDismiss?: (slot: ConversationThinkingPreviewSlot) => void;
+  /** The turn's end, or the live clock while it runs. */
+  turnEndedAtMs: number | null;
 }) {
   const { t } = useI18n();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -516,6 +673,7 @@ function ConversationThinkingPreview({
       : "conversationThinkingPreviewExpand",
   );
   const dismissLabel = t("conversationThinkingPreviewDismiss", { label });
+  const age = formatThinkingPreviewAge(preview, turnEndedAtMs);
   const targetWidthPx =
     widthState?.id === preview.id
       ? widthState.targetWidthPx
@@ -584,7 +742,17 @@ function ConversationThinkingPreview({
           onClick={() => onToggle?.(preview.slot)}
         >
           <span className="conversation-thinking-preview-dot" aria-hidden />
-          <span>{label}</span>
+          <span className={styles.thinkingPreviewLabel}>{label}</span>
+          {age ? (
+            <span
+              className={styles.thinkingPreviewAge}
+              title={t("conversationThinkingPreviewAgeTitle", {
+                duration: age,
+              })}
+            >
+              {t("conversationThinkingPreviewAge", { duration: age })}
+            </span>
+          ) : null}
           <span className="conversation-thinking-preview-chevron" aria-hidden>
             {collapsed ? "▸" : "▾"}
           </span>
@@ -741,6 +909,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         return (
           <UserPromptBlock
             content={item.content}
+            projectPathLinks={item.projectPathLinks}
             onCorrect={onCorrectUserPrompt}
             onCancelUnconfirmed={
               cancellableTempId && onCancelUnconfirmedUserPrompt
@@ -824,6 +993,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         const isConfigAck = item.subtype === "config_ack";
         const isLocalCommand = item.subtype === "local_command";
         const isSubagentActivity = item.subtype === "subagent_activity";
+        const isNoModelTurn = item.subtype === "no_model_turn";
         const isHighlightedConfigAck =
           isConfigAck && item.configChanged !== false;
         const icon =
@@ -835,7 +1005,9 @@ export const RenderItemComponent = memo(function RenderItemComponent({
                 ? "/"
                 : isSubagentActivity
                   ? "↳"
-                  : "⟳";
+                  : isNoModelTurn
+                    ? "∅"
+                    : "⟳";
         if (item.subtype === "compact_boundary" || isLocalCommand) {
           return <CollapsibleSystemMessage item={item} icon={icon} />;
         }

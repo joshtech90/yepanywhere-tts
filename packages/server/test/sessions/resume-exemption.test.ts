@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { isUnownedHeartbeatResumeEligible } from "../../src/sessions/resume-exemption.js";
+import {
+  isAutomaticSessionResumeAllowed,
+  isUnownedHeartbeatResumeEligible,
+} from "../../src/sessions/resume-exemption.js";
 
 describe("resume exemption", () => {
+  describe("isAutomaticSessionResumeAllowed", () => {
+    it("blocks only sessions with the durable automatic-resume exemption", () => {
+      expect(isAutomaticSessionResumeAllowed(undefined)).toBe(true);
+      expect(isAutomaticSessionResumeAllowed({})).toBe(true);
+      expect(
+        isAutomaticSessionResumeAllowed({ autoResumeDisabled: true }),
+      ).toBe(false);
+      expect(
+        isAutomaticSessionResumeAllowed({
+          automationPausedUntilUserTurn: true,
+        }),
+      ).toBe(false);
+    });
+  });
+
   describe("isUnownedHeartbeatResumeEligible", () => {
     it("requires heartbeat opt-in", () => {
       expect(isUnownedHeartbeatResumeEligible({})).toBe(false);
@@ -24,6 +42,12 @@ describe("resume exemption", () => {
         isUnownedHeartbeatResumeEligible({
           heartbeatTurnsEnabled: true,
           autoResumeDisabled: true,
+        }),
+      ).toBe(false);
+      expect(
+        isUnownedHeartbeatResumeEligible({
+          heartbeatTurnsEnabled: true,
+          automationPausedUntilUserTurn: true,
         }),
       ).toBe(false);
     });

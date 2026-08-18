@@ -37,11 +37,13 @@ describe("SessionMenu CSS module contracts", () => {
   it("keeps the caller and global hooks alongside module classes", () => {
     const { container } = renderMenu({
       className: "session-list-item__menu",
+      overlayTrigger: true,
     });
     const wrapper = container.firstElementChild as HTMLElement;
     const trigger = screen.getByRole("button", { name: "Session options" });
 
     expect(wrapper.classList.contains(styles.wrapper ?? "")).toBe(true);
+    expect(wrapper.classList.contains(styles.overlayTrigger ?? "")).toBe(true);
     expect(wrapper.classList.contains("session-menu-wrapper")).toBe(true);
     expect(wrapper.classList.contains("session-list-item__menu")).toBe(true);
     expect(wrapper.classList.contains("is-open")).toBe(false);
@@ -108,5 +110,15 @@ describe("SessionMenu CSS module contracts", () => {
       (screen.getByRole("button", { name: "Clone" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+  });
+
+  it("opens project settings from the session menu", () => {
+    const onConfigureProjectSettings = vi.fn();
+    renderMenu({ onConfigureProjectSettings });
+
+    fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
+
+    expect(onConfigureProjectSettings).toHaveBeenCalledOnce();
   });
 });

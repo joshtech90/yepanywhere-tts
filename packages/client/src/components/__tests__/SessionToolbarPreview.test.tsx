@@ -50,11 +50,36 @@ describe("ToolbarControlPreview", () => {
   it("renders the Conversation view specimen as active", () => {
     const { container } = renderControl("conversationView");
 
-    const button = container.querySelector(
-      ".conversation-view-toolbar-button",
-    );
+    const button = container.querySelector(".conversation-view-toolbar-button");
     expect(button).toBeTruthy();
     expect(button?.classList.contains("active")).toBe(true);
+  });
+
+  it("shows a static waveform and its default button opacity", () => {
+    const context = {
+      beginPath: vi.fn(),
+      clearRect: vi.fn(),
+      closePath: vi.fn(),
+      fill: vi.fn(),
+      fillStyle: "",
+      lineTo: vi.fn(),
+      moveTo: vi.fn(),
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      context,
+    );
+
+    const { container } = renderControl("waveform");
+
+    expect(
+      container.querySelector(".composer-speech-waveform canvas"),
+    ).toBeTruthy();
+    expect(
+      container
+        .querySelector(".message-input-toolbar")
+        ?.getAttribute("data-waveform-button-background-opacity"),
+    ).toBe("70");
   });
 
   it("activates an editable specimen by pointer and keyboard", () => {

@@ -1,0 +1,784 @@
+{
+  "schemaVersion": 1,
+  "capacityOverrides": {
+    "host-v1-linux-x64-16cpu-126720mib-ecfa1407f7322835": {
+      "rationale": "The 2026-08-08 local survey and recovery measurements used this capacity class.",
+      "drivers": {
+        "browser": {
+          "scenarios": {
+            "fleet-small": {
+              "browserProcess": {
+                "processMemory.maxProcessCount": {
+                  "max": 12,
+                  "rationale": "Three measured fleet repetitions used 11 Chromium processes."
+                },
+                "processMemory.maxTotalPssMiB": {
+                  "max": 3600,
+                  "rationale": "Three complete Linux process samples peaked at 2,989 MiB proportional set size."
+                },
+                "processMemory.maxRendererPssMiB": {
+                  "max": 3200,
+                  "rationale": "Three complete Linux process samples peaked at 2,647 MiB renderer proportional set size."
+                },
+                "processMemory.retainedPssMiB": {
+                  "max": 3500,
+                  "rationale": "Median startup-to-appended proportional set growth was 2,895 MiB."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "drivers": {
+    "server": {
+      "scenarios": {
+        "fleet-small": {
+          "server": {
+            "runtime.serverStartupMs": {
+              "max": 3500,
+              "rationale": "Profiled median was 2.24 s; margin covers host startup variance."
+            },
+            "latency.projectSessions.p95Ms": {
+              "max": 1800,
+              "rationale": "Cold first-index construction is tracked separately from the warm path."
+            },
+            "latency.projectSessionsWarm.p95Ms": {
+              "max": 20,
+              "rationale": "Surveyed values were 4-5 ms; this targets persistent warm-list regressions."
+            },
+            "latency.collectionHerd.p95Ms": {
+              "max": 50,
+              "rationale": "Profiled p95 was 15 ms."
+            },
+            "latency.detailColdTailText.p95Ms": {
+              "max": 300,
+              "rationale": "Profiled p95 was 169 ms; the C1 historical floor remains separately documented."
+            },
+            "latency.detailWarmHerdTailText.p95Ms": {
+              "max": 75,
+              "rationale": "Profiled p95 was 29 ms; the C1 historical floor remains separately documented."
+            },
+            "latency.detailAppendedHerdTailText.p95Ms": {
+              "max": 100,
+              "rationale": "Profiled p95 was 48 ms; the C1 historical floor remains separately documented."
+            },
+            "responseMiB.detailCold": {
+              "max": 7,
+              "rationale": "Profiled aggregate was 5.34 MiB across clients."
+            },
+            "responseMiB.detailWarmHerd": {
+              "max": 27,
+              "rationale": "Profiled aggregate was 21.36 MiB across the warm herd."
+            },
+            "responseMiB.detailAppendedHerd": {
+              "max": 40,
+              "rationale": "Profiled aggregate was 31.23 MiB across the appended herd."
+            },
+            "memory.settled.heapUsedMiB": {
+              "max": 125,
+              "rationale": "Profiled forced-GC settled heap was 106.9 MiB."
+            },
+            "memory.retainedHeapMiB": {
+              "max": 30,
+              "rationale": "Profiled forced-GC retained heap was 20.9 MiB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedSourceBytes": {
+              "max": 6500000,
+              "rationale": "Profiled source charge was 5.01 MB for 24 fixture transcripts."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedFiles": {
+              "max": 24,
+              "rationale": "The fleet fixture contains 24 retained transcript files."
+            },
+            "memory.settled.knownCaches.markdownAugments.retainedBytes": {
+              "max": 33554432,
+              "rationale": "The rendered-Markdown cache has an exact 32 MiB source-byte ceiling."
+            },
+            "memory.settled.knownCaches.projectPaths.retainedBytes": {
+              "max": 8192,
+              "rationale": "Profiled project-path source charge was 5,024 bytes."
+            },
+            "memory.settled.knownCaches.projectPaths.projects": {
+              "max": 4,
+              "rationale": "The fleet fixture contains four projects."
+            },
+            "memory.settled.knownCaches.projectPaths.watchers": {
+              "max": 24,
+              "rationale": "Profiled project-path diagnostics reported 24 watchers."
+            },
+            "memory.settled.residuals.heapUsedLessKnownCacheSourceMiB": {
+              "max": 115,
+              "rationale": "Profiled forced-GC heap less accountable cache source bytes was 102.2 MiB."
+            },
+            "profiles.serverDetail.cold.server.augment.p95Ms": {
+              "max": 200,
+              "rationale": "Profiled p95 was 128 ms and this phase dominates server-owned cold detail."
+            },
+            "profiles.serverDetail.cold.server.read.p95Ms": {
+              "max": 60,
+              "rationale": "Profiled p95 was 22 ms and this phase contributes at least 10% of cold detail."
+            },
+            "profiles.serverDetail.cold.frameworkSerializeLoopback.p95Ms": {
+              "max": 50,
+              "rationale": "Profiled p95 was 17 ms and this phase contributes at least 10% of cold detail."
+            },
+            "profiles.serverDetail.warm.server.augment.p95Ms": {
+              "max": 40,
+              "rationale": "Profiled p95 was 15 ms."
+            },
+            "profiles.serverDetail.warm.server.read.p95Ms": {
+              "max": 30,
+              "rationale": "Profiled p95 was 10 ms."
+            },
+            "profiles.serverDetail.warm.frameworkSerializeLoopback.p95Ms": {
+              "max": 45,
+              "rationale": "Profiled p95 was 19 ms."
+            },
+            "profiles.serverDetail.appended.server.augment.p95Ms": {
+              "max": 60,
+              "rationale": "Profiled p95 was 30 ms."
+            },
+            "profiles.serverDetail.appended.server.read.p95Ms": {
+              "max": 30,
+              "rationale": "Profiled p95 was 9 ms and remains visible near the 10% boundary."
+            },
+            "profiles.serverDetail.appended.server.normalize.p95Ms": {
+              "max": 2,
+              "rationale": "Recent fleet append p95 was 0.1 ms; this broad ceiling catches full-array normalization growth before optimizing the current sub-millisecond path."
+            },
+            "profiles.serverDetail.appended.server.route.p95Ms": {
+              "max": 5,
+              "rationale": "Recent fleet append slicing and anchor-search p95 was 0.6-0.7 ms."
+            },
+            "profiles.serverDetail.appended.frameworkSerializeLoopback.p95Ms": {
+              "max": 60,
+              "rationale": "Profiled p95 was 30 ms."
+            }
+          }
+        },
+        "large-session-cache": {
+          "server": {
+            "latency.detailColdTailText.p95Ms": {
+              "max": 500,
+              "rationale": "Profiled p95 was 317 ms."
+            },
+            "latency.detailWarmHerdTailText.p95Ms": {
+              "max": 300,
+              "rationale": "Profiled p95 was 146 ms."
+            },
+            "latency.detailAppendedHerdTailText.p95Ms": {
+              "max": 400,
+              "rationale": "Profiled p95 was 211 ms."
+            },
+            "responseMiB.detailCold": {
+              "max": 24,
+              "rationale": "Profiled aggregate was 19.23 MiB across clients."
+            },
+            "responseMiB.detailWarmHerd": {
+              "max": 72,
+              "rationale": "Profiled aggregate was 57.70 MiB across the warm herd."
+            },
+            "responseMiB.detailAppendedHerd": {
+              "max": 95,
+              "rationale": "Profiled aggregate was 75.92 MiB across the appended herd."
+            },
+            "memory.settled.heapUsedMiB": {
+              "max": 150,
+              "rationale": "Profiled forced-GC settled heap was 127.3 MiB."
+            },
+            "memory.retainedHeapMiB": {
+              "max": 55,
+              "rationale": "Profiled forced-GC retained heap was 41.2 MiB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedSourceBytes": {
+              "max": 22000000,
+              "rationale": "Profiled source charge was 16.91 MB for eight fixture transcripts."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedFiles": {
+              "max": 8,
+              "rationale": "The large fixture contains eight retained transcript files."
+            },
+            "memory.settled.knownCaches.markdownAugments.retainedBytes": {
+              "max": 33554432,
+              "rationale": "The rendered-Markdown cache has an exact 32 MiB source-byte ceiling."
+            },
+            "memory.settled.knownCaches.projectPaths.retainedBytes": {
+              "max": 4096,
+              "rationale": "Profiled project-path source charge was 2,512 bytes."
+            },
+            "memory.settled.knownCaches.projectPaths.projects": {
+              "max": 2,
+              "rationale": "The large fixture contains two projects."
+            },
+            "memory.settled.knownCaches.projectPaths.watchers": {
+              "max": 12,
+              "rationale": "Profiled project-path diagnostics reported 12 watchers."
+            },
+            "memory.settled.residuals.heapUsedLessKnownCacheSourceMiB": {
+              "max": 130,
+              "rationale": "Profiled forced-GC heap less accountable cache source bytes was 111.1 MiB."
+            },
+            "profiles.serverDetail.cold.server.augment.p95Ms": {
+              "max": 350,
+              "rationale": "Profiled p95 was 224 ms and this phase dominates server-owned cold detail."
+            },
+            "profiles.serverDetail.cold.server.read.p95Ms": {
+              "max": 180,
+              "rationale": "Profiled p95 was 102 ms."
+            },
+            "profiles.serverDetail.cold.frameworkSerializeLoopback.p95Ms": {
+              "max": 140,
+              "rationale": "Profiled p95 was 68 ms."
+            },
+            "profiles.serverDetail.warm.server.augment.p95Ms": {
+              "max": 150,
+              "rationale": "Profiled p95 was 90 ms."
+            },
+            "profiles.serverDetail.warm.frameworkSerializeLoopback.p95Ms": {
+              "max": 160,
+              "rationale": "Profiled p95 was 99 ms."
+            },
+            "profiles.serverDetail.appended.server.augment.p95Ms": {
+              "max": 200,
+              "rationale": "Profiled p95 was 126 ms."
+            },
+            "profiles.serverDetail.appended.server.normalize.p95Ms": {
+              "max": 2,
+              "rationale": "Recent large-session append p95 was 0.2 ms; this broad ceiling catches full-array normalization growth before optimizing the current path."
+            },
+            "profiles.serverDetail.appended.server.route.p95Ms": {
+              "max": 10,
+              "rationale": "Recent large-session append slicing and anchor-search p95 was 2.6-3.1 ms across three repetitions."
+            },
+            "profiles.serverDetail.appended.frameworkSerializeLoopback.p95Ms": {
+              "max": 200,
+              "rationale": "Profiled p95 was 122 ms."
+            }
+          }
+        }
+      }
+    },
+    "browser": {
+      "scenarios": {
+        "focused-append": {
+          "server": {
+            "latency.detailAppendedHerdTailText.p95Ms": {
+              "max": 50,
+              "rationale": "Three Node 20 single-session repetitions measured 4.4-5.0 ms without fleet request contention."
+            },
+            "profiles.serverDetail.appended.server.normalize.p95Ms": {
+              "max": 2,
+              "rationale": "Focused append normalization measured at or below timer resolution; retain the shared early-warning ceiling."
+            },
+            "profiles.serverDetail.appended.server.route.p95Ms": {
+              "max": 5,
+              "rationale": "Focused append slicing and anchor search measured 0.3 ms."
+            }
+          },
+          "browser": {
+            "0": {
+              "latency.appendedLiveFinalHighlight.p95Ms": {
+                "max": 200,
+                "rationale": "Three Node 20 one-page repetitions measured 51-54 ms; this ceiling preserves margin while catching restoration of a debounce-scale delay."
+              },
+              "profiles.append.nonOverlappingPhases.appendStartToPreprocessMs.p95Ms": {
+                "max": 100,
+                "rationale": "The single-target file-write-to-preprocess path measured 21-23 ms."
+              },
+              "profiles.append.nonOverlappingPhases.preprocessMs.p95Ms": {
+                "max": 5,
+                "rationale": "Focused projection preprocessing measured 0.3-0.4 ms."
+              },
+              "profiles.append.nonOverlappingPhases.groupToCommitMs.p95Ms": {
+                "max": 100,
+                "rationale": "Focused React scheduling measured 29-30 ms."
+              }
+            }
+          }
+        },
+        "fleet-small": {
+          "server": {
+            "memory.settled.heapUsedMiB": {
+              "max": 130,
+              "rationale": "Profiled browser-driven forced-GC settled heap was 110.2 MiB."
+            },
+            "memory.retainedHeapMiB": {
+              "max": 32,
+              "rationale": "Profiled browser-driven forced-GC retained heap was 24.1 MiB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedSourceBytes": {
+              "max": 6500000,
+              "rationale": "Profiled source charge was 5.01 MB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedFiles": {
+              "max": 24,
+              "rationale": "The fleet fixture contains 24 retained transcript files."
+            },
+            "memory.settled.knownCaches.markdownAugments.retainedBytes": {
+              "max": 33554432,
+              "rationale": "The rendered-Markdown cache has an exact 32 MiB source-byte ceiling."
+            },
+            "memory.settled.knownCaches.projectPaths.retainedBytes": {
+              "max": 8192,
+              "rationale": "Profiled project-path source charge was 5,024 bytes."
+            },
+            "memory.settled.residuals.heapUsedLessKnownCacheSourceMiB": {
+              "max": 120,
+              "rationale": "Profiled forced-GC heap less accountable cache source bytes was 105.5 MiB."
+            },
+            "profiles.serverDetail.appended.server.normalize.p95Ms": {
+              "max": 2,
+              "rationale": "Recent fleet append p95 was 0.1 ms; this broad ceiling catches full-array normalization growth before optimizing the current sub-millisecond path."
+            },
+            "profiles.serverDetail.appended.server.route.p95Ms": {
+              "max": 5,
+              "rationale": "Recent fleet append slicing and anchor-search p95 was 0.6-0.7 ms."
+            }
+          },
+          "browser": {
+            "0": {
+              "latency.warmFinalHighlight.p95Ms": {
+                "max": 900,
+                "rationale": "Profiled p95 was 510 ms and stays below the one-second concern threshold."
+              },
+              "latency.appendedLiveFinalHighlight.p95Ms": {
+                "max": 800,
+                "rationale": "Profiled p95 was 391 ms after the measured performance arc."
+              },
+              "memory.maxUsedJSHeapMiB": {
+                "max": 160,
+                "rationale": "Repeated surveyed maxima were about 111 MiB; browser heap is noisy."
+              },
+              "memory.maxJSHeapLessTranscriptApproxMiB": {
+                "max": 155,
+                "rationale": "Profiled approximate non-transcript JS heap was 103.6 MiB."
+              },
+              "transcriptCache.maxWarmBytes": {
+                "max": 0,
+                "rationale": "A zero budget must retain no warm transcript bytes."
+              },
+              "transcriptCache.maxWarmEntries": {
+                "max": 0,
+                "rationale": "A zero budget must retain no warm transcript entries."
+              },
+              "transcriptCache.maxLiveBytes": {
+                "max": 600000,
+                "rationale": "Profiled selected-session live retention was 432,888 bytes."
+              },
+              "transcriptCache.maxLiveEntries": {
+                "max": 1,
+                "rationale": "Each page retains only its selected live transcript."
+              },
+              "dom.maxNodes": {
+                "max": 960,
+                "rationale": "C2 and later consistently observed 939 nodes."
+              },
+              "dom.maxCdpNodes": {
+                "max": 12000,
+                "rationale": "Three fleet repetitions observed at most 8,607 live and detached DOM nodes."
+              },
+              "dom.maxDocuments": {
+                "max": 4,
+                "rationale": "Three fleet repetitions observed at most three live and detached documents."
+              },
+              "dom.maxEventListeners": {
+                "max": 9500,
+                "rationale": "Three fleet repetitions observed at most 7,095 event listeners."
+              },
+              "dom.maxLayoutObjects": {
+                "max": 6500,
+                "rationale": "Three fleet repetitions observed at most 4,973 layout objects."
+              },
+              "dom.maxMessageRows": {
+                "max": 16,
+                "rationale": "The fleet browser fixture renders 16 message rows."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.navigationToLoadStartMs.p95Ms": {
+                "max": 250,
+                "rationale": "Profiled p95 was 128 ms and this phase contributes at least 10% of warm final display."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.responseEndToDataReadyMs.p95Ms": {
+                "max": 180,
+                "rationale": "Profiled p95 was 89 ms and this phase contributes at least 10% of warm final display."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 500,
+                "rationale": "Profiled p95 was 314 ms and this phase dominates warm final display."
+              },
+              "profiles.append.nonOverlappingPhases.appendStartToPreprocessMs.p95Ms": {
+                "max": 200,
+                "rationale": "Leading-edge focused watch measured 59.9 ms p95; 200 ms catches restoration of the former 262 ms debounce floor."
+              },
+              "profiles.append.nonOverlappingPhases.preprocessMs.p95Ms": {
+                "max": 5,
+                "rationale": "Recent uncached fleet append preprocessing p95 was 0.5 ms; this ceiling watches projection recompilation without optimizing it prematurely."
+              },
+              "profiles.append.nonOverlappingPhases.groupToCommitMs.p95Ms": {
+                "max": 150,
+                "rationale": "Profiled p95 was 74 ms."
+              },
+              "profiles.append.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 100,
+                "rationale": "Profiled p95 was 42 ms and remains visible near the 10% boundary."
+              }
+            },
+            "24": {
+              "latency.warmFinalHighlight.p95Ms": {
+                "max": 900,
+                "rationale": "Profiled p95 was 518 ms and stays below the one-second concern threshold."
+              },
+              "latency.appendedLiveFinalHighlight.p95Ms": {
+                "max": 800,
+                "rationale": "Profiled p95 was 393 ms with transcript caching enabled."
+              },
+              "memory.maxUsedJSHeapMiB": {
+                "max": 170,
+                "rationale": "Repeated surveyed maxima were about 108 MiB; browser heap is noisy."
+              },
+              "memory.maxJSHeapLessTranscriptApproxMiB": {
+                "max": 165,
+                "rationale": "Profiled approximate non-transcript JS heap was 103.6 MiB."
+              },
+              "transcriptCache.maxWarmBytes": {
+                "max": 1500000,
+                "rationale": "The three-session ring retained 1,298,664 bytes."
+              },
+              "transcriptCache.maxWarmEntries": {
+                "max": 3,
+                "rationale": "The configured warm working set contains three sessions."
+              },
+              "transcriptCache.maxLiveBytes": {
+                "max": 600000,
+                "rationale": "Profiled selected-session live retention was 432,888 bytes."
+              },
+              "transcriptCache.maxLiveEntries": {
+                "max": 1,
+                "rationale": "Each page retains only its selected live transcript."
+              },
+              "dom.maxNodes": {
+                "max": 960,
+                "rationale": "C2 and later consistently observed 939 nodes."
+              },
+              "dom.maxCdpNodes": {
+                "max": 12000,
+                "rationale": "Three fleet repetitions observed at most 9,048 live and detached DOM nodes."
+              },
+              "dom.maxDocuments": {
+                "max": 4,
+                "rationale": "Three fleet repetitions observed at most three live and detached documents."
+              },
+              "dom.maxEventListeners": {
+                "max": 9500,
+                "rationale": "Three fleet repetitions observed at most 7,130 event listeners."
+              },
+              "dom.maxLayoutObjects": {
+                "max": 6500,
+                "rationale": "Three fleet repetitions observed at most 4,936 layout objects."
+              },
+              "dom.maxMessageRows": {
+                "max": 16,
+                "rationale": "The fleet browser fixture renders 16 message rows."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.navigationToLoadStartMs.p95Ms": {
+                "max": 250,
+                "rationale": "Two clear-host verification repetitions reached 184-187 ms while complete warm final display remained about 487 ms; this matches the cache-off navigation ceiling."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.loadStartToStateQueuedMs.p95Ms": {
+                "max": 150,
+                "rationale": "Profiled cache-hit state preparation p95 was 58 ms."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.stateQueuedToCommitMs.p95Ms": {
+                "max": 180,
+                "rationale": "Profiled p95 was 92 ms."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 550,
+                "rationale": "Profiled p95 was 357 ms and this phase dominates warm final display."
+              },
+              "profiles.append.nonOverlappingPhases.appendStartToPreprocessMs.p95Ms": {
+                "max": 200,
+                "rationale": "Leading-edge focused watch measured 59.2 ms p95; 200 ms catches restoration of the former 262 ms debounce floor."
+              },
+              "profiles.append.nonOverlappingPhases.preprocessMs.p95Ms": {
+                "max": 5,
+                "rationale": "Recent cached fleet append preprocessing p95 was 0.3 ms; this ceiling watches projection recompilation without optimizing it prematurely."
+              },
+              "profiles.append.nonOverlappingPhases.groupToCommitMs.p95Ms": {
+                "max": 150,
+                "rationale": "Profiled p95 was 76 ms."
+              },
+              "profiles.append.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 110,
+                "rationale": "Profiled p95 was 44 ms and remains visible near the 10% boundary."
+              }
+            }
+          }
+        },
+        "large-session-cache": {
+          "server": {
+            "memory.settled.heapUsedMiB": {
+              "max": 155,
+              "rationale": "Profiled browser-driven forced-GC settled heap was 130.4 MiB."
+            },
+            "memory.retainedHeapMiB": {
+              "max": 60,
+              "rationale": "Profiled browser-driven forced-GC retained heap was 44.1 MiB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedSourceBytes": {
+              "max": 22000000,
+              "rationale": "Profiled source charge was 16.91 MB."
+            },
+            "memory.settled.knownCaches.claudeTranscript.retainedFiles": {
+              "max": 8,
+              "rationale": "The large fixture contains eight retained transcript files."
+            },
+            "memory.settled.knownCaches.markdownAugments.retainedBytes": {
+              "max": 33554432,
+              "rationale": "The rendered-Markdown cache has an exact 32 MiB source-byte ceiling."
+            },
+            "memory.settled.knownCaches.projectPaths.retainedBytes": {
+              "max": 4096,
+              "rationale": "Profiled project-path source charge was 2,512 bytes."
+            },
+            "memory.settled.residuals.heapUsedLessKnownCacheSourceMiB": {
+              "max": 135,
+              "rationale": "Profiled forced-GC heap less accountable cache source bytes was 114.3 MiB."
+            },
+            "profiles.serverDetail.appended.server.normalize.p95Ms": {
+              "max": 2,
+              "rationale": "Recent large-session append p95 was 0.2 ms; this broad ceiling catches full-array normalization growth before optimizing the current path."
+            },
+            "profiles.serverDetail.appended.server.route.p95Ms": {
+              "max": 10,
+              "rationale": "Recent large-session append slicing and anchor-search p95 was 2.6-3.1 ms across three repetitions."
+            }
+          },
+          "browser": {
+            "0": {
+              "latency.warmFinalHighlight.p95Ms": {
+                "max": 1000,
+                "rationale": "Profiled p95 was 896 ms; the ratchet keeps final display below one second."
+              },
+              "latency.appendedLiveFinalHighlight.p95Ms": {
+                "max": 1000,
+                "rationale": "Profiled p95 was 689 ms; the ratchet keeps appended final display below one second."
+              },
+              "memory.maxUsedJSHeapMiB": {
+                "max": 240,
+                "rationale": "Independent surveyed batches ranged from 124 to 188 MiB; browser heap is noisy."
+              },
+              "memory.maxJSHeapLessTranscriptApproxMiB": {
+                "max": 230,
+                "rationale": "Independent surveyed approximate residuals ranged from 120 to 184 MiB."
+              },
+              "transcriptCache.maxWarmBytes": {
+                "max": 0,
+                "rationale": "A zero budget must retain no warm transcript bytes."
+              },
+              "transcriptCache.maxWarmEntries": {
+                "max": 0,
+                "rationale": "A zero budget must retain no warm transcript entries."
+              },
+              "transcriptCache.maxLiveBytes": {
+                "max": 6000000,
+                "rationale": "Profiled selected-session live retention was 4,779,694 bytes."
+              },
+              "transcriptCache.maxLiveEntries": {
+                "max": 1,
+                "rationale": "Each page retains only its selected live transcript."
+              },
+              "dom.maxNodes": {
+                "max": 960,
+                "rationale": "Profiled runs observed 943 nodes."
+              },
+              "dom.maxMessageRows": {
+                "max": 24,
+                "rationale": "The large browser fixture renders 24 message rows."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.requestToResponseStartMs.p95Ms": {
+                "max": 200,
+                "rationale": "Profiled p95 was 91 ms and this phase contributes at least 10% of warm final display."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.responseTransferMs.p95Ms": {
+                "max": 250,
+                "rationale": "Profiled p95 was 119 ms and this phase contributes at least 10% of warm final display."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.stateQueuedToCommitMs.p95Ms": {
+                "max": 450,
+                "rationale": "Profiled p95 was 300 ms."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 800,
+                "rationale": "Profiled p95 was 607 ms and this phase dominates warm final display."
+              },
+              "profiles.append.nonOverlappingPhases.appendStartToPreprocessMs.p95Ms": {
+                "max": 300,
+                "rationale": "Leading-edge focused watch measured 181.6 ms p95; 300 ms catches restoration of the former 397 ms profiled path."
+              },
+              "profiles.append.nonOverlappingPhases.preprocessMs.p95Ms": {
+                "max": 5,
+                "rationale": "Recent uncached large-session append preprocessing p95 was 0.8 ms; this ceiling watches projection recompilation without optimizing it prematurely."
+              },
+              "profiles.append.nonOverlappingPhases.groupToCommitMs.p95Ms": {
+                "max": 350,
+                "rationale": "Profiled p95 was 190 ms."
+              },
+              "profiles.append.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 130,
+                "rationale": "Profiled p95 was 64 ms and remains visible near the 10% boundary."
+              }
+            },
+            "24": {
+              "latency.warmFinalHighlight.p95Ms": {
+                "max": 1000,
+                "rationale": "Profiled p95 was 780 ms; the ratchet keeps final display below one second."
+              },
+              "latency.appendedLiveFinalHighlight.p95Ms": {
+                "max": 1000,
+                "rationale": "Profiled p95 was 696 ms; the ratchet keeps appended final display below one second."
+              },
+              "memory.maxUsedJSHeapMiB": {
+                "max": 220,
+                "rationale": "Independent surveyed batches ranged from 133 to 157 MiB; browser heap is noisy."
+              },
+              "memory.maxJSHeapLessTranscriptApproxMiB": {
+                "max": 205,
+                "rationale": "Independent surveyed approximate residuals ranged from 119 to 143 MiB."
+              },
+              "transcriptCache.maxWarmBytes": {
+                "max": 16000000,
+                "rationale": "The three-session ring retained about 14.34 MB."
+              },
+              "transcriptCache.maxWarmEntries": {
+                "max": 3,
+                "rationale": "The configured warm working set contains three sessions."
+              },
+              "transcriptCache.maxLiveBytes": {
+                "max": 6000000,
+                "rationale": "Profiled selected-session live retention was 4,779,694 bytes."
+              },
+              "transcriptCache.maxLiveEntries": {
+                "max": 1,
+                "rationale": "Each page retains only its selected live transcript."
+              },
+              "dom.maxNodes": {
+                "max": 960,
+                "rationale": "Profiled runs observed 943 nodes."
+              },
+              "dom.maxMessageRows": {
+                "max": 24,
+                "rationale": "The large browser fixture renders 24 message rows."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.navigationToLoadStartMs.p95Ms": {
+                "max": 220,
+                "rationale": "Profiled p95 was 105 ms."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.stateQueuedToCommitMs.p95Ms": {
+                "max": 450,
+                "rationale": "Profiled p95 was 307 ms."
+              },
+              "profiles.warmNavigation.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 800,
+                "rationale": "Profiled p95 was 631 ms and this phase dominates warm final display."
+              },
+              "profiles.append.nonOverlappingPhases.appendStartToPreprocessMs.p95Ms": {
+                "max": 300,
+                "rationale": "Leading-edge focused watch measured 175.9 ms p95; 300 ms catches restoration of the former 396 ms profiled path."
+              },
+              "profiles.append.nonOverlappingPhases.preprocessMs.p95Ms": {
+                "max": 5,
+                "rationale": "Recent cached large-session append preprocessing p95 was 0.5 ms; this ceiling watches projection recompilation without optimizing it prematurely."
+              },
+              "profiles.append.nonOverlappingPhases.groupToCommitMs.p95Ms": {
+                "max": 350,
+                "rationale": "Profiled p95 was 212 ms."
+              },
+              "profiles.append.nonOverlappingPhases.commitToReadableTailMs.p95Ms": {
+                "max": 140,
+                "rationale": "Profiled p95 was 67 ms and remains visible near the 10% boundary."
+              }
+            }
+          }
+        }
+      }
+    },
+    "built-client": {
+      "scenarios": {
+        "fleet-small": {
+          "server": {
+            "runtime.serverStartupToSelectedSessionReadableMs": {
+              "max": 2500,
+              "rationale": "Three Node 20 production-process repetitions measured 1.18-1.25 s; this broad ceiling covers startup variance while requiring an actually readable selected transcript."
+            },
+            "latency.builtClientColdTail.p95Ms": {
+              "max": 1500,
+              "rationale": "Three Node 20 production-bundle repetitions measured 776-822 ms from navigation to independently marked readable text."
+            }
+          }
+        },
+        "large-session-cache": {
+          "server": {
+            "runtime.serverStartupToSelectedSessionReadableMs": {
+              "max": 3000,
+              "rationale": "Three Node 20 production-process repetitions measured 1.24-1.26 s with the large transcript fixture."
+            },
+            "latency.builtClientColdTail.p95Ms": {
+              "max": 2500,
+              "rationale": "Three Node 20 production-bundle repetitions measured 1.16-1.19 s with independently marked readable text."
+            }
+          }
+        }
+      }
+    },
+    "specialized": {
+      "scenarios": {
+        "specialized-contracts": {
+          "server": {
+            "runtime.ownedProviderServerStartupMs": {
+              "max": 10000,
+              "rationale": "Three local out-of-process provider-runtime repetitions had a 2.64 s median startup; this portable ceiling leaves substantial CI runner margin."
+            },
+            "runtime.publicShareServerStartupMs": {
+              "max": 10000,
+              "rationale": "Three local public-share repetitions had a 2.63 s median startup; this portable ceiling leaves substantial CI runner margin."
+            },
+            "latency.providerFirstTextDelta.p95Ms": {
+              "max": 500,
+              "rationale": "Three deterministic 24-chunk repetitions measured 9.0 ms median time to first text delta."
+            },
+            "latency.providerFinalEnriched.p95Ms": {
+              "max": 1500,
+              "rationale": "Three complete raw-to-enriched provider streams measured 118.8 ms median final enrichment."
+            },
+            "latency.idleOwnershipRelease.p95Ms": {
+              "max": 4000,
+              "rationale": "The one-second time-compressed deadline released ownership in 1.048 s across the median of three repetitions."
+            },
+            "latency.publicShareMetadata.p95Ms": {
+              "max": 250,
+              "rationale": "Three frozen-share chunk metadata requests measured 2.0 ms at the aggregate median."
+            },
+            "latency.publicShareHerdReadableText.p95Ms": {
+              "max": 1500,
+              "rationale": "Three eight-client full-response herds exposed their transcript marker in 69.8 ms aggregate p95."
+            },
+            "responseMiB.publicShareHerd": {
+              "max": 16,
+              "rationale": "Eight legacy full-share responses totalled 13.107 MiB in each repetition for the pinned 64 KiB fixture."
+            },
+            "memory.settled.heapUsedMiB": {
+              "max": 160,
+              "rationale": "Three public-share herd repetitions settled at 90.5 MiB aggregate after forced GC."
+            },
+            "memory.retainedHeapMiB": {
+              "max": 60,
+              "rationale": "Three public-share herd repetitions retained 3.7 MiB aggregate after forced GC; the broad ceiling covers runtime variance while catching unbounded retention."
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,3 +1,7 @@
+import {
+  GLOSSARY_TOOLTIPS_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ThinkingText } from "../../components/ThinkingText";
@@ -18,7 +22,15 @@ import {
 import { estimateHoverCardPromptLines } from "../../components/sessionHoverCardLines";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useFloatingActionButtonEnabled } from "../../hooks/useFloatingActionButtonEnabled";
-import { FONT_SIZES, useFontSize } from "../../hooks/useFontSize";
+import {
+  UI_FONT_SCALE_MAX_PERCENT,
+  UI_FONT_SCALE_MIN_PERCENT,
+  UI_FONT_SCALE_PRESETS,
+  UI_FONT_SCALE_SLIDER_MAX_PERCENT,
+  UI_FONT_SCALE_SLIDER_MIN_PERCENT,
+  UI_FONT_SCALE_STEP_PERCENT,
+  useFontSize,
+} from "../../hooks/useFontSize";
 import { useFunPhrases } from "../../hooks/useFunPhrases";
 import {
   DEFAULT_GENERATED_TITLE_LENGTH,
@@ -61,6 +73,9 @@ import {
   OUTPUT_VERTICAL_SPACING_MAX_PERCENT,
   OUTPUT_VERTICAL_SPACING_MIN_PERCENT,
   OUTPUT_VERTICAL_SPACING_STEP_PERCENT,
+  USER_TURN_FONT_SIZE_OFFSET_MAX_PX,
+  USER_TURN_FONT_SIZE_OFFSET_MIN_PX,
+  USER_TURN_FONT_SIZE_OFFSET_STEP_PX,
   useOutputAppearance,
 } from "../../hooks/useOutputAppearance";
 import {
@@ -80,15 +95,19 @@ import {
   useSettingsIconStyle,
 } from "../../hooks/useSettingsIconStyle";
 import { useSidebarDuplicateHiding } from "../../hooks/useSidebarDuplicateHiding";
+import {
+  SIDEBAR_SPACINGS,
+  useSidebarSpacing,
+} from "../../hooks/useSidebarSpacing";
 import { TAB_SIZES, useTabSize } from "../../hooks/useTabSize";
 import { useTabTitleActivityPreference } from "../../hooks/useTabTitleActivityPreference";
 import { THEMES, useTheme } from "../../hooks/useTheme";
 import { SUPPORTED_LOCALES, useI18n } from "../../i18n";
 import {
-  getFontSizeLabel,
   getLocaleLabel,
   getOutputFixedFontLabel,
   getOutputProseFontLabel,
+  getSidebarSpacingLabel,
   getTabSizeLabel,
   getThemeLabel,
 } from "../../i18n-settings";
@@ -98,6 +117,7 @@ import {
 } from "./SettingsCategoryIcons";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
+import { SelectionActionButton } from "../../components/ui/SelectionActionCluster";
 import {
   DEFAULT_TOOLTIP_DELAY_MS,
   TOOLTIP_DELAY_MAX_MS,
@@ -106,6 +126,9 @@ import {
   useTooltipAppearance,
 } from "../../hooks/useTooltipAppearance";
 import { useWiderConversationActivityPreviews } from "../../hooks/useWiderConversationActivityPreviews";
+import { useSelectionActionPreferences } from "../../hooks/useSelectionActionPreferences";
+import { useGlossaryHints } from "../../hooks/useGlossaryHints";
+import { useVersion } from "../../hooks/useVersion";
 
 const OUTPUT_INLINE_MATH_SAMPLE = "$E=mc^2$";
 
@@ -168,10 +191,12 @@ export function AppearanceSettings() {
   useSettingsPaneTitle(t("appearanceSectionTitle"));
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
-  const { fontSize, setFontSize } = useFontSize();
+  const { fontSizePercent, setFontSizePercent } = useFontSize();
+  const { sidebarSpacing, setSidebarSpacing } = useSidebarSpacing();
   const {
     outputFont,
     outputUiFont,
+    userTurnFontSizeOffsetPx,
     outputFontSizePx,
     outputFixedFont,
     outputFixedFontSizeOffsetPx,
@@ -182,6 +207,7 @@ export function AppearanceSettings() {
     outputToolPreviewLineCount,
     setOutputFont,
     setOutputUiFont,
+    setUserTurnFontSizeOffsetPx,
     setOutputFontSizePx,
     setOutputFixedFont,
     setOutputFixedFontSizeOffsetPx,
@@ -198,6 +224,12 @@ export function AppearanceSettings() {
     widerConversationActivityPreviews,
     setWiderConversationActivityPreviews,
   } = useWiderConversationActivityPreviews();
+  const { glossaryHintsEnabled, setGlossaryHintsEnabled } = useGlossaryHints();
+  const { version: versionInfo } = useVersion();
+  const glossaryHintsSupported = serverHasCapability(
+    versionInfo,
+    GLOSSARY_TOOLTIPS_CAPABILITY,
+  );
   const { hoverCardMaxHeightPx, setHoverCardMaxHeightPx } =
     useHoverCardAppearance();
   const { tooltipMode, tooltipDelayMs, setTooltipMode, setTooltipDelayMs } =
@@ -250,6 +282,18 @@ export function AppearanceSettings() {
   } = useInlineMedia();
   const { quoteReplyButtonMode, setQuoteReplyButtonMode } =
     useQuoteReplyButtonMode();
+  const {
+    selectionQuoteActionEnabled,
+    setSelectionQuoteActionEnabled,
+    selectionTextCopyActionEnabled,
+    setSelectionTextCopyActionEnabled,
+    selectionSourceCopyActionEnabled,
+    setSelectionSourceCopyActionEnabled,
+    selectionRichCopyActionEnabled,
+    setSelectionRichCopyActionEnabled,
+    selectionNewSessionActionEnabled,
+    setSelectionNewSessionActionEnabled,
+  } = useSelectionActionPreferences();
   const { funPhrasesEnabled, setFunPhrasesEnabled } = useFunPhrases();
   const { floatingActionButtonEnabled, setFloatingActionButtonEnabled } =
     useFloatingActionButtonEnabled();
@@ -268,9 +312,11 @@ export function AppearanceSettings() {
   // restore cannot drift apart; a new setting is one row here.
   const undoEntries = [
     undoEntry(locale, setLocale),
-    undoEntry(fontSize, setFontSize),
+    undoEntry(fontSizePercent, setFontSizePercent),
+    undoEntry(sidebarSpacing, setSidebarSpacing),
     undoEntry(outputFont, setOutputFont),
     undoEntry(outputUiFont, setOutputUiFont),
+    undoEntry(userTurnFontSizeOffsetPx, setUserTurnFontSizeOffsetPx),
     undoEntry(outputFontSizePx, setOutputFontSizePx, (value) =>
       setOutputFontSizeDraft(formatNumberSetting(value)),
     ),
@@ -312,6 +358,7 @@ export function AppearanceSettings() {
       widerConversationActivityPreviews,
       setWiderConversationActivityPreviews,
     ),
+    undoEntry(glossaryHintsEnabled, setGlossaryHintsEnabled),
     undoEntry(tooltipDelayMs, setTooltipDelayMs),
     undoEntry(tooltipMode, setTooltipMode),
     undoEntry(hoverCardMaxHeightPx, setHoverCardMaxHeightPx, (value) =>
@@ -326,6 +373,23 @@ export function AppearanceSettings() {
     undoEntry(inlineMediaExpandedByDefault, setInlineMediaExpandedByDefault),
     undoEntry(compactMultiImageGalleries, setCompactMultiImageGalleries),
     undoEntry(quoteReplyButtonMode, setQuoteReplyButtonMode),
+    undoEntry(selectionQuoteActionEnabled, setSelectionQuoteActionEnabled),
+    undoEntry(
+      selectionTextCopyActionEnabled,
+      setSelectionTextCopyActionEnabled,
+    ),
+    undoEntry(
+      selectionSourceCopyActionEnabled,
+      setSelectionSourceCopyActionEnabled,
+    ),
+    undoEntry(
+      selectionRichCopyActionEnabled,
+      setSelectionRichCopyActionEnabled,
+    ),
+    undoEntry(
+      selectionNewSessionActionEnabled,
+      setSelectionNewSessionActionEnabled,
+    ),
     undoEntry(funPhrasesEnabled, setFunPhrasesEnabled),
     undoEntry(floatingActionButtonEnabled, setFloatingActionButtonEnabled),
     undoEntry(sidebarDuplicateHidingEnabled, setSidebarDuplicateHidingEnabled),
@@ -479,6 +543,7 @@ export function AppearanceSettings() {
         "typography",
         "text size",
         "line spacing",
+        "sidebar layout density compact comfortable spacing",
         "generated titles",
         "conversation view activity previews thinking",
       ]}
@@ -605,6 +670,35 @@ export function AppearanceSettings() {
             >
               ×
             </button>
+          </div>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSidebarSpacingTitle")}
+          description={t("appearanceSidebarSpacingDescription")}
+          keywords={["sidebar spacing", "layout", "compact", "comfortable"]}
+          valueText={getSidebarSpacingLabel(sidebarSpacing, translate)}
+          className="settings-item--wide-control"
+        >
+          <div
+            className="font-size-selector"
+            role="radiogroup"
+            aria-label={t("appearanceSidebarSpacingTitle")}
+          >
+            {SIDEBAR_SPACINGS.map((spacing) => {
+              const selected = sidebarSpacing === spacing;
+              return (
+                <button
+                  key={spacing}
+                  type="button"
+                  className={`font-size-option ${selected ? "active" : ""}`}
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setSidebarSpacing(spacing)}
+                >
+                  {getSidebarSpacingLabel(spacing, translate)}
+                </button>
+              );
+            })}
           </div>
         </SettingsItem>
         <SettingsItem
@@ -754,6 +848,24 @@ export function AppearanceSettings() {
             </div>
           )}
         </div>
+        {glossaryHintsSupported && (
+          <SettingsItem
+            label={t("appearanceGlossaryHintsTitle")}
+            description={t("appearanceGlossaryHintsDescription")}
+          >
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={glossaryHintsEnabled}
+                onChange={(event) =>
+                  setGlossaryHintsEnabled(event.target.checked)
+                }
+                aria-label={t("appearanceGlossaryHintsTitle")}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </SettingsItem>
+        )}
         <SettingsItem
           label={t("appearanceTooltipDelayTitle")}
           description={t("appearanceTooltipDelayDescription")}
@@ -927,6 +1039,117 @@ export function AppearanceSettings() {
           </div>
         </SettingsItem>
         <SettingsItem
+          label={t("appearanceSelectionQuoteActionTitle")}
+          description={t("appearanceSelectionQuoteActionDescription")}
+        >
+          <SelectionActionButton
+            kind="quote"
+            label={t("sessionQuoteSelection")}
+            specimen
+          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceSelectionQuoteActionTitle")}
+              checked={selectionQuoteActionEnabled}
+              onChange={(event) =>
+                setSelectionQuoteActionEnabled(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSelectionTextCopyActionTitle" as never)}
+          description={t(
+            "appearanceSelectionTextCopyActionDescription" as never,
+          )}
+        >
+          <SelectionActionButton
+            kind="text"
+            label={t("sessionCopySelectionText" as never)}
+            specimen
+          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceSelectionTextCopyActionTitle" as never)}
+              checked={selectionTextCopyActionEnabled}
+              onChange={(event) =>
+                setSelectionTextCopyActionEnabled(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSelectionSourceCopyActionTitle")}
+          description={t("appearanceSelectionSourceCopyActionDescription")}
+        >
+          <SelectionActionButton
+            kind="source"
+            label={t("sessionCopySelectionSource")}
+            specimen
+          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceSelectionSourceCopyActionTitle")}
+              checked={selectionSourceCopyActionEnabled}
+              onChange={(event) =>
+                setSelectionSourceCopyActionEnabled(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSelectionRichCopyActionTitle")}
+          description={t("appearanceSelectionRichCopyActionDescription")}
+        >
+          <SelectionActionButton
+            kind="rich"
+            label={t("sessionCopySelectionRich")}
+            specimen
+          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t("appearanceSelectionRichCopyActionTitle")}
+              checked={selectionRichCopyActionEnabled}
+              onChange={(event) =>
+                setSelectionRichCopyActionEnabled(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceSelectionNewSessionActionTitle" as never)}
+          description={t(
+            "appearanceSelectionNewSessionActionDescription" as never,
+          )}
+        >
+          <SelectionActionButton
+            kind="newSession"
+            label={t("sessionNewSessionFromSelection" as never)}
+            specimen
+          />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              aria-label={t(
+                "appearanceSelectionNewSessionActionTitle" as never,
+              )}
+              checked={selectionNewSessionActionEnabled}
+              onChange={(event) =>
+                setSelectionNewSessionActionEnabled(event.target.checked)
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
           label={t("appearanceFunPhrasesTitle")}
           description={t("appearanceFunPhrasesDescription")}
         >
@@ -1034,24 +1257,55 @@ export function AppearanceSettings() {
                   </div>
                 </div>
 
-                <div className="output-appearance-control">
+                <label
+                  className="output-appearance-control"
+                  htmlFor="ui-font-scale"
+                >
                   <span className="output-appearance-label">
                     {t("appearanceFontSizeTitle")}
                   </span>
-                  <div className="font-size-selector output-font-selector">
-                    {FONT_SIZES.map((size) => (
-                      <button
-                        key={size}
-                        type="button"
-                        className={`font-size-option ${fontSize === size ? "active" : ""}`}
-                        onClick={() => setFontSize(size)}
-                      >
-                        {getFontSizeLabel(size, translate)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+                  <CommittedRangeNumberInput
+                    id="ui-font-scale"
+                    min={UI_FONT_SCALE_SLIDER_MIN_PERCENT}
+                    max={UI_FONT_SCALE_SLIDER_MAX_PERCENT}
+                    numberMin={UI_FONT_SCALE_MIN_PERCENT}
+                    numberMax={UI_FONT_SCALE_MAX_PERCENT}
+                    step={UI_FONT_SCALE_STEP_PERCENT}
+                    value={fontSizePercent}
+                    unit="%"
+                    list="ui-font-scale-presets"
+                    ariaLabel={t("appearanceFontSizeTitle")}
+                    snapTextToStep={false}
+                    onCommit={setFontSizePercent}
+                  />
+                </label>
+                <datalist id="ui-font-scale-presets">
+                  {UI_FONT_SCALE_PRESETS.map((percent) => (
+                    <option
+                      key={percent}
+                      value={percent}
+                      label={`${percent}%`}
+                    />
+                  ))}
+                </datalist>
+                <label
+                  className="output-appearance-control"
+                  htmlFor="user-turn-font-size-offset"
+                >
+                  <span className="output-appearance-label">
+                    {t("appearanceUserTurnSizeOffsetLabel")}
+                  </span>
+                  <CommittedRangeNumberInput
+                    id="user-turn-font-size-offset"
+                    min={USER_TURN_FONT_SIZE_OFFSET_MIN_PX}
+                    max={USER_TURN_FONT_SIZE_OFFSET_MAX_PX}
+                    step={USER_TURN_FONT_SIZE_OFFSET_STEP_PX}
+                    value={userTurnFontSizeOffsetPx}
+                    unit="px"
+                    ariaLabel={t("appearanceUserTurnSizeOffsetLabel")}
+                    onCommit={setUserTurnFontSizeOffsetPx}
+                  />
+                </label>
                 <div className="output-appearance-control">
                   <span className="output-appearance-label">
                     {t("appearanceOutputFontLabel")}
@@ -1441,6 +1695,11 @@ export function AppearanceSettings() {
                     </div>
                     <div className="output-preview-ui-composer">
                       Composer: type a message to the agent…
+                    </div>
+                    <div className="message message-user-prompt">
+                      <div className="text-block">
+                        {t("appearanceUserTurnPreview")}
+                      </div>
                     </div>
                     <div className="output-preview-ui-caption">
                       Caption · updated 2m ago · 3 files

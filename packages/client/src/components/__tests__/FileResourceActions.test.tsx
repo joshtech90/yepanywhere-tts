@@ -1,24 +1,36 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
-import { FilePathContextMenu } from "../FileResourceActions";
+import {
+  FilePathContextMenu,
+  ResourceContextMenu,
+} from "../FileResourceActions";
 
-/** The two global classes this menu used before it owned a CSS Module. */
+/** Global class names forbidden by this component's CSS Module ownership. */
 const REMOVED_LEGACY_CLASSES = [
   "file-path-context-overlay",
   "file-path-context-menu",
 ];
 
-function renderMenu(props: Partial<
-  Parameters<typeof FilePathContextMenu>[0]
-> = {}) {
+function renderMenu(
+  props: Partial<Parameters<typeof FilePathContextMenu>[0]> = {},
+) {
   const onClose = vi.fn();
   const handlers = {
+    onCopyAbsolutePath: vi.fn(),
     onCopyContents: vi.fn(),
-    onCopyPath: vi.fn(),
-    onCopyUrl: vi.fn(),
+    onCopyProjectRelativePath: vi.fn(),
+    onCopyViewerLink: vi.fn(),
+    onOpen: vi.fn(),
+    onOpenPreview: vi.fn(),
+    onOpenSource: vi.fn(),
     onStartNewSession: vi.fn(),
-    onView: vi.fn(),
   };
   render(
     <I18nProvider>
@@ -39,7 +51,10 @@ function overlay() {
 }
 
 describe("FilePathContextMenu", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it("portals the overlay and menu directly into the body", () => {
     renderMenu();
@@ -49,40 +64,125 @@ describe("FilePathContextMenu", () => {
     expect(overlay().parentElement).toBe(document.body);
   });
 
-  it("renders all five items in order when every action is available", () => {
+  it("keeps copy actions flat while open uses a touch-selectable panel", () => {
     renderMenu();
 
     expect(
-      screen
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
     ).toEqual([
-      "View",
+      "Open›",
       "New session",
-      "Copy URL",
-      "Copy path",
+      "Copy project-relative path",
+      "Copy absolute file path",
+      "Copy viewer link",
+      "Copy contents",
+    ]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["‹Back", "Source", "Preview"]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Back" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual([
+      "Open›",
+      "New session",
+      "Copy project-relative path",
+      "Copy absolute file path",
+      "Copy viewer link",
       "Copy contents",
     ]);
   });
 
+  it("adds capability-shaped image actions without file-only entries", () => {
+    const onCopyImage = vi.fn();
+    const onDownload = vi.fn();
+    render(
+      <I18nProvider>
+        <ResourceContextMenu
+          x={10}
+          y={10}
+          canStartNewSession={false}
+          dismissLabel="Dismiss image actions"
+          onClose={vi.fn()}
+          onCopyImage={onCopyImage}
+          onDownload={onDownload}
+          onOpen={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Open", "Download", "Copy image"]);
+    expect(
+      screen.getByRole("button", { name: "Dismiss image actions" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy image" }));
+    expect(onCopyImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens adjacent submenus on hover-capable pointers", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true }) as MediaQueryList),
+    );
+    renderMenu();
+
+    const rootMenu = screen.getByRole("menu");
+    const openItem = within(rootMenu).getByRole("menuitem", { name: "Open" });
+    fireEvent.mouseEnter(openItem);
+
+    expect(document.body.contains(rootMenu)).toBe(true);
+    expect(openItem.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      within(screen.getByRole("menu", { name: "Open" }))
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Source", "Preview"]);
+    expect(screen.queryByRole("menuitem", { name: "Back" })).toBeNull();
+
+    fireEvent.mouseEnter(
+      within(rootMenu).getByRole("menuitem", {
+        name: "Copy project-relative path",
+      }),
+    );
+    expect(screen.queryByRole("menu", { name: "Open" })).toBeNull();
+    expect(document.body.contains(rootMenu)).toBe(true);
+  });
+
   it("omits the conditional items when their actions are unavailable", () => {
     renderMenu({
-      canCopyContents: false,
       canStartNewSession: false,
-      onCopyUrl: undefined,
+      onCopyAbsolutePath: undefined,
+      onCopyContents: undefined,
+      onCopyProjectRelativePath: undefined,
+      onCopyViewerLink: undefined,
+      onOpenPreview: undefined,
+      onOpenSource: undefined,
     });
 
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["View", "Copy path"]);
+    ).toEqual(["Open"]);
   });
 
-  it("omits an item whose handler is missing even when it is enabled", () => {
-    renderMenu({ onCopyContents: undefined, onStartNewSession: undefined });
+  it("uses an unclassified file-path label when no stronger path is known", () => {
+    renderMenu({
+      onCopyAbsolutePath: undefined,
+      onCopyContents: undefined,
+      onCopyFilePath: vi.fn(),
+      onCopyProjectRelativePath: undefined,
+      onCopyViewerLink: undefined,
+      onStartNewSession: undefined,
+    });
 
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["View", "Copy URL", "Copy path"]);
+    ).toEqual(["Open›", "Copy file path"]);
   });
 
   it("runs the selected action and then closes", () => {
@@ -90,10 +190,12 @@ describe("FilePathContextMenu", () => {
     const sequence: string[] = [];
     renderMenu({
       onClose: () => sequence.push("close"),
-      onCopyPath: () => sequence.push("copyPath"),
+      onCopyProjectRelativePath: () => sequence.push("copyPath"),
     });
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Copy path" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Copy project-relative path" }),
+    );
 
     expect(sequence).toEqual(["copyPath", "close"]);
   });
@@ -115,8 +217,8 @@ describe("FilePathContextMenu", () => {
     renderMenu({ x: 9999, y: 9999 });
 
     const menu = screen.getByRole("menu");
-    expect(menu.style.left).toBe(`${window.innerWidth - 190}px`);
-    expect(menu.style.top).toBe(`${window.innerHeight - 180}px`);
+    expect(menu.style.left).toBe(`${window.innerWidth - 230}px`);
+    expect(menu.style.top).toBe(`${window.innerHeight - 289}px`);
   });
 
   it("keeps the inline position off the viewport edges", () => {
@@ -125,6 +227,23 @@ describe("FilePathContextMenu", () => {
     const menu = screen.getByRole("menu");
     expect(menu.style.left).toBe("8px");
     expect(menu.style.top).toBe("8px");
+  });
+
+  it("opens a hover flyout to the left when the right edge is constrained", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true }) as MediaQueryList),
+    );
+    renderMenu({ x: 9999, y: 10 });
+
+    const rootMenu = screen.getByRole("menu");
+    fireEvent.mouseEnter(
+      within(rootMenu).getByRole("menuitem", { name: "Open" }),
+    );
+
+    expect(screen.getByRole("menu", { name: "Open" }).style.left).toBe(
+      `${window.innerWidth - 448}px`,
+    );
   });
 
   it("styles both portal nodes from the module, not the removed globals", () => {

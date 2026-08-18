@@ -8,8 +8,10 @@ import type {
   GetSessionSummaryOptions,
   ISessionReader,
   LoadedSession,
+  RecoveredSessionLaunchSettings,
   SessionListSummary,
 } from "./types.js";
+import { sortProviderChildSessions } from "./types.js";
 
 /**
  * One logical provider reader backed by multiple authoritative session roots.
@@ -75,6 +77,16 @@ export class MergedSessionReader implements ISessionReader {
         projectId,
       );
       if (summary) return summary;
+    }
+    return null;
+  }
+
+  async getRecoveredLaunchSettings(
+    sessionId: string,
+  ): Promise<RecoveredSessionLaunchSettings | null> {
+    for (const reader of this.readers) {
+      const settings = await reader.getRecoveredLaunchSettings?.(sessionId);
+      if (settings) return settings;
     }
     return null;
   }
@@ -158,7 +170,28 @@ export class MergedSessionReader implements ISessionReader {
         if (!byId.has(child.id)) byId.set(child.id, child);
       }
     }
-    return [...byId.values()];
+    return sortProviderChildSessions([...byId.values()]);
+  }
+
+  listAcceptedProviderChildSessions(
+    parentSessionId: string,
+  ): ProviderChildSessionSummary[] | undefined {
+    const byId = new Map<string, ProviderChildSessionSummary>();
+    let sawAccepted = false;
+    for (const reader of this.readers) {
+      if (!reader.listProviderChildSessions) continue;
+      if (!reader.listAcceptedProviderChildSessions) return undefined;
+      const children =
+        reader.listAcceptedProviderChildSessions(parentSessionId);
+      if (children === undefined) continue;
+      sawAccepted = true;
+      for (const child of children) {
+        if (!byId.has(child.id)) byId.set(child.id, child);
+      }
+    }
+    return sawAccepted
+      ? sortProviderChildSessions([...byId.values()])
+      : undefined;
   }
 
   async getSessionFilePath(sessionId: string): Promise<string | null> {

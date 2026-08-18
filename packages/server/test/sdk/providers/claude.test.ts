@@ -2,15 +2,28 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ClaudeProvider,
   claudeProvider,
+  evaluateClaudeSessionOptionsUpdate,
   formatClaudeLoginCommand,
   getClaudeAutoCompactOverrideEnv,
+  getClaudeSessionLaunchOptions,
   mergeClaudeModels,
   normalizeClaudeLaunchModel,
   probeClaudeControlLiveness,
   resolveClaudeSdkNativeExecutable,
   withClaudeGoalAlias,
 } from "../../../src/sdk/providers/claude.js";
+import { resolveProviderSessionOptions } from "../../../src/sdk/providers/types.js";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
+
+class ExposedClaudeProvider extends ClaudeProvider {
+  getLaunchEnvironment() {
+    return this.getEnv();
+  }
+
+  getLaunchToolOptions() {
+    return this.getDisallowedToolOptions();
+  }
+}
 
 describe("normalizeClaudeLaunchModel", () => {
   it("keeps Opus on the stable alias and retains Sonnet's extended spelling", () => {
@@ -72,6 +85,102 @@ describe("Claude auto-compaction launch environment", () => {
     expect(() => getClaudeAutoCompactOverrideEnv(percent)).toThrow(
       "integer from 1 to 100",
     );
+  });
+});
+
+describe("Claude subagent nesting launch environment", () => {
+  it("uses YA's default, supports unset, and preserves an operator value", () => {
+    const previous = process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    try {
+      const provider = new ExposedClaudeProvider();
+      expect(provider.getLaunchEnvironment()).toMatchObject({
+        CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1",
+      });
+
+      provider.setSubagentMaxDepthGetter(() => 4);
+      expect(provider.getLaunchEnvironment()).toMatchObject({
+        CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "4",
+      });
+
+      provider.setSubagentMaxDepthGetter(() => null);
+      expect(provider.getLaunchEnvironment()).not.toHaveProperty(
+        "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+      );
+
+      process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = "3";
+      provider.setSubagentMaxDepthGetter(() => 0);
+      expect(provider.getLaunchEnvironment()).toMatchObject({
+        CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "3",
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+      } else {
+        process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = previous;
+      }
+    }
+  });
+});
+
+describe("Claude tool availability", () => {
+  it("leaves plan-mode tools available for regular Claude", () => {
+    const provider = new ExposedClaudeProvider();
+
+    expect(provider.getLaunchToolOptions()).toEqual({});
+  });
+});
+
+describe("Claude provider-owned generation options", () => {
+  it("explicitly disables generated titles, recaps, progress, and suggestions by default", () => {
+    expect(getClaudeSessionLaunchOptions()).toEqual({
+      resolved: {
+        automaticTitle: false,
+        automaticRecaps: false,
+        agentProgressSummaries: false,
+        promptSuggestions: false,
+      },
+      sdk: {
+        title: "Yep Anywhere Session",
+        promptSuggestions: false,
+        agentProgressSummaries: false,
+      },
+    });
+  });
+
+  it("allows explicit launch-time opt-ins except unsupported native recaps", () => {
+    expect(
+      getClaudeSessionLaunchOptions({
+        automaticTitle: true,
+        agentProgressSummaries: true,
+        promptSuggestions: true,
+      }).sdk,
+    ).toEqual({
+      title: undefined,
+      promptSuggestions: true,
+      agentProgressSummaries: true,
+    });
+    expect(() =>
+      getClaudeSessionLaunchOptions({ automaticRecaps: true }),
+    ).toThrow("does not support provider-native automatic recaps");
+  });
+
+  it("reports launch-only changes and intrinsically absent recaps", () => {
+    const launched = resolveProviderSessionOptions();
+    expect(
+      evaluateClaudeSessionOptionsUpdate(launched, {
+        automaticTitle: false,
+        automaticRecaps: false,
+        agentProgressSummaries: true,
+      }),
+    ).toMatchObject({
+      automaticTitle: { requested: false, status: "applied" },
+      automaticRecaps: { requested: false, status: "inactive" },
+      agentProgressSummaries: {
+        requested: true,
+        status: "restart-required",
+      },
+    });
   });
 });
 

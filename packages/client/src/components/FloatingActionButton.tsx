@@ -13,12 +13,16 @@ import { useDraftPersistence } from "../hooks/useDraftPersistence";
 import { createFabDraftKey } from "../hooks/useDrafts";
 import { useFabVisibility } from "../hooks/useFabVisibility";
 import { useFloatingActionButtonEnabled } from "../hooks/useFloatingActionButtonEnabled";
-import { setRecentProjectId } from "../hooks/useRecentProject";
+import {
+  extractProjectIdFromPath,
+  setRecentProjectId,
+} from "../hooks/useRecentProject";
 import { setNewSessionPrefill } from "../lib/newSessionPrefill";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { generateUUID } from "../lib/uuid";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
+import { focusComposerForSpeechTransition } from "../lib/speechComposerFocus";
 import {
   clearSpeechInsertionRangeReplacement,
   createSpeechInsertionRange,
@@ -26,13 +30,15 @@ import {
   getSpeechInterimDisplayTranscript,
   getSpeechTranscriptInsertionParts,
   getSpeechTranscriptReplacementParts,
+  getSpeechVisibleDraftText,
   mapSpeechInsertionRangeThroughEdit,
-  retargetSpeechInsertionRangeReplacement,
+  retargetSpeechInsertionRange,
   type SpeechInsertionRange,
 } from "../lib/speechRecognition";
 import {
   commitSpeechTranscript,
   hasNonWhitespaceEdit,
+  type PendingSpeechRetarget,
   type PendingTextareaSelectionRestore,
 } from "../lib/speechDraftTransaction";
 import type {
@@ -42,6 +48,7 @@ import type {
 import { ProviderBadge } from "./ProviderBadge";
 import {
   VoiceInputButton,
+  type SpeechCycleSettlement,
   type SpeechPendingKind,
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
@@ -98,9 +105,12 @@ export function FloatingActionButton() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [message, setMessage, draftControls] = useDraftPersistence(fabDraftKey);
   const [interimTranscript, setInterimTranscript] = useState("");
+  const interimTranscriptRef = useRef(interimTranscript);
+  interimTranscriptRef.current = interimTranscript;
   const [speechPending, setSpeechPending] = useState<SpeechPendingKind | null>(
     null,
   );
+  const speechPendingRef = useRef<SpeechPendingKind | null>(null);
   const [, setSpeechPreviewRevision] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
@@ -110,7 +120,9 @@ export function FloatingActionButton() {
   const speechInsertionRangesRef = useRef<Map<string, SpeechInsertionRange>>(
     new Map(),
   );
+  const pendingSpeechRetargetRef = useRef<PendingSpeechRetarget | null>(null);
   const pendingSpeechFinalRef = useRef<PendingSpeechFinal | null>(null);
+  const pendingSpeechDeliveryRef = useRef<string | null>(null);
   // True once the user manually edits (non-whitespace) during the active mic
   // transaction; holds an automatic Smart Turn endpoint send. Speech-inserted
   // finals go through setDraft (not onChange) and never set this.
@@ -191,9 +203,22 @@ export function FloatingActionButton() {
 
   const handleSubmit = useCallback(
     (messageOverride?: unknown) => {
-      const trimmed = (
-        typeof messageOverride === "string" ? messageOverride : message
-      ).trim();
+      const override =
+        typeof messageOverride === "string" ? messageOverride : undefined;
+      const voice = voiceButtonRef.current;
+      if (
+        override === undefined &&
+        (voice?.isListening === true || speechPendingRef.current !== null)
+      ) {
+        pendingSpeechDeliveryRef.current = getSpeechVisibleDraftText(
+          draftControls.getDraft(),
+          interimTranscriptRef.current,
+          speechInsertionRangeRef.current,
+        );
+        if (voice?.isListening) voice.stopAndFinalize();
+        return;
+      }
+      const trimmed = (override ?? message).trim();
       if (!trimmed) return;
 
       // Store the message for NewSessionForm to pick up
@@ -251,8 +276,7 @@ export function FloatingActionButton() {
     ) {
       e.preventDefault();
       e.stopPropagation();
-      handleListeningStop();
-      voiceButtonRef.current.stopAndFinalize();
+      voiceButtonRef.current.toggle();
       return;
     }
 
@@ -287,11 +311,13 @@ export function FloatingActionButton() {
     speechInsertionRangeRef.current = range;
     speechInsertionRangesRef.current.set(targetId, range);
     pendingTextareaSelectionRef.current = null;
+    pendingSpeechRetargetRef.current = null;
     composerEditedDuringSpeechRef.current = false;
     if (textarea) {
-      textarea.focus();
+      focusComposerForSpeechTransition(textarea);
       textarea.setSelectionRange(selectionStart, selectionEnd);
     }
+    interimTranscriptRef.current = "";
     setInterimTranscript("");
   }, [draftControls]);
 
@@ -304,15 +330,58 @@ export function FloatingActionButton() {
 
   useEffect(() => clearPendingSpeechFinal, [clearPendingSpeechFinal]);
 
-  const handleSpeechSelectionTarget = useCallback(() => {
-    const textarea = textareaRef.current;
-    const range = speechInsertionRangeRef.current;
-    if (!textarea || !range) return;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-    if (selectionStart === selectionEnd) {
-      clearPendingSpeechFinal();
-      const nextRange = clearSpeechInsertionRangeReplacement(range);
+  const handleSpeechSelectionTarget = useCallback(
+    (event?: unknown, draftAtSelection?: string) => {
+      const manualInteraction = event !== undefined;
+      const textarea = textareaRef.current;
+      const range = speechInsertionRangeRef.current;
+      if (!textarea || !range) return;
+      const selectionStart = textarea.selectionStart;
+      const selectionEnd = textarea.selectionEnd;
+      const getNextRange = (
+        currentRange: SpeechInsertionRange,
+      ): SpeechInsertionRange => {
+        if (selectionStart === selectionEnd) {
+          return speechPendingRef.current === "listening"
+            ? retargetSpeechInsertionRange(
+                currentRange,
+                selectionStart,
+                selectionEnd,
+              )
+            : clearSpeechInsertionRangeReplacement(currentRange);
+        }
+        if (
+          currentRange.replaceSelectedAtMs === undefined &&
+          currentRange.end === selectionStart &&
+          currentRange.replaceEnd === selectionEnd
+        ) {
+          return currentRange;
+        }
+        return retargetSpeechInsertionRange(
+          currentRange,
+          selectionStart,
+          selectionEnd,
+        );
+      };
+
+      if (selectionStart === selectionEnd) clearPendingSpeechFinal();
+      const hasVisibleInterim = interimTranscriptRef.current.trim().length > 0;
+      if (
+        manualInteraction &&
+        (hasVisibleInterim || pendingSpeechRetargetRef.current !== null)
+      ) {
+        pendingSpeechRetargetRef.current = {
+          draft: draftAtSelection ?? draftControls.getDraft(),
+          start: selectionStart,
+          end: selectionEnd,
+        };
+        return;
+      }
+
+      const nextRange = getNextRange(range);
+      if (speechPendingRef.current === "listening" && nextRange !== range) {
+        voiceButtonRef.current?.beginInsertionBoundary();
+      }
       speechInsertionRangeRef.current = nextRange;
       if (activeSpeechTargetIdRef.current) {
         speechInsertionRangesRef.current.set(
@@ -321,29 +390,9 @@ export function FloatingActionButton() {
         );
       }
       setSpeechPreviewRevision((revision) => revision + 1);
-      return;
-    }
-    if (
-      range.replaceSelectedAtMs === undefined &&
-      range.end === selectionStart &&
-      range.replaceEnd === selectionEnd
-    ) {
-      return;
-    }
-    const nextRange = retargetSpeechInsertionRangeReplacement(
-      range,
-      selectionStart,
-      selectionEnd,
-    );
-    speechInsertionRangeRef.current = nextRange;
-    if (activeSpeechTargetIdRef.current) {
-      speechInsertionRangesRef.current.set(
-        activeSpeechTargetIdRef.current,
-        nextRange,
-      );
-    }
-    setSpeechPreviewRevision((revision) => revision + 1);
-  }, [clearPendingSpeechFinal]);
+    },
+    [clearPendingSpeechFinal, draftControls],
+  );
 
   const clearSpeechSelectionTarget = useCallback(() => {
     clearPendingSpeechFinal();
@@ -361,18 +410,30 @@ export function FloatingActionButton() {
     setSpeechPreviewRevision((revision) => revision + 1);
   }, [clearPendingSpeechFinal]);
 
+  const handleSpeechSelectionClick = useCallback(() => {
+    window.setTimeout(() => handleSpeechSelectionTarget(true), 0);
+  }, [handleSpeechSelectionTarget]);
+
   const commitVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
-      commitSpeechTranscript(
+      const outcome = commitSpeechTranscript(
         {
           textareaRef,
           getDraft: draftControls.getDraft,
           setDraft: draftControls.setDraft,
-          setInterimTranscript,
+          setInterimTranscript: (next) => {
+            interimTranscriptRef.current = next;
+            setInterimTranscript(next);
+          },
           speechInsertionRangeRef,
           activeSpeechTargetIdRef,
           speechInsertionRangesRef,
           pendingTextareaSelectionRef,
+          pendingSpeechRetargetRef,
+          onInsertionBoundary: () =>
+            voiceButtonRef.current?.beginInsertionBoundary(),
+          onSpeechTargetChanged: () =>
+            setSpeechPreviewRevision((revision) => revision + 1),
           onSmartTurnSend: handleSubmit,
           composerEditedDuringSpeech: () =>
             composerEditedDuringSpeechRef.current,
@@ -390,10 +451,10 @@ export function FloatingActionButton() {
       ) {
         setSpeechPreviewRevision((revision) => revision + 1);
       }
+      return outcome;
     },
     [draftControls, handleSubmit],
   );
-
   const handleVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
       const speechRange = metadata?.speechTargetId
@@ -402,7 +463,9 @@ export function FloatingActionButton() {
         : speechInsertionRangeRef.current;
       const delayMs = metadata?.smartTurnCommand
         ? 0
-        : getSpeechSelectionFinalDelayMs(speechRange);
+        : pendingSpeechRetargetRef.current
+          ? 0
+          : getSpeechSelectionFinalDelayMs(speechRange);
       if (delayMs > 0) {
         clearPendingSpeechFinal();
         const timer = setTimeout(() => {
@@ -416,7 +479,7 @@ export function FloatingActionButton() {
       }
 
       clearPendingSpeechFinal();
-      commitVoiceTranscript(transcript, metadata);
+      return commitVoiceTranscript(transcript, metadata);
     },
     [clearPendingSpeechFinal, commitVoiceTranscript],
   );
@@ -430,17 +493,29 @@ export function FloatingActionButton() {
   }, [commitVoiceTranscript]);
 
   const handleListeningStop = useCallback(() => {
+    const visibleInterim = getSpeechInterimDisplayTranscript(
+      draftControls.getDraft(),
+      interimTranscriptRef.current,
+      speechInsertionRangeRef.current,
+    );
     flushPendingSpeechFinal();
+    if (visibleInterim) commitVoiceTranscript(visibleInterim);
+    pendingSpeechRetargetRef.current = null;
+    interimTranscriptRef.current = "";
     setInterimTranscript("");
-    textareaRef.current?.focus();
-  }, [flushPendingSpeechFinal]);
+    focusComposerForSpeechTransition(textareaRef.current);
+    return Boolean(visibleInterim);
+  }, [commitVoiceTranscript, draftControls, flushPendingSpeechFinal]);
 
   const handleInterimTranscript = useCallback((transcript: string) => {
+    interimTranscriptRef.current = transcript;
     setInterimTranscript(transcript);
   }, []);
 
   const handlePendingSpeechChange = useCallback(
-    (kind: SpeechPendingKind | null) => {
+    (kind: SpeechPendingKind | null, settlement?: SpeechCycleSettlement) => {
+      speechPendingRef.current = kind;
+      if (kind === "listening") handleSpeechSelectionTarget();
       if (kind === null) {
         // Active recording finished: forget its target so completed targets do
         // not accumulate (see MessageInput).
@@ -450,10 +525,16 @@ export function FloatingActionButton() {
         }
         speechInsertionRangeRef.current = null;
         activeSpeechTargetIdRef.current = null;
+        pendingSpeechRetargetRef.current = null;
+        const pendingDelivery = pendingSpeechDeliveryRef.current;
+        pendingSpeechDeliveryRef.current = null;
+        if (settlement === "completed" && pendingDelivery !== null) {
+          handleSubmit(pendingDelivery);
+        }
       }
       setSpeechPending(kind);
     },
-    [],
+    [handleSpeechSelectionTarget, handleSubmit],
   );
 
   // Cancel a pending transcription/finalization. The provider discards the
@@ -468,6 +549,8 @@ export function FloatingActionButton() {
     }
     speechInsertionRangeRef.current = null;
     activeSpeechTargetIdRef.current = null;
+    pendingSpeechRetargetRef.current = null;
+    pendingSpeechDeliveryRef.current = null;
     setSpeechPending(null);
     setInterimTranscript("");
   }, [clearPendingSpeechFinal]);
@@ -565,11 +648,13 @@ export function FloatingActionButton() {
                   ) {
                     composerEditedDuringSpeechRef.current = true;
                   }
+                  handleSpeechSelectionTarget(true, nextMessage);
                   setMessage(nextMessage);
                 }}
                 onKeyDown={handleKeyDown}
                 onSelect={handleSpeechSelectionTarget}
                 onPointerUp={handleSpeechSelectionTarget}
+                onClick={handleSpeechSelectionClick}
                 onKeyUp={handleSpeechSelectionTarget}
                 onCut={clearSpeechSelectionTarget}
                 onCopy={clearSpeechSelectionTarget}
@@ -606,7 +691,9 @@ export function FloatingActionButton() {
               type="button"
               className="fab-submit"
               onClick={handleSubmit}
-              disabled={!message.trim()}
+              disabled={
+                !(message.trim() || speechPending !== null || interimTranscript)
+              }
               aria-label={t("fabGoToNewSession")}
             >
               ↵
@@ -639,15 +726,4 @@ export function FloatingActionButton() {
       </button>
     </div>
   );
-}
-
-/**
- * Extract projectId from URL path.
- * Matches: /projects/:projectId, /projects/:projectId/sessions/:sessionId,
- * and relay mode paths like /remote/:username/projects/:projectId
- */
-function extractProjectIdFromPath(pathname: string): string | null {
-  // Match both direct paths and relay mode paths
-  const match = pathname.match(/\/projects\/([^/]+)/);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
