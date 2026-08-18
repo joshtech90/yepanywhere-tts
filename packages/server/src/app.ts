@@ -1059,9 +1059,9 @@ export function createApp(options: AppOptions): AppResult {
       })
     : undefined;
 
-  // Name new sessions with the cheap helper model so the session list shows a
-  // topic instead of a truncated first message. Off unless enabled in
-  // settings. See topics/auto-session-title.md.
+  // Name new sessions with Claude's cheap helper model (Haiku) so every
+  // provider gets consistent titles instead of truncated first messages. Off
+  // unless enabled in settings. See topics/auto-session-title.md.
   let autoSessionTitleService: AutoSessionTitleService | undefined;
   if (options.eventBus && options.sessionMetadataService) {
     const metadataService = options.sessionMetadataService;

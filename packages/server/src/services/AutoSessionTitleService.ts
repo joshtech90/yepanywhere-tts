@@ -6,8 +6,10 @@
  * open with the same boilerplate, and the actual topic often sits past the
  * cutoff. This service watches sessions as they start, and once a session has
  * enough of an opening to be recognizable it asks the provider's cheapest
- * helper model (Haiku for Claude) for a short name and stores it as the
- * session's custom title.
+ * Claude's cheapest helper model (Haiku) for a short name and stores it as
+ * the session's custom title. The source session may belong to any provider;
+ * title generation deliberately stays on Claude so every list entry follows
+ * the same naming model.
  *
  * Guarantees:
  * - It never overwrites a title the user set (custom titles are left alone).
@@ -78,6 +80,9 @@ export interface AutoSessionTitleServiceOptions {
  * processes competing with the user's own work.
  */
 const MAX_CONCURRENT_TITLE_JOBS = 1;
+
+/** Keep automatic naming consistent across Claude, Codex, and future sources. */
+export const AUTO_SESSION_TITLE_HELPER_PROVIDER: ProviderName = "claude";
 
 /**
  * How recent a session must be to count as "new".
@@ -283,14 +288,17 @@ export class AutoSessionTitleService {
       }
 
       const abortController = new AbortController();
-      const generated = await this.options.generateTitle(context.provider, {
-        transcriptExcerpt: excerpt,
-        currentTitle: context.fullTitle?.slice(0, 200) || undefined,
-        lengthTarget: settings.maxLength,
-        language: settings.language,
-        model: HELPER_SIDE_MODEL_CHEAPEST,
-        signal: abortController.signal,
-      });
+      const generated = await this.options.generateTitle(
+        AUTO_SESSION_TITLE_HELPER_PROVIDER,
+        {
+          transcriptExcerpt: excerpt,
+          currentTitle: context.fullTitle?.slice(0, 200) || undefined,
+          lengthTarget: settings.maxLength,
+          language: settings.language,
+          model: HELPER_SIDE_MODEL_CHEAPEST,
+          signal: abortController.signal,
+        },
+      );
 
       const title = normalizeGeneratedSessionTitle(
         generated.text,
@@ -324,7 +332,8 @@ export class AutoSessionTitleService {
           event: "auto_session_title_set",
           sessionId,
           projectId,
-          provider: context.provider,
+          sourceProvider: context.provider,
+          helperProvider: AUTO_SESSION_TITLE_HELPER_PROVIDER,
           title,
           durationMs: this.now() - startedAt,
         },

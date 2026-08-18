@@ -1,8 +1,8 @@
 # Auto Session Title
 
-> Automatic session titles name a new session from its opening turns with the
-> provider's cheapest helper model, so the session list reads as a list of
-> topics instead of a column of truncated first messages.
+> Automatic session titles name a new session from its opening turns with
+> Claude Haiku, so the session list reads as a list of topics instead of a
+> column of truncated first messages.
 
 Topic: auto-session-title
 
@@ -56,9 +56,10 @@ rename would go.
    messages (default 2 — the first user turn plus the first agent reply) the
    attempt is abandoned and re-armed for a later update.
 5. The excerpt (first user message + first agent turn) goes to
-   `supervisor.generateSummary(provider, { purpose: "session-retitle",
+   `supervisor.generateSummary("claude", { purpose: "session-retitle",
    strategy: "side-session", ... })` with the `cheapest` helper model token,
-   which maps to Haiku for Claude and a mini model for Codex.
+   which maps to Haiku. The source session's provider is deliberately ignored
+   for generation, so Claude and Codex sessions use the same naming model.
 6. The reply is normalized (`normalizeGeneratedSessionTitle`) — helper models
    add preambles, `Title:` labels, quotes and trailing periods despite the
    instruction — stored via `SessionMetadataService.setTitle`, and announced
@@ -83,10 +84,10 @@ not reset the other fields.
 
 ## Provider support
 
-The `session-retitle` + `side-session` request variant is implemented by the
-Claude and Codex providers. A provider without it throws from
-`generateSummary`, which the service records as a failed attempt for that
-session and otherwise ignores.
+Automatic naming always uses the Claude provider's `session-retitle` +
+`side-session` request variant, regardless of the source session provider. If
+the Claude helper is unavailable, `generateSummary` throws; the service records
+that as a failed attempt for the session and otherwise ignores it.
 
 ## Relationship to manual retitle
 

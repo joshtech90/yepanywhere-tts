@@ -6,6 +6,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AUTO_SESSION_TITLE_MAX_AGE_MS,
+  AUTO_SESSION_TITLE_HELPER_PROVIDER,
   AutoSessionTitleService,
   buildTranscriptExcerpt,
   type AutoTitleSessionContext,
@@ -114,6 +115,19 @@ describe("AutoSessionTitleService", () => {
     expect(harness.titles.get("s1")).toBe("Stripe anfragen");
     expect(seen).toEqual(["Stripe anfragen"]);
     expect(harness.service.getOutcome("s1")).toBe("done");
+  });
+
+  it("uses Claude Haiku to title a Codex session", async () => {
+    const codex = fixture({ context: { provider: "codex" } });
+    codex.service.start();
+    emitUpdate(codex.eventBus, "codex-session");
+    await settle();
+
+    expect(codex.generateTitle).toHaveBeenCalledWith(
+      AUTO_SESSION_TITLE_HELPER_PROVIDER,
+      expect.objectContaining({ model: "cheapest" }),
+    );
+    expect(AUTO_SESSION_TITLE_HELPER_PROVIDER).toBe("claude");
   });
 
   it("titles each session only once even under a burst of updates", async () => {
