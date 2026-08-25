@@ -34,6 +34,7 @@ import {
   createRememberedDisclosureStateRegistry,
   RememberedDisclosureStateProvider,
 } from "../contexts/RememberedDisclosureStateContext";
+import { QuoteReplyProvider } from "../contexts/QuoteReplyContext";
 import type {
   ComposerDraftSignal,
   ComposerEditAvailabilityStore,
@@ -43,6 +44,7 @@ import {
   recordBrowserDebugPerformanceMetric,
 } from "../lib/browserDebugPerformance";
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
+import { selectionIntersectsElement } from "../lib/domSelection";
 import { getMessageId } from "../lib/mergeMessages";
 import {
   formatCompactRelativeAge,
@@ -85,10 +87,15 @@ import {
   projectConversationView,
   reconcileAutoExpandedThinkingItemIds,
   selectLatestCorrectablePrompt,
+  stabilizeRenderTurnGroups,
+  stabilizeTimelineEntryDisplayRows,
   windowConversationViewItems,
+  type TimelineEntryDisplayRow,
   type ComposerTailLanePosition,
   type RenderTurnGroup,
 } from "../lib/sessionDetail/renderSelectors";
+import type { CommentAnchor } from "../lib/commentAnchors";
+import { stabilizeRenderItems } from "../lib/stableRenderItems";
 import { UI_KEYS } from "../lib/storageKeys";
 import type { Message } from "../types";
 import type {
@@ -120,6 +127,14 @@ const PROGRESSIVE_RENDER_ITEM_BATCH_TARGET = 90;
 const PROGRESSIVE_RENDER_BATCH_DELAY_MS = 32;
 const PROGRESSIVE_RENDER_REVEAL_DELAY_MS = 180;
 const EMPTY_THINKING_PREVIEW_SLOTS = new Set<ConversationThinkingPreviewSlot>();
+
+function reuseEqualSet<T>(previous: ReadonlySet<T>, next: ReadonlySet<T>) {
+  if (previous.size !== next.size) return next;
+  for (const value of next) {
+    if (!previous.has(value)) return next;
+  }
+  return previous;
+}
 
 function isCtrlKeyShortcut(
   event: KeyboardEvent,
@@ -318,9 +333,9 @@ const SCROLL_SNAPSHOT_PUBLISH_DEBOUNCE_MS = 200;
 // velocity/direction reading. "Is the bottom line visible right now" stays
 // consistent through momentum and bounce (during a bottom bounce the last line
 // is *more* in view, which correctly reads as at-bottom), so it needs no
-// direction tracking and no settle timer. Exit-follow stays sensitive via the
-// directional wheel/touch/key handlers, which fire on intent during the touch,
-// before momentum begins.
+// direction tracking and no settle timer. Exit-follow uses the directional
+// wheel/touch/key handlers plus displacement above the latest follow write, so a
+// missed input precursor cannot let animated layout work trap the reader.
 function isAtScrollBottom(
   viewport: HTMLElement,
   content: HTMLElement,
@@ -972,6 +987,223 @@ function QueuedMessageActions({
   );
 }
 
+type UserTimelineDisplayRow = Extract<
+  TimelineEntryDisplayRow,
+  { kind: "user" }
+>;
+type AssistantTimelineDisplayRow = Extract<
+  TimelineEntryDisplayRow,
+  { kind: "assistant" }
+>;
+
+interface UserTimelineEntryProps {
+  row: UserTimelineDisplayRow;
+  isStreaming: boolean;
+  sessionProvider?: string;
+  latestCorrectablePromptId?: string;
+  latestCorrectablePromptContent?: string;
+  onCorrectLatestUserMessage?: (messageId: string, content: string) => void;
+  onCancelUnconfirmedUserMessage?: (tempId: string) => void;
+  onTrimBeforeUserMessage?: (messageId: string) => void;
+  onForkBeforeUserMessage?: (messageId: string) => void;
+  onForkAfterUserMessage?: (messageId: string) => void;
+  onForkAfterSummaryUserMessage?: (messageId: string) => void;
+  canForkBeforePrompt: (messageId: string) => boolean;
+  forkAfterUserMessageDisabled: boolean;
+  noopToggleThinkingExpanded: () => void;
+}
+
+const UserTimelineEntry = memo(function UserTimelineEntry({
+  row,
+  isStreaming,
+  sessionProvider,
+  latestCorrectablePromptId,
+  latestCorrectablePromptContent,
+  onCorrectLatestUserMessage,
+  onCancelUnconfirmedUserMessage,
+  onTrimBeforeUserMessage,
+  onForkBeforeUserMessage,
+  onForkAfterUserMessage,
+  onForkAfterSummaryUserMessage,
+  canForkBeforePrompt,
+  forkAfterUserMessageDisabled,
+  noopToggleThinkingExpanded,
+}: UserTimelineEntryProps) {
+  const { item } = row;
+  return (
+    <RenderItemComponent
+      item={item}
+      isStreaming={isStreaming}
+      thinkingExpanded={false}
+      toggleThinkingExpanded={noopToggleThinkingExpanded}
+      sessionProvider={sessionProvider}
+      onCorrectUserPrompt={
+        row.isLatestCorrectable &&
+        latestCorrectablePromptId &&
+        latestCorrectablePromptContent !== undefined
+          ? () =>
+              onCorrectLatestUserMessage?.(
+                latestCorrectablePromptId,
+                latestCorrectablePromptContent,
+              )
+          : undefined
+      }
+      onCancelUnconfirmedUserPrompt={onCancelUnconfirmedUserMessage}
+      onTrimBeforeUserPrompt={
+        onTrimBeforeUserMessage && row.allowsPromptActions
+          ? () => onTrimBeforeUserMessage(item.id)
+          : undefined
+      }
+      onForkBeforeUserPrompt={
+        onForkBeforeUserMessage &&
+        row.allowsPromptActions &&
+        canForkBeforePrompt(item.id)
+          ? () => onForkBeforeUserMessage(item.id)
+          : undefined
+      }
+      onForkAfterUserPrompt={
+        onForkAfterUserMessage && row.allowsPromptActions
+          ? () => onForkAfterUserMessage(item.id)
+          : undefined
+      }
+      onForkAfterSummaryUserPrompt={
+        onForkAfterSummaryUserMessage && row.allowsPromptActions
+          ? () => onForkAfterSummaryUserMessage(item.id)
+          : undefined
+      }
+      forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
+      staleNowMs={row.staleNowMs}
+    />
+  );
+});
+
+interface AssistantTimelineEntryProps {
+  row: AssistantTimelineDisplayRow;
+  isStreaming: boolean;
+  sessionProvider?: string;
+  getThinkingItemExpanded: (item: RenderItem) => boolean;
+  toggleThinkingItemExpanded: (item: RenderItem) => void;
+  noopToggleThinkingExpanded: () => void;
+  onTrimBeforeUserMessage?: (messageId: string) => void;
+  onForkBeforeUserMessage?: (messageId: string) => void;
+  onForkAfterUserMessage?: (messageId: string) => void;
+  onForkAfterSummaryUserMessage?: (messageId: string) => void;
+  canForkBeforePrompt: (messageId: string) => boolean;
+  forkAfterUserMessageDisabled: boolean;
+  handleQuoteTextBlock: (anchor: CommentAnchor) => void;
+  alwaysShowQuoteCircles: boolean;
+  paragraphQuoteCirclesEnabled: boolean;
+  onToggleConversationActivity: (itemId: string) => void;
+  widerConversationActivityPreviews: boolean;
+  collapsedConversationThinkingPreviewSlots: ReadonlySet<ConversationThinkingPreviewSlot>;
+  onToggleConversationThinkingPreview: (
+    slot: ConversationThinkingPreviewSlot,
+  ) => void;
+  onDismissConversationThinkingPreview: (
+    slot: ConversationThinkingPreviewSlot,
+  ) => void;
+}
+
+const AssistantTimelineEntry = memo(function AssistantTimelineEntry({
+  row,
+  isStreaming,
+  sessionProvider,
+  getThinkingItemExpanded,
+  toggleThinkingItemExpanded,
+  noopToggleThinkingExpanded,
+  onTrimBeforeUserMessage,
+  onForkBeforeUserMessage,
+  onForkAfterUserMessage,
+  onForkAfterSummaryUserMessage,
+  canForkBeforePrompt,
+  forkAfterUserMessageDisabled,
+  handleQuoteTextBlock,
+  alwaysShowQuoteCircles,
+  paragraphQuoteCirclesEnabled,
+  onToggleConversationActivity,
+  widerConversationActivityPreviews,
+  collapsedConversationThinkingPreviewSlots,
+  onToggleConversationThinkingPreview,
+  onDismissConversationThinkingPreview,
+}: AssistantTimelineEntryProps) {
+  return (
+    <AssistantTurnImageGallery items={row.group.items}>
+      {row.rows.map((assistantRow) => {
+        if (assistantRow.kind === "explored") {
+          return (
+            <ExploredToolGroup
+              key={assistantRow.id}
+              id={assistantRow.id}
+              projection={assistantRow.projection}
+              sessionProvider={sessionProvider}
+              staleNowMs={assistantRow.staleNowMs}
+            />
+          );
+        }
+
+        const { item } = assistantRow;
+        return (
+          <RenderItemComponent
+            key={item.id}
+            item={item}
+            isStreaming={isStreaming}
+            thinkingExpanded={getThinkingItemExpanded(item)}
+            toggleThinkingExpanded={
+              assistantRow.allowsThinkingToggle
+                ? () => toggleThinkingItemExpanded(item)
+                : noopToggleThinkingExpanded
+            }
+            sessionProvider={sessionProvider}
+            onTrimBeforeUserPrompt={
+              onTrimBeforeUserMessage && assistantRow.allowsPromptActions
+                ? () => onTrimBeforeUserMessage(item.id)
+                : undefined
+            }
+            onForkBeforeUserPrompt={
+              onForkBeforeUserMessage &&
+              assistantRow.allowsPromptActions &&
+              canForkBeforePrompt(item.id)
+                ? () => onForkBeforeUserMessage(item.id)
+                : undefined
+            }
+            onForkAfterUserPrompt={
+              onForkAfterUserMessage && assistantRow.allowsPromptActions
+                ? () => onForkAfterUserMessage(item.id)
+                : undefined
+            }
+            onForkAfterSummaryUserPrompt={
+              onForkAfterSummaryUserMessage && assistantRow.allowsPromptActions
+                ? () => onForkAfterSummaryUserMessage(item.id)
+                : undefined
+            }
+            forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
+            onQuoteTextBlock={
+              assistantRow.allowsTextQuote ? handleQuoteTextBlock : undefined
+            }
+            alwaysShowQuoteCircle={alwaysShowQuoteCircles}
+            paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+            staleNowMs={assistantRow.staleNowMs}
+            thinkingDurationMs={assistantRow.thinkingDurationMs}
+            onToggleConversationActivity={onToggleConversationActivity}
+            widerConversationActivityPreviews={
+              widerConversationActivityPreviews
+            }
+            collapsedConversationThinkingPreviewSlots={
+              collapsedConversationThinkingPreviewSlots
+            }
+            onToggleConversationThinkingPreview={
+              onToggleConversationThinkingPreview
+            }
+            onDismissConversationThinkingPreview={
+              onDismissConversationThinkingPreview
+            }
+          />
+        );
+      })}
+    </AssistantTurnImageGallery>
+  );
+});
+
 export const MessageList = memo(function MessageList({
   messages,
   transcriptDisplayObjects = EMPTY_TRANSCRIPT_DISPLAY_OBJECTS,
@@ -1083,6 +1315,7 @@ export const MessageList = memo(function MessageList({
   const isInitialLoadRef = useRef(true);
   const isProgrammaticScrollRef = useRef(false);
   const lastHeightRef = useRef(0);
+  const lastFollowScrollTopRef = useRef(0);
   const touchStartYRef = useRef<number | null>(null);
   const followUpScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const forcedCurrentScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>(
@@ -1247,6 +1480,7 @@ export const MessageList = memo(function MessageList({
         container.scrollTo({ top, behavior });
       }
       lastHeightRef.current = container.scrollHeight;
+      lastFollowScrollTopRef.current = top;
       setIsScrolledToBottom(true);
       reportFollowingBottom(true);
       setScrollPositionTimestampMs(null);
@@ -1508,6 +1742,7 @@ export const MessageList = memo(function MessageList({
       fullDisplayRenderItems,
     ],
   );
+  const previousConversationRenderItemsRef = useRef<readonly RenderItem[]>([]);
   const displayRenderItems = useMemo(() => {
     if (!effectiveConversationViewEnabled) return fullDisplayRenderItems;
     const startedAt = highResolutionNowMs();
@@ -1526,7 +1761,10 @@ export const MessageList = memo(function MessageList({
         },
       );
     }
-    return projected;
+    return stabilizeRenderItems(
+      previousConversationRenderItemsRef.current,
+      projected,
+    );
   }, [
     conversationWindow.items,
     dismissedConversationThinkingPreviewSlots,
@@ -1537,6 +1775,13 @@ export const MessageList = memo(function MessageList({
     isStreaming,
     nowMs,
   ]);
+  useEffect(() => {
+    previousConversationRenderItemsRef.current =
+      effectiveConversationViewEnabled ? displayRenderItems : [];
+  }, [displayRenderItems, effectiveConversationViewEnabled]);
+  const previousVisibleThinkingPreviewSlotsRef = useRef<
+    ReadonlySet<ConversationThinkingPreviewSlot>
+  >(EMPTY_THINKING_PREVIEW_SLOTS);
   const visibleConversationThinkingPreviewSlots = useMemo(() => {
     const slots = new Set<ConversationThinkingPreviewSlot>();
     for (const item of displayRenderItems) {
@@ -1545,8 +1790,12 @@ export const MessageList = memo(function MessageList({
         slots.add(preview.slot);
       }
     }
-    return slots;
+    return reuseEqualSet(previousVisibleThinkingPreviewSlotsRef.current, slots);
   }, [displayRenderItems]);
+  useEffect(() => {
+    previousVisibleThinkingPreviewSlotsRef.current =
+      visibleConversationThinkingPreviewSlots;
+  }, [visibleConversationThinkingPreviewSlots]);
   useLayoutEffect(() => {
     const previousThinkingTextLengths = previousThinkingTextLengthsRef.current;
     const nextThinkingTextLengths = getThinkingTextLengths(renderItems);
@@ -1589,9 +1838,13 @@ export const MessageList = memo(function MessageList({
       });
     });
   }, [provider, renderItems]);
+  const previousTurnGroupsRef = useRef<readonly RenderTurnGroup[]>([]);
   const turnGroups = useMemo(() => {
     const startedAt = highResolutionNowMs();
-    const grouped = groupRenderItemsIntoTurns(displayRenderItems);
+    const grouped = stabilizeRenderTurnGroups(
+      previousTurnGroupsRef.current,
+      groupRenderItemsIntoTurns(displayRenderItems),
+    );
     const durationMs = highResolutionNowMs() - startedAt;
     markReloadPerfPhase("message_list_group_end", {
       renderItems: displayRenderItems.length,
@@ -1605,6 +1858,9 @@ export const MessageList = memo(function MessageList({
     }
     return grouped;
   }, [displayRenderItems]);
+  useEffect(() => {
+    previousTurnGroupsRef.current = turnGroups;
+  }, [turnGroups]);
   useLayoutEffect(() => {
     markReloadPerfPhase("message_list_commit_effect", {
       messages: renderedTranscriptMessages.length,
@@ -1884,21 +2140,29 @@ export const MessageList = memo(function MessageList({
     progressiveRevealActive,
     visibleTimelineEntries,
   ]);
-  const timelineEntryRows = useMemo(
-    () =>
-      buildTimelineEntryDisplayRows({
-        entries: progressiveTimelineEntries,
-        latestCorrectablePromptId: latestCorrectablePrompt?.id ?? null,
-        latestVisibleTimestampMs,
-        nowMs,
-      }),
-    [
-      progressiveTimelineEntries,
-      latestCorrectablePrompt?.id,
+  const previousTimelineEntryRowsRef = useRef<
+    readonly TimelineEntryDisplayRow<RenderTurnGroup, BtwAsideTimelineItem>[]
+  >([]);
+  const timelineEntryRows = useMemo(() => {
+    const nextRows = buildTimelineEntryDisplayRows({
+      entries: progressiveTimelineEntries,
+      latestCorrectablePromptId: latestCorrectablePrompt?.id ?? null,
       latestVisibleTimestampMs,
       nowMs,
-    ],
-  );
+    });
+    return stabilizeTimelineEntryDisplayRows(
+      previousTimelineEntryRowsRef.current,
+      nextRows,
+    );
+  }, [
+    progressiveTimelineEntries,
+    latestCorrectablePrompt?.id,
+    latestVisibleTimestampMs,
+    nowMs,
+  ]);
+  useEffect(() => {
+    previousTimelineEntryRowsRef.current = timelineEntryRows;
+  }, [timelineEntryRows]);
   const firstPromptActionId = useMemo(() => {
     for (const row of timelineEntryRows) {
       if (row.kind === "user" && row.allowsPromptActions) {
@@ -2834,12 +3098,36 @@ export const MessageList = memo(function MessageList({
     if (!content || !container) return;
 
     const atBottom = isAtScrollBottom(container, content);
+    if (shouldAutoScrollRef.current) {
+      // Layout can grow between a bottom write and its scroll event. Unchanged
+      // scrollTop is stale follow geometry and should re-pin; movement upward
+      // from the last follow write is reader intent even when an input precursor
+      // was unavailable or lost amid animated layout work.
+      const movedUpFromFollowWrite =
+        !atBottom &&
+        container.scrollTop <
+          lastFollowScrollTopRef.current - FOLLOW_BOTTOM_TOLERANCE_PX;
+      if (movedUpFromFollowWrite) {
+        stopFollowingForUserScroll(container);
+      } else if (!atBottom) {
+        scrollToBottom(container);
+      } else {
+        lastFollowScrollTopRef.current = container.scrollTop;
+        thinkingDeltaFollowAllowedRef.current = true;
+        setNewOutputBelowVisible(false);
+        setIsScrolledToBottom(true);
+        reportFollowingBottom(true);
+      }
+      scheduleSettledScrollState();
+      return;
+    }
+
     shouldAutoScrollRef.current = atBottom;
     thinkingDeltaFollowAllowedRef.current = atBottom;
     if (atBottom) {
+      lastFollowScrollTopRef.current = container.scrollTop;
       setNewOutputBelowVisible(false);
-    }
-    if (!atBottom) {
+    } else {
       clearForcedCurrentScrollTimers();
     }
     setIsScrolledToBottom(atBottom);
@@ -2849,6 +3137,8 @@ export const MessageList = memo(function MessageList({
     clearForcedCurrentScrollTimers,
     reportFollowingBottom,
     scheduleSettledScrollState,
+    scrollToBottom,
+    stopFollowingForUserScroll,
   ]);
 
   // Attach scroll listener to parent container
@@ -2873,8 +3163,9 @@ export const MessageList = memo(function MessageList({
     if (inert) {
       return;
     }
-    const container = containerRef.current?.parentElement;
-    if (!container) return;
+    const content = containerRef.current;
+    const container = content?.parentElement;
+    if (!content || !container) return;
 
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY < 0 && !isInteractiveScrollTarget(event.target)) {
@@ -2918,6 +3209,12 @@ export const MessageList = memo(function MessageList({
         // the explicit transcript gesture own subsequent native page keys
         // instead of leaving them attached to the composer or document body.
         container.focus({ preventScroll: true });
+      }
+    };
+
+    const handleSelectionChange = () => {
+      if (selectionIntersectsElement(content)) {
+        stopFollowingForUserScroll(container);
       }
     };
 
@@ -2973,6 +3270,7 @@ export const MessageList = memo(function MessageList({
       passive: true,
     });
     container.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("selectionchange", handleSelectionChange);
     document.addEventListener("keydown", handleKeyDown, true);
 
     return () => {
@@ -2982,6 +3280,7 @@ export const MessageList = memo(function MessageList({
       container.removeEventListener("touchend", handleTouchEnd);
       container.removeEventListener("touchcancel", handleTouchEnd);
       container.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("selectionchange", handleSelectionChange);
       document.removeEventListener("keydown", handleKeyDown, true);
       if (keyboardOlderLoadFrameRef.current !== null) {
         cancelAnimationFrame(keyboardOlderLoadFrameRef.current);
@@ -3252,8 +3551,8 @@ export const MessageList = memo(function MessageList({
   ]);
 
   const handleFollowClick = useCallback(() => {
-    onFollowCurrent?.();
     scrollToCurrent();
+    onFollowCurrent?.();
   }, [onFollowCurrent, scrollToCurrent]);
 
   const followButtonTarget =
@@ -3299,7 +3598,7 @@ export const MessageList = memo(function MessageList({
   return createElement(
     RememberedDisclosureStateProvider,
     { registry: rememberedDisclosureStateRegistry },
-    <>
+    <QuoteReplyProvider onQuoteTextBlock={handleQuoteTextBlock}>
       <UserTurnNavigator
         getAnchors={getNavigatorAnchors}
         messageListRef={containerRef}
@@ -3452,139 +3751,61 @@ export const MessageList = memo(function MessageList({
           }
 
           if (timelineRow.kind === "user") {
-            const { item } = timelineRow;
             return (
-              <RenderItemComponent
+              <UserTimelineEntry
                 key={timelineRow.key}
-                item={item}
+                row={timelineRow}
                 isStreaming={isStreaming}
-                thinkingExpanded={getThinkingItemExpanded(item)}
-                toggleThinkingExpanded={noopToggleThinkingExpanded}
                 sessionProvider={provider}
-                onCorrectUserPrompt={
-                  timelineRow.isLatestCorrectable && latestCorrectablePrompt
-                    ? () =>
-                        onCorrectLatestUserMessage?.(
-                          latestCorrectablePrompt.id,
-                          latestCorrectablePrompt.content,
-                        )
-                    : undefined
+                latestCorrectablePromptId={latestCorrectablePrompt?.id}
+                latestCorrectablePromptContent={
+                  latestCorrectablePrompt?.content
                 }
-                onCancelUnconfirmedUserPrompt={onCancelUnconfirmedUserMessage}
-                onTrimBeforeUserPrompt={
-                  onTrimBeforeUserMessage && timelineRow.allowsPromptActions
-                    ? () => onTrimBeforeUserMessage(item.id)
-                    : undefined
-                }
-                onForkBeforeUserPrompt={
-                  onForkBeforeUserMessage &&
-                  timelineRow.allowsPromptActions &&
-                  canForkBeforePrompt(item.id)
-                    ? () => onForkBeforeUserMessage(item.id)
-                    : undefined
-                }
-                onForkAfterUserPrompt={
-                  onForkAfterUserMessage && timelineRow.allowsPromptActions
-                    ? () => onForkAfterUserMessage(item.id)
-                    : undefined
-                }
-                onForkAfterSummaryUserPrompt={
-                  onForkAfterSummaryUserMessage &&
-                  timelineRow.allowsPromptActions
-                    ? () => onForkAfterSummaryUserMessage(item.id)
-                    : undefined
-                }
-                forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
-                staleNowMs={timelineRow.staleNowMs}
-                latestVisibleTimestampMs={latestVisibleTimestampMs}
+                onCorrectLatestUserMessage={onCorrectLatestUserMessage}
+                onCancelUnconfirmedUserMessage={onCancelUnconfirmedUserMessage}
+                onTrimBeforeUserMessage={onTrimBeforeUserMessage}
+                onForkBeforeUserMessage={onForkBeforeUserMessage}
+                onForkAfterUserMessage={onForkAfterUserMessage}
+                onForkAfterSummaryUserMessage={onForkAfterSummaryUserMessage}
+                canForkBeforePrompt={canForkBeforePrompt}
+                forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
+                noopToggleThinkingExpanded={noopToggleThinkingExpanded}
               />
             );
           }
 
           return (
-            <AssistantTurnImageGallery
+            <AssistantTimelineEntry
               key={timelineRow.key}
-              items={timelineRow.group.items}
-            >
-              {timelineRow.rows.map((assistantRow) => {
-                if (assistantRow.kind === "explored") {
-                  return (
-                    <ExploredToolGroup
-                      key={assistantRow.id}
-                      id={assistantRow.id}
-                      projection={assistantRow.projection}
-                      sessionProvider={provider}
-                      staleNowMs={assistantRow.staleNowMs}
-                      latestVisibleTimestampMs={latestVisibleTimestampMs}
-                    />
-                  );
-                }
-
-                const { item } = assistantRow;
-                return (
-                  <RenderItemComponent
-                    key={item.id}
-                    item={item}
-                    isStreaming={isStreaming}
-                    thinkingExpanded={getThinkingItemExpanded(item)}
-                    toggleThinkingExpanded={
-                      assistantRow.allowsThinkingToggle
-                        ? () => toggleThinkingItemExpanded(item)
-                        : noopToggleThinkingExpanded
-                    }
-                    sessionProvider={provider}
-                    onTrimBeforeUserPrompt={
-                      onTrimBeforeUserMessage &&
-                      assistantRow.allowsPromptActions
-                        ? () => onTrimBeforeUserMessage(item.id)
-                        : undefined
-                    }
-                    onForkBeforeUserPrompt={
-                      onForkBeforeUserMessage &&
-                      assistantRow.allowsPromptActions &&
-                      canForkBeforePrompt(item.id)
-                        ? () => onForkBeforeUserMessage(item.id)
-                        : undefined
-                    }
-                    onForkAfterUserPrompt={
-                      onForkAfterUserMessage && assistantRow.allowsPromptActions
-                        ? () => onForkAfterUserMessage(item.id)
-                        : undefined
-                    }
-                    onForkAfterSummaryUserPrompt={
-                      onForkAfterSummaryUserMessage &&
-                      assistantRow.allowsPromptActions
-                        ? () => onForkAfterSummaryUserMessage(item.id)
-                        : undefined
-                    }
-                    forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
-                    onQuoteTextBlock={
-                      assistantRow.allowsTextQuote
-                        ? handleQuoteTextBlock
-                        : undefined
-                    }
-                    alwaysShowQuoteCircle={alwaysShowQuoteCircles}
-                    paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
-                    staleNowMs={assistantRow.staleNowMs}
-                    latestVisibleTimestampMs={latestVisibleTimestampMs}
-                    thinkingDurationMs={assistantRow.thinkingDurationMs}
-                    onToggleConversationActivity={toggleConversationActivity}
-                    widerConversationActivityPreviews={
-                      widerConversationActivityPreviews
-                    }
-                    collapsedConversationThinkingPreviewSlots={
-                      collapsedConversationThinkingPreviewSlots
-                    }
-                    onToggleConversationThinkingPreview={
-                      toggleConversationThinkingPreview
-                    }
-                    onDismissConversationThinkingPreview={
-                      dismissConversationThinkingPreview
-                    }
-                  />
-                );
-              })}
-            </AssistantTurnImageGallery>
+              row={timelineRow}
+              isStreaming={isStreaming}
+              sessionProvider={provider}
+              getThinkingItemExpanded={getThinkingItemExpanded}
+              toggleThinkingItemExpanded={toggleThinkingItemExpanded}
+              noopToggleThinkingExpanded={noopToggleThinkingExpanded}
+              onTrimBeforeUserMessage={onTrimBeforeUserMessage}
+              onForkBeforeUserMessage={onForkBeforeUserMessage}
+              onForkAfterUserMessage={onForkAfterUserMessage}
+              onForkAfterSummaryUserMessage={onForkAfterSummaryUserMessage}
+              canForkBeforePrompt={canForkBeforePrompt}
+              forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
+              handleQuoteTextBlock={handleQuoteTextBlock}
+              alwaysShowQuoteCircles={alwaysShowQuoteCircles}
+              paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+              onToggleConversationActivity={toggleConversationActivity}
+              widerConversationActivityPreviews={
+                widerConversationActivityPreviews
+              }
+              collapsedConversationThinkingPreviewSlots={
+                collapsedConversationThinkingPreviewSlots
+              }
+              onToggleConversationThinkingPreview={
+                toggleConversationThinkingPreview
+              }
+              onDismissConversationThinkingPreview={
+                dismissConversationThinkingPreview
+              }
+            />
           );
         })}
         {composerTailRows.map((tailRow) => {
@@ -3948,6 +4169,6 @@ export const MessageList = memo(function MessageList({
           onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
         />
       </div>
-    </>,
+    </QuoteReplyProvider>,
   );
 });

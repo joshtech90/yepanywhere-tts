@@ -17,6 +17,8 @@ import type { CSSProperties, MouseEvent, RefObject, TouchEvent } from "react";
 import {
   type Dispatch,
   type SetStateAction,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -27,6 +29,7 @@ import {
 import { useOptionalRenderModeContext } from "../contexts/RenderModeContext";
 import { useOptionalToastContext } from "../contexts/ToastContext";
 import { ConversationViewIcon } from "./ConversationViewIcon";
+import { DeliveryGlyph } from "./DeliveryGlyph";
 import {
   type EffortLevel,
   type ThinkingMode,
@@ -64,6 +67,7 @@ import { useI18n } from "../i18n";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
 import { writeClipboardTextLater } from "../lib/clipboard";
 import { BROWSER_DEBUG_LEASE_TTL_MS } from "../lib/browserDebugLease";
+import { buildFrontendReloadUrl } from "../lib/frontendReload";
 import {
   type SessionViewerControllerState,
   useSessionViewerController,
@@ -117,6 +121,7 @@ import { ContextThresholdQuickEdit } from "./ContextThresholdQuickEdit";
 import { SpeechPrefixActionCue } from "./SpeechPrefixActionCue";
 import type { FilterOption } from "./FilterDropdown";
 import { MessageAge } from "./MessageAge";
+import { MicrophoneIcon } from "./MicrophoneIcon";
 import { ModeSelector } from "./ModeSelector";
 import { SlashCommandButton } from "./SlashCommandButton";
 import { SpeechControlMenu } from "./SpeechControlMenu";
@@ -132,6 +137,12 @@ import {
 } from "./VoiceInputButton";
 
 type ToolbarTranslate = ReturnType<typeof useI18n>["t"];
+
+const BrowserDebugToolbarButton = lazy(() =>
+  import("./BrowserDebugToolbarButton").then((module) => ({
+    default: module.BrowserDebugToolbarButton,
+  })),
+);
 
 // Maps a control's narrowing priority to its overflow-tier CSS class. `first`
 // collapses first (early), `mid` next, `last` collapses last; `pin` yields no
@@ -604,11 +615,14 @@ interface ToolbarStatusControl {
 
 interface ToolbarBrowserDebugControl {
   active: boolean;
+  connected: boolean;
   enabling?: boolean;
   remainingFraction: number;
   performanceLabel?: string | null;
   title: string;
   onToggle: () => void;
+  onReactivate: () => void;
+  onReload: () => void;
 }
 
 interface ToolbarShortcutsControl {
@@ -723,27 +737,6 @@ export interface MessageInputToolbarViewProps {
   hidePrimaryDeliveryActions?: boolean;
 }
 
-function ToolbarMicrophoneIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
-
 function ToolbarDoneIcon() {
   return (
     <svg
@@ -817,6 +810,61 @@ function BrowserDebugLeaseIcon({
         </span>
       ) : null}
     </>
+  );
+}
+
+function LazyBrowserDebugToolbarButton({
+  t,
+  control,
+  className,
+  menuItem = false,
+}: {
+  t: ToolbarTranslate;
+  control: ToolbarBrowserDebugControl;
+  className: string;
+  menuItem?: boolean;
+}) {
+  const icon = (
+    <BrowserDebugLeaseIcon
+      active={control.active}
+      remainingFraction={control.remainingFraction}
+      performanceLabel={control.performanceLabel}
+    />
+  );
+  const ariaProps = menuItem
+    ? ({ role: "menuitemcheckbox", "aria-checked": control.active } as const)
+    : ({ "aria-pressed": control.active } as const);
+  const fallback = (
+    <button
+      type="button"
+      className={className}
+      onClick={control.onToggle}
+      title={control.title}
+      aria-label={control.title}
+      {...ariaProps}
+      disabled={control.enabling}
+    >
+      {icon}
+    </button>
+  );
+
+  return (
+    <Suspense fallback={fallback}>
+      <BrowserDebugToolbarButton
+        t={t}
+        active={control.active}
+        connected={control.connected}
+        disabled={control.enabling}
+        className={className}
+        title={control.title}
+        menuItem={menuItem}
+        onToggle={control.onToggle}
+        onReactivate={control.onReactivate}
+        onReload={control.onReload}
+      >
+        {icon}
+      </BrowserDebugToolbarButton>
+    </Suspense>
   );
 }
 
@@ -1402,7 +1450,7 @@ export function MessageInputToolbarView({
               title={deliveryTooltip(projectQueue.tooltip)}
               role={menu ? "menuitem" : undefined}
             >
-              <span className="send-icon">⇥</span>
+              <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
               {speechPrefix && <SpeechPrefixActionCue prefix={speechPrefix} />}
             </button>
           )}
@@ -1423,7 +1471,7 @@ export function MessageInputToolbarView({
               title={deliveryTooltip(projectQueue.newSessionTooltip)}
               role={menu ? "menuitem" : undefined}
             >
-              <span className="send-icon">⇥</span>
+              <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
               <span
                 className="project-queue-new-session-mark"
                 aria-hidden="true"
@@ -1719,8 +1767,9 @@ export function MessageInputToolbarView({
             </button>
           )}
           {visibility.browserDebug && browserDebugControl && (
-            <button
-              type="button"
+            <LazyBrowserDebugToolbarButton
+              t={t}
+              control={browserDebugControl}
               className={[
                 inlineTierClass("browserDebug"),
                 toolbarModuleStyles.browserDebugButton,
@@ -1730,18 +1779,7 @@ export function MessageInputToolbarView({
               ]
                 .filter(Boolean)
                 .join(" ")}
-              onClick={browserDebugControl.onToggle}
-              title={browserDebugControl.title}
-              aria-label={browserDebugControl.title}
-              aria-pressed={browserDebugControl.active}
-              disabled={browserDebugControl.enabling}
-            >
-              <BrowserDebugLeaseIcon
-                active={browserDebugControl.active}
-                remainingFraction={browserDebugControl.remainingFraction}
-                performanceLabel={browserDebugControl.performanceLabel}
-              />
-            </button>
+            />
           )}
           {visibility.nudge && nudgeControl && (
             <button
@@ -1813,7 +1851,7 @@ export function MessageInputToolbarView({
                     title={t("voiceInputStart" as never)}
                     aria-label={t("voiceInputStartLabel" as never)}
                   >
-                    <ToolbarMicrophoneIcon />
+                    <MicrophoneIcon />
                   </button>
                 }
               />
@@ -2039,8 +2077,10 @@ export function MessageInputToolbarView({
                 {visibility.browserDebug &&
                   browserDebugControl &&
                   isPriorityCollapsible("browserDebug") && (
-                    <button
-                      type="button"
+                    <LazyBrowserDebugToolbarButton
+                      t={t}
+                      control={browserDebugControl}
+                      menuItem
                       className={[
                         menuTierClass("browserDebug"),
                         toolbarModuleStyles.browserDebugButton,
@@ -2050,21 +2090,7 @@ export function MessageInputToolbarView({
                       ]
                         .filter(Boolean)
                         .join(" ")}
-                      onClick={browserDebugControl.onToggle}
-                      title={browserDebugControl.title}
-                      aria-label={browserDebugControl.title}
-                      role="menuitemcheckbox"
-                      aria-checked={browserDebugControl.active}
-                      disabled={browserDebugControl.enabling}
-                    >
-                      <BrowserDebugLeaseIcon
-                        active={browserDebugControl.active}
-                        remainingFraction={
-                          browserDebugControl.remainingFraction
-                        }
-                        performanceLabel={browserDebugControl.performanceLabel}
-                      />
-                    </button>
+                    />
                   )}
                 {visibility.nudge &&
                   nudgeControl &&
@@ -2537,7 +2563,9 @@ export function MessageInputToolbarView({
                       : queueControl.queueTooltip
                   }
                 >
-                  <span className="send-icon queue-icon">→</span>
+                  <DeliveryGlyph className="send-icon queue-icon">
+                    →
+                  </DeliveryGlyph>
                   {actionsControl.send.speechMessagePrefix && (
                     <SpeechPrefixActionCue
                       prefix={actionsControl.send.speechMessagePrefix}
@@ -2573,7 +2601,7 @@ export function MessageInputToolbarView({
                       : t("toolbarSteerTooltip")
                   }
                 >
-                  <span className="send-icon">↗</span>
+                  <DeliveryGlyph className="send-icon">↗</DeliveryGlyph>
                   {actionsControl.send.speechMessagePrefix && (
                     <SpeechPrefixActionCue
                       prefix={actionsControl.send.speechMessagePrefix}
@@ -2606,9 +2634,9 @@ export function MessageInputToolbarView({
                     : actionsControl.send.alternate.tooltip
                 }
               >
-                <span className="send-icon">
+                <DeliveryGlyph className="send-icon">
                   {actionsControl.send.alternate.icon}
-                </span>
+                </DeliveryGlyph>
                 {actionsControl.send.speechMessagePrefix && (
                   <SpeechPrefixActionCue
                     prefix={actionsControl.send.speechMessagePrefix}
@@ -2647,7 +2675,9 @@ export function MessageInputToolbarView({
                   tooltipMode,
                 )}
               >
-                <span className="send-icon">{actionsControl.send.icon}</span>
+                <DeliveryGlyph className="send-icon">
+                  {actionsControl.send.icon}
+                </DeliveryGlyph>
                 {actionsControl.send.primarySpeechMessagePrefix && (
                   <SpeechPrefixActionCue
                     prefix={actionsControl.send.primarySpeechMessagePrefix}
@@ -3031,6 +3061,22 @@ export function MessageInputToolbar({
         );
       });
   }, [browserDebugActive, browserDebugLease, sessionId, showToast, t]);
+  const reactivateBrowserDebug = useCallback(() => {
+    void browserDebugLease.reactivate().catch((error) => {
+      showToast?.(
+        t("browserDebugReactivateFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+        "error",
+      );
+    });
+  }, [browserDebugLease, showToast, t]);
+  const reloadWithBrowserDebug = useCallback(() => {
+    if (!browserDebugActive) return;
+    window.location.replace(
+      buildFrontendReloadUrl(window.location.href, String(Date.now())),
+    );
+  }, [browserDebugActive]);
   const hasPotentialDualActions = !!(onSend && onQueue && onSteer);
   const effectivePrimaryActionKind =
     primaryActionKind ?? (hasPotentialDualActions ? "steer" : "send");
@@ -3461,11 +3507,14 @@ export function MessageInputToolbar({
         supportsBrowserDebug && sessionId
           ? {
               active: browserDebugActive,
+              connected: browserDebugLease.connected,
               enabling: browserDebugLease.phase === "enabling",
               remainingFraction: browserDebugRemainingFraction,
               performanceLabel: browserDebugPerformanceLabel,
               title: browserDebugTitle,
               onToggle: toggleBrowserDebug,
+              onReactivate: reactivateBrowserDebug,
+              onReload: reloadWithBrowserDebug,
             }
           : null
       }

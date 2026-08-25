@@ -41,8 +41,8 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "build:stable": "pnpm --filter client build:stable",
-    "typecheck": "pnpm --filter shared build && pnpm -r --filter '!@yep-anywhere/android' exec tsc --noEmit",
-    "test": "pnpm -r --filter '!@yep-anywhere/android' test",
+    "typecheck": "pnpm --filter shared build && pnpm -r --filter=!@yep-anywhere/android exec tsc --noEmit",
+    "test": "pnpm -r --filter=!@yep-anywhere/android test",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
     "test:e2e:android": "pnpm --filter client test:e2e:android",
@@ -97,15 +97,15 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.147.0",
-      "compatibleThroughVersion": "0.147.0"
+      "expectedVersion": "0.149.0",
+      "compatibleThroughVersion": "0.149.1"
     },
     "claudeCode": {
       "compatibleThroughVersion": "2.1.223",
       "claudeAgentSdkVersion": "0.3.223"
     },
     "piCli": {
-      "compatibleThroughVersion": "0.82.1"
+      "compatibleThroughVersion": "0.84.2"
     },
     "grokCli": {
       "compatibleThroughVersion": "1.0.4"

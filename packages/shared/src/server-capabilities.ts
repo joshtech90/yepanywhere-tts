@@ -1,13 +1,13 @@
-import { PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY } from "./public-shares.js";
-import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 import {
   CAPABILITY_ID_ALLOCATIONS,
   CAPABILITY_ID_ENCODING_INTRODUCED_IN,
   CAPABILITY_ID_ENCODING_VERSION,
+  type CapabilityBitset,
   capabilityBitIsSet,
   encodeCapabilityIds,
-  type CapabilityBitset,
 } from "./capability-ids.js";
+import { PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY } from "./public-shares.js";
+import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 
 export type ServerCapabilityKind = "permanent" | "transitional";
 
@@ -61,6 +61,16 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     name: "provider-host-control",
     index: CAPABILITY_ID_ALLOCATIONS.providerHostControl.id,
     introducedIn: "0.7.1",
+  },
+  gitWorkingTreeSections: {
+    name: "git-working-tree-sections",
+    index: CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeSections.id,
+    introducedIn: "0.7.2",
+  },
+  gitWorkingTreeCompleteScan: {
+    name: "git-working-tree-complete-scan",
+    index: CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeCompleteScan.id,
+    introducedIn: "0.7.2",
   },
 } as const;
 
@@ -656,6 +666,45 @@ export const SERVER_CAPABILITIES = {
         "No maintained client still branches on git-source-review-projections.",
     },
   },
+  gitInclusiveToHead: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitInclusiveToHead.id,
+    name: "git-inclusive-to-head",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server compares an inclusive selected-commit range from the selected commit's first parent, or the empty tree for a root commit, through pinned HEAD.",
+    clientFallback:
+      "Hide inclusive To HEAD and make no range request; retain separately gated direct per-file selected-tree-to-HEAD comparison.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/git/range-to-head/:sha",
+        "POST /api/projects/:projectId/git/range-to-head-diff",
+      ],
+      routeModules: ["packages/server/src/routes/git-inclusive-to-head.ts"],
+      requestFields: [
+        "gitInclusiveComparisonDiff.baseSha",
+        "gitInclusiveComparisonDiff.headSha",
+        "gitInclusiveComparisonDiff.path",
+        "gitInclusiveComparisonDiff.status",
+        "gitInclusiveComparisonDiff.origPath",
+        "gitInclusiveComparisonDiff.fullContext",
+        "gitInclusiveComparisonDiff.ignoreWhitespace",
+      ],
+      responseFields: [
+        "gitInclusiveRevisionComparison.selectedSha",
+        "gitInclusiveRevisionComparison.baseSha",
+        "gitInclusiveRevisionComparison.headSha",
+        "gitInclusiveRevisionComparison.files",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "The existing projection capability permanently means direct selected-tree-to-HEAD comparison, and older servers have no inclusive-range route.",
+    },
+  },
   gitFileDiffProjections: {
     id: CAPABILITY_ID_ALLOCATIONS.gitFileDiffProjections.id,
     name: "git-file-diff-projections",
@@ -689,6 +738,231 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Hosted clients can outpace self-hosted servers, and the exact cumulative projection has no safe older-server request fallback.",
+    },
+  },
+  gitFileRevision: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitFileRevision.id,
+    name: "git-file-revision",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server resolves a file's last content revision and whether live filesystem content differs from the committed blob.",
+    clientFallback:
+      "Omit file-revision provenance and make no metadata request.",
+    serverContract: {
+      routes: ["GET /api/projects/:projectId/git/file-revision"],
+      routeModules: ["packages/server/src/routes/git-file-revision.ts"],
+      requestFields: [
+        "gitFileRevision.path",
+        "gitFileRevision.rev",
+        "gitFileRevision.origPath",
+      ],
+      responseFields: [
+        "gitFileRevision.isGitRepo",
+        "gitFileRevision.commit",
+        "gitFileRevision.dirty",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, and older servers have no per-file revision metadata route.",
+    },
+  },
+  gitWorkingTreeFiles: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeFiles.id,
+    name: "git-working-tree-files",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server exposes current-content inventory plus a persistent, searchable non-ignored untracked cache outside the project.",
+    clientFallback:
+      "Keep the tracked-only Files browser and legacy compact untracked expansion, making no working-tree or cache request.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/git/working-tree-files",
+        "GET /api/projects/:projectId/git/untracked-files",
+      ],
+      routeModules: ["packages/server/src/routes/git-working-tree-files.ts"],
+      responseFields: [
+        "gitWorkingTreeFiles.files[].path",
+        "gitWorkingTreeFiles.files[].tracked",
+        "gitWorkingTreeFiles.truncated",
+        "gitWorkingTreeFiles.limit",
+        "gitUntrackedFiles.files",
+        "gitUntrackedFiles.folders",
+        "gitUntrackedFiles.total",
+        "gitUntrackedFiles.refreshedAt",
+        "gitUntrackedFiles.truncated",
+        "gitUntrackedFiles.limit",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers expose only tracked paths, so the hosted client must not infer an incomplete current-content inventory from that route.",
+    },
+  },
+  gitWorkingTreeSections: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeSections.id,
+    name: "git-working-tree-sections",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.2",
+    advertisement: {
+      kind: "optional-bit",
+      index:
+        OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS.gitWorkingTreeSections.index,
+    },
+    description:
+      "Server maintains one project-keyed, lease-owned Working Tree snapshot with requested tracked, untracked, ignored, and filesystem-directory coverage, lazy filesystem-only inventory outside Git repositories, embedded Git facts when available, and sequenced live deltas.",
+    clientFallback:
+      "Use the released static working-tree inventory and cache-backed status paths without section controls, ignored enumeration, or a worktree subscription.",
+    serverContract: {
+      routes: ["GET /api/projects/:projectId/git/working-tree-files"],
+      requestFields: [
+        "gitWorkingTreeFiles.tracked",
+        "gitWorkingTreeFiles.untracked",
+        "gitWorkingTreeFiles.ignored",
+        "relaySubscribe.channel=worktree",
+        "relaySubscribe.projectId",
+        "relaySubscribe.coverage",
+        "relaySubscribe.coverage.expandedPrefixes",
+      ],
+      responseFields: [
+        "gitWorkingTreeFiles.files[].kind",
+        "gitWorktreeSnapshot.generation",
+        "gitWorktreeSnapshot.coverage",
+        "gitWorktreeSnapshot.headSha",
+        "gitWorktreeSnapshot.baseSha",
+        "gitWorktreeSnapshot.files[].tracked",
+        "gitWorktreeSnapshot.files[].kind",
+        "gitWorktreeSnapshot.files[].present",
+        "gitWorktreeSnapshot.files[].worktreeChanges",
+        "gitWorktreeSnapshot.files[].cumulativeChange",
+        "gitWorktreeSnapshot.directories[].path",
+        "gitWorktreeSnapshot.directories[].pending",
+        "gitWorktreeSnapshot.directories[].truncated",
+        "gitWorktreeDelta.generation",
+        "gitWorktreeDelta.changes",
+        "gitWorktreeDelta.directoryChanges",
+        "gitWorktreeDelta.truncated",
+      ],
+      events: ["git-worktree-snapshot", "git-worktree-delta"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace self-hosted servers, and the released inventory route provides neither sectioned ignored coverage nor a resident live snapshot and delta contract.",
+    },
+  },
+  gitWorkingTreeCompleteScan: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeCompleteScan.id,
+    name: "git-working-tree-complete-scan",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.2",
+    advertisement: {
+      kind: "optional-bit",
+      index:
+        OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS.gitWorkingTreeCompleteScan
+          .index,
+    },
+    description:
+      "Server reports total filesystem inventory sizes and accepts an explicit complete-scan worktree lease that removes the bounded client projection.",
+    clientFallback:
+      "Keep the bounded filesystem inventory and truncation notice without sending a complete-scan request or showing a Show all action.",
+    serverContract: {
+      requestFields: ["relaySubscribe.coverage.filesystemScan"],
+      responseFields: [
+        "gitWorktreeSnapshot.totalFiles",
+        "gitWorktreeSnapshot.directories[].totalFiles",
+        "gitWorktreeDelta.totalFiles",
+        "gitWorktreeDelta.directoryChanges[].directory.totalFiles",
+      ],
+      events: ["git-worktree-snapshot", "git-worktree-delta"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers ignore the new request field and cannot honor a visible request to replace a bounded filesystem listing with its complete contents.",
+    },
+  },
+  cacheMissBillingIgnoreAfter: {
+    id: CAPABILITY_ID_ALLOCATIONS.cacheMissBillingIgnoreAfter.id,
+    name: "cache-miss-billing-ignore-after",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server separates the cache-billing upper idle cutoff from the legacy recent-activity no-alert window.",
+    clientFallback:
+      "Keep the legacy recent-activity control and omit the ignore-after field and control.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.cacheMissBilling.ignoreAfterMinutes"],
+      responseFields: ["settings.cacheMissBilling.ignoreAfterMinutes"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers interpret recentActivityMinutes as a lower no-alert window, so the upper cutoff requires an additive field and permanent client gate.",
+    },
+  },
+  gitLiveWorktreeSetting: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitLiveWorktreeSetting.id,
+    name: "git-live-worktree-setting",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server persists the default-off live worktree monitoring setting independently of whether the live protocol is active.",
+    clientFallback:
+      "Hide and omit the setting, use static working-tree paths, and do not activate a worktree subscription.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.liveWorktreeMonitoringEnabled"],
+      responseFields: ["settings.liveWorktreeMonitoringEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers lack the safety setting, so a current client must not interpret their source-ahead live capability as operator opt-in.",
+    },
+  },
+  gitIncomingCommits: {
+    id: CAPABILITY_ID_ALLOCATIONS.gitIncomingCommits.id,
+    name: "git-incoming-commits",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.7.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server lists commits on the configured upstream tracking ref but not local HEAD without contacting the remote.",
+    clientFallback:
+      "Keep the upstream name as inert status text and make no incoming-commit request.",
+    serverContract: {
+      routes: ["GET /api/projects/:projectId/git/incoming-commits"],
+      routeModules: ["packages/server/src/routes/git-incoming-commits.ts"],
+      responseFields: [
+        "gitIncomingCommits.upstream",
+        "gitIncomingCommits.headSha",
+        "gitIncomingCommits.upstreamSha",
+        "gitIncomingCommits.commits",
+        "gitIncomingCommits.truncated",
+        "gitIncomingCommits.limit",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers have no read-only incoming-commit preview, and the client must not trigger an unsupported request or hidden fetch.",
     },
   },
   approvalAuditLog: {
@@ -1313,6 +1587,38 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients can outpace installed servers, and project settings must never issue unsupported reads or writes to older servers.",
     },
   },
+  projectCodeNames: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectCodeNames.id,
+    name: "project-code-names",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server allocates, persists, and atomically edits unique project code names for compact project identity in browser titles and session lists.",
+    clientFallback:
+      "Use full project names, keep legacy tab-title activity frames, hide code-name editing, and make no code-name request.",
+    serverContract: {
+      routes: [
+        "GET /api/projects",
+        "GET /api/projects/:projectId",
+        "POST /api/projects",
+        "PATCH /api/projects/:projectId/code-name",
+      ],
+      requestFields: ["projectCodeName.codeName"],
+      responseFields: [
+        "projects[].codeName",
+        "project.codeName",
+        "projectCodeName.assignments",
+      ],
+      events: ["project-code-names-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, which neither return durable code names nor support conflict-safe edits.",
+    },
+  },
   sidebarSessionResume: {
     id: CAPABILITY_ID_ALLOCATIONS.sidebarSessionResume.id,
     name: "sidebar-session-resume",
@@ -1347,7 +1653,7 @@ export const SERVER_CAPABILITIES = {
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
     description:
-      "Server persists a YA-only /done transcript row and pauses automatic session-waking work until the next real user turn.",
+      "Server persists a YA-only /done transcript row, pauses automatic session-waking work until the next real user turn, and verifies that the owned provider process stopped.",
     clientFallback:
       "Hide the toolbar setting and action, treat typed /done as an ordinary provider command, and make no done request.",
     serverContract: {
@@ -1356,6 +1662,7 @@ export const SERVER_CAPABILITIES = {
       responseFields: [
         "message",
         "paused",
+        "termination",
         "settings.clientDefaults.sessionToolbarPresence.syntheticDone",
       ],
     },
@@ -1373,18 +1680,40 @@ export const SERVER_CAPABILITIES = {
     introducedIn: "0.7.1",
     advertisement: { kind: "version-implied" },
     description:
-      "Server archives a session and applies the same durable, non-interrupting session boundary as /done while preserving /archive in the queued and transcript projections.",
+      "Server archives a session, applies the same durable stop boundary as /done, and preserves /archive in the queued and transcript projections.",
     clientFallback:
       "Translate typed /archive to the established synthetic /done operation before queue projection and make no archive request.",
     serverContract: {
       routes: ["POST /api/sessions/:sessionId/archive"],
       routeModules: ["packages/server/src/routes/session-archive.ts"],
-      responseFields: ["message", "paused"],
+      responseFields: ["message", "paused", "termination"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
         "Older servers cannot atomically archive with the durable session boundary, but can preserve the user's done intent through the established /done route.",
+    },
+  },
+  syntheticTerminateCommand: {
+    id: CAPABILITY_ID_ALLOCATIONS.syntheticTerminateCommand.id,
+    name: "synthetic-terminate-command",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server archives a session, persists a /terminate boundary, blocks automatic resume, and verifies that the owned provider process stopped.",
+    clientFallback:
+      "Hide the command, treat typed /terminate as an ordinary provider command, and make no terminate request.",
+    serverContract: {
+      routes: ["POST /api/sessions/:sessionId/terminate"],
+      routeModules: ["packages/server/src/routes/session-terminate.ts"],
+      responseFields: ["message", "paused", "termination", "resumeExemption"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers do not combine archival, durable resume exemption, and verified process termination.",
     },
   },
   projectQueueNewSessionShortcutSetting: {
@@ -1595,12 +1924,16 @@ export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;
 
 export const PROJECT_SESSION_DEFAULTS_CAPABILITY =
   SERVER_CAPABILITIES.projectSessionDefaults.name;
+export const PROJECT_CODE_NAMES_CAPABILITY =
+  SERVER_CAPABILITIES.projectCodeNames.name;
 export const SIDEBAR_SESSION_RESUME_CAPABILITY =
   SERVER_CAPABILITIES.sidebarSessionResume.name;
 export const SYNTHETIC_DONE_COMMAND_CAPABILITY =
   SERVER_CAPABILITIES.syntheticDoneCommand.name;
 export const SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY =
   SERVER_CAPABILITIES.syntheticArchiveCommand.name;
+export const SYNTHETIC_TERMINATE_COMMAND_CAPABILITY =
+  SERVER_CAPABILITIES.syntheticTerminateCommand.name;
 export const PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.projectQueueNewSessionShortcutSetting.name;
 
@@ -1619,12 +1952,28 @@ export const GIT_DIRTY_FILE_EDITOR_CAPABILITY =
   SERVER_CAPABILITIES.gitDirtyFileEditor.name;
 export const GIT_FILE_DIFF_PROJECTIONS_CAPABILITY =
   SERVER_CAPABILITIES.gitFileDiffProjections.name;
+export const GIT_FILE_REVISION_CAPABILITY =
+  SERVER_CAPABILITIES.gitFileRevision.name;
+export const GIT_WORKING_TREE_FILES_CAPABILITY =
+  SERVER_CAPABILITIES.gitWorkingTreeFiles.name;
+export const GIT_WORKING_TREE_SECTIONS_CAPABILITY =
+  SERVER_CAPABILITIES.gitWorkingTreeSections.name;
+export const GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY =
+  SERVER_CAPABILITIES.gitWorkingTreeCompleteScan.name;
+export const GIT_LIVE_WORKTREE_SETTING_CAPABILITY =
+  SERVER_CAPABILITIES.gitLiveWorktreeSetting.name;
+export const CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY =
+  SERVER_CAPABILITIES.cacheMissBillingIgnoreAfter.name;
+export const GIT_INCOMING_COMMITS_CAPABILITY =
+  SERVER_CAPABILITIES.gitIncomingCommits.name;
 export const GIT_SOURCE_REVIEW_CAPABILITY =
   SERVER_CAPABILITIES.gitSourceReview.name;
 export const GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY =
   SERVER_CAPABILITIES.gitSourceReviewSubmissions.name;
 export const GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY =
   SERVER_CAPABILITIES.gitSourceReviewProjections.name;
+export const GIT_INCLUSIVE_TO_HEAD_CAPABILITY =
+  SERVER_CAPABILITIES.gitInclusiveToHead.name;
 
 export const APPROVAL_AUDIT_LOG_CAPABILITY =
   SERVER_CAPABILITIES.approvalAuditLog.name;

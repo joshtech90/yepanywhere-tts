@@ -20,6 +20,7 @@ import {
 } from "react";
 import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
+import { FileRevisionLink } from "../components/FileRevisionLink";
 import { MarkdownPreview } from "../components/MarkdownPreview";
 import { renderFixedFontRichContent } from "../components/ui/FixedFontMathToggle";
 import { Modal } from "../components/ui/Modal";
@@ -36,8 +37,9 @@ import { DiffCommentController } from "./DiffCommentLayer";
 import { SideBySideDiff } from "./SideBySideDiff";
 import { CHANGED_DIFF_LINE_SELECTOR, UnifiedDiff } from "./UnifiedDiff";
 import type { MessageKey, TranslationFn } from "../i18n";
+import styles from "./GitStatusDiffPreview.module.css";
 
-const GIT_DIFF_MAX_RENDERED_HTML_CHARS = 1_000_000;
+const GIT_DIFF_MAX_RENDERED_HTML_CHARS = 1_000_000 * 20;
 
 function getDiffSourceText(hunks: PatchHunk[]): string {
   return hunks.flatMap((hunk) => hunk.lines).join("\n");
@@ -64,6 +66,7 @@ function getDiffScrollRoot(content: HTMLElement): HTMLElement {
 
 export interface GitDiffViewState {
   showFullContext?: boolean;
+  hideRemovedLines?: boolean;
   showMarkdownPreview?: boolean;
 }
 
@@ -81,6 +84,7 @@ interface DiffPaneHeader {
   title: string;
   path: string;
   actions?: ReactNode;
+  revision?: ReactNode;
 }
 
 export interface GitDiffPreviewHandle {
@@ -124,12 +128,21 @@ export type GitDiffSource =
   | { kind: "working-tree-history" }
   | { kind: "commit"; sha: string }
   | { kind: "comparison"; baseSha: string; headSha: string }
+  | { kind: "inclusive-comparison"; baseSha: string; headSha: string }
   | { kind: "file-projection"; mode: GitFileDiffMode };
 
 const WORKTREE_SOURCE: GitDiffSource = { kind: "worktree" };
 const WORKING_TREE_HISTORY_SOURCE: GitDiffSource = {
   kind: "working-tree-history",
 };
+
+function revisionForDiffSource(source: GitDiffSource): string | undefined {
+  if (source.kind === "commit") return source.sha;
+  if (source.kind === "comparison" || source.kind === "inclusive-comparison") {
+    return source.headSha;
+  }
+  return undefined;
+}
 
 function getRelativeScrollRatio(element: HTMLElement): number {
   const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
@@ -154,8 +167,8 @@ function sourceFromPrimitives(
 ): GitDiffSource {
   return kind === "commit"
     ? { kind: "commit", sha: baseSha }
-    : kind === "comparison"
-      ? { kind: "comparison", baseSha, headSha }
+    : kind === "comparison" || kind === "inclusive-comparison"
+      ? { kind, baseSha, headSha }
       : kind === "file-projection"
         ? { kind: "file-projection", mode: fileDiffMode }
         : kind === "working-tree-history"
@@ -180,8 +193,12 @@ function fetchDiffForSource(
       ...(ignoreWhitespace ? { ignoreWhitespace: true } : {}),
     });
   }
-  if (source.kind === "comparison") {
-    return api.getGitComparisonDiff(projectId, {
+  if (source.kind === "comparison" || source.kind === "inclusive-comparison") {
+    const getDiff =
+      source.kind === "inclusive-comparison"
+        ? api.getGitInclusiveComparisonDiff
+        : api.getGitComparisonDiff;
+    return getDiff(projectId, {
       baseSha: source.baseSha,
       headSha: source.headSha,
       path: file.path,
@@ -195,6 +212,7 @@ function fetchDiffForSource(
     return api.getGitFileProjectionDiff(projectId, {
       path: file.path,
       mode: source.mode,
+      ...(file.origPath ? { origPath: file.origPath } : {}),
       fullContext,
     });
   }
@@ -226,7 +244,7 @@ function commentRevisionsForSource(source: GitDiffSource):
     };
     return { old: revision, new: revision };
   }
-  if (source.kind === "comparison") {
+  if (source.kind === "comparison" || source.kind === "inclusive-comparison") {
     return {
       old: { kind: "sha", sha: source.baseSha },
       new: { kind: "sha", sha: source.headSha },
@@ -304,6 +322,18 @@ export const GitDiffPreview = forwardRef<
               title: fileName ?? file.path,
               path: file.path,
               actions: headerActions,
+              revision: (
+                <FileRevisionLink
+                  projectId={projectId}
+                  path={file.path}
+                  origPath={
+                    revisionForDiffSource(source) ? undefined : file.origPath
+                  }
+                  rev={revisionForDiffSource(source)}
+                  dirtyLabel={t("fileRevisionDirty" as never)}
+                  uncommittedLabel={t("fileRevisionUncommitted" as never)}
+                />
+              ),
             }}
             onHunkNavigationChange={handleHunkNavigationChange}
             onCommentEditorOpenChange={onCommentEditorOpenChange}
@@ -383,9 +413,17 @@ export function GitDiffModal({
       closeOnBackGesture
       contentRef={bodyRef}
     >
-      {headerActions && (
-        <div className="git-diff-preview-header-actions">{headerActions}</div>
-      )}
+      <div className="git-diff-preview-header-actions">
+        <FileRevisionLink
+          projectId={projectId}
+          path={file.path}
+          origPath={revisionForDiffSource(source) ? undefined : file.origPath}
+          rev={revisionForDiffSource(source)}
+          dirtyLabel={t("fileRevisionDirty" as never)}
+          uncommittedLabel={t("fileRevisionUncommitted" as never)}
+        />
+        {headerActions}
+      </div>
       <GitDiffBody
         file={file}
         fileKey={fileKey}
@@ -445,10 +483,13 @@ export function GitDiffBody({
   const sourceBaseSha =
     source.kind === "commit"
       ? source.sha
-      : source.kind === "comparison"
+      : source.kind === "comparison" || source.kind === "inclusive-comparison"
         ? source.baseSha
         : "";
-  const sourceHeadSha = source.kind === "comparison" ? source.headSha : "";
+  const sourceHeadSha =
+    source.kind === "comparison" || source.kind === "inclusive-comparison"
+      ? source.headSha
+      : "";
   const sourceFileDiffMode =
     source.kind === "file-projection" ? source.mode : "worktree";
   const requestKey = JSON.stringify([
@@ -480,6 +521,25 @@ export function GitDiffBody({
           error: null,
         };
   const { result: diffResult, loading, error } = currentLoad;
+  const liveDiffViewRef = useRef<{
+    fileKey: string;
+    view: GitDiffViewState | undefined;
+  }>({ fileKey, view: retainedDiffView });
+  if (liveDiffViewRef.current.fileKey !== fileKey) {
+    liveDiffViewRef.current = { fileKey, view: retainedDiffView };
+  }
+  const retainLiveDiffView = useCallback(
+    (retainedFileKey: string, view: GitDiffViewState) => {
+      if (liveDiffViewRef.current.fileKey === retainedFileKey) {
+        liveDiffViewRef.current.view = {
+          ...liveDiffViewRef.current.view,
+          ...view,
+        };
+      }
+      onRetainDiffView?.(retainedFileKey, view);
+    },
+    [onRetainDiffView],
+  );
   const visibleDiffResultRef = useRef(diffResult);
   const pendingScrollRef = useRef<{
     fileKey: string;
@@ -558,7 +618,11 @@ export function GitDiffBody({
       })
       .catch((err) => {
         if (!cancelled) {
-          if (ignoreWhitespace || sourceKind === "comparison") {
+          if (
+            ignoreWhitespace ||
+            sourceKind === "comparison" ||
+            sourceKind === "inclusive-comparison"
+          ) {
             onProjectionRequestFailure?.();
           }
           const message = err.message || t("gitStatusLoadDiffFailed");
@@ -602,6 +666,7 @@ export function GitDiffBody({
           title={paneHeader.title}
           path={paneHeader.path}
           actions={paneHeader.actions}
+          revision={paneHeader.revision}
         />
       )}
       {initialLoading && (
@@ -618,8 +683,8 @@ export function GitDiffBody({
             projectId={projectId}
             source={source}
             diffResult={diffResult}
-            retainedDiffView={retainedDiffView}
-            onRetainDiffView={onRetainDiffView}
+            retainedDiffView={liveDiffViewRef.current.view}
+            onRetainDiffView={retainLiveDiffView}
             paneHeader={paneHeader}
             onHunkNavigationChange={onHunkNavigationChange}
             onCommentEditorOpenChange={onCommentEditorOpenChange}
@@ -667,7 +732,12 @@ function GitDiffContent({
   t: TranslationFn;
 } & GitDiffPreviewRetentionProps) {
   const [showFullContext, setShowFullContext] = useState(
-    () => retainedDiffView?.showFullContext ?? false,
+    () =>
+      (retainedDiffView?.showFullContext ?? false) ||
+      (retainedDiffView?.hideRemovedLines ?? false),
+  );
+  const [hideRemovedLines, setHideRemovedLines] = useState(
+    () => retainedDiffView?.hideRemovedLines ?? false,
   );
   const fullContextRevisionKey = useMemo(
     () =>
@@ -720,10 +790,13 @@ function GitDiffContent({
   const sourceBaseSha =
     source.kind === "commit"
       ? source.sha
-      : source.kind === "comparison"
+      : source.kind === "comparison" || source.kind === "inclusive-comparison"
         ? source.baseSha
         : "";
-  const sourceHeadSha = source.kind === "comparison" ? source.headSha : "";
+  const sourceHeadSha =
+    source.kind === "comparison" || source.kind === "inclusive-comparison"
+      ? source.headSha
+      : "";
   const sourceFileDiffMode =
     source.kind === "file-projection" ? source.mode : "worktree";
   const commentRevisions = useMemo(
@@ -857,7 +930,11 @@ function GitDiffContent({
         );
         return result;
       } catch (err) {
-        if (ignoreWhitespace || sourceKind === "comparison") {
+        if (
+          ignoreWhitespace ||
+          sourceKind === "comparison" ||
+          sourceKind === "inclusive-comparison"
+        ) {
           onProjectionRequestFailure?.();
         }
         const message =
@@ -901,8 +978,29 @@ function GitDiffContent({
       content?.querySelector(CHANGED_DIFF_LINE_SELECTOR) ?? null,
     );
     setShowFullContext(nextShowFullContext);
-    retainDiffView({ showFullContext: nextShowFullContext });
+    if (!nextShowFullContext) setHideRemovedLines(false);
+    retainDiffView({
+      showFullContext: nextShowFullContext,
+      ...(nextShowFullContext ? {} : { hideRemovedLines: false }),
+    });
   }, [loadFullContext, retainDiffView, showFullContext]);
+
+  const handleToggleRemovedLines = useCallback(async () => {
+    const nextHideRemovedLines = !hideRemovedLines;
+    if (nextHideRemovedLines && !(await loadFullContext())) return;
+    const content = contentRef.current;
+    const scrollRoot = content ? getDiffScrollRoot(content) : null;
+    pendingScrollAnchorRef.current = captureScrollPositionAnchor(
+      scrollRoot,
+      content?.querySelector(CHANGED_DIFF_LINE_SELECTOR) ?? null,
+    );
+    if (nextHideRemovedLines) setShowFullContext(true);
+    setHideRemovedLines(nextHideRemovedLines);
+    retainDiffView({
+      hideRemovedLines: nextHideRemovedLines,
+      ...(nextHideRemovedLines ? { showFullContext: true } : {}),
+    });
+  }, [hideRemovedLines, loadFullContext, retainDiffView]);
 
   const handleToggleMarkdownPreview = useCallback(() => {
     const nextShowMarkdownPreview = !showMarkdownPreview;
@@ -936,12 +1034,15 @@ function GitDiffContent({
       anchor,
       contentRef.current?.querySelector(CHANGED_DIFF_LINE_SELECTOR) ?? null,
     );
-  }, [showFullContext, fullContextResult]);
+  }, [showFullContext, hideRemovedLines, fullContextResult]);
 
   const displayResult =
     showFullContext && fullContextResult ? fullContextResult : diffResult;
 
-  const oversizedHtmlSkip = getOversizedDiffHtmlSkip(displayResult.diffHtml);
+  const plainDiff =
+    displayResult.renderMode === "plain" ||
+    displayResult.diffHtml.length > GIT_DIFF_MAX_RENDERED_HTML_CHARS;
+  const diffHtml = plainDiff ? "" : displayResult.diffHtml;
   const binaryPatchSkip = useMemo(
     () =>
       displayResult.previewSkipped
@@ -949,8 +1050,7 @@ function GitDiffContent({
         : getBinaryPatchSkip(displayResult.structuredPatch),
     [displayResult.previewSkipped, displayResult.structuredPatch],
   );
-  const previewSkipped =
-    displayResult.previewSkipped ?? binaryPatchSkip ?? oversizedHtmlSkip;
+  const previewSkipped = displayResult.previewSkipped ?? binaryPatchSkip;
   const [hunkPosition, setHunkPosition] = useState({ index: 0, count: 0 });
   const hunkPositionRef = useRef(hunkPosition);
 
@@ -1100,12 +1200,20 @@ function GitDiffContent({
             ignoreWhitespace ? "active" : ""
           }`}
           onClick={onToggleIgnoreWhitespace}
-          title={t("gitStatusIgnoreWhitespace")}
-          aria-label={t("gitStatusIgnoreWhitespace")}
+          title={
+            ignoreWhitespace
+              ? t("gitStatusIgnoreWhitespaceActive")
+              : t("gitStatusIgnoreWhitespace")
+          }
+          aria-label={
+            ignoreWhitespace
+              ? t("gitStatusIgnoreWhitespaceActive")
+              : t("gitStatusIgnoreWhitespace")
+          }
           aria-pressed={ignoreWhitespace}
         >
           <span className="diff-whitespace-glyph" aria-hidden="true">
-            ␣
+            _+
           </span>
         </button>
       )}
@@ -1152,6 +1260,27 @@ function GitDiffContent({
       >
         <ContextModeIcon expanded={showFullContext} />
       </button>
+      <button
+        type="button"
+        className={`diff-context-toggle diff-toolbar-icon-button ${
+          hideRemovedLines ? "active" : ""
+        }`}
+        onClick={handleToggleRemovedLines}
+        disabled={contextLoading}
+        title={
+          hideRemovedLines
+            ? t("gitStatusShowRemovedLines")
+            : t("gitStatusHideRemovedLines")
+        }
+        aria-label={
+          hideRemovedLines
+            ? t("gitStatusShowRemovedLines")
+            : t("gitStatusHideRemovedLines")
+        }
+        aria-pressed={hideRemovedLines}
+      >
+        <RemovedLinesIcon hidden={hideRemovedLines} />
+      </button>
       <CopyButton
         value={resolveCopyContent}
         title={t("fileViewerCopyContent")}
@@ -1163,7 +1292,7 @@ function GitDiffContent({
         }
         icon="content"
       />
-      {!showingMarkdownPreview && (
+      {!showingMarkdownPreview && !plainDiff && !hideRemovedLines && (
         <button
           type="button"
           className="diff-context-toggle diff-toolbar-icon-button"
@@ -1191,18 +1320,21 @@ function GitDiffContent({
           ? t("gitStatusWhitespaceChangesHidden")
           : t("gitStatusNoContentChanges")}
       </div>
-    ) : displayResult.diffHtml &&
+    ) : diffHtml &&
+      !hideRemovedLines &&
       resolveDiffViewMode(viewMode, paneWidth) === "side-by-side" ? (
       <SideBySideDiff
-        diffHtml={displayResult.diffHtml}
+        diffHtml={diffHtml}
         structuredPatch={displayResult.structuredPatch}
         splitAfterLine={splitAfterLine}
         editor={editor}
       />
-    ) : displayResult.diffHtml ? (
+    ) : diffHtml ? (
       <UnifiedDiff
-        diffHtml={displayResult.diffHtml}
+        diffHtml={diffHtml}
         structuredPatch={displayResult.structuredPatch}
+        hideRemovedLines={hideRemovedLines}
+        plain={plainDiff}
         splitAfterLine={splitAfterLine}
         editor={editor}
       />
@@ -1210,6 +1342,8 @@ function GitDiffContent({
       <UnifiedDiff
         diffHtml=""
         structuredPatch={displayResult.structuredPatch}
+        hideRemovedLines={hideRemovedLines}
+        plain={plainDiff}
         splitAfterLine={splitAfterLine}
         editor={editor}
       />
@@ -1222,6 +1356,7 @@ function GitDiffContent({
           title={paneHeader.title}
           path={paneHeader.path}
           actions={paneHeader.actions}
+          revision={paneHeader.revision}
         >
           {toolbarButtons}
         </DiffPaneToolbar>
@@ -1236,6 +1371,11 @@ function GitDiffContent({
         className="diff-modal-content source-diff-pane diff-gutter-aligned"
         ref={mountContent}
       >
+        {plainDiff && !previewSkipped && !showingMarkdownPreview && (
+          <div className={styles.plainNotice}>
+            {t("gitStatusDiffPlainMode")}
+          </div>
+        )}
         {showingMarkdownPreview && renderedPreviewHtml ? (
           <MarkdownPreview html={renderedPreviewHtml} sourcePath={file.path} />
         ) : previewSkipped ? (
@@ -1274,6 +1414,7 @@ function DiffPaneToolbar({
   title,
   path,
   actions,
+  revision,
   children,
 }: DiffPaneHeader & { children?: ReactNode }) {
   const directoryPath =
@@ -1283,8 +1424,11 @@ function DiffPaneToolbar({
         : path
       : "";
   return (
-    <div className="git-diff-pane-toolbar">
-      <span className="git-diff-file-identity" title={path || title}>
+    <div className={`git-diff-pane-toolbar ${styles.toolbar}`}>
+      <span
+        className={`git-diff-file-identity ${styles.fileIdentity}`}
+        title={path || title}
+      >
         {directoryPath && (
           <>
             <span className="git-diff-toolbar-path">{directoryPath}</span>
@@ -1293,11 +1437,22 @@ function DiffPaneToolbar({
             </span>
           </>
         )}
-        <h3 className="git-diff-preview-title">{title}</h3>
+        <h3 className={`git-diff-preview-title ${styles.previewTitle}`}>
+          {title}
+        </h3>
       </span>
-      {children && <div className="diff-context-buttons">{children}</div>}
+      {revision}
+      {children && (
+        <div className={`diff-context-buttons ${styles.controls}`}>
+          {children}
+        </div>
+      )}
       {actions && (
-        <div className="git-diff-preview-header-actions">{actions}</div>
+        <div
+          className={`git-diff-preview-header-actions ${styles.headerActions}`}
+        >
+          {actions}
+        </div>
       )}
     </div>
   );
@@ -1328,6 +1483,25 @@ function ContextModeIcon({ expanded }: { expanded: boolean }) {
           <path d="m8 21 4-4 4 4" />
         </>
       )}
+    </svg>
+  );
+}
+
+function RemovedLinesIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 7h14M5 12h14M5 17h14" />
+      {hidden && <path d="M4 4l16 16" />}
     </svg>
   );
 }
@@ -1432,6 +1606,18 @@ function GitDiffPreviewSkippedState({
             <dd>{formatBytes(previewSkipped.totalBytes)}</dd>
           </div>
         )}
+        {previewSkipped.totalChars !== undefined && (
+          <div>
+            <dt>{t("gitStatusDiffPreviewSkippedCharacters")}</dt>
+            <dd>{previewSkipped.totalChars.toLocaleString()}</dd>
+          </div>
+        )}
+        {previewSkipped.totalLines !== undefined && (
+          <div>
+            <dt>{t("gitStatusDiffPreviewSkippedLines")}</dt>
+            <dd>{previewSkipped.totalLines.toLocaleString()}</dd>
+          </div>
+        )}
         {previewSkipped.maxLineChars !== undefined && (
           <div>
             <dt>{t("gitStatusDiffPreviewSkippedLineLength")}</dt>
@@ -1447,20 +1633,6 @@ function GitDiffPreviewSkippedState({
       </dl>
     </div>
   );
-}
-
-function getOversizedDiffHtmlSkip(
-  diffHtml: string,
-): GitDiffPreviewSkipped | null {
-  if (diffHtml.length <= GIT_DIFF_MAX_RENDERED_HTML_CHARS) {
-    return null;
-  }
-
-  return {
-    reason: "html-too-large",
-    htmlChars: diffHtml.length,
-    maxHtmlChars: GIT_DIFF_MAX_RENDERED_HTML_CHARS,
-  };
 }
 
 function getBinaryPatchSkip(
@@ -1513,7 +1685,6 @@ function getDiffPreviewSkippedMessage(
     case "html-too-large":
       return t("gitStatusDiffPreviewSkippedHtmlTooLarge");
   }
-  return t("gitStatusDiffPreviewSkippedContentTooLarge");
 }
 
 function formatBytes(bytes: number): string {

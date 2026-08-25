@@ -73,6 +73,15 @@ adding chrome; visible narrowing tiers also show its toolbar button.
 
 ## Known Exceptions
 
+[provider-runtime-status](provider-runtime-status.md) gives Codex
+`serverOverloaded` turns a built-in, bounded same-model retry. Codex itself
+ends these turns, but the failure is transient and the recovery adds no new
+user concept or submitted text: YA resamples the already-recorded turn after
+20, 45, 80, 125… seconds, exposes the existing retry status, and stops after
+16 attempts or an explicit abort. Quota and other terminal errors are
+unchanged. Authorized by graehl on 2026-08-24 in the originating request, with
+the five-times-slower schedule supplied as a follow-up.
+
 The server-wide **Subagent nesting limit** defaults to depth `1`, rather than
 Claude Code's first-party default of `3`. Native subagent fan-out can multiply
 token and quota use before an operator can see or stop the deeper work, so this
@@ -209,16 +218,16 @@ revisions, acronyms, single letters, and unlisted title-case words remain
 provider-verbatim. Authorized by Kyle on 2026-07-30 as an explicit product
 decision after observing the pause-boundary behavior interactively.
 
-## Worked instance: default-off speech annotations
+## Known exception: default speech annotation
 
 [mic-button-speech-ui](mic-button-speech-ui.md) offers a browser-local
-**Speech message prefix** selector with `[ASR]`, `[STT]`, `[Dictation]`, and
-Custom choices. The selector defaults to Off, so Smart Turn, spoken `send`, and
-manual delivery all remain provider-verbatim until the user opts into this YA-
-novel annotation. An optional Quick-send window extends the selected prefix to
-one rapid manual delivery after finalized speech; it also defaults to 0/off and
-has no effect while prefixing is Off. This is an ordinary application of the
-provider-text rule above, not a Known Exception.
+**Speech message prefix** selector with `🎤`, `[ASR]`, `[STT]`, `[Dictation]`,
+Custom, and Off choices. The selector defaults to `🎤`, so Smart Turn and
+spoken `send` prepend the microphone emoji plus one separating space. An
+optional Quick-send window extends the selected prefix to one rapid manual
+delivery after finalized speech; it defaults to 0/off. Explicit stored choices
+remain authoritative. Graehl authorized this provider-text exception on
+2026-08-22; Off continues to guarantee verbatim delivery.
 
 ## Worked instances: queued-turn delivery
 
@@ -242,6 +251,21 @@ behind a configurable compose-time join window
 0 = never join). The blind-go-ahead intent itself deserves a first-class
 control someday (a slice or duration budget), rather than riding on
 queue mechanics.
+
+## Worked instance: live worktree monitoring
+
+Source Control's lease-backed live filesystem snapshot defaults on only on
+Linux, where its bounded native-watcher profile has been measured. macOS stays
+off after its watcher-exhaustion incident, and Windows stays off pending native
+measurement; explicit opt-in on either uses poll-only reconciliation. Core YA
+sessions, static Git status, bounded working-tree inventory, explicit refresh,
+and file viewing do not require live monitoring. Continuous monitoring is
+YA-novel and may scale with an externally controlled directory tree, so the
+Linux default is a deliberate measured exception rather than a general
+promotion. Hard watcher ceilings and resource-exhaustion fallback remain
+mandatory wherever native watchers run. See
+[source-control](source-control.md) and
+[live-worktree-resource-safety](../docs/tactical/113-live-worktree-resource-safety.md).
 
 ## Related topics
 

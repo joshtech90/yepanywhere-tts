@@ -8,6 +8,7 @@ import {
   memo,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -16,6 +17,7 @@ import {
 } from "react";
 import { api } from "../api/client";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useQuoteReply } from "../contexts/QuoteReplyContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useFileVersionControl } from "../hooks/useFileVersionControl";
 import { useSelectionActions } from "../hooks/useMessageListSelectionQuote";
@@ -23,10 +25,17 @@ import { useRegisterQuoteableTextSource } from "../hooks/useQuoteableTextSource"
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
-import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
+import {
+  writeClipboardRichText,
+  writeClipboardText,
+  writeClipboardTextLater,
+} from "../lib/clipboard";
+import { createCommentAnchor } from "../lib/commentAnchors";
 import { getEmbeddedFileMediaBlob } from "../lib/embeddedFileMedia";
 import { downloadBlob } from "../lib/imageActions";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
+import { getMarkdownSnippetForSubElement } from "../lib/markdownSelectionCopy";
+import { getRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
 import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
 import {
   annotateShikiSourceOffsets,
@@ -55,6 +64,7 @@ import {
   FileDiffViewLinks,
   type FileViewSelection,
 } from "./FileDiffViewLinks";
+import { FileRevisionLink } from "./FileRevisionLink";
 import {
   FilePathContextMenu,
   type FileViewPresentation,
@@ -71,10 +81,10 @@ import {
   FileViewerDensityControls,
   getSourceViewStyle,
   MarkdownPreview,
-  MarkdownViewToggle,
   useFileViewerDensity,
 } from "./MarkdownPreview";
 import { Modal } from "./ui/Modal";
+import { ViewerSelectAllButton } from "./ViewerSelectAllButton";
 
 export interface FileViewerSource {
   loadFile: (
@@ -127,6 +137,9 @@ interface FileViewerProps {
 }
 
 export type FileViewerMode = "full" | "range";
+
+const MARKDOWN_COMMENT_BLOCK_SELECTOR =
+  "p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, tr";
 
 /**
  * Format file size for display.
@@ -350,6 +363,7 @@ export const FileViewer = memo(function FileViewer({
   diffMode,
 }: FileViewerProps) {
   const { t } = useI18n();
+  const quoteTextBlock = useQuoteReply();
   const transport = useCurrentSourceRuntime().transport;
   const publicShareContext = usePublicShareContext();
   const viewIdentity = `${projectId}\0${filePath}\0${diffMode ?? "source"}`;
@@ -437,21 +451,6 @@ export const FileViewer = memo(function FileViewer({
     },
     [projectId, startNewSessionWithPrefill],
   );
-  const {
-    floatingSelectionActions: standaloneSelectionActions,
-    selectionContextMenu: standaloneSelectionContextMenu,
-  } = useSelectionActions({
-    containerRef: fileViewerBodyRef,
-    inert: !standalone,
-    onStartNewSessionFromSelection:
-      publicShareContext === null ? startNewSessionFromSelection : undefined,
-    quoteClearSignal: 0,
-    isInteractiveTarget: (target) =>
-      target instanceof Element &&
-      target.closest(
-        "button, input, textarea, select, a[href], [contenteditable='true']",
-      ) !== null,
-  });
   const markdownPreviewRef = useRef<HTMLDivElement>(null);
   const {
     modal: localMediaModal,
@@ -479,6 +478,44 @@ export const FileViewer = memo(function FileViewer({
     },
     [],
   );
+  const handleMarkdownPreviewClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      handleLocalResourceClick(event);
+      if (
+        event.defaultPrevented ||
+        !quoteTextBlock ||
+        !(event.target instanceof Element) ||
+        event.target.closest(
+          "button, input, textarea, select, a[href], [contenteditable='true']",
+        )
+      ) {
+        return;
+      }
+      const selection = event.currentTarget.ownerDocument.getSelection();
+      if (selection && !selection.isCollapsed) {
+        return;
+      }
+      const sourceElement = fileViewerBodyRef.current;
+      const blockElement = event.target.closest<HTMLElement>(
+        MARKDOWN_COMMENT_BLOCK_SELECTOR,
+      );
+      if (
+        !sourceElement ||
+        !blockElement ||
+        !event.currentTarget.contains(blockElement)
+      ) {
+        return;
+      }
+      const snippet = getMarkdownSnippetForSubElement(
+        sourceElement,
+        blockElement,
+      );
+      if (snippet) {
+        quoteTextBlock(createCommentAnchor(snippet));
+      }
+    },
+    [handleLocalResourceClick, quoteTextBlock],
+  );
   const mediaSource = useMemo(
     () => source.createMediaSource?.(fileData),
     [fileData, source],
@@ -494,6 +531,17 @@ export const FileViewer = memo(function FileViewer({
         )
       : fileData.renderedMarkdownHtml;
   }, [fileData, source]);
+  const renderedClipboardPayload = useMemo(
+    () =>
+      fileData
+        ? getRenderedFileClipboardPayload(
+            filePath,
+            fileData,
+            renderedMarkdownHtml ?? undefined,
+          )
+        : null,
+    [fileData, filePath, renderedMarkdownHtml],
+  );
   const highlightedHtml = useMemo(() => {
     const annotated = annotateHighlightedHtmlLines(
       fileData?.highlightedHtml,
@@ -676,6 +724,13 @@ export const FileViewer = memo(function FileViewer({
         .then((file) => file.content ?? ""),
     );
   }, [filePath, projectId, source]);
+  const handleCopyRenderedContentsFromMenu = useCallback(() => {
+    if (!renderedClipboardPayload) return;
+    void writeClipboardRichText(
+      renderedClipboardPayload.html,
+      renderedClipboardPayload.text,
+    );
+  }, [renderedClipboardPayload]);
 
   const displayPath = useMemo(
     () => makeDisplayPath(filePath, projectPath),
@@ -897,11 +952,14 @@ export const FileViewer = memo(function FileViewer({
       if (showPreview && hasMarkdownPreview && renderedMarkdownHtml) {
         return (
           <MarkdownPreview
+            className={
+              quoteTextBlock ? viewerStyles.commentableMarkdown : undefined
+            }
             html={renderedMarkdownHtml}
             sourcePath={filePath}
             density={markdownDensity}
             ariaLabel={t("fileViewerPreview" as never)}
-            onClick={handleLocalResourceClick}
+            onClick={handleMarkdownPreviewClick}
             onContextMenu={handleLocalResourceContextMenu}
             onKeyDown={handleLocalResourceKeyDown}
             ref={markdownPreviewRef}
@@ -1055,6 +1113,18 @@ export const FileViewer = memo(function FileViewer({
   // Header with file info and actions
   const header = (
     <div className={`file-viewer-header ${viewerStyles.header}`}>
+      {onClose && (
+        <button
+          type="button"
+          className={`file-viewer-action ${viewerStyles.backButton}`}
+          onClick={onClose}
+          title={t("actionBack")}
+          aria-label={t("actionBack")}
+        >
+          <BackIcon />
+          <span className={viewerStyles.backLabel}>{t("actionBack")}</span>
+        </button>
+      )}
       <div className={`file-viewer-info ${viewerStyles.info}`}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
         <span
@@ -1064,23 +1134,35 @@ export const FileViewer = memo(function FileViewer({
         >
           {displayPath}
         </span>
-        <span className="file-viewer-meta">
-          {metadata ? formatFileSize(metadata.size) : ""}
-          {!diffActive && metadata?.isText && content !== undefined && (
-            <>
-              {" \u2022 "}
-              {fileData?.contentTruncated
-                ? `lines ${getContentStartLine(fileData)}-${getContentEndLine(fileData)}${
-                    fileData?.contentTotalLines
-                      ? ` of ${fileData.contentTotalLines}`
-                      : ""
-                  }`
-                : t("fileViewerLines" as never, {
-                    count: content.length > 0 ? content.split("\n").length : 0,
-                  })}
-            </>
+        <div className={viewerStyles.provenanceRow}>
+          {publicShareContext === null && fileVersionControl.relativePath && (
+            <FileRevisionLink
+              projectId={projectId}
+              path={fileVersionControl.relativePath}
+              origPath={fileVersionControl.worktreeFile?.origPath}
+              dirtyLabel={t("fileRevisionDirty" as never)}
+              uncommittedLabel={t("fileRevisionUncommitted" as never)}
+            />
           )}
-        </span>
+          <span className="file-viewer-meta">
+            {metadata ? formatFileSize(metadata.size) : ""}
+            {!diffActive && metadata?.isText && content !== undefined && (
+              <>
+                {" \u2022 "}
+                {fileData?.contentTruncated
+                  ? `lines ${getContentStartLine(fileData)}-${getContentEndLine(fileData)}${
+                      fileData?.contentTotalLines
+                        ? ` of ${fileData.contentTotalLines}`
+                        : ""
+                    }`
+                  : t("fileViewerLines" as never, {
+                      count:
+                        content.length > 0 ? content.split("\n").length : 0,
+                    })}
+              </>
+            )}
+          </span>
+        </div>
       </div>
       <div className={`file-viewer-actions ${viewerStyles.actions}`}>
         {publicShareContext === null && (
@@ -1094,13 +1176,16 @@ export const FileViewer = memo(function FileViewer({
           />
         )}
         {!diffActive && hasFilePreview && (
-          <MarkdownViewToggle
-            sourceLabel={t("fileViewerSource" as never)}
-            previewLabel={t("fileViewerPreview" as never)}
-            showPreview={showPreview}
-            onShowSource={() => setShowPreview(false)}
-            onShowPreview={() => setShowPreview(true)}
-          />
+          <button
+            type="button"
+            className={`file-viewer-action ${viewerStyles.rawToggle}`}
+            aria-label={t("fileViewerRawSource" as never)}
+            aria-pressed={!showPreview}
+            title={t("fileViewerRawSource" as never)}
+            onClick={() => setShowPreview((visible) => !visible)}
+          >
+            <RawSourceIcon />
+          </button>
         )}
         {!diffActive && metadata?.isText && content !== undefined && (
           <FileViewerDensityControls
@@ -1109,6 +1194,15 @@ export const FileViewer = memo(function FileViewer({
             canZoomOut={viewerDensity.canZoomOut}
             onZoomIn={viewerDensity.zoomIn}
             onZoomOut={viewerDensity.zoomOut}
+          />
+        )}
+        {(diffActive ||
+          (!isImage &&
+            content !== undefined &&
+            !(showPreview && hasHtmlPreview))) && (
+          <ViewerSelectAllButton
+            className="file-viewer-action"
+            contentRef={fileViewerBodyRef}
           />
         )}
         {!diffActive && content !== undefined && (
@@ -1247,23 +1341,37 @@ export const FileViewer = memo(function FileViewer({
             )
           }
           onCopyContents={handleCopyContentsFromMenu}
+          onCopyRenderedContents={
+            renderedClipboardPayload
+              ? handleCopyRenderedContentsFromMenu
+              : undefined
+          }
         />
       )}
       {localResourceContextMenu}
       {loadedIsImage ? imageActions.contextMenuElement : null}
-      {standaloneSelectionContextMenu}
       <div
         className={`file-viewer-body ${viewerStyles.body}`}
         ref={fileViewerBodyRef}
       >
-        {standaloneSelectionActions}
         {renderContent()}
+        {standalone ? (
+          <FileViewerSelectionActions
+            containerRef={fileViewerBodyRef}
+            onStartNewSessionFromSelection={
+              publicShareContext === null
+                ? startNewSessionFromSelection
+                : undefined
+            }
+          />
+        ) : null}
       </div>
       {localMediaModal ? (
         <LocalMediaModal
           path={localMediaModal.path}
           mediaType={localMediaModal.mediaType}
           mediaSource={mediaSource}
+          dismissOnBack
           onClose={closeLocalMediaModal}
         />
       ) : null}
@@ -1271,6 +1379,7 @@ export const FileViewer = memo(function FileViewer({
         <LocalFileModal
           resource={localFileModal.resource}
           initialPresentation={localFileModal.initialPresentation}
+          dismissOnBack
           onClose={closeLocalFileModal}
         />
       ) : null}
@@ -1278,6 +1387,8 @@ export const FileViewer = memo(function FileViewer({
         <Modal
           title={getPathBasename(projectFileModal.filePath)}
           onClose={closeProjectFileModal}
+          closeOnBackGesture
+          closeOnBackspace
         >
           <FileViewer
             projectId={projectFileModal.projectId}
@@ -1293,7 +1404,71 @@ export const FileViewer = memo(function FileViewer({
   );
 });
 
+function FileViewerSelectionActions({
+  containerRef,
+  onStartNewSessionFromSelection,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+  onStartNewSessionFromSelection?: (prefill: string) => void;
+}) {
+  const { floatingSelectionActions, selectionContextMenu } =
+    useSelectionActions({
+      containerRef,
+      inert: false,
+      onStartNewSessionFromSelection,
+      quoteClearSignal: 0,
+      isInteractiveTarget: (target) =>
+        target instanceof Element &&
+        target.closest(
+          "button, input, textarea, select, a[href], [contenteditable='true']",
+        ) !== null,
+    });
+
+  return (
+    <>
+      {floatingSelectionActions}
+      {selectionContextMenu}
+    </>
+  );
+}
+
 // Icons
+function BackIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13.5 8h-11M6.5 4l-4 4 4 4" />
+    </svg>
+  );
+}
+
+function RawSourceIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5.5 4 2 8l3.5 4M10.5 4 14 8l-3.5 4M9.5 2.5l-3 11" />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg

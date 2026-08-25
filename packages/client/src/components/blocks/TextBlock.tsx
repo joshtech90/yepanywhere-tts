@@ -210,7 +210,9 @@ export const TextBlock = memo(function TextBlock({
 
   // --- Read aloud (text-to-speech) ---
   // Stable per-block id so the shared controller can tell which block is playing.
-  const speakIdRef = useRef<string>(`tb-${Math.random().toString(36).slice(2)}`);
+  const speakIdRef = useRef<string>(
+    `tb-${Math.random().toString(36).slice(2)}`,
+  );
   // Subscribe to the global read-aloud controller; derive this block's state.
   const readAloudTick = useReadAloudSubscription();
   const isThisPlaying =

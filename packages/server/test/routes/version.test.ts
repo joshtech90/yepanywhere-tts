@@ -3,18 +3,24 @@ import {
   APPROVAL_AUDIT_LOG_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
+  CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   GIT_DIRTY_FILE_EDITOR_CAPABILITY,
+  GIT_INCLUSIVE_TO_HEAD_CAPABILITY,
+  GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+  GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+  GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROVIDER_HOST_CONTROL_CAPABILITY,
   RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
@@ -71,6 +77,10 @@ describe("Version Routes", () => {
     );
   });
 
+  it("advertises project code-name support", () => {
+    expect(getServerCapabilities()).toContain(PROJECT_CODE_NAMES_CAPABILITY);
+  });
+
   it("advertises isolated Claude gateway configuration", () => {
     expect(getServerCapabilities()).toContain(CLAUDE_GATEWAY_CAPABILITY);
     expect(getServerCapabilities()).toContain(
@@ -107,6 +117,35 @@ describe("Version Routes", () => {
   it("advertises Source Control diff projections", () => {
     expect(getServerCapabilities()).toContain(
       GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
+    );
+    expect(getServerCapabilities()).toContain(GIT_INCLUSIVE_TO_HEAD_CAPABILITY);
+  });
+
+  it("advertises the default-off live worktree setting", () => {
+    expect(getServerCapabilities()).toContain(
+      GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+    );
+  });
+
+  it("advertises live worktree protocols only while enabled", () => {
+    expect(getServerCapabilities()).not.toContain(
+      GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
+    );
+    expect(getServerCapabilities()).not.toContain(
+      GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+    );
+    const enabledCapabilities = getServerCapabilities({
+      isLiveWorktreeMonitoringEnabled: () => true,
+    });
+    expect(enabledCapabilities).toContain(
+      GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
+    );
+    expect(enabledCapabilities).toContain(GIT_WORKING_TREE_SECTIONS_CAPABILITY);
+  });
+
+  it("advertises the cache-billing ignore-after setting", () => {
+    expect(getServerCapabilities()).toContain(
+      CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
     );
   });
 

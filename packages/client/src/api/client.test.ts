@@ -178,7 +178,9 @@ describe("api git facade", () => {
 
   it("preserves git endpoint paths and methods", async () => {
     await api.getGitStatus("project-a");
+    await api.getGitStatus("project-a", { useUntrackedCache: true });
     await api.getGitUntrackedFolder("project-a", "src/a b.ts");
+    await api.listGitUntrackedFiles("project-a", { q: "needle path" });
     await api.checkGitRemote("project-a");
     await api.getGitIntegrationOptions("project-a");
     await api.pullGit("project-a");
@@ -191,7 +193,15 @@ describe("api git facade", () => {
       ignoreWhitespace: true,
     });
     await api.getGitComparison("project-a", "abc123");
+    await api.getGitInclusiveComparison("project-a", "abc123");
     await api.getGitComparisonDiff("project-a", {
+      baseSha: "abc123",
+      headSha: "def456",
+      path: "src/a.ts",
+      status: "modified",
+      ignoreWhitespace: true,
+    });
+    await api.getGitInclusiveComparisonDiff("project-a", {
       baseSha: "abc123",
       headSha: "def456",
       path: "src/a.ts",
@@ -208,7 +218,17 @@ describe("api git facade", () => {
     ).toEqual([
       { url: "/api/projects/project-a/git", method: "GET", body: undefined },
       {
+        url: "/api/projects/project-a/git?untracked=cache",
+        method: "GET",
+        body: undefined,
+      },
+      {
         url: "/api/projects/project-a/git/untracked-folder?path=src%2Fa%20b.ts",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "/api/projects/project-a/git/untracked-files?q=needle+path",
         method: "GET",
         body: undefined,
       },
@@ -249,7 +269,23 @@ describe("api git facade", () => {
         body: undefined,
       },
       {
+        url: "/api/projects/project-a/git/range-to-head/abc123",
+        method: "GET",
+        body: undefined,
+      },
+      {
         url: "/api/projects/project-a/git/compare-diff",
+        method: "POST",
+        body: JSON.stringify({
+          baseSha: "abc123",
+          headSha: "def456",
+          path: "src/a.ts",
+          status: "modified",
+          ignoreWhitespace: true,
+        }),
+      },
+      {
+        url: "/api/projects/project-a/git/range-to-head-diff",
         method: "POST",
         body: JSON.stringify({
           baseSha: "abc123",

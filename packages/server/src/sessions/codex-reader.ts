@@ -11,7 +11,7 @@
  * Unlike Claude's DAG structure, Codex sessions are linear.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -211,6 +211,27 @@ interface CodexEntryCache {
   partialLine: string;
 }
 
+interface CodexEntryReadOwner {
+  promise: Promise<CodexEntryCache | null>;
+  joinedCallers: number;
+}
+
+interface CodexParsedEntrySnapshot {
+  entries: CodexSessionEntry[];
+  partialLine: string;
+  readLinesMs: number;
+  parseMs: number;
+  lineCount: number;
+  maxLineLength: number;
+}
+
+interface CodexParsedJsonlChunk {
+  entries: CodexSessionEntry[];
+  partialLine: string;
+  lineCount: number;
+  maxLineLength: number;
+}
+
 interface CodexAgentMapping {
   toolUseId: string;
   agentId: string;
@@ -407,12 +428,15 @@ interface CodexSummaryStreamRead {
 function parseCodexJsonlChunk(
   chunk: string,
   mayEndWithPartialLine: boolean,
-): { entries: CodexSessionEntry[]; partialLine: string } {
+): CodexParsedJsonlChunk {
   const lines = chunk.split("\n");
-  const partialLine = mayEndWithPartialLine ? (lines.pop() ?? "") : "";
+  const trailingLine = mayEndWithPartialLine ? (lines.pop() ?? "") : "";
   const entries: CodexSessionEntry[] = [];
+  const lineCount = lines.length + (trailingLine ? 1 : 0);
+  let maxLineLength = trailingLine.length;
 
   for (const line of lines) {
+    maxLineLength = Math.max(maxLineLength, line.length);
     const trimmed = line.trim();
     if (!trimmed) {
       continue;
@@ -423,113 +447,15 @@ function parseCodexJsonlChunk(
     }
   }
 
-  return { entries, partialLine };
-}
-
-function getCodexMessagePayloadText(
-  content: Array<{ type: string; text?: string }>,
-): string {
-  return content
-    .map((block) => (typeof block.text === "string" ? block.text : block.type))
-    .join("\n");
-}
-
-function getCodexEntryDedupeKey(entry: CodexSessionEntry): string | null {
-  if (entry.type === "response_item") {
-    const { payload } = entry;
-    if (payload.type === "message") {
-      return [
-        entry.type,
-        entry.timestamp,
-        payload.type,
-        payload.role,
-        getCodexMessagePayloadText(payload.content),
-      ].join("\n");
-    }
-    return null;
-  }
-
-  if (entry.type === "event_msg") {
-    const { payload } = entry;
-    if (payload.type === "user_message" || payload.type === "agent_message") {
-      return [entry.type, entry.timestamp, payload.type, payload.message].join(
-        "\n",
-      );
+  if (trailingLine.trim()) {
+    const trailingEntry = parseCodexSessionEntry(trailingLine.trim());
+    if (trailingEntry) {
+      entries.push(trailingEntry);
+      return { entries, partialLine: "", lineCount, maxLineLength };
     }
   }
 
-  return null;
-}
-
-function getCodexSummaryDedupeKey(entry: CodexSessionEntry): string | null {
-  if (entry.type === "response_item") {
-    const { payload } = entry;
-    if (payload.type !== "message") {
-      return null;
-    }
-
-    const hash = createHash("sha256");
-    hash.update(entry.type);
-    hash.update("\0");
-    hash.update(entry.timestamp);
-    hash.update("\0");
-    hash.update(payload.type);
-    hash.update("\0");
-    hash.update(payload.role);
-    hash.update("\0");
-    payload.content.forEach((block, index) => {
-      if (index > 0) hash.update("\n");
-      hash.update(
-        "text" in block && typeof block.text === "string"
-          ? block.text
-          : block.type,
-      );
-    });
-    return hash.digest("base64url");
-  }
-
-  if (entry.type === "event_msg") {
-    const { payload } = entry;
-    if (payload.type !== "user_message" && payload.type !== "agent_message") {
-      return null;
-    }
-
-    const hash = createHash("sha256");
-    hash.update(entry.type);
-    hash.update("\0");
-    hash.update(entry.timestamp);
-    hash.update("\0");
-    hash.update(payload.type);
-    hash.update("\0");
-    hash.update(payload.message);
-    return hash.digest("base64url");
-  }
-
-  return null;
-}
-
-function dedupeCodexEntries(entries: CodexSessionEntry[]): CodexSessionEntry[] {
-  const seen = new Set<string>();
-  let deduped: CodexSessionEntry[] | null = null;
-
-  entries.forEach((entry, index) => {
-    const key = getCodexEntryDedupeKey(entry);
-    if (!key) {
-      deduped?.push(entry);
-      return;
-    }
-    if (seen.has(key)) {
-      if (!deduped) {
-        deduped = entries.slice(0, index);
-      }
-      return;
-    }
-
-    seen.add(key);
-    deduped?.push(entry);
-  });
-
-  return deduped ?? entries;
+  return { entries, partialLine: trailingLine, lineCount, maxLineLength };
 }
 
 class CodexAgentMappingCollector {
@@ -622,6 +548,8 @@ export class CodexSessionReader implements ISessionReader {
   // Cache of session ID -> file path for quick lookups
   private sessionFileCache: Map<string, CodexSessionFile> = new Map();
   private entryCache: Map<string, CodexEntryCache> = new Map();
+  private entryReadOwners: Map<string, CodexEntryReadOwner> = new Map();
+  private entryCacheRevision = 0;
   private agentMappingCache: Map<string, CodexAgentMappingCache> = new Map();
 
   constructor(options: CodexSessionReaderOptions) {
@@ -651,6 +579,7 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   invalidateCache(): void {
+    this.entryCacheRevision += 1;
     this.sessionFileCache.clear();
     this.entryCache.clear();
     this.agentMappingCache.clear();
@@ -1476,6 +1405,91 @@ export class CodexSessionReader implements ISessionReader {
     const shouldWriteCache = options?.cache ?? true;
     const startedAt = Date.now();
     const memoryBefore = process.memoryUsage();
+
+    for (;;) {
+      const stats = await stat(filePath);
+      const cached = this.entryCache.get(sessionId);
+
+      if (
+        cached &&
+        cached.filePath === filePath &&
+        cached.size === stats.size &&
+        cached.mtimeMs === stats.mtimeMs
+      ) {
+        this.cacheAgentMappingsFromEntries(
+          sessionId,
+          filePath,
+          stats.mtimeMs,
+          stats.size,
+          cached.entries,
+        );
+        this.recordEntryReadMetrics({
+          startedAt,
+          memoryBefore,
+          sessionId,
+          filePath,
+          purpose,
+          cacheMode: shouldWriteCache ? "read-write" : "read-only",
+          cacheStatus: "hit",
+          stats,
+          parsedEntries: cached.entries.length,
+          dedupedEntries: cached.entries.length,
+        });
+        return cached.entries.slice();
+      }
+
+      if (!shouldWriteCache) {
+        return this.readEntriesWithoutCache({
+          startedAt,
+          memoryBefore,
+          sessionId,
+          filePath,
+          purpose,
+          stats,
+        });
+      }
+
+      const existingOwner = this.entryReadOwners.get(sessionId);
+      if (existingOwner) {
+        existingOwner.joinedCallers += 1;
+        await existingOwner.promise;
+        continue;
+      }
+
+      const revision = this.entryCacheRevision;
+      let owner: CodexEntryReadOwner;
+      const promise = this.refreshEntryCache({
+        startedAt,
+        memoryBefore,
+        sessionId,
+        filePath,
+        purpose,
+        revision,
+      }).finally(() => {
+        if (this.entryReadOwners.get(sessionId) === owner) {
+          this.entryReadOwners.delete(sessionId);
+        }
+      });
+      owner = { promise, joinedCallers: 0 };
+      this.entryReadOwners.set(sessionId, owner);
+
+      const refreshed = await promise;
+      if (refreshed && this.entryCache.get(sessionId) === refreshed) {
+        return refreshed.entries.slice();
+      }
+    }
+  }
+
+  private async refreshEntryCache(options: {
+    startedAt: number;
+    memoryBefore: NodeJS.MemoryUsage;
+    sessionId: string;
+    filePath: string;
+    purpose: CodexEntryReadPurpose;
+    revision: number;
+  }): Promise<CodexEntryCache | null> {
+    const { startedAt, memoryBefore, sessionId, filePath, purpose, revision } =
+      options;
     const stats = await stat(filePath);
     const cached = this.entryCache.get(sessionId);
 
@@ -1485,31 +1499,10 @@ export class CodexSessionReader implements ISessionReader {
       cached.size === stats.size &&
       cached.mtimeMs === stats.mtimeMs
     ) {
-      cached.entries = dedupeCodexEntries(cached.entries);
-      this.cacheAgentMappingsFromEntries(
-        sessionId,
-        filePath,
-        stats.mtimeMs,
-        stats.size,
-        cached.entries,
-      );
-      this.recordEntryReadMetrics({
-        startedAt,
-        memoryBefore,
-        sessionId,
-        filePath,
-        purpose,
-        cacheMode: shouldWriteCache ? "read-write" : "read-only",
-        cacheStatus: "hit",
-        stats,
-        parsedEntries: cached.entries.length,
-        dedupedEntries: cached.entries.length,
-      });
-      return cached.entries.slice();
+      return cached;
     }
 
     if (
-      shouldWriteCache &&
       cached &&
       cached.filePath === filePath &&
       !isCompressedCodexSessionFile(filePath) &&
@@ -1523,16 +1516,18 @@ export class CodexSessionReader implements ISessionReader {
       );
       const readLinesMs = Date.now() - readStartedAt;
       const parseStartedAt = Date.now();
-      const { entries, partialLine } = parseCodexJsonlChunk(
-        cached.partialLine + appended,
-        stats.size > cached.size,
-      );
+      const parsed = parseCodexJsonlChunk(cached.partialLine + appended, true);
       const parseMs = Date.now() - parseStartedAt;
-      const dedupeStartedAt = Date.now();
-      cached.entries.push(...entries);
-      cached.entries = dedupeCodexEntries(cached.entries);
-      const dedupeMs = Date.now() - dedupeStartedAt;
-      cached.partialLine = partialLine;
+
+      if (
+        revision !== this.entryCacheRevision ||
+        this.entryCache.get(sessionId) !== cached
+      ) {
+        return null;
+      }
+
+      cached.entries.push(...parsed.entries);
+      cached.partialLine = parsed.partialLine;
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       this.cacheAgentMappingsFromEntries(
@@ -1553,69 +1548,136 @@ export class CodexSessionReader implements ISessionReader {
         stats,
         readLinesMs,
         parseMs,
-        dedupeMs,
-        lineCount: entries.length,
-        parsedEntries: entries.length,
+        lineCount: parsed.lineCount,
+        parsedEntries: parsed.entries.length,
         dedupedEntries: cached.entries.length,
+        maxLineLength: parsed.maxLineLength,
       });
-      return cached.entries.slice();
+      return cached;
     }
 
-    const readStartedAt = Date.now();
-    const lines = await readJsonlLines(filePath);
-    const readLinesMs = Date.now() - readStartedAt;
-    const entries: CodexSessionEntry[] = [];
-    let maxLineLength = 0;
-    const parseStartedAt = Date.now();
-    for (const line of lines) {
-      maxLineLength = Math.max(maxLineLength, line.length);
-      const entry = parseCodexSessionEntry(line);
-      if (entry) {
-        entries.push(entry);
-      }
+    const parsed = await this.readEntrySnapshot(filePath, stats);
+    if (
+      revision !== this.entryCacheRevision ||
+      this.entryCache.get(sessionId) !== cached
+    ) {
+      return null;
     }
-    const parseMs = Date.now() - parseStartedAt;
-    const dedupeStartedAt = Date.now();
-    const dedupedEntries = dedupeCodexEntries(entries);
-    const dedupeMs = Date.now() - dedupeStartedAt;
+
+    const cacheStoreStartedAt = Date.now();
+    const refreshed: CodexEntryCache = {
+      filePath,
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      entries: parsed.entries,
+      partialLine: parsed.partialLine,
+    };
+    this.entryCache.set(sessionId, refreshed);
+    const cacheStoreMs = Date.now() - cacheStoreStartedAt;
     this.cacheAgentMappingsFromEntries(
       sessionId,
       filePath,
-      stats.mtimeMs,
-      stats.size,
-      dedupedEntries,
+      Number(stats.mtimeMs),
+      Number(stats.size),
+      parsed.entries,
     );
-    let cacheStoreMs = 0;
-    if (shouldWriteCache) {
-      const cacheStoreStartedAt = Date.now();
-      this.entryCache.set(sessionId, {
-        filePath,
-        mtimeMs: stats.mtimeMs,
-        size: stats.size,
-        entries: dedupedEntries,
-        partialLine: "",
-      });
-      cacheStoreMs = Date.now() - cacheStoreStartedAt;
-    }
     this.recordEntryReadMetrics({
       startedAt,
       memoryBefore,
       sessionId,
       filePath,
       purpose,
-      cacheMode: shouldWriteCache ? "read-write" : "read-only",
+      cacheMode: "read-write",
       cacheStatus: "miss",
       stats,
-      readLinesMs,
-      parseMs,
-      dedupeMs,
+      readLinesMs: parsed.readLinesMs,
+      parseMs: parsed.parseMs,
       cacheStoreMs,
-      lineCount: lines.length,
-      parsedEntries: entries.length,
-      dedupedEntries: dedupedEntries.length,
-      maxLineLength,
+      lineCount: parsed.lineCount,
+      parsedEntries: parsed.entries.length,
+      dedupedEntries: parsed.entries.length,
+      maxLineLength: parsed.maxLineLength,
     });
-    return dedupedEntries.slice();
+    return refreshed;
+  }
+
+  private async readEntriesWithoutCache(options: {
+    startedAt: number;
+    memoryBefore: NodeJS.MemoryUsage;
+    sessionId: string;
+    filePath: string;
+    purpose: CodexEntryReadPurpose;
+    stats: Awaited<ReturnType<typeof stat>>;
+  }): Promise<CodexSessionEntry[]> {
+    const { startedAt, memoryBefore, sessionId, filePath, purpose, stats } =
+      options;
+    const parsed = await this.readEntrySnapshot(filePath, stats);
+    this.cacheAgentMappingsFromEntries(
+      sessionId,
+      filePath,
+      Number(stats.mtimeMs),
+      Number(stats.size),
+      parsed.entries,
+    );
+    this.recordEntryReadMetrics({
+      startedAt,
+      memoryBefore,
+      sessionId,
+      filePath,
+      purpose,
+      cacheMode: "read-only",
+      cacheStatus: "miss",
+      stats,
+      readLinesMs: parsed.readLinesMs,
+      parseMs: parsed.parseMs,
+      lineCount: parsed.lineCount,
+      parsedEntries: parsed.entries.length,
+      dedupedEntries: parsed.entries.length,
+      maxLineLength: parsed.maxLineLength,
+    });
+    return parsed.entries.slice();
+  }
+
+  private async readEntrySnapshot(
+    filePath: string,
+    stats: Awaited<ReturnType<typeof stat>>,
+  ): Promise<CodexParsedEntrySnapshot> {
+    const readStartedAt = Date.now();
+    if (isCompressedCodexSessionFile(filePath)) {
+      const lines = await readJsonlLines(filePath);
+      const readLinesMs = Date.now() - readStartedAt;
+      const entries: CodexSessionEntry[] = [];
+      let maxLineLength = 0;
+      const parseStartedAt = Date.now();
+      for (const line of lines) {
+        maxLineLength = Math.max(maxLineLength, line.length);
+        const entry = parseCodexSessionEntry(line);
+        if (entry) {
+          entries.push(entry);
+        }
+      }
+      return {
+        entries,
+        partialLine: "",
+        readLinesMs,
+        parseMs: Date.now() - parseStartedAt,
+        lineCount: lines.length,
+        maxLineLength,
+      };
+    }
+
+    const content = await this.readFileRange(filePath, 0, Number(stats.size));
+    const readLinesMs = Date.now() - readStartedAt;
+    const parseStartedAt = Date.now();
+    const parsed = parseCodexJsonlChunk(content, true);
+    return {
+      entries: parsed.entries,
+      partialLine: parsed.partialLine,
+      readLinesMs,
+      parseMs: Date.now() - parseStartedAt,
+      lineCount: parsed.lineCount,
+      maxLineLength: parsed.maxLineLength,
+    };
   }
 
   async getSessionSummaryFromFile(
@@ -1719,11 +1781,10 @@ export class CodexSessionReader implements ISessionReader {
       legacyResponseUserCount: 0,
       assistantMessageCount: 0,
     };
-    const seenDedupeKeys = new Set<string>();
     let lineCount = 0;
     let parsedEntries = 0;
     let dedupedEntries = 0;
-    let skippedDuplicateEntries = 0;
+    const skippedDuplicateEntries = 0;
     let maxLineLength = 0;
     let bytesRead = 0;
     let stoppedEarly = false;
@@ -1775,15 +1836,6 @@ export class CodexSessionReader implements ISessionReader {
       }
 
       parsedEntries += 1;
-      const dedupeKey = getCodexSummaryDedupeKey(entry);
-      if (dedupeKey) {
-        if (seenDedupeKeys.has(dedupeKey)) {
-          skippedDuplicateEntries += 1;
-          continue;
-        }
-        seenDedupeKeys.add(dedupeKey);
-      }
-
       dedupedEntries += 1;
       this.applySummaryEntry(state, entry);
       if (readMode === "head" && this.hasHeadSummary(state)) {
@@ -2202,8 +2254,23 @@ export class CodexSessionReader implements ISessionReader {
     const handle = await open(filePath, "r");
     try {
       const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, start);
-      return buffer.toString("utf-8", 0, bytesRead);
+      let totalBytesRead = 0;
+      while (totalBytesRead < length) {
+        const { bytesRead } = await handle.read(
+          buffer,
+          totalBytesRead,
+          length - totalBytesRead,
+          start + totalBytesRead,
+        );
+        if (bytesRead === 0) break;
+        totalBytesRead += bytesRead;
+      }
+      if (totalBytesRead !== length) {
+        throw new Error(
+          `Codex transcript changed during bounded read: expected ${length} bytes, read ${totalBytesRead}`,
+        );
+      }
+      return buffer.toString("utf-8");
     } finally {
       await handle.close();
     }

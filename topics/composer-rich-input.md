@@ -39,6 +39,20 @@ provisional speech a **real inline text run**:
 - Streaming interim preview and selected-span replacement would share one node
   model instead of the value/mirror split.
 
+## Shipped image intake stays outside the text model
+
+Image attachments do not require a rich editor. The shipped desktop-paste and
+installed-PWA image-share behavior, browser-local bounds, and consumer
+acknowledgement boundary are current product behavior owned by
+[attachment-intake.md](attachment-intake.md). A future rich editor must
+preserve that contract rather than reimplementing intake inside its text model.
+
+## Design decisions
+
+- **Keep attachment intake outside a `contenteditable` migration:** Android
+  gains a standard, explicitly invoked screenshot path without changing
+  submitted text or taking on rich-editor input-method risks.
+
 ## Costs and risks (why "not for now")
 
 `contenteditable` is notoriously finicky; a switch must re-validate, at minimum:

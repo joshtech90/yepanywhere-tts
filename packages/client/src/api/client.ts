@@ -372,7 +372,8 @@ function getGlobalSessionsRequest(
 export const api = {
   // Text-to-speech (read aloud). Audio is returned as base64 so it travels
   // through the same (possibly encrypted relay) JSON channel as everything else.
-  ttsStatus: () => fetchJSON<{ enabled: boolean; error?: string }>("/tts/status"),
+  ttsStatus: () =>
+    fetchJSON<{ enabled: boolean; error?: string }>("/tts/status"),
   // Split a message into ordered chunks for fast-start playback.
   ttsPlan: (text: string) =>
     fetchJSON<{ chunks: string[] }>("/tts/plan", {
@@ -457,6 +458,14 @@ export const api = {
 
   getProject: (projectId: string) =>
     fetchJSON<{ project: Project }>(`/projects/${projectId}`),
+
+  updateProjectCodeName: (projectId: string, codeName: string) =>
+    fetchJSON<{
+      assignments: Array<{ projectId: string; codeName: string }>;
+    }>(`/projects/${encodeURIComponent(projectId)}/code-name`, {
+      method: "PATCH",
+      body: JSON.stringify({ codeName }),
+    }),
 
   getProjectSessionDefaults: (projectId: string) =>
     fetchJSON<ProjectSessionDefaultsResponse>(
@@ -1461,6 +1470,16 @@ export const api = {
       method: "POST",
     }),
 
+  terminateSession: (sessionId: string) =>
+    fetchJSON<{
+      message: DurableSyntheticDoneMessage;
+      paused: true;
+      queued?: boolean;
+      deferredMessages?: SessionQueuedMessageSummary[];
+    }>(`/sessions/${sessionId}/terminate`, {
+      method: "POST",
+    }),
+
   getLastSeen: () =>
     fetchJSON<{
       lastSeen: Record<string, { timestamp: string; messageId?: string }>;
@@ -1612,6 +1631,7 @@ export const api = {
       output: string;
       status: CodexUpdateStatus;
       error?: string;
+      retryable?: boolean;
     }>("/codex/updates/install", { method: "POST" }),
 
   // Remote executors API
@@ -1844,6 +1864,8 @@ export interface ServerSettings {
   publicSharesEnabled?: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether experimental live Source Control filesystem monitoring is enabled. */
+  liveWorktreeMonitoringEnabled?: boolean;
   /** Whether captured source-review submissions and outcomes are enabled */
   sourceReviewSubmissionsEnabled?: boolean;
   /** Completed assistant turns that may ingest one submission response */

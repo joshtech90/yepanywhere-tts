@@ -8,6 +8,17 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProcessingIndicator } from "../ProcessingIndicator";
 
+let nextAnimationFrameId = 1;
+let animationFrames = new Map<number, FrameRequestCallback>();
+
+function flushAnimationFrames() {
+  const pending = Array.from(animationFrames.values());
+  animationFrames.clear();
+  for (const callback of pending) {
+    callback(performance.now());
+  }
+}
+
 vi.mock("../../i18n", () => ({
   useI18n: () => ({
     t: (key: string) =>
@@ -24,6 +35,8 @@ vi.mock("../../i18n", () => ({
           "Right-click: expand all thinking blocks, including earlier ones",
         processingThinkingRightClickLatestOnly:
           "Right-click: auto-expand only the latest thinking block",
+        processingAnimationPause: "Pause processing text animation",
+        processingAnimationResume: "Resume processing text animation",
       })[key] ?? key,
   }),
 }));
@@ -31,6 +44,23 @@ vi.mock("../../i18n", () => ({
 describe("ProcessingIndicator", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    nextAnimationFrameId = 1;
+    animationFrames = new Map();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        const id = nextAnimationFrameId;
+        nextAnimationFrameId += 1;
+        animationFrames.set(id, callback);
+        return id;
+      }),
+    );
+    vi.stubGlobal(
+      "cancelAnimationFrame",
+      vi.fn((id: number) => {
+        animationFrames.delete(id);
+      }),
+    );
     // Mock localStorage for useFunPhrases hook - disable fun phrases for predictable tests
     vi.stubGlobal("localStorage", {
       getItem: vi.fn().mockReturnValue("false"),
@@ -49,12 +79,11 @@ describe("ProcessingIndicator", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders dot and cursor when processing", () => {
+  it("renders the activity dot without a text cursor", () => {
     render(<ProcessingIndicator isProcessing={true} />);
 
-    const cursor = document.querySelector(".processing-cursor");
-    expect(cursor).not.toBeNull();
-    expect(cursor?.textContent).toBe("|");
+    expect(document.querySelector(".processing-cursor")).toBeNull();
+    expect(document.querySelector(".processing-text")?.textContent).toBe("");
 
     const dotContainer = document.querySelector(".processing-dot-container");
     expect(dotContainer?.firstElementChild?.firstElementChild).not.toBeNull();
@@ -65,18 +94,117 @@ describe("ProcessingIndicator", () => {
 
     const textElement = document.querySelector(".processing-text");
 
-    // Initially just cursor
-    expect(textElement?.textContent).toBe("|");
+    expect(textElement?.textContent).toBe("");
 
-    // Advance enough time to type several characters (500ms = 20 chars worth)
+    // The timer only queues work; text changes on the next visual frame.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(25);
+    });
+    expect(textElement?.textContent).toBe("");
+    act(flushAnimationFrames);
+    expect(textElement?.textContent).toBe("T");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25);
+    });
+    act(flushAnimationFrames);
+    expect(textElement?.textContent).toBe("Th");
+  });
+
+  it("coalesces simultaneous animation timers into one visual frame", async () => {
+    render(<ProcessingIndicator isProcessing={true} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
 
-    // Should have typed some text (starts with T from "Thinking...")
-    const content = textElement?.textContent ?? "";
-    expect(content).toMatch(/^T/); // Starts with T
-    expect(content.length).toBeGreaterThan(1); // Has typed something
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".processing-text")?.textContent).toBe("");
+
+    act(flushAnimationFrames);
+    expect(document.querySelector(".processing-text")?.textContent).toBe("");
+  });
+
+  it("does not schedule text frames while outside the viewport", async () => {
+    let notifyIntersection: IntersectionObserverCallback = () => {};
+    class TestIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        notifyIntersection = callback;
+      }
+
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+
+    const { container } = render(<ProcessingIndicator isProcessing={true} />);
+    const indicator = container.querySelector(
+      ".processing-indicator",
+    ) as HTMLElement;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+
+    act(() => {
+      notifyIntersection(
+        [
+          { target: indicator, isIntersecting: true },
+        ] as unknown as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25);
+    });
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      notifyIntersection(
+        [
+          { target: indicator, isIntersecting: false },
+        ] as unknown as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+    });
+    expect(cancelAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(animationFrames.size).toBe(0);
+  });
+
+  it("pauses and resumes the typewriter when clicked", async () => {
+    render(<ProcessingIndicator isProcessing={true} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    const toggle = screen.getByRole("button", {
+      name: "Pause processing text animation",
+    });
+    const pausedText = toggle.textContent;
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(toggle.getAttribute("aria-label")).toBe(
+      "Resume processing text animation",
+    );
+    expect(document.querySelector(".processing-cursor")).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(toggle.textContent).toBe(pausedText);
+
+    fireEvent.click(toggle);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25);
+    });
+    act(flushAnimationFrames);
+
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.textContent).not.toBe(pausedText);
   });
 
   it("has processing indicator container", () => {
@@ -244,8 +372,8 @@ describe("ProcessingIndicator", () => {
     // Start processing again
     rerender(<ProcessingIndicator isProcessing={true} />);
 
-    // Should be visible again with cursor
+    // Should be visible again without reintroducing a cursor.
     expect(document.querySelector(".processing-indicator")).not.toBeNull();
-    expect(document.querySelector(".processing-cursor")).not.toBeNull();
+    expect(document.querySelector(".processing-cursor")).toBeNull();
   });
 });

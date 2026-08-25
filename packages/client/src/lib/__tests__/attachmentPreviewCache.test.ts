@@ -3,7 +3,12 @@ import "fake-indexeddb/auto";
 import type { UploadedFile } from "@yep-anywhere/shared";
 import { planThumbnail } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getEntry, openDatabase, putEntryWithKey } from "../diagnostics/idb";
+import {
+  deleteEntry,
+  getEntry,
+  openDatabase,
+  putEntryWithKey,
+} from "../diagnostics/idb";
 import {
   loadCachedAttachmentPreview,
   storeUploadedAttachmentPreview,
@@ -159,8 +164,17 @@ describe("attachment preview cache", () => {
       attachmentId: uploadedFile.id,
       path: uploadedFile.path,
     });
-    expect(await getEntry(db, STORE_NAME, uploadedFile.path)).toBeNull();
+    expect(await getEntry(db, STORE_NAME, uploadedFile.path)).toMatchObject({
+      aliasFor: uploadedFile.id,
+    });
     db.close();
+
+    const loadedByPath = await loadCachedAttachmentPreview(
+      uploadedFile.path,
+      uploadedFile.path,
+    );
+    expect(loadedByPath?.attachmentId).toBe(uploadedFile.id);
+    expect(loadedByPath?.path).toBe(uploadedFile.path);
   });
 
   it("migrates legacy path-keyed previews onto attachment ids", async () => {
@@ -190,7 +204,100 @@ describe("attachment preview cache", () => {
       attachmentId,
       path: legacyPath,
     });
-    expect(await getEntry(db, STORE_NAME, legacyPath)).toBeNull();
+    expect(await getEntry(db, STORE_NAME, legacyPath)).toMatchObject({
+      aliasFor: attachmentId,
+    });
     db.close();
+  });
+
+  it("serves a stored preview from the database rather than memory", async () => {
+    // Only an upload in flight may be held in memory; once stored, the entry
+    // lives under the database eviction budget and nowhere else, reachable by
+    // its persisted path through a pointer rather than a second copy.
+    const sourceFile = new File(["preview"], "held.jpeg", {
+      type: "image/jpeg",
+    });
+    const uploadedFile: UploadedFile = {
+      id: "attachment-id-3",
+      originalName: "held.jpeg",
+      name: "attachment-id-3_held.jpeg",
+      path: "/project/.attachments/session/attachment-id-3_held.jpeg",
+      size: sourceFile.size,
+      mimeType: "image/jpeg",
+    };
+
+    await storeUploadedAttachmentPreview(uploadedFile, sourceFile);
+
+    const db = await openPreviewDatabase();
+    await deleteEntry(db, STORE_NAME, uploadedFile.id);
+    db.close();
+
+    expect(
+      await loadCachedAttachmentPreview(uploadedFile.id, uploadedFile.path),
+    ).toBeNull();
+  });
+
+  it("evicts preview and alias pairs without deleting live aliases", async () => {
+    const db = await openPreviewDatabase();
+    const recentId = "attachment-id-recent";
+    const recentPath = "/project/.attachments/session/recent.jpg";
+    const oldId = "attachment-id-old";
+    const oldPath = "/project/.attachments/session/old.jpg";
+    const preview = (
+      attachmentId: string,
+      path: string,
+      lastAccessedAt: number,
+    ) => ({
+      attachmentId,
+      path,
+      originalName: `${attachmentId}.jpg`,
+      mimeType: "image/jpeg",
+      size: 1,
+      thumbnailVariant: "current",
+      thumbnailWidth: 1,
+      thumbnailHeight: 1,
+      fullBlob: new Blob(["x"], { type: "image/jpeg" }),
+      totalBytes: 70 * 1024 * 1024,
+      createdAt: 1,
+      lastAccessedAt,
+    });
+    await putEntryWithKey(
+      db,
+      STORE_NAME,
+      recentId,
+      preview(recentId, recentPath, 300),
+    );
+    await putEntryWithKey(db, STORE_NAME, recentPath, {
+      aliasFor: recentId,
+      totalBytes: 0,
+      lastAccessedAt: 100,
+    });
+    await putEntryWithKey(db, STORE_NAME, oldId, preview(oldId, oldPath, 200));
+    await putEntryWithKey(db, STORE_NAME, oldPath, {
+      aliasFor: oldId,
+      totalBytes: 0,
+      lastAccessedAt: 150,
+    });
+    db.close();
+
+    const sourceFile = new File(["new"], "new.jpg", { type: "image/jpeg" });
+    const uploadedFile: UploadedFile = {
+      id: "attachment-id-new",
+      originalName: "new.jpg",
+      name: "attachment-id-new_new.jpg",
+      path: "/project/.attachments/session/new.jpg",
+      size: sourceFile.size,
+      mimeType: "image/jpeg",
+    };
+    await storeUploadedAttachmentPreview(uploadedFile, sourceFile);
+
+    const inspected = await openPreviewDatabase();
+    expect(await getEntry(inspected, STORE_NAME, recentId)).toBeDefined();
+    expect(await getEntry(inspected, STORE_NAME, recentPath)).toMatchObject({
+      aliasFor: recentId,
+    });
+    expect(await getEntry(inspected, STORE_NAME, oldId)).toBeNull();
+    expect(await getEntry(inspected, STORE_NAME, oldPath)).toBeNull();
+    inspected.close();
   });
 });

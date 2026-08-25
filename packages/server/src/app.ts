@@ -29,7 +29,10 @@ import { createAuthRoutes } from "./auth/routes.js";
 import type { DesktopBootstrapService } from "./desktop/DesktopBootstrapService.js";
 import type { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import type { FrontendProxy } from "./frontend/index.js";
-import type { SessionIndexService } from "./indexes/index.js";
+import type {
+  SessionDiscoveryIndexRegistry,
+  SessionIndexService,
+} from "./indexes/index.js";
 import type {
   ProjectMetadataService,
   SessionMetadataService,
@@ -100,9 +103,13 @@ import { canonicalizeManagedAttachmentPath } from "./uploads/attachmentAccess.js
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
 import { createGitBrowseRoutes } from "./routes/git-browse.js";
+import { createGitFileRevisionRoutes } from "./routes/git-file-revision.js";
 import { createGitFileProjectionRoutes } from "./routes/git-file-projections.js";
+import { createGitInclusiveToHeadRoutes } from "./routes/git-inclusive-to-head.js";
+import { createGitIncomingCommitsRoutes } from "./routes/git-incoming-commits.js";
 import { createGitProjectionRoutes } from "./routes/git-projections.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
+import { createGitWorkingTreeFilesRoutes } from "./routes/git-working-tree-files.js";
 import { createGlossaryArtifactRoutes } from "./routes/glossary-artifacts.js";
 import { createGlobalSessionsRoutes } from "./routes/global-sessions.js";
 import { createReviewCommentsRoutes } from "./routes/review-comments.js";
@@ -142,6 +149,7 @@ import { createServerInfoRoutes } from "./routes/server-info.js";
 import { createSessionArchiveRoutes } from "./routes/session-archive.js";
 import { createSessionDoneRoutes } from "./routes/session-done.js";
 import { createSessionIndexRoutes } from "./routes/session-index.js";
+import { createSessionTerminateRoutes } from "./routes/session-terminate.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
@@ -230,7 +238,6 @@ import { ClaudeSessionReader } from "./sessions/reader.js";
 import {
   isAutomaticSessionResumeAllowed,
   isUnownedHeartbeatResumeEligible,
-  type ResumeExemptionResult,
 } from "./sessions/resume-exemption.js";
 import type { SummaryParserWorkerMode } from "./sessions/summary-parser-worker-protocol.js";
 import type {
@@ -283,6 +290,8 @@ export interface AppOptions {
   dirtyFileEditorService?: DirtyFileEditorService;
   /** SessionIndexService for caching session summaries */
   sessionIndexService?: SessionIndexService;
+  /** Process-local owner registry for provider discovery shards. */
+  sessionDiscoveryIndexRegistry?: SessionDiscoveryIndexRegistry;
   /** Claude summary parser child-process mode. Default off. */
   claudeSummaryParserWorkerMode?: SummaryParserWorkerMode;
   /** Codex summary parser child-process mode. Default on when unset. */
@@ -648,6 +657,7 @@ export function createApp(options: AppOptions): AppResult {
     const created = createCodexSessionDiscoveryIndex(
       options.dataDir,
       sessionsDir,
+      options.sessionDiscoveryIndexRegistry,
     );
     if (created) {
       codexDiscoveryIndexes.set(sessionsDir, created);
@@ -1395,6 +1405,9 @@ export function createApp(options: AppOptions): AppResult {
         (clampProjectQueueQuietSeconds(
           options.serverSettingsService?.getSetting("projectQueueQuietSeconds"),
         ) ?? DEFAULT_PROJECT_QUEUE_QUIET_SECONDS) * 1000,
+      getEffectiveProcessProjectId: (process) =>
+        options.sessionMetadataService?.getMetadata(process.sessionId)
+          ?.workingProjectId ?? process.projectId,
       getGlobalInstructions: () =>
         buildEffectiveAgentContext({
           globalInstructions:
@@ -1551,6 +1564,10 @@ export function createApp(options: AppOptions): AppResult {
         options.serverSettingsService?.getSetting("clientDefaults"),
       desktopRuntime: options.desktopRuntime,
       providerHostControlAvailable: isProviderRuntimeHostAvailable(),
+      isLiveWorktreeMonitoringEnabled: () =>
+        options.serverSettingsService?.getSetting(
+          "liveWorktreeMonitoringEnabled",
+        ) ?? false,
     }),
   );
 
@@ -1666,6 +1683,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionMetadataService: options.sessionMetadataService,
       projectMetadataService: options.projectMetadataService,
+      eventBus: options.eventBus,
       projectQueueService: options.projectQueueService,
       sessionIndexService: options.sessionIndexService,
       codexScanner,
@@ -1810,6 +1828,15 @@ export function createApp(options: AppOptions): AppResult {
     }),
   );
   app.route(
+    "/api/sessions",
+    createSessionTerminateRoutes({
+      supervisor,
+      sessionMetadataService: options.sessionMetadataService,
+      sessionQueuePersistenceService: options.sessionQueuePersistenceService,
+      eventBus: options.eventBus,
+    }),
+  );
+  app.route(
     "/api",
     createToolResultMediaRoutes({
       scanner,
@@ -1858,21 +1885,7 @@ export function createApp(options: AppOptions): AppResult {
       // Explicit Kill blocks YA's automatic resume gate while preserving the
       // provider transcript for history and deliberate manual continuation.
       blockSessionResume: async ({ sessionId }) => {
-        const metadata = options.sessionMetadataService;
-        if (!metadata) {
-          throw new Error("Session metadata service is unavailable");
-        }
-        const heartbeatWasEnabled =
-          metadata.getMetadata(sessionId)?.heartbeatTurnsEnabled === true;
-        await metadata.updateMetadata(sessionId, {
-          heartbeatTurnsEnabled: false,
-          autoResumeDisabled: true,
-        });
-
-        const result: ResumeExemptionResult = {
-          heartbeatDisabled: heartbeatWasEnabled,
-          autoResumeDisabled: true,
-        };
+        const result = await supervisor.disableSessionAutoResume(sessionId);
         console.log(
           `[Processes] Blocked auto-resume for killed session ${sessionId}` +
             ` (heartbeatDisabled=${result.heartbeatDisabled})`,
@@ -1973,9 +1986,22 @@ export function createApp(options: AppOptions): AppResult {
     "/api/projects",
     createGitBrowseRoutes({ scanner, storagePolicy: projectStoragePolicy }),
   );
+  app.route("/api/projects", createGitFileRevisionRoutes({ scanner }));
+
+  // Current-content inventory and last-fetched incoming history.
+  app.route(
+    "/api/projects",
+    createGitWorkingTreeFilesRoutes({
+      scanner,
+      dataDir: effectiveDataDir,
+      dirtyFileEditorService: options.dirtyFileEditorService,
+    }),
+  );
+  app.route("/api/projects", createGitIncomingCommitsRoutes({ scanner }));
 
   // Optional Source Control diff projections.
   app.route("/api/projects", createGitProjectionRoutes({ scanner }));
+  app.route("/api/projects", createGitInclusiveToHeadRoutes({ scanner }));
 
   // Exact worktree projections shared by file links and file viewers.
   app.route("/api/projects", createGitFileProjectionRoutes({ scanner }));
@@ -2211,6 +2237,10 @@ export function createApp(options: AppOptions): AppResult {
           if (result.success) {
             console.log(
               `[codex-update] Auto-updated to ${result.status.installed ?? "?"}`,
+            );
+          } else if (result.retryable) {
+            console.info(
+              `[codex-update] Auto-update deferred: ${result.error ?? "provider active"}`,
             );
           } else {
             console.warn(

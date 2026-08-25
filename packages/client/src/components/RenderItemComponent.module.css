@@ -85,6 +85,39 @@
 }
 
 /*
+ * Auto-hide rollup of the activity+thinking extras down to the compact
+ * summary. Height is set inline from the measured row to the summary height;
+ * overflow clips from the bottom. The mask keeps the summary solid and fades
+ * only the clipping edge. Duration comes from
+ * --conversation-thinking-rollup-ms (1.5s).
+ */
+.thinkingRollingUp {
+  overflow: hidden;
+  min-height: 0;
+  transition: height var(--conversation-thinking-rollup-ms, 1.5s) ease-in-out;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 2.75rem,
+    #000 max(2.75rem, calc(100% - 2.5rem)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 2.75rem,
+    #000 max(2.75rem, calc(100% - 2.5rem)),
+    transparent
+  );
+}
+
+.thinkingAutoHiding {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--conversation-thinking-rollup-ms, 1.5s) ease-in;
+}
+
+/*
  * Compact chips are always expandable — outline them so the chevron affordance
  * is obvious even when the provider retained no summary body.
  *

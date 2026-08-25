@@ -878,6 +878,38 @@ describe("Settings Routes", () => {
       });
     });
 
+    it("accepts the experimental live worktree monitoring gate", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ liveWorktreeMonitoringEnabled: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        liveWorktreeMonitoringEnabled: true,
+      });
+    });
+
+    it("rejects a non-boolean live worktree monitoring gate", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ liveWorktreeMonitoringEnabled: "yes" }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("accepts the source-review opt-in and bounded response turns", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -1687,6 +1719,7 @@ describe("Settings Routes", () => {
             },
             minimumWastedTokens: 25_000,
             recentActivityMinutes: 5,
+            ignoreAfterMinutes: 45,
           },
         }),
       });
@@ -1703,6 +1736,7 @@ describe("Settings Routes", () => {
           },
           minimumWastedTokens: 25_000,
           recentActivityMinutes: 5,
+          ignoreAfterMinutes: 45,
         },
       });
     });
@@ -1727,6 +1761,14 @@ describe("Settings Routes", () => {
       expect(response.status).toBe(400);
       const json = await response.json();
       expect(json.error).toContain("cacheMissBilling must use booleans");
+      expect(json.error).toContain("minimumWastedTokens 1-5000000");
+      expect(json.error).toContain(
+        "freshWindowMinutes and providerFreshWindowMinutes 1-1440",
+      );
+      expect(json.error).toContain(
+        "recentActivityMinutes and ignoreAfterMinutes 0-1440",
+      );
+      expect(json.error).not.toContain("minimumInputTokens");
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 

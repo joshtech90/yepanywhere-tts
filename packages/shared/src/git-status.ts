@@ -7,6 +7,9 @@ import type { PatchHunk } from "./types.js";
 export {
   GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
+  GIT_FILE_REVISION_CAPABILITY,
+  GIT_INCLUSIVE_TO_HEAD_CAPABILITY,
+  GIT_INCOMING_COMMITS_CAPABILITY,
   GIT_SOURCE_REVIEW_CAPABILITY,
   GIT_SOURCE_REVIEW_PROJECTIONS_CAPABILITY,
   GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
@@ -55,6 +58,25 @@ export interface GitRecentCommit {
   authorDate: string;
 }
 
+/** Commit metadata shown beside a file view. */
+export interface GitFileRevisionCommit extends GitRecentCommit {
+  /** Commit subject and body, capped by the server at 50 lines. */
+  message: string;
+  /** Whether undisplayed commit-message lines remain. */
+  messageTruncated: boolean;
+}
+
+/** Last committed content revision for one repository-relative file path. */
+export interface GitFileRevision {
+  path: string;
+  /** False when the selected project is not a Git working tree. */
+  isGitRepo: boolean;
+  /** Null for a file with no revision reachable from the requested tree. */
+  commit: GitFileRevisionCommit | null;
+  /** True only when live file content differs from the committed blob. */
+  dirty: boolean;
+}
+
 /**
  * A commit's metadata plus the files it changed (topic:
  * source-review-to-session, stage 3 commit browser). Diffs are fetched per
@@ -77,6 +99,18 @@ export interface GitRevisionComparison {
   files: GitFileChange[];
 }
 
+/** Inclusive selected-commit-through-HEAD comparison with pinned endpoints. */
+export interface GitInclusiveRevisionComparison {
+  /** Resolved full SHA of the selected commit included in the range. */
+  selectedSha: string;
+  /** Selected commit's first parent, or Git's empty tree for a root commit. */
+  baseSha: string;
+  /** Resolved full SHA of HEAD when the comparison was created. */
+  headSha: string;
+  /** Net files changed by the inclusive range. */
+  files: GitFileChange[];
+}
+
 export type GitFileDiffMode = "worktree" | "cumulative";
 
 /** Exact file-change corpora backing file-viewer diff selectors. */
@@ -96,6 +130,16 @@ export interface GitCommitListResult {
   commits: GitRecentCommit[];
   /** True when more commits exist past this page (for "load more"). */
   hasMore: boolean;
+}
+
+/** Commits observed on the upstream tracking ref but not local HEAD. */
+export interface GitIncomingCommitListResult {
+  upstream: string;
+  headSha: string;
+  upstreamSha: string;
+  commits: GitRecentCommit[];
+  truncated: boolean;
+  limit: number;
 }
 
 /**
@@ -165,6 +209,122 @@ export interface GitFileListResult {
   truncated: boolean;
 }
 
+export type GitWorkingTreePathKind = "tracked" | "untracked" | "ignored";
+
+/** Git change facts embedded in one resident worktree path row. */
+export type GitWorkingTreeChange = Omit<GitFileChange, "path">;
+
+/** One path in the server-maintained worktree snapshot. */
+export interface GitWorkingTreeFile {
+  /** Repo-relative path. */
+  path: string;
+  /** False for untracked or ignored files; true for files known to the index. */
+  tracked: boolean;
+  /** Classification used by live worktree snapshots. Older servers omit it. */
+  kind?: GitWorkingTreePathKind;
+  /** False only for a tracked deletion retained as dirty truth. */
+  present?: boolean;
+  /** Staged and/or unstaged changes from HEAD to the live filesystem. */
+  worktreeChanges?: GitWorkingTreeChange[];
+  /** Net change from HEAD^1 to the live filesystem. */
+  cumulativeChange?: GitWorkingTreeChange;
+}
+
+export type GitWorktreeFilesystemScan = "bounded" | "complete";
+
+export interface GitWorktreeCoverage {
+  tracked: boolean;
+  untracked: boolean;
+  ignored: boolean;
+  /**
+   * Filesystem-only directories explicitly opened by this subscriber. The root
+   * is implicit. Omission retains the earlier bounded breadth-first inventory.
+   */
+  expandedPrefixes?: string[];
+  /**
+   * Delivery policy for an opened filesystem-only directory. Omission is the
+   * bounded policy understood by earlier servers.
+   */
+  filesystemScan?: GitWorktreeFilesystemScan;
+}
+
+/** One filesystem-only directory row in a lazy worktree inventory. */
+export interface GitWorktreeDirectory {
+  /** Canonical project-relative path without a trailing slash. */
+  path: string;
+  /** True until a subscriber opens this directory prefix. */
+  pending: boolean;
+  /** True when the opened directory contains more files than were published. */
+  truncated: boolean;
+  /** Exact direct file count when known, including count-only recovery. */
+  totalFiles?: number;
+}
+
+export interface GitWorktreeGeneration {
+  epoch: string;
+  sequence: number;
+}
+
+export interface GitWorktreeSnapshotEvent {
+  type: "git-worktree-snapshot";
+  generation: GitWorktreeGeneration;
+  coverage: GitWorktreeCoverage;
+  /** Resolved HEAD used by worktree projection facts. */
+  headSha: string | null;
+  /** Resolved HEAD^1 used by cumulative projection facts. */
+  baseSha: string | null;
+  files: GitWorkingTreeFile[];
+  /** Filesystem-only directory rows. Older servers omit this field. */
+  directories?: GitWorktreeDirectory[];
+  truncated: boolean;
+  /** Exact files in this subscriber's opened-directory corpus when known. */
+  totalFiles?: number;
+  timestamp: string;
+}
+
+export type GitWorktreePathChangeType = "create" | "modify" | "delete";
+
+export interface GitWorktreePathChange {
+  changeType: GitWorktreePathChangeType;
+  path: string;
+  file?: GitWorkingTreeFile;
+}
+
+export interface GitWorktreeDirectoryChange {
+  changeType: GitWorktreePathChangeType;
+  path: string;
+  directory?: GitWorktreeDirectory;
+}
+
+export interface GitWorktreeDeltaEvent {
+  type: "git-worktree-delta";
+  generation: GitWorktreeGeneration;
+  /** Current resolved projection endpoints after applying this delta. */
+  headSha: string | null;
+  baseSha: string | null;
+  changes: GitWorktreePathChange[];
+  /** Filesystem-only directory-row changes. Older servers omit this field. */
+  directoryChanges?: GitWorktreeDirectoryChange[];
+  /** Current bounded state. Older servers omit this field from deltas. */
+  truncated?: boolean;
+  /** Current exact opened-directory total; null clears an unavailable count. */
+  totalFiles?: number | null;
+  timestamp: string;
+}
+
+export type GitWorktreeSubscriptionEvent =
+  | GitWorktreeSnapshotEvent
+  | GitWorktreeDeltaEvent;
+
+/** Bounded current-content inventory for the Working Tree browser. */
+export interface GitWorkingTreeFileListResult {
+  files: GitWorkingTreeFile[];
+  /** True when the inventory contains more paths than this response. */
+  truncated: boolean;
+  /** Effective response bound. */
+  limit: number;
+}
+
 /** Rudimentary commit-delta / filename search results. */
 export interface GitSearchResult {
   /** Matching file paths (filename search). */
@@ -188,6 +348,31 @@ export interface GitUntrackedFolderInfo {
   limit: number;
 }
 
+export interface GitUntrackedFolderSummary {
+  /** Top-level compact directory path, with trailing slash. */
+  path: string;
+  /** Cached descendant count before any response bound. */
+  count: number;
+}
+
+/** A bounded view over the persistent non-ignored untracked-path cache. */
+export interface GitUntrackedFileListResult {
+  /** File paths for a root, folder, or search query. */
+  files: string[];
+  /** Top-level groups, populated only by an unfiltered root request. */
+  folders: GitUntrackedFolderSummary[];
+  /** Complete cached file count before query and response bounds. */
+  total: number;
+  /** Last complete filesystem reconciliation time. */
+  refreshedAt: string;
+  /** True when either the cache or this response hit its safety bound. */
+  truncated: boolean;
+  /** Effective file/group response bound. */
+  limit: number;
+  /** Last-editor attribution for returned file paths that have it. */
+  lastEditors?: Record<string, GitFileEditor>;
+}
+
 export type GitDiffPreviewSkippedReason =
   | "binary"
   | "content-too-large"
@@ -197,14 +382,22 @@ export type GitDiffPreviewSkippedReason =
 export interface GitDiffPreviewSkipped {
   /** Why the preview was omitted or downgraded. */
   reason: GitDiffPreviewSkippedReason;
-  /** Size of the content the guard measured — the diff, or the source it refused to diff. */
+  /** Source bytes measured before diffing, when that boundary rejected input. */
   totalBytes?: number;
+  /** Source characters represented by the rendered hunks. */
+  totalChars?: number;
+  /** Lines represented by the rendered hunks. */
+  totalLines?: number;
   /** Longest measured line in JavaScript string characters, when known. */
   maxLineChars?: number;
-  /** Highlighted HTML size in JavaScript string characters, for client guards. */
+  /** Highlighted HTML size in JavaScript string characters, for legacy clients. */
   htmlChars?: number;
   /** Source content byte budget that triggered this guard. */
   maxTotalBytes?: number;
+  /** Hunk-content character budget that triggered this guard. */
+  maxTotalChars?: number;
+  /** Hunk-line budget that triggered this guard. */
+  maxTotalLines?: number;
   /** Per-line character budget that triggered this guard. */
   maxLineCharsLimit?: number;
   /** Highlighted HTML character budget that triggered this guard. */
@@ -212,9 +405,11 @@ export interface GitDiffPreviewSkipped {
 }
 
 export interface GitDiffResult {
-  /** Syntax-highlighted diff HTML, omitted when previewSkipped is present. */
+  /** Syntax-highlighted diff HTML, omitted for a plain or skipped preview. */
   diffHtml: string;
-  /** Structured diff hunks for normal small previews. */
+  /** Large accepted diffs use one low-node-count plain-text projection. */
+  renderMode?: "plain";
+  /** Structured diff hunks for accepted previews. */
   structuredPatch: PatchHunk[];
   /** Rendered markdown preview HTML for small markdown files. */
   markdownHtml?: string;

@@ -7,10 +7,13 @@
 
 Topic: cache-miss-accounting
 
-Status: implemented 2026-08-17 in
+Status: implemented as of 2026-08-21 in
 `packages/server/src/services/CacheMissBillingMonitor.ts`, surfaced in
-Settings → Cache Billing. Default off. The per-project boot baseline described
-under [Session boot](#session-boot) is not built; it is tracked in
+Settings → Cache Billing. Default off. The idle-gap boundary distinguishes
+human from automatic provider turns, and mixed-version support keeps the
+legacy recent-activity meaning while gating the additive ignore-after field.
+The per-project boot baseline described under [Session boot](#session-boot) is
+not built; it is tracked in
 [`gaps/cache-miss-boot-baseline.md`](../gaps/cache-miss-boot-baseline.md).
 
 Related topics: [session usage accounting](session-usage-accounting.md) (the
@@ -70,25 +73,66 @@ no expectation and is never judged.
 
 ## Recorded versus flagged
 
-Every miss above the wasted-token floor is **recorded**. Only misses after a
-real idle gap are **flagged** (`exception: true`, eligible for a popup).
-Within `recentActivityMinutes` — 10 by default — a miss is recorded with
-`exception: false` and stays silent: a provider-side shard or serving
-migration can drop a warm cache with no YA-visible cause and no YA-available
-remedy, so alarming about it trains the operator to ignore the feature. The
-observation still counts in the distribution, which is where it is useful.
+A continuing-turn sample's idle gap starts at the previous usage-bearing
+assistant observation and ends when the next real human message is yielded to
+the provider. It therefore excludes the provider's work on the new turn. A
+reload-safe worker that predates yield reporting temporarily uses server receipt
+of the human message; a current worker replaces that fallback with the provider
+boundary before usage arrives. Automatic heartbeat, wake, and project-queue
+turns advance the warm-prefix baseline but never create cache evidence or
+popups. Additional provider requests within the same human turn have no human
+idle interval and occupy the zero end of the 0–10 minute bucket. Only the first
+provider request after a human message is a complete human-turn probability
+sample.
 
-Clean hits are recorded only once the idle gap reaches that same window. They
-are the denominator — a bucket where one turn in twenty missed reads very
-differently from one where every turn missed — but back-to-back turns are
-never at risk, and recording each would rewrite session metadata on every
-assistant message for no analytic gain.
+Within the provider freshness window, every measurable clean hit and every
+miss above the wasted-token floor is **recorded**. Clean hits are the
+denominator: a duration bucket where one turn in twenty missed means something
+different from one where every turn missed. The legacy recent-activity window
+records a miss but does not flag it (`exception: false`) or show a popup; its
+default is 10 minutes. Later eligible misses are flagged because they represent
+an unexpected recompute after local activity has settled.
+
+The optional ignore-after cutoff excludes both hits and misses beyond its
+duration so the event list, totals, and probability denominators describe the
+same population. Zero means no additional cutoff beyond the provider freshness
+window. It is serialized separately as `ignoreAfterMinutes` and exposed only
+when the server advertises `cache-miss-billing-ignore-after`. Without the
+capability, the client keeps the legacy recent-activity control and omits the
+new field from writes and undo restores.
+
+The UI's separate recency filter limits records by event timestamp. Its 1–96h
+slider ends in an unlimited notch, and a blank numeric value also means
+unlimited. The visible summary, all charts, provider/model hover contents, and
+grouped wrapping table consume that same explicitly filtered event set. A
+finite window is repeated beside the table row count; unlimited adds no suffix.
+Duration buckets double from `0–30s`, `30s–1m`, `1–2m`, and onward with no
+terminal cap, so short cache lifetimes remain visible without losing the long
+tail. The charts omit ranges containing no observations.
+
+The table adds a browser-local result filter, defaulting to misses and
+persisting Misses / Hits / All across revisits. It does not filter the charts:
+clean hits remain the denominator for miss probability even when the table is
+showing misses only. Table columns distinguish when YA recorded an event
+(`Seen`) from its measured human-turn delay (`Gap`). Rows from one session
+share a color marker, while clicking a numbered `Msg` jumps to the next older
+visible event from that session; the full provider id remains available on
+hover.
+
+## Design decisions
+
+- **Keep hit/miss filtering table-local** (versus filtering every evidence
+  view): the table is a row-browsing surface, while the probability charts
+  require retained hits as their denominator.
 
 ## Defaults
 
 - `minimumWastedTokens` 10,000 — above per-turn noise (breakpoint shuffles,
   re-written trailing segments), well below a prefix recompute worth seeing.
-- `recentActivityMinutes` 10 — the "not YA's fault, don't alarm" boundary.
+- `recentActivityMinutes` 10 — record short-delay misses for the distribution,
+  but do not flag them or show popups.
+- ignore-after 0 — do not impose another measurement cutoff inside the
+  provider freshness window.
 - `providerFreshWindowMinutes` claude 60 / codex 10 — how long YA expects a
   cache to exist at all. Beyond it, no expectation is formed and nothing is
   recorded.

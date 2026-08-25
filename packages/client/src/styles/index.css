@@ -328,6 +328,13 @@
   --project-queue-new-session-action-bg: #5b21b6;
 
   /* Semantic Colors */
+  /* Selection/emphasis accent. The color names were used across the client but
+     never defined, so browsers dropped bare accent declarations. They alias
+     each theme's primary; the literals cover first paint before the theme
+     attribute lands. */
+  --accent-color: var(--primary-color, #3b82f6);
+  --accent-primary: var(--primary-color, #3b82f6);
+  --accent-contrast: #0b1220;
   --thinking-color: var(--app-claude-orange);
   /* Maximum-contrast tooltip polarity for dark and default themes. */
   --tooltip-background: #ffffff;
@@ -507,6 +514,7 @@
   --attention-color: #4daafc;
   --focus-border: #007acc;
   --primary-color: #60a5fa;
+  --accent-contrast: #0b1220;
   --bg-diff-added: color-mix(in srgb, var(--success-color) 7%, transparent);
   --bg-diff-removed: color-mix(in srgb, var(--error-color) 7%, transparent);
   --bg-diff-gutter-added: color-mix(
@@ -593,6 +601,7 @@
   --attention-color: #5db5ff;
   --focus-border: #007acc;
   --primary-color: #60a5fa;
+  --accent-contrast: #0b1220;
   --bg-diff-added: color-mix(in srgb, var(--success-color) 7%, transparent);
   --bg-diff-removed: color-mix(in srgb, var(--error-color) 7%, transparent);
   --bg-diff-gutter-added: color-mix(
@@ -681,6 +690,7 @@
   --attention-color: #0066cc;
   --focus-border: #0066cc;
   --primary-color: #2563eb;
+  --accent-contrast: #ffffff;
   --tooltip-background: #000000;
   --tooltip-foreground: #ffffff;
   --tooltip-border: #ffffff;
@@ -759,6 +769,7 @@
   --attention-color: #5db5ff;
   --focus-border: #007acc;
   --primary-color: #60a5fa;
+  --accent-contrast: #0b1220;
   --bg-diff-added: color-mix(in srgb, var(--success-color) 7%, transparent);
   --bg-diff-removed: color-mix(in srgb, var(--error-color) 7%, transparent);
   --bg-diff-gutter-added: color-mix(
@@ -840,6 +851,7 @@
     --attention-color: #0066cc;
     --focus-border: #0066cc;
     --primary-color: #2563eb;
+    --accent-contrast: #ffffff;
     --tooltip-background: #000000;
     --tooltip-foreground: #ffffff;
     --tooltip-border: #ffffff;
@@ -6494,149 +6506,6 @@ a.sidebar-nav-item {
   padding: var(--space-2) 0;
 }
 
-.attachment-chip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  padding-right: var(--space-1);
-  background: var(--bg-code);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  font-size: var(--font-size-xs);
-}
-
-.attachment-chip-image {
-  overflow: hidden;
-  padding: 0;
-}
-
-.attachment-chip-main {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  flex: 1;
-  padding: var(--space-1) var(--space-2);
-  padding-right: var(--space-1);
-  background: transparent;
-  border: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.attachment-preview {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--bg-elevated);
-}
-
-.attachment-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.attachment-preview-fallback {
-  font-size: 11px;
-  line-height: 1;
-}
-
-/*
- * Hover preview: a non-interactive, fit-to-screen overlay of the full image,
- * surfaced after a brief linger (see HOVER_PREVIEW_LINGER_MS). pointer-events
- * are off so it never steals the hover that keeps it visible. Sits just below
- * the modal overlay (z-index 9999) since it hides while the modal is open.
- */
-.attachment-hover-preview {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3vmin;
-  pointer-events: none;
-  z-index: 9990;
-}
-
-.attachment-hover-preview img {
-  max-width: 92vw;
-  max-height: 92vh;
-  object-fit: contain;
-  border-radius: var(--radius-md);
-  background: var(--bg-primary);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
-}
-
-.attachment-chip.uploading {
-  opacity: 0.7;
-}
-
-.attachment-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 132px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-}
-
-.attachment-size {
-  color: var(--text-dimmed);
-  flex-shrink: 0;
-}
-
-.attachment-progress {
-  color: var(--app-yep-green);
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.attachment-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  margin-left: var(--space-1);
-  background: transparent;
-  border: none;
-  border-radius: 50%;
-  color: var(--text-dimmed);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-
-.attachment-remove:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-/* Mobile adjustments */
-@media (max-width: 600px) {
-  .attachment-name {
-    max-width: 80px;
-  }
-
-  .attachment-chip {
-    padding: 2px var(--space-1);
-    padding-right: 2px;
-  }
-}
-
 /* Status */
 .status-indicator {
   display: flex;
@@ -6922,22 +6791,6 @@ a.sidebar-nav-item {
 
 .processing-thinking-toggle-slash {
   stroke-width: 2.4;
-}
-
-.processing-cursor {
-  animation: blink 0.7s step-start infinite;
-  margin-left: 1px;
-}
-
-@keyframes blink {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  51%,
-  100% {
-    opacity: 0;
-  }
 }
 
 /* ==========================================================================
@@ -7393,15 +7246,11 @@ a.sidebar-nav-item {
 
 /* Compacting state - animated indicator */
 .system-message-compacting {
-  border-left-color: var(--accent-primary, #3b82f6);
+  border-left-color: var(--accent-primary);
   background: linear-gradient(
     90deg,
     var(--bg-tertiary, #2a2a2a) 0%,
-    color-mix(
-        in srgb,
-        var(--accent-primary, #3b82f6) 10%,
-        var(--bg-tertiary, #2a2a2a)
-      )
+    color-mix(in srgb, var(--accent-primary) 10%, var(--bg-tertiary, #2a2a2a))
       50%,
     var(--bg-tertiary, #2a2a2a) 100%
   );
@@ -7520,7 +7369,7 @@ a.sidebar-nav-item {
 }
 
 .task-notification-progress {
-  border-left-color: var(--accent-primary, #3b82f6);
+  border-left-color: var(--accent-primary);
 }
 
 .task-notification-completed {
@@ -7913,13 +7762,6 @@ a.sidebar-nav-item {
   margin: 0;
 }
 
-.session-toolbar-settings {
-  flex-direction: column;
-  align-items: stretch;
-  container-name: session-toolbar-settings;
-  container-type: inline-size;
-}
-
 .output-appearance-settings {
   container-name: output-appearance;
   container-type: inline-size;
@@ -8254,14 +8096,6 @@ a.sidebar-nav-item {
   box-shadow: none;
 }
 
-.session-toolbar-control-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  width: 100%;
-  max-width: 100%;
-}
-
 .session-toolbar-zone {
   display: flex;
   flex-direction: column;
@@ -8289,41 +8123,6 @@ a.sidebar-nav-item {
   height: 1px;
   margin: var(--space-2) 0;
   background: var(--border-color);
-}
-
-.session-toolbar-hidden-groups {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-3);
-}
-
-/* Match one Hidden column when it fits; 26rem keeps priority controls readable. */
-@container session-toolbar-settings (min-width: 492px) {
-  .session-toolbar-control-list {
-    width: min(100%, max(26rem, calc(50% - 6px)));
-  }
-}
-
-.session-toolbar-hidden-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.session-toolbar-hidden-group-title {
-  color: var(--text-secondary);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.session-toolbar-hidden-empty {
-  margin: 0;
-  color: var(--text-dimmed);
-  font-size: var(--font-size-xs);
-  font-style: italic;
 }
 
 .session-toolbar-control-row {
@@ -9182,39 +8981,6 @@ a.sidebar-nav-item {
   margin-top: var(--space-1);
 }
 
-.settings-warning-box {
-  background: color-mix(
-    in srgb,
-    var(--warning-color, #f59e0b) 15%,
-    transparent
-  );
-  border: 1px solid var(--warning-color, #f59e0b);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
-.settings-warning-box strong {
-  display: block;
-  color: var(--warning-color, #f59e0b);
-  margin-bottom: var(--space-2);
-}
-
-.settings-warning-box p {
-  margin: 0 0 var(--space-2);
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-}
-
-.settings-warning-box p:last-child {
-  margin-bottom: 0;
-}
-
-.settings-warning-box a {
-  color: var(--link-color);
-  text-decoration: underline;
-}
-
 .provider-deprecation-notice {
   display: flex;
   align-items: center;
@@ -9301,8 +9067,8 @@ a.sidebar-nav-item {
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background-color: var(--accent-color, #3b82f6);
-  border-color: var(--accent-color, #3b82f6);
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
@@ -11409,74 +11175,6 @@ a.sidebar-nav-item {
   .new-session-project-panel {
     max-height: min(28rem, 45vh);
   }
-}
-
-.pending-files-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.pending-file-chip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  background: var(--bg-code);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  max-width: 200px;
-}
-
-.pending-file-preview {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  object-fit: cover;
-  flex-shrink: 0;
-}
-
-.pending-file-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.pending-file-name {
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pending-file-size {
-  font-size: var(--font-size-xs);
-  color: var(--text-dimmed);
-}
-
-.pending-file-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 50%;
-  color: var(--text-dimmed);
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-  flex-shrink: 0;
-}
-
-.pending-file-remove:hover {
-  background: var(--bg-hover);
-  color: var(--error-color);
 }
 
 /* Provider Selection Section */

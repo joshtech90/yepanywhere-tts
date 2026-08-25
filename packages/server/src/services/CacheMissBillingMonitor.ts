@@ -20,6 +20,12 @@ interface ProcessUsageState {
   messageIndex: number;
   assistantUsageCount: number;
   lastExpectedWarmAtMs?: number;
+  /** Kind of provider turn currently producing usage observations. */
+  activeTurnKind?: "human" | "automatic";
+  /** Provider-input time for the next usage-bearing human turn. */
+  humanTurnStartedAtMs?: number;
+  /** Whether the first usage observation for that human turn was consumed. */
+  humanTurnUsageObserved?: boolean;
   /** Total prompt size of the previous observation, for the growth measure. */
   lastTotalContextTokens?: number;
 }
@@ -102,6 +108,20 @@ function carriesUsage(message: SDKMessage): boolean {
   return message.type === "system" && message.subtype === "token_usage";
 }
 
+/**
+ * A boundary that rewrites the prompt prefix, so the next request pays for a
+ * prefix the provider never cached and no earlier observation predicts it.
+ * Microcompaction drops older content from the same prefix, which invalidates
+ * the comparison exactly as a full compaction does.
+ */
+function isContextReplacementBoundary(message: SDKMessage): boolean {
+  return (
+    message.type === "system" &&
+    (message.subtype === "compact_boundary" ||
+      message.subtype === "microcompact_boundary")
+  );
+}
+
 export function extractCacheMissBillingObservation(
   message: SDKMessage,
   provider: ProviderName,
@@ -173,6 +193,25 @@ export class CacheMissBillingMonitor {
     this.processStates.delete(processId);
   }
 
+  observeUserTurnStarted(process: Process, startedAtMs = Date.now()): void {
+    this.observeProviderTurnStarted(process, "human", startedAtMs);
+  }
+
+  observeProviderTurnStarted(
+    process: Process,
+    turnKind: "human" | "automatic",
+    startedAtMs = Date.now(),
+  ): void {
+    const state = this.processStates.get(process.id) ?? {
+      messageIndex: 0,
+      assistantUsageCount: 0,
+    };
+    state.activeTurnKind = turnKind;
+    state.humanTurnStartedAtMs = turnKind === "human" ? startedAtMs : undefined;
+    state.humanTurnUsageObserved = false;
+    this.processStates.set(process.id, state);
+  }
+
   observeMessage(process: Process, message: SDKMessage): void {
     const state = this.processStates.get(process.id) ?? {
       messageIndex: 0,
@@ -180,6 +219,12 @@ export class CacheMissBillingMonitor {
     };
     state.messageIndex += 1;
     this.processStates.set(process.id, state);
+
+    if (isContextReplacementBoundary(message)) {
+      state.lastExpectedWarmAtMs = undefined;
+      state.lastTotalContextTokens = undefined;
+      return;
+    }
 
     if (!CACHE_MISS_BILLING_PROVIDERS.has(process.provider)) {
       return;
@@ -198,9 +243,22 @@ export class CacheMissBillingMonitor {
     const assistantUsageCountBefore = state.assistantUsageCount;
     const previousWarmAtMs = state.lastExpectedWarmAtMs;
     const previousTotalContextTokens = state.lastTotalContextTokens;
+    const humanTurnStartedAtMs = state.humanTurnStartedAtMs;
+    const firstUsageForHumanTurn =
+      humanTurnStartedAtMs !== undefined &&
+      state.humanTurnUsageObserved !== true;
     state.assistantUsageCount += 1;
     state.lastExpectedWarmAtMs = nowMs;
     state.lastTotalContextTokens = observation.usage.totalContextTokens;
+    if (humanTurnStartedAtMs !== undefined) {
+      state.humanTurnUsageObserved = true;
+    }
+
+    // Automatic provider turns still advance the warm-prefix baseline, but
+    // they are never evidence about a human turn and must never raise popups.
+    if (state.activeTurnKind !== "human") {
+      return;
+    }
 
     const settings = normalizeCacheMissBillingSettings(
       this.options.getSettings?.(),
@@ -224,13 +282,30 @@ export class CacheMissBillingMonitor {
       previousWarmAtMs ?? 0,
       process.lastPromptCacheRefreshTime?.getTime() ?? 0,
     );
+    const cacheRequestStartedAtMs = humanTurnStartedAtMs ?? nowMs;
+    const elapsedSinceWarmObservationMs =
+      lastWarmAtMs > 0
+        ? Math.max(0, cacheRequestStartedAtMs - lastWarmAtMs)
+        : undefined;
     const elapsedSinceExpectedCacheMs =
-      lastWarmAtMs > 0 ? nowMs - lastWarmAtMs : undefined;
+      humanTurnStartedAtMs !== undefined && lastWarmAtMs > 0
+        ? firstUsageForHumanTurn
+          ? Math.max(0, humanTurnStartedAtMs - lastWarmAtMs)
+          : 0
+        : undefined;
     const warmExpected =
-      elapsedSinceExpectedCacheMs !== undefined &&
-      elapsedSinceExpectedCacheMs <= providerFreshWindowMinutes * 60_000;
+      elapsedSinceWarmObservationMs !== undefined &&
+      elapsedSinceWarmObservationMs <= providerFreshWindowMinutes * 60_000;
 
     if (!forkExpected && !warmExpected) {
+      return;
+    }
+    const ignoreAfterMinutes = settings.ignoreAfterMinutes;
+    if (
+      ignoreAfterMinutes > 0 &&
+      elapsedSinceExpectedCacheMs !== undefined &&
+      elapsedSinceExpectedCacheMs > ignoreAfterMinutes * 60_000
+    ) {
       return;
     }
     const expectedCacheSource = forkExpected ? "fork" : "warm-session";
@@ -273,26 +348,20 @@ export class CacheMissBillingMonitor {
       providerFreshWindowMinutes,
     };
 
-    /**
-     * Misses close behind the previous turn are recorded but never flagged:
-     * a provider-side shard or serving migration can drop a warm cache with no
-     * YA-visible cause, and the value of those observations is the shape of
-     * the inactivity distribution, not an alert.
-     */
-    const withinRecentActivity =
-      elapsedSinceExpectedCacheMs !== undefined &&
-      elapsedSinceExpectedCacheMs <= settings.recentActivityMinutes * 60_000;
     const missed =
       expectedNewContentTokens !== undefined &&
       wastedInputTokens >= settings.minimumWastedTokens;
     const outcome: CacheMissBillingOutcome | null = missed
       ? "unexpected-recompute"
-      : this.shouldRecordHit(observation, elapsedSinceExpectedCacheMs, settings)
+      : this.shouldRecordHit(observation, elapsedSinceExpectedCacheMs)
         ? "expected-cache-hit"
         : null;
     if (!outcome) {
       return;
     }
+    const withinRecentActivity =
+      elapsedSinceExpectedCacheMs !== undefined &&
+      elapsedSinceExpectedCacheMs <= settings.recentActivityMinutes * 60_000;
     const exception =
       outcome === "unexpected-recompute" && !withinRecentActivity;
 
@@ -300,6 +369,7 @@ export class CacheMissBillingMonitor {
       id: randomUUID(),
       timestamp: nowIso,
       provider: process.provider,
+      ...(process.resolvedModel ? { model: process.resolvedModel } : {}),
       sessionId: process.sessionId,
       projectId: process.projectId,
       sessionPath: `/projects/${process.projectId}/sessions/${process.sessionId}`,
@@ -328,27 +398,21 @@ export class CacheMissBillingMonitor {
         ? { elapsedSinceExpectedCacheMs }
         : {}),
       expectedCacheSource,
+      ...(firstUsageForHumanTurn && elapsedSinceExpectedCacheMs !== undefined
+        ? { completeProbabilitySample: true }
+        : {}),
     };
 
     void this.record(record, settings.showToasts && exception);
   }
 
-  /**
-   * Clean hits are the denominator of the inactivity distribution, but writing
-   * one per turn would rewrite session metadata on every assistant message for
-   * no analytic gain: back-to-back turns are never at risk. Record a hit only
-   * once the gap is long enough that keeping the cache was in question.
-   */
+  /** Clean hits are the denominator required for an empirical miss rate. */
   private shouldRecordHit(
     observation: CacheMissBillingObservation,
     elapsedSinceExpectedCacheMs: number | undefined,
-    settings: Required<CacheMissBillingSettings>,
   ): boolean {
     if ((observation.usage.cacheReadTokens ?? 0) <= 0) return false;
-    if (elapsedSinceExpectedCacheMs === undefined) return false;
-    return (
-      elapsedSinceExpectedCacheMs >= settings.recentActivityMinutes * 60_000
-    );
+    return elapsedSinceExpectedCacheMs !== undefined;
   }
 
   private async record(

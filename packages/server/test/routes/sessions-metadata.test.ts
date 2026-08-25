@@ -209,6 +209,36 @@ async function createGrokRedirectFixture(): Promise<{
 }
 
 describe("Sessions metadata route", () => {
+  it("verifiably stops an owned process after persisting archive metadata", async () => {
+    const order: string[] = [];
+    const updateMetadata = vi.fn(async () => {
+      order.push("persist-archive");
+    });
+    const abortSessionWithVerification = vi.fn(async () => {
+      order.push("abort-process");
+      return null;
+    });
+    const routes = createSessionsRoutes({
+      supervisor: {
+        abortSessionWithVerification,
+      } as unknown as SessionsDeps["supervisor"],
+      sessionMetadataService: {
+        updateMetadata,
+        getMetadata: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    } as SessionsDeps);
+
+    const response = await routes.request("/sessions/sess-1/metadata", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["persist-archive", "abort-process"]);
+    expect(abortSessionWithVerification).toHaveBeenCalledWith("sess-1");
+  });
+
   it("redirects stale active-process detail links to the process project", async () => {
     const wrongProject = {
       ...createProject(),
@@ -1624,6 +1654,7 @@ describe("Sessions metadata route", () => {
       },
     );
     const emit = vi.fn();
+    const sessionProjectChanged = vi.fn();
     const reader = {
       getSessionSummary: vi.fn(async (_sessionId: string, projectId) =>
         projectId === transcriptProject.id ? createSummary() : null,
@@ -1669,6 +1700,10 @@ describe("Sessions metadata route", () => {
         eventBus: {
           emit,
         } as unknown as NonNullable<SessionsDeps["eventBus"]>,
+        projectQueueScheduler: {
+          reserveUserSessionStart: vi.fn(),
+          sessionProjectChanged,
+        },
         sessionMetadataService: {
           getMetadata: vi.fn(() => metadata),
           getProvider: vi.fn(() => "grok"),
@@ -1695,6 +1730,10 @@ describe("Sessions metadata route", () => {
         "sess-1",
         workingProject.id,
         transcriptProject.id,
+      );
+      expect(sessionProjectChanged).toHaveBeenCalledWith(
+        transcriptProject.id,
+        workingProject.id,
       );
       expect(emit).toHaveBeenCalledWith(
         expect.objectContaining({

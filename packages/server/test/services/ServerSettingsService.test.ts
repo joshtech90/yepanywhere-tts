@@ -3,7 +3,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_PROJECT_QUEUE_QUIET_SECONDS } from "@yep-anywhere/shared";
-import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
+import {
+  ServerSettingsService,
+  defaultLiveWorktreeMonitoringEnabled,
+} from "../../src/services/ServerSettingsService.js";
 
 describe("ServerSettingsService", () => {
   let testDir: string;
@@ -74,6 +77,49 @@ describe("ServerSettingsService", () => {
     await service.initialize();
 
     expect(service.getSetting("workstreamsEnabled")).toBe(false);
+  });
+
+  it("defaults live worktree monitoring on only on Linux", () => {
+    expect(defaultLiveWorktreeMonitoringEnabled("darwin")).toBe(false);
+    expect(defaultLiveWorktreeMonitoringEnabled("linux")).toBe(true);
+    expect(defaultLiveWorktreeMonitoringEnabled("win32")).toBe(false);
+  });
+
+  it("applies the platform monitoring default and persists an explicit choice", async () => {
+    const platformDefault = defaultLiveWorktreeMonitoringEnabled();
+    const service = new ServerSettingsService({ dataDir: testDir });
+    await service.initialize();
+
+    expect(service.getSetting("liveWorktreeMonitoringEnabled")).toBe(
+      platformDefault,
+    );
+    await service.updateSettings({
+      liveWorktreeMonitoringEnabled: !platformDefault,
+    });
+
+    const reloaded = new ServerSettingsService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getSetting("liveWorktreeMonitoringEnabled")).toBe(
+      !platformDefault,
+    );
+  });
+
+  it("normalizes invalid live worktree monitoring state to the platform default", async () => {
+    await fs.writeFile(
+      path.join(testDir, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: { liveWorktreeMonitoringEnabled: "yes" },
+      }),
+      "utf-8",
+    );
+    const service = new ServerSettingsService({ dataDir: testDir });
+
+    await service.initialize();
+
+    expect(service.getSetting("liveWorktreeMonitoringEnabled")).toBe(
+      defaultLiveWorktreeMonitoringEnabled(),
+    );
   });
 
   it("defaults project writes to app data and tool media to on demand", async () => {

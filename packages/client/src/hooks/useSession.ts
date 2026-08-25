@@ -125,6 +125,19 @@ function buildSessionFileChangePerfDetail(
   };
 }
 
+function hasUnreconciledHeartbeatProgress(
+  liveness: SessionLivenessSnapshot,
+  durableUpdatedAt: string | undefined,
+): boolean {
+  if (!liveness.lastProviderMessageAt) return false;
+  const progressAtMs = Date.parse(liveness.lastProviderMessageAt);
+  const durableUpdatedAtMs = Date.parse(durableUpdatedAt ?? "");
+  return (
+    Number.isFinite(progressAtMs) &&
+    (!Number.isFinite(durableUpdatedAtMs) || progressAtMs > durableUpdatedAtMs)
+  );
+}
+
 function scheduleAwayRecap(
   projectId: string,
   sessionId: string,
@@ -584,6 +597,15 @@ export function useSession(
     pendingIso: null,
     timer: null,
   });
+  const streamProgressLivenessRef = useRef<{
+    lastUpdateMs: number;
+    pendingObservedAtMs: number | null;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({
+    lastUpdateMs: Number.NEGATIVE_INFINITY,
+    pendingObservedAtMs: null,
+    timer: null,
+  });
 
   const noteStreamActivity = useCallback((immediate = false) => {
     const nowMs = Date.now();
@@ -654,32 +676,65 @@ export function useSession(
     [],
   );
 
+  const publishStreamProgressLiveness = useCallback(
+    (observedAtMs: number) => {
+      const ref = streamProgressLivenessRef.current;
+      ref.lastUpdateMs = Date.now();
+      setSessionLiveness((previous) => {
+        const previousProgressMs = Date.parse(
+          previous?.lastVerifiedProgressAt ?? previous?.checkedAt ?? "",
+        );
+        if (
+          previous?.derivedStatus === "verified-progressing" &&
+          Number.isFinite(previousProgressMs) &&
+          previousProgressMs >= observedAtMs
+        ) {
+          return previous;
+        }
+        return buildStreamProgressLiveness(observedAtMs, previous);
+      });
+    },
+    [buildStreamProgressLiveness],
+  );
+
   const noteStreamProgressLiveness = useCallback(() => {
-    const nowMs = Date.now();
-
-    setSessionLiveness((previous) => {
-      const nowVerifiedProgressMs = Date.parse(
-        previous?.lastVerifiedProgressAt ?? previous?.checkedAt ?? "",
-      );
-
-      if (
-        previous &&
-        previous.derivedStatus === "verified-progressing" &&
-        Number.isFinite(nowVerifiedProgressMs) &&
-        nowMs - nowVerifiedProgressMs < STREAM_LIVENESS_UPDATE_MS
-      ) {
-        return previous;
+    const observedAtMs = Date.now();
+    const ref = streamProgressLivenessRef.current;
+    const elapsedMs = observedAtMs - ref.lastUpdateMs;
+    if (elapsedMs < 0 || elapsedMs >= STREAM_LIVENESS_UPDATE_MS) {
+      if (ref.timer) {
+        clearTimeout(ref.timer);
+        ref.timer = null;
       }
+      ref.pendingObservedAtMs = null;
+      publishStreamProgressLiveness(observedAtMs);
+      return;
+    }
 
-      return buildStreamProgressLiveness(nowMs, previous);
-    });
-  }, [buildStreamProgressLiveness]);
+    // Gate before enqueueing React state, but retain one trailing observation.
+    // A provider burst gets one timer, and silence cannot strand its final state.
+    ref.pendingObservedAtMs = observedAtMs;
+    if (!ref.timer) {
+      ref.timer = setTimeout(() => {
+        const pendingObservedAtMs = ref.pendingObservedAtMs;
+        ref.pendingObservedAtMs = null;
+        ref.timer = null;
+        if (pendingObservedAtMs !== null) {
+          publishStreamProgressLiveness(pendingObservedAtMs);
+        }
+      }, STREAM_LIVENESS_UPDATE_MS - elapsedMs);
+    }
+  }, [publishStreamProgressLiveness]);
 
   useEffect(() => {
     return () => {
-      const timer = streamActivityRef.current.timer;
-      if (timer) {
-        clearTimeout(timer);
+      const activityTimer = streamActivityRef.current.timer;
+      if (activityTimer) {
+        clearTimeout(activityTimer);
+      }
+      const livenessTimer = streamProgressLivenessRef.current.timer;
+      if (livenessTimer) {
+        clearTimeout(livenessTimer);
       }
     };
   }, []);
@@ -981,6 +1036,7 @@ export function useSession(
     updateSession,
     handleStreamingUpdate,
     handleStreamMessageEvent,
+    flushPendingStreamMessage,
     handleStreamSubagentMessage,
     registerToolUseAgent,
     mergeLoadedAgentContent,
@@ -1636,6 +1692,12 @@ export function useSession(
       : null,
     {
       onChange: handleSessionWatchChange,
+      onOpen: () => {
+        throttledFetch({ route: "focused-session-watch-open" });
+      },
+      onReconnect: () => {
+        throttledFetch({ route: "focused-session-watch-reconnect" });
+      },
     },
   );
 
@@ -1944,6 +2006,9 @@ export function useSession(
           statusData.state === "in-turn" ||
           statusData.state === "waiting-input"
         ) {
+          if (statusData.state !== "in-turn") {
+            flushPendingStreamMessage();
+          }
           logSessionUiTrace("stream-status", {
             sessionId,
             state: statusData.state,
@@ -1974,6 +2039,28 @@ export function useSession(
         };
         if (heartbeatData.liveness) {
           setSessionLiveness(heartbeatData.liveness);
+          if (
+            hasUnreconciledHeartbeatProgress(
+              heartbeatData.liveness,
+              session?.updatedAt,
+            )
+          ) {
+            throttledFetch({
+              route: "session-heartbeat-progress",
+              lastProviderMessageAt:
+                heartbeatData.liveness.lastProviderMessageAt,
+              durableUpdatedAt: session?.updatedAt,
+            });
+          }
+          const heartbeatProcessState = parseProcessState(
+            heartbeatData.liveness.state,
+          );
+          if (heartbeatProcessState) {
+            setProcessState(heartbeatProcessState);
+            if (heartbeatProcessState !== "waiting-input") {
+              setPendingInputRequest(null);
+            }
+          }
         }
       } else if (data.eventType === "deferred-queue") {
         const deferredData = data as {
@@ -2016,6 +2103,7 @@ export function useSession(
           completeData.sessionId ?? sessionId,
           completeData.providerRuntimeStatus,
         );
+        flushPendingStreamMessage();
         setProcessState("idle");
         setStatus({ owner: "none" });
         setSessionLiveness(null);
@@ -2255,6 +2343,7 @@ export function useSession(
       removePendingMessage,
       streamingMarkdownCallbacks,
       handleStreamMessageEvent,
+      flushPendingStreamMessage,
       handleStreamSubagentMessage,
       registerToolUseAgent,
       clearAgentStreamingPlaceholders,
@@ -2267,6 +2356,7 @@ export function useSession(
       reportProviderRuntimeStatus,
       session?.provider,
       session?.model,
+      session?.updatedAt,
       options?.onConfigurationError,
     ],
   );

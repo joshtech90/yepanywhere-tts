@@ -9,6 +9,8 @@
 - core-service-api - Proposal to expose YA's provider/session runtime as a headless service and extractable core for external scripts and OpenAI-style proxy clients.
 - prompt-suggestions - Next-user-turn suggestion surface and native/simulated split.
 - session-liveness - Provider/session cache state, stale entries, and recovery.
+- session-context-actions - Clear, fork, handoff, compaction, and durable
+  done/archive/terminate session boundaries.
 - pluggable-speech-recognition - YA server-routed speech backends and browser-native fallback.
 - cost-efficiency - Preferring subscription/local over metered APIs; billing footgun masking.
 - ya-env-vars - Catalog of YA env vars and the canonical YEP_/YEP_MODULE_
@@ -322,3 +324,30 @@
   the session it writes, read from the launching command.
 - isearch-jump - Ctrl+R/S Enter and click must land on the highlighted match
   after search unhides non-matching turns.
+- attachment-hover-preview - Anchored full-size image hover on attachment chips, using local bytes when just pasted or sent.
+- conversation-thinking-auto-hide - Conversation view fades thinking 5s after a completed turn with following text.
+- cache-miss-accounting - Provider-normalized cache hit/miss evidence, human-turn idle gaps, empirical rate/provider views, and grouped event inspection.
+- provider-installation-updates - Cross-provider coordination for installation
+  mutation, runtime leases, verified generations, and cache convergence.
+- live-worktree-resource-safety - Platform-dependent live Source Control
+  monitoring, bounded native watchers, and fail-closed resource-exhaustion
+  fallback.
+- at-session-launching - Opt-in scanner that launches due at/ queue jobs
+  across projects through at-queue.
+- mobile-ime-delivery - Android IME-safe composer delivery and the default-off
+  preference for retaining keyboard focus afterward.
+- server-cache-concurrency-safety - Per-key async ownership, bounded source
+  snapshots, invalidation fences, and serialized publication for retained
+  server caches.
+- agent-session-access - Scripted local-agent session search/browse/messaging
+  over a scoped REST channel; boss supervision; fs/git mirror rejected.
+- new-session-agent-tooling - Launch-time PATH scripts, scoped API channel,
+  capability fragment, and virgin instruction-scope option.
+- ask-session - Exact-id agent ask plus structured candidate search, bounded
+  timeout/deferral reply contract, ask records, and an asks drawer.
+- boss-mode - Delegated-orchestration working mode: the user talks to one
+  boss agent session that creates and supervises the rest.
+- project-code-names - Unique editable project shorthand for browser titles
+  and sidebar labels, with deterministic collision reassignment.
+- server-side-settings - Server-owned policy, cross-client coherence, demand
+  leases, warm retention, and environment fallback or pinning.

@@ -47,6 +47,7 @@ import {
   toDurableRecapMessage,
 } from "../sessions/recap-overlays.js";
 import type { RecoveredSessionLaunchSettings } from "../sessions/types.js";
+import type { ResumeExemptionResult } from "../sessions/resume-exemption.js";
 import { normalizeSlashCommandName } from "../sdk/slashCommandEmulation.js";
 import type {
   ClaudeSDK,
@@ -3053,6 +3054,97 @@ export class Supervisor {
     return this.sessionDone.requestSessionDone(sessionId, command);
   }
 
+  async requestSessionBoundaryAndAbort(
+    sessionId: string,
+    command: SyntheticSessionBoundaryCommand = "/done",
+  ): Promise<
+    SessionDoneResult & {
+      termination: ProcessAbortResult | null;
+      resumeExemption?: ResumeExemptionResult;
+    }
+  > {
+    let boundary: SessionDoneResult;
+    try {
+      boundary = await this.sessionDone.requestSessionBoundaryForStop(
+        sessionId,
+        command,
+      );
+    } catch (error) {
+      // Once the pending boundary is durable, stop still owns process cleanup
+      // even if transcript promotion or read-state persistence failed.
+      const hasDurableBoundary =
+        this.sessionMetadataService?.getMetadata(sessionId)
+          ?.pendingSyntheticDone !== undefined;
+      if (hasDurableBoundary) {
+        try {
+          await this.stopBoundaryProcess(sessionId, command);
+        } catch (shutdownError) {
+          throw new AggregateError(
+            [error, shutdownError],
+            `Failed to finalize and stop ${command} for session ${sessionId}`,
+          );
+        }
+      }
+      throw error;
+    }
+    const { termination, resumeExemption } = await this.stopBoundaryProcess(
+      sessionId,
+      command,
+    );
+    return {
+      message: boundary.message,
+      paused: true,
+      queued: false,
+      termination,
+      ...(resumeExemption ? { resumeExemption } : {}),
+    };
+  }
+
+  private async stopBoundaryProcess(
+    sessionId: string,
+    command: SyntheticSessionBoundaryCommand,
+  ): Promise<{
+    termination: ProcessAbortResult | null;
+    resumeExemption?: ResumeExemptionResult;
+  }> {
+    let resumeExemption: ResumeExemptionResult | undefined;
+    if (command === "/terminate") {
+      try {
+        resumeExemption = await this.disableSessionAutoResume(sessionId);
+      } catch (error) {
+        resumeExemption = {
+          heartbeatDisabled: false,
+          autoResumeDisabled: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    const termination = await this.abortSessionWithVerification(sessionId);
+    return {
+      termination,
+      ...(resumeExemption ? { resumeExemption } : {}),
+    };
+  }
+
+  async disableSessionAutoResume(
+    sessionId: string,
+  ): Promise<ResumeExemptionResult> {
+    const metadata = this.sessionMetadataService;
+    if (!metadata) {
+      throw new Error("Session metadata service is unavailable");
+    }
+    const heartbeatWasEnabled =
+      metadata.getMetadata(sessionId)?.heartbeatTurnsEnabled === true;
+    await metadata.updateMetadata(sessionId, {
+      heartbeatTurnsEnabled: false,
+      autoResumeDisabled: true,
+    });
+    return {
+      heartbeatDisabled: heartbeatWasEnabled,
+      autoResumeDisabled: true,
+    };
+  }
+
   private async finalizePendingDone(
     process: Process,
   ): Promise<DurableSyntheticDoneMessage | null> {
@@ -3191,6 +3283,15 @@ export class Supervisor {
     const processId = this.sessionToProcess.get(sessionId);
     if (!processId) return undefined;
     return this.processes.get(processId);
+  }
+
+  /**
+   * Durable session state for projections a live subscription must build from
+   * the same sources the request routes use — a queued boundary outlives the
+   * Process that requested it.
+   */
+  getSessionMetadataService(): SessionMetadataService | undefined {
+    return this.sessionMetadataService;
   }
 
   getProviderRuntimeStatusForSession(sessionId: string): ProviderRuntimeStatus {
@@ -4155,6 +4256,13 @@ export class Supervisor {
     return result;
   }
 
+  async abortSessionWithVerification(
+    sessionId: string,
+  ): Promise<ProcessAbortResult | null> {
+    const process = this.getProcessForSession(sessionId);
+    return process ? this.abortProcessWithVerification(process.id) : null;
+  }
+
   /**
    * Interrupt the current turn of a running process gracefully.
    * Unlike abort, this stops the current turn but keeps the process alive.
@@ -4457,7 +4565,20 @@ export class Supervisor {
     }
     this.observedProcessIds.add(process.id);
     process.subscribe((event) => {
-      if (event.type === "user-turn-accepted") {
+      if (event.type === "provider-turn-started") {
+        this.cacheMissBillingMonitor.observeProviderTurnStarted(
+          process,
+          event.turnKind,
+          event.startedAtMs,
+        );
+      } else if (event.type === "user-turn-accepted") {
+        // Server receipt is the fallback boundary for an older reload-safe
+        // worker. A worker that reports provider yield replaces it with the
+        // later authoritative boundary before usage arrives.
+        this.cacheMissBillingMonitor.observeUserTurnStarted(
+          process,
+          event.startedAtMs,
+        );
         this.resumeRecapsAfterUserTurn(process);
         this.resumeAutomationAfterUserTurn(process);
       } else if (
@@ -4710,6 +4831,7 @@ export class Supervisor {
     this.processes.set(process.id, process);
     this.sessionToProcess.set(process.sessionId, process.id);
     this.everOwnedSessions.add(process.sessionId);
+    this.sessionDone.recoverPendingDone(process);
 
     const ownership: SessionOwnership = {
       owner: "self",

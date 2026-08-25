@@ -5,7 +5,7 @@
       "reason": "Device stream video vocabulary produced by EmulatorStream."
     },
     "packages/client/src/styles/index.css": {
-      "maxLines": 16075,
+      "maxLines": 15773,
       "reason": "Legacy application shell plus global tokens, themes, and base rules. Fork: +3 lines for the read-aloud (TTS) toggle in the session header."
     },
     "packages/client/src/styles/provider-colors.css": {
@@ -13,7 +13,7 @@
       "reason": "Theme-dependent provider badge color tokens shared by every badge surface."
     },
     "packages/client/src/styles/renderers.css": {
-      "maxLines": 6089,
+      "maxLines": 6041,
       "reason": "Legacy generated-content and renderer class vocabulary. Fork: +70 lines for read-aloud (TTS) text-block highlighting and player controls."
     },
     "packages/client/src/styles/tool-rows.css": {
@@ -21,6 +21,6 @@
       "reason": "Shared tool-row state and generated renderer composition."
     }
   },
-  "updated": "2026-08-18",
+  "updated": "2026-08-23",
   "note": "Chapter 11 containment baseline for authored non-module CSS under packages/client/src. Limits may only ratchet downward. New client stylesheets must be CSS Modules unless a reviewed generated-content or truly global exception is added here with a reason. Fork note: index.css/renderers.css limits are raised above upstream only by the read-aloud (TTS) feature; they still ratchet downward from here."
 }

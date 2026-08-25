@@ -331,14 +331,20 @@ function convertCodexEntries(
     }
 
     if (entry.type === "response_item") {
+      const userResponseKind = isCodexUserResponseEntry(entry)
+        ? userTurnProvenance.responseKinds.get(entry)
+        : undefined;
+      const clientUserMessageId = isCodexUserResponseEntry(entry)
+        ? (userTurnProvenance.pairedEventByResponse.get(entry)?.payload
+            .client_id ?? undefined)
+        : undefined;
       const msg = convertCodexResponseItem(
         entry,
         messageIndex++,
         toolCallContexts,
         closedToolResultIds,
-        isCodexUserResponseEntry(entry)
-          ? userTurnProvenance.responseKinds.get(entry)
-          : undefined,
+        userResponseKind,
+        clientUserMessageId,
       );
       if (msg) {
         attachCodexProviderForkTurnId(
@@ -388,6 +394,7 @@ function convertCodexEntries(
       const shouldIncludeUserMessage =
         isCodexUserMessageEventEntry(entry) &&
         !userTurnProvenance.pairedUserEvents.has(entry);
+      const shouldIncludeTaskComplete = entry.payload.type === "task_complete";
       const shouldIncludeTurnAborted = entry.payload.type === "turn_aborted";
       const shouldIncludeSubagentActivity =
         entry.payload.type === "sub_agent_activity";
@@ -401,16 +408,23 @@ function convertCodexEntries(
       // those are streaming artifacts that duplicate full response data.
       if (
         shouldIncludeUserMessage ||
+        shouldIncludeTaskComplete ||
         shouldIncludeTurnAborted ||
         shouldIncludeSubagentActivity ||
         shouldIncludeContextCompacted ||
         shouldIncludeExecCommandEnd
       ) {
+        const eventMessageIndex = messageIndex;
+        // The turn-based completion ID must not renumber later positional IDs.
+        if (!shouldIncludeTaskComplete) {
+          messageIndex++;
+        }
         const msg = convertCodexEventMsg(
           entry,
-          messageIndex++,
+          eventMessageIndex,
           toolCallContexts,
           closedToolResultIds,
+          sessionId,
         );
         if (msg) {
           if (isCodexCorrelationDebugEnabled()) {
@@ -646,14 +660,19 @@ function getCodexEventPayloadItemId(
 // Derive the durable message uuid for a Codex response item. Calls and outputs
 // key on the globally-unique call_id. Native live tool items share that id;
 // nested code-mode commandExecution items do not, so their scoped client
-// reconciliation adopts this durable identity. Messages and reasoning retain
-// positional uuids and rely on the approximate backstop. See
-// topics/stream-durable-id-dedup.md.
+// reconciliation adopts this durable identity. Messages and reasoning use the
+// persisted response-item id. A paired user turn prefers the client id that
+// Codex persisted from turn/start or turn/steer.
 function codexDurableResponseItemUuid(
   payload: CodexResponseItemEntry["payload"],
   positionalUuid: string,
+  clientUserMessageId?: string,
 ): string {
   switch (payload.type) {
+    case "message":
+      return clientUserMessageId || payload.id || positionalUuid;
+    case "reasoning":
+      return payload.id || positionalUuid;
     case "function_call":
       return payload.call_id;
     case "function_call_output":
@@ -674,10 +693,15 @@ function convertCodexResponseItem(
   toolCallContexts: Map<string, CodexToolCallContext>,
   closedToolResultIds: Set<string>,
   userResponseKind?: CodexUserResponseKind,
+  clientUserMessageId?: string,
 ): Message | null {
   const payload = entry.payload;
   const positionalUuid = `codex-${index}-${entry.timestamp}`;
-  const uuid = codexDurableResponseItemUuid(payload, positionalUuid);
+  const uuid = codexDurableResponseItemUuid(
+    payload,
+    positionalUuid,
+    clientUserMessageId,
+  );
 
   switch (payload.type) {
     case "message":
@@ -1314,6 +1338,7 @@ function convertCodexEventMsg(
   index: number,
   toolCallContexts: Map<string, CodexToolCallContext>,
   closedToolResultIds: Set<string>,
+  sessionId: string,
 ): Message | null {
   const payloadUnknown: unknown = entry.payload;
   const uuid = `codex-event-${index}-${entry.timestamp}`;
@@ -1369,6 +1394,16 @@ function convertCodexEventMsg(
           role: "assistant",
           content: [{ type: "thinking", thinking: payload.text }],
         },
+        timestamp: entry.timestamp,
+      };
+
+    case "task_complete":
+      return {
+        uuid: `codex-turn-complete-${payload.turn_id}-${entry.timestamp}`,
+        type: "system",
+        subtype: "turn_complete",
+        session_id: sessionId,
+        codexTurnId: payload.turn_id,
         timestamp: entry.timestamp,
       };
 

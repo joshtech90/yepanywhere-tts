@@ -1,9 +1,15 @@
 import type { ProviderName } from "@yep-anywhere/shared";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PageHeader } from "../components/PageHeader";
+import {
+  PROJECT_CODE_NAMES_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useVersion } from "../hooks/useVersion";
+import { useIncomingShareFiles } from "../hooks/useIncomingShareFiles";
 import { useProject, useProjects } from "../hooks/useProjects";
 import {
   getRecentProjectId,
@@ -13,12 +19,17 @@ import {
 import { useRecentSessions } from "../hooks/useRecentSessions";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
+import { useToastContext } from "../contexts/ToastContext";
 
 const RECENT_PROJECT_SESSION_LIMIT = 30;
 const DETACHED_PROJECT_PARAM = "detached";
 
 export function NewSessionPage() {
   const { t } = useI18n();
+  const { showToast } = useToastContext();
+  const [incomingShareFiles, setIncomingShareFiles] = useState<readonly File[]>(
+    [],
+  );
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get("projectId") ?? undefined;
   const preferredProvider = searchParams.get("provider") ?? undefined;
@@ -28,7 +39,16 @@ export function NewSessionPage() {
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
     useNavigationLayout();
 
+  useIncomingShareFiles(setIncomingShareFiles, {
+    onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
+  });
+
   const { projects, loading: projectsLoading } = useProjects();
+  const { version } = useVersion();
+  const supportsProjectCodeNames = serverHasCapability(
+    version,
+    PROJECT_CODE_NAMES_CAPABILITY,
+  );
   const { recentSessions, isLoading: recentSessionsLoading } =
     useRecentSessions({
       limit: RECENT_PROJECT_SESSION_LIMIT,
@@ -45,7 +65,11 @@ export function NewSessionPage() {
   );
 
   // Update browser tab title (must be called unconditionally before any early returns)
-  useDocumentTitle(selectedProject?.name, t("newSessionTitle"));
+  useDocumentTitle(
+    selectedProject?.name,
+    supportsProjectCodeNames ? selectedProject?.codeName : undefined,
+    t("newSessionTitle"),
+  );
 
   useEffect(() => {
     if (!projectId || !selectedProject) return;
@@ -150,6 +174,7 @@ export function NewSessionPage() {
       <main className="page-scroll-container">
         <div className="page-content-inner new-session-page-shell">
           <NewSessionForm
+            incomingShareFiles={incomingShareFiles}
             projectId={projectId}
             selectedProject={selectedProject}
             projects={projects}

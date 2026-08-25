@@ -1,3 +1,7 @@
+.link {
+  text-decoration: none;
+}
+
 .dirty {
   border-left: 2px solid var(--warning-color);
   background: color-mix(in srgb, var(--warning-color) 6%, transparent);
@@ -18,4 +22,12 @@
 
 .cleanLabel {
   color: var(--success-color);
+}
+
+.matchContext {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  line-height: 1.3;
 }

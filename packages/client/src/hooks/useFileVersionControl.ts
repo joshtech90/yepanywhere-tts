@@ -163,21 +163,25 @@ export function useFileVersionControl(
     version,
     GIT_FILE_DIFF_PROJECTIONS_CAPABILITY,
   );
-  const enabledProjectId = supportsStatus && supported ? projectId : undefined;
-  const {
-    gitStatus,
-    loading: statusLoading,
-    error: statusError,
-  } = useGitStatus(enabledProjectId, { poll: false });
   const relativePath = useMemo(
     () => projectRelativeGitPath(filePath),
     [filePath],
   );
+  const enabledStatusProjectId =
+    supportsStatus && supported && relativePath ? projectId : undefined;
+  const {
+    gitStatus,
+    loading: statusLoading,
+    error: statusError,
+  } = useGitStatus(enabledStatusProjectId, {
+    poll: false,
+    omitUntracked: false,
+  });
   const statusKey =
     gitStatus?.isGitRepo && relativePath ? gitStatusKey(gitStatus) : null;
   const projection = useFileProjectionManifest(
     sourceKey,
-    enabledProjectId,
+    enabledStatusProjectId,
     statusKey,
   );
 
@@ -190,10 +194,11 @@ export function useFileVersionControl(
       projectId &&
         relativePath &&
         (version === null ||
-          (enabledProjectId &&
+          (supported &&
+            enabledStatusProjectId &&
             (statusLoading ||
               (!gitStatus && !statusError) ||
-              projection.loading))),
+              (gitStatus?.isGitRepo && projection.loading)))),
     ),
     relativePath,
     supported,

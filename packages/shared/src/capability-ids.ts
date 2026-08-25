@@ -246,6 +246,66 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "synthetic-archive-command",
     introducedIn: "0.7.1",
   },
+  gitWorkingTreeFiles: {
+    id: 38,
+    direction: "server",
+    name: "git-working-tree-files",
+    introducedIn: "0.7.1",
+  },
+  gitIncomingCommits: {
+    id: 39,
+    direction: "server",
+    name: "git-incoming-commits",
+    introducedIn: "0.7.1",
+  },
+  gitInclusiveToHead: {
+    id: 40,
+    direction: "server",
+    name: "git-inclusive-to-head",
+    introducedIn: "0.7.1",
+  },
+  gitWorkingTreeSections: {
+    id: 41,
+    direction: "server",
+    name: "git-working-tree-sections",
+    introducedIn: "0.7.2",
+  },
+  gitWorkingTreeCompleteScan: {
+    id: 42,
+    direction: "server",
+    name: "git-working-tree-complete-scan",
+    introducedIn: "0.7.2",
+  },
+  cacheMissBillingIgnoreAfter: {
+    id: 43,
+    direction: "server",
+    name: "cache-miss-billing-ignore-after",
+    introducedIn: "0.7.2",
+  },
+  gitLiveWorktreeSetting: {
+    id: 44,
+    direction: "server",
+    name: "git-live-worktree-setting",
+    introducedIn: "0.7.2",
+  },
+  syntheticTerminateCommand: {
+    id: 45,
+    direction: "server",
+    name: "synthetic-terminate-command",
+    introducedIn: "0.7.2",
+  },
+  projectCodeNames: {
+    id: 46,
+    direction: "server",
+    name: "project-code-names",
+    introducedIn: "0.7.2",
+  },
+  gitFileRevision: {
+    id: 47,
+    direction: "server",
+    name: "git-file-revision",
+    introducedIn: "0.7.2",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

@@ -1531,6 +1531,144 @@ describe("linkifyProjectPaths", () => {
     expect(out).toContain("&quot;,</span>");
   });
 
+  it("links paths relative to the viewed file directory", async () => {
+    const existing = new Set([
+      "RegressionTests/xmt/Privacy/input/aip2705-boundary.txt",
+      "RegressionTests/xmt/Privacy/output/baseline.stdout",
+      "scripts/run.py",
+    ]);
+    const asked: string[][] = [];
+    const fileIndex: ProjectPathIndex = {
+      findExisting: async (paths: readonly string[]) => {
+        asked.push([...paths]);
+        return new Set(paths.filter((path) => existing.has(path)));
+      },
+      has: async (path: string) => existing.has(path),
+      knownFile: (path: string) => existing.has(path),
+      release: () => undefined,
+      sourceRevision: () => 1,
+    };
+    const html =
+      "<span>$ROOT/input/aip2705-boundary.txt " +
+      "output/baseline.stdout scripts/run.py missing.txt</span>";
+
+    const out = await linkifyProjectPaths(html, {
+      projectPath: "/repo",
+      index: fileIndex,
+      selfRelativePath:
+        "RegressionTests/xmt/Privacy/regtest-aip2705-boundary.yml",
+    });
+
+    expect(out).toContain(
+      'data-ya-path="/repo/RegressionTests/xmt/Privacy/input/aip2705-boundary.txt"',
+    );
+    expect(out).toContain(">$ROOT/input/aip2705-boundary.txt</a>");
+    expect(out).toContain(
+      'data-ya-path="/repo/RegressionTests/xmt/Privacy/output/baseline.stdout"',
+    );
+    expect(out).toContain('data-ya-path="/repo/scripts/run.py"');
+    expect(out).not.toContain(
+      "/repo/RegressionTests/xmt/Privacy/scripts/run.py",
+    );
+    expect(out).not.toContain("missing.txt</a>");
+    expect(asked).toHaveLength(1);
+  });
+
+  it("directly resolves deduplicated words beside a short external file", async () => {
+    const projectPath = await createRepo();
+    const externalRoot = await createRepo();
+    const viewedFile = join(externalRoot, "config", "view.yml");
+    const sibling = join(externalRoot, "config", "XMTConfig-ont.yml");
+    const model = join(externalRoot, "models", "boundary-refiner.onnx");
+    const findExisting = vi.fn(async () => new Set<string>());
+    const externalIndex: ProjectPathIndex = {
+      findExisting,
+      has: async () => false,
+      knownFile: () => undefined,
+      release: () => undefined,
+      sourceRevision: () => 1,
+    };
+    const resolveAbsoluteFilePaths = vi.fn(
+      async (paths: readonly string[]) =>
+        new Set(paths.filter((path) => path === sibling || path === model)),
+    );
+
+    const out = await linkifyProjectPaths(
+      "<span>basis XMTConfig-ont.yml ../models/boundary-refiner.onnx " +
+        "call call</span>",
+      {
+        projectId: "project-1",
+        projectPath,
+        index: externalIndex,
+        selfAbsolutePath: viewedFile,
+        selfRelativePath: viewedFile,
+        resolveAbsoluteFilePaths,
+      },
+    );
+
+    expect(findExisting).not.toHaveBeenCalled();
+    expect(resolveAbsoluteFilePaths).toHaveBeenCalledTimes(1);
+    expect(resolveAbsoluteFilePaths.mock.calls[0]?.[0]).toEqual([
+      join(externalRoot, "config", "basis"),
+      sibling,
+      model,
+      join(externalRoot, "config", "call"),
+    ]);
+    expect(out).toContain(`path=${encodeURIComponent(sibling)}`);
+    expect(out).toContain(">XMTConfig-ont.yml</a>");
+    expect(out).toContain(`path=${encodeURIComponent(model)}`);
+    expect(out).toContain(">../models/boundary-refiner.onnx</a>");
+    expect(out).not.toContain(">call</a>");
+  });
+
+  it("checks only path-shaped words when an external file exceeds the cap", async () => {
+    const projectPath = await createRepo();
+    const externalRoot = await createRepo();
+    const viewedFile = join(externalRoot, "config", "view.yml");
+    const model = join(externalRoot, "models", "refiner.onnx");
+    const settings = join(externalRoot, "config", "settings.json");
+    const resolveAbsoluteFilePaths = vi.fn(async () => new Set([model]));
+    const words = Array.from({ length: 70 }, (_, index) => `word${index}`);
+
+    const out = await linkifyProjectPaths(
+      `<span>${words.join(" ")} ../models/refiner.onnx settings.json ` +
+        "../models/refiner.onnx</span>",
+      {
+        projectId: "project-1",
+        projectPath,
+        index,
+        selfAbsolutePath: viewedFile,
+        selfRelativePath: viewedFile,
+        resolveAbsoluteFilePaths,
+      },
+    );
+
+    expect(resolveAbsoluteFilePaths).toHaveBeenCalledWith([model, settings]);
+    expect(out).toContain(">../models/refiner.onnx</a>");
+    expect(out).not.toContain(">settings.json</a>");
+  });
+
+  it("prefers a project-relative path over a file-relative collision", async () => {
+    const existing = new Set(["shared.txt", "configs/shared.txt"]);
+    const collisionIndex: ProjectPathIndex = {
+      findExisting: async (paths: readonly string[]) =>
+        new Set(paths.filter((path) => existing.has(path))),
+      has: async (path: string) => existing.has(path),
+      knownFile: (path: string) => existing.has(path),
+      release: () => undefined,
+      sourceRevision: () => 1,
+    };
+
+    const out = await linkifyProjectPaths("<span>shared.txt</span>", {
+      projectPath: "/repo",
+      index: collisionIndex,
+      selfRelativePath: "configs/view.yml",
+    });
+
+    expect(out).toContain('data-ya-path="/repo/shared.txt"');
+    expect(out).not.toContain('data-ya-path="/repo/configs/shared.txt"');
+  });
+
   it("resolves only exact existing tokens in raw command text", async () => {
     const targets = await resolveProjectPathTextLinks(
       "cat topics/performance-regression-suite.md topics/commits.md",
@@ -1548,6 +1686,26 @@ describe("linkifyProjectPaths", () => {
         text: "topics/performance-regression-suite.md",
       },
     ]);
+  });
+
+  it("keeps viewed-file root markers literal outside a file viewer", async () => {
+    const rootMarkerIndex: ProjectPathIndex = {
+      findExisting: async (paths: readonly string[]) =>
+        new Set(paths.filter((path) => path === "input/request.txt")),
+      has: async (path: string) => path === "input/request.txt",
+      knownFile: (path: string) => path === "input/request.txt",
+      release: () => undefined,
+      sourceRevision: () => 1,
+    };
+
+    await expect(
+      resolveProjectPathTextLinks("$ROOT/input/request.txt", {
+        projectId: "project-1",
+        projectPath: "/repo",
+        index: rootMarkerIndex,
+        gateLookupsByShape: true,
+      }),
+    ).resolves.toEqual([]);
   });
 
   it("does not link a string that merely looks like a path", async () => {

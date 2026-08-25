@@ -1,8 +1,10 @@
-import type {
-  GitFileChange,
-  GitStatusInfo,
-  GitUntrackedFolderInfo,
-  ReviewSiteStateSummary,
+import {
+  getSessionDisplayTitle,
+  type GitFileChange,
+  type GitStatusInfo,
+  type GitUntrackedFileListResult,
+  type GitUntrackedFolderInfo,
+  type ReviewSiteStateSummary,
 } from "@yep-anywhere/shared";
 import {
   memo,
@@ -16,7 +18,13 @@ import {
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { ChangesetFileFilter } from "../components/ChangesetFileFilter";
+import { FileViewer } from "../components/FileViewer";
 import { ResizableSourceColumns } from "../components/ResizableSourceColumns";
+import {
+  SourceFileOutline,
+  SourceFileSectionDivider,
+  type SourceOutlinePathProps,
+} from "../components/SourceFileOutline";
 import { SourceFileHeaderActions } from "../components/SourceFileHeaderActions";
 import {
   SourceFilePath,
@@ -29,6 +37,7 @@ import {
   sourceRowMenuSurface,
   type SourceContextMenuAction,
   type SourceContextMenuController,
+  type SourceContextMenuOpenOptions,
   useSourceContextMenu,
 } from "../components/SourceContextMenu";
 import {
@@ -40,7 +49,13 @@ import { handleSourceListKeyDown } from "../hooks/useSourceKeyboard";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import type { TranslationFn } from "../i18n";
+import {
+  getClientSummarySnapshotForSource,
+  reportSessionCollectionTitleSnapshot,
+  useClientSummarySourceKey,
+} from "../lib/clientSummaryStore";
 import { writeClipboardText } from "../lib/clipboard";
+import { Modal } from "../components/ui/Modal";
 import { CommitHistoryParentLink } from "./CommitHistoryParentLink";
 import styles from "./WorkingTreeBrowser.module.css";
 import {
@@ -68,8 +83,25 @@ const UNTRACKED_FOLDER_CONCURRENCY = 4;
 /** How long arriving expansions accumulate before one list re-render. */
 const FOLDER_FLUSH_MS = 100;
 const UNTRACKED_GROUP_COLLAPSE_THRESHOLD = 10;
+const sessionTitleRequests = new Map<string, Promise<boolean>>();
 
 const EMPTY_REVIEW_STATES: ReviewSiteStateSummary[] = [];
+
+function hasSessionTitleObservation(
+  session:
+    | { title?: string | null; fullTitle?: string | null; customTitle?: string }
+    | undefined,
+): boolean {
+  return (
+    session?.title !== undefined ||
+    session?.fullTitle !== undefined ||
+    session?.customTitle !== undefined
+  );
+}
+
+function fileMenuContextKey(file: WorktreeFileChange): string {
+  return `${file.path}\0${file.lastEditor?.sessionId ?? ""}`;
+}
 
 type WorktreeListEntry =
   | {
@@ -91,12 +123,14 @@ type WorktreeListEntry =
 const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
   file,
   displayPath = sourceFileDisplayPath(file),
+  pathProps,
   query,
   selected,
   commentCount,
   reviewStates,
   isWideScreen,
   menuActionsForFile,
+  menuOpenOptionsForFile,
   menuTargetProps,
   onOpenMenu,
   onActivateFile,
@@ -104,12 +138,16 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
 }: {
   file: WorktreeFileChange;
   displayPath?: string;
+  pathProps?: SourceOutlinePathProps;
   query: string;
   selected: boolean;
   commentCount: number;
   reviewStates: ReviewSiteStateSummary[];
   isWideScreen: boolean;
   menuActionsForFile: (file: WorktreeFileChange) => SourceContextMenuAction[];
+  menuOpenOptionsForFile: (
+    file: WorktreeFileChange,
+  ) => SourceContextMenuOpenOptions;
   menuTargetProps: SourceContextMenuController["targetProps"];
   onOpenMenu: SourceContextMenuController["openFromButton"];
   onActivateFile: (file: WorktreeFileChange, selected: boolean) => void;
@@ -117,13 +155,13 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
 }) {
   const isFolder = file.path.endsWith("/");
   const menuActions = menuActionsForFile(file);
-  const tooltipPath =
-    displayPath === sourceFileDisplayPath(file) ? displayPath : file.path;
+  const menuOpenOptions = menuOpenOptionsForFile(file);
+  const fullDisplayPath = sourceFileDisplayPath(file);
 
   return (
     <li className={`commit-file-row ${sourceRowMenuSurface}`}>
       <SourceFileRowButton
-        path={tooltipPath}
+        path={fullDisplayPath}
         type="button"
         className={`commit-file-item ${selected ? "selected" : ""}`}
         disabled={isFolder}
@@ -133,13 +171,19 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
             onActivateFile(file, selected);
           }
         }}
-        {...menuTargetProps(menuActions, () => {
-          onActivateFile(file, selected);
-        })}
+        {...menuTargetProps(
+          menuActions,
+          () => {
+            onActivateFile(file, selected);
+          },
+          menuOpenOptions,
+        )}
       >
         <SourceFileStatusBadge status={file.status} t={t} />
         <WorktreeStateMarker state={file.worktreeState} t={t} />
-        <SourceFilePath query={query}>{displayPath}</SourceFilePath>
+        <SourceFilePath {...pathProps} query={query} fullPath={fullDisplayPath}>
+          {displayPath}
+        </SourceFilePath>
         {(file.linesAdded !== null || file.linesDeleted !== null) && (
           <span className="git-line-counts">
             {file.linesAdded ? (
@@ -165,6 +209,7 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
           actions={menuActions}
           label={t("sourceMoreActions")}
           onOpen={onOpenMenu}
+          openOptions={menuOpenOptions}
         />
       )}
     </li>
@@ -180,6 +225,8 @@ export function WorkingTreeBrowser({
   projectId,
   status,
   isWideScreen,
+  supportsUntrackedCache = false,
+  untrackedFiles = null,
   initialWorkingTreePath,
   embeddedInHistory = false,
   onBackToRevisions,
@@ -196,6 +243,8 @@ export function WorkingTreeBrowser({
   projectId: string;
   status: GitStatusInfo;
   isWideScreen: boolean;
+  supportsUntrackedCache?: boolean;
+  untrackedFiles?: GitUntrackedFileListResult | null;
   /** One-shot deep link to a dirty file from a session Edit block. */
   initialWorkingTreePath?: string;
   /** Let Commits place these same files/diff in its revision-detail columns. */
@@ -224,7 +273,17 @@ export function WorkingTreeBrowser({
   const [untrackedFolderExpansion, setUntrackedFolderExpansion] = useState<
     Record<string, boolean>
   >({});
+  const [loadingUntrackedFolders, setLoadingUntrackedFolders] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [untrackedSearch, setUntrackedSearch] =
+    useState<GitUntrackedFileListResult | null>(null);
+  const [untrackedSearchLoading, setUntrackedSearchLoading] = useState(false);
+  const [untrackedCacheError, setUntrackedCacheError] = useState(false);
+  const folderRequestsRef = useRef(new Set<string>());
+  const searchRequestRef = useRef(0);
   const [fileQuery, setFileQuery] = useState("");
+  const [sessionTitleRevision, setSessionTitleRevision] = useState(0);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [commentEditorOpen, setCommentEditorOpen] = useState(false);
   const [appliedWorkingTreeLink, setAppliedWorkingTreeLink] = useState<
@@ -243,7 +302,9 @@ export function WorkingTreeBrowser({
     navigateRef.current(href);
   }, []);
   const basePath = useRemoteBasePath();
+  const clientSummarySourceKey = useClientSummarySourceKey();
   const fileMenu = useSourceContextMenu(t);
+  const refreshFileMenuActions = fileMenu.refreshOpenActions;
   const { pending, siteStates } = useProjectReviewComments(
     projectId,
     captureReviewProjections,
@@ -259,9 +320,18 @@ export function WorkingTreeBrowser({
   );
 
   useEffect(() => {
-    let cancelled = false;
     setExpandedUntrackedFolders({});
     setUntrackedFolderExpansion({});
+    setLoadingUntrackedFolders(new Set());
+    folderRequestsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (supportsUntrackedCache) {
+      setUntrackedFolderScan({ loaded: 0, total: 0 });
+      return undefined;
+    }
     const paths = untrackedFolderKey ? untrackedFolderKey.split("\0") : [];
     setUntrackedFolderScan({ loaded: 0, total: paths.length });
     if (paths.length === 0) return undefined;
@@ -327,16 +397,117 @@ export function WorkingTreeBrowser({
       cancelled = true;
       if (flushHandle !== null) clearTimeout(flushHandle);
     };
-  }, [projectId, untrackedFolderKey]);
+  }, [projectId, supportsUntrackedCache, untrackedFolderKey]);
+
+  const cachedFolderCounts = useMemo(
+    () =>
+      new Map(
+        (untrackedFiles?.folders ?? []).map(({ path, count }) => [path, count]),
+      ),
+    [untrackedFiles?.folders],
+  );
+
+  const loadUntrackedFolder = useCallback(
+    async (path: string) => {
+      if (folderRequestsRef.current.has(path)) return;
+      folderRequestsRef.current.add(path);
+      setLoadingUntrackedFolders(new Set(folderRequestsRef.current));
+      setUntrackedCacheError(false);
+      try {
+        const result = await api.listGitUntrackedFiles(projectId, { path });
+        setExpandedUntrackedFolders((current) => ({
+          ...current,
+          [path]: {
+            path,
+            files: result.files,
+            ...(result.lastEditors ? { lastEditors: result.lastEditors } : {}),
+            truncated: result.truncated,
+            limit: result.limit,
+          },
+        }));
+      } catch {
+        setUntrackedCacheError(true);
+      } finally {
+        folderRequestsRef.current.delete(path);
+        setLoadingUntrackedFolders(new Set(folderRequestsRef.current));
+      }
+    },
+    [projectId],
+  );
+
+  useEffect(() => {
+    if (!supportsUntrackedCache) return;
+    for (const [path, count] of cachedFolderCounts) {
+      if (
+        count <= UNTRACKED_GROUP_COLLAPSE_THRESHOLD &&
+        untrackedFolderExpansion[path] !== false &&
+        !expandedUntrackedFolders[path]
+      ) {
+        void loadUntrackedFolder(path);
+      }
+    }
+  }, [
+    cachedFolderCounts,
+    expandedUntrackedFolders,
+    loadUntrackedFolder,
+    supportsUntrackedCache,
+    untrackedFolderExpansion,
+  ]);
+
+  useEffect(() => {
+    searchRequestRef.current += 1;
+    const requestId = searchRequestRef.current;
+    const query = fileQuery.trim();
+    if (!supportsUntrackedCache || query === "") {
+      setUntrackedSearch(null);
+      setUntrackedSearchLoading(false);
+      return undefined;
+    }
+
+    setUntrackedSearchLoading(true);
+    setUntrackedCacheError(false);
+    const timer = setTimeout(() => {
+      void api
+        .listGitUntrackedFiles(projectId, { q: query })
+        .then((result) => {
+          if (requestId === searchRequestRef.current) {
+            setUntrackedSearch(result);
+          }
+        })
+        .catch(() => {
+          if (requestId === searchRequestRef.current) {
+            setUntrackedSearch(null);
+            setUntrackedCacheError(true);
+          }
+        })
+        .finally(() => {
+          if (requestId === searchRequestRef.current) {
+            setUntrackedSearchLoading(false);
+          }
+        });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [fileQuery, projectId, supportsUntrackedCache]);
 
   const previousRowsRef = useRef<{
     statusFiles: GitFileChange[];
     byPath: Map<string, WorktreeFileChange>;
   } | null>(null);
   const currentFiles = useMemo(() => {
-    const merged = mergeWorkingTreeFiles(
-      expandUntrackedFolders(status.files, expandedUntrackedFolders),
-    );
+    const cachedSearchFiles = (untrackedSearch?.files ?? []).map((path) => ({
+      path,
+      status: "?",
+      staged: false,
+      linesAdded: null,
+      linesDeleted: null,
+      ...(untrackedSearch?.lastEditors?.[path]
+        ? { lastEditor: untrackedSearch.lastEditors[path] }
+        : {}),
+    }));
+    const merged = mergeWorkingTreeFiles([
+      ...expandUntrackedFolders(status.files, expandedUntrackedFolders),
+      ...cachedSearchFiles,
+    ]);
     // Untracked-folder expansions arrive in batches and rebuild every row,
     // including the rows they did not touch. A row's object identity is the
     // signal the diff pane refetches on, so handing out a fresh-but-equal
@@ -359,7 +530,7 @@ export function WorkingTreeBrowser({
     });
     previousRowsRef.current = { statusFiles: status.files, byPath };
     return rows;
-  }, [expandedUntrackedFolders, status.files]);
+  }, [expandedUntrackedFolders, status.files, untrackedSearch]);
   useEffect(() => {
     if (!selectedPath) return;
     const selected = currentFiles.find((file) => file.path === selectedPath);
@@ -392,11 +563,13 @@ export function WorkingTreeBrowser({
         statusFiles: status.files,
         files,
         folders: expandedUntrackedFolders,
+        folderCounts: cachedFolderCounts,
         folderExpansion: untrackedFolderExpansion,
         matchingPaths,
         query: fileQuery,
       }),
     [
+      cachedFolderCounts,
       expandedUntrackedFolders,
       fileQuery,
       files,
@@ -405,14 +578,72 @@ export function WorkingTreeBrowser({
       untrackedFolderExpansion,
     ],
   );
+  const trackedListEntries = useMemo(
+    () =>
+      listEntries.filter(
+        (entry) =>
+          entry.kind === "file" && entry.file.worktreeState !== "untracked",
+      ),
+    [listEntries],
+  );
+  const untrackedListEntries = useMemo(
+    () =>
+      listEntries.filter(
+        (entry) =>
+          entry.kind === "folder" || entry.file.worktreeState === "untracked",
+      ),
+    [listEntries],
+  );
+  const trackedOutlineItems = useMemo(
+    () =>
+      trackedListEntries.flatMap((entry) =>
+        entry.kind === "file"
+          ? [
+              {
+                id: entry.file.path,
+                path: entry.file.path,
+                displayPath: sourceFileDisplayPath(entry.file),
+                statuses: [entry.file.status],
+                value: entry.file,
+              },
+            ]
+          : [],
+      ),
+    [trackedListEntries],
+  );
+  const untrackedOutlineItems = useMemo(
+    () =>
+      untrackedListEntries.flatMap((entry) =>
+        entry.kind === "file"
+          ? [
+              {
+                id: entry.file.path,
+                path: entry.file.path,
+                displayPath: sourceFileDisplayPath(entry.file),
+                statuses: [entry.file.status],
+                value: entry.file,
+              },
+            ]
+          : [],
+      ),
+    [untrackedListEntries],
+  );
+  const untrackedFolderEntries = useMemo(
+    () =>
+      untrackedListEntries.filter(
+        (entry): entry is Extract<WorktreeListEntry, { kind: "folder" }> =>
+          entry.kind === "folder",
+      ),
+    [untrackedListEntries],
+  );
   const visiblePreviewableFiles = useMemo(
     () =>
-      listEntries.flatMap((entry) =>
+      [...trackedListEntries, ...untrackedListEntries].flatMap((entry) =>
         entry.kind === "file"
           ? [entry.file]
           : entry.children.map((child) => child.file),
       ),
-    [listEntries],
+    [trackedListEntries, untrackedListEntries],
   );
   const selectedFile =
     previewableFiles.find((file) => file.path === selectedPath) ?? null;
@@ -499,13 +730,21 @@ export function WorkingTreeBrowser({
   }, [siteStates]);
 
   const toggleUntrackedFolder = useCallback(
-    (path: string, expanded: boolean) => {
+    (path: string, expanded: boolean, loaded: boolean) => {
+      if (supportsUntrackedCache && !loaded) {
+        setUntrackedFolderExpansion((current) => ({
+          ...current,
+          [path]: true,
+        }));
+        void loadUntrackedFolder(path);
+        return;
+      }
       setUntrackedFolderExpansion((current) => ({
         ...current,
         [path]: !expanded,
       }));
     },
-    [],
+    [loadUntrackedFolder, supportsUntrackedCache],
   );
 
   const handleFileClick = useCallback(
@@ -536,12 +775,29 @@ export function WorkingTreeBrowser({
     retainedScrollRatioRef.current.set(fileKey, ratio);
   }, []);
 
+  const lastEditorSessionLabel = useCallback(
+    (sessionId: string) => {
+      void sessionTitleRevision;
+      const session = getClientSummarySnapshotForSource(
+        clientSummarySourceKey,
+      ).sessions.entities.get(sessionId);
+      const title = getSessionDisplayTitle(session);
+      return t("sourceOpenLastEditorSessionNamed", {
+        title: title === "Untitled" ? sessionId.slice(0, 8) : title,
+      });
+    },
+    [clientSummarySourceKey, sessionTitleRevision, t],
+  );
+
   const fileMenuActions = useCallback(
     (file: WorktreeFileChange): SourceContextMenuAction[] => {
       const lastEditorSessionHref =
         supportsLastEditor && file.lastEditor
           ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(file.lastEditor.sessionId)}`
           : undefined;
+      const editorSessionLabel = file.lastEditor
+        ? lastEditorSessionLabel(file.lastEditor.sessionId)
+        : t("sourceOpenLastEditorSession");
       return [
         {
           label: t("sourceCopyPath"),
@@ -552,7 +808,7 @@ export function WorkingTreeBrowser({
         ...(lastEditorSessionHref
           ? [
               {
-                label: t("sourceOpenLastEditorSession"),
+                label: editorSessionLabel,
                 onSelect: () => navigateTo(lastEditorSessionHref),
               },
             ]
@@ -567,38 +823,116 @@ export function WorkingTreeBrowser({
           : []),
       ];
     },
-    [basePath, navigateTo, onBlameFile, projectId, supportsLastEditor, t],
+    [
+      basePath,
+      lastEditorSessionLabel,
+      navigateTo,
+      onBlameFile,
+      projectId,
+      supportsLastEditor,
+      t,
+    ],
+  );
+
+  const loadSessionTitle = useCallback(
+    (sessionId: string): Promise<boolean> | null => {
+      const session = getClientSummarySnapshotForSource(
+        clientSummarySourceKey,
+      ).sessions.entities.get(sessionId);
+      if (hasSessionTitleObservation(session)) return null;
+
+      const requestKey = `${clientSummarySourceKey}\0${projectId}\0${sessionId}`;
+      let request = sessionTitleRequests.get(requestKey);
+      if (!request) {
+        const requestStartedAt = Date.now();
+        request = api.getSessionMetadata(projectId, sessionId).then(
+          (response) => {
+            reportSessionCollectionTitleSnapshot(
+              clientSummarySourceKey,
+              response.session,
+              requestStartedAt,
+            );
+            return true;
+          },
+          () => false,
+        );
+        sessionTitleRequests.set(requestKey, request);
+        void request.finally(() => {
+          if (sessionTitleRequests.get(requestKey) === request) {
+            sessionTitleRequests.delete(requestKey);
+          }
+        });
+      }
+      return request;
+    },
+    [clientSummarySourceKey, projectId],
+  );
+
+  const menuOpenOptionsForFile = useCallback(
+    (file: WorktreeFileChange): SourceContextMenuOpenOptions => {
+      const contextKey = fileMenuContextKey(file);
+      return {
+        contextKey,
+        onOpen: () => {
+          const sessionId = file.lastEditor?.sessionId;
+          if (!supportsLastEditor || !sessionId) return;
+          const request = loadSessionTitle(sessionId);
+          if (!request) return;
+          void request.then((loaded) => {
+            if (!loaded) return;
+            setSessionTitleRevision((revision) => revision + 1);
+            refreshFileMenuActions(contextKey, fileMenuActions(file));
+          });
+        },
+      };
+    },
+    [
+      fileMenuActions,
+      loadSessionTitle,
+      refreshFileMenuActions,
+      supportsLastEditor,
+    ],
   );
 
   const lastEditorSessionHref =
     supportsLastEditor && selectedFile?.lastEditor
       ? `${basePath}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(selectedFile.lastEditor.sessionId)}`
       : undefined;
+  const selectedLastEditorSessionLabel = selectedFile?.lastEditor
+    ? lastEditorSessionLabel(selectedFile.lastEditor.sessionId)
+    : undefined;
   const fileActions = selectedFile ? (
     <SourceFileHeaderActions
       path={selectedFile.path}
       lastEditorSessionHref={lastEditorSessionHref}
+      lastEditorSessionLabel={selectedLastEditorSessionLabel}
       onBlameFile={onBlameFile}
       t={t}
     />
   ) : null;
-  const renderFileRow = ({
-    file,
-    displayPath,
-  }: {
-    file: WorktreeFileChange;
-    displayPath: string;
-  }) => (
+  const renderFileRow = (
+    {
+      file,
+      displayPath,
+    }: {
+      file: WorktreeFileChange;
+      displayPath: string;
+    },
+    visiblePath = displayPath,
+    pathProps?: SourceOutlinePathProps,
+  ) => (
     <WorkingTreeFileRow
       key={file.path}
       file={file}
-      displayPath={displayPath}
+      displayPath={visiblePath}
+      pathProps={pathProps}
       query={fileQuery}
       selected={selectedPath === file.path}
       commentCount={fileCommentCount.get(file.path) ?? 0}
       reviewStates={reviewStatesByPath.get(file.path) ?? EMPTY_REVIEW_STATES}
       isWideScreen={isWideScreen}
       menuActionsForFile={fileMenuActions}
+      menuOpenOptionsForFile={menuOpenOptionsForFile}
       menuTargetProps={fileMenu.targetProps}
       onOpenMenu={fileMenu.openFromButton}
       onActivateFile={handleFileClick}
@@ -688,7 +1022,7 @@ export function WorkingTreeBrowser({
                   className="source-detail-title"
                   title={t("sourceWorkingTreeDescription")}
                 >
-                  {t("sourceWorkingTree")}
+                  {t("sourceUncommittedChanges")}
                 </span>
                 <span className="source-detail-count">
                   {t("sourceChangedFileCount", { count: files.length })}
@@ -703,79 +1037,238 @@ export function WorkingTreeBrowser({
                 })}
               </span>
             )}
+            {supportsUntrackedCache && untrackedFiles?.truncated && (
+              <span className={styles.scanProgress} role="status">
+                {t("sourceUntrackedCacheBounded", {
+                  count: untrackedFiles.total,
+                })}
+              </span>
+            )}
+            {untrackedSearchLoading && (
+              <span className={styles.scanProgress} role="status">
+                {t("sourceUntrackedSearchLoading")}
+              </span>
+            )}
+            {untrackedSearch?.truncated && (
+              <span className={styles.scanProgress} role="status">
+                {t("sourceUntrackedSearchTruncated", {
+                  count: untrackedSearch.files.length,
+                })}
+              </span>
+            )}
+            {untrackedCacheError && (
+              <span className={styles.scanProgress} role="status">
+                {t("sourceUntrackedCacheError")}
+              </span>
+            )}
             <ChangesetFileFilter
               query={fileQuery}
               onQueryChange={setFileQuery}
               t={t}
             />
           </div>
-          <ul className="commit-file-list" onKeyDown={handleSourceListKeyDown}>
-            {listEntries.map((entry) =>
-              entry.kind === "file" ? (
-                renderFileRow(entry)
-              ) : (
-                <li key={entry.path} className={styles.folderGroup}>
-                  <div className={styles.folderHeader}>
-                    <SourceFileRowButton
-                      path={entry.path}
-                      type="button"
-                      className="commit-file-item"
-                      disabled={!entry.info || entry.info.files.length === 0}
-                      aria-expanded={entry.info ? entry.expanded : undefined}
-                      aria-label={t(
-                        entry.info
-                          ? entry.expanded
-                            ? "sourceCollapseUntrackedFolder"
-                            : "sourceExpandUntrackedFolder"
-                          : "sourceLoadingUntrackedFolder",
-                        { path: entry.path },
-                      )}
-                      data-source-list-item
-                      onClick={() =>
-                        toggleUntrackedFolder(entry.path, entry.expanded)
-                      }
-                    >
-                      <span className={styles.disclosure} aria-hidden="true">
-                        {entry.info ? (entry.expanded ? "−" : "+") : "…"}
-                      </span>
-                      <SourceFileStatusBadge status="?" t={t} />
-                      <SourceFilePath query={fileQuery}>
-                        {entry.path}
-                      </SourceFilePath>
-                      {entry.info && (
-                        <span
-                          className={styles.folderCount}
-                          title={
-                            entry.info.truncated
-                              ? t("sourceUntrackedFolderTruncated", {
-                                  count: entry.info.files.length,
-                                })
-                              : undefined
-                          }
-                        >
-                          {entry.info.files.length}
-                          {entry.info.truncated ? "+" : ""}
-                        </span>
-                      )}
-                    </SourceFileRowButton>
-                  </div>
-                  {entry.children.length > 0 && (
-                    <ul className={styles.folderChildren}>
-                      {entry.children.map(renderFileRow)}
-                    </ul>
-                  )}
-                </li>
-              ),
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: delegates arrow traversal across tracked, untracked, and folder rows to their nested controls */}
+          <div onKeyDown={handleSourceListKeyDown}>
+            {trackedOutlineItems.length > 0 && (
+              <SourceFileOutline
+                className="commit-file-list"
+                items={trackedOutlineItems}
+                scopeKey={`${projectId}:working-tree:tracked`}
+                query={fileQuery}
+                renderFile={(item, visiblePath, pathProps) =>
+                  renderFileRow(
+                    { file: item.value, displayPath: item.displayPath },
+                    visiblePath,
+                    pathProps,
+                  )
+                }
+                t={t}
+              />
             )}
-          </ul>
+            {untrackedListEntries.length > 0 && (
+              <>
+                <SourceFileSectionDivider>
+                  {t("sourceUntrackedFiles")}
+                </SourceFileSectionDivider>
+                {untrackedOutlineItems.length > 0 && (
+                  <SourceFileOutline
+                    className="commit-file-list"
+                    items={untrackedOutlineItems}
+                    scopeKey={`${projectId}:working-tree:untracked`}
+                    query={fileQuery}
+                    renderFile={(item, visiblePath, pathProps) =>
+                      renderFileRow(
+                        { file: item.value, displayPath: item.displayPath },
+                        visiblePath,
+                        pathProps,
+                      )
+                    }
+                    t={t}
+                  />
+                )}
+                {untrackedFolderEntries.length > 0 && (
+                  <ul className="commit-file-list">
+                    {untrackedFolderEntries.map((entry) => (
+                      <li key={entry.path} className={styles.folderGroup}>
+                        <div className={styles.folderHeader}>
+                          <SourceFileRowButton
+                            path={entry.path}
+                            type="button"
+                            className="commit-file-item"
+                            disabled={
+                              loadingUntrackedFolders.has(entry.path) ||
+                              (!supportsUntrackedCache && !entry.info) ||
+                              (supportsUntrackedCache
+                                ? (cachedFolderCounts.get(entry.path) ?? 0) ===
+                                  0
+                                : !entry.info || entry.info.files.length === 0)
+                            }
+                            aria-expanded={
+                              supportsUntrackedCache || entry.info
+                                ? entry.expanded
+                                : undefined
+                            }
+                            aria-label={t(
+                              loadingUntrackedFolders.has(entry.path) ||
+                                (!supportsUntrackedCache && !entry.info)
+                                ? "sourceLoadingUntrackedFolder"
+                                : entry.expanded
+                                  ? "sourceCollapseUntrackedFolder"
+                                  : "sourceExpandUntrackedFolder",
+                              { path: entry.path },
+                            )}
+                            data-source-list-item
+                            onClick={() =>
+                              toggleUntrackedFolder(
+                                entry.path,
+                                entry.expanded,
+                                entry.info !== undefined,
+                              )
+                            }
+                          >
+                            <span
+                              className={styles.disclosure}
+                              aria-hidden="true"
+                            >
+                              {loadingUntrackedFolders.has(entry.path) ||
+                              (!supportsUntrackedCache && !entry.info)
+                                ? "…"
+                                : entry.expanded
+                                  ? "−"
+                                  : "+"}
+                            </span>
+                            <SourceFileStatusBadge status="?" t={t} />
+                            <SourceFilePath
+                              query={fileQuery}
+                              fullPath={entry.path}
+                            >
+                              {entry.path}
+                            </SourceFilePath>
+                            {(cachedFolderCounts.get(entry.path) ??
+                              entry.info?.files.length) !== undefined && (
+                              <span
+                                className={styles.folderCount}
+                                title={
+                                  entry.info?.truncated
+                                    ? t("sourceUntrackedFolderTruncated", {
+                                        count: entry.info.files.length,
+                                      })
+                                    : undefined
+                                }
+                              >
+                                {cachedFolderCounts.get(entry.path) ??
+                                  entry.info?.files.length}
+                                {entry.info?.truncated ? "+" : ""}
+                              </span>
+                            )}
+                          </SourceFileRowButton>
+                        </div>
+                        {entry.children.length > 0 && (
+                          <SourceFileOutline
+                            className={styles.folderChildren}
+                            items={entry.children.map((child) => ({
+                              id: child.file.path,
+                              path: child.displayPath,
+                              displayPath: child.displayPath,
+                              statuses: [child.file.status],
+                              value: child.file,
+                            }))}
+                            scopeKey={`${projectId}:working-tree:${entry.path}`}
+                            query={fileQuery}
+                            renderFile={(item, visiblePath, pathProps) =>
+                              renderFileRow(
+                                {
+                                  file: item.value,
+                                  displayPath: item.displayPath,
+                                },
+                                visiblePath,
+                                pathProps,
+                              )
+                            }
+                            t={t}
+                          />
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
           {listEntries.length === 0 && (
             <div className="git-status-empty">{t("sourceNoMatches")}</div>
           )}
         </div>
 
-        {isWideScreen && selectedFile && (
-          <GitDiffPreview
-            ref={diffPreviewRef}
+        {isWideScreen &&
+          selectedFile &&
+          (selectedFile.worktreeState === "untracked" ? (
+            <section className={styles.currentContent}>
+              {fileActions && (
+                <div className={styles.currentContentActions}>
+                  {fileActions}
+                </div>
+              )}
+              <FileViewer projectId={projectId} filePath={selectedFile.path} />
+            </section>
+          ) : (
+            <GitDiffPreview
+              ref={diffPreviewRef}
+              file={selectedFile}
+              fileKey={selectedFile.path}
+              projectId={projectId}
+              source={WORKING_TREE_SOURCE}
+              retainedScrollRatio={retainedScrollRatio}
+              retainedDiffView={retainedDiffView}
+              onRetainScrollRatio={retainScrollRatio}
+              onRetainDiffView={retainDiffView}
+              headerActions={fileActions}
+              onCommentEditorOpenChange={setCommentEditorOpen}
+              captureReviewProjections={captureReviewProjections}
+              ignoreWhitespace={ignoreWhitespace}
+              onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
+              onProjectionRequestFailure={onProjectionRequestFailure}
+              t={t}
+            />
+          ))}
+      </ResizableSourceColumns>
+      {fileMenu.menu}
+
+      {!isWideScreen &&
+        selectedFile &&
+        (selectedFile.worktreeState === "untracked" ? (
+          <Modal
+            title={selectedFile.path}
+            onClose={() => setSelectedPath(null)}
+            closeOnBackGesture
+          >
+            {fileActions && (
+              <div className={styles.currentContentActions}>{fileActions}</div>
+            )}
+            <FileViewer projectId={projectId} filePath={selectedFile.path} />
+          </Modal>
+        ) : (
+          <GitDiffModal
             file={selectedFile}
             fileKey={selectedFile.path}
             projectId={projectId}
@@ -791,31 +1284,9 @@ export function WorkingTreeBrowser({
             onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
             onProjectionRequestFailure={onProjectionRequestFailure}
             t={t}
+            onClose={() => setSelectedPath(null)}
           />
-        )}
-      </ResizableSourceColumns>
-      {fileMenu.menu}
-
-      {!isWideScreen && selectedFile && (
-        <GitDiffModal
-          file={selectedFile}
-          fileKey={selectedFile.path}
-          projectId={projectId}
-          source={WORKING_TREE_SOURCE}
-          retainedScrollRatio={retainedScrollRatio}
-          retainedDiffView={retainedDiffView}
-          onRetainScrollRatio={retainScrollRatio}
-          onRetainDiffView={retainDiffView}
-          headerActions={fileActions}
-          onCommentEditorOpenChange={setCommentEditorOpen}
-          captureReviewProjections={captureReviewProjections}
-          ignoreWhitespace={ignoreWhitespace}
-          onToggleIgnoreWhitespace={onToggleIgnoreWhitespace}
-          onProjectionRequestFailure={onProjectionRequestFailure}
-          t={t}
-          onClose={() => setSelectedPath(null)}
-        />
-      )}
+        ))}
     </div>
   );
 }
@@ -824,6 +1295,7 @@ function buildWorktreeListEntries({
   statusFiles,
   files,
   folders,
+  folderCounts,
   folderExpansion,
   matchingPaths,
   query,
@@ -831,6 +1303,7 @@ function buildWorktreeListEntries({
   statusFiles: GitFileChange[];
   files: WorktreeFileChange[];
   folders: Record<string, GitUntrackedFolderInfo>;
+  folderCounts: ReadonlyMap<string, number>;
   folderExpansion: Record<string, boolean>;
   matchingPaths: ReadonlySet<string>;
   query: string;
@@ -870,10 +1343,12 @@ function buildWorktreeListEntries({
       if (normalizedQuery && !folderMatches && matchingChildren.length === 0) {
         continue;
       }
+      const descendantCount =
+        folderCounts.get(statusFile.path) ?? info?.files.length;
       const userExpanded =
         folderExpansion[statusFile.path] ??
-        (info
-          ? info.files.length <= UNTRACKED_GROUP_COLLAPSE_THRESHOLD
+        (descendantCount !== undefined
+          ? descendantCount <= UNTRACKED_GROUP_COLLAPSE_THRESHOLD
           : false);
       const expanded = normalizedQuery
         ? matchingChildren.length > 0

@@ -79,8 +79,11 @@ stable component identity, and lower update cadence.
 - When fixing one high-rate path, keep tracing. A throttled markdown path does
   not prove text placeholders, tool previews, activity/freshness state,
   queued-message UI, or composer-adjacent state are also covered.
-- Long transcript work must preserve row identity for unchanged history and
-  should avoid front-to-back scans on hot current-message updates.
+- Long transcript work must preserve render-item, turn-group, and display-row
+  identity for unchanged history and avoid front-to-back scans on hot
+  current-message updates. User and assistant timeline entries are memoized at
+  the turn boundary: a live-tail replacement may enter the changed current
+  turn, but must not re-enter historical turn galleries or render items.
 - Native transcript scroll handlers perform only constant-time follow/intent
   bookkeeping and schedule one trailing position read. Transcript-position
   context is measured after 200 ms of scroll rest, indexes rendered rows once,
@@ -98,6 +101,21 @@ stable component identity, and lower update cadence.
   cross-tab `storage` events reconcile the cached value.
 - Composer text is user data. Streaming/render work must not steal focus,
   defeat normal browser key buffering, or delay page-lifecycle draft flushes.
+- The processing phrase typewriter is local leaf state. Clicking its text (or
+  focusing it and pressing Enter/Space) pauses phrase progress at the current
+  character; repeating the action resumes it. The processing text has no
+  typewriter cursor. The pause lasts only for the mounted processing cycle and
+  never pauses the agent. **Fun Phrases** controls the phrase pool, not whether
+  the typewriter animates. Timer expirations queue through one pending animation
+  frame, so phrase rotation and character progress produce at most one React
+  update per painted frame. The timer and frame stop while the indicator is
+  outside the viewport or the document is hidden; resuming does not replay
+  missed progress.
+- Activity pulses and spinners inherit one viewport-owned CSS animation play
+  state. A shared `IntersectionObserver` pauses them outside the viewport, and
+  document visibility pauses every observed activity animation while the tab is
+  hidden. Adding another activity indicator must reuse that observer rather than
+  create a per-indicator observer or JavaScript animation loop.
 
 ## Design decisions
 
@@ -107,6 +125,12 @@ stable component identity, and lower update cadence.
   message-driven transcript path and lets urgent input preempt it. A cadence
   controller would duplicate the existing token/markdown throttles while still
   needing a separate path for full activity messages.
+- **Use immutable source-message identity for tool projection stability** (vs.
+  deep-comparing rebuilt tool payloads): tool input, result, and display actions
+  are pure projections of the source messages already checked by identity.
+  Live approval can change the projected status, so status remains an explicit
+  comparison. This avoids deep walks over old, potentially large tool results
+  on every tail update.
 
 ## Transcript Layout Stability
 
@@ -199,7 +223,29 @@ five seconds. These were contended diagnostic samples rather than calibrated
 ratchet measurements; they support the scheduling decision and do not define a
 portable latency ceiling.
 
-The same consented tab later isolated scrolled-back position tracking as a
+A later 2026-08-23 real-work trace found the remaining identity leak: with
+7,543 DOM elements, active stream updates produced `MessageList` commits up to
+181 ms in one renewed sample (and 276 ms in the preceding lease), while
+preprocessing remained at or below 20.5 ms. A deterministic 40-turn update
+probe reproduced the structural cause: one changed live tail re-entered all 40
+historical assistant galleries. Stabilizing Conversation projection items,
+turn groups, display rows, and the derived thinking-preview set reduces that
+update to exactly one gallery and one render item—the changed live tail. These
+render counts are the regression contract; a separate 20-turn tool-heavy probe
+also records zero historical explored-tool group renders. The real-work timings
+remain diagnostic rather than portable ceilings.
+
+The post-fix active-stream sample in the same real-work session ran for 90
+seconds and recorded 193 keystrokes with no delayed keystrokes, a 46.6 ms
+maximum key-to-frame delay, and no long tasks while assistant text, thinking,
+tool activity, and the processing typewriter continued updating. The trace had
+one isolated 100.7 ms frame gap and a 36.8 ms maximum `MessageList` commit,
+rather than the earlier sustained 200-plus-ms delays. This satisfies the
+user-approved approximately-100-ms heavy-redraw target and closes the specific
+active-stream typing-latency gap. These values remain diagnostic, not a
+portable ceiling.
+
+The same consented tab separately isolated scrolled-back position tracking as a
 separate scroll-rate owner. With roughly 980 rendered rows, one scroll event
 performed 165 full render-row queries while the bottom-follow path performed
 none. An 8,000-pixel out-and-back probe took about 5.3 seconds normally; a

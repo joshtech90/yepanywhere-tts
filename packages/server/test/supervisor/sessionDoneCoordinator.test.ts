@@ -29,9 +29,9 @@ function coordinatorProcess(overrides: Partial<Process> = {}): Process {
       const entry: PendingYaCommand = {
         command: "done",
         content: options?.content ?? "/done",
-        tempId: "ya-done-queued",
-        timestamp: "2026-08-16T10:00:00.000Z",
-        userTurnVersion: 1,
+        tempId: options?.tempId ?? "ya-done-queued",
+        timestamp: options?.timestamp ?? "2026-08-16T10:00:00.000Z",
+        userTurnVersion: options?.userTurnVersion ?? 1,
         completionStarted: false,
       };
       pending.push(entry);
@@ -92,9 +92,16 @@ describe("SessionDoneCoordinator", () => {
     const result = await state.requestSessionDone("session-1");
 
     expect(result).toMatchObject({ queued: true, paused: true });
-    expect(updateMetadata).toHaveBeenCalledWith("session-1", {
-      automationPausedUntilUserTurn: true,
-    });
+    expect(updateMetadata).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({
+        automationPausedUntilUserTurn: true,
+        pendingSyntheticDone: expect.objectContaining({
+          message: expect.objectContaining({ content: "/done" }),
+          userTurnVersion: 1,
+        }),
+      }),
+    );
     expect(order[0]).toBe("persist");
     expect(order).toContain("queue");
     expect(process.hasPendingYaCommand("done")).toBe(true);
@@ -117,13 +124,20 @@ describe("SessionDoneCoordinator", () => {
 
     const result = await state.requestSessionDone("session-1", "/archive");
 
-    expect(updateMetadata).toHaveBeenCalledWith("session-1", {
-      automationPausedUntilUserTurn: true,
-      archived: true,
-    });
-    expect(queueYaCommand).toHaveBeenCalledWith("done", {
-      content: "/archive",
-    });
+    expect(updateMetadata).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({
+        automationPausedUntilUserTurn: true,
+        archived: true,
+        pendingSyntheticDone: expect.objectContaining({
+          message: expect.objectContaining({ content: "/archive" }),
+        }),
+      }),
+    );
+    expect(queueYaCommand).toHaveBeenCalledWith(
+      "done",
+      expect.objectContaining({ content: "/archive" }),
+    );
     expect(result).toMatchObject({
       queued: true,
       message: { content: "/archive" },
@@ -154,6 +168,35 @@ describe("SessionDoneCoordinator", () => {
     expect(laterDone.message).toMatchObject({
       uuid: done.message.uuid,
       content: "/archive",
+    });
+  });
+
+  it("keeps /terminate stronger than queued done or archive boundaries", async () => {
+    const process = coordinatorProcess();
+    const state = new SessionDoneCoordinator({
+      sessionMetadataService: {
+        getMetadata: () => undefined,
+        updateMetadata: async () => {},
+      } as unknown as SessionMetadataService,
+      getProcessForSession: () => process,
+      cancelInFlightForkedRecap: () => {},
+      requestHeartbeatSweep: () => {},
+    });
+
+    const done = await state.requestSessionDone("session-1", "/done");
+    const terminate = await state.requestSessionDone("session-1", "/terminate");
+    const laterArchive = await state.requestSessionDone(
+      "session-1",
+      "/archive",
+    );
+
+    expect(terminate.message).toMatchObject({
+      uuid: done.message.uuid,
+      content: "/terminate",
+    });
+    expect(laterArchive.message).toMatchObject({
+      uuid: done.message.uuid,
+      content: "/terminate",
     });
   });
 
@@ -228,6 +271,205 @@ describe("SessionDoneCoordinator", () => {
       queued: false,
       message: { content: "/archive" },
     });
+  });
+
+  it("upgrades a persisted /done after its process is gone", async () => {
+    const message = {
+      type: "user" as const,
+      content: "/done" as const,
+      message: { role: "user" as const, content: "/done" as const },
+      timestamp: "2026-08-16T10:00:00.000Z",
+      uuid: "durable-boundary-1",
+      id: "durable-boundary-1",
+      isSynthetic: true as const,
+      yaSyntheticSource: "done" as const,
+    };
+    const updateMetadata = vi.fn(async () => {});
+    const state = new SessionDoneCoordinator({
+      sessionMetadataService: {
+        getMetadata: () => ({
+          automationPausedUntilUserTurn: true,
+          pendingSyntheticDone: { message, userTurnVersion: 4 },
+        }),
+        updateMetadata,
+      } as unknown as SessionMetadataService,
+      getProcessForSession: () => undefined,
+      cancelInFlightForkedRecap: () => {},
+      requestHeartbeatSweep: () => {},
+    });
+
+    await expect(
+      state.requestSessionDone("session-1", "/archive"),
+    ).resolves.toMatchObject({
+      queued: true,
+      message: {
+        uuid: "durable-boundary-1",
+        timestamp: "2026-08-16T10:00:00.000Z",
+        content: "/archive",
+      },
+    });
+    expect(updateMetadata).toHaveBeenCalledWith("session-1", {
+      automationPausedUntilUserTurn: true,
+      archived: true,
+      pendingSyntheticDone: {
+        message: expect.objectContaining({
+          uuid: "durable-boundary-1",
+          content: "/archive",
+        }),
+        userTurnVersion: 4,
+      },
+    });
+  });
+
+  it("finalizes a persisted boundary when its process is already gone", async () => {
+    const message = {
+      type: "user" as const,
+      content: "/done" as const,
+      message: { role: "user" as const, content: "/done" as const },
+      timestamp: "2026-08-16T10:00:00.000Z",
+      uuid: "durable-boundary-1",
+      id: "durable-boundary-1",
+      isSynthetic: true as const,
+      yaSyntheticSource: "done" as const,
+    };
+    let pendingMessage = message;
+    const recordSyntheticDone = vi.fn(async () => {});
+    const state = new SessionDoneCoordinator({
+      sessionMetadataService: {
+        getMetadata: () => ({
+          automationPausedUntilUserTurn: true,
+          pendingSyntheticDone: {
+            message: pendingMessage,
+            userTurnVersion: 4,
+          },
+        }),
+        updateMetadata: async (_sessionId, updates) => {
+          pendingMessage =
+            updates.pendingSyntheticDone?.message ?? pendingMessage;
+        },
+        recordSyntheticDone,
+      } as unknown as SessionMetadataService,
+      getProcessForSession: () => undefined,
+      cancelInFlightForkedRecap: () => {},
+      requestHeartbeatSweep: () => {},
+    });
+
+    const result = await state.requestSessionBoundaryForStop(
+      "session-1",
+      "/terminate",
+    );
+
+    expect(result).toMatchObject({
+      queued: false,
+      message: { content: "/terminate", uuid: "durable-boundary-1" },
+    });
+    expect(recordSyntheticDone).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({ content: "/terminate" }),
+      { archived: true },
+    );
+  });
+
+  it.each(["/done", "/archive", "/terminate"] as const)(
+    "recovers and finalizes a queued %s boundary on a replacement process",
+    async (command) => {
+      const process = coordinatorProcess();
+      const recordSyntheticDone = vi.fn(async () => {});
+      const message = {
+        type: "user" as const,
+        content: command,
+        message: { role: "user" as const, content: command },
+        timestamp: "2026-08-16T10:00:00.000Z",
+        uuid: "durable-boundary-1",
+        id: "durable-boundary-1",
+        isSynthetic: true as const,
+        yaSyntheticSource: "done" as const,
+      };
+      const state = new SessionDoneCoordinator({
+        sessionMetadataService: {
+          getMetadata: () => ({
+            automationPausedUntilUserTurn: true,
+            pendingSyntheticDone: { message, userTurnVersion: 4 },
+          }),
+          recordSyntheticDone,
+        } as unknown as SessionMetadataService,
+        getProcessForSession: () => process,
+        cancelInFlightForkedRecap: () => {},
+        requestHeartbeatSweep: () => {},
+      });
+
+      state.recoverPendingDone(process);
+
+      expect(process.getPendingYaCommand("done")).toMatchObject({
+        content: command,
+        tempId: "durable-boundary-1",
+        timestamp: "2026-08-16T10:00:00.000Z",
+        userTurnVersion: process.userTurnVersion,
+      });
+      expect(process.pauseRecapsUntilUserTurn).toHaveBeenCalled();
+
+      (process as unknown as { state: { type: "idle" } }).state = {
+        type: "idle",
+      };
+      await expect(state.finalizePendingDone(process)).resolves.toEqual(
+        message,
+      );
+      if (command !== "/done") {
+        expect(recordSyntheticDone).toHaveBeenCalledWith("session-1", message, {
+          archived: true,
+        });
+      } else {
+        expect(recordSyntheticDone).toHaveBeenCalledWith("session-1", message);
+      }
+      expect(process.hasPendingYaCommand("done")).toBe(false);
+    },
+  );
+
+  it("resumes automation when the replacement process takes a user turn", async () => {
+    // The requesting process counted four user turns; its replacement starts
+    // its own count at zero, so the recovered boundary must wait for a turn
+    // this process sees rather than one it can never reach.
+    const process = coordinatorProcess({
+      userTurnVersion: 0,
+    } as unknown as Partial<Process>);
+    const message = {
+      type: "user" as const,
+      content: "/done" as const,
+      message: { role: "user" as const, content: "/done" as const },
+      timestamp: "2026-08-16T10:00:00.000Z",
+      uuid: "durable-boundary-1",
+      id: "durable-boundary-1",
+      isSynthetic: true as const,
+      yaSyntheticSource: "done" as const,
+    };
+    const updateMetadata = vi.fn(async () => {});
+    const state = new SessionDoneCoordinator({
+      sessionMetadataService: {
+        getMetadata: () => ({
+          automationPausedUntilUserTurn: true,
+          pendingSyntheticDone: { message, userTurnVersion: 4 },
+        }),
+        recordSyntheticDone: async () => {},
+        updateMetadata,
+      } as unknown as SessionMetadataService,
+      getProcessForSession: () => process,
+      cancelInFlightForkedRecap: () => {},
+      requestHeartbeatSweep: () => {},
+    });
+
+    state.recoverPendingDone(process);
+    expect(process.getPendingYaCommand("done")?.userTurnVersion).toBe(0);
+
+    (process as unknown as { userTurnVersion: number }).userTurnVersion = 1;
+    (process as unknown as { state: { type: "idle" } }).state = {
+      type: "idle",
+    };
+    await state.finalizePendingDone(process);
+
+    expect(updateMetadata).toHaveBeenCalledWith("session-1", {
+      automationPausedUntilUserTurn: false,
+    });
+    expect(process.resumeRecapsAfterUserTurn).toHaveBeenCalled();
   });
 
   it("does not queue /done when the pause cannot be persisted", async () => {

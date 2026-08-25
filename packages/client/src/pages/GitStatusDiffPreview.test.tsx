@@ -6,6 +6,7 @@ import {
   MARKDOWN_LIKE_FILE_EXTENSIONS,
 } from "@yep-anywhere/shared";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -181,6 +182,84 @@ describe("GitDiffBody", () => {
     expect(await screen.findByText("full-b")).toBeTruthy();
   });
 
+  it("shows complete after-side text without removed lines", async () => {
+    const normal: GitDiffResult = {
+      diffHtml: "",
+      structuredPatch: [
+        {
+          oldStart: 2,
+          oldLines: 1,
+          newStart: 2,
+          newLines: 1,
+          lines: ["-old", "+new"],
+        },
+      ],
+    };
+    const full: GitDiffResult = {
+      diffHtml: "",
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 3,
+          newStart: 1,
+          newLines: 3,
+          lines: [" before", "-old", "+new", " after"],
+        },
+      ],
+    };
+    getGitDiff.mockImplementation(
+      (
+        _projectId: string,
+        options: {
+          fullContext?: boolean;
+        },
+      ) => Promise.resolve(options.fullContext ? full : normal),
+    );
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <GitDiffBody
+          file={FILE}
+          fileKey="src/live.ts:false"
+          projectId="p1"
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("old", { exact: false });
+    fireEvent.click(
+      screen.getByRole("button", { name: "gitStatusHideRemovedLines" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        getGitDiff.mock.calls.some(([, options]) => options.fullContext),
+      ).toBe(true),
+    );
+    const rendered = document.querySelector(".highlighted-diff");
+    expect(rendered?.textContent).toContain("before");
+    expect(rendered?.textContent).toContain("new");
+    expect(rendered?.textContent).toContain("after");
+    expect(rendered?.textContent).not.toContain("-old");
+    expect(rendered?.textContent).not.toContain("+new");
+    expect(rendered?.querySelector(".line-hunk")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "gitStatusShowRemovedLines" }),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "gitStatusShowRemovedLines" }),
+    );
+    expect(rendered?.textContent).toContain("-old");
+    expect(rendered?.querySelector(".line-hunk")).not.toBeNull();
+  });
+
   it("keeps the requested rendered diff through a source-only refresh", async () => {
     const markdownFile: GitFileChange = {
       ...FILE,
@@ -215,6 +294,55 @@ describe("GitDiffBody", () => {
 
     rendered.rerender(view({ ...markdownFile, linesAdded: 3 }));
     expect(await screen.findByText("third diff")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "gitStatusDiff" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("keeps a later Preview choice through a delayed projection reset", async () => {
+    const markdownFile: GitFileChange = {
+      ...FILE,
+      path: "notes/report.qmd",
+    };
+    let resolveProjectedDiff: (value: GitDiffResult) => void = () => {};
+    const projectedDiff = new Promise<GitDiffResult>((resolve) => {
+      resolveProjectedDiff = resolve;
+    });
+    getGitDiff
+      .mockResolvedValueOnce(result("# Initial report"))
+      .mockReturnValueOnce(projectedDiff);
+
+    const view = (ignoreWhitespace: boolean) => (
+      <MemoryRouter>
+        <GitDiffBody
+          file={markdownFile}
+          fileKey="notes/report.qmd"
+          projectId="p1"
+          ignoreWhitespace={ignoreWhitespace}
+          t={t}
+        />
+      </MemoryRouter>
+    );
+    const rendered = render(view(false));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "gitStatusPreview" }),
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "gitStatusDiff" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    rendered.rerender(view(true));
+    await screen.findByText("gitStatusLoadingDiff");
+    await act(async () => {
+      resolveProjectedDiff(result("# Projected report"));
+      await projectedDiff;
+    });
+
+    expect(await screen.findByText("Projected report")).toBeTruthy();
     expect(
       screen
         .getByRole("button", { name: "gitStatusDiff" })
@@ -371,7 +499,7 @@ describe("GitDiffBody", () => {
     expect(
       screen.getByRole("button", { name: "gitStatusIgnoreWhitespace" })
         .textContent,
-    ).toBe("␣");
+    ).toBe("_+");
     expect(
       screen.getByRole("button", { name: "gitStatusFullContext" }).textContent,
     ).toBe("");
@@ -385,6 +513,80 @@ describe("GitDiffBody", () => {
         "1/1",
       ),
     );
+  });
+
+  it("describes the active whitespace projection", async () => {
+    getGitDiff.mockResolvedValue(result("compact"));
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <GitDiffBody
+          file={FILE}
+          fileKey="src/example.ts:false"
+          projectId="p1"
+          ignoreWhitespace
+          onToggleIgnoreWhitespace={() => {}}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("compact");
+    const toggle = screen.getByRole("button", {
+      name: "gitStatusIgnoreWhitespaceActive",
+    });
+    expect(toggle.getAttribute("title")).toBe(
+      "gitStatusIgnoreWhitespaceActive",
+    );
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("downgrades oversized highlighted HTML to the plain projection", async () => {
+    getGitDiff.mockResolvedValue({
+      ...result("large line"),
+      diffHtml: "x".repeat(20_000_001),
+    });
+
+    render(
+      <MemoryRouter>
+        <GitDiffBody
+          file={FILE}
+          fileKey="src/example.ts:false"
+          projectId="p1"
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-diff-rendering="plain"]')?.textContent,
+      ).toContain("+large line"),
+    );
+    expect(screen.getByText("gitStatusDiffPlainMode")).toBeTruthy();
+    expect(document.querySelectorAll(".line-hunk")).toHaveLength(1);
+    await waitFor(() =>
+      expect(document.querySelector(".diff-hunk-indicator")?.textContent).toBe(
+        "1/1",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "sourcePreviousHunkShortcut" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "sourceNextHunkShortcut" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: "diffViewModeTitle: diffViewModeAuto",
+      }),
+    ).toBeNull();
+    expect(screen.queryByText("gitStatusDiffPreviewSkipped")).toBeNull();
   });
 
   it("renders the server binary-file omission state", async () => {

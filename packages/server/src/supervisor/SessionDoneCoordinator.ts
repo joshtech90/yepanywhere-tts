@@ -40,7 +40,7 @@ export function syntheticDoneMessage(
 }
 
 /**
- * Owns `/done` and `/archive` requests, durable automation pause, and idle
+ * Owns synthetic session-boundary requests, durable automation pause, and
  * finalize. Process still holds the Process-local `ya-command` chip and
  * idle-boundary hold; this coordinator is the persist/resume policy those
  * chips sit under.
@@ -60,6 +60,26 @@ export class SessionDoneCoordinator {
     );
   }
 
+  recoverPendingDone(process: Process): void {
+    const pending = this.options.sessionMetadataService?.getMetadata(
+      process.sessionId,
+    )?.pendingSyntheticDone;
+    if (!pending || process.hasPendingYaCommand("done")) {
+      return;
+    }
+    process.queueYaCommand("done", {
+      content: pending.message.content,
+      tempId: pending.message.uuid,
+      timestamp: pending.message.timestamp,
+      // A user-turn version counts turns within one Process, so the requesting
+      // process's value means nothing to this one. Rebase on the replacement's
+      // current count: the boundary still waits for a later real user turn,
+      // measured where the wait now happens.
+      userTurnVersion: process.userTurnVersion,
+    });
+    this.pauseLiveProcess(process);
+  }
+
   async requestSessionDone(
     sessionId: string,
     command: SyntheticSessionBoundaryCommand = "/done",
@@ -69,6 +89,27 @@ export class SessionDoneCoordinator {
     );
   }
 
+  async requestSessionBoundaryForStop(
+    sessionId: string,
+    command: SyntheticSessionBoundaryCommand,
+  ): Promise<SessionDoneResult> {
+    return this.runSessionOperation(sessionId, async () => {
+      const boundary = await this.requestSessionDoneLocked(sessionId, command);
+      if (!boundary.queued) return boundary;
+
+      const process = this.options.getProcessForSession(sessionId);
+      const message = process
+        ? await this.finalizePendingDoneLocked(process)
+        : await this.finalizePendingDoneWithoutProcessLocked(sessionId);
+      if (!message) {
+        throw new Error(
+          `Failed to finalize ${command} for session ${sessionId}`,
+        );
+      }
+      return { message, paused: true, queued: false };
+    });
+  }
+
   private async requestSessionDoneLocked(
     sessionId: string,
     command: SyntheticSessionBoundaryCommand,
@@ -76,19 +117,57 @@ export class SessionDoneCoordinator {
     const metadata = this.requireMetadata();
     const process = this.options.getProcessForSession(sessionId);
     const existing = process?.getPendingYaCommand("done");
-    const archive = command === "/archive";
-    const pendingCommand =
-      existing?.content === "/archive" ? "/archive" : command;
+    const persisted = metadata.getMetadata(sessionId)?.pendingSyntheticDone;
+    const archive = command !== "/done";
+    const pendingCommand = strongestBoundaryCommand(
+      command,
+      existing?.content,
+      persisted?.message.content,
+    );
     const hasActiveTurn =
       process !== undefined &&
       (process.state.type === "in-turn" ||
         process.state.type === "waiting-input" ||
         process.isRetainingProviderWork());
 
-    if (process && (existing || hasActiveTurn)) {
-      await this.persistAutomationPause(sessionId, archive);
+    if (persisted || (process && (existing || hasActiveTurn))) {
+      const timestamp =
+        existing?.timestamp ??
+        persisted?.message.timestamp ??
+        new Date().toISOString();
+      const tempId =
+        existing?.tempId ??
+        persisted?.message.uuid ??
+        `ya-done-${randomUUID()}`;
+      // A live process's own count wins over a persisted one, which may have
+      // been recorded by an earlier process whose turn numbering ended with it.
+      const userTurnVersion =
+        existing?.userTurnVersion ??
+        process?.userTurnVersion ??
+        persisted?.userTurnVersion;
+      if (userTurnVersion === undefined) {
+        throw new Error("Pending session boundary has no user-turn version");
+      }
+      const boundaryMessage = syntheticDoneMessage(
+        tempId,
+        timestamp,
+        pendingCommand,
+      );
+      await this.persistPendingDone(
+        sessionId,
+        boundaryMessage,
+        userTurnVersion,
+        archive,
+      );
+      if (!process) {
+        this.options.requestHeartbeatSweep();
+        return { message: boundaryMessage, paused: true, queued: true };
+      }
       const pending = process.queueYaCommand("done", {
         content: pendingCommand,
+        tempId,
+        timestamp,
+        userTurnVersion,
       });
       this.pauseLiveProcess(process);
 
@@ -103,7 +182,7 @@ export class SessionDoneCoordinator {
         message: syntheticDoneMessage(
           pending.tempId,
           pending.timestamp,
-          pending.content === "/archive" ? "/archive" : "/done",
+          normalizeBoundaryCommand(pending.content),
         ),
         paused: true,
         queued: true,
@@ -155,11 +234,11 @@ export class SessionDoneCoordinator {
       return null;
     }
 
-    const timestamp = new Date().toISOString();
-    const command = pending.content === "/archive" ? "/archive" : "/done";
+    const timestamp = pending.timestamp;
+    const command = normalizeBoundaryCommand(pending.content);
     const message = syntheticDoneMessage(pending.tempId, timestamp, command);
     try {
-      if (command === "/archive") {
+      if (command !== "/done") {
         await metadata.recordSyntheticDone(process.sessionId, message, {
           archived: true,
         });
@@ -190,12 +269,44 @@ export class SessionDoneCoordinator {
           projectId: process.projectId,
           error: error instanceof Error ? error.message : String(error),
         },
-        "Failed to finalize queued /done command",
+        "Failed to finalize queued session boundary",
       );
       return null;
     }
 
     process.completePendingYaCommand(pending.tempId);
+    return message;
+  }
+
+  private async finalizePendingDoneWithoutProcessLocked(
+    sessionId: string,
+  ): Promise<DurableSyntheticDoneMessage | null> {
+    const pending =
+      this.options.sessionMetadataService?.getMetadata(
+        sessionId,
+      )?.pendingSyntheticDone;
+    if (!pending) return null;
+
+    const command = normalizeBoundaryCommand(pending.message.content);
+    const message = syntheticDoneMessage(
+      pending.message.uuid,
+      pending.message.timestamp,
+      command,
+    );
+    const metadata = this.requireMetadata();
+    if (command !== "/done") {
+      await metadata.recordSyntheticDone(sessionId, message, {
+        archived: true,
+      });
+    } else {
+      await metadata.recordSyntheticDone(sessionId, message);
+    }
+    await this.options.notificationService?.markSeen(
+      sessionId,
+      message.timestamp,
+      message.uuid,
+    );
+    this.options.requestHeartbeatSweep();
     return message;
   }
 
@@ -266,12 +377,15 @@ export class SessionDoneCoordinator {
     return metadata;
   }
 
-  private async persistAutomationPause(
+  private async persistPendingDone(
     sessionId: string,
+    message: DurableSyntheticDoneMessage,
+    userTurnVersion: number,
     archived: boolean,
   ): Promise<void> {
     await this.requireMetadata().updateMetadata(sessionId, {
       automationPausedUntilUserTurn: true,
+      pendingSyntheticDone: { message, userTurnVersion },
       ...(archived ? { archived: true } : {}),
     });
   }
@@ -282,4 +396,20 @@ export class SessionDoneCoordinator {
     process.handleAutomationPauseChanged();
     this.options.requestHeartbeatSweep();
   }
+}
+
+function normalizeBoundaryCommand(
+  command: string,
+): SyntheticSessionBoundaryCommand {
+  if (command === "/terminate") return "/terminate";
+  if (command === "/archive") return "/archive";
+  return "/done";
+}
+
+function strongestBoundaryCommand(
+  ...commands: (string | undefined)[]
+): SyntheticSessionBoundaryCommand {
+  if (commands.includes("/terminate")) return "/terminate";
+  if (commands.includes("/archive")) return "/archive";
+  return "/done";
 }

@@ -14,6 +14,7 @@ import type { HttpBindings } from "@hono/node-server";
 import type {
   BinaryFormatValue,
   CapabilityBitset,
+  GitWorktreeCoverage,
   OriginMetadata,
   RelayRequest,
   RelayUploadError,
@@ -53,6 +54,10 @@ import { getLogger } from "../logging/logger.js";
 import { AUTHENTICATED_SRP_TRANSPORT } from "../middleware/authenticated-transport.js";
 import { WS_INTERNAL_AUTHENTICATED } from "../middleware/internal-auth.js";
 import type { ProjectGlossarySubscriptionManager } from "../projects/projectGlossarySubscriptionManager.js";
+import {
+  type ProjectWorktreeSubscriptionManager,
+  WorktreeMonitoringDisabledError,
+} from "../projects/projectWorktreeSubscriptionManager.js";
 import type {
   RemoteAccessService,
   RemoteSessionService,
@@ -356,6 +361,8 @@ export interface RelayHandlerDeps {
   focusedSessionWatchManager?: FocusedSessionWatchManager;
   /** Project glossary path subscriptions and their reference-counted watchers. */
   projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager;
+  /** Project worktree snapshots and their reference-counted watchers. */
+  projectWorktreeSubscriptionManager?: ProjectWorktreeSubscriptionManager;
   /** Emulator bridge service for Android emulator streaming (optional) */
   deviceBridgeService?: DeviceBridgeService;
   /** Speech backend registry for relayed streaming STT (optional) */
@@ -1037,6 +1044,7 @@ export function handleSessionSubscribe(
   const { cleanup } = createSessionSubscription(process, sendEvent, {
     wantsLiveDeltas,
     sessionQueuePersistenceService,
+    sessionMetadataService: supervisor.getSessionMetadataService(),
     resolveAbsoluteFilePaths,
     onError: (err) => {
       console.error("[WS Relay] Error in session subscription:", err);
@@ -1353,6 +1361,218 @@ export function handleGlossarySubscribe(
   }
 }
 
+const MAX_WORKTREE_EXPANDED_PREFIXES = 256;
+const MAX_WORKTREE_PREFIX_LENGTH = 4_096;
+
+function parseExpandedPrefixes(value: unknown): string[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_WORKTREE_EXPANDED_PREFIXES) {
+    return null;
+  }
+
+  const prefixes = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string") return null;
+    if (candidate === "") continue;
+    if (
+      candidate.length > MAX_WORKTREE_PREFIX_LENGTH ||
+      candidate.startsWith("/") ||
+      candidate.includes("\\") ||
+      candidate.includes("\0")
+    ) {
+      return null;
+    }
+    const segments = candidate.split("/");
+    if (
+      segments.some(
+        (segment) =>
+          segment === "" ||
+          segment === "." ||
+          segment === ".." ||
+          segment.toLowerCase() === ".git",
+      ) ||
+      /^[a-z]:$/iu.test(segments[0] ?? "")
+    ) {
+      return null;
+    }
+    for (let length = 1; length <= segments.length; length += 1) {
+      prefixes.add(segments.slice(0, length).join("/"));
+      if (prefixes.size > MAX_WORKTREE_EXPANDED_PREFIXES) return null;
+    }
+  }
+  return [...prefixes].sort((left, right) => {
+    const depth = left.split("/").length - right.split("/").length;
+    return depth !== 0 ? depth : left < right ? -1 : left > right ? 1 : 0;
+  });
+}
+
+function parseWorktreeCoverage(value: unknown): GitWorktreeCoverage | null {
+  if (!value || typeof value !== "object") return null;
+  const coverage = value as {
+    tracked?: unknown;
+    untracked?: unknown;
+    ignored?: unknown;
+    expandedPrefixes?: unknown;
+    filesystemScan?: unknown;
+  };
+  const expandedPrefixes = parseExpandedPrefixes(coverage.expandedPrefixes);
+  const filesystemScan = coverage.filesystemScan;
+  return typeof coverage.tracked === "boolean" &&
+    typeof coverage.untracked === "boolean" &&
+    typeof coverage.ignored === "boolean" &&
+    expandedPrefixes !== null &&
+    (filesystemScan === undefined ||
+      (expandedPrefixes !== undefined &&
+        (filesystemScan === "bounded" || filesystemScan === "complete")))
+    ? {
+        tracked: coverage.tracked,
+        untracked: coverage.untracked,
+        ignored: coverage.ignored,
+        ...(expandedPrefixes === undefined ? {} : { expandedPrefixes }),
+        ...(filesystemScan === undefined ? {} : { filesystemScan }),
+      }
+    : null;
+}
+
+/** Subscribe to one maintained worktree snapshot and its revisioned deltas. */
+export function handleWorktreeSubscribe(
+  subscriptions: Map<string, () => void>,
+  msg: RelaySubscribe,
+  send: SendFn,
+  manager?: ProjectWorktreeSubscriptionManager,
+): void {
+  const { subscriptionId, projectId } = msg;
+  const coverage = parseWorktreeCoverage(msg.coverage);
+  if (!manager) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 503,
+      body: { error: "Worktree subscription service unavailable" },
+    });
+    return;
+  }
+  if (manager.isEnabled?.() === false) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 503,
+      body: { error: "Live worktree monitoring is disabled" },
+    });
+    return;
+  }
+  if (!projectId || !isUrlProjectId(projectId)) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 400,
+      body: { error: "Valid projectId required for worktree channel" },
+    });
+    return;
+  }
+  if (!coverage) {
+    send({
+      type: "response",
+      id: subscriptionId,
+      status: 400,
+      body: { error: "Valid coverage required for worktree channel" },
+    });
+    return;
+  }
+
+  let eventId = 0;
+  let opened = false;
+  let cancelled = false;
+  let heartbeatInterval: NodeJS.Timeout | null = null;
+  let release: (() => void) | null = null;
+  const buffered: Array<{ eventType: string; data: unknown }> = [];
+  const sendEvent = (eventType: string, data: unknown) => {
+    if (!opened) {
+      buffered.push({ eventType, data });
+      return;
+    }
+    send({
+      type: "event",
+      subscriptionId,
+      eventType,
+      eventId: String(eventId++),
+      data,
+    });
+  };
+
+  const cleanup = () => {
+    cancelled = true;
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+    release?.();
+    release = null;
+  };
+  subscriptions.set(subscriptionId, cleanup);
+
+  const fail = (error: unknown) => {
+    const ownsSubscription = subscriptions.get(subscriptionId) === cleanup;
+    if (ownsSubscription) subscriptions.delete(subscriptionId);
+    const shouldReport = !cancelled && ownsSubscription;
+    cleanup();
+    if (!shouldReport) return;
+    try {
+      send({
+        type: "response",
+        id: subscriptionId,
+        status:
+          error instanceof WorktreeMonitoringDisabledError
+            ? 503
+            : error instanceof Error && error.message === "Project not found"
+              ? 404
+              : 500,
+        body: {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Worktree subscription failed",
+        },
+      });
+    } catch (sendError) {
+      getLogger().warn(
+        { error: sendError, subscriptionId },
+        "[WS Relay] Failed to send worktree subscription error",
+      );
+    }
+  };
+  const open = () => {
+    if (cancelled || subscriptions.get(subscriptionId) !== cleanup) {
+      cleanup();
+      return;
+    }
+
+    opened = true;
+    send({
+      type: "event",
+      subscriptionId,
+      eventType: "connected",
+      eventId: String(eventId++),
+      data: { timestamp: new Date().toISOString() },
+    });
+    for (const event of buffered) sendEvent(event.eventType, event.data);
+    heartbeatInterval = setInterval(() => {
+      sendEvent("heartbeat", { timestamp: new Date().toISOString() });
+    }, 30_000);
+    getLogger().debug(
+      `[WS Relay] Subscribed to worktree project=${projectId} (${subscriptionId})`,
+    );
+  };
+
+  try {
+    const subscription = manager.subscribe(projectId, coverage, (event) => {
+      sendEvent(event.type, event);
+    });
+    release = subscription.release;
+    void subscription.ready.then(open).catch(fail);
+  } catch (error) {
+    fail(error);
+  }
+}
+
 /**
  * Handle a subscribe message.
  */
@@ -1366,6 +1586,7 @@ export function handleSubscribe(
   connState: ConnectionState,
   focusedSessionWatchManager?: FocusedSessionWatchManager,
   projectGlossarySubscriptionManager?: ProjectGlossarySubscriptionManager,
+  projectWorktreeSubscriptionManager?: ProjectWorktreeSubscriptionManager,
   connectedBrowsers?: ConnectedBrowsersService,
   browserProfileService?: BrowserProfileService,
   closeConnection?: () => void,
@@ -1425,6 +1646,15 @@ export function handleSubscribe(
         msg,
         send,
         projectGlossarySubscriptionManager,
+      );
+      break;
+
+    case "worktree":
+      handleWorktreeSubscribe(
+        subscriptions,
+        msg,
+        send,
+        projectWorktreeSubscriptionManager,
       );
       break;
 
@@ -1990,6 +2220,7 @@ export async function handleMessage(
           connState,
           deps.focusedSessionWatchManager,
           deps.projectGlossarySubscriptionManager,
+          deps.projectWorktreeSubscriptionManager,
           deps.connectedBrowsers,
           deps.browserProfileService,
           () => ws.close(4004, "Legacy browser profile revoked"),

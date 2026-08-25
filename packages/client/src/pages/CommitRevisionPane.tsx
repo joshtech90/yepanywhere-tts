@@ -1,14 +1,17 @@
 import type { GitRecentCommit, GitStatusInfo } from "@yep-anywhere/shared";
-import { type RefObject, useCallback } from "react";
+import { type MouseEvent, type RefObject, useCallback } from "react";
 import {
   SourceRowMenuTrigger,
   sourceRowMenuSurface,
   type SourceContextMenuAction,
   useSourceContextMenu,
 } from "../components/SourceContextMenu";
+import { SearchMatchText } from "../components/SearchMatchText";
 import { SourceShortcutHelp } from "../components/SourceShortcutHelp";
 import { handleSourceListKeyDown } from "../hooks/useSourceKeyboard";
 import { writeClipboardText } from "../lib/clipboard";
+import type { CommitSearchMatch } from "../lib/commitSearchIndex";
+import { findTextMatch } from "../lib/searchMatch";
 import type { TranslationFn } from "../i18n";
 import { WORKING_TREE_KEY } from "./useCommitBrowserModel";
 import styles from "./CommitRevisionPane.module.css";
@@ -29,6 +32,7 @@ export function CommitRevisionPane({
   searchError,
   searchActive,
   displayedCommits,
+  commitSearchMatches,
   selectedKey,
   selectedIsWorkingTree,
   showWorkingTreeRevision,
@@ -41,6 +45,7 @@ export function CommitRevisionPane({
   onSearchQueryChange,
   onSearchIndexRequested,
   onOpenRevision,
+  revisionHref,
   onFocusRevision,
   onLoadMore,
   onMarkReadTo,
@@ -59,6 +64,7 @@ export function CommitRevisionPane({
   searchError: string | null;
   searchActive: boolean;
   displayedCommits: GitRecentCommit[];
+  commitSearchMatches: ReadonlyMap<string, CommitSearchMatch>;
   displayedKeys: string[];
   selectedKey: string | null;
   selectedIsWorkingTree: boolean;
@@ -72,6 +78,7 @@ export function CommitRevisionPane({
   onSearchQueryChange: (query: string) => void;
   onSearchIndexRequested: () => void;
   onOpenRevision: (key: string) => void;
+  revisionHref: (key: string) => string;
   onFocusRevision: (key: string) => void;
   onLoadMore: () => void;
   onMarkReadTo: (authorDate: string) => void;
@@ -151,6 +158,11 @@ export function CommitRevisionPane({
   const workingTreeFileCount = status
     ? new Set(status.files.map((file) => file.path)).size
     : 0;
+  const workingTreeMenuActions = revisionMenuActions(WORKING_TREE_KEY);
+  const workingTreeTargetProps = revisionMenu.targetProps(
+    workingTreeMenuActions,
+    () => onOpenRevision(WORKING_TREE_KEY),
+  );
   return (
     <>
       <div className="commit-list-column">
@@ -206,23 +218,25 @@ export function CommitRevisionPane({
                 <li
                   className={`commit-list-row commit-list-working-tree ${sourceRowMenuSurface}`}
                 >
-                  <button
-                    type="button"
-                    className={`commit-list-item unread ${
+                  <a
+                    className={`commit-list-item ${styles.link} unread ${
                       workingTreeClean ? "" : styles.dirty
                     } ${selectedIsWorkingTree ? "selected" : ""} ${
                       !workingTreeClean && selectedIsWorkingTree
                         ? styles.dirtySelected
                         : ""
                     }`}
+                    href={revisionHref(WORKING_TREE_KEY)}
                     data-source-list-item
                     onFocus={() => {
                       if (isWideScreen) onFocusRevision(WORKING_TREE_KEY);
                     }}
-                    {...revisionMenu.targetProps(
-                      revisionMenuActions(WORKING_TREE_KEY),
-                      () => onOpenRevision(WORKING_TREE_KEY),
-                    )}
+                    {...workingTreeTargetProps}
+                    onClick={(event) => {
+                      if (isModifiedLinkActivation(event)) return;
+                      event.preventDefault();
+                      workingTreeTargetProps.onClick();
+                    }}
                   >
                     <span className="commit-subject-row">
                       <span className="commit-subject">
@@ -260,9 +274,9 @@ export function CommitRevisionPane({
                         </>
                       )}
                     </span>
-                  </button>
+                  </a>
                   <SourceRowMenuTrigger
-                    actions={revisionMenuActions(WORKING_TREE_KEY)}
+                    actions={workingTreeMenuActions}
                     label={t("sourceMoreActions")}
                     onOpen={revisionMenu.openFromButton}
                   />
@@ -271,28 +285,46 @@ export function CommitRevisionPane({
               {displayedCommits.map((commit) => {
                 const commentCount = commentCountBySha.get(commit.hash) ?? 0;
                 const menuActions = revisionMenuActions(commit.hash, commit);
+                const targetProps = revisionMenu.targetProps(menuActions, () =>
+                  onOpenRevision(commit.hash),
+                );
+                const match = commitSearchMatches.get(commit.hash);
+                const formattedDate = formatCommitDate(commit.authorDate);
+                const matchContext = getCommitMatchContext(
+                  match,
+                  searchQuery,
+                  formattedDate,
+                );
                 return (
                   <li
                     key={commit.hash}
                     className={`commit-list-row ${sourceRowMenuSurface}`}
                   >
-                    <button
-                      type="button"
-                      className={`commit-list-item ${
+                    <a
+                      className={`commit-list-item ${styles.link} ${
                         selectedKey === commit.hash ? "selected" : ""
                       } ${isRead(commit.authorDate) ? "read" : "unread"}`}
+                      href={revisionHref(commit.hash)}
                       data-source-list-item
                       onFocus={() => {
                         if (isWideScreen) onFocusRevision(commit.hash);
                       }}
-                      {...revisionMenu.targetProps(menuActions, () =>
-                        onOpenRevision(commit.hash),
-                      )}
+                      {...targetProps}
+                      onClick={(event) => {
+                        if (isModifiedLinkActivation(event)) return;
+                        event.preventDefault();
+                        targetProps.onClick();
+                      }}
                     >
                       <span className="commit-subject-row">
-                        <span className="commit-subject" title={commit.subject}>
-                          {commit.subject}
-                        </span>
+                        <SearchMatchText
+                          className="commit-subject"
+                          text={commit.subject}
+                          query={
+                            match?.field === "subject" ? searchQuery : undefined
+                          }
+                          title={commit.subject}
+                        />
                         {commentCount > 0 && (
                           <span
                             className="source-comment-badge"
@@ -305,15 +337,42 @@ export function CommitRevisionPane({
                         )}
                       </span>
                       <span className="commit-meta">
-                        <span className="commit-hash">{commit.shortHash}</span>
-                        <span className="commit-author">
-                          {commit.authorName}
-                        </span>
-                        <span className="commit-date">
-                          {formatCommitDate(commit.authorDate)}
-                        </span>
+                        <SearchMatchText
+                          className="commit-hash"
+                          text={commit.shortHash}
+                          query={
+                            match?.field === "shortHash"
+                              ? searchQuery
+                              : undefined
+                          }
+                        />
+                        <SearchMatchText
+                          className="commit-author"
+                          text={commit.authorName}
+                          query={
+                            match?.field === "author" ? searchQuery : undefined
+                          }
+                        />
+                        <SearchMatchText
+                          className="commit-date"
+                          text={formattedDate}
+                          query={
+                            match?.field === "date" &&
+                            findTextMatch(formattedDate, searchQuery)
+                              ? searchQuery
+                              : undefined
+                          }
+                        />
                       </span>
-                    </button>
+                      {matchContext && (
+                        <SearchMatchText
+                          className={styles.matchContext}
+                          text={matchContext}
+                          query={searchQuery}
+                          title={matchContext}
+                        />
+                      )}
+                    </a>
                     <SourceRowMenuTrigger
                       actions={menuActions}
                       label={t("sourceMoreActions")}
@@ -339,6 +398,31 @@ export function CommitRevisionPane({
       {revisionMenu.menu}
     </>
   );
+}
+
+function isModifiedLinkActivation(
+  event: MouseEvent<HTMLAnchorElement>,
+): boolean {
+  return (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  );
+}
+
+function getCommitMatchContext(
+  match: CommitSearchMatch | undefined,
+  query: string,
+  formattedDate: string,
+): string | null {
+  if (!match) return null;
+  if (match.field === "change" || match.field === "hash") return match.text;
+  if (match.field === "date" && !findTextMatch(formattedDate, query)) {
+    return match.text;
+  }
+  return null;
 }
 
 function formatCommitDate(iso: string): string {

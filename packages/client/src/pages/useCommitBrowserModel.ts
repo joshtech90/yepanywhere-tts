@@ -1,11 +1,12 @@
 import type {
   GitCommitDetail,
   GitFileChange,
+  GitInclusiveRevisionComparison,
   GitRecentCommit,
   GitRevisionComparison,
   GitStatusInfo,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useCommitSearchIndex } from "../hooks/useCommitSearchIndex";
 import type { TranslationFn } from "../i18n";
@@ -25,7 +26,7 @@ export function useCommitBrowserModel({
   isWideScreen,
   initialSha,
   initialPath,
-  supportsProjections,
+  supportsInclusiveToHead,
   onProjectionUnavailable,
   t,
 }: {
@@ -34,7 +35,7 @@ export function useCommitBrowserModel({
   isWideScreen: boolean;
   initialSha?: string;
   initialPath?: string;
-  supportsProjections: boolean;
+  supportsInclusiveToHead: boolean;
   onProjectionUnavailable: () => void;
   t: TranslationFn;
 }) {
@@ -52,10 +53,14 @@ export function useCommitBrowserModel({
     initialPath ?? null,
   );
   const [compareToHead, setCompareToHead] = useState(false);
-  const [comparison, setComparison] = useState<GitRevisionComparison | null>(
-    null,
-  );
+  const [comparison, setComparison] =
+    useState<GitInclusiveRevisionComparison | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(false);
+  const [directComparison, setDirectComparison] =
+    useState<GitRevisionComparison | null>(null);
+  const [directComparisonFile, setDirectComparisonFile] =
+    useState<GitFileChange | null>(null);
+  const directComparisonRequestRef = useRef(0);
   const [messageView, setMessageView] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchIndexRequested, setSearchIndexRequested] = useState(false);
@@ -66,7 +71,20 @@ export function useCommitBrowserModel({
     searchQuery,
     searchIndexRequested,
   );
-  const searchedOrRecentCommits = searchActive ? searchIndex.results : commits;
+
+  useEffect(() => {
+    if (!isWideScreen && searchQuery.trim().length > 0) setSelectedKey(null);
+  }, [isWideScreen, searchQuery]);
+  const searchedOrRecentCommits = searchActive
+    ? searchIndex.results.map((result) => result.commit)
+    : commits;
+  const commitSearchMatches = useMemo(
+    () =>
+      new Map(
+        searchIndex.results.map((result) => [result.commit.hash, result.match]),
+      ),
+    [searchIndex.results],
+  );
   const selectedIsWorkingTree = selectedKey === WORKING_TREE_KEY;
   const selectedSha =
     selectedKey && !selectedIsWorkingTree ? selectedKey : null;
@@ -134,7 +152,9 @@ export function useCommitBrowserModel({
   // the same on phone so it reaches the useful newest commit instead of an
   // empty state. Explicit and user-selected revisions remain authoritative.
   useEffect(() => {
-    if ((!isWideScreen && !status?.isClean) || !defaultKey) return;
+    if (searchActive || (!isWideScreen && !status?.isClean) || !defaultKey) {
+      return;
+    }
     setSelectedKey((current) =>
       current &&
       (displayedKeys.includes(current) ||
@@ -142,7 +162,14 @@ export function useCommitBrowserModel({
         ? current
         : defaultKey,
     );
-  }, [defaultKey, displayedKeys, initialSha, isWideScreen, status?.isClean]);
+  }, [
+    defaultKey,
+    displayedKeys,
+    initialSha,
+    isWideScreen,
+    searchActive,
+    status?.isClean,
+  ]);
 
   const loadMore = useCallback(async () => {
     try {
@@ -164,31 +191,75 @@ export function useCommitBrowserModel({
   }, [commits.length, projectId, t]);
 
   const handleProjectionRequestFailure = useCallback(() => {
+    directComparisonRequestRef.current += 1;
+    setDirectComparison(null);
+    setDirectComparisonFile(null);
     setCompareToHead(false);
     setComparison(null);
     setLoadingComparison(false);
-    if (compareToHead) setSelectedPath(null);
     onProjectionUnavailable();
-  }, [compareToHead, onProjectionUnavailable]);
+  }, [onProjectionUnavailable]);
+
+  const openDirectComparison = useCallback(
+    async (file: GitFileChange) => {
+      if (!selectedSha) return;
+      const requestId = directComparisonRequestRef.current + 1;
+      directComparisonRequestRef.current = requestId;
+      setCompareToHead(false);
+      setComparison(null);
+      setSelectedPath(file.path);
+      setMessageView(false);
+      try {
+        const result = await api.getGitComparison(projectId, selectedSha);
+        if (requestId !== directComparisonRequestRef.current) return;
+        const comparedFile = result.files.find(
+          (candidate) =>
+            candidate.path === file.path || candidate.origPath === file.path,
+        );
+        setSelectedPath(comparedFile?.path ?? file.path);
+        setDirectComparison(result);
+        setDirectComparisonFile(
+          comparedFile ?? {
+            ...file,
+            status: "M",
+            staged: false,
+            linesAdded: null,
+            linesDeleted: null,
+          },
+        );
+      } catch {
+        if (requestId !== directComparisonRequestRef.current) return;
+        setDirectComparison(null);
+        setDirectComparisonFile(null);
+        onProjectionUnavailable();
+      }
+    },
+    [onProjectionUnavailable, projectId, selectedSha],
+  );
 
   const toggleComparison = useCallback(() => {
+    directComparisonRequestRef.current += 1;
+    setDirectComparison(null);
+    setDirectComparisonFile(null);
     if (compareToHead) {
       setCompareToHead(false);
       setComparison(null);
       setLoadingComparison(false);
-      setSelectedPath(null);
       return;
     }
-    if (!supportsProjections) {
+    if (!supportsInclusiveToHead) {
       onProjectionUnavailable();
       return;
     }
     setCompareToHead(true);
-    setSelectedPath(null);
+    setLoadingComparison(true);
     setMessageView(false);
-  }, [compareToHead, onProjectionUnavailable, supportsProjections]);
+  }, [compareToHead, onProjectionUnavailable, supportsInclusiveToHead]);
 
   useEffect(() => {
+    directComparisonRequestRef.current += 1;
+    setDirectComparison(null);
+    setDirectComparisonFile(null);
     if (!selectedSha) {
       setDetail(null);
       setLoadingDetail(false);
@@ -223,10 +294,10 @@ export function useCommitBrowserModel({
   }, [initialPath, projectId, selectedSha, t]);
 
   useEffect(() => {
-    if (!compareToHead || !selectedSha || !supportsProjections) {
+    if (!compareToHead || !selectedSha || !supportsInclusiveToHead) {
       setComparison(null);
       setLoadingComparison(false);
-      if (compareToHead && !supportsProjections) {
+      if (compareToHead && !supportsInclusiveToHead) {
         handleProjectionRequestFailure();
       }
       return;
@@ -235,7 +306,7 @@ export function useCommitBrowserModel({
     setComparison(null);
     setLoadingComparison(true);
     api
-      .getGitComparison(projectId, selectedSha)
+      .getGitInclusiveComparison(projectId, selectedSha)
       .then((result) => {
         if (cancelled) return;
         setComparison(result);
@@ -253,7 +324,7 @@ export function useCommitBrowserModel({
     handleProjectionRequestFailure,
     projectId,
     selectedSha,
-    supportsProjections,
+    supportsInclusiveToHead,
   ]);
 
   const selectedFiles = useMemo(
@@ -262,39 +333,65 @@ export function useCommitBrowserModel({
   );
 
   useEffect(() => {
+    if (compareToHead && loadingComparison) return;
     const linkedFile = initialPath
       ? selectedFiles.find(
           (file) => file.path === initialPath || file.origPath === initialPath,
         )
       : undefined;
     if (!isWideScreen && !linkedFile) return;
-    setSelectedPath((current) =>
-      linkedFile
-        ? linkedFile.path
-        : current && selectedFiles.some((file) => file.path === current)
-          ? current
-          : (selectedFiles[0]?.path ?? null),
-    );
-  }, [initialPath, isWideScreen, selectedFiles]);
+    setSelectedPath((current) => {
+      const retainedFile = current
+        ? selectedFiles.find(
+            (file) => file.path === current || file.origPath === current,
+          )
+        : undefined;
+      return (
+        linkedFile?.path ?? retainedFile?.path ?? selectedFiles[0]?.path ?? null
+      );
+    });
+  }, [
+    compareToHead,
+    initialPath,
+    isWideScreen,
+    loadingComparison,
+    selectedFiles,
+  ]);
 
-  const selectedFile: GitFileChange | null = selectedPath
+  useEffect(() => {
+    if (directComparisonFile && directComparisonFile.path !== selectedPath) {
+      setDirectComparison(null);
+      setDirectComparisonFile(null);
+    }
+  }, [directComparisonFile, selectedPath]);
+
+  const ordinarySelectedFile: GitFileChange | null = selectedPath
     ? (selectedFiles.find((file) => file.path === selectedPath) ?? null)
     : null;
+  const selectedFile = directComparisonFile ?? ordinarySelectedFile;
   const source =
-    selectedSha && compareToHead && comparison
+    selectedSha && directComparison && directComparisonFile
       ? ({
           kind: "comparison",
-          baseSha: comparison.baseSha,
-          headSha: comparison.headSha,
+          baseSha: directComparison.baseSha,
+          headSha: directComparison.headSha,
         } as const)
-      : selectedSha
-        ? ({ kind: "commit", sha: selectedSha } as const)
-        : undefined;
+      : selectedSha && compareToHead && comparison
+        ? ({
+            kind: "inclusive-comparison",
+            baseSha: comparison.baseSha,
+            headSha: comparison.headSha,
+          } as const)
+        : selectedSha
+          ? ({ kind: "commit", sha: selectedSha } as const)
+          : undefined;
   const diffFileKey =
     selectedSha && selectedFile
-      ? compareToHead && comparison
-        ? `${comparison.baseSha}:${comparison.headSha}:${selectedFile.path}`
-        : `${selectedSha}:${selectedFile.path}`
+      ? directComparison && directComparisonFile
+        ? `tree:${directComparison.baseSha}:${directComparison.headSha}:${selectedFile.path}`
+        : compareToHead && comparison
+          ? `${comparison.baseSha}:${comparison.headSha}:${selectedFile.path}`
+          : `${selectedSha}:${selectedFile.path}`
       : null;
   const selectedIndex = selectedKey ? displayedKeys.indexOf(selectedKey) : -1;
   const newerKey =
@@ -321,6 +418,7 @@ export function useCommitBrowserModel({
     setSearchIndexRequested,
     searchActive,
     searchIndex,
+    commitSearchMatches,
     selectedKey,
     setSelectedKey,
     selectedIsWorkingTree,
@@ -337,6 +435,7 @@ export function useCommitBrowserModel({
     compareToHead,
     loadingComparison,
     toggleComparison,
+    openDirectComparison,
     handleProjectionRequestFailure,
     messageView,
     setMessageView,

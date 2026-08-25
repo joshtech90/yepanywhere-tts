@@ -144,12 +144,24 @@ export interface ConversationActivityItem extends RenderItemBase {
    */
   thinkingPreviews?: ConversationThinkingPreview[];
   /**
+   * True when this turn still has visible agent-authored conversation text
+   * after its last thinking block. Conversation view uses that to auto-hide
+   * the thinking preview once the completed turn has been glanceable.
+   */
+  hasFollowingConversationText?: boolean;
+  /**
    * Newest concrete activity kinds for a live turn, newest first. Capped
    * generously; the visible count is decided by layout — the list clips to the
    * height beside the thinking preview. The visible row is only a name; its
    * ordinary tool summary remains available as a tooltip.
    */
   recentActivities?: ConversationRecentActivity[];
+  /**
+   * Newest ordinary activity summaries available when the summary tooltip is
+   * explicitly enlarged. The headline's count remains authoritative when this
+   * bounded preview omits thinking or older activity.
+   */
+  tooltipActivities?: ConversationRecentActivity[];
   /** Earliest observed source-message timestamp among condensed activities. */
   startedAtMs: number | null;
   /** Latest observed timestamp, or the current clock while the turn is active. */

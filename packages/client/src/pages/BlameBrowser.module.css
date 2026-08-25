@@ -1,0 +1,119 @@
+.inventory {
+  min-width: 0;
+}
+
+.sectionControls {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+}
+
+.sectionToggle {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sectionToggle:hover,
+.sectionToggle:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.activeSectionToggle {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+  border-color: var(--border-color);
+}
+
+.truncated {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 8px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.truncated button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 3px 8px;
+  color: var(--text-primary);
+  font: inherit;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.truncated button:hover,
+.truncated button:focus-visible {
+  background: var(--bg-hover);
+}
+
+.detail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.detail > :global(.file-viewer),
+.detail > :global(.blame-view) {
+  min-height: 0;
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+}
+
+.detailModes {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  margin: 0;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.detailModes button {
+  padding: 3px 8px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.74rem;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.detailModes button:hover,
+.detailModes button:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.detailModes .activeMode {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+}

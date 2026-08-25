@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useSchemaValidationContext } from "../../contexts/SchemaValidationContext";
+import { useOptionalRemoteConnection } from "../../contexts/RemoteConnectionContext";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useReloadNotifications } from "../../hooks/useReloadNotifications";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
@@ -8,13 +9,14 @@ import { useSchemaValidation } from "../../hooks/useSchemaValidation";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useSessionPerformanceSettings } from "../../hooks/useSessionPerformanceSettings";
 import { useI18n } from "../../i18n";
+import { relayEndpoints } from "../../lib/connection/relayEndpoints";
+import { getHostById, getHostByRelayUsername } from "../../lib/hostStorage";
 import {
   SESSION_SCROLL_BEHAVIOR_MODES,
   type SessionScrollBehaviorMode,
 } from "../../lib/sessionScrollBehavior";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
-import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
@@ -54,6 +56,19 @@ const sessionScrollMemoryModeLabelKeys: Record<
 export function DevelopmentSettings() {
   const { t } = useI18n();
   const basePath = useRemoteBasePath();
+  const remoteConnection = useOptionalRemoteConnection();
+  const currentRelayHost = remoteConnection?.connection
+    ? remoteConnection.currentRelayUsername
+      ? getHostByRelayUsername(remoteConnection.currentRelayUsername)
+      : remoteConnection.currentHostId
+        ? getHostById(remoteConnection.currentHostId)
+        : undefined
+    : undefined;
+  const currentRelayUrl =
+    currentRelayHost?.mode === "relay" ? currentRelayHost.relayUrl : undefined;
+  const relayMonitorUrl = currentRelayUrl
+    ? relayEndpoints(currentRelayUrl)?.statsUrl
+    : undefined;
   useSettingsPaneTitle(t("developmentSectionTitle"));
   const {
     isManualReloadMode,
@@ -69,8 +84,6 @@ export function DevelopmentSettings() {
   const {
     crossHostDelegationEnabled,
     setCrossHostDelegationEnabled,
-    multiHostMonitorEnabled,
-    setMultiHostMonitorEnabled,
     relayDebugEnabled,
     setRelayDebugEnabled,
     remoteLogCollectionEnabled,
@@ -88,7 +101,6 @@ export function DevelopmentSettings() {
         ? {
             validationEnabled: validationSettings.enabled,
             crossHostDelegationEnabled,
-            multiHostMonitorEnabled,
             relayDebugEnabled,
             remoteLogCollectionEnabled,
             sessionScrollBehaviorMode,
@@ -99,7 +111,6 @@ export function DevelopmentSettings() {
     [
       validationSettings.enabled,
       crossHostDelegationEnabled,
-      multiHostMonitorEnabled,
       relayDebugEnabled,
       remoteLogCollectionEnabled,
       serverSettings,
@@ -110,7 +121,6 @@ export function DevelopmentSettings() {
     (snapshot: NonNullable<typeof undoState>) => {
       setValidationEnabled(snapshot.validationEnabled);
       setCrossHostDelegationEnabled(snapshot.crossHostDelegationEnabled);
-      setMultiHostMonitorEnabled(snapshot.multiHostMonitorEnabled);
       setRelayDebugEnabled(snapshot.relayDebugEnabled);
       setRemoteLogCollectionEnabled(snapshot.remoteLogCollectionEnabled);
       setSessionScrollBehaviorMode(snapshot.sessionScrollBehaviorMode);
@@ -126,7 +136,6 @@ export function DevelopmentSettings() {
     [
       setValidationEnabled,
       setCrossHostDelegationEnabled,
-      setMultiHostMonitorEnabled,
       setRelayDebugEnabled,
       setRemoteLogCollectionEnabled,
       setSessionScrollBehaviorMode,
@@ -236,22 +245,21 @@ export function DevelopmentSettings() {
             </label>
           </div>
         </SettingsItem>
-        <SettingsItem
-          label={t("developmentMultiHostMonitorTitle")}
-          description={t("developmentMultiHostMonitorDescription")}
-        >
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              aria-label={t("developmentMultiHostMonitorTitle")}
-              checked={multiHostMonitorEnabled}
-              onChange={(event) =>
-                setMultiHostMonitorEnabled(event.target.checked)
-              }
-            />
-            <span className="toggle-slider" />
-          </label>
-        </SettingsItem>
+        {relayMonitorUrl && (
+          <SettingsItem
+            label={t("developmentRelayMonitorTitle")}
+            description={t("developmentRelayMonitorDescription")}
+          >
+            <a
+              className="settings-button settings-button-secondary"
+              href={relayMonitorUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("developmentRelayMonitorOpen")}
+            </a>
+          </SettingsItem>
+        )}
         <SettingsItem
           label={t("developmentRelayDebugTitle")}
           description={t("developmentRelayDebugDescription")}
@@ -311,62 +319,51 @@ export function DevelopmentSettings() {
         </SettingsItem>
       </div>
 
-      <HideInSettingsSearch>
-        <div className="settings-group">
-          <details>
-            <summary className="settings-hint">
+      <div className="settings-group">
+        <SettingsItem
+          label={t("developmentSessionScrollMemoryTitle")}
+          description={t("developmentSessionScrollMemoryDescription")}
+          valueText={t(
+            sessionScrollMemoryModeLabelKeys[sessionScrollBehaviorMode],
+          )}
+          className="settings-item--wide-control"
+          info={
+            <>
               <strong>{t("developmentSessionScrollMemoryTitle")}</strong>
-            </summary>
-            <SettingsItem
-              label={t("developmentSessionScrollMemoryControlTitle")}
-              description={t("developmentSessionScrollMemoryDescription")}
-              valueText={t(
-                sessionScrollMemoryModeLabelKeys[sessionScrollBehaviorMode],
-              )}
-              className="settings-item--wide-control"
-              info={
-                <>
-                  <strong>
-                    {t("developmentSessionScrollMemoryControlTitle")}
-                  </strong>
-                  <p>{t("developmentSessionScrollMemoryDescription")}</p>
-                  <ul className="settings-option-description-list">
-                    {SESSION_SCROLL_BEHAVIOR_MODES.map((mode) => (
-                      <li key={mode}>
-                        <strong>
-                          {t(sessionScrollMemoryModeLabelKeys[mode])}
-                        </strong>
-                        <span>
-                          {t(sessionScrollMemoryModeDescriptionKeys[mode])}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
+              <p>{t("developmentSessionScrollMemoryDescription")}</p>
+              <ul className="settings-option-description-list">
+                {SESSION_SCROLL_BEHAVIOR_MODES.map((mode) => (
+                  <li key={mode}>
+                    <strong>{t(sessionScrollMemoryModeLabelKeys[mode])}</strong>
+                    <span>
+                      {t(sessionScrollMemoryModeDescriptionKeys[mode])}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          }
+        >
+          <div className="settings-item-actions">
+            <select
+              className="settings-select"
+              value={sessionScrollBehaviorMode}
+              onChange={(event) =>
+                setSessionScrollBehaviorMode(
+                  event.target.value as SessionScrollBehaviorMode,
+                )
               }
+              aria-label={t("developmentSessionScrollMemoryControlTitle")}
             >
-              <div className="settings-item-actions">
-                <select
-                  className="settings-select"
-                  value={sessionScrollBehaviorMode}
-                  onChange={(event) =>
-                    setSessionScrollBehaviorMode(
-                      event.target.value as SessionScrollBehaviorMode,
-                    )
-                  }
-                  aria-label={t("developmentSessionScrollMemoryControlTitle")}
-                >
-                  {SESSION_SCROLL_BEHAVIOR_MODES.map((mode) => (
-                    <option key={mode} value={mode}>
-                      {t(sessionScrollMemoryModeLabelKeys[mode])}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </SettingsItem>
-          </details>
-        </div>
-      </HideInSettingsSearch>
+              {SESSION_SCROLL_BEHAVIOR_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {t(sessionScrollMemoryModeLabelKeys[mode])}
+                </option>
+              ))}
+            </select>
+          </div>
+        </SettingsItem>
+      </div>
 
       {isManualReloadMode && (
         <div className="settings-group">

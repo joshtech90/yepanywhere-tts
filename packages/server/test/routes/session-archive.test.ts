@@ -7,7 +7,7 @@ import type { EventBus } from "../../src/watcher/EventBus.js";
 
 describe("session archive route", () => {
   it("archives through the done coordinator and preserves /archive projections", async () => {
-    const requestSessionDone = vi.fn(async () => ({
+    const requestSessionBoundaryAndAbort = vi.fn(async () => ({
       paused: true as const,
       queued: true,
       message: {
@@ -38,9 +38,11 @@ describe("session archive route", () => {
     app.route(
       "/api/sessions",
       createSessionArchiveRoutes({
-        sessionMetadataService: {} as SessionMetadataService,
+        sessionMetadataService: {
+          getMetadata: () => undefined,
+        } as unknown as SessionMetadataService,
         supervisor: {
-          requestSessionDone,
+          requestSessionBoundaryAndAbort,
           getProcessForSession,
         } as unknown as Supervisor,
         eventBus: { emit } as unknown as EventBus,
@@ -68,7 +70,10 @@ describe("session archive route", () => {
         },
       ],
     });
-    expect(requestSessionDone).toHaveBeenCalledWith("session-1", "/archive");
+    expect(requestSessionBoundaryAndAbort).toHaveBeenCalledWith(
+      "session-1",
+      "/archive",
+    );
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "session-metadata-changed",
@@ -79,14 +84,16 @@ describe("session archive route", () => {
   });
 
   it("fails closed when durable session metadata is unavailable", async () => {
-    const requestSessionDone = vi.fn(async () => {
+    const requestSessionBoundaryAndAbort = vi.fn(async () => {
       throw new Error("should not run");
     });
     const app = new Hono();
     app.route(
       "/api/sessions",
       createSessionArchiveRoutes({
-        supervisor: { requestSessionDone } as unknown as Supervisor,
+        supervisor: {
+          requestSessionBoundaryAndAbort,
+        } as unknown as Supervisor,
       }),
     );
 
@@ -95,6 +102,6 @@ describe("session archive route", () => {
     });
 
     expect(response.status).toBe(503);
-    expect(requestSessionDone).not.toHaveBeenCalled();
+    expect(requestSessionBoundaryAndAbort).not.toHaveBeenCalled();
   });
 });

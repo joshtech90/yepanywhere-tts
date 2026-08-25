@@ -77,13 +77,18 @@ import {
   startsAdditionalModelGroup,
   withProviderVisibleModelSelection,
 } from "../lib/modelCatalog";
-import { providerSupportsLocalSessionSandbox } from "../lib/providerCapabilities";
+import {
+  providerSupportsLocalSessionSandbox,
+  providerSupportsRemoteExecutors,
+} from "../lib/providerCapabilities";
 import { serverHasAvailableSessionSandbox } from "../lib/sessionSandboxAvailability";
 import {
   type PendingFile,
   type PendingLocalFile,
   type PendingStagedFile,
   type PendingUploadingFile,
+  getPendingFileImageDimensions,
+  getPendingFileMimeType,
   getPendingFileName,
   getPendingFileSize,
   isPendingLocalFile,
@@ -111,6 +116,7 @@ import {
 } from "../lib/newSessionProjects";
 import { getRecapModeDescription } from "../lib/recapModes";
 import { prepareImageUpload } from "../lib/imageAttachmentResize";
+import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import type { DraftAttachmentState } from "../lib/draftEnvelope";
 import {
   deleteDraftAttachmentRef,
@@ -193,6 +199,8 @@ import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUs
 import { shortenPath } from "../lib/text";
 import { getPermissionModeOptions } from "../lib/permissionModes";
 import type { PermissionMode, Project } from "../types";
+import { AttachmentChip } from "./AttachmentChip";
+import { DeliveryGlyph } from "./DeliveryGlyph";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import { FullPaneComposerToggle } from "./FullPaneComposerToggle";
 import { NewSessionProjectQueue } from "./NewSessionProjectQueue";
@@ -287,6 +295,8 @@ export interface NewSessionFormProps {
   preferredThinking?: ThinkingOption;
   /** Seed approval behavior from an existing session. */
   preferredPermissionMode?: PermissionMode;
+  /** One PWA image-share batch claimed by the owning route. */
+  incomingShareFiles?: readonly File[];
   /** Seed the execution host from an existing session. */
   preferredExecutor?: string;
   /**
@@ -339,6 +349,7 @@ export function NewSessionForm({
   preferredThinking,
   preferredPermissionMode,
   preferredExecutor,
+  incomingShareFiles,
   launch,
 }: NewSessionFormProps) {
   const { t } = useI18n();
@@ -474,9 +485,12 @@ export function NewSessionForm({
   const { version: versionInfo, loading: versionLoading } = useVersion();
   const supportsSessionSandboxing =
     serverHasAvailableSessionSandbox(versionInfo);
+  const supportsRemoteExecutors =
+    providerSupportsRemoteExecutors(selectedProvider);
+  const effectiveExecutor = supportsRemoteExecutors ? selectedExecutor : null;
   const canConfigureSessionSandbox =
     supportsSessionSandboxing &&
-    selectedExecutor === null &&
+    effectiveExecutor === null &&
     providerSupportsLocalSessionSandbox(selectedProvider);
   const effectiveSandboxLevel: SessionSandboxLevel = canConfigureSessionSandbox
     ? sandboxLevel
@@ -759,6 +773,25 @@ export function NewSessionForm({
                 : {}),
             },
           );
+          if (uploadFile.type.startsWith("image/")) {
+            void storeUploadedAttachmentPreview(
+              {
+                id: stagedRef.id,
+                originalName: file.name,
+                name: stagedRef.name,
+                path: stagedRef.id,
+                size: stagedRef.size,
+                mimeType: stagedRef.mimeType,
+                ...(stagedRef.width !== undefined
+                  ? { width: stagedRef.width }
+                  : {}),
+                ...(stagedRef.height !== undefined
+                  ? { height: stagedRef.height }
+                  : {}),
+              },
+              uploadFile,
+            ).catch(() => {});
+          }
           return {
             ...stagedRef,
             originalName: file.name,
@@ -834,6 +867,19 @@ export function NewSessionForm({
       t,
     ],
   );
+
+  const consumedIncomingShareFilesRef = useRef<readonly File[] | null>(null);
+  useEffect(() => {
+    if (
+      !allowAttachments ||
+      !incomingShareFiles?.length ||
+      consumedIncomingShareFilesRef.current === incomingShareFiles
+    ) {
+      return;
+    }
+    consumedIncomingShareFilesRef.current = incomingShareFiles;
+    addPendingFiles(incomingShareFiles);
+  }, [addPendingFiles, allowAttachments, incomingShareFiles]);
 
   // Fetch available providers
   const {
@@ -2050,7 +2096,7 @@ export function NewSessionForm({
           thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
-          executor: selectedExecutor ?? undefined,
+          executor: effectiveExecutor ?? undefined,
           ...(supportsSessionSandboxing
             ? { sandboxLevel: effectiveSandboxLevel }
             : {}),
@@ -2067,7 +2113,7 @@ export function NewSessionForm({
           model: selectedModel ?? null,
           thinking,
           provider: selectedProvider ?? null,
-          executor: selectedExecutor ?? null,
+          executor: effectiveExecutor,
           sandboxLevel: supportsSessionSandboxing
             ? effectiveSandboxLevel
             : null,
@@ -2300,6 +2346,7 @@ export function NewSessionForm({
       basePath,
       draftControls,
       effectiveEffortLevel,
+      effectiveExecutor,
       effectivePermissionMode,
       effectiveThinkingMode,
       helperSideModel,
@@ -2317,7 +2364,6 @@ export function NewSessionForm({
       effectiveSandboxLevel,
       resolvePendingAttachmentsForSession,
       resolveProjectIdForSubmission,
-      selectedExecutor,
       selectedCheckoutWorkstreamId,
       selectedModel,
       selectedPromptSuggestionMode,
@@ -2402,7 +2448,7 @@ export function NewSessionForm({
           thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
-          executor: selectedExecutor ?? undefined,
+          executor: effectiveExecutor ?? undefined,
           ...(supportsSessionSandboxing
             ? { sandboxLevel: effectiveSandboxLevel }
             : {}),
@@ -2433,7 +2479,7 @@ export function NewSessionForm({
         model: selectedModel ?? null,
         thinking,
         provider: selectedProvider ?? null,
-        executor: selectedExecutor ?? null,
+        executor: effectiveExecutor,
         sandboxLevel: supportsSessionSandboxing ? effectiveSandboxLevel : null,
         textLength: trimmedMessage.length,
         attachmentCount: stagedRefs.length,
@@ -3200,7 +3246,7 @@ export function NewSessionForm({
               )}
               title={describePrefixedTooltip(projectQueueNewSessionTitle)}
             >
-              <span className="send-icon">⇥</span>
+              <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
               {manualDeliverySpeechPrefix && (
                 <SpeechPrefixActionCue prefix={manualDeliverySpeechPrefix} />
               )}
@@ -3244,52 +3290,30 @@ export function NewSessionForm({
         </div>
       </div>
       {pendingFiles.length > 0 && (
-        <div className="pending-files-list">
+        <div className={styles.pendingFilesList}>
           {pendingFiles.map((pf) => {
             const progress = uploadProgress[pf.id];
             const fileName = getPendingFileName(pf);
             const fileSize = getPendingFileSize(pf);
+            const imageSize = getPendingFileImageDimensions(pf);
             return (
-              <div key={pf.id} className="pending-file-chip">
-                {pf.previewUrl && (
-                  <img
-                    src={pf.previewUrl}
-                    alt=""
-                    className="pending-file-preview"
-                  />
-                )}
-                <div className="pending-file-info">
-                  <span className="pending-file-name">{fileName}</span>
-                  <span className="pending-file-size">
-                    {progress
-                      ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
-                      : formatSize(fileSize)}
-                  </span>
-                </div>
-                {!isStarting && (
-                  <button
-                    type="button"
-                    className="pending-file-remove"
-                    onClick={() => handleRemoveFile(pf.id)}
-                    aria-label={t("newSessionRemoveFile", {
-                      name: fileName,
-                    })}
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      aria-hidden="true"
-                    >
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
-                )}
-              </div>
+              <AttachmentChip
+                key={pf.id}
+                attachmentId={pf.id}
+                originalName={fileName}
+                mimeType={getPendingFileMimeType(pf)}
+                sizeLabel={
+                  progress
+                    ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
+                    : formatSize(fileSize)
+                }
+                imageWidth={imageSize?.width}
+                imageHeight={imageSize?.height}
+                previewUrl={pf.previewUrl}
+                onRemove={
+                  isStarting ? undefined : () => handleRemoveFile(pf.id)
+                }
+              />
             );
           })}
         </div>
@@ -3781,48 +3805,50 @@ export function NewSessionForm({
         )}
       </div>
 
-      {/* Executor Selection - only show if remote executors are configured */}
-      {!executorsLoading && remoteExecutors.length > 0 && (
-        <div className="new-session-executor-section">
-          <h3>{t("newSessionRunOnTitle")}</h3>
-          <div className="executor-options">
-            <button
-              key="local"
-              type="button"
-              className={`executor-option ${selectedExecutor === null ? "selected" : ""}`}
-              onClick={() => setSelectedExecutor(null)}
-              disabled={isStarting}
-            >
-              <span className="executor-option-dot executor-local" />
-              <div className="executor-option-content">
-                <span className="executor-option-label">
-                  {t("newSessionRunOnLocal")}
-                </span>
-                <span className="executor-option-desc">
-                  {t("newSessionRunOnLocalDesc")}
-                </span>
-              </div>
-            </button>
-            {remoteExecutors.map((host) => (
+      {/* Executor Selection - only show for providers whose adapter uses it. */}
+      {supportsRemoteExecutors &&
+        !executorsLoading &&
+        remoteExecutors.length > 0 && (
+          <div className="new-session-executor-section">
+            <h3>{t("newSessionRunOnTitle")}</h3>
+            <div className="executor-options">
               <button
-                key={host}
+                key="local"
                 type="button"
-                className={`executor-option ${selectedExecutor === host ? "selected" : ""}`}
-                onClick={() => setSelectedExecutor(host)}
+                className={`executor-option ${selectedExecutor === null ? "selected" : ""}`}
+                onClick={() => setSelectedExecutor(null)}
                 disabled={isStarting}
               >
-                <span className="executor-option-dot executor-remote" />
+                <span className="executor-option-dot executor-local" />
                 <div className="executor-option-content">
-                  <span className="executor-option-label">{host}</span>
+                  <span className="executor-option-label">
+                    {t("newSessionRunOnLocal")}
+                  </span>
                   <span className="executor-option-desc">
-                    {t("newSessionRunOnRemoteDesc")}
+                    {t("newSessionRunOnLocalDesc")}
                   </span>
                 </div>
               </button>
-            ))}
+              {remoteExecutors.map((host) => (
+                <button
+                  key={host}
+                  type="button"
+                  className={`executor-option ${selectedExecutor === host ? "selected" : ""}`}
+                  onClick={() => setSelectedExecutor(host)}
+                  disabled={isStarting}
+                >
+                  <span className="executor-option-dot executor-remote" />
+                  <div className="executor-option-content">
+                    <span className="executor-option-label">{host}</span>
+                    <span className="executor-option-desc">
+                      {t("newSessionRunOnRemoteDesc")}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   );
 }

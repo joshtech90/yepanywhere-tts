@@ -14,6 +14,8 @@ normalization must produce), [provider-abstraction](provider-abstraction.md)
 provider/model conditional to the `AgentProvider` seam — distinct from *how to
 add a provider*), [stream-persisted-render-parity](stream-persisted-render-parity.md)
 (a contract every provider must satisfy), [provider-state-machine](provider-state-machine.md),
+[provider-installation-updates](provider-installation-updates.md) (mandatory
+coordination before a provider gains an in-app installer/updater),
 [provider-session-tree](provider-session-tree.md), [codex-sessions](codex-sessions.md),
 [pi-provider](pi-provider.md). Dev doc:
 `docs/project/multi-provider-integration.md` (the kzahel-organized architecture
@@ -60,6 +62,39 @@ Both halves converge on the shared `Message`/render-item model via
 normalization (`sessions/normalization.ts` dispatch; provider-specific
 normalizers like `codex/normalization.ts`). A new provider's normalized output
 must validate against the `claude-sdk-schema` Zod types.
+
+## CLI discovery and launch contract
+
+An installed-file check is not proof that Node can launch the file. Windows
+`where` commonly returns multiple CRLF-delimited PATHEXT matches, including
+extensionless and `.cmd` npm shims. Providers must parse those as ordered
+candidates and then apply the launch mechanism's stronger requirements:
+
+- `execFile()` and shell-free `spawn()` require a directly executable target;
+  they must not advertise an unresolved `.cmd` shim as usable;
+- a provider distributed as JavaScript may represent its launch as the current
+  Node executable plus a package entrypoint argument, as Pi does;
+- a provider with a packaged native executable should prefer it, as OpenCode
+  does for model discovery;
+- an existing provider that deliberately owns a shell-compatible process path
+  may select a Windows `.cmd` / `.bat` shim, but must skip an extensionless npm
+  shell script; and
+- explicit configured paths are authoritative. A missing or unsafe explicit
+  target fails closed instead of drifting to another PATH installation.
+
+If YA can mutate the installation, discovery and launch are also readers of a
+shared installation family. The updater must use the coordinator in
+[provider-installation-updates](provider-installation-updates.md); do not add an
+independent `update()` method to one provider row when aliases may share the
+same executable.
+
+`parseCommandLookupOutput()` owns only CRLF/LF splitting, trimming, blank-line
+removal, and order. `selectCommandLookupTarget()` adds the coarse Windows
+direct-versus-shell extension rule; provider-specific package layouts and
+executable preferences remain with the provider. When a provider has more than
+one process call site, resolve one launch descriptor and use it for version
+probes, catalogs, sessions, and contract tests so detection cannot disagree
+with startup.
 
 ## The convergence contract: paired stream items settle to persisted shape
 

@@ -22,8 +22,8 @@ import { getLogger } from "../logging/logger.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { DirtyFileEditorService } from "../services/DirtyFileEditorService.js";
 import {
-  GIT_DIFF_PREVIEW_MAX_DIFF_CHARS,
   GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
+  GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES,
   skippedBinaryGitDiffResult,
   skippedGitDiffResult,
 } from "../git/diffPreviewGuards.js";
@@ -117,10 +117,14 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
     deps.dirtyFileEditorService?.reconcileGitStatus(projectPath, status, {
       authoritative,
     }) ?? status;
-  const getGitStatusWithRemoteCheckTime = async (projectPath: string) =>
+  const getGitStatusWithRemoteCheckTime = async (
+    projectPath: string,
+    includeUntracked = true,
+  ) =>
     enrichStatus(
       projectPath,
-      await readGitStatusWithRemoteCheckTime(projectPath),
+      await readGitStatusWithRemoteCheckTime(projectPath, includeUntracked),
+      includeUntracked,
     );
   const getGitStatusSnapshot = async (projectPath: string) => {
     const snapshot = await readGitStatusSnapshot(projectPath);
@@ -142,7 +146,10 @@ export function createGitStatusRoutes(deps: GitStatusDeps): Hono {
     }
 
     try {
-      const result = await getGitStatusWithRemoteCheckTime(project.path);
+      const result = await getGitStatusWithRemoteCheckTime(
+        project.path,
+        c.req.query("untracked") === undefined,
+      );
       return c.json(result);
     } catch (err) {
       if (isNotGitRepoError(err)) {
@@ -718,23 +725,20 @@ function workingTreeDiffArgs(
   return staged ? ["diff", "--cached"] : ["diff"];
 }
 
-/**
- * An untracked file is entirely additions, so the file *is* the diff and its
- * size can be checked against the rendered budget without reading it.
- */
+/** Reject an untracked file before reading only when it exceeds the source ceiling. */
 async function getUntrackedDiffPreviewSizeSkip(
   cwd: string,
   path: string,
 ): Promise<GitDiffPreviewSkipped | null> {
   const stats = await stat(resolve(cwd, path));
-  if (!stats.isFile() || stats.size <= GIT_DIFF_PREVIEW_MAX_DIFF_CHARS) {
+  if (!stats.isFile() || stats.size <= GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES) {
     return null;
   }
 
   return {
     reason: "content-too-large",
     totalBytes: stats.size,
-    maxTotalBytes: GIT_DIFF_PREVIEW_MAX_DIFF_CHARS,
+    maxTotalBytes: GIT_DIFF_PREVIEW_MAX_TOTAL_BYTES,
     maxLineCharsLimit: GIT_DIFF_PREVIEW_MAX_LINE_CHARS,
   };
 }
@@ -840,8 +844,13 @@ async function getCheckedRemoteAt(projectPath: string): Promise<string | null> {
 
 async function readGitStatusWithRemoteCheckTime(
   projectPath: string,
+  includeUntracked = true,
 ): Promise<GitStatusInfo> {
-  return getGitStatus(projectPath, await getCheckedRemoteAt(projectPath));
+  return getGitStatus(
+    projectPath,
+    await getCheckedRemoteAt(projectPath),
+    includeUntracked,
+  );
 }
 
 async function readGitStatusSnapshot(
@@ -1239,9 +1248,10 @@ function statusChar(xy: string | undefined, index: 0 | 1): string | null {
   return ch && ch !== "." ? ch : null;
 }
 
-async function getGitStatus(
+export async function getGitStatus(
   projectPath: string,
   checkedRemoteAt: string | null,
+  includeUntracked = true,
 ): Promise<GitStatusInfo> {
   // Run local read-only commands in parallel.
   const [statusResult, numstatUnstaged, numstatStaged, logResult] =
@@ -1251,6 +1261,7 @@ async function getGitStatus(
         "status",
         "--porcelain=v2",
         "--branch",
+        ...(includeUntracked ? [] : ["--untracked-files=no"]),
       ]),
       runGit(projectPath, [
         ...GIT_DECODE_PATHS_ARGS,

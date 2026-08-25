@@ -52,11 +52,12 @@ added the Environment pane in `038b0e1c` (2026-06-19).
 
 ## Local Access transaction boundary
 
-Local Access combines network rebinding, authentication, allowed hosts, and
-file-viewer paths behind Apply Changes, unlike ordinary immediate Settings plus
-Undo. A bind or authentication change may need validation and redirect, while
-file access and allowed hosts already support runtime updates. The listening
-port is launch-owned and therefore read-only in this form.
+Local Access keeps network rebinding, authentication, and allowed hosts behind
+Apply Changes, unlike ordinary immediate Settings plus Undo. File-viewer paths
+now save immediately with pane-level Undo. A bind or authentication change may
+need validation and redirect, while allowed hosts already support runtime
+updates. The listening port is launch-owned and therefore read-only in this
+form.
 
 Decide whether to split network/auth into an explicit transactional form and
 make ordinary server settings immediate, or document a category-level
@@ -75,18 +76,6 @@ Decide whether the broader security audit shares the approval-log toggle/file
 or has independent retention. graehl added the original audit in `d1d46d3b`
 (2026-05-03); Kyle made it configurable and default-off in `02fc240d`
 (2026-07-05).
-
-## Remote executor provider and path contract
-
-The current implementation runs Claude over SSH, but the new-session executor
-selector is not provider-gated. A non-Claude session can retain an executor
-value that Codex and other providers do not use. Windows local-home translation
-also needs an explicit remote-platform mapping; a backslash suffix cannot be
-assumed valid on a POSIX host.
-
-Decide whether to restrict the selector and persisted default to Claude or
-build a provider-neutral remote-execution contract. Kyle added Remote Executors
-in `d7f51330` (2026-01-14).
 
 ## Ambient provider keys and metered billing
 

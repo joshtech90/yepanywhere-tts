@@ -9,6 +9,7 @@ import type {
   ProjectQueueItemSummary,
   ProjectQueueProjectStatus,
   ProjectQueueRecoveredSessionQueueSummary,
+  SessionMetadataPayload,
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import type { GlobalSessionItem, InboxItem } from "../api/client";
@@ -1324,6 +1325,31 @@ function withProjectFields(
   };
 }
 
+function withProjectHint(
+  record: SessionCollectionRecord,
+  fields: {
+    projectId?: string;
+    projectName?: string;
+  },
+  observation: SessionCollectionObservation,
+): SessionCollectionRecord {
+  const projectMatches =
+    record.projectId === undefined ||
+    fields.projectId === undefined ||
+    record.projectId === fields.projectId;
+  return withProjectFields(
+    record,
+    {
+      projectId: record.projectId === undefined ? fields.projectId : undefined,
+      projectName:
+        projectMatches && record.projectName === undefined
+          ? fields.projectName
+          : undefined,
+    },
+    observation,
+  );
+}
+
 function withLifecycleFields(
   record: SessionCollectionRecord,
   fields: {
@@ -1595,6 +1621,38 @@ function recordMatchesQuery(
     return false;
   }
   return true;
+}
+
+export function applySessionCollectionTitleSnapshot(
+  state: ClientSummaryState,
+  session: SessionMetadataPayload,
+  observedAt = Date.now(),
+): ClientSummaryState {
+  const observation = createSessionCollectionObservation(
+    observedAt,
+    "partial-snapshot",
+    "session-metadata",
+  );
+  let record = getRecord(state, session.id);
+  record = withContentFields(
+    record,
+    {
+      title: session.title,
+      fullTitle: session.fullTitle,
+    },
+    observation,
+  );
+  record = withMetadataFields(
+    record,
+    { customTitle: session.customTitle },
+    observation,
+  );
+  record = withProjectFields(
+    record,
+    { projectId: session.projectId },
+    observation,
+  );
+  return putRecord(state, record);
 }
 
 export function applyGlobalSessionsCollectionSnapshot(
@@ -1956,7 +2014,7 @@ export function applySessionCollectionCreated(
     observation,
   );
 
-  record = withProjectFields(
+  record = withProjectHint(
     record,
     {
       projectId: session.projectId,
@@ -2030,8 +2088,14 @@ export function applySessionCollectionMetadataChanged(
     },
     observation,
   );
+  const projectRecord =
+    event.projectId !== undefined &&
+    record.projectId !== undefined &&
+    event.projectId !== record.projectId
+      ? { ...record, projectName: undefined }
+      : record;
   const withProject = withProjectFields(
-    record,
+    projectRecord,
     { projectId: event.projectId },
     observation,
   );
@@ -2049,11 +2113,7 @@ export function applySessionCollectionStatusChanged(
     "session-status",
   );
   let record = getRecord(state, event.sessionId);
-  record = withProjectFields(
-    record,
-    { projectId: event.projectId },
-    observation,
-  );
+  record = withProjectHint(record, { projectId: event.projectId }, observation);
   record = withLifecycleFields(
     record,
     {
@@ -2077,11 +2137,7 @@ export function applySessionCollectionProcessStateChanged(
     "process-state",
   );
   let record = getRecord(state, event.sessionId);
-  record = withProjectFields(
-    record,
-    { projectId: event.projectId },
-    observation,
-  );
+  record = withProjectHint(record, { projectId: event.projectId }, observation);
   record = withLifecycleFields(
     record,
     {

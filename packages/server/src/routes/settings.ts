@@ -249,6 +249,16 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       if (typeof body.workstreamsEnabled === "boolean") {
         updates.workstreamsEnabled = body.workstreamsEnabled;
       }
+      if ("liveWorktreeMonitoringEnabled" in body) {
+        if (typeof body.liveWorktreeMonitoringEnabled !== "boolean") {
+          return c.json(
+            { error: "liveWorktreeMonitoringEnabled must be a boolean" },
+            400,
+          );
+        }
+        updates.liveWorktreeMonitoringEnabled =
+          body.liveWorktreeMonitoringEnabled;
+      }
       if ("sourceReviewSubmissionsEnabled" in body) {
         if (typeof body.sourceReviewSubmissionsEnabled !== "boolean") {
           return c.json(
@@ -801,7 +811,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           return c.json(
             {
               error:
-                "cacheMissBilling must use booleans for enabled/showToasts, freshness windows 1-1440, and minimumInputTokens 1-5000000",
+                "cacheMissBilling must use booleans for enabled/showToasts, freshWindowMinutes and providerFreshWindowMinutes 1-1440, recentActivityMinutes and ignoreAfterMinutes 0-1440, and minimumWastedTokens 1-5000000",
             },
             400,
           );

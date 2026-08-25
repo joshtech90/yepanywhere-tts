@@ -175,6 +175,62 @@ export default async function globalSetup() {
   );
   console.log(`[E2E] Created mock session at ${sessionFile}`);
 
+  const providerChildSessionId = "provider-child-layout-001";
+  writeFileSync(
+    join(mockSessionDir, `${providerChildSessionId}.jsonl`),
+    mockMessages.map((message) => JSON.stringify(message)).join("\n"),
+  );
+  const providerChildDir = join(
+    mockSessionDir,
+    providerChildSessionId,
+    "subagents",
+  );
+  mkdirSync(providerChildDir, { recursive: true });
+  writeFileSync(
+    join(providerChildDir, "agent-layout-child.jsonl"),
+    [
+      {
+        type: "user",
+        uuid: "provider-child-user-1",
+        agentId: "layout-child",
+        isSidechain: true,
+        sessionId: providerChildSessionId,
+        message: { content: "Inspect the provider child layout." },
+      },
+      {
+        type: "assistant",
+        uuid: "provider-child-assistant-1",
+        parentUuid: "provider-child-user-1",
+        agentId: "layout-child",
+        isSidechain: true,
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "The compact title layout keeps the transcript visible.",
+            },
+          ],
+        },
+      },
+      {
+        type: "result",
+        uuid: "provider-child-result-1",
+        parentUuid: "provider-child-assistant-1",
+      },
+    ]
+      .map((message) => JSON.stringify(message))
+      .join("\n"),
+  );
+  writeFileSync(
+    join(providerChildDir, "agent-layout-child.meta.json"),
+    JSON.stringify({
+      agentType: "Explore",
+      description: "Inspect the provider child layout",
+      spawnDepth: 1,
+    }),
+  );
+  console.log("[E2E] Created provider child layout session");
+
   for (const speechSessionId of [
     "speech-caret-001",
     "speech-caret-002",
@@ -401,6 +457,14 @@ export default async function globalSetup() {
     ].join("\n"),
   );
   writeFileSync(join(fileBrowserProjectPath, "data.json"), '{"key": "value"}');
+  writeFileSync(
+    join(fileBrowserProjectPath, "hostile.html"),
+    '<script>fetch("/api/processes", { headers: { "X-Yep-Anywhere": "true" } }).then(() => { document.title = "EXECUTED"; })</script>',
+  );
+  writeFileSync(
+    join(fileBrowserProjectPath, "hostile.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg" onload="fetch(\'/api/processes\', { headers: { \'X-Yep-Anywhere\': \'true\' } })"><rect width="10" height="10"/></svg>',
+  );
   const fileBrowserSessionDir = join(
     E2E_CLAUDE_SESSIONS_DIR,
     hostname(),
@@ -425,7 +489,11 @@ export default async function globalSetup() {
   mkdirSync(sourceControlProjectPath, { recursive: true });
   writeFileSync(
     join(sourceControlProjectPath, "README.md"),
-    "# Source Control browser fixture\n",
+    [
+      "# Source Control browser fixture",
+      "prefix/that/is/intentionally/long/enough/to/be/truncated/while/searching/ZebraNeedle/and/a/long/trailing/suffix/for/the/source/control/result",
+      "",
+    ].join("\n"),
   );
   execFileSync("git", ["init", "--initial-branch=main"], {
     cwd: sourceControlProjectPath,
@@ -474,6 +542,61 @@ export default async function globalSetup() {
   );
   console.log(
     `[E2E] Created clean Source Control fixture at ${sourceControlProjectPath}`,
+  );
+
+  // This project must exist before the server assembles its project inventory.
+  // The spec dirties the committed file after global setup.
+  const sourceControlToolbarProjectPath = join(
+    E2E_TEMP_DIR,
+    "source-control-toolbar-project",
+  );
+  const sourceControlToolbarFileName =
+    "claude-gateway-process-start-and-output-collector-with-an-intentionally-long-layout-name-that-wraps-at-medium-width.ts";
+  const sourceControlToolbarRelativePath = `src/${sourceControlToolbarFileName}`;
+  mkdirSync(join(sourceControlToolbarProjectPath, "src"), { recursive: true });
+  writeFileSync(
+    join(sourceControlToolbarProjectPath, sourceControlToolbarRelativePath),
+    "export const toolbarLayoutFixture = false;\n",
+  );
+  execFileSync("git", ["init", "--initial-branch=main"], {
+    cwd: sourceControlToolbarProjectPath,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["add", sourceControlToolbarRelativePath], {
+    cwd: sourceControlToolbarProjectPath,
+    stdio: "ignore",
+  });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=YA E2E",
+      "-c",
+      "user.email=ya-e2e@example.invalid",
+      "commit",
+      "-m",
+      "Seed toolbar layout fixture",
+    ],
+    { cwd: sourceControlToolbarProjectPath, stdio: "ignore" },
+  );
+  const sourceControlToolbarSessionDir = join(
+    E2E_CLAUDE_SESSIONS_DIR,
+    hostname(),
+    sourceControlToolbarProjectPath.replace(/[/\\:]/g, "-"),
+  );
+  mkdirSync(sourceControlToolbarSessionDir, { recursive: true });
+  writeFileSync(
+    join(sourceControlToolbarSessionDir, "source-control-toolbar-001.jsonl"),
+    JSON.stringify({
+      type: "user",
+      cwd: sourceControlToolbarProjectPath,
+      message: { role: "user", content: "Inspect the diff toolbar layout" },
+      timestamp: "2026-01-03T00:00:02.000Z",
+      uuid: "source-control-toolbar-user-1",
+    }),
+  );
+  console.log(
+    `[E2E] Created Source Control toolbar fixture at ${sourceControlToolbarProjectPath}`,
   );
 
   // A separate dirty Quarto project exercises the rendered-document path
@@ -630,10 +753,11 @@ export default async function globalSetup() {
     "activity-selection-001.jsonl",
   );
   const activityOutput = [
-    `selection anchor near top ${"wide-output ".repeat(20)}`,
+    "selection anchor near top",
+    "backward drag anchor near bottom",
     ...Array.from(
       { length: 70 },
-      (_, index) => `activity output line ${index + 2}`,
+      (_, index) => `activity output line ${index + 3}`,
     ),
   ].join("\n");
   writeFileSync(

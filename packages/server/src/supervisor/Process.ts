@@ -500,6 +500,89 @@ function buildClaudeApiRetryStatus(
   };
 }
 
+function normalizeClaudeTerminalReason(
+  message: SDKMessage,
+): ProviderRuntimeReason {
+  const httpStatus = readPositiveInteger(message.apiErrorStatus);
+  if (httpStatus === 402 || httpStatus === 429) return "rate_limit";
+  if (httpStatus === 529) return "overloaded";
+
+  const providerReason = normalizeProviderRuntimeReason(message.error);
+  if (providerReason !== "unknown") return providerReason;
+  return httpStatus !== undefined && httpStatus >= 500
+    ? "server_error"
+    : "unknown";
+}
+
+function buildClaudeApiTerminalStatus(
+  provider: ProviderName,
+  message: SDKMessage,
+  receivedAt: Date,
+): ProviderRuntimeTerminalStatus | null {
+  if (!isClaudeSdkApiErrorMessage(provider, message)) return null;
+  return {
+    kind: "terminal",
+    provider,
+    reason: normalizeClaudeTerminalReason(message),
+    message: extractMessageText(message) ?? "Claude API request failed",
+    occurredAt: receivedAt.toISOString(),
+    source: "claude.assistant.api_error",
+  };
+}
+
+function readClaudeGatewayCompactionQuotaMessage(
+  provider: ProviderName,
+  message: SDKMessage,
+): string | null {
+  if (
+    provider !== "claude-gateway" ||
+    message.type !== "system" ||
+    message.subtype !== "local_command"
+  ) {
+    return null;
+  }
+  const content = readNonEmptyString(message.content);
+  const prefix =
+    "<local-command-stderr>Error during compaction: API Error: 402 ";
+  const suffix = "</local-command-stderr>";
+  if (!content?.startsWith(prefix) || !content.endsWith(suffix)) return null;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(content.slice(prefix.length, -suffix.length));
+  } catch {
+    return null;
+  }
+  const error =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>).error
+      : null;
+  if (!error || typeof error !== "object") return null;
+  const fields = error as Record<string, unknown>;
+  if (fields.code !== "quota_exceeded") return null;
+  return readNonEmptyString(fields.message) ?? "Claude Gateway quota exceeded";
+}
+
+function buildClaudeGatewayCompactionQuotaStatus(
+  provider: ProviderName,
+  message: SDKMessage,
+  receivedAt: Date,
+): ProviderRuntimeTerminalStatus | null {
+  const quotaMessage = readClaudeGatewayCompactionQuotaMessage(
+    provider,
+    message,
+  );
+  if (!quotaMessage) return null;
+  return {
+    kind: "terminal",
+    provider,
+    reason: "rate_limit",
+    message: quotaMessage,
+    occurredAt: receivedAt.toISOString(),
+    source: "claude.system.local_command.compaction",
+  };
+}
+
 function normalizeCodexTerminalReason(
   codexErrorInfo: unknown,
 ): ProviderRuntimeReason {
@@ -553,6 +636,17 @@ function buildCodexRetryStatus(
   const details = readNonEmptyString(message.codexAdditionalDetails);
   const turnId = readNonEmptyString(message.codexTurnId);
   const requestId = readNonEmptyString(message.codexRequestId);
+  const retryDelayMs = readFiniteNumber(message.codexRetryDelayMs);
+  const nonNegativeRetryDelayMs =
+    retryDelayMs !== undefined && retryDelayMs >= 0
+      ? Math.trunc(retryDelayMs)
+      : undefined;
+  const retryAt =
+    nonNegativeRetryDelayMs !== undefined
+      ? new Date(receivedAt.getTime() + nonNegativeRetryDelayMs).toISOString()
+      : undefined;
+  const attempt = readPositiveInteger(message.codexRetryAttempt);
+  const maxRetries = readPositiveInteger(message.codexRetryMaxRetries);
 
   return {
     kind: "retrying",
@@ -561,6 +655,12 @@ function buildCodexRetryStatus(
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     startedAt: previous?.kind === "retrying" ? previous.startedAt : lastSeenAt,
     lastSeenAt,
+    ...(retryAt ? { retryAt } : {}),
+    ...(nonNegativeRetryDelayMs !== undefined
+      ? { retryDelayMs: nonNegativeRetryDelayMs }
+      : {}),
+    ...(attempt !== undefined ? { attempt } : {}),
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
     eventCount: previous?.kind === "retrying" ? previous.eventCount + 1 : 1,
     source: "codex.error",
     ...(providerMessage ? { message: providerMessage } : {}),
@@ -839,6 +939,7 @@ export class Process {
 
   private legacyQueue: UserMessage[] = [];
   private messageQueue: AgentMessageQueue | null;
+  private unsubscribeMessageQueueYielded: (() => void) | undefined;
   private deferredDeliveryOverrides: DeferredDeliveryOptions | undefined;
   private sessionQueuePersistenceService:
     | SessionQueuePersistenceService
@@ -1152,6 +1253,32 @@ export class Process {
 
     // Start bucket swap timer for bounded message history
     this.startBucketSwapTimer();
+
+    this.unsubscribeMessageQueueYielded = this.messageQueue?.subscribeYielded?.(
+      (messages) => {
+        const turnKind = messages.some(
+          (message) =>
+            !isHiddenInjectedMessage(message) &&
+            message.automaticSource === undefined &&
+            message.metadata?.serverReceivedAt !== undefined,
+        )
+          ? "human"
+          : messages.some(
+                (message) =>
+                  !isHiddenInjectedMessage(message) &&
+                  message.automaticSource !== undefined,
+              )
+            ? "automatic"
+            : undefined;
+        if (turnKind) {
+          this.emit({
+            type: "provider-turn-started",
+            startedAtMs: Date.now(),
+            turnKind,
+          });
+        }
+      },
+    );
 
     // Start processing messages from the SDK
     this.processMessages();
@@ -1636,6 +1763,26 @@ export class Process {
           receivedAt,
         ),
       );
+      return;
+    }
+
+    const claudeCompactionQuotaStatus = buildClaudeGatewayCompactionQuotaStatus(
+      this.provider,
+      message,
+      receivedAt,
+    );
+    if (claudeCompactionQuotaStatus) {
+      this.setProviderRuntimeStatus(claudeCompactionQuotaStatus);
+      return;
+    }
+
+    const claudeTerminalStatus = buildClaudeApiTerminalStatus(
+      this.provider,
+      message,
+      receivedAt,
+    );
+    if (claudeTerminalStatus) {
+      this.setProviderRuntimeStatus(claudeTerminalStatus);
       return;
     }
 
@@ -2277,6 +2424,8 @@ export class Process {
   private emitCompletion(): void {
     if (this.completionEmitted) return;
     this.completionEmitted = true;
+    this.unsubscribeMessageQueueYielded?.();
+    this.unsubscribeMessageQueueYielded = undefined;
     this.emit({ type: "complete" });
   }
 
@@ -3178,9 +3327,13 @@ export class Process {
       message.automaticSource === undefined &&
       message.metadata?.serverReceivedAt !== undefined
     ) {
+      const receivedAtMs = Date.parse(message.metadata.serverReceivedAt);
       this._userTurnVersion += 1;
       this.resumeRecapsAfterUserTurn();
-      this.emit({ type: "user-turn-accepted" });
+      this.emit({
+        type: "user-turn-accepted",
+        startedAtMs: Number.isFinite(receivedAtMs) ? receivedAtMs : Date.now(),
+      });
     }
     return { ...message, recapResumeHandled: true };
   }
@@ -3595,6 +3748,7 @@ export class Process {
       content?: SyntheticSessionBoundaryCommand;
       tempId?: string;
       timestamp?: string;
+      userTurnVersion?: number;
     },
   ): PendingYaCommand {
     const content: SyntheticSessionBoundaryCommand =
@@ -3619,7 +3773,7 @@ export class Process {
       content,
       tempId: options?.tempId ?? `ya-${command}-${randomUUID()}`,
       timestamp: options?.timestamp ?? new Date().toISOString(),
-      userTurnVersion: this._userTurnVersion,
+      userTurnVersion: options?.userTurnVersion ?? this._userTurnVersion,
       completionStarted: false,
     };
     this.pendingYaCommands.push(entry);

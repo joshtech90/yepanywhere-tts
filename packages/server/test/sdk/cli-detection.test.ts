@@ -8,6 +8,9 @@ import {
   findCodexCliPath,
   getCodexCliVersion,
   normalizeCodexCliVersion,
+  parseCommandLookupOutput,
+  probeCodexCliVersion,
+  selectCommandLookupTarget,
 } from "../../src/sdk/cli-detection.js";
 
 const tempDirs: string[] = [];
@@ -45,6 +48,50 @@ function prependPath(...dirs: string[]): void {
     .join(delimiter);
 }
 
+describe("command lookup output", () => {
+  it("parses ordered CRLF candidates and ignores blank lines", () => {
+    expect(
+      parseCommandLookupOutput("  C:\\npm\\pi  \r\nC:\\npm\\pi.cmd\r\n\r\n"),
+    ).toEqual(["C:\\npm\\pi", "C:\\npm\\pi.cmd"]);
+  });
+
+  it("also accepts ordinary LF-delimited which output", () => {
+    expect(
+      parseCommandLookupOutput("/opt/homebrew/bin/pi\n/usr/local/bin/pi\n"),
+    ).toEqual(["/opt/homebrew/bin/pi", "/usr/local/bin/pi"]);
+  });
+
+  it("selects a Windows command shim only for shell-owned launches", () => {
+    const output = "C:\\npm\\gemini\r\nC:\\npm\\gemini.cmd\r\n";
+    const exists = () => true;
+
+    expect(selectCommandLookupTarget(output, "shell", "win32", exists)).toBe(
+      "C:\\npm\\gemini.cmd",
+    );
+    expect(
+      selectCommandLookupTarget(output, "direct", "win32", exists),
+    ).toBeNull();
+  });
+
+  it("selects a native Windows executable for shell-free launches", () => {
+    const output =
+      "C:\\npm\\grok\r\nC:\\npm\\grok.cmd\r\nC:\\bin\\grok.exe\r\n";
+
+    expect(
+      selectCommandLookupTarget(output, "direct", "win32", () => true),
+    ).toBe("C:\\bin\\grok.exe");
+  });
+
+  it("keeps the first existing POSIX candidate for either launch mode", () => {
+    const output = "/stale/gemini\n/usr/local/bin/gemini\n";
+    const exists = (path: string) => path.startsWith("/usr/local");
+
+    expect(selectCommandLookupTarget(output, "shell", "linux", exists)).toBe(
+      "/usr/local/bin/gemini",
+    );
+  });
+});
+
 describe("Codex CLI detection", () => {
   it("normalizes and compares Codex CLI semver output", () => {
     expect(normalizeCodexCliVersion("codex-cli 0.144.1")).toBe("0.144.1");
@@ -66,6 +113,30 @@ describe("Codex CLI detection", () => {
     );
   });
 
+  it("classifies empty and failed Codex version probes", async () => {
+    const dir = makeTempDir("codex-probe-failure-");
+    const emptyPath = join(
+      dir,
+      process.platform === "win32" ? "codex-empty.cmd" : "codex-empty",
+    );
+    writeFileSync(
+      emptyPath,
+      process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\nexit 0\n",
+      "utf8",
+    );
+    if (process.platform !== "win32") chmodSync(emptyPath, 0o755);
+    await expect(probeCodexCliVersion(emptyPath)).resolves.toMatchObject({
+      ok: false,
+      reason: "empty-output",
+    });
+
+    const missingPath = join(dir, "missing-codex");
+    await expect(probeCodexCliVersion(missingPath)).resolves.toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+  });
+
   it("keeps an explicit codex path authoritative", async () => {
     const explicitDir = makeTempDir("codex-explicit-");
     const pathDir = makeTempDir("codex-path-");
@@ -79,6 +150,20 @@ describe("Codex CLI detection", () => {
       path: explicitCodex,
       version: "codex-cli 1.0.0",
     });
+  });
+
+  it("retries a bounded explicit-path replacement miss", async () => {
+    const dir = makeTempDir("codex-replacement-retry-");
+    const codexPath = join(
+      dir,
+      process.platform === "win32" ? "codex.cmd" : "codex",
+    );
+    const detection = findCodexCliPath(codexPath);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    createFakeCodex(dir, "7.8.9");
+
+    await expect(detection).resolves.toBe(codexPath);
   });
 
   it("auto-detects the highest version rather than the first PATH hit", async () => {

@@ -24,7 +24,7 @@ export function createSessionArchiveRoutes(
     }
 
     const sessionId = c.req.param("sessionId");
-    const result = await deps.supervisor.requestSessionDone(
+    const result = await deps.supervisor.requestSessionBoundaryAndAbort(
       sessionId,
       "/archive",
     );

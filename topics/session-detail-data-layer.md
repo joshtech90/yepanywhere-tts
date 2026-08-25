@@ -131,6 +131,15 @@ Those actions should be testable without React. The reducer is where YA should
 settle duplicate suppression, stable ids, parent/tree projection, subagent
 attachment, durable-vs-live parity, and augment attachment identity.
 
+Duplicate suppression requires shared provenance identity. Equal type, role,
+content, attachment set, parent, or timestamp does not make two provider log
+rows duplicates: repeated prompts and responses are valid transcript events.
+When live and durable sources expose the same provider item id, or a provider
+persists YA's supplied client id, the reducer merges by that id. When an older
+server or provider cannot supply it, the reducer preserves both rows rather
+than guessing from content or client-observed time. A provider-log timestamp
+may advance a durable freshness watermark, but it is not message identity.
+
 ## Augment Contract
 
 Augments should attach at the data layer by stable message/block identity, not
@@ -157,6 +166,17 @@ The goal is not to force every token through React or an external store
 notification. The goal is to make the lifecycle of incoming messages explicit:
 received, normalized, maybe streaming, committed, reconciled with durable data,
 and selected for rendering.
+
+Incremental catch-up serializes reads per mounted session window, but
+serialization must not erase demand. Calls arriving during one in-flight read
+coalesce into one trailing read after it settles; calls during that trailing
+read preserve another trailing pass. This bounds concurrent parsing while
+ensuring that a file event, reconnect, or liveness heartbeat observed during a
+slow transcript read is eventually reconciled.
+
+The focused session watch requests catch-up on its initial open as well as
+after a reconnect. The initial read and watch subscription therefore do not
+leave an unobserved interval between snapshot hydration and live observation.
 
 ## Store Model
 

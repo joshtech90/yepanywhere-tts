@@ -103,6 +103,82 @@ describe("Files API", () => {
       expect(json.rawUrl).toContain("/files/raw?path=README.md");
     });
 
+    it("links paths relative to the viewed file directory", async () => {
+      await mkdir(join(projectPath, "configs", "input"), { recursive: true });
+      await writeFile(
+        join(projectPath, "configs", "input", "request.txt"),
+        "request",
+      );
+      await writeFile(
+        join(projectPath, "configs", "regtest.yml"),
+        "input: $ROOT/input/request.txt\nreadme: README.md\n",
+      );
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=configs%2Fregtest.yml&highlight=true`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.highlightedHtml).toContain(
+        `data-ya-path="${join(projectPath, "configs", "input", "request.txt")}"`,
+      );
+      expect(json.highlightedHtml).toContain(">$ROOT/input/request.txt</a>");
+      expect(json.highlightedHtml).toContain(
+        `data-ya-path="${join(projectPath, "README.md")}"`,
+      );
+    });
+
+    it("links relative paths from an allowed file outside the project", async () => {
+      const externalRoot = join(testDir, "external-files");
+      const configDir = join(externalRoot, "config");
+      const modelsDir = join(externalRoot, "models");
+      const viewedFile = join(configDir, "XMTConfig.yml");
+      const basisFile = join(configDir, "basis.yml");
+      const modelFile = join(modelsDir, "boundary-refiner.onnx");
+      await mkdir(configDir, { recursive: true });
+      await mkdir(modelsDir, { recursive: true });
+      await writeFile(basisFile, "basis");
+      await writeFile(modelFile, "model");
+      await writeFile(
+        viewedFile,
+        "basis: basis.yml\nmodel: ../models/boundary-refiner.onnx\n" +
+          "action: call\n",
+      );
+      initFileAccess({
+        uploadsDir: join(testDir, "uploads"),
+        homeDir: join(testDir, "home"),
+        tempPaths: [],
+        envPaths: [externalRoot],
+      });
+
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=${encodeURIComponent(viewedFile)}&highlight=true`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.highlightedHtml).toContain(
+        `path=${encodeURIComponent(basisFile)}`,
+      );
+      expect(json.highlightedHtml).toContain(">basis.yml</a>");
+      expect(json.highlightedHtml).toContain(
+        `path=${encodeURIComponent(modelFile)}`,
+      );
+      expect(json.highlightedHtml).toContain(
+        ">../models/boundary-refiner.onnx</a>",
+      );
+      expect(json.highlightedHtml).not.toContain(">call</a>");
+    });
+
     it("keeps file reads independent of provider inventory refreshes", async () => {
       const { app } = createApp({
         codexSessionsDir: join(testDir, "codex-sessions"),
@@ -759,6 +835,38 @@ describe("Files API", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Disposition")).toContain("inline");
     });
+
+    it.each([
+      ["proof.html", "text/html"],
+      ["proof.svg", "image/svg+xml"],
+      ["proof.xml", "application/xml"],
+    ])(
+      "forces active %s content to download with scriptless headers",
+      async (filename, contentType) => {
+        await writeFile(
+          join(projectPath, filename),
+          '<script>fetch("/api/processes", { headers: { "X-Yep-Anywhere": "true" } })</script>',
+        );
+        const { app } = createApp({
+          sdk: mockSdk,
+          projectsDir: join(testDir, "sessions"),
+        });
+
+        const res = await app.request(
+          `/api/projects/${projectId}/files/raw?path=${filename}`,
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("Content-Type")).toBe(contentType);
+        expect(res.headers.get("Content-Disposition")).toContain("attachment");
+        expect(res.headers.get("Content-Security-Policy")).toContain(
+          "script-src 'none'",
+        );
+        expect(res.headers.get("Permissions-Policy")).toContain("camera=()");
+        expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+        expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      },
+    );
 
     it("serves raw content for an absolute path inside an allowed prefix", async () => {
       const inProjectFile = join(projectPath, "abs-raw-notes.txt");

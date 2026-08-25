@@ -35,7 +35,10 @@ import {
   createStaticRoutes,
 } from "./frontend/index.js";
 import { ensureSelfSignedCertificate } from "./https/self-signed.js";
-import { SessionIndexService } from "./indexes/index.js";
+import {
+  SessionDiscoveryIndexRegistry,
+  SessionIndexService,
+} from "./indexes/index.js";
 import {
   getLogFilePath,
   getLogger,
@@ -56,6 +59,7 @@ import { NotificationService } from "./notifications/index.js";
 import { CodexSessionScanner } from "./projects/codex-scanner.js";
 import { GeminiSessionScanner } from "./projects/gemini-scanner.js";
 import { ProjectGlossarySubscriptionManager } from "./projects/projectGlossarySubscriptionManager.js";
+import { ProjectWorktreeSubscriptionManager } from "./projects/projectWorktreeSubscriptionManager.js";
 import { projectPathCacheDiagnostics } from "./projects/projectPathIndex.js";
 import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
 import { PushService, getOrCreateVapidKeys } from "./push/index.js";
@@ -105,6 +109,7 @@ import {
   TtsService,
   WorkstreamService,
 } from "./services/index.js";
+import { providerInstallationCoordinator } from "./services/ProviderInstallationCoordinator.js";
 import { configureInboundWebSocketMessageLimit } from "./websocketLimits.js";
 import {
   type SpeechRegistryInitOptions,
@@ -172,6 +177,8 @@ let disposeAppForShutdown:
 let deviceBridgeForShutdown: DeviceBridgeService | null = null;
 let projectGlossarySubscriptionsForShutdown: ProjectGlossarySubscriptionManager | null =
   null;
+let projectWorktreeSubscriptionsForShutdown: ProjectWorktreeSubscriptionManager | null =
+  null;
 let hostAwakeForShutdown: HostAwakeService | null = null;
 let securityClientForShutdown: SecurityClientService | null = null;
 let providerSessionWatchersForShutdown: ProviderSessionWatcherRegistry | null =
@@ -194,6 +201,29 @@ async function gracefulShutdown(signal: string): Promise<void> {
   isShuttingDown = true;
 
   console.log(`[Shutdown] Received ${signal}, cleaning up...`);
+
+  // An admitted provider package mutation (npm install -g) must not be
+  // interrupted mid-replacement: hold reload/shutdown on a bounded drain.
+  // If the deadline passes, exit with an explicit recovery diagnostic —
+  // the abandoned writer lease is removed by owner-identity stale cleanup
+  // once this PID is gone, so the next server can update again.
+  const updateDrainMs = signal === "SIGHUP" ? 30_000 : 10_000;
+  try {
+    const pendingUpdates =
+      await providerInstallationCoordinator.waitForLocalUpdates(updateDrainMs);
+    if (pendingUpdates.length > 0) {
+      console.warn(
+        `[Shutdown] Provider installation update for ${pendingUpdates.join(", ")} ` +
+          `still running after ${updateDrainMs}ms; exiting anyway — stale-writer ` +
+          "owner verification recovers the lease on the next start",
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[Shutdown] Error draining provider installation updates:",
+      error,
+    );
+  }
 
   if (attachmentStagingCleanupTimer) {
     clearInterval(attachmentStagingCleanupTimer);
@@ -295,6 +325,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
   projectGlossarySubscriptionsForShutdown?.dispose();
   projectGlossarySubscriptionsForShutdown = null;
+  projectWorktreeSubscriptionsForShutdown?.dispose();
+  projectWorktreeSubscriptionsForShutdown = null;
   providerSessionWatchersForShutdown?.stop();
   providerSessionWatchersForShutdown = null;
 
@@ -509,6 +541,7 @@ const sessionQueuePersistenceService = new SessionQueuePersistenceService({
   dataDir: config.dataDir,
   eventBus,
 });
+const sessionDiscoveryIndexRegistry = new SessionDiscoveryIndexRegistry();
 const sessionIndexService = new SessionIndexService({
   projectsDir: config.claudeProjectsDir,
   dataDir: path.join(config.dataDir, "indexes"),
@@ -516,6 +549,7 @@ const sessionIndexService = new SessionIndexService({
   writeLockTimeoutMs: config.sessionIndexWriteLockTimeoutMs,
   writeLockStaleMs: config.sessionIndexWriteLockStaleMs,
   summaryParseConcurrency: config.sessionIndexSummaryParseConcurrency,
+  sessionDiscoveryIndexRegistry,
   eventBus,
 });
 const pushService = new PushService({ dataDir: config.dataDir });
@@ -939,6 +973,7 @@ async function startServer() {
     sessionQueuePersistenceService,
     dirtyFileEditorService,
     sessionIndexService,
+    sessionDiscoveryIndexRegistry,
     projectScanCacheTtlMs: config.projectScanCacheTtlMs,
     sessionAutoArchiveDays: config.sessionAutoArchiveDays,
     maxWorkers: config.maxWorkers,
@@ -1022,6 +1057,31 @@ async function startServer() {
       glossaryIndexService,
     });
   projectGlossarySubscriptionsForShutdown = projectGlossarySubscriptionManager;
+  const projectWorktreeSubscriptionManager =
+    new ProjectWorktreeSubscriptionManager({
+      scanner,
+      enabled: serverSettingsService.getSetting(
+        "liveWorktreeMonitoringEnabled",
+      ),
+    });
+  serverSettingsService.onSettingsChanged((settings, previousSettings) => {
+    if (
+      settings.liveWorktreeMonitoringEnabled ===
+      previousSettings.liveWorktreeMonitoringEnabled
+    ) {
+      return;
+    }
+    projectWorktreeSubscriptionManager.setEnabled(
+      settings.liveWorktreeMonitoringEnabled,
+    );
+    void updateRelayConnection().catch((error) => {
+      console.error(
+        "[Relay] Failed to refresh live worktree capability advertisement:",
+        error,
+      );
+    });
+  });
+  projectWorktreeSubscriptionsForShutdown = projectWorktreeSubscriptionManager;
 
   // Set service references for graceful shutdown
   supervisorForShutdown = supervisor;
@@ -1139,6 +1199,7 @@ async function startServer() {
     browserProfileService,
     focusedSessionWatchManager,
     projectGlossarySubscriptionManager,
+    projectWorktreeSubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir: config.dataDir,
@@ -1164,6 +1225,7 @@ async function startServer() {
     browserProfileService,
     focusedSessionWatchManager,
     projectGlossarySubscriptionManager,
+    projectWorktreeSubscriptionManager,
     deviceBridgeService,
     speechBackendRegistry,
     dataDir: config.dataDir,
@@ -1186,6 +1248,8 @@ async function startServer() {
         isDeviceBridgeEnabled: () =>
           serverSettingsService.getSetting("deviceBridgeEnabled") ?? false,
         providerHostControlAvailable: isProviderRuntimeHostAvailable(),
+        isLiveWorktreeMonitoringEnabled: () =>
+          serverSettingsService.getSetting("liveWorktreeMonitoringEnabled"),
       });
       relayClientService.start({
         relayUrl: relayConfig.url,
@@ -1675,6 +1739,7 @@ async function startServer() {
         },
         background: {
           externalSessionTracker: externalTracker?.getDiagnostics() ?? null,
+          liveWorktree: projectWorktreeSubscriptionManager.diagnostics(),
         },
       }),
     });

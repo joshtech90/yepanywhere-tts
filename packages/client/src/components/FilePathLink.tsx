@@ -18,8 +18,13 @@ import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../lib/appHref";
-import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
+import {
+  writeClipboardRichTextLater,
+  writeClipboardText,
+  writeClipboardTextLater,
+} from "../lib/clipboard";
 import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../lib/markdownSelectionCopy";
+import { requireRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useFileViewerController } from "../lib/fileViewerController";
 import {
@@ -52,7 +57,7 @@ import {
 } from "./FileResourceActions";
 import { createPublicShareFileViewerSource } from "./publicShareFileViewerSource";
 import { CopyTextButton } from "./ui/CopyTextButton";
-import { useModalBackGesture } from "./ui/Modal";
+import { useModalBackGesture, useModalBackspace } from "./ui/Modal";
 import styles from "./FilePathLink.module.css";
 
 export { FileVersionControlLinks } from "./FileDiffViewLinks";
@@ -257,6 +262,16 @@ export const FilePathLink = memo(function FilePathLink({
       : api.getFile(projectId, viewerFilePath);
     void writeClipboardTextLater(loadFile.then((file) => file.content ?? ""));
   }, [projectId, publicShareFileViewerSource, viewerFilePath]);
+  const handleCopyRenderedContentsFromMenu = useCallback(() => {
+    const loadFile = publicShareFileViewerSource
+      ? publicShareFileViewerSource.loadFile(projectId, viewerFilePath, true)
+      : api.getFile(projectId, viewerFilePath, true);
+    void writeClipboardRichTextLater(
+      loadFile.then((file) =>
+        requireRenderedFileClipboardPayload(viewerFilePath, file),
+      ),
+    );
+  }, [projectId, publicShareFileViewerSource, viewerFilePath]);
 
   // Format the display text
   const fileName = showFullPath ? filePath : getPathBasename(filePath);
@@ -328,6 +343,11 @@ export const FilePathLink = memo(function FilePathLink({
             fileViewUrl ? handleCopyViewerLinkFromMenu : undefined
           }
           onCopyContents={handleCopyContentsFromMenu}
+          onCopyRenderedContents={
+            hasPresentationChoice
+              ? handleCopyRenderedContentsFromMenu
+              : undefined
+          }
         />
       )}
       {showModal && (
@@ -433,6 +453,7 @@ export function FileViewerModal({
   }, [close, minimized]);
 
   useModalBackGesture(close, !minimized, "__fileViewerModal");
+  useModalBackspace(close, !minimized);
 
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -443,6 +464,12 @@ export function FileViewerModal({
     };
   }, [minimized]);
 
+  const sessionViewerLayer =
+    publicShareContext === null
+      ? (document.querySelector<HTMLElement>(
+          ".navigation-route-layer.is-active [data-session-viewer-layer]",
+        ) ?? document.querySelector<HTMLElement>("[data-session-viewer-layer]"))
+      : null;
   const modalContent = (
     <div
       className="modal-overlay"
@@ -480,9 +507,11 @@ export function FileViewerModal({
 
   const portalHost =
     publicShareContext === null
-      ? (document.querySelector<HTMLElement>(
+      ? (sessionViewerLayer ??
+        document.querySelector<HTMLElement>(
           ".navigation-route-layer.is-active .session-page",
-        ) ?? document.querySelector<HTMLElement>(".session-page"))
+        ) ??
+        document.querySelector<HTMLElement>(".session-page"))
       : null;
 
   return createPortal(

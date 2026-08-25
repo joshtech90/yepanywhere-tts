@@ -10,6 +10,7 @@ Topic: provider-refresh
 Related topics: [claude](claude.md), [grok](grok.md),
 [opencode-backend](opencode-backend.md),
 [pi-provider](pi-provider.md),
+[provider-installation-updates](provider-installation-updates.md),
 [provider-state-machine](provider-state-machine.md),
 [provider-model-glyphs](provider-model-glyphs.md),
 [cost-efficiency](cost-efficiency.md).
@@ -41,6 +42,11 @@ Cost and credential boundaries still apply during refresh work. Do not turn a
 subscription-backed provider into an API-billed provider, or pass an ambient API
 key to a CLI that normally uses browser/subscription auth, unless the user made
 that choice explicit. See [cost-efficiency](cost-efficiency.md).
+
+This maintainer audit is not the runtime provider updater. Any YA command that
+mutates a user's installed provider software follows
+[provider-installation-updates](provider-installation-updates.md), including
+its runtime leases, verification, and cache-generation contract.
 
 ## Generic Refresh Loop
 
@@ -82,6 +88,13 @@ After updating Pi, run the opt-in installed-binary check documented in
 matching upstream release tags when the version changed; the real zero-token
 probe covers the production model-discovery command but intentionally does not
 exercise authenticated assistant events or persisted sessions.
+
+Current refresh, 2026-08-20: official `v0.82.1..v0.84.2` preserves Pi's
+published JavaScript bin entry and the RPC commands, response fields,
+`agent_settled` boundary, and v3 coding-agent session assumptions consumed by
+YA. The 0.84.0 delta-only `message_update` change matches YA's existing
+accumulators, and the 0.84.2 Windows zero-token probe completed successfully.
+Root compatibility is recorded through Pi 0.84.2.
 
 ## Codex
 
@@ -149,6 +162,59 @@ protocol subset was last audited against. It is not a minimum supported version:
 older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
+
+Current no-op refresh, 2026-08-24:
+
+- Installed Codex and npm `@openai/codex` `latest` are `0.149.1`; the official
+  `rust-v0.149.1` source is commit
+  `ff29a44391deccde0aba0f8390337d7f3c319ea4`. Root compatibility is recorded
+  through `0.149.1`, while `expectedVersion` remains `0.149.0` because the
+  checked-in app-server protocol subset did not change.
+- The patch adds image-aware budgeting to an under-development remote
+  compaction path and a `--thread-source` option to `codex exec` and its
+  TypeScript SDK. YA uses `codex app-server`, whose generated types, turn
+  controls, notifications, and provider startup surface are unchanged.
+- Memory-consolidation requests now identify their source in internal response
+  metadata. YA's persisted session metadata already accepts provider-defined
+  `thread_source` strings, so this needs no schema or renderer change.
+- The no-token `model/list` probe returns the same eight account-visible models
+  and consumed metadata as 0.149.0, including Sol as default and Daybreak Blue
+  as a live-catalog-only specialized model.
+
+Status: Codex 0.149.1 app-server, model-catalog, and persisted-transcript
+compatibility is refreshed with no YA runtime source change.
+
+Current source refresh, 2026-08-21:
+
+- Installed Codex is `0.149.0`; the official `rust-v0.149.0` source is commit
+  `758ef40f50c1a458425c7cfbf1eb12cbc07af0b0`. Root compatibility and
+  expected-protocol markers now record `0.149.0`.
+- Regeneration adds three files and changes seven in YA's checked-in app-server
+  subset. Agent messages can identify asynchronous delivery, image generation
+  can report a usage-limit failure, and errors add a non-retryable
+  `misalignmentPolicyViolation` kind. Thread project assignment and section
+  appearance are additive metadata; turn start, steer, interrupt, approval,
+  user-input, and completion controls used by YA are unchanged.
+- YA already renders an asynchronously delivered agent message without using
+  item completion as a turn boundary, matching Codex's contract that the
+  message is visible while the current turn continues. Image-generation items
+  remain outside YA's current thread-item renderer; adopting their result or
+  failure UI is a separate feature rather than a compatibility fallback.
+- The no-token `model/list` probe adds account-visible
+  `gpt-daybreak-blue-latest` to the existing seven-model catalog. YA preserves
+  its two-word provider display name and places this specialized model after
+  the general GPT-5.6 choices. It remains live-catalog-only rather than an
+  auth/probe-failure fallback because specialized availability can vary by
+  account.
+- The first local 0.149.0 rollout parses all 330 entries through the strict
+  session schema with no malformed lines or schema failures. Its one authored
+  user turn remains paired and provenanced; it contains no asynchronous agent
+  delivery or image-generation failure sample, so those two classifications
+  remain grounded in the tagged protocol and app-server contract rather than a
+  local persisted example.
+
+Status: Codex 0.149.0 app-server, live model-catalog, and persisted-transcript
+compatibility is refreshed.
 
 Current source refresh, 2026-08-10:
 

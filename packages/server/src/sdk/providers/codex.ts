@@ -42,6 +42,11 @@ import {
 import { formatCodexSubagentActivity } from "../../codex/subagentActivity.js";
 import { getLogger } from "../../logging/logger.js";
 import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
+import {
+  CODEX_INSTALLATION_FAMILY,
+  type ProviderInstallationCoordinator,
+  providerInstallationCoordinator,
+} from "../../services/ProviderInstallationCoordinator.js";
 import { findCodexCliPath, getCodexCliVersion } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
@@ -230,9 +235,42 @@ const APP_SERVER_FORCE_KILL_WAIT_MS = 1000;
 const APP_SERVER_EXIT_POLL_MS = 25;
 const CODEX_FAILURE_TRACE_LIMIT = 12;
 const CODEX_FAILURE_PREVIEW_CHARS = 240;
+const CODEX_SERVER_OVERLOAD_RETRY_LIMIT = 16;
+const CODEX_SERVER_OVERLOAD_RETRY_SCALE_MS = 5000;
 const CODEX_THINKING_OFF_MIN_REASONING_EFFORT_PREFIXES = [
   "gpt-5.3-codex-spark",
 ] as const;
+
+type CodexOverloadRetryWait = (
+  delayMs: number,
+  signal: AbortSignal,
+) => Promise<boolean>;
+
+function getCodexOverloadRetryDelayMs(attempt: number): number {
+  return (attempt + 1) ** 2 * CODEX_SERVER_OVERLOAD_RETRY_SCALE_MS;
+}
+
+async function waitForCodexOverloadRetry(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) return false;
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (elapsed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      resolve(elapsed);
+    };
+    const onAbort = (): void => finish(false);
+    const timeout = setTimeout(() => finish(true), delayMs);
+    timeout.unref?.();
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 async function withCodexTimeout<T>(
   promise: Promise<T>,
@@ -587,6 +625,10 @@ export interface CodexProviderConfig {
   baseUrl?: string;
   /** API key override (normally read from ~/.codex/auth.json) */
   apiKey?: string;
+  /** Shared installation owner (injectable for deterministic tests). */
+  installationCoordinator?: ProviderInstallationCoordinator;
+  /** Overload retry timer (injectable for deterministic tests). */
+  overloadRetryWait?: CodexOverloadRetryWait;
 }
 
 class AsyncQueue<T> {
@@ -1010,7 +1052,12 @@ export class CodexProvider implements AgentProvider {
   readonly supportsNativeCompactThreshold = true;
 
   private readonly config: CodexProviderConfig;
-  private modelCache: { models: ModelInfo[]; expiresAt: number } | null = null;
+  private readonly installationCoordinator: ProviderInstallationCoordinator;
+  private modelCache: {
+    models: ModelInfo[];
+    expiresAt: number;
+    installationSourceVersion: string;
+  } | null = null;
   private getConfiguredReasoningSummary: () => CodexReasoningSummary = () =>
     DEFAULT_CODEX_REASONING_SUMMARY;
   private getConfiguredSubagentMaxDepth: () => SubagentMaxDepth = () =>
@@ -1018,6 +1065,8 @@ export class CodexProvider implements AgentProvider {
 
   constructor(config: CodexProviderConfig = {}) {
     this.config = config;
+    this.installationCoordinator =
+      config.installationCoordinator ?? providerInstallationCoordinator;
   }
 
   setCodexPath(codexPath: string | undefined): void {
@@ -1033,6 +1082,12 @@ export class CodexProvider implements AgentProvider {
     this.getConfiguredSubagentMaxDepth = getter;
   }
 
+  getModelCatalogCacheKey(): string {
+    return this.installationCoordinator.getSourceVersion(
+      CODEX_INSTALLATION_FAMILY,
+    );
+  }
+
   /**
    * Check if the Codex CLI is installed.
    */
@@ -1044,7 +1099,12 @@ export class CodexProvider implements AgentProvider {
    * Check if Codex CLI is installed by looking in PATH and common locations.
    */
   private async isCodexCliInstalled(): Promise<boolean> {
-    return (await findCodexCliPath(this.config.codexPath)) !== null;
+    return (
+      (await findCodexCliPath(
+        this.config.codexPath,
+        this.installationCoordinator,
+      )) !== null
+    );
   }
 
   /**
@@ -1052,7 +1112,10 @@ export class CodexProvider implements AgentProvider {
    */
   private async resolveCodexCommand(): Promise<string> {
     if (this.config.codexPath) return this.config.codexPath;
-    return (await findCodexCliPath()) ?? "codex";
+    return (
+      (await findCodexCliPath(undefined, this.installationCoordinator)) ??
+      "codex"
+    );
   }
 
   private getCodexClientName(overrideClientName?: string): string {
@@ -1108,8 +1171,20 @@ export class CodexProvider implements AgentProvider {
    * Queries Codex app-server's model/list endpoint with a static fallback.
    */
   async getAvailableModels(): Promise<ModelInfo[]> {
+    return this.installationCoordinator.withReadLease(
+      CODEX_INSTALLATION_FAMILY,
+      () => this.getAvailableModelsWithLease(),
+    );
+  }
+
+  private async getAvailableModelsWithLease(): Promise<ModelInfo[]> {
     const now = Date.now();
-    if (this.modelCache && this.modelCache.expiresAt > now) {
+    const installationSourceVersion = this.getModelCatalogCacheKey();
+    if (
+      this.modelCache &&
+      this.modelCache.expiresAt > now &&
+      this.modelCache.installationSourceVersion === installationSourceVersion
+    ) {
       return this.modelCache.models;
     }
 
@@ -1125,12 +1200,22 @@ export class CodexProvider implements AgentProvider {
     this.modelCache = {
       models,
       expiresAt: now + MODEL_CACHE_TTL_MS,
+      installationSourceVersion,
     };
 
     return models;
   }
 
   async getSubscriptionUsage(
+    models: readonly ModelInfo[],
+  ): Promise<ProviderSubscriptionUsage | null> {
+    return this.installationCoordinator.withReadLease(
+      CODEX_INSTALLATION_FAMILY,
+      () => this.getSubscriptionUsageWithLease(models),
+    );
+  }
+
+  private async getSubscriptionUsageWithLease(
     models: readonly ModelInfo[],
   ): Promise<ProviderSubscriptionUsage | null> {
     if (!(await this.isCodexCliInstalled())) return null;
@@ -1339,7 +1424,10 @@ export class CodexProvider implements AgentProvider {
   private async getInstalledCodexCliVersion(): Promise<string | null> {
     try {
       const codexCommand = await this.resolveCodexCommand();
-      const version = await getCodexCliVersion(codexCommand);
+      const version = await getCodexCliVersion(
+        codexCommand,
+        this.installationCoordinator,
+      );
       return normalizeSemver(version);
     } catch {
       return null;
@@ -1442,6 +1530,10 @@ export class CodexProvider implements AgentProvider {
    * Start a new Codex session.
    */
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    const installationLease =
+      await this.installationCoordinator.acquireRuntimeLease(
+        CODEX_INSTALLATION_FAMILY,
+      );
     const queue = new MessageQueue();
     const abortController = new AbortController();
     const runtimeState: CodexTurnRuntimeState = {
@@ -1501,6 +1593,7 @@ export class CodexProvider implements AgentProvider {
         yield* sessionIterator;
       } finally {
         settleInitialActiveClient(null);
+        await installationLease.release();
       }
     })();
 
@@ -1530,6 +1623,7 @@ export class CodexProvider implements AgentProvider {
         }
         abortController.abort();
         await activeClient?.close();
+        await installationLease.release();
       },
       isProcessAlive: () => activeClient?.isAlive() ?? false,
       getProviderActivity: () =>
@@ -1601,6 +1695,7 @@ export class CodexProvider implements AgentProvider {
                 "turn/steer",
                 {
                   threadId: runtimeState.threadId,
+                  clientUserMessageId: message.uuid ?? null,
                   input: prepared.input,
                   expectedTurnId,
                 } satisfies TurnSteerParams,
@@ -1820,6 +1915,20 @@ export class CodexProvider implements AgentProvider {
   }
 
   async forkSession(options: {
+    sessionId: string;
+    cwd: string;
+    upToMessageId?: string;
+    boundary?: ProviderForkBoundary;
+    title?: string;
+    sessionSandbox?: SessionSandboxRuntime;
+  }): Promise<{ sessionId: string }> {
+    return this.installationCoordinator.withReadLease(
+      CODEX_INSTALLATION_FAMILY,
+      () => this.forkSessionWithLease(options),
+    );
+  }
+
+  private async forkSessionWithLease(options: {
     sessionId: string;
     cwd: string;
     upToMessageId?: string;
@@ -2164,7 +2273,11 @@ export class CodexProvider implements AgentProvider {
       const consumeTurn = async function* (
         provider: CodexProvider,
         turn: CodexThreadTurn,
-      ): AsyncIterableIterator<SDKMessage> {
+      ): AsyncGenerator<
+        SDKMessage,
+        { overloadError: SDKMessage | null },
+        void
+      > {
         const activeTurnId = turn.id;
         runtimeState.activeTurnId = activeTurnId;
         runtimeState.activeToolCallIds.clear();
@@ -2172,6 +2285,7 @@ export class CodexProvider implements AgentProvider {
         failureTrace.activeTurnId = activeTurnId;
         let turnComplete = turn.status !== "inProgress";
         let emittedTurnError = false;
+        let overloadError: SDKMessage | null = null;
 
         while (!turnComplete && !signal.aborted) {
           const notification = await appServer.nextNotification(signal);
@@ -2232,6 +2346,8 @@ export class CodexProvider implements AgentProvider {
             );
             runtimeState.activeTurnId = observedTurnId;
           }
+          const effectiveActiveTurnId =
+            runtimeState.activeTurnId ?? currentActiveTurnId;
 
           const messages = provider.convertNotificationToSDKMessages(
             notification,
@@ -2239,6 +2355,17 @@ export class CodexProvider implements AgentProvider {
             usageByTurnId,
             liveEventState,
           );
+          const isServerOverload = provider.isCodexServerOverloadedNotification(
+            notification,
+            effectiveActiveTurnId,
+          );
+          const suppressFailedOverloadCompletion =
+            overloadError !== null &&
+            notification.method === "turn/completed" &&
+            provider.isTurnTerminalNotification(
+              notification,
+              effectiveActiveTurnId,
+            );
           for (const rawMsg of messages) {
             const msg =
               rawMsg.type === "error"
@@ -2250,15 +2377,25 @@ export class CodexProvider implements AgentProvider {
                       provider.formatCodexFailureTrace(failureTrace),
                   } as SDKMessage)
                 : rawMsg;
+            if (isServerOverload && msg.type === "error") {
+              overloadError = msg;
+              continue;
+            }
+            if (suppressFailedOverloadCompletion) {
+              continue;
+            }
             failureTrace.lastEmittedMessage =
               provider.describeSDKMessageForFailureTrace(msg);
             yield msg;
           }
 
+          if (isServerOverload) {
+            continue;
+          }
           if (
             provider.isTurnTerminalNotification(
               notification,
-              currentActiveTurnId,
+              effectiveActiveTurnId,
             )
           ) {
             if (notification.method === "error") emittedTurnError = true;
@@ -2268,12 +2405,16 @@ export class CodexProvider implements AgentProvider {
         runtimeState.activeTurnId = null;
         failureTrace.activeTurnId = null;
 
+        if (signal.aborted) {
+          return { overloadError: null };
+        }
+
         if (
           !emittedTurnError &&
           turn.status === "failed" &&
           turn.error?.message
         ) {
-          yield {
+          const fallbackError = {
             type: "error",
             uuid: `codex-error-${turn.id}`,
             session_id: sessionId,
@@ -2290,12 +2431,21 @@ export class CodexProvider implements AgentProvider {
               turn.error.message,
             ),
           } as SDKMessage;
+          if (turn.error.codexErrorInfo === "serverOverloaded") {
+            return { overloadError: fallbackError };
+          }
+          yield fallbackError;
+        }
+
+        if (overloadError) {
+          return { overloadError };
         }
 
         yield {
           type: "result",
           session_id: sessionId,
         } as SDKMessage;
+        return { overloadError: null };
       };
 
       const messageGen = queue[Symbol.asyncIterator]();
@@ -2374,8 +2524,9 @@ export class CodexProvider implements AgentProvider {
             turnPolicy,
             runtimeState.workspaceWriteSandboxPolicy,
             runtimeState.turnEffortOverride,
+            message.uuid,
           );
-          const turnResult = await appServer.request<TurnStartResponse>(
+          let turnResult = await appServer.request<TurnStartResponse>(
             "turn/start",
             turnStartParams,
           );
@@ -2392,7 +2543,78 @@ export class CodexProvider implements AgentProvider {
             },
             "Started Codex app-server turn",
           );
-          yield* consumeTurn(this, turnResult.turn);
+          let overloadRetryAttempt = 0;
+          while (!signal.aborted) {
+            const { overloadError } = yield* consumeTurn(this, turnResult.turn);
+            if (!overloadError) break;
+
+            overloadRetryAttempt += 1;
+            if (overloadRetryAttempt > CODEX_SERVER_OVERLOAD_RETRY_LIMIT) {
+              yield {
+                ...overloadError,
+                codexWillRetry: false,
+                codexOverloadRetryExhausted: true,
+                codexRetryAttempt: CODEX_SERVER_OVERLOAD_RETRY_LIMIT,
+                codexRetryMaxRetries: CODEX_SERVER_OVERLOAD_RETRY_LIMIT,
+              } as SDKMessage;
+              yield {
+                type: "result",
+                session_id: sessionId,
+              } as SDKMessage;
+              break;
+            }
+
+            const retryDelayMs =
+              getCodexOverloadRetryDelayMs(overloadRetryAttempt);
+            yield {
+              ...overloadError,
+              codexWillRetry: true,
+              codexOverloadRetry: true,
+              codexRetryDelayMs: retryDelayMs,
+              codexRetryAttempt: overloadRetryAttempt,
+              codexRetryMaxRetries: CODEX_SERVER_OVERLOAD_RETRY_LIMIT,
+            } as SDKMessage;
+
+            log.info(
+              {
+                sessionId,
+                turnId: overloadError.codexTurnId,
+                model: options.model ?? runtimeState.resolvedModel,
+                retryAttempt: overloadRetryAttempt,
+                retryDelayMs,
+              },
+              "Codex model is overloaded; waiting to retry the turn",
+            );
+            const retryReady = await (
+              this.config.overloadRetryWait ?? waitForCodexOverloadRetry
+            )(retryDelayMs, signal);
+            if (!retryReady || signal.aborted) break;
+
+            const retryTurnStartParams = this.createTurnStartParams(
+              sessionId,
+              [],
+              options,
+              turnPolicy,
+              runtimeState.workspaceWriteSandboxPolicy,
+              runtimeState.turnEffortOverride,
+            );
+            turnResult = await appServer.request<TurnStartResponse>(
+              "turn/start",
+              retryTurnStartParams,
+            );
+            log.info(
+              {
+                sessionId,
+                turnId: turnResult.turn.id,
+                turnStatus: turnResult.turn.status,
+                model: options.model ?? runtimeState.resolvedModel,
+                retryAttempt: overloadRetryAttempt,
+                approvalPolicy: turnPolicy.approvalPolicy,
+                sandboxPolicy: retryTurnStartParams.sandboxPolicy,
+              },
+              "Retried Codex overloaded turn without resending user input",
+            );
+          }
         }
       } finally {
         signal.removeEventListener("abort", stopMessageWait);
@@ -2488,6 +2710,19 @@ export class CodexProvider implements AgentProvider {
     }
 
     return false;
+  }
+
+  private isCodexServerOverloadedNotification(
+    notification: JsonRpcNotification,
+    turnId: string,
+  ): boolean {
+    if (notification.method !== "error") return false;
+    const params = asCodexErrorNotification(notification.params);
+    return (
+      params?.turnId === turnId &&
+      params.willRetry === false &&
+      params.error.codexErrorInfo === "serverOverloaded"
+    );
   }
 
   private updateBackgroundProcessTracking(
@@ -2923,9 +3158,11 @@ export class CodexProvider implements AgentProvider {
     turnPolicy: CodexThreadPolicy | null = null,
     workspaceWriteSandboxPolicy: CodexSandboxPolicy | null = null,
     effortOverride: EffortLevel | null | undefined = options.effort,
+    clientUserMessageId?: string,
   ): TurnStartParams {
     return {
       threadId,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
       model: options.model ?? null,
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       input,
@@ -2967,20 +3204,25 @@ export class CodexProvider implements AgentProvider {
   async generateSummary(
     request: SummaryGenerationRequest,
   ): Promise<SummaryGenerationResult> {
-    switch (request.strategy) {
-      case "side-session": {
-        if (request.purpose === "session-retitle") {
-          return { text: await this.generateSideSessionTitle(request) };
+    return this.installationCoordinator.withReadLease(
+      CODEX_INSTALLATION_FAMILY,
+      async () => {
+        switch (request.strategy) {
+          case "side-session": {
+            if (request.purpose === "session-retitle") {
+              return { text: await this.generateSideSessionTitle(request) };
+            }
+            const text = await this.generateSideSessionRecap(
+              request.recentAssistantText,
+              request.model,
+            );
+            return { text };
+          }
+          case "fork":
+            return await this.generateForkBackedSummary(request);
         }
-        const text = await this.generateSideSessionRecap(
-          request.recentAssistantText,
-          request.model,
-        );
-        return { text };
-      }
-      case "fork":
-        return await this.generateForkBackedSummary(request);
-    }
+      },
+    );
   }
 
   private async generateSideSessionRecap(
@@ -4979,8 +5221,8 @@ export class CodexProvider implements AgentProvider {
     return `${turnId}:${itemId}`;
   }
 
-  private buildItemMessageUuid(turnId: string, itemId: string): string {
-    return `${itemId}-${turnId}`;
+  private buildItemMessageUuid(itemId: string): string {
+    return itemId;
   }
 
   // Native tool thread items carry Codex's globally-unique call_id as item.id,
@@ -5062,7 +5304,7 @@ export class CodexProvider implements AgentProvider {
     const message = withCodexTimestamp({
       type: "assistant",
       session_id: sessionId,
-      uuid: this.buildItemMessageUuid(turnId, itemId),
+      uuid: this.buildItemMessageUuid(itemId),
       _isStreaming: true,
       message: {
         role: "assistant",
@@ -5097,7 +5339,7 @@ export class CodexProvider implements AgentProvider {
     const message = withCodexTimestamp({
       type: "assistant",
       session_id: sessionId,
-      uuid: this.buildItemMessageUuid(turnId, itemId),
+      uuid: this.buildItemMessageUuid(itemId),
       _isStreaming: true,
       message: {
         role: "assistant",
@@ -5465,10 +5707,12 @@ export class CodexProvider implements AgentProvider {
     // Native tool items key the uuid on call_id (item.id). Code-mode
     // commandExecution items temporarily key on exec-* and carry correlation
     // metadata for adoption of the outer durable call_* id client-side.
-    // Message/reasoning counters have no durable equivalent and stay scoped.
+    // Message/reasoning item ids are the provider ids persisted in rollout.
     const uuid = this.isToolBackedThreadItem(item)
       ? this.buildItemToolUuid(item.id)
-      : `${item.id}-${turnId}`;
+      : item.type === "agent_message" || item.type === "reasoning"
+        ? item.id
+        : `${item.id}-${turnId}`;
 
     switch (item.type) {
       case "reasoning": {

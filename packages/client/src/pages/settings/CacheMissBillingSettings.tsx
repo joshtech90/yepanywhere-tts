@@ -1,26 +1,35 @@
 import {
+  CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   type CacheMissBillingRecord,
   type CacheMissBillingSettings as CacheMissBillingSettingsValue,
   type ProviderName,
+  serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api } from "../../api/client";
-import styles from "./CacheMissBillingSettings.module.css";
-import { CacheMissInactivityChart } from "./CacheMissInactivityChart";
-import { useServerSettings } from "../../hooks/useServerSettings";
+import { useRelativeNow } from "../../hooks/useRelativeNow";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
+import { useServerSettings } from "../../hooks/useServerSettings";
+import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import { activityBus } from "../../lib/activityBus";
+import styles from "./CacheMissBillingSettings.module.css";
+import { CacheMissEventTable } from "./CacheMissEventTable";
+import {
+  CacheMissInactivityChart,
+  CacheMissProbabilityChart,
+  CacheMissProviderChart,
+} from "./CacheMissInactivityChart";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
 
-const MAX_EVENTS = 200;
-type TFunction = ReturnType<typeof useI18n>["t"];
+const MAX_EVENTS = 500;
+const MAX_RECENCY_HOURS = 96;
+const UNLIMITED_RECENCY_SLIDER_VALUE = MAX_RECENCY_HOURS + 1;
 
 function clampInteger(
   value: string,
@@ -33,12 +42,6 @@ function clampInteger(
     return fallback;
   }
   return Math.max(min, Math.min(max, parsed));
-}
-
-function formatTokenCount(tokens: number): string {
-  return new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: 0,
-  }).format(tokens);
 }
 
 function effectiveCacheMissBillingSettings(
@@ -54,87 +57,6 @@ function effectiveCacheMissBillingSettings(
   };
 }
 
-function eventReasonLabel(event: CacheMissBillingRecord, t: TFunction): string {
-  switch (event.reason) {
-    case "fork-prefix-cache-hit":
-      return t("cacheMissBillingReasonForkHit");
-    case "warm-session-cache-hit":
-      return t("cacheMissBillingReasonWarmHit");
-    case "fork-prefix-cache-miss":
-      return t("cacheMissBillingReasonForkMiss");
-    case "warm-session-cache-miss":
-      return t("cacheMissBillingReasonWarmMiss");
-  }
-}
-
-function eventPositionLabel(
-  event: CacheMissBillingRecord,
-  t: TFunction,
-): string {
-  if (event.messageId) {
-    return t("cacheMissBillingEventMessageId", {
-      messageId: event.messageId,
-    });
-  }
-  if (event.messageIndex !== undefined) {
-    return t("cacheMissBillingEventMessageIndex", {
-      index: String(event.messageIndex),
-    });
-  }
-  return t("cacheMissBillingEventMessageUnknown");
-}
-
-function eventUsageLabel(event: CacheMissBillingRecord, t: TFunction): string {
-  if (event.outcome === "expected-cache-hit") {
-    return t("cacheMissBillingEventUsageHit", {
-      provider: event.provider,
-      tokens: formatTokenCount(event.observedUsage.cacheReadTokens ?? 0),
-    });
-  }
-  return t("cacheMissBillingEventUsageMiss", {
-    provider: event.provider,
-    tokens: formatTokenCount(event.wastedInputTokens),
-  });
-}
-
-/** Wasted tokens, idle gap, and whether the miss was flagged. */
-function eventMissDetail(
-  event: CacheMissBillingRecord,
-  t: TFunction,
-): string | null {
-  if (event.outcome !== "unexpected-recompute") return null;
-  const parts = [
-    t("cacheMissBillingEventWasted", {
-      tokens: formatTokenCount(event.wastedInputTokens),
-    }),
-  ];
-  if (event.elapsedSinceExpectedCacheMs !== undefined) {
-    parts.push(
-      t("cacheMissBillingEventAfterIdle", {
-        minutes: String(Math.round(event.elapsedSinceExpectedCacheMs / 60_000)),
-      }),
-    );
-  }
-  if (!event.exception) {
-    parts.push(t("cacheMissBillingEventNotFlagged"));
-  }
-  return parts.join(" · ");
-}
-
-function eventExpectedCostLabel(
-  event: CacheMissBillingRecord,
-  t: TFunction,
-): string {
-  const basis =
-    event.expectedInputCost.prefixBasis === "provider-fork-byte-identical"
-      ? t("cacheMissBillingExpectedBasisFork")
-      : t("cacheMissBillingExpectedBasisWarm");
-  return t("cacheMissBillingExpectedCostDetail", {
-    basis,
-    window: String(event.expectedInputCost.providerFreshWindowMinutes),
-  });
-}
-
 function providerFreshWindowMinutes(
   settings: Required<CacheMissBillingSettingsValue>,
   provider: ProviderName,
@@ -144,63 +66,55 @@ function providerFreshWindowMinutes(
   );
 }
 
-function CacheMissBillingEventList({
-  emptyMessage,
-  events,
-  t,
-  basePath,
-}: {
-  emptyMessage: string;
-  events: CacheMissBillingRecord[];
-  t: TFunction;
-  basePath: string;
-}) {
-  if (events.length === 0) {
-    return <p className="settings-empty">{emptyMessage}</p>;
-  }
-  return (
-    <div className={`settings-group ${styles.events}`}>
-      {events.map((event) => (
-        <div key={event.id} className="settings-item model-settings-item">
-          <div className={styles.eventHeader}>
-            <div className="settings-item-info">
-              <strong>{eventReasonLabel(event, t)}</strong>
-              <p>{eventUsageLabel(event, t)}</p>
-            </div>
-            <Link
-              className="settings-button"
-              to={`${basePath}${event.sessionPath}`}
-            >
-              {t("cacheMissBillingOpenSession")}
-            </Link>
-          </div>
-          <p className={`settings-hint ${styles.eventDetail}`}>
-            {t("cacheMissBillingEventDetail", {
-              time: new Date(event.timestamp).toLocaleString(),
-              position: eventPositionLabel(event, t),
-            })}
-          </p>
-          {eventMissDetail(event, t) && (
-            <p className={`settings-hint ${styles.eventDetail}`}>
-              {eventMissDetail(event, t)}
-            </p>
-          )}
-          <p className={`settings-hint ${styles.eventDetail}`}>
-            {eventExpectedCostLabel(event, t)}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
+export function cacheMissBillingSettingsForServer(
+  settings: CacheMissBillingSettingsValue,
+  supportsIgnoreAfter: boolean,
+): CacheMissBillingSettingsValue {
+  if (supportsIgnoreAfter) return settings;
+  const legacySettings: CacheMissBillingSettingsValue = { ...settings };
+  delete legacySettings.ignoreAfterMinutes;
+  return legacySettings;
+}
+
+export function filterCacheMissEvents(
+  events: CacheMissBillingRecord[],
+  recencyHours: number | null,
+  ignoreAfterMinutes: number,
+  nowMs: number,
+): CacheMissBillingRecord[] {
+  const cutoffMs =
+    recencyHours === null ? null : nowMs - recencyHours * 60 * 60_000;
+  return events.filter((event) => {
+    const timestampMs = Date.parse(event.timestamp);
+    if (
+      cutoffMs !== null &&
+      (!Number.isFinite(timestampMs) || timestampMs < cutoffMs)
+    ) {
+      return false;
+    }
+    return (
+      ignoreAfterMinutes === 0 ||
+      event.elapsedSinceExpectedCacheMs === undefined ||
+      event.elapsedSinceExpectedCacheMs <= ignoreAfterMinutes * 60_000
+    );
+  });
 }
 
 export function CacheMissBillingSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("cacheMissBillingTitle"));
+  const { version } = useVersion();
+  const supportsIgnoreAfter = serverHasCapability(
+    version,
+    CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
+  );
   const basePath = useRemoteBasePath();
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const [events, setEvents] = useState<CacheMissBillingRecord[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  const [recencyHours, setRecencyHours] = useState<number | null>(null);
+  const [recencyText, setRecencyText] = useState("");
+  const nowMs = useRelativeNow(60_000);
 
   const effective = effectiveCacheMissBillingSettings(
     settings?.cacheMissBilling,
@@ -212,31 +126,39 @@ export function CacheMissBillingSettings() {
         settings?.cacheMissBilling,
       );
       await updateSettings({
-        cacheMissBilling: {
-          ...current,
-          ...patch,
-          providerFreshWindowMinutes: {
-            ...current.providerFreshWindowMinutes,
-            ...patch.providerFreshWindowMinutes,
+        cacheMissBilling: cacheMissBillingSettingsForServer(
+          {
+            ...current,
+            ...patch,
+            providerFreshWindowMinutes: {
+              ...current.providerFreshWindowMinutes,
+              ...patch.providerFreshWindowMinutes,
+            },
           },
-        },
+          supportsIgnoreAfter,
+        ),
       });
     },
-    [settings?.cacheMissBilling, updateSettings],
+    [settings?.cacheMissBilling, supportsIgnoreAfter, updateSettings],
   );
 
   const restore = useCallback(
     async (snapshot: Required<CacheMissBillingSettingsValue>) => {
-      await updateSettings({ cacheMissBilling: snapshot });
+      await updateSettings({
+        cacheMissBilling: cacheMissBillingSettingsForServer(
+          snapshot,
+          supportsIgnoreAfter,
+        ),
+      });
     },
-    [updateSettings],
+    [supportsIgnoreAfter, updateSettings],
   );
   useSettingsUndoBaseline(settings ? effective : null, restore);
-  const failureEvents = events.filter(
-    (event) => event.outcome === "unexpected-recompute",
-  );
-  const successEvents = events.filter(
-    (event) => event.outcome === "expected-cache-hit",
+  const filteredEvents = filterCacheMissEvents(
+    events,
+    recencyHours,
+    effective.ignoreAfterMinutes,
+    nowMs,
   );
 
   useEffect(() => {
@@ -274,6 +196,44 @@ export function CacheMissBillingSettings() {
       });
     });
   }, []);
+
+  const setRecencyFromSlider = (value: number) => {
+    if (value === UNLIMITED_RECENCY_SLIDER_VALUE) {
+      setRecencyHours(null);
+      setRecencyText("");
+      return;
+    }
+    setRecencyHours(value);
+    setRecencyText(String(value));
+  };
+
+  const setRecencyFromText = (value: string) => {
+    setRecencyText(value);
+    if (value.trim() === "") {
+      setRecencyHours(null);
+      return;
+    }
+    const parsed = Number.parseInt(value, 10);
+    if (
+      Number.isInteger(parsed) &&
+      parsed >= 1 &&
+      parsed <= MAX_RECENCY_HOURS
+    ) {
+      setRecencyHours(parsed);
+    }
+  };
+
+  const normalizeRecencyText = () => {
+    if (recencyText.trim() === "") return;
+    const value = clampInteger(
+      recencyText,
+      recencyHours ?? MAX_RECENCY_HOURS,
+      1,
+      MAX_RECENCY_HOURS,
+    );
+    setRecencyHours(value);
+    setRecencyText(String(value));
+  };
 
   if (isLoading) {
     return <SettingsSection description={t("cacheMissBillingLoading")} />;
@@ -470,48 +430,137 @@ export function CacheMissBillingSettings() {
               </span>
             </div>
           </SettingsItem>
+
+          {supportsIgnoreAfter && (
+            <SettingsItem
+              label={t("cacheMissBillingIgnoreAfterTitle")}
+              description={t("cacheMissBillingIgnoreAfterDescription")}
+              className="settings-item--wide-control"
+            >
+              <div className="settings-item-actions">
+                <span className="settings-input-unit">
+                  <input
+                    key={`ignore-after-${effective.ignoreAfterMinutes}`}
+                    type="number"
+                    className="settings-input-small"
+                    min={0}
+                    max={1440}
+                    defaultValue={effective.ignoreAfterMinutes}
+                    disabled={!effective.enabled}
+                    onBlur={(event) => {
+                      const value = clampInteger(
+                        event.currentTarget.value,
+                        effective.ignoreAfterMinutes,
+                        0,
+                        1440,
+                      );
+                      event.currentTarget.value = String(value);
+                      if (value !== effective.ignoreAfterMinutes) {
+                        void updateCacheMissBilling({
+                          ignoreAfterMinutes: value,
+                        });
+                      }
+                    }}
+                    aria-label={t("cacheMissBillingIgnoreAfterTitle")}
+                  />
+                  <span>{t("cacheMissBillingMinutesUnit")}</span>
+                </span>
+              </div>
+            </SettingsItem>
+          )}
         </div>
 
         {error && <p className="settings-warning">{error}</p>}
       </SettingsSection>
 
       <SettingsSection
-        title={t("cacheMissChartTitle")}
-        description={t("cacheMissChartDescription")}
+        title={t("cacheMissEvidenceTitle")}
+        description={t("cacheMissEvidenceDescription")}
       >
-        <HideInSettingsSearch>
-          <CacheMissInactivityChart events={events} />
-        </HideInSettingsSearch>
-      </SettingsSection>
-
-      <SettingsSection description={t("cacheMissBillingEventsDescription")}>
         {eventsError && <p className="settings-warning">{eventsError}</p>}
         <HideInSettingsSearch>
-          <div className={styles.eventLog}>
-            <div className={styles.eventColumns}>
-              <div className={styles.eventColumn}>
-                <h3 className={styles.eventColumnTitle}>
-                  {t("cacheMissBillingFailuresTitle")}
-                </h3>
-                <CacheMissBillingEventList
-                  emptyMessage={t("cacheMissBillingFailuresEmpty")}
-                  events={failureEvents}
-                  t={t}
-                  basePath={basePath}
-                />
+          <div className={styles.evidence}>
+            <div className={styles.recencyControl}>
+              <div className={styles.recencyHeader}>
+                <div>
+                  <h3>{t("cacheMissRecencyTitle")}</h3>
+                  <p>{t("cacheMissRecencyDescription")}</p>
+                </div>
+                <span>
+                  {t("cacheMissRecencySummary", {
+                    shown: filteredEvents.length,
+                    total: events.length,
+                  })}
+                </span>
               </div>
-              <div className={styles.eventColumn}>
-                <h3 className={styles.eventColumnTitle}>
-                  {t("cacheMissBillingSuccessesTitle")}
-                </h3>
-                <CacheMissBillingEventList
-                  emptyMessage={t("cacheMissBillingSuccessesEmpty")}
-                  events={successEvents}
-                  t={t}
-                  basePath={basePath}
-                />
+              <div className={styles.recencyInputs}>
+                <div className={styles.sliderStack}>
+                  <input
+                    type="range"
+                    min={1}
+                    max={UNLIMITED_RECENCY_SLIDER_VALUE}
+                    step={1}
+                    value={recencyHours ?? UNLIMITED_RECENCY_SLIDER_VALUE}
+                    onChange={(event) =>
+                      setRecencyFromSlider(
+                        Number.parseInt(event.currentTarget.value, 10),
+                      )
+                    }
+                    aria-label={t("cacheMissRecencySliderLabel")}
+                  />
+                  <div className={styles.sliderLabels} aria-hidden="true">
+                    <span>1h</span>
+                    <span>96h</span>
+                    <span>∞</span>
+                  </div>
+                </div>
+                <label className={styles.recencyTextInput}>
+                  <span>{t("cacheMissRecencyHoursLabel")}</span>
+                  <span className="settings-input-unit">
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_RECENCY_HOURS}
+                      value={recencyText}
+                      placeholder="∞"
+                      onChange={(event) =>
+                        setRecencyFromText(event.currentTarget.value)
+                      }
+                      onBlur={normalizeRecencyText}
+                    />
+                    <span>{t("cacheMissRecencyHoursUnit")}</span>
+                  </span>
+                </label>
               </div>
             </div>
+
+            <div className={styles.chartGrid}>
+              <section className={styles.chartPanel}>
+                <h3>{t("cacheMissChartTitle")}</h3>
+                <p>{t("cacheMissChartDescription")}</p>
+                <CacheMissInactivityChart events={filteredEvents} />
+              </section>
+              <section className={styles.chartPanel}>
+                <h3>{t("cacheMissProbabilityTitle")}</h3>
+                <p>{t("cacheMissProbabilityDescription")}</p>
+                <CacheMissProbabilityChart events={filteredEvents} />
+              </section>
+              <section className={styles.chartPanel}>
+                <h3>{t("cacheMissProviderTitle")}</h3>
+                <p>{t("cacheMissProviderDescription")}</p>
+                <CacheMissProviderChart events={filteredEvents} />
+              </section>
+            </div>
+
+            <section className={styles.eventTableSection}>
+              <h3>{t("cacheMissEventsTitle")}</h3>
+              <p>{t("cacheMissBillingEventsDescription")}</p>
+              <CacheMissEventTable
+                events={filteredEvents}
+                basePath={basePath}
+                recencyHours={recencyHours}
+              />
+            </section>
           </div>
         </HideInSettingsSearch>
       </SettingsSection>

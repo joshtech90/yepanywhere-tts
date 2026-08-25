@@ -1,15 +1,26 @@
-import { exec } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, realpath, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { getLogger } from "../logging/logger.js";
 import { detectCodexCli } from "../sdk/cli-detection.js";
+import {
+  buildNpmCommandArgs,
+  resolveNpmCommandTarget,
+} from "../utils/npmCommand.js";
+import {
+  CODEX_INSTALLATION_FAMILY,
+  ProviderInstallationBusyError,
+  type ProviderInstallationCoordinator,
+  providerInstallationCoordinator,
+} from "./ProviderInstallationCoordinator.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const GITHUB_LATEST_URL =
   "https://api.github.com/repos/openai/codex/releases/latest";
 const DEFAULT_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
+const ALLOWED_NPM_PACKAGES = new Set(["@openai/codex"]);
 
 const log = getLogger().child({ component: "codex-update-checker" });
 
@@ -46,6 +57,15 @@ export interface CodexUpdateStatus {
   error: string | null;
 }
 
+export interface CodexUpdateInstallResult {
+  success: boolean;
+  output: string;
+  status: CodexUpdateStatus;
+  error?: string;
+  /** The installation is healthy but an active operation deferred mutation. */
+  retryable?: boolean;
+}
+
 export interface CodexUpdateCheckerOptions {
   /** Explicit Codex CLI path supplied by an embedding runtime such as desktop. */
   codexCliPath?: string;
@@ -65,6 +85,11 @@ export interface CodexUpdateCheckerOptions {
   ) => Promise<CodexInstallMetadata>;
   /** Override the package install command (for tests). Returns combined stdout/stderr. */
   runInstall?: (pkg: string) => Promise<string>;
+  /** Shared installation lifecycle owner (injectable for tests). */
+  installationCoordinator?: Pick<
+    ProviderInstallationCoordinator,
+    "runExclusiveUpdate" | "withReadLease"
+  >;
   /** Refresh TTL in ms (default: 24h). */
   refreshTtlMs?: number;
 }
@@ -104,12 +129,22 @@ export class CodexUpdateChecker {
     CodexUpdateCheckerOptions["runInstall"]
   >;
   private readonly refreshTtlMs: number;
+  private readonly installationCoordinator: Pick<
+    ProviderInstallationCoordinator,
+    "runExclusiveUpdate" | "withReadLease"
+  >;
 
   constructor(options: CodexUpdateCheckerOptions = {}) {
+    this.installationCoordinator =
+      options.installationCoordinator ?? providerInstallationCoordinator;
     this.fetchLatest = options.fetchLatest ?? fetchLatestFromGitHub;
     this.detectInstalled =
       options.detectInstalled ??
-      (() => detectInstalledFromCli(options.codexCliPath));
+      (() =>
+        detectInstalledFromCli(
+          options.codexCliPath,
+          this.installationCoordinator,
+        ));
     this.detectInstallMetadata =
       options.detectInstallMetadata ?? detectInstallMetadataFromPath;
     this.runInstall = options.runInstall ?? runNpmGlobalInstall;
@@ -184,12 +219,7 @@ export class CodexUpdateChecker {
    * Run `npm install -g <pkg>@latest` when the install is npm-global.
    * Refreshes status on success. Returns combined stdout/stderr.
    */
-  async install(): Promise<{
-    success: boolean;
-    output: string;
-    status: CodexUpdateStatus;
-    error?: string;
-  }> {
+  async install(): Promise<CodexUpdateInstallResult> {
     const current = await this.getStatus();
     if (current.updateMethod !== "npm" || !current.installedPackage) {
       return {
@@ -201,11 +231,68 @@ export class CodexUpdateChecker {
       };
     }
     const pkg = current.installedPackage;
-    log.info({ pkg }, "Running npm install -g for Codex CLI update");
+    if (!ALLOWED_NPM_PACKAGES.has(pkg)) {
+      return {
+        success: false,
+        output: "",
+        status: current,
+        error: `Refusing to update unrecognized Codex npm package: ${pkg}`,
+      };
+    }
+
+    let terminalStatus = current;
+    log.info(
+      { family: CODEX_INSTALLATION_FAMILY, pkg },
+      "Admitting Codex CLI update",
+    );
     try {
-      const output = await this.runInstall(pkg);
-      const refreshed = await this.getStatus({ force: true });
-      return { success: true, output, status: refreshed };
+      return await this.installationCoordinator.runExclusiveUpdate(
+        CODEX_INSTALLATION_FAMILY,
+        async () => {
+          const admitted = await this.getStatus({ force: true });
+          terminalStatus = admitted;
+          if (
+            admitted.updateMethod !== "npm" ||
+            admitted.installedPackage !== pkg
+          ) {
+            throw new Error(
+              "Codex installation changed before the update could start",
+            );
+          }
+
+          log.info(
+            { family: CODEX_INSTALLATION_FAMILY, pkg },
+            "Running npm install -g for Codex CLI update",
+          );
+          let output: string;
+          try {
+            output = await this.runInstall(pkg);
+          } catch (error) {
+            terminalStatus = await this.getStatus({ force: true });
+            throw error;
+          }
+          const refreshed = await this.getStatus({ force: true });
+          terminalStatus = refreshed;
+          if (!refreshed.installed || !refreshed.installedPath) {
+            throw new Error(
+              "Codex update completed but the production CLI probe could not launch the installation",
+            );
+          }
+          // A launchable CLI is not success by itself: npm can exit zero
+          // while the old version stays installed. The admitted target
+          // version must actually be reached before success publishes.
+          const target = admitted.latest;
+          if (
+            target !== null &&
+            compareVersions(refreshed.installed, target) < 0
+          ) {
+            throw new Error(
+              `Codex update completed but the installed CLI still reports ${refreshed.installed}; expected at least ${target}`,
+            );
+          }
+          return { success: true, output, status: refreshed };
+        },
+      );
     } catch (e) {
       const err = e as NodeJS.ErrnoException & {
         stdout?: string;
@@ -215,22 +302,39 @@ export class CodexUpdateChecker {
         .filter(Boolean)
         .join("\n")
         .trim();
-      log.warn({ error: err.message }, "npm install -g failed for Codex CLI");
+      const details = {
+        error: err.message,
+        family: CODEX_INSTALLATION_FAMILY,
+      };
+      if (e instanceof ProviderInstallationBusyError) {
+        log.info(details, "Codex CLI update deferred while provider is active");
+      } else {
+        log.warn(details, "Codex CLI update failed");
+      }
       return {
         success: false,
         output,
-        status: current,
+        status: terminalStatus,
         error: err.message,
+        ...(e instanceof ProviderInstallationBusyError
+          ? { retryable: true }
+          : {}),
       };
     }
   }
 }
 
-async function detectInstalledFromCli(codexCliPath?: string): Promise<{
+async function detectInstalledFromCli(
+  codexCliPath: string | undefined,
+  installationCoordinator: Pick<
+    ProviderInstallationCoordinator,
+    "withReadLease"
+  >,
+): Promise<{
   version: string | null;
   path: string | null;
 }> {
-  const info = await detectCodexCli(codexCliPath);
+  const info = await detectCodexCli(codexCliPath, installationCoordinator);
   return {
     version: info.version ?? null,
     path: info.path ?? null,
@@ -252,9 +356,15 @@ async function detectInstallMetadataFromPath(
   }
 
   const npmGlobalRoot = await getNpmGlobalRoot();
-  const installedPackage = npmGlobalRoot
+  let installedPackage = npmGlobalRoot
     ? extractNpmGlobalPackageName(resolvedInstalledPath, npmGlobalRoot)
     : null;
+  if (!installedPackage && npmGlobalRoot) {
+    installedPackage = await resolveNpmPrefixShimPackage(
+      resolvedInstalledPath,
+      npmGlobalRoot,
+    );
+  }
 
   if (installedPackage) {
     return {
@@ -291,9 +401,15 @@ export function inferManualInstallCommand(
 
 async function getNpmGlobalRoot(): Promise<string | null> {
   try {
-    const { stdout } = await execAsync("npm root -g", {
-      encoding: "utf-8",
-    });
+    const target = resolveNpmCommandTarget();
+    const { stdout } = await execFileAsync(
+      target.command,
+      buildNpmCommandArgs(target, ["root", "-g"]),
+      {
+        encoding: "utf-8",
+        windowsHide: true,
+      },
+    );
     const npmGlobalRoot = stdout.trim();
     if (!npmGlobalRoot) return null;
     try {
@@ -304,6 +420,55 @@ async function getNpmGlobalRoot(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+const MAX_SHIM_FILE_BYTES = 64 * 1024;
+
+/**
+ * Resolve the npm package behind a launcher shim that sits in the npm
+ * prefix directory beside `node_modules`. A normal Windows global install
+ * exposes `%APPDATA%\npm\codex.cmd` — a generated cmd/PowerShell/sh shim,
+ * not a symlink — so realpath never lands below `npm root -g` and prefix
+ * membership has to be recognized from the shim itself.
+ */
+async function resolveNpmPrefixShimPackage(
+  resolvedInstalledPath: string,
+  npmGlobalRoot: string,
+): Promise<string | null> {
+  if (path.basename(npmGlobalRoot) !== "node_modules") return null;
+  const prefixDir = path.dirname(npmGlobalRoot);
+  if (path.dirname(resolvedInstalledPath) !== prefixDir) return null;
+
+  let shim: string;
+  try {
+    const stats = await stat(resolvedInstalledPath);
+    if (!stats.isFile() || stats.size > MAX_SHIM_FILE_BYTES) return null;
+    shim = await readFile(resolvedInstalledPath, { encoding: "utf-8" });
+  } catch {
+    return null;
+  }
+
+  // Generated shims reference the target as
+  // node_modules\@scope\name\bin\entry.js (cmd) or with forward slashes
+  // (sh/PowerShell); either separator identifies the owning package.
+  const match = shim.match(
+    /node_modules[\\/](@[^\\/\s"']+[\\/][^\\/\s"']+|[^\\/\s"']+)/,
+  );
+  const candidate = match?.[1];
+  if (!candidate) return null;
+  const segments = candidate.split(/[\\/]/);
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    return null;
+  }
+
+  try {
+    const packageDir = path.join(npmGlobalRoot, ...segments);
+    const packageStats = await stat(packageDir);
+    if (!packageStats.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  return segments.join("/");
 }
 
 function extractNpmGlobalPackageName(
@@ -333,10 +498,20 @@ function extractNpmGlobalPackageName(
 }
 
 async function runNpmGlobalInstall(pkg: string): Promise<string> {
-  const { stdout, stderr } = await execAsync(`npm install -g ${pkg}@latest`, {
-    timeout: 5 * 60 * 1000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  if (!ALLOWED_NPM_PACKAGES.has(pkg)) {
+    throw new Error(`Unsupported Codex npm package: ${pkg}`);
+  }
+  const target = resolveNpmCommandTarget();
+  const { stdout, stderr } = await execFileAsync(
+    target.command,
+    buildNpmCommandArgs(target, ["install", "-g", `${pkg}@latest`]),
+    {
+      timeout: 5 * 60 * 1000,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
   return [stdout, stderr].filter(Boolean).join("\n").trim();
 }
 
@@ -403,4 +578,5 @@ export const __testing__ = {
   compareVersions,
   extractNpmGlobalPackageName,
   inferManualInstallCommand,
+  resolveNpmPrefixShimPackage,
 };

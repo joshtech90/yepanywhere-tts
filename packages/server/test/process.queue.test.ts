@@ -38,6 +38,82 @@ describe("MessageQueue", () => {
 
 describe("Process", () => {
   describe("message queue", () => {
+    it("reports when a human turn is yielded to provider input", async () => {
+      let resolveIterator!: (result: IteratorResult<SDKMessage>) => void;
+      const iterator: AsyncIterator<SDKMessage> = {
+        next: () =>
+          new Promise((resolve) => {
+            resolveIterator = resolve;
+          }),
+      };
+      const queue = new MessageQueue();
+      const process = new Process(iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+      });
+      const started = vi.fn();
+      const accepted = vi.fn();
+      process.subscribe((event) => {
+        if (event.type === "provider-turn-started") {
+          started(event.startedAtMs, event.turnKind);
+        } else if (event.type === "user-turn-accepted") {
+          accepted(event.startedAtMs);
+        }
+      });
+
+      const serverReceivedAt = new Date().toISOString();
+      process.queueMessage({
+        text: "provider-bound",
+        metadata: { serverReceivedAt },
+      });
+      await queue[Symbol.asyncIterator]().next();
+
+      expect(accepted).toHaveBeenCalledWith(Date.parse(serverReceivedAt));
+      expect(started).toHaveBeenCalledTimes(1);
+      expect(started).toHaveBeenCalledWith(expect.any(Number), "human");
+      resolveIterator({ done: true, value: undefined });
+      await process.abort();
+    });
+
+    it("reports automatic provider-input turns separately", async () => {
+      let resolveIterator!: (result: IteratorResult<SDKMessage>) => void;
+      const iterator: AsyncIterator<SDKMessage> = {
+        next: () =>
+          new Promise((resolve) => {
+            resolveIterator = resolve;
+          }),
+      };
+      const queue = new MessageQueue();
+      const process = new Process(iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "claude",
+        idleTimeoutMs: 100,
+        queue,
+      });
+      const started = vi.fn();
+      process.subscribe((event) => {
+        if (event.type === "provider-turn-started") {
+          started(event.startedAtMs, event.turnKind);
+        }
+      });
+
+      process.queueMessage({
+        text: "heartbeat",
+        automaticSource: "heartbeat",
+      });
+      await queue[Symbol.asyncIterator]().next();
+
+      expect(started).toHaveBeenCalledWith(expect.any(Number), "automatic");
+      resolveIterator({ done: true, value: undefined });
+      await process.abort();
+    });
+
     it("queues messages and returns position", async () => {
       const iterator = createMockIterator([
         { type: "system", session_id: "sess-1" },

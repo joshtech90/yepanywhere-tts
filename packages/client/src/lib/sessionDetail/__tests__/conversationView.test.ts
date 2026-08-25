@@ -502,6 +502,33 @@ describe("selectConversationThinkingPreviews", () => {
     expect(
       summary(projected).thinkingPreviews?.map((preview) => preview.id),
     ).toEqual(["latest"]);
+    expect(summary(projected).hasFollowingConversationText).toBe(false);
+  });
+
+  it("marks a completed turn whose authored text follows thinking", () => {
+    const projected = projectConversationView(
+      [
+        {
+          type: "thinking",
+          id: "thinking",
+          thinking: "Planning",
+          status: "complete",
+          sourceMessages: [],
+        },
+        {
+          type: "text",
+          id: "answer",
+          text: "Here is the result.",
+          sourceMessages: [],
+        },
+      ],
+      {
+        active: false,
+        nowMs: 1_000,
+      },
+    );
+
+    expect(summary(projected).hasFollowingConversationText).toBe(true);
   });
 
   it("omits dismissed preview slots without changing the source transcript", () => {
@@ -574,6 +601,11 @@ describe("selectConversationThinkingPreviews", () => {
       { label: "Write", detail: "Write: report.md", preview: "report.md" },
       { label: "Run", detail: "Run: pnpm test", preview: "pnpm test" },
     ]);
+    expect(summary(projected).tooltipActivities?.slice(0, 2)).toEqual([
+      { label: "Write", detail: "Write: report.md", preview: "report.md" },
+      { label: "Run", detail: "Run: pnpm test", preview: "pnpm test" },
+    ]);
+    expect(summary(projected).tooltipActivities).toHaveLength(4);
   });
 
   it("keeps the activities after the last thought once the turn ends", () => {

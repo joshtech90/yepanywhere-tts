@@ -20,9 +20,17 @@ import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../hooks/useInlineMedia";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
-import { writeClipboardText, writeClipboardTextLater } from "../lib/clipboard";
+import {
+  writeClipboardRichTextLater,
+  writeClipboardText,
+  writeClipboardTextLater,
+} from "../lib/clipboard";
 import { downloadBlob, writeClipboardImageLater } from "../lib/imageActions";
 import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
+import {
+  requireRenderedFileClipboardPayload,
+  requireRenderedHtmlClipboardPayload,
+} from "../lib/renderedFileClipboard";
 import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
 import {
@@ -73,6 +81,7 @@ interface LocalMediaModalProps {
   mediaType: LocalResourceMediaType;
   mediaSource?: LocalMediaSource;
   imageNavigation?: ImageViewerNavigation;
+  dismissOnBack?: boolean;
   onClose: () => void;
 }
 
@@ -90,6 +99,7 @@ interface DisplayedLocalMedia {
 interface LocalFileModalProps {
   resource: LocalResourceRef;
   initialPresentation?: FileViewPresentation;
+  dismissOnBack?: boolean;
   onClose: () => void;
 }
 
@@ -394,6 +404,7 @@ export function LocalMediaModal({
   mediaType,
   mediaSource,
   imageNavigation,
+  dismissOnBack,
   onClose,
 }: LocalMediaModalProps) {
   const { t } = useI18n();
@@ -558,6 +569,8 @@ export function LocalMediaModal({
           )
         }
         onClose={onClose}
+        closeOnBackGesture={dismissOnBack}
+        closeOnBackspace={dismissOnBack}
         variant={imageModalActive ? "image-viewer" : undefined}
       >
         {displayedImage ? (
@@ -614,6 +627,7 @@ export function LocalMediaModal({
 export function LocalFileModal({
   resource,
   initialPresentation,
+  dismissOnBack,
   onClose,
 }: LocalFileModalProps) {
   const sessionMetadata = useOptionalSessionMetadata();
@@ -685,7 +699,12 @@ export function LocalFileModal({
   }, [apiPath, presentation, transport]);
 
   return (
-    <Modal title={fileName} onClose={onClose}>
+    <Modal
+      title={fileName}
+      onClose={onClose}
+      closeOnBackGesture={dismissOnBack}
+      closeOnBackspace={dismissOnBack}
+    >
       <div className={styles.fileModalContent}>
         <div
           className={styles.fileModalMeta}
@@ -976,6 +995,38 @@ function LocalResourceContextMenu({
                   localResourceApiPath(resource, false),
                   transport,
                 ).then(readBlobText),
+              );
+            }
+      }
+      onCopyRenderedContents={
+        isMedia || !hasPresentationChoice
+          ? undefined
+          : () => {
+              const { projectFileTarget, resource } = contextMenu;
+              if (projectFileTarget) {
+                void writeClipboardRichTextLater(
+                  api
+                    .getFile(
+                      projectFileTarget.projectId,
+                      projectFileTarget.filePath,
+                      true,
+                    )
+                    .then((file) =>
+                      requireRenderedFileClipboardPayload(
+                        projectFileTarget.filePath,
+                        file,
+                      ),
+                    ),
+                );
+                return;
+              }
+              void writeClipboardRichTextLater(
+                fetchLocalResourceBlob(
+                  localResourceApiPath(resource, true),
+                  transport,
+                )
+                  .then(readBlobText)
+                  .then(requireRenderedHtmlClipboardPayload),
               );
             }
       }

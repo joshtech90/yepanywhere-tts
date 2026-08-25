@@ -19,6 +19,7 @@ See also:
 - [`client-global-store.md`](client-global-store.md)
 - [`inbox.md`](inbox.md)
 - [`architecture-mandates.md`](architecture-mandates.md)
+- [`server-cache-publication.md`](server-cache-publication.md)
 
 ## Continuous-observer model
 
@@ -76,6 +77,14 @@ Focused session targets in the same directory share one native watch while
 retaining per-target polling and trailing validation. Removing the final target
 closes that native watch, and an asynchronous file-resolution result arriving
 after the final unsubscribe must not recreate it.
+
+Cache publication follows the same ordering rule as watcher reconciliation.
+One mutable discovery or summary index scope has one process-local cold-load
+owner, and scans acknowledge only the invalidation revision they observed at
+start. A file event that arrives during a scan or summary parse remains pending
+even if the older request returns a coherent pre-event result. Derived disk
+snapshots publish through serialized atomic replacement; Gemini's durable
+project mapping additionally serializes its complete load/mutate/save cycle.
 
 Staleness is nevertheless an allowed state. An old, offscreen, unowned session
 may remain at its last durable compact observation until a file/process event,
@@ -334,6 +343,15 @@ restored snapshot against the server epoch/generation. Cross-tab coordination
 does not remove server-side single-flight: different browsers/devices and lease
 failover can still request the same work concurrently.
 
+An explicit `session-metadata-changed` project transition and a full session
+snapshot are authoritative for a known row's working-project membership.
+`session-created`, `session-status-changed`, and `process-state-changed` may
+seed a project on a row that does not have one yet, but their process launch
+project cannot move a known row back after reclassification. Sidebar project
+copy resolves the current project name from the project collection by that
+authoritative id, so an older name carried by the session row cannot leave a
+relocated session visibly grouped under its former project.
+
 ## Tests that should fail on contract regressions
 
 - Twenty simultaneous clients requesting one stale projection cause one
@@ -359,6 +377,9 @@ failover can still request the same work concurrently.
   completes after the final unsubscribe.
 - A late computation for an obsolete source version cannot overwrite a newer
   row or mark the newer generation fresh.
+- Moving an active session from project A to B updates its sidebar project
+  immediately, and a later lifecycle event carrying launch project A cannot
+  move it back.
 - A write to one project leaves every other shard's generation, retained rows,
   and delta comparison untouched.
 - One adapter pass over a provider-global store yields the same rows every

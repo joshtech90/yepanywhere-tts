@@ -6,7 +6,7 @@ import type { Supervisor } from "../../src/supervisor/Supervisor.js";
 
 describe("session done route", () => {
   it("returns the supervisor result and canonical queued-message projection", async () => {
-    const requestSessionDone = vi.fn(async () => ({
+    const requestSessionBoundaryAndAbort = vi.fn(async () => ({
       paused: true as const,
       queued: true,
       message: {
@@ -36,9 +36,11 @@ describe("session done route", () => {
     app.route(
       "/api/sessions",
       createSessionDoneRoutes({
-        sessionMetadataService: {} as SessionMetadataService,
+        sessionMetadataService: {
+          getMetadata: () => undefined,
+        } as unknown as SessionMetadataService,
         supervisor: {
-          requestSessionDone,
+          requestSessionBoundaryAndAbort,
           getProcessForSession,
         } as unknown as Supervisor,
       }),
@@ -68,19 +70,21 @@ describe("session done route", () => {
         },
       ],
     });
-    expect(requestSessionDone).toHaveBeenCalledWith("session-1");
+    expect(requestSessionBoundaryAndAbort).toHaveBeenCalledWith("session-1");
     expect(getProcessForSession).toHaveBeenCalledWith("session-1");
   });
 
   it("fails closed when durable session metadata is unavailable", async () => {
-    const requestSessionDone = vi.fn(async () => {
+    const requestSessionBoundaryAndAbort = vi.fn(async () => {
       throw new Error("should not run");
     });
     const app = new Hono();
     app.route(
       "/api/sessions",
       createSessionDoneRoutes({
-        supervisor: { requestSessionDone } as unknown as Supervisor,
+        supervisor: {
+          requestSessionBoundaryAndAbort,
+        } as unknown as Supervisor,
       }),
     );
 
@@ -89,6 +93,6 @@ describe("session done route", () => {
     });
 
     expect(response.status).toBe(503);
-    expect(requestSessionDone).not.toHaveBeenCalled();
+    expect(requestSessionBoundaryAndAbort).not.toHaveBeenCalled();
   });
 });

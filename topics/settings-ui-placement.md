@@ -101,6 +101,12 @@ UI should state directly.
   instructions at provider launch. Claude uses its system-prompt extension;
   other adapters prefix the first provider-facing user message, with current
   resume coverage differing by provider.
+- **Message Delivery → Keep Mobile Keyboard Open After Delivery.** A portable
+  browser-local preference, off by default. Pointer delivery on a touch layout
+  always retires the old browser editing host so pending Android IME composition
+  cannot become a new draft. Off leaves the replacement composer unfocused and
+  lets the keyboard collapse; on refocuses the replacement host after the
+  delivery boundary. Desktop keyboard delivery is unaffected.
 - **Remote Access → Host Marker.** Optional and unset by default. Presets apply
   immediately; a valid custom emoji applies on Enter or blur; Clear removes it.
   Connected clients show the marker in host-identifying headers and browser
@@ -155,17 +161,27 @@ UI should state directly.
   broad allow-set: their separate route permits only transcript-linked project
   files and bounded assets referenced by a linked Markdown or HTML file. The
   built-in hostname allow-set includes localhost, private-network IP addresses,
-  and Tailscale MagicDNS names ending in `.ts.net`.
+  and Tailscale MagicDNS names ending in `.ts.net`. File-access toggles save
+  immediately. Custom folders save when the editor loses focus or when the user
+  chooses **Save folders**; the pane-header **Undo** restores the file-access
+  values from when the pane opened.
 - **Local Access → Approval audit log.** Saves explicit approve and deny
   decisions, including the associated tool inputs or commands, to
   `logs/approval-decisions.jsonl`. It does not currently audit bypass-mode
   selection or transitions.
-- **Remote Executors.** The current implementation starts Claude sessions on
-  SSH hosts named by the server account's `~/.ssh/config`. A home-relative
-  local project maps the suffix below that operating-system account's home to
-  the remote SSH account's home; a project outside local home requires the
-  exact same absolute path remotely. The remote Claude CLI owns authentication
-  and may differ in version from the local SDK-managed CLI.
+- **Remote Executors.** This server-wide host list is the sole enablement for
+  the New Session **Run via SSH** chooser. Adding or removing a host updates an
+  already-mounted New Session form immediately; no page reload or server restart
+  is required. The chooser appears only for provider adapters that implement
+  remote execution; unsupported providers cannot retain an ignored executor
+  value. Hosts are aliases in the server account's `~/.ssh/config`. A
+  home-relative local project maps the suffix below that operating-system
+  account's home to the remote SSH account's home. Containment follows the
+  local platform's path identity, including case-insensitive Windows drive
+  paths; the mapped suffix uses the remote home path's separators. A project
+  outside local home requires the exact same absolute path remotely. The remote
+  provider CLI owns authentication and may differ in version from the local
+  runtime.
 - **Development / About.** Development is always visible immediately before
   About; About is last. Restart Server appears only when the development wrapper
   supports manual backend reload. Its warning counts interruptible active

@@ -55,6 +55,8 @@ let fileActivityOptions:
 let sessionWatchOptions:
   | {
       onChange?: (event: SessionWatchChangeEvent) => void;
+      onOpen?: () => void;
+      onReconnect?: () => void;
     }
   | undefined;
 
@@ -174,11 +176,13 @@ vi.mock("../useSessionMessages", () => ({
         projectId: "proj-1",
         provider: sessionMessagesMock.provider,
         model: "gpt-5.4",
+        updatedAt: "2026-04-24T00:00:00.000Z",
         messages: [],
       },
       updateSession,
       handleStreamingUpdate: vi.fn(),
       handleStreamMessageEvent: vi.fn(),
+      flushPendingStreamMessage: vi.fn(),
       handleStreamSubagentMessage,
       registerToolUseAgent,
       mergeLoadedAgentContent,
@@ -400,6 +404,26 @@ describe("useSession completion reconciliation", () => {
       vi.advanceTimersByTime(500);
     });
     expect(fetchNewMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("catches up after the focused session watch reconnects", () => {
+    renderHook(() => useSession(PROJECT_ID, "sess-1", undefined));
+
+    act(() => {
+      sessionWatchOptions?.onReconnect?.();
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the initial snapshot-to-watch race when the watch opens", () => {
+    renderHook(() => useSession(PROJECT_ID, "sess-1", undefined));
+
+    act(() => {
+      sessionWatchOptions?.onOpen?.();
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces deferred effort configuration failures", () => {
@@ -1335,6 +1359,55 @@ describe("useSession completion reconciliation", () => {
     });
   });
 
+  it("catches up when a heartbeat reports progress newer than durable state", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "heartbeat",
+        liveness: mockLiveness({
+          lastProviderMessageAt: "2026-04-24T00:06:00.000Z",
+        }),
+      });
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs a missed idle transition from the stream heartbeat", () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    expect(result.current.processState).toBe("in-turn");
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "heartbeat",
+        liveness: mockLiveness({
+          derivedStatus: "verified-idle",
+          activeWorkKind: "none",
+          state: "idle",
+          lastVerifiedIdleAt: "2026-04-24T00:06:00.000Z",
+        }),
+      });
+    });
+
+    expect(result.current.processState).toBe("idle");
+    expect(result.current.sessionLiveness).toMatchObject({
+      derivedStatus: "verified-idle",
+      state: "idle",
+    });
+  });
+
   it("moves stale liveness to live on user-visible stream progress", () => {
     const eventStart = new Date("2026-04-24T01:00:00.000Z");
     vi.setSystemTime(eventStart);
@@ -1384,6 +1457,55 @@ describe("useSession completion reconciliation", () => {
       lastRawProviderEventSource: "stream_event",
       silenceMs: 0,
     });
+  });
+
+  it("gates stream-progress liveness and publishes the trailing event", () => {
+    const eventStart = new Date("2026-04-24T01:00:00.000Z");
+    vi.setSystemTime(eventStart);
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+    const sendVisibleDelta = () =>
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "x" },
+        },
+      });
+
+    act(sendVisibleDelta);
+    expect(result.current.sessionLiveness?.lastVerifiedProgressAt).toBe(
+      eventStart.toISOString(),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(499);
+      sendVisibleDelta();
+    });
+    expect(result.current.sessionLiveness?.lastVerifiedProgressAt).toBe(
+      eventStart.toISOString(),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(result.current.sessionLiveness?.lastVerifiedProgressAt).toBe(
+      new Date(eventStart.getTime() + 499).toISOString(),
+    );
+
+    act(() => {
+      sendVisibleDelta();
+      vi.advanceTimersByTime(500);
+    });
+    expect(result.current.sessionLiveness?.lastVerifiedProgressAt).toBe(
+      new Date(eventStart.getTime() + 500).toISOString(),
+    );
   });
 
   it("keeps stale liveness when stream_event has no user-visible content", () => {

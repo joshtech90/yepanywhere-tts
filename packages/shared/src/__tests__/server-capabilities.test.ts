@@ -2,10 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   CAPABILITY_ID_ALLOCATIONS,
   CAPABILITY_ID_ENCODING_VERSION,
+  CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_UPDATE_CAPABILITY,
+  GIT_FILE_REVISION_CAPABILITY,
+  GIT_INCLUSIVE_TO_HEAD_CAPABILITY,
+  GIT_INCOMING_COMMITS_CAPABILITY,
+  GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+  GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
+  GIT_WORKING_TREE_FILES_CAPABILITY,
+  GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROVIDER_HOST_CONTROL_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_FREEZE_CAPABILITY,
@@ -95,6 +103,32 @@ describe("server capability advertisements", () => {
       ),
     ).toBe(false);
     expect(CAPABILITY_ID_ALLOCATIONS.claudeGatewayDisablePlanMode.id).toBe(36);
+    expect(
+      serverHasCapability(
+        { current: "0.7.1" },
+        GIT_WORKING_TREE_FILES_CAPABILITY,
+      ),
+    ).toBe(true);
+    expect(
+      serverHasCapability(
+        { current: "0.7.0" },
+        GIT_WORKING_TREE_FILES_CAPABILITY,
+      ),
+    ).toBe(false);
+    expect(CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeFiles.id).toBe(38);
+    expect(
+      serverHasCapability(
+        { current: "0.7.1" },
+        GIT_INCOMING_COMMITS_CAPABILITY,
+      ),
+    ).toBe(true);
+    expect(
+      serverHasCapability(
+        { current: "0.7.0" },
+        GIT_INCOMING_COMMITS_CAPABILITY,
+      ),
+    ).toBe(false);
+    expect(CAPABILITY_ID_ALLOCATIONS.gitIncomingCommits.id).toBe(39);
   });
 
   it("lets a negative bit override an otherwise implied capability", () => {
@@ -204,6 +238,91 @@ describe("server capability advertisements", () => {
         PROJECT_SESSION_DEFAULTS_CAPABILITY,
       ),
     ).toBe(true);
+  });
+
+  it("assigns inclusive To HEAD to permanent capability ID 40", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.gitInclusiveToHead.id).toBe(40);
+    const advertisement = encodeVersionedServerCapabilities(
+      [GIT_INCLUSIVE_TO_HEAD_CAPABILITY],
+      "0.7.0-741-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 8]],
+    });
+  });
+
+  it("assigns Working Tree sections to permanent capability ID 41", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeSections.id).toBe(41);
+    const advertisement = encodeVersionedServerCapabilities(
+      [GIT_WORKING_TREE_SECTIONS_CAPABILITY],
+      "0.7.0-741-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 9]],
+    });
+  });
+
+  it("assigns complete Working Tree scans to permanent capability ID 42", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.gitWorkingTreeCompleteScan.id).toBe(42);
+    const advertisement = encodeVersionedServerCapabilities(
+      [GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY],
+      "0.7.0-741-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 10]],
+    });
+  });
+
+  it("assigns file revision metadata to permanent capability ID 47", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.gitFileRevision.id).toBe(47);
+    expect(
+      serverHasCapability({ current: "0.7.2" }, GIT_FILE_REVISION_CAPABILITY),
+    ).toBe(true);
+    expect(
+      serverHasCapability({ current: "0.7.1" }, GIT_FILE_REVISION_CAPABILITY),
+    ).toBe(false);
+  });
+
+  it("assigns cache-billing ignore-after to permanent capability ID 43", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.cacheMissBillingIgnoreAfter.id).toBe(43);
+    const advertisement = encodeVersionedServerCapabilities(
+      [CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY],
+      "0.7.0-741-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 11]],
+    });
+  });
+
+  it("assigns the live worktree setting to permanent capability ID 44", () => {
+    expect(CAPABILITY_ID_ALLOCATIONS.gitLiveWorktreeSetting.id).toBe(44);
+    const advertisement = encodeVersionedServerCapabilities(
+      [GIT_LIVE_WORKTREE_SETTING_CAPABILITY],
+      "0.7.0-741-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 12]],
+    });
+  });
+
+  it("does not infer optional live worktree protocols from the release", () => {
+    expect(
+      serverHasCapability(
+        { current: "0.7.2" },
+        GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+      ),
+    ).toBe(false);
+    expect(
+      serverHasCapability(
+        { current: "0.7.2" },
+        GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
+      ),
+    ).toBe(false);
   });
 
   it("encodes selective share freeze in the second capability word", () => {

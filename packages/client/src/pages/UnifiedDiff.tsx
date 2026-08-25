@@ -1,7 +1,8 @@
 import type { PatchHunk } from "@yep-anywhere/shared";
-import { memo, type ReactNode, useMemo } from "react";
+import { Fragment, memo, type ReactNode, useMemo } from "react";
 import { parseDiffLineFragments } from "../lib/diffSideBySide";
 import { ReviewCommentSplitLayout } from "./ReviewCommentSplitLayout";
+import styles from "./UnifiedDiff.module.css";
 
 type UnifiedRow =
   | { type: "header"; text: string }
@@ -15,17 +16,36 @@ export const UnifiedDiff = memo(function UnifiedDiff({
   structuredPatch,
   splitAfterLine,
   editor = null,
+  plain = false,
+  hideRemovedLines = false,
 }: {
   diffHtml: string;
   structuredPatch: PatchHunk[];
   splitAfterLine?: number;
   editor?: ReactNode;
+  plain?: boolean;
+  hideRemovedLines?: boolean;
 }) {
-  const fragments = useMemo(() => parseDiffLineFragments(diffHtml), [diffHtml]);
-  const rows = useMemo(
-    () => buildUnifiedRows(structuredPatch),
-    [structuredPatch],
+  const fragments = useMemo(
+    () =>
+      plain
+        ? new Map<number, string>()
+        : parseDiffLineFragments(diffHtml, hideRemovedLines),
+    [diffHtml, hideRemovedLines, plain],
   );
+  const rows = useMemo(
+    () => (plain ? [] : buildUnifiedRows(structuredPatch, hideRemovedLines)),
+    [hideRemovedLines, plain, structuredPatch],
+  );
+  if (plain) {
+    return (
+      <PlainUnifiedRows
+        hunks={structuredPatch}
+        hideRemovedLines={hideRemovedLines}
+      />
+    );
+  }
+
   const splitIndex =
     splitAfterLine === undefined
       ? -1
@@ -34,7 +54,13 @@ export const UnifiedDiff = memo(function UnifiedDiff({
         );
 
   if (splitIndex < 0 || !editor) {
-    return <UnifiedRows rows={rows} fragments={fragments} />;
+    return (
+      <UnifiedRows
+        rows={rows}
+        fragments={fragments}
+        omitDiffPrefixes={hideRemovedLines}
+      />
+    );
   }
 
   return (
@@ -43,30 +69,76 @@ export const UnifiedDiff = memo(function UnifiedDiff({
         <UnifiedRows
           rows={rows.slice(0, splitIndex + 1)}
           fragments={fragments}
+          omitDiffPrefixes={hideRemovedLines}
         />
       }
       editor={editor}
       after={
-        <UnifiedRows rows={rows.slice(splitIndex + 1)} fragments={fragments} />
+        <UnifiedRows
+          rows={rows.slice(splitIndex + 1)}
+          fragments={fragments}
+          omitDiffPrefixes={hideRemovedLines}
+        />
       }
     />
   );
 });
 
-function buildUnifiedRows(hunks: PatchHunk[]): UnifiedRow[] {
+function PlainUnifiedRows({
+  hunks,
+  hideRemovedLines,
+}: {
+  hunks: PatchHunk[];
+  hideRemovedLines: boolean;
+}) {
+  return (
+    <div className={styles.plain} data-diff-rendering="plain">
+      <pre>
+        <code>
+          {hunks.map((hunk, index) => (
+            <Fragment key={`${hunk.oldStart}:${hunk.newStart}:${index}`}>
+              {!hideRemovedLines && (
+                <>
+                  <span className={`${styles.hunkHeader} line-hunk`}>
+                    {`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`}
+                  </span>
+                  {"\n"}
+                </>
+              )}
+              {hunk.lines
+                .filter((line) => !hideRemovedLines || !line.startsWith("-"))
+                .map((line) => (hideRemovedLines ? line.slice(1) : line))
+                .join("\n")}
+              {index + 1 < hunks.length ? "\n" : ""}
+            </Fragment>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+function buildUnifiedRows(
+  hunks: PatchHunk[],
+  hideRemovedLines: boolean,
+): UnifiedRow[] {
   const rows: UnifiedRow[] = [];
   let flatIndex = 0;
   for (const hunk of hunks) {
-    rows.push({
-      type: "header",
-      text: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
-    });
-    for (const line of hunk.lines) {
+    if (!hideRemovedLines) {
       rows.push({
-        type: "line",
-        flatIndex,
-        text: line,
+        type: "header",
+        text: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
       });
+    }
+    for (const line of hunk.lines) {
+      if (!hideRemovedLines || !line.startsWith("-")) {
+        rows.push({
+          type: "line",
+          flatIndex,
+          text: line,
+        });
+      }
       flatIndex += 1;
     }
   }
@@ -76,9 +148,11 @@ function buildUnifiedRows(hunks: PatchHunk[]): UnifiedRow[] {
 function UnifiedRows({
   rows,
   fragments,
+  omitDiffPrefixes,
 }: {
   rows: UnifiedRow[];
   fragments: Map<number, string>;
+  omitDiffPrefixes: boolean;
 }) {
   const html = rows
     .map((row) => {
@@ -87,7 +161,7 @@ function UnifiedRows({
       }
       return (
         fragments.get(row.flatIndex) ??
-        `<span class="${fallbackClassName(row.text)}" data-diff-line="${row.flatIndex}"><span class="diff-prefix">${escapeText(row.text[0] ?? " ")}</span>${escapeText(row.text.slice(1))}</span>`
+        `<span class="${fallbackClassName(row.text)}" data-diff-line="${row.flatIndex}">${omitDiffPrefixes ? "" : `<span class="diff-prefix">${escapeText(row.text[0] ?? " ")}</span>`}${escapeText(row.text.slice(1))}</span>`
       );
     })
     .join("");

@@ -14,9 +14,11 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
+  SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
   getCanonicalInvocationToken,
   isClaudeProviderName,
   serverHasCapability,
@@ -38,6 +40,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
 import { SessionViewerProvider } from "../components/SessionManagedViewer";
+import styles from "./SessionPage.module.css";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
@@ -93,6 +96,7 @@ import { useEngagementTracking } from "../hooks/useEngagementTracking";
 import { useBtwAsides } from "../hooks/useBtwAsides";
 import { useGeneratedTitleEnabled } from "../hooks/useGeneratedTitleEnabled";
 import { useGeneratedTitleLength } from "../hooks/useGeneratedTitleLength";
+import { useIncomingShareFiles } from "../hooks/useIncomingShareFiles";
 import {
   getModelSetting,
   getThinkingSetting,
@@ -481,10 +485,18 @@ function SessionPageContent({
     versionInfo,
     SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
   );
+  const supportsSyntheticTerminate = serverHasCapability(
+    versionInfo,
+    SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
+  );
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
   const supportsProjectSessionDefaults = serverHasCapability(
     versionInfo,
     PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  );
+  const supportsProjectCodeNames = serverHasCapability(
+    versionInfo,
+    PROJECT_CODE_NAMES_CAPABILITY,
   );
   const projectQueueProjectIds = useMemo(
     () =>
@@ -1049,7 +1061,9 @@ function SessionPageContent({
               (command !== "btw" || supportsBtwAsides) &&
               (command !== "done" ||
                 mainComposerForAside ||
-                syntheticDoneEnabled),
+                syntheticDoneEnabled) &&
+              (command !== "terminate" ||
+                (syntheticDoneEnabled && supportsSyntheticTerminate)),
           ).map(createClientSlashCommand)
         : [];
     if (supportsManualCompact) {
@@ -1086,6 +1100,7 @@ function SessionPageContent({
     status.owner,
     supportsBtwAsides,
     supportsManualCompact,
+    supportsSyntheticTerminate,
     syntheticDoneEnabled,
   ]);
 
@@ -1552,6 +1567,7 @@ function SessionPageContent({
         owner: status.owner,
         processState,
         items: activityRenderItems,
+        messages,
         sessionLiveness,
         hasSessionUpdateStream,
         sessionUpdatesConnected,
@@ -1559,6 +1575,7 @@ function SessionPageContent({
     [
       activityRenderItems,
       hasSessionUpdateStream,
+      messages,
       processState,
       sessionLiveness,
       sessionUpdatesConnected,
@@ -1989,6 +2006,7 @@ function SessionPageContent({
         syntheticDoneEnabled,
         syntheticDoneSupported: supportsSyntheticDone,
         syntheticArchiveSupported: supportsSyntheticArchive,
+        syntheticTerminateSupported: supportsSyntheticTerminate,
         hasAttachments:
           attachmentsRef.current.length > 0 ||
           pendingUploadsRef.current.size > 0,
@@ -2130,18 +2148,20 @@ function SessionPageContent({
   );
 
   const handleSyntheticSessionBoundary = useCallback(
-    async (command: "done" | "archive") => {
+    async (command: "done" | "archive" | "terminate") => {
       try {
         const result =
-          command === "archive"
-            ? await api.archiveSession(actualSessionId)
-            : await api.markSessionDone(actualSessionId);
+          command === "terminate"
+            ? await api.terminateSession(actualSessionId)
+            : command === "archive"
+              ? await api.archiveSession(actualSessionId)
+              : await api.markSessionDone(actualSessionId);
         // The composer cleared the command optimistically but kept the
         // localStorage recovery copy. Without this the text is restored on
         // remount and the session keeps a "Draft" badge for a command it
         // already consumed.
         draftControlsRef.current?.confirmInputClear();
-        if (command === "archive") {
+        if (command !== "done") {
           setLocalIsArchived(true);
           activityBus.emitLocal("session-metadata-changed", {
             type: "session-metadata-changed",
@@ -2161,9 +2181,11 @@ function SessionPageContent({
         draftControlsRef.current?.restoreFromStorage();
         showToast(
           t(
-            command === "archive"
-              ? "syntheticArchiveFailed"
-              : "syntheticDoneFailed",
+            command === "terminate"
+              ? "syntheticTerminateFailed"
+              : command === "archive"
+                ? "syntheticArchiveFailed"
+                : "syntheticDoneFailed",
           ),
           "error",
         );
@@ -3514,6 +3536,7 @@ function SessionPageContent({
         syntheticDoneEnabled,
         syntheticDoneSupported: supportsSyntheticDone,
         syntheticArchiveSupported: supportsSyntheticArchive,
+        syntheticTerminateSupported: supportsSyntheticTerminate,
         hasAttachments: false,
       });
       if (
@@ -3545,6 +3568,7 @@ function SessionPageContent({
       showToast,
       supportsSyntheticArchive,
       supportsSyntheticDone,
+      supportsSyntheticTerminate,
       syntheticDoneEnabled,
     ],
   );
@@ -4013,11 +4037,24 @@ function SessionPageContent({
         })
           .then(
             (uploaded) => {
-              if (
-                !isComposerStagedAttachment(uploaded) &&
-                uploaded.mimeType.startsWith("image/")
-              ) {
-                void storeUploadedAttachmentPreview(uploaded, file).catch(
+              if (uploaded.mimeType.startsWith("image/")) {
+                const cachedFile = isComposerStagedAttachment(uploaded)
+                  ? {
+                      id: uploaded.id,
+                      originalName: uploaded.originalName,
+                      name: uploaded.name,
+                      path: uploaded.id,
+                      size: uploaded.size,
+                      mimeType: uploaded.mimeType,
+                      ...(uploaded.width !== undefined
+                        ? { width: uploaded.width }
+                        : {}),
+                      ...(uploaded.height !== undefined
+                        ? { height: uploaded.height }
+                        : {}),
+                    }
+                  : uploaded;
+                void storeUploadedAttachmentPreview(cachedFile, file).catch(
                   (err) => {
                     console.warn(
                       "[SessionPage] Failed to cache attachment preview:",
@@ -4065,6 +4102,11 @@ function SessionPageContent({
       t,
     ],
   );
+
+  useIncomingShareFiles(handleAttach, {
+    enabled: !isDomLingerParked,
+    onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
+  });
 
   const handleRemoveAttachment = useCallback(
     (id: string) => {
@@ -4165,7 +4207,12 @@ function SessionPageContent({
   }, [pendingElsewhereDismissKey]);
 
   // Update browser tab title
-  useDocumentTitle(project?.name, displayTitle, !isDomLingerParked);
+  useDocumentTitle(
+    project?.name,
+    supportsProjectCodeNames ? project?.codeName : undefined,
+    displayTitle,
+    !isDomLingerParked,
+  );
 
   const setRetitleState = (state: GeneratedRetitleState | null) => {
     generatedRetitleRef.current = state;
@@ -5355,7 +5402,7 @@ function SessionPageContent({
       )}
 
       <div
-        className={`session-split${
+        className={`${styles.sessionSplit} session-split${
           wantBtwSplitLayout ? " session-split-with-aside" : ""
         }${
           wantBtwSplitLayout && btwSidePaneCollapsed
@@ -5363,7 +5410,7 @@ function SessionPageContent({
             : ""
         }`}
       >
-        <main className="session-messages" tabIndex={-1}>
+        <main className={`${styles.messages} session-messages`} tabIndex={-1}>
           {loading ? (
             <div className="loading">
               <div>{t("sessionLoading")}</div>
@@ -5499,6 +5546,7 @@ function SessionPageContent({
             </SessionMetadataProvider>
           )}
         </main>
+        <div className={styles.viewerLayer} data-session-viewer-layer />
         {showBtwSidePane && focusedBtwAside && (
           <BtwAsidePane
             aside={focusedBtwAside}
@@ -5524,7 +5572,7 @@ function SessionPageContent({
           </button>
         )}
 
-        <footer className="session-input">
+        <footer className={`${styles.input} session-input`}>
           <div
             className={`session-connection-bar session-connection-${sessionConnectionStatus}`}
           />

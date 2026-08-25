@@ -9,7 +9,8 @@ Topic: project-path-links
 Status: **implemented (2026-08-02); demand-driven cache and turn-text
 annotation landed 2026-08-05; authenticated absolute-path probes landed
 2026-08-10; command, tool-result, and user-turn annotations landed
-2026-08-16.**
+2026-08-16; viewed-file-relative and external-file-relative links landed
+2026-08-25.**
 Highlighted file content, assistant turn text, completed command text, and
 completed tool-result bodies link exact project files through a demand-driven,
 watcher-backed directory cache — the same cache that now also decides the
@@ -40,9 +41,11 @@ an existing prefix is never linked out of a longer filename. It is never added
 to the project index or discovered by a filesystem crawl.
 The probe uses the same realpath-resolved allow-set and regular-file check as
 the authenticated file endpoint, and click-time fetching repeats that check.
-At most 64 distinct absolute candidates are probed for one completed body.
-Short tokens such as `/x`, network-style `//...` tokens, missing files, and
-files outside the configured allow-set remain plain text.
+At most 64 distinct direct-filesystem candidates are probed for one completed
+body, shared between explicit absolute paths and paths resolved relative to an
+external viewed file. Short absolute tokens such as `/x`, network-style
+`//...` tokens, missing files, and files outside the configured allow-set
+remain plain text.
 
 This absolute-path resolver is absent from both live and frozen public-share
 rendering. Generated absolute links also carry the private-project-link marker
@@ -221,6 +224,33 @@ rewrites only confirmed files. Project-relative matches retain the existing
 local-file markup; absolute matches use private project-file markup so both
 open in the FileViewer belonging to the active session project.
 
+Highlighted file content also resolves relative tokens from the viewed file's
+containing directory when the same token is not an existing project-root path.
+Project-root precedence preserves every established link when both coordinates
+exist. A leading `$ROOT/` is treated as an explicit relative-root marker: the
+marker is removed, then the same project-root-first, viewed-directory-second
+resolution applies. This covers configuration values such as
+`$ROOT/input/example.txt` without teaching the viewer a project-specific file
+format. Turn text and tool annotations have no viewed-file coordinate, so their
+project-root-relative contract is unchanged.
+
+When the viewed file itself is an allowed absolute file outside the selected
+project, relative tokens resolve from that file's directory through the same
+authenticated allow-set and regular-file oracle as explicit absolute paths.
+The unrelated selected-project index is not queried. If every distinct token
+fits the body's remaining 64-probe budget, all are checked once; repeated
+occurrences share that answer. For a larger body, only tokens with a path
+separator, a leading dot, or a plausible extension are eligible, and the same
+cap still applies. Confirmed targets use private project-file viewer links;
+public shares receive no external resolver and cannot discover these files.
+
+All possible targets for one body enter the same `findExisting()` batch. The
+index therefore answers cached negative prefixes immediately and groups dense
+root or sibling-directory candidates into its existing bounded directory
+listing; file-relative support adds no per-token `stat` loop and no project
+crawl. Self-link suppression applies to the resolved target rather than only
+to the visible spelling.
+
 Constraints that keep it safe over arbitrary markup:
 
 - Only text between tags is rewritten. Markup is never matched, so a real
@@ -240,6 +270,14 @@ Constraints that keep it safe over arbitrary markup:
 
 An empty or unavailable index returns the content unchanged, so the feature
 degrades to plain content rather than failing the view.
+
+## Design decisions
+
+- **Project-root paths win collisions** (vs. nearest-file precedence): adding a
+  sibling with the same name cannot retarget an existing project-relative link.
+- **Expand bounded target aliases into the existing index batch** (vs. client
+  path corpora or a second filesystem oracle): the watcher-backed index keeps
+  membership, invalidation, and I/O batching authoritative in one place.
 
 ## Turn text
 

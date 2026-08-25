@@ -2,6 +2,7 @@ import {
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
+  PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   type ProjectQueueItemSummary,
   serverHasCapability,
@@ -165,9 +166,11 @@ function compareDuplicateRepresentative(
 }
 
 // Named with a `debugLog` prefix so the console-chatter scanner treats its
-// console.debug sites as dev-gated (topics/console-chatter.md); the call site
+// console.debug site as dev-gated (topics/console-chatter.md); the call site
 // still guards on import.meta.env.DEV so nothing runs in production.
-function debugLogSidebarDuplicates(sessions: SidebarSessionItem[]): void {
+function debugLogRepeatedSidebarSessionIds(
+  sessions: SidebarSessionItem[],
+): void {
   const idCounts = new Map<string, number>();
   for (const session of sessions) {
     idCounts.set(session.id, (idCounts.get(session.id) ?? 0) + 1);
@@ -175,30 +178,6 @@ function debugLogSidebarDuplicates(sessions: SidebarSessionItem[]): void {
   const repeatedIds = [...idCounts].filter(([, count]) => count > 1);
   if (repeatedIds.length > 0) {
     console.debug("[Sidebar] repeated session ids in recent list", repeatedIds);
-  }
-  const groups = new Map<string, SidebarSessionItem[]>();
-  for (const session of sessions) {
-    const key = duplicateGroupingKey(session);
-    if (!key) continue;
-    let group = groups.get(key);
-    if (!group) {
-      group = [];
-      groups.set(key, group);
-    }
-    group.push(session);
-  }
-  for (const [key, arr] of groups) {
-    if (arr.length <= 1) continue;
-    console.debug(
-      `[Sidebar] duplicate-title group (${arr.length}) ${key}`,
-      arr.map((session) => ({
-        id: session.id,
-        activity: session.activity,
-        updatedAt: session.updatedAt,
-        owner: session.ownership?.owner,
-        messageCount: session.messageCount,
-      })),
-    );
   }
 }
 
@@ -404,6 +383,10 @@ export function Sidebar({
     serverSettings?.clientDefaults,
   );
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
+  const supportsProjectCodeNames = serverHasCapability(
+    versionInfo,
+    PROJECT_CODE_NAMES_CAPABILITY,
+  );
   const supportsSourceControl = serverHasCapability(
     versionInfo,
     GIT_STATUS_ENHANCED_CAPABILITY,
@@ -668,8 +651,16 @@ export function Sidebar({
     : EMPTY_PROJECT_QUEUE_SESSION_IDS;
   const knownProjectQueueItems = useKnownProjectQueueItems();
   const projectNameById = useMemo(
-    () => new Map(projects.map((project) => [project.id, project.name])),
-    [projects],
+    () =>
+      new Map(
+        projects.map((project) => [
+          project.id,
+          supportsProjectCodeNames && project.codeName
+            ? project.codeName
+            : project.name,
+        ]),
+      ),
+    [projects, supportsProjectCodeNames],
   );
   const pendingProjectQueueItems = useMemo(
     () =>
@@ -854,10 +845,10 @@ export function Sidebar({
     return { visibleOlder: visible, hiddenOlder: hidden };
   }, [groupDuplicateSessions, olderSessions, sidebarDuplicateHidingEnabled]);
 
-  // Dev-only: surface how a single logical conversation fans out across rotated
-  // session ids (and flag any true repeated id, which the collapse cannot fix).
+  // Dev-only: flag a true repeated id, which title grouping cannot fix.
   useEffect(() => {
-    if (import.meta.env.DEV) debugLogSidebarDuplicates(recentDaySessions);
+    if (import.meta.env.DEV)
+      debugLogRepeatedSidebarSessionIds(recentDaySessions);
   }, [recentDaySessions]);
 
   const drafts = useDraftSessionIds();
@@ -898,7 +889,9 @@ export function Sidebar({
         activity={getSidebarRowActivity(session)}
         onNavigate={onNavigate}
         showProjectName
-        projectName={session.projectName}
+        projectName={
+          projectNameById.get(session.projectId) ?? session.projectName
+        }
         basePath={basePath}
         messageCount={session.messageCount}
         hasDraft={drafts.has(session.id)}

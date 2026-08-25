@@ -98,6 +98,11 @@ export default defineConfig(({ command }) => ({
       input: {
         main: resolve(__dirname, "remote.html"),
       },
+      output: {
+        manualChunks: {
+          "react-runtime": ["react", "react-dom/client"],
+        },
+      },
     },
   },
   // Dev server configuration

@@ -56,6 +56,8 @@ export const UI_KEYS = {
   speechMessageCustomPrefix: "yep-anywhere-speech-message-custom-prefix",
   speechMicDeviceId: "yep-anywhere-speech-mic-device-id",
   floatingActionButtonEnabled: "yep-anywhere-floating-action-button-enabled",
+  keepMobileKeyboardOpenAfterDelivery:
+    "yep-anywhere-keep-mobile-keyboard-open-after-delivery",
   developerMode: "yep-anywhere-developer-mode",
   conversationView: "yep-anywhere-conversation-view-enabled",
   conversationViewTurnLimit: "yep-anywhere-conversation-view-turn-limit",
@@ -86,6 +88,7 @@ export const UI_KEYS = {
   selectionNewSessionActionEnabled:
     "yep-anywhere-selection-new-session-action-enabled",
   sessionThinkingVisible: "yep-anywhere-session-thinking-visible",
+  cacheMissEventOutcomeFilter: "yep-anywhere-cache-miss-event-outcome-filter",
   settingsSearchMatchValues: "yep-anywhere-settings-search-match-values",
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",
   sessionLoadingProgress: "yep-anywhere-session-loading-progress-enabled",

@@ -73,8 +73,13 @@ provider-history rewrite and not deletion.
   YA does not infer failure from unconstrained summary prose.
 - Each assistant turn with condensed activity ends in one summary button. A
   completed summary reads like `4m · 17 activities hidden`; the live
-  edge reads like `Working 4m · 17 activities`. If source timestamps are
-  unavailable, the label keeps the activity count without inventing a time.
+  edge reads like `Working 4m · 17 activities`. A durable completion marker in
+  the latest turn—provider `turn_complete`, or a Stop-hook summary that did not
+  prevent continuation—ends stale coarse `in-turn` presentation. A marker from
+  an older turn does not apply after a newer user prompt, and explicitly
+  provider-retained background work remains active after turn completion. If
+  source timestamps are unavailable, the label keeps the activity count without
+  inventing a time.
   Durations below 10 seconds retain one decimal place; durations from 10
   seconds onward use whole seconds (or the existing compact minute/hour form).
   Its disclosure triangle stays legible at the compact text size and is
@@ -116,11 +121,27 @@ provider-history rewrite and not deletion.
   keeps only its latest thinking block. While the next block streams, its
   immediately preceding completed block returns as the expanded previous
   preview, preserving live-turn context without leaving two completed cards
-  behind. A block restored by expanding its ordinary activity summary is not
-  duplicated in the preview. Preview text participates in the projected search
-  scope. The row packs the activity summary and available previews together
-  whenever their measured target widths fit, then wraps whole cards when they
-  do not.
+  behind. When that completed turn also has visible agent-authored
+  conversation text after the thinking, the thinking preview and the
+  thinking-height activity names hide after
+  `CONVERSATION_THINKING_AUTO_HIDE_MS` (5s). The hide is a
+  `CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS` (1.5s) CSS height rollup of
+  the activity+thinking row down to the compact summary: overflow clips
+  from the bottom while a bottom-edge mask fades the clipping line, and
+  the extras ease-in to `opacity: 0` over the same 1.5s so the shrink
+  stays visible. The summary pill does not fade. After the 1.5s the extras
+  unmount. The delay runs from turn completion, or from the moment the card
+  appeared when that is later — a live turn's first thought, or thinking
+  switched back on, is glanceable for its own 5s rather than vanishing on
+  arrival. A turn already rendered as complete more than 5s ago starts
+  compact, with no flash of the card. Live turns, and completed turns whose
+  latest content is still thinking, keep the preview. Turning thinking
+  visibility back on restores the preview even after auto-hide. A new turn
+  interrupting the rollup returns the row to its natural height. A block
+  restored by expanding its ordinary activity summary is not duplicated in
+  the preview. Preview text participates in the projected search scope. The
+  row packs the activity summary and available previews together whenever
+  their measured target widths fit, then wraps whole cards when they do not.
 - The activity list and the superseded *previous* thinking preview each cap
   their height to the current/latest preview's rendered content height, measured
   and published on the row as `--conversation-thinking-height`. Neither sibling
@@ -186,8 +207,15 @@ provider-history rewrite and not deletion.
   cut. File operations may add a basename and commands may add a bounded
   description or verb-first command fragment. These previews remain whole single
   lines and may truncate; by default they cannot widen the activity column. The
-  complete ordinary tool summary remains available as a tooltip. Shell
-  separators divide a command preview only outside quoted or escaped text, so a
+  complete ordinary tool summary remains available as a tooltip. The turn's
+  compact activity summary keeps its ordinary expand/collapse hint on hover; a
+  secondary click enlarges that hint into the same one-line count/duration
+  headline in stronger weight plus the newest available ordinary activity
+  summaries. The detail list is bounded to the same 24-row preview budget and
+  newest-first order as activity names; the headline's activity count remains
+  authoritative, and an ellipsis marks hidden thinking, semantic sub-actions,
+  or older summaries that the preview cannot enumerate. Shell separators divide
+  a command preview only outside quoted or escaped text, so a
   quoted regular-expression alternation or semicolon remains part of its
   argument while a real pipeline still supplies separate command segments.
   Because the names cap to the current/latest card's rendered height, collapsing
@@ -287,9 +315,12 @@ The history-window projection and `projectConversationView` run after the
 stable provider transcript projection and before turn grouping, timeline rows,
 search, and React rendering. The window selects a user-turn-aligned suffix;
 `projectConversationView` then adds a synthetic `conversation_activity` render
-item rather than hiding DOM nodes. This keeps owner/public behavior, ordering,
-media retention, search scope, progressive rendering, and scroll anchoring
-attached to the same render-item model as the full transcript.
+item rather than hiding DOM nodes. Its output is identity-stabilized before turn
+grouping: an unchanged synthetic activity summary must keep its render-item
+identity while the live tail changes. This keeps owner/public behavior,
+ordering, media retention, search scope, progressive rendering, scroll
+anchoring, and historical turn memoization attached to the same render-item
+model as the full transcript.
 
 **Grow within a block, reset between blocks** (vs. an exponential moving
 average over recent blocks): a complete thinking turn is normally only a few

@@ -214,7 +214,7 @@ export interface SessionsDeps {
   projectMetadataService?: ProjectMetadataService;
   projectQueueScheduler?: Pick<
     ProjectQueueScheduler,
-    "reserveUserSessionStart"
+    "reserveUserSessionStart" | "sessionProjectChanged"
   >;
   eventBus?: EventBus;
   codexScanner?: CodexSessionScanner;
@@ -2686,6 +2686,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const metadata = deps.sessionMetadataService.getMetadata(sessionId);
     const process = deps.supervisor.getProcessForSession(sessionId);
+    const previousWorkingProjectId =
+      metadata?.workingProjectId ??
+      process?.projectId ??
+      (projectId as UrlProjectId);
     const transcriptProjectId =
       metadata?.transcriptProjectId ??
       process?.projectId ??
@@ -2725,6 +2729,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       sessionId,
       storedWorkingProjectId,
       storedTranscriptProjectId,
+    );
+    deps.projectQueueScheduler?.sessionProjectChanged(
+      previousWorkingProjectId,
+      targetProjectId,
     );
 
     deps.eventBus?.emit({
@@ -3219,20 +3227,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
-
-    // Normalized messages may be shared by the parsed-transcript cache, and
-    // several provider readers expose stable message objects directly.
-    // Route-specific HTML, tool, media, and pruning fields belong only to this
-    // response projection.
-    session = {
-      ...session,
-      messages: detachSessionMessageProjection(session.messages),
-    };
-    if (isClaudeSdkProviderName(session.provider)) {
-      pruneTaskListSnapshotsToLatest(session.messages);
-    }
     const sliceEndMs = performance.now();
 
+    // Normalization carries sanitized inline image bytes as private symbol
+    // metadata. Consume those candidates before generic response detachment,
+    // which intentionally retains only serializable fields. The materializer
+    // is copy-on-write and does not mutate provider-reader cache objects.
     if (!publicShare && deps.toolResultMediaStore) {
       session = {
         ...session,
@@ -3245,6 +3245,18 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           })
           .materializeMessages(session.messages),
       };
+    }
+
+    // Normalized messages may be shared by the parsed-transcript cache, and
+    // several provider readers expose stable message objects directly.
+    // Route-specific HTML, tool, media, and pruning fields belong only to this
+    // response projection.
+    session = {
+      ...session,
+      messages: detachSessionMessageProjection(session.messages),
+    };
+    if (isClaudeSdkProviderName(session.provider)) {
+      pruneTaskListSnapshotsToLatest(session.messages);
     }
 
     // Keep persisted rendering in lockstep with stream augmentation behavior.
@@ -7026,6 +7038,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const { patch } = parsed;
 
     await deps.sessionMetadataService.updateMetadata(sessionId, patch);
+
+    // Archive is a stop boundary, including for older clients that only know
+    // the generic metadata route. Provider-owned background jobs can outlive a
+    // graceful turn interrupt, so verify the whole owned process is gone.
+    if (patch.archived === true) {
+      await deps.supervisor.abortSessionWithVerification(sessionId);
+    }
 
     if (patch.heartbeatTurnText) {
       const savedProjectId =

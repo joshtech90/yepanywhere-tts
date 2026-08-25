@@ -8,6 +8,9 @@ import type {
   GitFileListResult,
   GitFileDiffMode,
   GitFileProjectionManifest,
+  GitFileRevision,
+  GitIncomingCommitListResult,
+  GitInclusiveRevisionComparison,
   GitIntegrationOptionsResult,
   GitPullResult,
   GitPushResult,
@@ -15,23 +18,55 @@ import type {
   GitRevisionComparison,
   GitSearchResult,
   GitStatusInfo,
+  GitUntrackedFileListResult,
   GitUntrackedFolderInfo,
+  GitWorkingTreeFileListResult,
+  GitWorktreeCoverage,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
 
 export const gitApi = {
-  getGitStatus: (projectId: string) =>
-    fetchJSON<GitStatusInfo>(`/projects/${projectId}/git`),
+  getGitStatus: (
+    projectId: string,
+    options: { omitUntracked?: boolean; useUntrackedCache?: boolean } = {},
+  ) => {
+    const untrackedMode = options.useUntrackedCache
+      ? "cache"
+      : options.omitUntracked
+        ? "none"
+        : null;
+    return fetchJSON<GitStatusInfo>(
+      `/projects/${projectId}/git${untrackedMode ? `?untracked=${untrackedMode}` : ""}`,
+    );
+  },
 
   getGitUntrackedFolder: (projectId: string, path: string) =>
     fetchJSON<GitUntrackedFolderInfo>(
       `/projects/${projectId}/git/untracked-folder?path=${encodeURIComponent(path)}`,
     ),
 
+  listGitUntrackedFiles: (
+    projectId: string,
+    params: { path?: string; q?: string } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (params.path) query.set("path", params.path);
+    if (params.q) query.set("q", params.q);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return fetchJSON<GitUntrackedFileListResult>(
+      `/projects/${projectId}/git/untracked-files${suffix}`,
+    );
+  },
+
   checkGitRemote: (projectId: string) =>
     fetchJSON<GitRemoteCheckResult>(`/projects/${projectId}/git/check-remote`, {
       method: "POST",
     }),
+
+  getGitIncomingCommits: (projectId: string) =>
+    fetchJSON<GitIncomingCommitListResult>(
+      `/projects/${projectId}/git/incoming-commits`,
+    ),
 
   getGitIntegrationOptions: (projectId: string) =>
     fetchJSON<GitIntegrationOptionsResult>(
@@ -120,6 +155,11 @@ export const gitApi = {
       `/projects/${projectId}/git/compare/${encodeURIComponent(sha)}`,
     ),
 
+  getGitInclusiveComparison: (projectId: string, sha: string) =>
+    fetchJSON<GitInclusiveRevisionComparison>(
+      `/projects/${projectId}/git/range-to-head/${encodeURIComponent(sha)}`,
+    ),
+
   getGitComparisonDiff: (
     projectId: string,
     params: {
@@ -137,16 +177,46 @@ export const gitApi = {
       body: JSON.stringify(params),
     }),
 
+  getGitInclusiveComparisonDiff: (
+    projectId: string,
+    params: {
+      baseSha: string;
+      headSha: string;
+      path: string;
+      status: string;
+      origPath?: string;
+      fullContext?: boolean;
+      ignoreWhitespace?: boolean;
+    },
+  ) =>
+    fetchJSON<GitDiffResult>(`/projects/${projectId}/git/range-to-head-diff`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
   getGitFileProjections: (projectId: string) =>
     fetchJSON<GitFileProjectionManifest>(
       `/projects/${projectId}/git/file-projections`,
     ),
+
+  getGitFileRevision: (
+    projectId: string,
+    params: { path: string; rev?: string; origPath?: string },
+  ) => {
+    const query = new URLSearchParams({ path: params.path });
+    if (params.rev) query.set("rev", params.rev);
+    if (params.origPath) query.set("origPath", params.origPath);
+    return fetchJSON<GitFileRevision>(
+      `/projects/${projectId}/git/file-revision?${query.toString()}`,
+    );
+  },
 
   getGitFileProjectionDiff: (
     projectId: string,
     params: {
       path: string;
       mode: GitFileDiffMode;
+      origPath?: string;
       fullContext?: boolean;
     },
   ) =>
@@ -176,6 +246,22 @@ export const gitApi = {
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return fetchJSON<GitFileListResult>(
       `/projects/${projectId}/git/files${suffix}`,
+    );
+  },
+
+  listGitWorkingTreeFiles: (
+    projectId: string,
+    coverage?: GitWorktreeCoverage,
+  ) => {
+    const query = new URLSearchParams();
+    if (coverage) {
+      query.set("tracked", String(coverage.tracked));
+      query.set("untracked", String(coverage.untracked));
+      query.set("ignored", String(coverage.ignored));
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return fetchJSON<GitWorkingTreeFileListResult>(
+      `/projects/${projectId}/git/working-tree-files${suffix}`,
     );
   },
 

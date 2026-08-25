@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -7,11 +8,16 @@ import {
 } from "@testing-library/react";
 import { toUrlProjectId, type FileContentResponse } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../api/client";
+import { QuoteReplyProvider } from "../../contexts/QuoteReplyContext";
 import { I18nProvider } from "../../i18n";
 import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
+import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 import { extractMarkdownSnippetsFromSelection } from "../../lib/markdownSelectionCopy";
 import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
+import { UI_KEYS } from "../../lib/storageKeys";
 import { FileViewer, type FileViewerSource } from "../FileViewer";
+import { FileViewerModal } from "../FilePathLink";
 
 const mocks = vi.hoisted(() => ({
   useFileVersionControl: vi.fn(),
@@ -162,6 +168,116 @@ describe("FileViewer", () => {
         "range",
       ),
     );
+  });
+
+  it("offers a Back control that closes a modal viewer", async () => {
+    const onClose = vi.fn();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.txt",
+          size: 5,
+          mimeType: "text/plain",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "notes",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="notes.txt"
+          source={source}
+          onClose={onClose}
+        />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs out of an in-file viewer before closing its parent", async () => {
+    const childResponse: FileContentResponse = {
+      metadata: {
+        path: "child.yml",
+        size: 5,
+        mimeType: "text/yaml",
+        isText: true,
+      },
+      rawUrl: "",
+      content: "child",
+    };
+    const getFile = vi.spyOn(api, "getFile").mockResolvedValue(childResponse);
+    const onClose = vi.fn();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "parent.yml",
+          size: 9,
+          mimeType: "text/yaml",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "child.yml",
+        highlightedHtml:
+          '<a href="/projects/project-id/file?path=child.yml" ' +
+          'data-ya-resource="project-file" data-ya-project-id="project-id" ' +
+          'data-ya-path="child.yml">child.yml</a>',
+      })),
+    };
+
+    try {
+      render(
+        <I18nProvider>
+          <FileViewerModal
+            projectId="project-id"
+            filePath="parent.yml"
+            source={source}
+            onClose={onClose}
+          />
+        </I18nProvider>,
+      );
+
+      fireEvent.click(await screen.findByRole("link", { name: "child.yml" }));
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(2),
+      );
+      const backButtons = screen.getAllByRole("button", { name: "Back" });
+      const childBack = backButtons.at(-1);
+      if (!childBack) throw new Error("Nested file viewer has no Back control");
+      fireEvent.click(childBack);
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(1),
+      );
+      expect(onClose).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("link", { name: "child.yml" }));
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(2),
+      );
+      fireEvent.keyDown(document, { key: "Backspace" });
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(1),
+      );
+      expect(onClose).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(document, { key: "Backspace" });
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(getFile).toHaveBeenCalledWith(
+        "project-id",
+        "child.yml",
+        true,
+        undefined,
+        undefined,
+        "full",
+      );
+    } finally {
+      getFile.mockRestore();
+    }
   });
 
   afterEach(() => {
@@ -596,17 +712,27 @@ describe("FileViewer", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Preview" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Raw source" })).toBeTruthy();
     });
 
     expect(await screen.findByRole("heading", { name: "Title" })).toBeTruthy();
     expect(
       container.querySelector(".markdown-preview-span-start"),
     ).toBeTruthy();
+    const selectAll = screen.getByRole("button", { name: "Select all" });
+    expect(selectAll.closest(".file-viewer-actions")).not.toBeNull();
+    fireEvent.click(selectAll);
+    expect(document.getSelection()?.toString()).toContain("Title");
+    expect(document.getSelection()?.toString()).toContain("Selected text");
+    document.getSelection()?.removeAllRanges();
 
-    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    const rawSource = screen.getByRole("button", { name: "Raw source" });
+    expect(rawSource.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(rawSource);
     expect(container.querySelector(".shiki-container")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(rawSource.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(rawSource);
+    expect(rawSource.getAttribute("aria-pressed")).toBe("false");
 
     const heading = await screen.findByRole("heading", { name: "Title" });
     const headingText = heading.firstChild;
@@ -625,6 +751,124 @@ describe("FileViewer", () => {
         selectedText: "Title",
       },
     ]);
+  });
+
+  it("keeps select-all active while standalone selection actions mount", async () => {
+    const originalRangeRect = Object.getOwnPropertyDescriptor(
+      Range.prototype,
+      "getBoundingClientRect",
+    );
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        top: 100,
+        right: 300,
+        bottom: 120,
+        left: 100,
+        width: 200,
+        height: 20,
+        x: 100,
+        y: 100,
+        toJSON: () => ({}),
+      }),
+    });
+    localStorage.setItem(UI_KEYS.selectionTextCopyActionEnabled, "true");
+    invalidateLocalStorageValues(UI_KEYS.selectionTextCopyActionEnabled);
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.md",
+          size: 21,
+          mimeType: "text/markdown",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "# Title\n\nSelected text",
+        renderedMarkdownHtml: "<h1>Title</h1><p>Selected text</p>",
+      })),
+    };
+
+    try {
+      render(
+        <I18nProvider>
+          <FileViewer
+            projectId="project-id"
+            filePath="notes.md"
+            initialPresentation="preview"
+            source={source}
+            standalone
+          />
+        </I18nProvider>,
+      );
+
+      await screen.findByRole("heading", { name: "Title" });
+      const selectAll = screen.getByRole("button", { name: "Select all" });
+      expect(fireEvent.pointerDown(selectAll)).toBe(false);
+      await act(async () => {
+        fireEvent.click(selectAll);
+      });
+
+      const copyText = await screen.findByRole("button", {
+        name: "Copy text",
+      });
+      fireEvent.mouseMove(copyText);
+      expect(document.getSelection()?.toString()).toContain("Title");
+      expect(document.getSelection()?.toString()).toContain("Selected text");
+    } finally {
+      await act(async () => {
+        localStorage.removeItem(UI_KEYS.selectionTextCopyActionEnabled);
+        invalidateLocalStorageValues(UI_KEYS.selectionTextCopyActionEnabled);
+        document.getSelection()?.removeAllRanges();
+      });
+      if (originalRangeRect) {
+        Object.defineProperty(
+          Range.prototype,
+          "getBoundingClientRect",
+          originalRangeRect,
+        );
+      } else {
+        Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+      }
+    }
+  });
+
+  it("quotes a clicked rendered Markdown block into the session", async () => {
+    const onQuoteTextBlock = vi.fn();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.md",
+          size: 21,
+          mimeType: "text/markdown",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "# Title\n\nSelected text",
+        renderedMarkdownHtml: "<h1>Title</h1><p>Selected text</p>",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <QuoteReplyProvider onQuoteTextBlock={onQuoteTextBlock}>
+          <FileViewer
+            projectId="project-id"
+            filePath="notes.md"
+            initialPresentation="preview"
+            source={source}
+          />
+        </QuoteReplyProvider>
+      </I18nProvider>,
+    );
+
+    document.getSelection()?.removeAllRanges();
+    fireEvent.click(await screen.findByText("Selected text"));
+
+    expect(onQuoteTextBlock).toHaveBeenCalledTimes(1);
+    expect(onQuoteTextBlock.mock.calls[0]?.[0]).toMatchObject({
+      quotedText: "> Selected text",
+      selectedText: "Selected text",
+    });
   });
 
   it("opens Quarto files rendered and maps include selections to source", async () => {
@@ -658,14 +902,19 @@ describe("FileViewer", () => {
     );
 
     const includePath = await screen.findByText("_introduction.qmd");
+    const viewerBody =
+      container.querySelector<HTMLElement>(".file-viewer-body");
+    await waitFor(() =>
+      expect(viewerBody?.getAttribute("data-markdown-copy-source")).toBe(
+        "true",
+      ),
+    );
     const range = document.createRange();
     range.selectNodeContents(includePath);
     const selection = document.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
 
-    const viewerBody =
-      container.querySelector<HTMLElement>(".file-viewer-body");
     expect(extractMarkdownSnippetsFromSelection(viewerBody!)).toMatchObject([
       {
         markdown: "_introduction.qmd",
@@ -710,21 +959,26 @@ describe("FileViewer", () => {
       </I18nProvider>,
     );
 
-    expect(await screen.findByRole("button", { name: "Preview" })).toBeTruthy();
+    const rawSource = await screen.findByRole("button", {
+      name: "Raw source",
+    });
+    expect(rawSource.getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector("iframe")).toBeNull();
     expect(screen.getByText(/Preview heading/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(rawSource);
     const frame = container.querySelector<HTMLIFrameElement>("iframe");
     expect(frame).toBeTruthy();
+    expect(rawSource.getAttribute("aria-pressed")).toBe("false");
     expect(frame?.getAttribute("sandbox")).toBe("");
     expect(frame?.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(frame?.srcdoc).toContain("Content-Security-Policy");
     expect(frame?.srcdoc).toContain("default-src 'none'");
     expect(document.body.dataset.pwned).toBeUndefined();
 
-    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    fireEvent.click(rawSource);
     expect(container.querySelector("iframe")).toBeNull();
+    expect(rawSource.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("honors an HTML preview selected before the project viewer opens", async () => {
@@ -754,9 +1008,11 @@ describe("FileViewer", () => {
     );
 
     await waitFor(() => expect(container.querySelector("iframe")).toBeTruthy());
-    expect(screen.getByRole("button", { name: "Preview" }).classList).toContain(
-      "active",
-    );
+    expect(
+      screen
+        .getByRole("button", { name: "Raw source" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
   });
 
   it("opens image previews as raw image tabs", async () => {

@@ -106,6 +106,8 @@ export interface ServerSettings {
   publicSharesEnabled: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
+  /** Whether experimental live Source Control filesystem monitoring is enabled. */
+  liveWorktreeMonitoringEnabled: boolean;
   /** Whether captured source-review submissions and outcomes are enabled. */
   sourceReviewSubmissionsEnabled?: boolean;
   /** Completed assistant turns that may ingest one submission response. */
@@ -242,6 +244,19 @@ export interface ServerSettings {
 export const CODEX_UPDATE_POLICIES = ["auto", "notify", "off"] as const;
 export type CodexUpdatePolicy = (typeof CODEX_UPDATE_POLICIES)[number];
 
+/**
+ * Live worktree monitoring defaults on only where its resource profile has
+ * been measured. Linux uses the perf-validated bounded native watcher set.
+ * macOS stays Off after the FSEvents watcher-exhaustion incident, and Windows
+ * stays Off pending platform measurement. Explicit opt-in on either platform
+ * runs poll-only with no native allocation. A stored choice always wins.
+ */
+export function defaultLiveWorktreeMonitoringEnabled(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "linux";
+}
+
 /** Default settings */
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   projectDirectoryStorage: "app-data",
@@ -252,6 +267,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   approvalAuditLogEnabled: false,
   publicSharesEnabled: false,
   workstreamsEnabled: false,
+  liveWorktreeMonitoringEnabled: defaultLiveWorktreeMonitoringEnabled(),
   sourceReviewSubmissionsEnabled: true,
   sourceReviewResponseTurns: DEFAULT_SOURCE_REVIEW_RESPONSE_TURNS,
   hostProcessObservabilityEnabled: true,
@@ -488,6 +504,10 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     typeof settings.sourceReviewSubmissionsEnabled === "boolean"
       ? settings.sourceReviewSubmissionsEnabled
       : DEFAULT_SERVER_SETTINGS.sourceReviewSubmissionsEnabled;
+  normalized.liveWorktreeMonitoringEnabled =
+    typeof settings.liveWorktreeMonitoringEnabled === "boolean"
+      ? settings.liveWorktreeMonitoringEnabled
+      : DEFAULT_SERVER_SETTINGS.liveWorktreeMonitoringEnabled;
   normalized.sourceReviewResponseTurns =
     typeof settings.sourceReviewResponseTurns === "number" &&
     Number.isInteger(settings.sourceReviewResponseTurns) &&

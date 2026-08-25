@@ -17,6 +17,10 @@ const gitStatusPageStylesheetUrl = new URL(
   "../../pages/GitStatusPage.module.css",
   import.meta.url,
 );
+const gitStatusDiffPreviewStylesheetUrl = new URL(
+  "../../pages/GitStatusDiffPreview.module.css",
+  import.meta.url,
+);
 const commitHistoryParentLinkStylesheetUrl = new URL(
   "../../pages/CommitHistoryParentLink.module.css",
   import.meta.url,
@@ -29,15 +33,27 @@ const sourceFileRowStylesheetUrl = new URL(
   "../../components/SourceFileRow.module.css",
   import.meta.url,
 );
+const searchMatchTextStylesheetUrl = new URL(
+  "../../components/SearchMatchText.module.css",
+  import.meta.url,
+);
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Match a selector by its tokens, so an assertion survives reformatting of the
+ * stylesheet it reads and fails only when the selector itself changes.
+ */
+function selectorPattern(selector: string): string {
+  return selector.trim().split(/\s+/).map(escapeRegExp).join("\\s+");
+}
+
 function getLastRuleDeclarations(css: string, selector: string): string {
   const matches = [
     ...css.matchAll(
-      new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`, "g"),
+      new RegExp(`${selectorPattern(selector)}\\s*\\{([^}]*)\\}`, "g"),
     ),
   ];
   expect(matches.length, `${selector} should have a CSS rule`).toBeGreaterThan(
@@ -53,7 +69,7 @@ function getRuleDeclarationsContaining(
 ): string {
   const matches = [
     ...css.matchAll(
-      new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`, "g"),
+      new RegExp(`${selectorPattern(selector)}\\s*\\{([^}]*)\\}`, "g"),
     ),
   ].filter((match) => match[1]?.includes(needle));
   expect(
@@ -163,10 +179,6 @@ describe("Source Control workbench layout CSS contract", () => {
       ".headerControls.fallbackRow .actionGroup,\n.compatibilityActions .actionGroup",
       "width",
     );
-    const review = getLastRuleDeclarations(
-      pageCss,
-      ".headerControls.fallbackRow :global(.review-tray-button)",
-    );
     const indicator = getRuleDeclarationsContaining(
       indexCss,
       ".git-status-action-indicator",
@@ -186,7 +198,6 @@ describe("Source Control workbench layout CSS contract", () => {
     expect(actionGroup).toMatch(/display:\s*inline-flex\s*;/);
     expect(actionGroup).toMatch(/flex-shrink:\s*0\s*;/);
     expect(fallback).toMatch(/width:\s*100%\s*;/);
-    expect(review).toMatch(/margin-left:\s*auto\s*;/);
     expect(indicator).toMatch(/width:\s*0\.75rem\s*;/);
     expect(indicator).toMatch(/flex:\s*0\s+0\s+0\.75rem\s*;/);
     expect(projectSelector).toMatch(/flex:\s*0\s+0\s+auto\s*;/);
@@ -282,12 +293,14 @@ describe("Source Control workbench layout CSS contract", () => {
   });
 
   it("uses the full desktop row width while keeping path matches visible", async () => {
-    const [menuCss, pathCss, indexCss, rendererCss] = await Promise.all([
-      readFile(sourceContextMenuStylesheetUrl, "utf8"),
-      readFile(sourceFileRowStylesheetUrl, "utf8"),
-      readFile(indexStylesheetUrl, "utf8"),
-      readFile(rendererStylesheetUrl, "utf8"),
-    ]);
+    const [menuCss, pathCss, matchCss, indexCss, rendererCss] =
+      await Promise.all([
+        readFile(sourceContextMenuStylesheetUrl, "utf8"),
+        readFile(sourceFileRowStylesheetUrl, "utf8"),
+        readFile(searchMatchTextStylesheetUrl, "utf8"),
+        readFile(indexStylesheetUrl, "utf8"),
+        readFile(rendererStylesheetUrl, "utf8"),
+      ]);
     const rowSurface = getLastRuleDeclarations(menuCss, ".rowSurface");
     const desktopTrigger = getRuleDeclarationsContaining(
       menuCss,
@@ -301,7 +314,7 @@ describe("Source Control workbench layout CSS contract", () => {
       "flex: 1 1 auto",
     );
     const matchedPath = getLastRuleDeclarations(pathCss, ".pathWithMatch");
-    const match = getLastRuleDeclarations(pathCss, ".match");
+    const match = getLastRuleDeclarations(matchCss, ".match");
 
     expect(rowSurface).toMatch(/position:\s*relative\s*;/);
     expect(desktopTrigger).toMatch(/position:\s*absolute\s*;/);
@@ -315,7 +328,10 @@ describe("Source Control workbench layout CSS contract", () => {
   });
 
   it("prioritizes the filename and uses compact diff controls", async () => {
-    const css = await readFile(rendererStylesheetUrl, "utf8");
+    const [css, previewCss] = await Promise.all([
+      readFile(rendererStylesheetUrl, "utf8"),
+      readFile(gitStatusDiffPreviewStylesheetUrl, "utf8"),
+    ]);
     const identity = getRuleDeclarationsContaining(
       css,
       ".git-diff-file-identity",
@@ -325,17 +341,67 @@ describe("Source Control workbench layout CSS contract", () => {
       css,
       ".git-diff-pane-toolbar .git-diff-preview-title",
     );
+    const narrowIdentity = getLastRuleDeclarations(
+      previewCss,
+      ".toolbar:global(.git-diff-pane-toolbar) .fileIdentity",
+    );
+    const narrowTitle = getLastRuleDeclarations(
+      previewCss,
+      ".toolbar:global(.git-diff-pane-toolbar) .previewTitle",
+    );
+    const narrowControlOrder = getLastRuleDeclarations(
+      previewCss,
+      ".toolbar:global(.git-diff-pane-toolbar) .controls, .toolbar:global(.git-diff-pane-toolbar) .headerActions",
+    );
+    const narrowControls = getLastRuleDeclarations(
+      previewCss,
+      ".toolbar:global(.git-diff-pane-toolbar) .controls",
+    );
+    const narrowActions = getLastRuleDeclarations(
+      previewCss,
+      ".toolbar:global(.git-diff-pane-toolbar) .headerActions",
+    );
     const path = getLastRuleDeclarations(css, ".git-diff-toolbar-path");
     const icon = getLastRuleDeclarations(css, ".diff-toolbar-icon-button");
     const hunk = getLastRuleDeclarations(css, ".diff-hunk-indicator");
 
     expect(identity).toMatch(/min-width:\s*0\s*;/);
     expect(title).toMatch(/font-size:\s*0\.74rem\s*;/);
+    expect(narrowIdentity).toMatch(/flex-basis:\s*100%\s*;/);
+    expect(narrowIdentity).toMatch(/order:\s*2\s*;/);
+    expect(narrowTitle).toMatch(/overflow-wrap:\s*anywhere\s*;/);
+    expect(narrowTitle).toMatch(/white-space:\s*normal\s*;/);
+    expect(narrowControlOrder).toMatch(/order:\s*1\s*;/);
+    expect(narrowControls).toMatch(/flex-wrap:\s*wrap\s*;/);
+    expect(narrowActions).toMatch(/margin-left:\s*auto\s*;/);
     expect(path).toMatch(/flex:\s*0\s+1000\s+auto\s*;/);
     expect(path).toMatch(/direction:\s*rtl\s*;/);
     expect(icon).toMatch(/width:\s*24px\s*;/);
     expect(icon).toMatch(/padding:\s*0\s*;/);
     expect(hunk).toMatch(/min-width:\s*1\.9rem\s*;/);
+  });
+
+  it("gives narrow diff toolbar rules more weight than the legacy stylesheet", async () => {
+    const previewCss = await readFile(
+      gitStatusDiffPreviewStylesheetUrl,
+      "utf8",
+    );
+    const container = previewCss.slice(previewCss.indexOf("@container"));
+    const selectors = [...container.matchAll(/(^|\})\s*([^{}@]+)\{/g)].flatMap(
+      (match) => (match[2] ?? "").split(",").map((one) => one.trim()),
+    );
+
+    expect(selectors.length).toBeGreaterThan(0);
+    for (const selector of selectors) {
+      // Each toolbar element also carries its legacy `git-diff-*` class, which
+      // renderers.css and index.css style with two-class selectors. Every
+      // replacement must have strictly greater specificity so chunk order is
+      // irrelevant.
+      expect(
+        (selector.match(/\./g) ?? []).length,
+        `${selector} must outrank the legacy two-class rule it replaces`,
+      ).toBeGreaterThan(2);
+    }
   });
 
   it("uses compact blame columns and one scrollbar per provenance run", async () => {

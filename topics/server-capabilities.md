@@ -66,6 +66,95 @@ request; it does not reuse `git-source-review-projections`, whose advertised
 meaning predates these routes. The capability is permanent and
 version-implied from `0.7.1`.
 
+`git-file-revision` owns read-only last-revision metadata for a selected file.
+The ordinary optional-feature corpus is `v0.7.0` (2026-07-25) and `v0.6.2`
+(2026-07-11); no other stable server release fell in the preceding 14 days as
+of 2026-08-24. Both lack the route and permanent ID 47. Without it, clients
+omit file-revision chrome and make no metadata request. Existing capability
+meanings and older capable behavior remain unchanged. It is version-implied
+from `0.7.2`.
+
+`git-working-tree-files` owns the current-content inventory, persistent
+untracked-cache route, and cache-backed status request. Releases `0.6.2` and
+`0.7.0` have none of them. Without the permanent capability, the client retains
+tracked-only Files plus legacy compact untracked expansion and sends no
+working-tree or cache request. It is version-implied from `0.7.1` and owns ID
+38.
+
+`git-incoming-commits` owns the read-only local `HEAD..<upstream>` preview. The
+server reads the tracking ref left by the last remote check and never fetches on
+open. Releases `0.6.2` and `0.7.0` lack the route. Without the permanent
+capability, upstream remains inert and the client sends no incoming-commit
+request. It is version-implied from `0.7.1` and owns ID 39.
+
+`git-inclusive-to-head` owns inclusive selected-commit-through-pinned-HEAD list
+and per-file diff routes. The core corpus `v0.6.0`, `v0.6.1`, `v0.6.2`, and
+`v0.7.0` lacks them. Without permanent ID 40, the client hides inclusive **To
+HEAD** and sends no range request. The existing
+`git-source-review-projections` capability retains its direct
+selected-tree-to-HEAD and ignore-whitespace meaning; a separately available
+direct per-file action continues to use only those older routes. It is
+version-implied from `0.7.1`.
+
+`git-working-tree-sections` owns the optional lease-backed project snapshot and
+sequenced live-delta contract, including requested Tracked / Untracked /
+Ignored coverage, lazy opened-directory coverage for filesystem-only projects,
+embedded dirty and cumulative Git facts when available, and the sectioned
+static route used for explicit refresh or resynchronization. A filesystem
+subscriber sends optional `coverage.expandedPrefixes`; root is implicit, and
+snapshots plus deltas may carry pending or bounded directory rows. Subscribers
+to one project share the server snapshot, unioned watcher set, and
+reconciliation owner while receiving a projection of their own prefixes.
+Omitting the new request field retains the preceding bounded breadth-first
+filesystem inventory, and omitting the new response fields remains readable by
+a current client. Without permanent ID 41, the client keeps the released static
+`git-working-tree-files` behavior, sends no worktree subscription, does no
+ignored enumeration, and retains the focused 30-second fallback refresh. It is
+an optional bit from `0.7.2`, advertised only while the default-off server
+setting is effectively enabled. The Maintainer approved correcting this
+unpublished capability before its first stable release after native watcher
+exhaustion crashed the server.
+
+`git-working-tree-complete-scan` owns exact filesystem file totals on worktree
+snapshots, deltas, and directory rows plus the optional
+`coverage.filesystemScan: "complete"` request. The ordinary optional-feature
+corpus is `v0.7.0` (2026-07-25) and `v0.6.2` (2026-07-11); neither contains ID
+41's live subscription or these fields. Without permanent ID 42, the client
+keeps the bounded opened-directory projection and its truncation notice, hides
+**Show all N**, and sends no complete request. Existing capability meanings and
+older capable behavior remain unchanged. It is an optional bit from `0.7.2`
+and is advertised only with active ID 41.
+
+`git-live-worktree-setting` owns the additive
+`settings.liveWorktreeMonitoringEnabled` field on `GET /api/settings` and
+`PUT /api/settings`. The ordinary optional-feature corpus is `v0.7.0`
+(2026-07-25) and `v0.6.2` (2026-07-11); neither contains IDs 41/42 or the
+setting. Without the permanent setting capability, a current client hides the
+control, omits the field, and refuses to activate a live subscription even if a
+source-ahead server advertises pre-stabilization ID 41. The setting capability
+does not mean monitoring is active: optional IDs 41/42 carry that fact.
+
+`cache-miss-billing-ignore-after` owns the additive
+`settings.cacheMissBilling.ignoreAfterMinutes` field on `GET /api/settings` and
+`PUT /api/settings`. The ordinary optional-feature corpus is `v0.7.0`
+(2026-07-25) and `v0.6.2` (2026-07-11); both lack the field and capability.
+Without permanent ID 43, the client keeps presenting and writing the legacy
+`recentActivityMinutes` lower no-alert window, hides the ignore-after control,
+and omits the additive field from writes and undo restores. Existing capability
+meanings and older behavior remain unchanged. It is version-implied from
+`0.7.2`.
+
+`project-code-names` owns the additive `codeName` field on project list,
+detail, and create responses; `PATCH /api/projects/:projectId/code-name`; and
+the `project-code-names-changed` invalidation event. The ordinary optional
+feature corpus is `v0.7.0` (2026-07-25) and `v0.6.2` (2026-07-11); no other
+stable server release fell in the preceding 14 days as of 2026-08-24. Both
+lack the field, route, event, and permanent ID 46. Without it, clients use full
+project names, retain the released browser-title activity frames, hide
+code-name editing, and make no code-name request. Existing capability meanings
+and older capable behavior remain unchanged. It is version-implied from
+`0.7.2`.
+
 `codex-reasoning-summary-setting` owns `settings.codexReasoningSummary` on
 `GET /api/settings` and `PUT /api/settings`. The ordinary optional-feature
 corpus was `v0.7.0` (2026-07-25) and `v0.6.2` (2026-07-11); no other stable
@@ -258,9 +347,19 @@ the same ledger:
 | 35 | server | 0.7.1 | `codex-reasoning-summary-setting` |
 | 36 | server | 0.7.1 | `claude-gateway-disable-plan-mode` |
 | 37 | server | 0.7.1 | `synthetic-archive-command` |
+| 38 | server | 0.7.1 | `git-working-tree-files` |
+| 39 | server | 0.7.1 | `git-incoming-commits` |
+| 40 | server | 0.7.1 | `git-inclusive-to-head` |
+| 41 | server | 0.7.2 | `git-working-tree-sections` |
+| 42 | server | 0.7.2 | `git-working-tree-complete-scan` |
+| 43 | server | 0.7.2 | `cache-miss-billing-ignore-after` |
+| 44 | server | 0.7.2 | `git-live-worktree-setting` |
+| 45 | server | 0.7.2 | `synthetic-terminate-command` |
+| 46 | server | 0.7.2 | `project-code-names` |
+| 47 | server | 0.7.2 | `git-file-revision` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 38; retired rows stay in the ledger as reserved IDs.
+ID 48; retired rows stay in the ledger as reserved IDs.
 
 ## When To Add One
 

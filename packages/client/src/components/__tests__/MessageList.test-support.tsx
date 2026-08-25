@@ -9,7 +9,8 @@ import { UI_KEYS } from "../../lib/storageKeys";
 import type { Message } from "../../types";
 import { MessageList } from "../MessageList";
 
-vi.mock("../../i18n", () => ({
+vi.mock("../../i18n", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../i18n")>()),
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {
       const translations: Record<string, string> = {
@@ -56,6 +57,8 @@ vi.mock("../../i18n", () => ({
         sessionNewSessionFromSelection: "New session",
         sessionSelectionActionMenu: "Selected text actions",
         sessionDismissSelectionActions: "Dismiss selected text actions",
+        viewerSelectAll: "Select all",
+        viewerSelectAllTitle: "Select all (Ctrl/Cmd+A)",
         sourceActionMenu: "Source actions",
         sourceDismissActions: "Dismiss source actions",
         projectQueueAttachmentOnly: "Attachment-only message",

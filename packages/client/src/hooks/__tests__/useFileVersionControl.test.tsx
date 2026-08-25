@@ -9,12 +9,23 @@ import type {
   GitFileProjectionManifest,
   GitStatusInfo,
 } from "@yep-anywhere/shared";
+import {
+  GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+  GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+} from "@yep-anywhere/shared";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileVersionControlLinks } from "../../components/FileDiffViewLinks";
 import { I18nProvider } from "../../i18n";
 import { resetClientQueryControllerForTests } from "../../lib/clientQueryController";
-import { resetClientSummaryStoreForTests } from "../../lib/clientSummaryStore";
+import {
+  asClientSummarySourceKey,
+  resetClientSummaryStoreForTests,
+} from "../../lib/clientSummaryStore";
 import { resetRouteRetentionForTests } from "../../lib/routeRetention";
+import type { YaSourceRuntime } from "../../lib/sourceRuntime";
+import { SourceRuntimeProvider } from "../../lib/sourceRuntimeReact";
+import { FakeSourceTransport } from "../../lib/transport";
 import { useFileVersionControl } from "../useFileVersionControl";
 import { resetVersionSnapshotsForTests, useVersion } from "../useVersion";
 
@@ -101,6 +112,30 @@ function VersionLinksFixture({ count }: { count: number }) {
   );
 }
 
+function createRuntime(transport: FakeSourceTransport): YaSourceRuntime {
+  return {
+    sourceKey: asClientSummarySourceKey("test:file-version-control"),
+    transport,
+    api: {} as YaSourceRuntime["api"],
+    summary: {} as YaSourceRuntime["summary"],
+    sessionDetails: {} as YaSourceRuntime["sessionDetails"],
+  };
+}
+
+function createWrapper(runtime: YaSourceRuntime) {
+  return function TestSourceRuntimeProvider({
+    children,
+  }: {
+    children: ReactNode;
+  }) {
+    return (
+      <SourceRuntimeProvider runtime={runtime}>
+        {children}
+      </SourceRuntimeProvider>
+    );
+  };
+}
+
 async function settle() {
   await act(async () => {
     await Promise.resolve();
@@ -138,6 +173,75 @@ afterEach(() => {
 });
 
 describe("useFileVersionControl", () => {
+  it("uses one static projection without acquiring a live worktree lease", async () => {
+    mocks.getVersion.mockResolvedValue({
+      current: "0.7.2",
+      latest: null,
+      updateAvailable: false,
+      capabilities: [
+        GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+        GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+      ],
+    });
+    const transport = new FakeSourceTransport();
+    const hook = renderHook(
+      () => [useSubject("src/worktree.ts"), useSubject("src/committed.ts")],
+      { wrapper: createWrapper(createRuntime(transport)) },
+    );
+    await settle();
+
+    expect(transport.getSubscriptions("worktree")).toHaveLength(0);
+    expect(hook.result.current[0]).toMatchObject({
+      supported: true,
+      loading: false,
+      relativePath: "src/worktree.ts",
+      worktreeFile: { path: "src/worktree.ts", linesAdded: 1 },
+      cumulativeFile: null,
+    });
+    expect(hook.result.current[1]).toMatchObject({
+      supported: true,
+      loading: false,
+      relativePath: "src/committed.ts",
+      worktreeFile: null,
+      cumulativeFile: { path: "src/committed.ts", linesAdded: 2 },
+    });
+    expect(mocks.getGitStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.getGitStatus).toHaveBeenCalledWith("project-a", {});
+    expect(mocks.getGitFileProjections).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not lease a worktree for a non-Git project", async () => {
+    mocks.getVersion.mockResolvedValue({
+      current: "0.7.2",
+      latest: null,
+      updateAvailable: false,
+      capabilities: [
+        GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+        GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+      ],
+    });
+    mocks.getGitStatus.mockResolvedValue({
+      ...STATUS,
+      isGitRepo: false,
+      files: [],
+      recentCommits: [],
+    });
+    const transport = new FakeSourceTransport();
+    const hook = renderHook(() => useSubject("src/worktree.ts"), {
+      wrapper: createWrapper(createRuntime(transport)),
+    });
+    await settle();
+
+    expect(transport.getSubscriptions("worktree")).toHaveLength(0);
+    expect(mocks.getGitStatus).toHaveBeenCalledTimes(1);
+    expect(hook.result.current).toMatchObject({
+      supported: true,
+      loading: false,
+      worktreeFile: null,
+      cumulativeFile: null,
+    });
+  });
+
   it("exposes only the exact projections containing the path", async () => {
     const worktree = renderHook(() => useSubject("src/worktree.ts"));
     const cumulative = renderHook(() => useSubject("src/committed.ts"));

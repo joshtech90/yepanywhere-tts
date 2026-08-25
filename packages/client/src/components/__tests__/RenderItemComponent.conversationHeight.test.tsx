@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import { CONVERSATION_ACTIVITY_RESERVE_HOLD_MS } from "../../lib/sessionDetail/activityHeightReserve";
+import { CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS } from "../../lib/sessionDetail/thinkingPreviewAutoHide";
 import type {
+  ConversationActivityItem,
   ConversationThinkingPreviewSlot,
   RenderItem,
 } from "../../types/renderItems";
@@ -232,6 +234,37 @@ describe("conversation thinking preview height publication", () => {
         ?.classList.contains("is-wide-activity-previews"),
     ).toBe(true);
   });
+
+  it("supplies the activity headline and expanded-row summaries to tooltip zoom", () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    const base = conversationActivityItem() as ConversationActivityItem;
+    const item: ConversationActivityItem = {
+      ...base,
+      tooltipActivities: [
+        { label: "Write", detail: "Write: report.md", preview: "report.md" },
+        { label: "Run", detail: "Run: pnpm test", preview: "pnpm test" },
+      ],
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={item}
+          isStreaming
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    const summary = container.querySelector<HTMLElement>(
+      ".conversation-activity-summary",
+    );
+    expect(summary?.dataset.tooltipZoomHeadline).toContain("5 activities");
+    expect(summary?.dataset.tooltipZoomDetail).toBe(
+      "Write: report.md\nRun: pnpm test\n…",
+    );
+  });
 });
 
 describe("conversation thinking preview age", () => {
@@ -445,5 +478,215 @@ describe("conversation activity height reserve", () => {
     rerender(renderActivity({ ...base, thinkingPreviews: [] }));
     stubRowMetrics(row, () => naturalHeightPx);
     expect(reservedHeight(row)).toBe("90px");
+  });
+});
+
+describe("conversation thinking auto-hide", () => {
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function renderCompleted(overrides: Partial<ConversationActivityItem> = {}) {
+    const base = conversationActivityItem() as ConversationActivityItem;
+    const item: ConversationActivityItem = {
+      ...base,
+      active: false,
+      hasFollowingConversationText: true,
+      endedAtMs: Date.now(),
+      thinkingPreviews: base.thinkingPreviews?.map((preview) => ({
+        ...preview,
+        status: "complete",
+      })),
+      ...overrides,
+    };
+    return render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={item}
+          isStreaming={false}
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+    );
+  }
+
+  it("keeps thinking visible for 5s after a completed turn with following text", () => {
+    const { container } = renderCompleted();
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(4_999);
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+  });
+
+  it("hides thinking after the delay when conversation text followed it", () => {
+    const { container } = renderCompleted();
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS);
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).toBeNull();
+    expect(
+      container.querySelector(".conversation-activity-summary"),
+    ).not.toBeNull();
+  });
+
+  it("starts compact for a turn that completed more than 5s ago", () => {
+    const { container } = renderCompleted({
+      endedAtMs: Date.now() - 60_000,
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).toBeNull();
+  });
+
+  it("does not hide thinking when no conversation text followed it", () => {
+    const { container } = renderCompleted({
+      hasFollowingConversationText: false,
+      endedAtMs: Date.now() - 60_000,
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+  });
+
+  function renderItem(item: ConversationActivityItem) {
+    return render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={item}
+          isStreaming={false}
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+    );
+  }
+
+  function completedItem(
+    overrides: Partial<ConversationActivityItem> = {},
+  ): ConversationActivityItem {
+    const base = conversationActivityItem() as ConversationActivityItem;
+    return {
+      ...base,
+      active: false,
+      hasFollowingConversationText: true,
+      endedAtMs: Date.now(),
+      thinkingPreviews: base.thinkingPreviews?.map((preview) => ({
+        ...preview,
+        status: "complete",
+      })),
+      ...overrides,
+    };
+  }
+
+  it("hides thinking that arrived after the row, measured from its arrival", () => {
+    // A live turn's activity row usually exists before its first thought, so
+    // the card's own wait starts when it appears, not when the turn began.
+    const live = completedItem({ active: true, thinkingPreviews: undefined });
+    const { container, rerender } = renderItem(live);
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).toBeNull();
+
+    const withThinking = completedItem({ active: true });
+    act(() => {
+      rerender(
+        <I18nProvider>
+          <RenderItemComponent
+            item={withThinking}
+            isStreaming={false}
+            thinkingExpanded={false}
+            toggleThinkingExpanded={() => {}}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+
+    act(() => {
+      rerender(
+        <I18nProvider>
+          <RenderItemComponent
+            item={completedItem({ endedAtMs: Date.now() })}
+            isStreaming={false}
+            thinkingExpanded={false}
+            toggleThinkingExpanded={() => {}}
+          />
+        </I18nProvider>,
+      );
+    });
+    act(() => {
+      vi.advanceTimersByTime(4_999);
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS);
+    });
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).toBeNull();
+  });
+
+  it("releases the pinned row height when a new turn interrupts the rollup", () => {
+    const { container, rerender } = renderItem(completedItem());
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    );
+    expect(row).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(row?.style.height).not.toBe("");
+
+    act(() => {
+      rerender(
+        <I18nProvider>
+          <RenderItemComponent
+            item={completedItem({ active: true })}
+            isStreaming={false}
+            thinkingExpanded={false}
+            toggleThinkingExpanded={() => {}}
+          />
+        </I18nProvider>,
+      );
+    });
+    expect(row?.style.height).toBe("");
+    expect(
+      container.querySelector(".conversation-thinking-preview"),
+    ).not.toBeNull();
   });
 });

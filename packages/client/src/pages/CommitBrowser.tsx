@@ -1,10 +1,15 @@
-import type { GitCommitDetail, GitStatusInfo } from "@yep-anywhere/shared";
+import type {
+  GitCommitDetail,
+  GitStatusInfo,
+  GitUntrackedFileListResult,
+} from "@yep-anywhere/shared";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { ResizableSourceColumns } from "../components/ResizableSourceColumns";
 import { SourceFileHeaderActions } from "../components/SourceFileHeaderActions";
@@ -22,7 +27,11 @@ import {
   type GitDiffPreviewHandle,
 } from "./GitStatusDiffPreview";
 import { CommitRevisionPane } from "./CommitRevisionPane";
-import { useCommitBrowserModel } from "./useCommitBrowserModel";
+import { BlameView } from "./BlameView";
+import {
+  useCommitBrowserModel,
+  WORKING_TREE_KEY,
+} from "./useCommitBrowserModel";
 import { WorkingTreeBrowser } from "./WorkingTreeBrowser";
 import type { TranslationFn } from "../i18n";
 
@@ -37,11 +46,19 @@ export function CommitBrowser({
   projectId,
   status,
   isWideScreen,
+  supportsUntrackedCache = false,
+  untrackedFiles = null,
   initialSha,
   initialPath,
+  initialBlame = false,
+  showRevisionPane = true,
+  revisionHref = () => "#",
+  onSelectRevision,
+  onBrowseHistory,
   onBlameFile,
   captureReviewProjections = false,
   supportsProjections = false,
+  supportsInclusiveToHead = false,
   supportsLastEditor = false,
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace = NOOP,
@@ -52,14 +69,27 @@ export function CommitBrowser({
   /** Supplies the pinned Working tree revision without a second git model. */
   status?: GitStatusInfo;
   isWideScreen: boolean;
+  supportsUntrackedCache?: boolean;
+  untrackedFiles?: GitUntrackedFileListResult | null;
   /** Direct commit selection, e.g. from an asynchronously populated blame hash. */
   initialSha?: string;
   /** Direct file selection within the initial commit. */
   initialPath?: string;
-  /** Bridge a commit file to its blame-at-HEAD view (the files tab). */
+  /** Open direct file selection in blame mode. */
+  initialBlame?: boolean;
+  /** Whether the commit selector is part of this view. */
+  showRevisionPane?: boolean;
+  /** Focused URL for a commit, or for the Working tree when passed null. */
+  revisionHref?: (sha: string | null) => string;
+  /** Keep current-tab selection and URL state aligned. */
+  onSelectRevision?: (sha: string | null) => void;
+  /** Open the commit selector around the focused revision. */
+  onBrowseHistory?: () => void;
+  /** Bridge the pinned Working tree revision into the Files blame view. */
   onBlameFile?: (path: string) => void;
   captureReviewProjections?: boolean;
   supportsProjections?: boolean;
+  supportsInclusiveToHead?: boolean;
   supportsLastEditor?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
@@ -72,6 +102,10 @@ export function CommitBrowser({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mobileListScrollTopRef = useRef(0);
   const restoreMobileListScrollRef = useRef(false);
+  const [showBlame, setShowBlame] = useState(initialBlame);
+  useEffect(() => {
+    if (initialBlame) setShowBlame(true);
+  }, [initialBlame]);
   useSourceSearchShortcut(searchInputRef);
   const {
     displayedCommits,
@@ -86,6 +120,7 @@ export function CommitBrowser({
     setSearchIndexRequested,
     searchActive,
     searchIndex,
+    commitSearchMatches,
     selectedKey,
     setSelectedKey,
     selectedIsWorkingTree,
@@ -102,6 +137,7 @@ export function CommitBrowser({
     compareToHead,
     loadingComparison,
     toggleComparison,
+    openDirectComparison,
     handleProjectionRequestFailure,
     messageView,
     setMessageView,
@@ -115,7 +151,7 @@ export function CommitBrowser({
     isWideScreen,
     initialSha,
     initialPath,
-    supportsProjections,
+    supportsInclusiveToHead,
     onProjectionUnavailable,
     t,
   });
@@ -179,8 +215,28 @@ export function CommitBrowser({
         mobileListScrollTopRef.current = scroller?.scrollTop ?? 0;
       }
       setSelectedKey(key);
+      onSelectRevision?.(key === WORKING_TREE_KEY ? null : key);
     },
-    [isWideScreen, setSelectedKey],
+    [isWideScreen, onSelectRevision, setSelectedKey],
+  );
+
+  const blameRevision =
+    source?.kind === "commit"
+      ? source.sha
+      : source?.kind === "comparison" || source?.kind === "inclusive-comparison"
+        ? source.headSha
+        : undefined;
+  const toggleBlame = useCallback(() => {
+    setMessageView(false);
+    setShowBlame((current) => !current);
+  }, [setMessageView]);
+  const openBlameFile = useCallback(
+    (path: string) => {
+      setSelectedPath(path);
+      setMessageView(false);
+      setShowBlame(true);
+    },
+    [setMessageView, setSelectedPath],
   );
 
   // Selected-file actions, shown in the diff pane header (the file banner)
@@ -188,7 +244,8 @@ export function CommitBrowser({
   const fileActions = selectedFile ? (
     <SourceFileHeaderActions
       path={selectedFile.path}
-      onBlameFile={onBlameFile}
+      onBlameFile={blameRevision ? toggleBlame : undefined}
+      blameTitle={t("sourceToggleBlame")}
       t={t}
     />
   ) : null;
@@ -274,10 +331,11 @@ export function CommitBrowser({
     <div className="commit-browser" ref={browserRef}>
       <ResizableSourceColumns
         layout="history"
+        revisionPaneVisible={showRevisionPane}
         className="commit-browser-columns"
         t={t}
       >
-        {(isWideScreen || !selectedKey) && (
+        {showRevisionPane && (isWideScreen || !selectedKey) ? (
           <CommitRevisionPane
             status={status}
             isWideScreen={isWideScreen}
@@ -290,6 +348,7 @@ export function CommitBrowser({
             searchError={searchIndex.error}
             searchActive={searchActive}
             displayedCommits={displayedCommits}
+            commitSearchMatches={commitSearchMatches}
             displayedKeys={displayedKeys}
             selectedKey={selectedKey}
             selectedIsWorkingTree={selectedIsWorkingTree}
@@ -303,6 +362,9 @@ export function CommitBrowser({
             onSearchQueryChange={setSearchQuery}
             onSearchIndexRequested={() => setSearchIndexRequested(true)}
             onOpenRevision={openRevision}
+            revisionHref={(key) =>
+              revisionHref(key === WORKING_TREE_KEY ? null : key)
+            }
             onFocusRevision={setSelectedKey}
             onLoadMore={() => {
               void loadMore();
@@ -311,15 +373,25 @@ export function CommitBrowser({
             onMarkUnreadSince={readState.markUnreadSince}
             t={t}
           />
-        )}
+        ) : !showRevisionPane ? (
+          <div className="commit-list-column" aria-hidden="true" />
+        ) : null}
 
         {selectedIsWorkingTree && status && (
           <WorkingTreeBrowser
             projectId={projectId}
             status={status}
             isWideScreen={isWideScreen}
+            supportsUntrackedCache={supportsUntrackedCache}
+            untrackedFiles={untrackedFiles}
             embeddedInHistory
-            onBackToRevisions={!isWideScreen ? handleMobileBack : undefined}
+            onBackToRevisions={
+              !showRevisionPane
+                ? onBrowseHistory
+                : !isWideScreen
+                  ? handleMobileBack
+                  : undefined
+            }
             revisionNavigation={
               <RevisionJump
                 newerKey={newerKey}
@@ -347,6 +419,7 @@ export function CommitBrowser({
             loading={loadingDetail || (compareToHead && loadingComparison)}
             detailError={detailError}
             compareToHead={compareToHead}
+            supportsInclusiveToHead={supportsInclusiveToHead}
             isWideScreen={isWideScreen}
             messageView={messageView}
             selectedFiles={selectedFiles}
@@ -361,9 +434,26 @@ export function CommitBrowser({
                 t={t}
               />
             }
-            onBack={!isWideScreen ? handleMobileBack : undefined}
+            onBack={
+              !showRevisionPane
+                ? onBrowseHistory
+                : !isWideScreen
+                  ? handleMobileBack
+                  : undefined
+            }
             onToggleComparison={toggleComparison}
-            onShowMessage={() => setMessageView(true)}
+            onCompareFileToHead={
+              supportsProjections
+                ? (file) => {
+                    setShowBlame(false);
+                    void openDirectComparison(file);
+                  }
+                : undefined
+            }
+            onShowMessage={() => {
+              setShowBlame(false);
+              setMessageView(true);
+            }}
             onFocusFile={(file) => {
               setSelectedPath(file.path);
               setMessageView(false);
@@ -383,7 +473,7 @@ export function CommitBrowser({
               setSelectedPath(file.path);
               setMessageView(false);
             }}
-            onBlameFile={onBlameFile}
+            onBlameFile={blameRevision ? openBlameFile : undefined}
             onMarkReadTo={readState.markReadTo}
             onMarkUnreadSince={readState.markUnreadSince}
             t={t}
@@ -393,6 +483,16 @@ export function CommitBrowser({
         {isWideScreen &&
           (messageView && detail ? (
             <CommitMessageView detail={detail} t={t} />
+          ) : showBlame && selectedFile && blameRevision ? (
+            <BlameView
+              projectId={projectId}
+              path={selectedFile.path}
+              rev={blameRevision}
+              onOpenCommit={openRevision}
+              onToggleBlame={toggleBlame}
+              captureReviewProjections={captureReviewProjections}
+              t={t}
+            />
           ) : selectedFile && source && diffFileKey ? (
             <GitDiffPreview
               ref={diffPreviewRef}
@@ -424,7 +524,24 @@ export function CommitBrowser({
         !messageView &&
         selectedFile &&
         source &&
-        diffFileKey && (
+        diffFileKey &&
+        (showBlame && blameRevision ? (
+          <Modal
+            title={selectedFile.path}
+            onClose={() => setSelectedPath(null)}
+            closeOnBackGesture
+          >
+            <BlameView
+              projectId={projectId}
+              path={selectedFile.path}
+              rev={blameRevision}
+              onOpenCommit={openRevision}
+              onToggleBlame={toggleBlame}
+              captureReviewProjections={captureReviewProjections}
+              t={t}
+            />
+          </Modal>
+        ) : (
           <GitDiffModal
             file={selectedFile}
             fileKey={diffFileKey}
@@ -438,7 +555,7 @@ export function CommitBrowser({
             t={t}
             onClose={() => setSelectedPath(null)}
           />
-        )}
+        ))}
     </div>
   );
 }

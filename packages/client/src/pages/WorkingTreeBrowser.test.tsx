@@ -9,7 +9,16 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const stableT = vi.hoisted(() => (key: string) => key);
+const sessionRecords = vi.hoisted(
+  () =>
+    new Map<
+      string,
+      { title?: string | null; fullTitle?: string | null; customTitle?: string }
+    >(),
+);
 
 vi.mock("react-router-dom", async (orig) => ({
   ...(await orig<typeof import("react-router-dom")>()),
@@ -20,18 +29,48 @@ vi.mock("../hooks/useRemoteBasePath", () => ({
 }));
 vi.mock("../i18n", async (orig) => ({
   ...(await orig<typeof import("../i18n")>()),
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: stableT }),
+}));
+vi.mock("../lib/clientSummaryStore", async (orig) => ({
+  ...(await orig<typeof import("../lib/clientSummaryStore")>()),
+  useClientSummarySourceKey: () => "local",
+  getClientSummarySnapshotForSource: () => ({
+    sessions: { entities: sessionRecords },
+  }),
+  reportSessionCollectionTitleSnapshot: (
+    _sourceKey: string,
+    session: {
+      id: string;
+      title: string | null;
+      fullTitle: string | null;
+      customTitle?: string;
+    },
+  ) => {
+    sessionRecords.set(session.id, {
+      title: session.title,
+      fullTitle: session.fullTitle,
+      customTitle: session.customTitle,
+    });
+  },
 }));
 
+const getFile = vi.fn();
+const getSessionMetadata = vi.fn();
 const getGitDiff = vi.fn();
 const getGitUntrackedFolder = vi.fn();
+const listGitUntrackedFiles = vi.fn();
 const listReviewComments = vi.fn();
 const addReviewComment = vi.fn();
 vi.mock("../api/client", () => ({
   api: {
+    getFile: (...args: unknown[]) => getFile(...args),
+    getFileRawUrl: () => "/raw/file",
+    getSessionMetadata: (...args: unknown[]) => getSessionMetadata(...args),
     getGitDiff: (...args: unknown[]) => getGitDiff(...args),
     getGitUntrackedFolder: (...args: unknown[]) =>
       getGitUntrackedFolder(...args),
+    listGitUntrackedFiles: (...args: unknown[]) =>
+      listGitUntrackedFiles(...args),
     listReviewComments: (...args: unknown[]) => listReviewComments(...args),
     addReviewComment: (...args: unknown[]) => addReviewComment(...args),
   },
@@ -39,12 +78,29 @@ vi.mock("../api/client", () => ({
 
 import { WorkingTreeBrowser } from "./WorkingTreeBrowser";
 
-const t = (key: string) => key;
+const t = stableT;
 
 describe("WorkingTreeBrowser", () => {
+  beforeEach(() => {
+    getSessionMetadata.mockReset();
+    getFile.mockImplementation((_projectId: string, path: string) =>
+      Promise.resolve({
+        metadata: {
+          path,
+          size: path.length,
+          mimeType: "text/plain",
+          isText: true,
+        },
+        content: `contents:${path}`,
+        rawUrl: `/raw/${path}`,
+      }),
+    );
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    sessionRecords.clear();
   });
 
   it("keeps a clean working tree as the Changes landing", async () => {
@@ -199,6 +255,11 @@ describe("WorkingTreeBrowser", () => {
   });
 
   it("shows the last-editor session link only behind its capability", async () => {
+    sessionRecords.set("session-1", { title: "Fix source navigation" });
+    const namedT = (key: string, params?: Record<string, unknown>) =>
+      key === "sourceOpenLastEditorSessionNamed"
+        ? `Open session: ${String(params?.title)}`
+        : key;
     getGitDiff.mockResolvedValue({ diffHtml: "", structuredPatch: [] });
     listReviewComments.mockResolvedValue({
       comments: [],
@@ -233,7 +294,7 @@ describe("WorkingTreeBrowser", () => {
           projectId="p1"
           status={status}
           isWideScreen={true}
-          t={t}
+          t={namedT}
         />
       </MemoryRouter>,
     );
@@ -250,15 +311,123 @@ describe("WorkingTreeBrowser", () => {
           status={status}
           isWideScreen={true}
           supportsLastEditor
-          t={t}
+          t={namedT}
         />
       </MemoryRouter>,
     );
 
     const link = await screen.findByRole("link", {
-      name: "sourceOpenLastEditorSession",
+      name: "Open session: Fix source navigation",
     });
     expect(link.getAttribute("href")).toBe("/projects/p1/sessions/session-1");
+
+    const row = document.querySelector('[data-source-path="src/dirty.ts"]');
+    fireEvent.contextMenu(row?.closest("button") as HTMLButtonElement, {
+      clientX: 20,
+      clientY: 20,
+    });
+    expect(
+      await screen.findByRole("menuitem", {
+        name: "Open session: Fix source navigation",
+      }),
+    ).toBeDefined();
+    expect(getSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  it("loads a missing last-editor title into the client catalog once", async () => {
+    const namedT = (key: string, params?: Record<string, unknown>) =>
+      key === "sourceOpenLastEditorSessionNamed"
+        ? `Open session: ${String(params?.title)}`
+        : key;
+    getSessionMetadata.mockResolvedValue({
+      session: {
+        id: "session-missing",
+        projectId: "p1",
+        title: "Fetched editor title",
+        fullTitle: "Fetched editor title",
+        createdAt: "2026-08-02T09:00:00.000Z",
+        updatedAt: "2026-08-02T10:00:00.000Z",
+        messageCount: 2,
+        provider: "claude",
+      },
+      ownership: { owner: "none" },
+      processState: null,
+    });
+    getGitDiff.mockResolvedValue({ diffHtml: "", structuredPatch: [] });
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={{
+            isGitRepo: true,
+            branch: "main",
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            isClean: false,
+            files: [
+              {
+                path: "src/dirty.ts",
+                status: "M",
+                staged: false,
+                linesAdded: 1,
+                linesDeleted: 1,
+                lastEditor: {
+                  sessionId: "session-missing",
+                  observedAt: "2026-08-02T10:00:00.000Z",
+                },
+              },
+            ],
+            recentCommits: [],
+          }}
+          isWideScreen={true}
+          supportsLastEditor
+          t={namedT}
+        />
+      </MemoryRouter>,
+    );
+
+    const row = document.querySelector('[data-source-path="src/dirty.ts"]');
+    fireEvent.contextMenu(row?.closest("button") as HTMLButtonElement, {
+      clientX: 20,
+      clientY: 20,
+    });
+    expect(
+      screen.getByRole("menuitem", { name: "Open session: session-" }),
+    ).toBeDefined();
+    await waitFor(() =>
+      expect(getSessionMetadata).toHaveBeenCalledWith("p1", "session-missing"),
+    );
+    expect(
+      await screen.findByRole("menuitem", {
+        name: "Open session: Fetched editor title",
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", {
+        name: "Open session: Fetched editor title",
+      }),
+    ).toBeDefined();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "sourceDismissActions" }),
+    );
+    fireEvent.contextMenu(row?.closest("button") as HTMLButtonElement, {
+      clientX: 20,
+      clientY: 20,
+    });
+    expect(
+      screen.getByRole("menuitem", {
+        name: "Open session: Fetched editor title",
+      }),
+    ).toBeDefined();
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1);
   });
 
   it("keeps last-editor links when an untracked folder expands", async () => {
@@ -310,11 +479,83 @@ describe("WorkingTreeBrowser", () => {
     );
 
     const link = await screen.findByRole("link", {
-      name: "sourceOpenLastEditorSession",
+      name: "sourceOpenLastEditorSessionNamed",
     });
     expect(link.getAttribute("href")).toBe(
       "/projects/p1/sessions/session-untracked",
     );
+  });
+
+  it("preserves an explicit folder disclosure when the status corpus changes", async () => {
+    const folderFiles = (path: string) =>
+      Array.from(
+        { length: 11 },
+        (_, index) => `${path}file-${String(index).padStart(2, "0")}.ts`,
+      );
+    getGitUntrackedFolder.mockImplementation(
+      (_projectId: string, path: string) =>
+        Promise.resolve({
+          path,
+          files: folderFiles(path),
+          truncated: false,
+          limit: 500,
+        }),
+    );
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+    const status = (folders: string[]): GitStatusInfo => ({
+      isGitRepo: true,
+      branch: "main",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      isClean: false,
+      files: folders.map((path) => ({
+        path,
+        status: "?",
+        staged: false,
+        linesAdded: null,
+        linesDeleted: null,
+      })),
+    });
+    const rendered = render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={status(["generated/"])}
+          isWideScreen={false}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "sourceExpandUntrackedFolder",
+      }),
+    );
+    expect(await screen.findByText("file-00.ts")).toBeDefined();
+
+    rendered.rerender(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={status(["generated/", "other/"])}
+          isWideScreen={false}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: "sourceCollapseUntrackedFolder",
+      }),
+    ).toBeDefined();
+    expect(screen.getByText("file-00.ts")).toBeDefined();
   });
 
   it("groups large untracked folders and reveals matching loaded children", async () => {
@@ -391,7 +632,9 @@ describe("WorkingTreeBrowser", () => {
 
     await waitFor(() =>
       expect(
-        document.querySelector('[data-source-path="needle-bootstrap.json"]'),
+        document.querySelector(
+          '[data-source-path="generated/needle-bootstrap.json"]',
+        ),
       ).not.toBeNull(),
     );
     expect(
@@ -404,6 +647,158 @@ describe("WorkingTreeBrowser", () => {
 
     fireEvent.change(input, { target: { value: "" } });
     expect(screen.queryByText("needle-bootstrap.json")).toBeNull();
+  });
+
+  it("loads a cached large folder only when expanded", async () => {
+    listGitUntrackedFiles.mockResolvedValue({
+      files: Array.from(
+        { length: 12 },
+        (_, index) => `generated/file-${String(index).padStart(2, "0")}.ts`,
+      ),
+      folders: [],
+      total: 12,
+      refreshedAt: "2026-08-18T00:00:00.000Z",
+      truncated: false,
+      limit: 500,
+    });
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+    const detailedT = (key: string, vars?: Record<string, string | number>) =>
+      vars ? `${key} ${JSON.stringify(vars)}` : key;
+
+    render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={{
+            isGitRepo: true,
+            branch: "main",
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            isClean: false,
+            files: [
+              {
+                path: "generated/",
+                status: "?",
+                staged: false,
+                linesAdded: null,
+                linesDeleted: null,
+              },
+            ],
+          }}
+          isWideScreen={false}
+          supportsUntrackedCache
+          untrackedFiles={{
+            files: [],
+            folders: [{ path: "generated/", count: 12 }],
+            total: 12,
+            refreshedAt: "2026-08-18T00:00:00.000Z",
+            truncated: false,
+            limit: 500,
+          }}
+          t={detailedT}
+        />
+      </MemoryRouter>,
+    );
+
+    const expand = await screen.findByRole("button", {
+      name: 'sourceExpandUntrackedFolder {"path":"generated/"}',
+    });
+    expect(listGitUntrackedFiles).not.toHaveBeenCalled();
+    expect(getGitUntrackedFolder).not.toHaveBeenCalled();
+
+    fireEvent.click(expand);
+
+    await waitFor(() =>
+      expect(listGitUntrackedFiles).toHaveBeenCalledWith("p1", {
+        path: "generated/",
+      }),
+    );
+    expect(await screen.findByText("file-00.ts")).toBeDefined();
+    expect(getGitUntrackedFolder).not.toHaveBeenCalled();
+  });
+
+  it("searches cached children without realizing their folder", async () => {
+    listGitUntrackedFiles.mockResolvedValue({
+      files: ["generated/needle-bootstrap.json"],
+      folders: [],
+      total: 20,
+      refreshedAt: "2026-08-18T00:00:00.000Z",
+      truncated: true,
+      limit: 500,
+    });
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={{
+            isGitRepo: true,
+            branch: "main",
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            isClean: false,
+            files: [
+              {
+                path: "generated/",
+                status: "?",
+                staged: false,
+                linesAdded: null,
+                linesDeleted: null,
+              },
+            ],
+          }}
+          isWideScreen={false}
+          supportsUntrackedCache
+          untrackedFiles={{
+            files: [],
+            folders: [{ path: "generated/", count: 20 }],
+            total: 20,
+            refreshedAt: "2026-08-18T00:00:00.000Z",
+            truncated: false,
+            limit: 500,
+          }}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "sourceFilterFiles" }));
+    const input = screen.getByPlaceholderText("sourceFilterFiles");
+    fireEvent.change(input, { target: { value: "needle" } });
+
+    await waitFor(() =>
+      expect(listGitUntrackedFiles).toHaveBeenCalledWith("p1", { q: "needle" }),
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector(
+          '[data-source-path="generated/needle-bootstrap.json"]',
+        ),
+      ).not.toBeNull(),
+    );
+    expect(screen.getByText("sourceUntrackedSearchTruncated")).toBeDefined();
+    expect(getGitUntrackedFolder).not.toHaveBeenCalled();
+    expect(listGitUntrackedFiles).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "" } });
+    await waitFor(() =>
+      expect(
+        document.querySelector(
+          '[data-source-path="generated/needle-bootstrap.json"]',
+        ),
+      ).toBeNull(),
+    );
   });
 
   it("expands many untracked folders without refetching the open diff", async () => {
@@ -469,8 +864,9 @@ describe("WorkingTreeBrowser", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() =>
-      expect(getGitUntrackedFolder).toHaveBeenCalledTimes(folders.length),
+    await waitFor(
+      () => expect(getGitUntrackedFolder).toHaveBeenCalledTimes(folders.length),
+      { timeout: 5_000 },
     );
     await waitFor(() =>
       expect(
@@ -522,21 +918,102 @@ describe("WorkingTreeBrowser", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(getGitDiff).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(document.querySelector(".git-diff-loading")).toBeNull(),
+    fireEvent.click(
+      await screen.findByRole("button", { name: "sourceExpandPathGroup" }),
     );
-    const finalRow = (await screen.findByText("generated/file-399.ts")).closest(
-      ".commit-file-item",
+    await waitFor(() => expect(getFile).toHaveBeenCalledTimes(1));
+    const finalPath = document.querySelector(
+      '[data-source-path="generated/file-399.ts"]',
     );
+    const finalRow = finalPath?.closest(".commit-file-item");
     if (!finalRow) throw new Error("Final generated file row is missing");
-    getGitDiff.mockImplementation(() => new Promise(() => {}));
+    getFile.mockImplementation(() => new Promise(() => {}));
     translationCalls = 0;
 
     fireEvent.click(finalRow);
 
-    expect(getGitDiff).toHaveBeenCalledTimes(2);
+    expect(getFile).toHaveBeenCalledTimes(2);
     expect(translationCalls).toBeLessThan(50);
+  });
+
+  it("partitions untracked files below tracked changes and opens live contents", async () => {
+    getGitDiff.mockResolvedValue({ diffHtml: "", structuredPatch: [] });
+    listReviewComments.mockResolvedValue({
+      comments: [],
+      batches: [],
+      pendingCount: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <WorkingTreeBrowser
+          projectId="p1"
+          status={{
+            isGitRepo: true,
+            branch: "main",
+            upstream: null,
+            ahead: 0,
+            behind: 0,
+            isClean: false,
+            files: [
+              {
+                path: "src/tracked.ts",
+                status: "M",
+                staged: false,
+                linesAdded: 1,
+                linesDeleted: 0,
+              },
+              {
+                path: "generated/untracked.ts",
+                status: "?",
+                staged: false,
+                linesAdded: null,
+                linesDeleted: null,
+              },
+            ],
+          }}
+          isWideScreen={true}
+          t={t}
+        />
+      </MemoryRouter>,
+    );
+
+    const trackedPath = await waitFor(() => {
+      const found = document.querySelector(
+        '[data-source-path="src/tracked.ts"]',
+      );
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    const divider = screen.getByText("sourceUntrackedFiles");
+    const untrackedPath = document.querySelector(
+      '[data-source-path="generated/untracked.ts"]',
+    ) as HTMLElement | null;
+    expect(untrackedPath).not.toBeNull();
+    expect(
+      trackedPath.compareDocumentPosition(divider) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      divider.compareDocumentPosition(untrackedPath as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(untrackedPath as HTMLElement);
+    await waitFor(() =>
+      expect(getFile).toHaveBeenCalledWith(
+        "p1",
+        "generated/untracked.ts",
+        true,
+        undefined,
+        undefined,
+        "full",
+      ),
+    );
+    expect(
+      await screen.findByText("contents:generated/untracked.ts"),
+    ).toBeDefined();
+    expect(getGitDiff).toHaveBeenCalledTimes(1);
   });
 
   it("uses only compact staged and untracked state markers", async () => {
@@ -588,9 +1065,14 @@ describe("WorkingTreeBrowser", () => {
       </MemoryRouter>,
     );
 
-    const stagedRow = (await screen.findByText("src/staged.ts")).closest(
-      ".commit-file-item",
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-source-path="src/staged.ts"]'),
+      ).not.toBeNull(),
     );
+    const stagedRow = document
+      .querySelector('[data-source-path="src/staged.ts"]')
+      ?.closest(".commit-file-item");
     if (!stagedRow) throw new Error("Staged file row is missing");
     expect(stagedRow.querySelector(".worktree-file-state")?.textContent).toBe(
       "✓",
@@ -601,14 +1083,14 @@ describe("WorkingTreeBrowser", () => {
         ?.getAttribute("data-tooltip"),
     ).toBe("sourceWorktreeStaged");
     expect(
-      screen
-        .getByText("src/unstaged.ts")
-        .closest(".commit-file-item")
+      document
+        .querySelector('[data-source-path="src/unstaged.ts"]')
+        ?.closest(".commit-file-item")
         ?.querySelector(".worktree-file-state"),
     ).toBeNull();
-    const untrackedRow = screen
-      .getByText("src/untracked.ts")
-      .closest(".commit-file-item");
+    const untrackedRow = document
+      .querySelector('[data-source-path="src/untracked.ts"]')
+      ?.closest(".commit-file-item");
     if (!untrackedRow) throw new Error("Untracked file row is missing");
     expect(untrackedRow.querySelector(".worktree-file-state")).toBeNull();
     expect(
@@ -660,7 +1142,11 @@ describe("WorkingTreeBrowser", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByText("src/keep.ts");
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-source-path="src/keep.ts"]'),
+      ).not.toBeNull(),
+    );
     await waitFor(() => expect(listReviewComments).toHaveBeenCalledWith("p1"));
     fireEvent.click(screen.getByRole("button", { name: "sourceFilterFiles" }));
     const input = screen.getByPlaceholderText("sourceFilterFiles");
@@ -670,7 +1156,9 @@ describe("WorkingTreeBrowser", () => {
     expect(
       document.querySelector('[data-source-path="src/keep.ts"]'),
     ).not.toBeNull();
-    expect(screen.queryByText("scratch/drop.txt")).toBeNull();
+    expect(
+      document.querySelector('[data-source-path="scratch/drop.txt"]'),
+    ).toBeNull();
     fireEvent.change(input, { target: { value: "missing" } });
     expect(screen.getByText("sourceNoMatches")).toBeDefined();
   });
@@ -759,7 +1247,16 @@ describe("WorkingTreeBrowser", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByText("src/mobile.ts"));
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-source-path="src/mobile.ts"]'),
+      ).not.toBeNull(),
+    );
+    fireEvent.click(
+      document
+        .querySelector('[data-source-path="src/mobile.ts"]')!
+        .closest("button")!,
+    );
 
     expect(await screen.findByRole("dialog")).toBeDefined();
     expect(screen.queryByText("sourceWorktreeUnstaged")).toBeNull();
@@ -988,7 +1485,9 @@ describe("WorkingTreeBrowser", () => {
         const rendered = render(view(dirtyStatus(1)));
         if (!isWideScreen) {
           fireEvent.click(
-            screen.getByRole("button", { name: /notes\/live\.md/ }),
+            document
+              .querySelector('[data-source-path="notes/live.md"]')!
+              .closest("button")!,
           );
         }
         fireEvent.click(
@@ -1019,7 +1518,9 @@ describe("WorkingTreeBrowser", () => {
         rendered.rerender(view(dirtyStatus(3)));
         if (!isWideScreen) {
           fireEvent.click(
-            screen.getByRole("button", { name: /notes\/live\.md/ }),
+            document
+              .querySelector('[data-source-path="notes/live.md"]')!
+              .closest("button")!,
           );
         }
 

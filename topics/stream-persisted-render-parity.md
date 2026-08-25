@@ -82,6 +82,38 @@ observable order was nondeterministic async completion.
   could keep showing activity decoration while transcript rows were blocked,
   but changing liveness caching would not release those rows.
 
+## Live tool-field loss incident (2026-08-19)
+
+A live Claude turn showed one thinking activity for about five minutes while tool
+work continued. Sending a steer caused the accumulated tool activity to appear.
+The server stream was active; the client live projection was lossy:
+`useStreamingContent` copied only `type`, `text`, and `thinking` from each
+`content_block_start`, discarding a tool block's `id`, `name`, and `input`.
+Conversation view therefore could not compile live tool-call rows. Durable JSONL
+catch-up restored the complete blocks later, making the steer look like a render
+flush.
+
+The live accumulator now retains the complete provider block and accumulates
+`input_json_delta.partial_json` until it forms a valid tool input. Unknown or
+incomplete deltas do not publish a no-effect React update. Focused tests cover
+live tool identity and completed input, and the authorized browser tab advanced
+to 50 live activities without another steer.
+
+Replaceable micro-deltas use two timers over one dirty set:
+
+- a quiet timer follows the newest delta at an adaptive cadence with a 100 ms
+  base; and
+- a maximum-age timer remains pinned to the oldest unpublished delta. Its
+  ordinary bound is 200 ms, rising only with the adaptive interval under
+  measured flush/event pressure.
+
+Whichever timer fires drains the set and cancels the other. A flush callback
+that accepts more data re-arms before returning. Recomputing a shorter adaptive
+deadline against the pinned origin schedules an immediate zero-delay flush when
+that deadline is already past. Stream-progress liveness uses the same
+leading-plus-trailing principle: burst events are rejected before the React
+setter, but one timer publishes the final observation if the stream goes quiet.
+
 ## Implemented repair boundary
 
 `packages/server/src/subscriptions.ts` establishes provider order before any
@@ -131,6 +163,14 @@ and route snapshots retain the map. Duplicate updates remain no-ops, live IDs
 can migrate to durable IDs, and active-window pruning removes stale entries.
 Token-rate pending/block Markdown remains on the ref-backed streaming path.
 
+The client preserves transcript identity for structurally equal same-id SDK
+messages. Once an identified raw message is visible, later same-id replacements
+are held for a bounded 100 ms window and only the latest replacement is
+published; a different message id, waiting-input/idle status, or turn completion
+flushes the pending replacement first. This keeps raw-first latency and event
+order while preventing a raw/enriched burst from reconciling the complete
+detailed transcript once per intermediate snapshot.
+
 Focused regressions in `packages/server/test/subscriptions.test.ts` prove raw
 order while the first finalizer is blocked, independent later finalization,
 latest-generation suppression, atomic enriched-message/event order, immediate
@@ -169,6 +209,10 @@ equality is graded by whether the live item has a durable counterpart:
   item while it is active. Prefer changes that do not alter row count, group
   boundaries, navigation anchors, or stable identity. Once the persisted
   counterpart is available, the item settles to the durable representation.
+- **No-effect replacements do not publish.** A structurally equal same-id SDK
+  snapshot preserves the existing transcript array and message identity.
+  Replaceable same-id enrichment bursts publish their latest bounded snapshot,
+  not every intermediate representation.
 - **Reload-safe snapshots are reconciliation, not replay.** A native provider
   snapshot may contain the whole completed active-turn prefix. Reattaching YA
   must not publish that prefix as freshly observed live activity. Browser
@@ -239,8 +283,9 @@ same logical session; keep the two fixtures representing the *same* commands so
 a drift means a real asymmetry, not two different sessions. The comparison
 retains render-item IDs, source-message IDs and parent/tool relationships,
 block HTML, media, and structured fields. Provider-specific identity aliases
-must be declared at the assertion; the Codex fixture declares only its known
-positional durable IDs for the user prompt and final assistant text.
+must be declared at the assertion. Current Codex user, assistant, and reasoning
+rows instead converge on persisted provider identity; positional ids remain a
+historical fallback.
 
 The harness intentionally enforces strict equality for facts and items that
 the fixture declares paired. That is a conservative test for the

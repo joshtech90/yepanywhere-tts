@@ -3,6 +3,7 @@ import type {
   CacheMissBillingRecord,
   ContextUsage,
   PendingInputType,
+  ProjectCodeNameChangedEvent,
   ProjectQueueChangedEvent,
   ProviderName,
   ProviderRuntimeStatus,
@@ -18,6 +19,7 @@ import {
   createManagedStream,
   type ManagedStream,
   type ManagedStreamEvent,
+  SERVER_PUSH_INACTIVITY_TIMEOUT_MS,
   type SourceTransport,
 } from "./transport";
 
@@ -241,6 +243,7 @@ export interface ActivityEventMap {
   "review-response-changed": ReviewResponseChangedEvent;
   "provider-runtime-status-changed": ProviderRuntimeStatusChangedEvent;
   "project-queue-changed": ProjectQueueChangedEvent;
+  "project-code-names-changed": ProjectCodeNameChangedEvent;
   "workstreams-changed": WorkstreamsChangedEvent;
   "session-queue-persistence-changed": SessionQueuePersistenceChangedEvent;
   "session-metadata-changed": SessionMetadataChangedEvent;
@@ -474,7 +477,10 @@ class ActivityBus {
         onError: (error) => this.handleStreamError(record, error),
         onClose: (error) => this.handleStreamClose(record, error),
       },
-      { autoStart: false },
+      {
+        autoStart: false,
+        inactivityTimeoutMs: SERVER_PUSH_INACTIVITY_TIMEOUT_MS,
+      },
     );
     record.stream = stream;
     record.unsubscribeStream = stream.subscribe(() => {
@@ -601,6 +607,7 @@ class ActivityBus {
       "review-response-changed",
       "provider-runtime-status-changed",
       "project-queue-changed",
+      "project-code-names-changed",
       "workstreams-changed",
       "session-queue-persistence-changed",
       "session-metadata-changed",
@@ -717,7 +724,7 @@ class ActivityBus {
   }
 
   resetForTests(): void {
-    for (const [sourceKey, record] of [...this.streamRecords]) {
+    for (const [sourceKey, record] of Array.from(this.streamRecords)) {
       this.closeStreamRecord(sourceKey, record);
     }
     this.listeners.clear();
