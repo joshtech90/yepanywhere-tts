@@ -31,7 +31,8 @@ export function createTtsRoutes(deps: TtsDeps): Hono {
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
-    const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const obj =
+      body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const text = obj.text;
     if (typeof text !== "string" || text.trim().length === 0) {
       return c.json({ error: "text is required" }, 400);
@@ -46,7 +47,8 @@ export function createTtsRoutes(deps: TtsDeps): Hono {
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
-    const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    const obj =
+      body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const text = obj.text;
     const wantsBase64 = obj.format === "base64";
     const preCleaned = obj.preCleaned === true;

@@ -681,8 +681,16 @@
   opacity: 1;
   pointer-events: auto;
   color: var(--text-primary, #ccc);
-  border-color: color-mix(in srgb, var(--app-yep-green) 45%, var(--border-color, #333));
-  background: color-mix(in srgb, var(--app-yep-green) 14%, var(--bg-secondary, #252525));
+  border-color: color-mix(
+    in srgb,
+    var(--app-yep-green) 45%,
+    var(--border-color, #333)
+  );
+  background: color-mix(
+    in srgb,
+    var(--app-yep-green) 14%,
+    var(--bg-secondary, #252525)
+  );
 }
 
 .text-block-speak-spinner {
@@ -751,7 +759,10 @@
   border-radius: 8px;
   color: var(--text-muted, #888);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .auto-read-toggle:hover {

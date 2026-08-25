@@ -2584,10 +2584,7 @@ export function createApp(options: AppOptions): AppResult {
 
   // Text-to-speech (read-aloud) route, mounted independently of STT speech.
   if (options.ttsService) {
-    app.route(
-      "/api/tts",
-      createTtsRoutes({ ttsService: options.ttsService }),
-    );
+    app.route("/api/tts", createTtsRoutes({ ttsService: options.ttsService }));
   }
 
   // Local media/file serving — both doors enforce the live file-access

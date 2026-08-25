@@ -37,11 +37,7 @@ export const AUTO_SESSION_TITLE_MAX_DELAY_SECONDS = 600;
 export const DEFAULT_AUTO_SESSION_TITLE_DELAY_SECONDS = 20;
 
 /** Language the generated title should be written in. */
-export const AUTO_SESSION_TITLE_LANGUAGES = [
-  "auto",
-  "de",
-  "en",
-] as const;
+export const AUTO_SESSION_TITLE_LANGUAGES = ["auto", "de", "en"] as const;
 export type AutoSessionTitleLanguage =
   (typeof AUTO_SESSION_TITLE_LANGUAGES)[number];
 
@@ -103,13 +99,12 @@ export function normalizeAutoSessionTitleSettings(
   value: unknown,
   base: AutoSessionTitleSettings = DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
 ): AutoSessionTitleSettings {
-  const input = (
-    value && typeof value === "object" ? value : {}
-  ) as Partial<Record<keyof AutoSessionTitleSettings, unknown>>;
+  const input = (value && typeof value === "object" ? value : {}) as Partial<
+    Record<keyof AutoSessionTitleSettings, unknown>
+  >;
 
   return {
-    enabled:
-      typeof input.enabled === "boolean" ? input.enabled : base.enabled,
+    enabled: typeof input.enabled === "boolean" ? input.enabled : base.enabled,
     triggerMessageCount: clampInteger(
       input.triggerMessageCount,
       AUTO_SESSION_TITLE_MIN_TRIGGER_MESSAGES,

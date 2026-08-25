@@ -666,9 +666,7 @@ async function startServer() {
       key: fs.readFileSync(config.tlsKeyPath),
       cert: fs.readFileSync(config.tlsCertPath),
     };
-    console.log(
-      `[HTTPS] Using TLS certificate from ${config.tlsCertPath}`,
-    );
+    console.log(`[HTTPS] Using TLS certificate from ${config.tlsCertPath}`);
   } else if (config.httpsSelfSigned) {
     const certResult = ensureSelfSignedCertificate({
       dataDir: config.dataDir,

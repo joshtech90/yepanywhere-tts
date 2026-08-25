@@ -13,8 +13,8 @@
       "reason": "Theme-dependent provider badge color tokens shared by every badge surface."
     },
     "packages/client/src/styles/renderers.css": {
-      "maxLines": 6041,
-      "reason": "Legacy generated-content and renderer class vocabulary. Fork: +70 lines for read-aloud (TTS) text-block highlighting and player controls."
+      "maxLines": 6052,
+      "reason": "Legacy generated-content and renderer class vocabulary. Fork: +81 lines for read-aloud (TTS) text-block highlighting and player controls, as formatted by Biome."
     },
     "packages/client/src/styles/tool-rows.css": {
       "maxLines": 813,

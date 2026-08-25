@@ -102,10 +102,16 @@ function prefixLengths(units: string[], inBytes = false): number[] {
 
 function spanLen(prefix: number[], start: number, end: number): number {
   if (end <= start) return 0;
-  return (prefix[end] as number) - (prefix[start] as number) + (end - start - 1);
+  return (
+    (prefix[end] as number) - (prefix[start] as number) + (end - start - 1)
+  );
 }
 
-function candidateCaps(preferred: number, hardMax: number, rounds = 5): number[] {
+function candidateCaps(
+  preferred: number,
+  hardMax: number,
+  rounds = 5,
+): number[] {
   const low = Math.max(1, Math.min(preferred, hardMax));
   const high = Math.max(preferred, hardMax);
   const caps = new Set<number>([low, high]);
@@ -205,17 +211,33 @@ function waveScore(
   const waves = Math.ceil(chunkCount / concurrency);
   const startupWeight = Math.max(100, preferred);
   const wallclock = waves * (startupWeight + maxChunkLen);
-  return [wallclock, waves, maxChunkLen, smallDeficit, smallChunks, chunkCount, cap];
+  return [
+    wallclock,
+    waves,
+    maxChunkLen,
+    smallDeficit,
+    smallChunks,
+    chunkCount,
+    cap,
+  ];
 }
 
 function balancedDpChunks(input: string): string[] {
   const text = input.trim();
   if (!text) return [];
-  const minChars = Math.max(1, Math.round(PREFERRED_CHUNK_CHARS * BALANCED_MIN_RATIO));
-  let bestChoice:
-    | { ranges: Array<[number, number]>; units: string[]; score: number[] }
-    | null = null;
-  for (const cap of candidateCaps(PREFERRED_CHUNK_CHARS, HARD_MAX_CHUNK_CHARS)) {
+  const minChars = Math.max(
+    1,
+    Math.round(PREFERRED_CHUNK_CHARS * BALANCED_MIN_RATIO),
+  );
+  let bestChoice: {
+    ranges: Array<[number, number]>;
+    units: string[];
+    score: number[];
+  } | null = null;
+  for (const cap of candidateCaps(
+    PREFERRED_CHUNK_CHARS,
+    HARD_MAX_CHUNK_CHARS,
+  )) {
     const units = ttsUnits(text, HARD_MAX_CHUNK_CHARS, MAX_CHUNK_BYTES);
     if (!units.length) continue;
     const charsPrefix = prefixLengths(units);
@@ -245,7 +267,9 @@ function balancedDpChunks(input: string): string[] {
   if (bestChoice === null) {
     return ttsUnits(text, HARD_MAX_CHUNK_CHARS, MAX_CHUNK_BYTES) || [text];
   }
-  return bestChoice.ranges.map(([s, e]) => bestChoice.units.slice(s, e).join(" "));
+  return bestChoice.ranges.map(([s, e]) =>
+    bestChoice.units.slice(s, e).join(" "),
+  );
 }
 
 /**
@@ -257,10 +281,7 @@ function balancedDpChunks(input: string): string[] {
  * Returns null if any clause can't be matched contiguously, signalling the
  * caller to fall back to its previous length-based slice.
  */
-function consumedPrefixLength(
-  text: string,
-  clauses: string[],
-): number | null {
+function consumedPrefixLength(text: string, clauses: string[]): number | null {
   let cursor = 0;
   let end = 0;
   for (const clause of clauses) {
@@ -316,9 +337,7 @@ export function splitIntoChunks(input: string, fastStart = true): string[] {
           // (e.g. a word-wrapped atom whose internal whitespace was collapsed),
           // which preserves the previous behavior for that edge case.
           const consumed = consumedPrefixLength(text, keptClauses);
-          remainder = text
-            .slice(consumed ?? subBuf.length)
-            .replace(/^\s+/, "");
+          remainder = text.slice(consumed ?? subBuf.length).replace(/^\s+/, "");
         }
       }
     }

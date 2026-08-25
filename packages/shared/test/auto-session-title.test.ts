@@ -39,8 +39,9 @@ describe("normalizeAutoSessionTitleSettings", () => {
   });
 
   it("falls back to the base value for an unknown language", () => {
-    expect(normalizeAutoSessionTitleSettings({ language: "klingon" }).language)
-      .toBe("auto");
+    expect(
+      normalizeAutoSessionTitleSettings({ language: "klingon" }).language,
+    ).toBe("auto");
     expect(normalizeAutoSessionTitleSettings({ language: "de" }).language).toBe(
       "de",
     );
@@ -65,9 +66,9 @@ describe("normalizeGeneratedSessionTitle", () => {
   });
 
   it("strips a label prefix, quotes and trailing punctuation", () => {
-    expect(normalizeGeneratedSessionTitle('Title: "Telegram-Bot Deploy".')).toBe(
-      "Telegram-Bot Deploy",
-    );
+    expect(
+      normalizeGeneratedSessionTitle('Title: "Telegram-Bot Deploy".'),
+    ).toBe("Telegram-Bot Deploy");
     expect(normalizeGeneratedSessionTitle("Titel — Wohnungssuche")).toBe(
       "Wohnungssuche",
     );
@@ -78,7 +79,9 @@ describe("normalizeGeneratedSessionTitle", () => {
 
   it("takes the first non-empty line when the model adds a preamble", () => {
     expect(
-      normalizeGeneratedSessionTitle("\n\nWohnungssuche Kleinanzeigen\n\nWhy: …"),
+      normalizeGeneratedSessionTitle(
+        "\n\nWohnungssuche Kleinanzeigen\n\nWhy: …",
+      ),
     ).toBe("Wohnungssuche Kleinanzeigen");
   });
 

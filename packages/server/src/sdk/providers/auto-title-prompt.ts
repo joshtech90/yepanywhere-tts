@@ -43,9 +43,7 @@ export function boundAutoTitleExcerpt(
   return `${trimmed.slice(0, maxChars).trimEnd()}\n[...]`;
 }
 
-export function createAutoTitlePrompt(
-  options: AutoTitlePromptOptions,
-): string {
+export function createAutoTitlePrompt(options: AutoTitlePromptOptions): string {
   const lengthTarget =
     options.lengthTarget ?? DEFAULT_AUTO_SESSION_TITLE_MAX_LENGTH;
   const language = options.language ?? "auto";
@@ -57,7 +55,7 @@ export function createAutoTitlePrompt(
     "Name the concrete task, topic, or artifact — for example",
     '"Stripe anfragen", "Wohnungssuche Kleinanzeigen", "Telegram-Bot Deploy".',
     LANGUAGE_INSTRUCTION[language],
-    "No generic titles like \"Chat\", \"Session\", \"Help request\" or",
+    'No generic titles like "Chat", "Session", "Help request" or',
     '"Diverse Aufgaben". No date, no session id, no file path unless the file',
     "is the actual subject.",
     options.currentTitle

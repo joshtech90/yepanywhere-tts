@@ -2,10 +2,7 @@ import { readFile, access } from "node:fs/promises";
 import * as path from "node:path";
 import type { TextToSpeechClient } from "@google-cloud/text-to-speech";
 import { getLogger } from "../logging/logger.js";
-import {
-  CHUNKING_MIN_TOTAL_CHARS,
-  splitIntoChunks,
-} from "./ttsChunking.js";
+import { CHUNKING_MIN_TOTAL_CHARS, splitIntoChunks } from "./ttsChunking.js";
 
 const logger = getLogger();
 
