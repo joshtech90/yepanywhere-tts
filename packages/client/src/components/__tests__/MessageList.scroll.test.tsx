@@ -7,6 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { setConversationViewPreference } from "../../hooks/useConversationView";
 import {
@@ -270,30 +271,6 @@ describe("MessageList scroll and follow", () => {
     expect(onFollowingBottomChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("disables off-screen transcript rendering by default and allows opt-in", () => {
-    const messages = [userMessage("user-1", "completed request")];
-    const { container, rerender } = render(<MessageList messages={messages} />);
-
-    expect(
-      container
-        .querySelector(".message-list")
-        ?.classList.contains("message-list-offscreen-rendering"),
-    ).toBe(false);
-
-    rerender(
-      <MessageList
-        messages={messages}
-        offscreenTranscriptRenderingEnabled={true}
-      />,
-    );
-
-    expect(
-      container
-        .querySelector(".message-list")
-        ?.classList.contains("message-list-offscreen-rendering"),
-    ).toBe(true);
-  });
-
   it("scrolls to current from a focused composer with Ctrl+End", () => {
     const { container } = render(
       <MessageList
@@ -534,6 +511,89 @@ describe("MessageList scroll and follow", () => {
     expect(container.scrollTop).toBe(500);
     expect(onFollowCurrent).toHaveBeenCalledTimes(1);
     composerTarget.remove();
+  });
+
+  it("publishes live-tail return state when Follow is activated", async () => {
+    const composerTarget = document.createElement("div");
+    composerTarget.className = "session-input-inner";
+    document.body.append(composerTarget);
+    const onScrollSnapshotChange = vi.fn();
+    const promptTimestamp = "2026-08-26T12:00:00.000Z";
+
+    const { container } = render(
+      <MessageList
+        messages={[
+          userMessage("user-1", "earlier request", promptTimestamp),
+          assistantMessage(
+            "assistant-1",
+            "current response",
+            "2026-08-26T12:01:00.000Z",
+          ),
+        ]}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+      />,
+    );
+    Object.defineProperty(container, "scrollTop", {
+      configurable: true,
+      value: 200,
+      writable: true,
+    });
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(container, "clientHeight", {
+      configurable: true,
+      value: 500,
+    });
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 400,
+        width: 400,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    container.getBoundingClientRect = () => rectFor(0, 500);
+    const user = container.querySelector<HTMLElement>(
+      '[data-render-id="user-1"]',
+    );
+    const assistant = container.querySelector<HTMLElement>(
+      '[data-render-id="assistant-1"]',
+    );
+    const lastLine = container.querySelector<HTMLElement>(".message-list")
+      ?.lastElementChild as HTMLElement | null;
+    expect(user).toBeTruthy();
+    expect(assistant).toBeTruthy();
+    expect(lastLine).toBeTruthy();
+    (user as HTMLElement).getBoundingClientRect = () => rectFor(-80, 40);
+    (assistant as HTMLElement).getBoundingClientRect = () => rectFor(120, 280);
+    (lastLine as HTMLElement).getBoundingClientRect = () => rectFor(120, 380);
+
+    fireEvent.wheel(container, { deltaY: -120 });
+    onScrollSnapshotChange.mockClear();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Follow latest session output",
+      }),
+    );
+
+    expect(container.scrollTop).toBe(500);
+    expect(onScrollSnapshotChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        atBottom: true,
+        following: true,
+        seenTurn: {
+          id: "user-1",
+          timestampMs: new Date(promptTimestamp).getTime(),
+          activityIndex: 1,
+        },
+      }),
+    );
   });
 
   it("retargets the position timestamp to a hovered row's start time", async () => {
@@ -1118,6 +1178,72 @@ describe("MessageList scroll and follow", () => {
     expect(container.scrollTop).toBe(900);
   });
 
+  it("pins a steering send before the next paint while following", () => {
+    const firstThought = codexThinkingMessage(
+      "thinking-1",
+      "Initial visible thought",
+      "2026-08-26T18:00:00.000Z",
+      true,
+    );
+    const pendingSteer = {
+      tempId: "steer-1",
+      content: "Clarify the diff scope",
+      timestamp: "2026-08-26T18:00:01.000Z",
+      status: "Sending...",
+    };
+    const layoutScrollTops: number[] = [];
+    let scrollHeight = 1000;
+    let sendSteer: (() => void) | null = null;
+
+    function SteeringHarness() {
+      const [sent, setSent] = useState(false);
+      const viewportRef = useRef<HTMLDivElement>(null);
+      sendSteer = () => {
+        scrollHeight = 1400;
+        setSent(true);
+      };
+      useLayoutEffect(() => {
+        if (sent && viewportRef.current) {
+          layoutScrollTops.push(viewportRef.current.scrollTop);
+        }
+      }, [sent]);
+
+      return (
+        <div ref={viewportRef}>
+          <MessageList
+            provider="codex"
+            isProcessing
+            conversationViewEnabledOverride
+            messages={[firstThought]}
+            pendingMessages={sent ? [pendingSteer] : []}
+            scrollTrigger={sent ? 1 : 0}
+          />
+        </div>
+      );
+    }
+
+    const { container } = render(<SteeringHarness />);
+    const viewport = container.firstElementChild as HTMLDivElement;
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      value: 500,
+      writable: true,
+    });
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 500,
+    });
+
+    act(() => sendSteer?.());
+
+    expect(layoutScrollTops).toEqual([900]);
+    expect(viewport.scrollTop).toBe(900);
+  });
+
   it("does not follow visible thinking deltas until Follow is clicked", async () => {
     const composerTarget = document.createElement("div");
     composerTarget.className = "session-input-inner";
@@ -1366,6 +1492,242 @@ describe("MessageList scroll and follow", () => {
     );
 
     expect(container.scrollTop).toBe(200); // 700 - 500
+  });
+
+  it("publishes a newly completed turn while visibly following", async () => {
+    const onScrollSnapshotChange = vi.fn();
+    const messages = [
+      userMessage("user-1", "go", "2026-08-25T12:00:00.000Z"),
+      assistantMessage("assistant-1", "done", "2026-08-25T12:01:00.000Z"),
+    ];
+    const { container, rerender } = render(
+      <MessageList
+        isProcessing={true}
+        messages={messages}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+      />,
+    );
+    Object.defineProperty(container, "scrollTop", {
+      configurable: true,
+      value: 500,
+      writable: true,
+    });
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(container, "clientHeight", {
+      configurable: true,
+      value: 500,
+    });
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 400,
+        width: 400,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    container.getBoundingClientRect = () => rectFor(0, 500);
+    const user = container.querySelector<HTMLElement>(
+      '[data-render-id="user-1"]',
+    );
+    const assistant = container.querySelector<HTMLElement>(
+      '[data-render-id="assistant-1"]',
+    );
+    expect(user).toBeTruthy();
+    expect(assistant).toBeTruthy();
+    (user as HTMLElement).getBoundingClientRect = () => rectFor(40, 40);
+    (assistant as HTMLElement).getBoundingClientRect = () => rectFor(120, 280);
+    onScrollSnapshotChange.mockClear();
+
+    rerender(
+      <MessageList
+        isProcessing={false}
+        messages={messages}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onScrollSnapshotChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          completedTurn: {
+            id: "user-1",
+            timestampMs: new Date("2026-08-25T12:01:00.000Z").getTime(),
+          },
+          following: true,
+        }),
+      );
+    });
+  });
+
+  it("publishes an active turn as seen in Conversation View", async () => {
+    const onScrollSnapshotChange = vi.fn();
+    const promptTimestamp = "2026-08-25T12:00:00.000Z";
+    const { container } = render(
+      <MessageList
+        conversationViewEnabledOverride
+        isProcessing={true}
+        messages={[
+          userMessage("user-1", "go", promptTimestamp),
+          assistantMessage(
+            "assistant-1",
+            "still working",
+            "2026-08-25T12:01:00.000Z",
+          ),
+        ]}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+      />,
+    );
+    Object.defineProperty(container, "scrollTop", {
+      configurable: true,
+      value: 500,
+      writable: true,
+    });
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(container, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 400,
+        width: 400,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    container.getBoundingClientRect = () => rectFor(0, 400);
+    const user = container.querySelector<HTMLElement>(
+      '[data-render-id="user-1"]',
+    );
+    const assistant = container.querySelector<HTMLElement>(
+      '[data-render-id="assistant-1"]',
+    );
+    expect(user).toBeTruthy();
+    expect(assistant).toBeTruthy();
+    (user as HTMLElement).getBoundingClientRect = () => rectFor(-80, 40);
+    (assistant as HTMLElement).getBoundingClientRect = () => rectFor(120, 240);
+    onScrollSnapshotChange.mockClear();
+
+    fireEvent.scroll(container);
+
+    await waitFor(() => {
+      expect(onScrollSnapshotChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          anchor: expect.objectContaining({
+            id: "assistant-1",
+            topOffset: 120,
+          }),
+          seenTurn: {
+            id: "user-1",
+            timestampMs: new Date(promptTimestamp).getTime(),
+            activityIndex: 1,
+          },
+        }),
+      );
+      expect(
+        onScrollSnapshotChange.mock.lastCall?.[0].completedTurn,
+      ).toBeUndefined();
+    });
+  });
+
+  it("captures the furthest visible activity in expanded view", async () => {
+    const onScrollSnapshotChange = vi.fn();
+    const promptTimestamp = "2026-08-25T12:00:00.000Z";
+    const { container } = render(
+      <MessageList
+        conversationViewEnabledOverride={false}
+        isProcessing={true}
+        messages={[
+          userMessage("user-1", "go", promptTimestamp),
+          assistantMessage(
+            "assistant-mid",
+            "first activity",
+            "2026-08-25T12:00:30.000Z",
+          ),
+          assistantMessage(
+            "assistant-1",
+            "still working",
+            "2026-08-25T12:01:00.000Z",
+          ),
+        ]}
+        onScrollSnapshotChange={onScrollSnapshotChange}
+      />,
+    );
+    Object.defineProperty(container, "scrollTop", {
+      configurable: true,
+      value: 500,
+      writable: true,
+    });
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    });
+    Object.defineProperty(container, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 400,
+        width: 400,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    container.getBoundingClientRect = () => rectFor(0, 400);
+    const user = container.querySelector<HTMLElement>(
+      '[data-render-id="user-1"]',
+    );
+    const middleActivity = container.querySelector<HTMLElement>(
+      '[data-render-id="assistant-mid"]',
+    );
+    const assistant = container.querySelector<HTMLElement>(
+      '[data-render-id="assistant-1"]',
+    );
+    expect(user).toBeTruthy();
+    expect(middleActivity).toBeTruthy();
+    expect(assistant).toBeTruthy();
+    (user as HTMLElement).getBoundingClientRect = () => rectFor(-180, 40);
+    (middleActivity as HTMLElement).getBoundingClientRect = () =>
+      rectFor(-60, 180);
+    (assistant as HTMLElement).getBoundingClientRect = () => rectFor(220, 140);
+    onScrollSnapshotChange.mockClear();
+
+    fireEvent.scroll(container);
+
+    await waitFor(() => {
+      expect(onScrollSnapshotChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          anchor: expect.objectContaining({
+            id: "assistant-1",
+            topOffset: 220,
+          }),
+          seenTurn: {
+            id: "user-1",
+            timestampMs: new Date(promptTimestamp).getTime(),
+            activityIndex: 2,
+          },
+        }),
+      );
+    });
   });
 
   it("lets a user wheel away cancel live follow before resize catch-up", () => {
@@ -1718,6 +2080,111 @@ describe("MessageList scroll and follow", () => {
     }
 
     expect(scrollContainer.scrollTop).toBe(200);
+  });
+
+  it("retries a remembered anchor through growth until the user scrolls", () => {
+    const animationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        callback(0);
+        return 0;
+      });
+    let resizeCallback: ResizeObserverCallback | null = null;
+    class CapturingResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: CapturingResizeObserver,
+    });
+
+    const scrollContainer = document.createElement("div");
+    document.body.append(scrollContainer);
+    let scrollTop = 0;
+    let scrollHeight = 500;
+    Object.defineProperty(scrollContainer, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.min(value, scrollHeight - 500);
+      },
+    });
+    Object.defineProperty(scrollContainer, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(scrollContainer, "clientHeight", {
+      configurable: true,
+      value: 500,
+    });
+    scrollContainer.scrollTo = vi.fn() as typeof scrollContainer.scrollTo;
+    const rectFor = (top: number, height: number): DOMRect =>
+      ({
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 360,
+        width: 360,
+        height,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function getRect(this: HTMLElement) {
+        if (this === scrollContainer) {
+          return rectFor(0, 500);
+        }
+        if (this.dataset.renderId === "assistant-1") {
+          return rectFor(-scrollTop, scrollHeight);
+        }
+        return rectFor(0, 40);
+      });
+
+    try {
+      render(
+        <MessageList
+          messages={[
+            userMessage("user-1", "earlier request"),
+            assistantMessage("assistant-1", "current response"),
+          ]}
+          initialScrollSnapshot={{
+            atBottom: false,
+            scrollTop: 4800,
+            scrollHeight: 5500,
+            clientHeight: 500,
+            anchor: { id: "assistant-1", topOffset: -4800 },
+            following: false,
+            updatedAtMs: Date.now(),
+          }}
+          scrollBehaviorMode="remember-place"
+        />,
+        { container: scrollContainer },
+      );
+
+      expect(scrollContainer.scrollTop).toBe(0);
+      scrollHeight = 5500;
+      act(() => {
+        resizeCallback?.([], {} as ResizeObserver);
+      });
+      expect(scrollContainer.scrollTop).toBe(4800);
+
+      fireEvent.wheel(scrollContainer, { deltaY: -120 });
+      scrollContainer.scrollTop = 4400;
+      scrollHeight = 6000;
+      act(() => {
+        resizeCallback?.([], {} as ResizeObserver);
+      });
+      expect(scrollContainer.scrollTop).toBe(4400);
+    } finally {
+      animationFrameSpy.mockRestore();
+      rectSpy.mockRestore();
+    }
   });
 
   it("falls back to a neighboring row when a remembered anchor is gone", () => {

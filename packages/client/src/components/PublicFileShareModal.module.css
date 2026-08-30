@@ -1,0 +1,145 @@
+:global(.modal):has(.modal) {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.modal {
+  display: grid;
+  gap: 14px;
+}
+
+.fileIdentity {
+  align-items: center;
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.fileIdentity > svg {
+  flex: 0 0 auto;
+  height: 18px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  width: 18px;
+}
+
+.fileIdentity > span:nth-child(2) {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveBadge {
+  background: color-mix(in srgb, var(--app-yep-green) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-yep-green) 55%, transparent);
+  border-radius: 999px;
+  color: var(--app-yep-green);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
+
+.description {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.warning {
+  align-items: flex-start;
+  background: color-mix(in srgb, var(--warning-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning-color) 40%, transparent);
+  border-radius: 8px;
+  color: var(--text-primary);
+  display: flex;
+  font-size: 0.78rem;
+  gap: 8px;
+  line-height: 1.4;
+  padding: 9px 10px;
+}
+
+.warning svg {
+  color: var(--warning-color);
+  flex: 0 0 auto;
+  height: 17px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  width: 17px;
+}
+
+.createButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+  justify-content: center;
+}
+
+.createButton svg {
+  height: 17px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  width: 17px;
+}
+
+.manualCopy {
+  display: grid;
+  font-size: 0.76rem;
+  gap: 5px;
+}
+
+.manualCopy span {
+  color: var(--text-secondary);
+}
+
+.manualCopy input {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  min-width: 0;
+  padding: 7px 8px;
+  width: 100%;
+}
+
+.inventory {
+  display: grid;
+  gap: 8px;
+}
+
+.inventoryHeading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+}
+
+.inventoryHeading strong {
+  font-size: 0.83rem;
+}
+
+@media (max-width: 599px) {
+  :global(.modal):has(.modal) {
+    width: calc(100vw - 20px);
+  }
+
+  .modal {
+    gap: 11px;
+  }
+
+  .warning {
+    font-size: 0.74rem;
+  }
+}

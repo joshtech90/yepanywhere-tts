@@ -1,6 +1,5 @@
 import {
   createContext,
-  type ReactNode,
   useCallback,
   useContext,
   useEffect,
@@ -11,10 +10,8 @@ import {
 import { Link, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
-import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
-import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import {
   DESKTOP_BREAKPOINT,
   MIN_CONTENT_WIDTH,
@@ -22,6 +19,13 @@ import {
 } from "../hooks/useSidebarWidth";
 import { SidebarSessionFeedsProvider } from "../hooks/useSidebarSessionFeeds";
 import { useI18n } from "../i18n";
+import {
+  SessionDomLingerHost,
+  SessionDomLingerRouteMarker,
+  type SessionDomLingerElement,
+} from "./SessionDomLingerHost";
+
+export { SessionDomLingerRouteMarker };
 
 export interface NavigationLayoutContext {
   /** Open the mobile sidebar */
@@ -35,7 +39,6 @@ export interface NavigationLayoutContext {
 }
 
 const NOOP = () => {};
-const SESSION_DOM_LINGER_TTL_MS = 60_000;
 const NON_TEXT_INPUT_TYPES = new Set([
   "button",
   "checkbox",
@@ -51,27 +54,8 @@ const NON_TEXT_INPUT_TYPES = new Set([
 const NavigationLayoutReactContext =
   createContext<NavigationLayoutContext | null>(null);
 
-interface SessionRouteLocationSnapshot {
-  pathname: string;
-  search: string;
-  state: unknown;
-}
-
-interface SessionDomLingerRoute {
-  key: string;
-  projectId: string;
-  sessionId: string;
-  location: SessionRouteLocationSnapshot;
-  status: "active" | "parked";
-  parkedAtMs?: number;
-  expiresAtMs?: number;
-}
-
 interface NavigationLayoutProps {
-  sessionElement?: (
-    route: SessionDomLingerRoute,
-    options: { parked: boolean },
-  ) => ReactNode;
+  sessionElement?: SessionDomLingerElement;
 }
 
 interface ResponsiveLayoutState {
@@ -141,35 +125,6 @@ function responsiveLayoutStateEquals(
   );
 }
 
-function createSessionDomLingerKey(options: {
-  sourceKey: string;
-  projectId: string;
-  sessionId: string;
-  search: string;
-}): string {
-  return [
-    encodeURIComponent(options.sourceKey),
-    encodeURIComponent(options.projectId),
-    encodeURIComponent(options.sessionId),
-    encodeURIComponent(options.search),
-  ].join(":");
-}
-
-function readSessionRouteFromPathname(
-  pathname: string,
-): { projectId: string; sessionId: string } | null {
-  const match = pathname.match(
-    /(?:^|\/)projects\/([^/]+)\/sessions\/([^/]+)\/?$/,
-  );
-  if (!match?.[1] || !match[2]) {
-    return null;
-  }
-  return {
-    projectId: decodeURIComponent(match[1]),
-    sessionId: decodeURIComponent(match[2]),
-  };
-}
-
 function readSidebarSessionRouteFromPathname(
   pathname: string,
 ): { projectId: string; sessionId: string } | null {
@@ -192,10 +147,6 @@ function isContentFrameRoutePathname(pathname: string): boolean {
   return /(?:^|\/)projects\/[^/]+\/file\/?$/.test(pathname);
 }
 
-export function SessionDomLingerRouteMarker() {
-  return null;
-}
-
 /**
  * Shared layout for all pages that need a sidebar.
  * Renders the Sidebar once so it persists across route changes.
@@ -205,14 +156,9 @@ export function NavigationLayout(props: NavigationLayoutProps) {
 }
 
 function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
-  const { sessionDomLingerEnabled } = useSessionPerformanceSettings();
   const { t } = useI18n();
 
   const location = useLocation();
-  const currentSessionMatch = useMemo(
-    () => readSessionRouteFromPathname(location.pathname),
-    [location.pathname],
-  );
   const sidebarSessionMatch = useMemo(
     () => readSidebarSessionRouteFromPathname(location.pathname),
     [location.pathname],
@@ -225,7 +171,6 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
     () => isContentFrameRoutePathname(location.pathname),
     [location.pathname],
   );
-  const sourceKey = useClientSummarySourceKey();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const forceExpandedSidebar =
     new URLSearchParams(location.search).get("sidebar") === "expanded";
@@ -322,16 +267,15 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
   // This prevents having both sidebars visible after window resize/device rotation
   // Only auto-close when desktop sidebar is actually visible (isWideScreen)
   useEffect(() => {
-    if (sidebarOpen && isWideScreen && canShowExpandedSidebar) {
+    if (
+      !isContentFrameRoute &&
+      sidebarOpen &&
+      isWideScreen &&
+      canShowExpandedSidebar
+    ) {
       setSidebarOpen(false);
     }
-  }, [canShowExpandedSidebar, isWideScreen, sidebarOpen]);
-
-  useEffect(() => {
-    if (isContentFrameRoute && sidebarOpen) {
-      setSidebarOpen(false);
-    }
-  }, [isContentFrameRoute, sidebarOpen]);
+  }, [canShowExpandedSidebar, isContentFrameRoute, isWideScreen, sidebarOpen]);
 
   // Smart toggle: if viewport can support expanded, toggle preference; otherwise open overlay
   const handleToggleExpanded = useCallback(() => {
@@ -376,218 +320,108 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
     () => ({ width: effectivelyCollapsed ? undefined : sidebarWidth }),
     [effectivelyCollapsed, sidebarWidth],
   );
-  const currentSessionRoute = useMemo<SessionDomLingerRoute | null>(() => {
-    if (!currentSessionMatch) {
-      return null;
-    }
-    const { projectId, sessionId } = currentSessionMatch;
-    return {
-      key: createSessionDomLingerKey({
-        sourceKey,
-        projectId,
-        sessionId,
-        search: location.search,
-      }),
-      projectId,
-      sessionId,
-      location: {
-        pathname: location.pathname,
-        search: location.search,
-        state: location.state,
-      },
-      status: "active",
-    };
-  }, [
-    currentSessionMatch,
-    location.pathname,
-    location.search,
-    location.state,
-    sourceKey,
-  ]);
-  const [lingerRoute, setLingerRoute] = useState<SessionDomLingerRoute | null>(
-    () => currentSessionRoute,
-  );
-  const sessionLayerRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!sessionDomLingerEnabled) {
-      setLingerRoute(currentSessionRoute);
-      return;
-    }
-    if (currentSessionRoute) {
-      setLingerRoute(currentSessionRoute);
-      return;
-    }
-    setLingerRoute((previous) => {
-      if (!previous || previous.status === "parked") {
-        return previous;
-      }
-      const now = Date.now();
-      return {
-        ...previous,
-        status: "parked",
-        parkedAtMs: now,
-        expiresAtMs: now + SESSION_DOM_LINGER_TTL_MS,
-      };
-    });
-  }, [currentSessionRoute, sessionDomLingerEnabled]);
-
-  useEffect(() => {
-    if (lingerRoute?.status !== "parked") {
-      return;
-    }
-    const timeoutMs = Math.max(0, (lingerRoute.expiresAtMs ?? 0) - Date.now());
-    const timer = window.setTimeout(() => {
-      setLingerRoute((previous) =>
-        previous?.key === lingerRoute.key && previous.status === "parked"
-          ? null
-          : previous,
-      );
-    }, timeoutMs);
-    return () => window.clearTimeout(timer);
-  }, [lingerRoute]);
-
-  const parkedSessionRoute =
-    sessionDomLingerEnabled && !currentSessionRoute ? lingerRoute : null;
-  const renderedSessionRoute = currentSessionRoute ?? parkedSessionRoute;
-  const sessionLayerVisible = Boolean(
-    currentSessionRoute &&
-      renderedSessionRoute &&
-      currentSessionRoute.key === renderedSessionRoute.key,
-  );
-  const sessionLayerParked = Boolean(
-    renderedSessionRoute && !sessionLayerVisible,
-  );
-
-  useEffect(() => {
-    const element = sessionLayerRef.current as
-      | (HTMLDivElement & { inert?: boolean })
-      | null;
-    if (!element) {
-      return;
-    }
-    element.inert = sessionLayerParked;
-  }, [sessionLayerParked]);
-
-  const sidebarFeedsEnabled =
-    !isContentFrameRoute &&
-    ((isWideScreen && !isMinimized) || (!isWideScreen && sidebarOpen));
+  const sidebarFeedsEnabled = isContentFrameRoute
+    ? sidebarOpen
+    : (isWideScreen && !isMinimized) || (!isWideScreen && sidebarOpen);
 
   return (
-    <SidebarSessionFeedsProvider enabled={sidebarFeedsEnabled}>
-      <div
-        ref={layoutFrameRef}
-        className={`session-page ${isWideScreen ? "desktop-layout" : ""} ${
-          isContentFrameRoute ? "content-frame-layout" : ""
-        } ${isResizing ? "resizing" : ""}`}
-        style={containerStyle}
-      >
-        {/* Desktop sidebar - always visible on wide screens; the minimized mode
+    <SessionDomLingerHost sessionElement={sessionElement}>
+      {({ onSessionNavigate, renderRouteStack }) => (
+        <SidebarSessionFeedsProvider enabled={sidebarFeedsEnabled}>
+          <div
+            ref={layoutFrameRef}
+            className={`session-page ${isWideScreen ? "desktop-layout" : ""} ${
+              isContentFrameRoute ? "content-frame-layout" : ""
+            } ${isResizing ? "resizing" : ""}`}
+            style={containerStyle}
+          >
+            {/* Desktop sidebar - always visible on wide screens; the minimized mode
           renders the floating restore toggle in its place */}
-        {isWideScreen &&
-          !isContentFrameRoute &&
-          (isMinimized ? (
-            <Link
-              to={{
-                pathname: location.pathname,
-                search: location.search,
-                hash: location.hash,
-              }}
-              className="sidebar-toggle sidebar-floating-restore"
-              role="button"
-              onClick={(event) => {
-                if (
-                  event.button !== 0 ||
-                  event.metaKey ||
-                  event.ctrlKey ||
-                  event.shiftKey ||
-                  event.altKey
-                ) {
-                  return;
-                }
-                event.preventDefault();
-                restoreCollapsedSidebar();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== " ") {
-                  return;
-                }
-                event.preventDefault();
-                restoreCollapsedSidebar();
-              }}
-              title={t("actionRestoreSidebar")}
-              aria-label={t("actionRestoreSidebar")}
-            >
-              <SidebarToggleIcon />
-            </Link>
-          ) : (
-            <aside
-              className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
-              style={desktopSidebarStyle}
-            >
-              <Sidebar
-                isOpen={true}
-                onClose={NOOP}
-                onNavigate={NOOP}
-                currentSessionId={sidebarSessionMatch?.sessionId}
-                isDesktop={true}
-                isCollapsed={effectivelyCollapsed}
-                onToggleExpanded={handleToggleExpanded}
-                onMinimize={minimizeToFloatingToggle}
-                sidebarWidth={sidebarWidth}
-                onResizeStart={handleResizeStart}
-                onResize={setSidebarWidth}
-                onResizeEnd={handleResizeEnd}
-              />
-            </aside>
-          ))}
-
-        {/* Mobile sidebar - modal overlay (also used for constrained desktop overlay) */}
-        {!isContentFrameRoute && (!isWideScreen || sidebarOpen) && (
-          <Sidebar
-            isOpen={sidebarOpen}
-            onClose={closeSidebar}
-            onNavigate={closeSidebar}
-            currentSessionId={sidebarSessionMatch?.sessionId}
-          />
-        )}
-
-        <GlossaryProjectProvider
-          projectId={currentProjectId ?? ""}
-          enabled={currentProjectId !== null}
-        >
-          <NavigationLayoutReactContext.Provider value={context}>
-            <div className="navigation-route-stack">
-              {renderedSessionRoute && sessionElement && (
-                <div
-                  key={renderedSessionRoute.key}
-                  ref={sessionLayerRef}
-                  className={`navigation-route-layer session-dom-linger-layer ${
-                    sessionLayerVisible ? "is-active" : "is-parked"
-                  }`}
-                  aria-hidden={sessionLayerParked ? true : undefined}
-                  data-session-dom-linger={
-                    sessionLayerVisible ? "active" : "parked"
-                  }
+            {isWideScreen &&
+              !isContentFrameRoute &&
+              (isMinimized ? (
+                <Link
+                  to={{
+                    pathname: location.pathname,
+                    search: location.search,
+                    hash: location.hash,
+                  }}
+                  className="sidebar-toggle sidebar-floating-restore"
+                  role="button"
+                  onClick={(event) => {
+                    if (
+                      event.button !== 0 ||
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey
+                    ) {
+                      return;
+                    }
+                    event.preventDefault();
+                    restoreCollapsedSidebar();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== " ") {
+                      return;
+                    }
+                    event.preventDefault();
+                    restoreCollapsedSidebar();
+                  }}
+                  title={t("actionRestoreSidebar")}
+                  aria-label={t("actionRestoreSidebar")}
                 >
-                  {sessionElement(renderedSessionRoute, {
-                    parked: sessionLayerParked,
-                  })}
-                </div>
-              )}
-              <div
-                className={`navigation-route-layer navigation-route-foreground ${
-                  sessionLayerVisible ? "is-hidden" : "is-active"
-                }`}
-                aria-hidden={sessionLayerVisible ? true : undefined}
-              >
-                <Outlet context={context} />
-              </div>
-            </div>
-          </NavigationLayoutReactContext.Provider>
-        </GlossaryProjectProvider>
-      </div>
-    </SidebarSessionFeedsProvider>
+                  <SidebarToggleIcon />
+                </Link>
+              ) : (
+                <aside
+                  className={`sidebar-desktop ${effectivelyCollapsed ? "sidebar-collapsed" : ""} ${isResizing ? "resizing" : ""}`}
+                  style={desktopSidebarStyle}
+                >
+                  <Sidebar
+                    isOpen={true}
+                    onClose={NOOP}
+                    onNavigate={NOOP}
+                    onSessionNavigate={onSessionNavigate}
+                    currentSessionId={sidebarSessionMatch?.sessionId}
+                    isDesktop={true}
+                    isCollapsed={effectivelyCollapsed}
+                    onToggleExpanded={handleToggleExpanded}
+                    onMinimize={minimizeToFloatingToggle}
+                    sidebarWidth={sidebarWidth}
+                    onResizeStart={handleResizeStart}
+                    onResize={setSidebarWidth}
+                    onResizeEnd={handleResizeEnd}
+                  />
+                </aside>
+              ))}
+
+            {/* Mobile sidebar - modal overlay (also used for constrained desktop overlay) */}
+            {(isContentFrameRoute
+              ? sidebarOpen
+              : !isWideScreen || sidebarOpen) && (
+              <Sidebar
+                isOpen={sidebarOpen}
+                onClose={closeSidebar}
+                onNavigate={closeSidebar}
+                onSessionNavigate={onSessionNavigate}
+                currentSessionId={sidebarSessionMatch?.sessionId}
+              />
+            )}
+
+            <GlossaryProjectProvider
+              projectId={currentProjectId ?? ""}
+              enabled={currentProjectId !== null}
+            >
+              <NavigationLayoutReactContext.Provider value={context}>
+                {renderRouteStack(<Outlet context={context} />)}
+              </NavigationLayoutReactContext.Provider>
+            </GlossaryProjectProvider>
+          </div>
+        </SidebarSessionFeedsProvider>
+      )}
+    </SessionDomLingerHost>
   );
 }
 

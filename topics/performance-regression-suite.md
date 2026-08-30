@@ -53,6 +53,13 @@ samples; RSS uses their median. Current source emits session-detail clocks and
 bounded cache/V8 gauges. Older checkpoints report missing owner telemetry as
 unavailable, never as synthetic zero.
 
+The session-detail augmentation clock carries a description with input-message,
+changed-message, and Markdown cache hit/join/miss counts. Those counts are
+request-local even when detail requests overlap. A tracked suite process may set
+`YA_PERF_PERSISTED_AUGMENT_DELAY_MS` to place a bounded test-only delay inside
+that same clock; an untracked server rejects the variable. This probe validates
+the clock path and is not an optimization result.
+
 ### Browser
 
 The browser driver adds the measured checkout's React dev client and one real
@@ -74,6 +81,27 @@ critical path. It has a distinct history key from fleet scenarios because it
 excludes deliberate multi-file/multi-page fan-out. Its cache proof leaves the
 selected route before refresh so a one-session ring cannot create a false
 same-route result.
+
+An interaction trace is a separate observation mode from the cache proof. It
+may keep the measured route mounted, change Conversation View, type without
+submitting, scroll, disclose older history, and reveal tooltip or hover-card
+surfaces without first navigating away to prove cache behavior. A trace that
+mixes those modes is invalid because the cache proof's route departure changes
+the DOM whose interaction cost the trace intends to measure.
+
+The `sidebar-switch` interaction trace is diagnostic rather than primary-score
+evidence. It alternates two cached session routes and labels fresh, elapsed-idle,
+and post-activity phases. Because those phases execute in order, an apparent
+phase difference is not a causal activity-versus-time attribution until an
+interleaved or separately randomized control reproduces it.
+
+The `cached-sidebar-switch-routine` scenario is the bounded exception: ordinary
+push/PR CI loads two 120-turn sessions, alternates six times without injected
+activity, and excludes the first cold destination load from its latency
+distribution. Every later switch must reuse the same retained session layer,
+and retained switch-to-first-readable-frame p95 must stay at or below 200 ms.
+This gate does not cover expiry, append catch-up, or sustained concurrent
+updates.
 
 ### Built client
 
@@ -99,6 +127,15 @@ relay, verifies bounded chunk metadata, drives the configured reader herd
 through the legacy full-response route, and samples forced-GC memory. The
 provider adapter/SDK, provider transcript writer, and internet relay remain
 outside this simulation.
+
+A cohort run may launch several isolated specialized-contract lanes under one
+parent lease to model concurrent offered load. Each lane still owns its server,
+browser, fixture, ports, app data, process group, and semantic action. The
+parent records one host window and performs the authoritative final marker-family
+sweep. Cohort endpoint samples remain valid only for the qualities that the
+specialized driver actually observes; they cannot be substituted for missing
+browser frame, leak-slope, tooltip, or browser-startup-memory terms in a
+multi-quality score.
 
 Routine server/browser/built-client runs use an in-process post-provider mock
 and disable provider discovery. They cannot support claims about provider
@@ -131,6 +168,8 @@ The manual `.github/workflows/performance.yml` workflow is diagnostic, not a
 push/PR gate. It uploads result, history, and logs on failure as well as success
 and emits the capacity registration needed for later review. Small cloud hosts
 follow the same eligibility, marker, teardown, and deletion rules.
+Ordinary `.github/workflows/ci.yml` separately runs the small retained-sidebar
+scenario as a push/PR gate.
 
 ## Provider-backed tiers
 

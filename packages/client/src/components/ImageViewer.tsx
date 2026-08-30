@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 import styles from "./ImageViewer.module.css";
 
@@ -87,7 +88,7 @@ export function ImageViewer({
   navigation,
   onContextMenu,
   onNavigationInput,
-  onClose,
+  toolbarHost,
   url,
   vector = false,
 }: {
@@ -97,7 +98,7 @@ export function ImageViewer({
   navigation?: ImageViewerNavigation;
   onContextMenu?: (event: ReactMouseEvent<Element>) => void;
   onNavigationInput?: (input: ImageViewerNavigationInput) => void;
-  onClose: () => void;
+  toolbarHost?: HTMLElement | null;
   url: string;
   /**
    * Vector sources have no pixel grid to preserve, so "Fit" may enlarge them to
@@ -118,6 +119,8 @@ export function ImageViewer({
         y: number;
       }
     | {
+        contentX: number;
+        contentY: number;
         distance: number;
         kind: "pinch";
         scale: number;
@@ -215,6 +218,24 @@ export function ImageViewer({
     [getFitScale, scale, viewMode],
   );
 
+  const startPinch = useCallback(
+    (first: { x: number; y: number }, second: { x: number; y: number }) => {
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const centerX = (first.x + second.x) / 2 - rect.left;
+      const centerY = (first.y + second.y) / 2 - rect.top;
+      gestureRef.current = {
+        contentX: stage.scrollLeft + centerX,
+        contentY: stage.scrollTop + centerY,
+        distance: pointerDistance(first, second),
+        kind: "pinch",
+        scale: getCurrentScale(),
+      };
+    },
+    [getCurrentScale],
+  );
+
   const zoomAt = useCallback(
     (requestedScale: number, clientX?: number, clientY?: number) => {
       const stage = stageRef.current;
@@ -286,11 +307,7 @@ export function ImageViewer({
       if (!first || !second) {
         return;
       }
-      gestureRef.current = {
-        distance: pointerDistance(first, second),
-        kind: "pinch",
-        scale: getCurrentScale(),
-      };
+      startPinch(first, second);
       return;
     }
     startRemainingPointerPan();
@@ -316,11 +333,7 @@ export function ImageViewer({
       }
       const gesture = gestureRef.current;
       if (gesture?.kind !== "pinch") {
-        gestureRef.current = {
-          distance: pointerDistance(first, second),
-          kind: "pinch",
-          scale: getCurrentScale(),
-        };
+        startPinch(first, second);
         return;
       }
       const distance = pointerDistance(first, second);
@@ -328,11 +341,21 @@ export function ImageViewer({
         return;
       }
       suppressClickRef.current = true;
-      zoomAt(
+      const nextScale = clampImageScale(
         gesture.scale * (distance / gesture.distance),
-        (first.x + second.x) / 2,
-        (first.y + second.y) / 2,
       );
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const centerX = (first.x + second.x) / 2 - rect.left;
+      const centerY = (first.y + second.y) / 2 - rect.top;
+      setViewMode("zoom");
+      setScale(nextScale);
+      requestAnimationFrame(() => {
+        const ratio = nextScale / gesture.scale;
+        stage.scrollLeft = gesture.contentX * ratio - centerX;
+        stage.scrollTop = gesture.contentY * ratio - centerY;
+      });
       return;
     }
 
@@ -414,66 +437,74 @@ export function ImageViewer({
       } satisfies CSSProperties)
     : undefined;
   const zoomLabel = `${Math.round(getCurrentScale() * 100)}%`;
+  const toolbar = (
+    <div
+      className={cx(
+        styles.toolbar,
+        toolbarHost !== undefined && styles.headerToolbar,
+      )}
+      role="toolbar"
+      aria-label={t("imageViewerControls")}
+    >
+      <button
+        type="button"
+        className={styles.control}
+        aria-pressed={viewMode === "fit"}
+        onClick={fitImage}
+      >
+        {t("imageViewerFit")}
+      </button>
+      <button
+        type="button"
+        className={styles.control}
+        aria-pressed={viewMode === "zoom" && scale === 1}
+        onClick={() => zoomAt(1)}
+      >
+        {t("imageViewerActualSize")}
+      </button>
+      <button
+        type="button"
+        className={styles.control}
+        aria-label={t("imageViewerZoomOut")}
+        onClick={() => zoomAt(getCurrentScale() / IMAGE_ZOOM_STEP)}
+      >
+        −
+      </button>
+      <output className={styles.zoomLevel} aria-live="polite">
+        {zoomLabel}
+      </output>
+      <button
+        type="button"
+        className={styles.control}
+        aria-label={t("imageViewerZoomIn")}
+        onClick={() => zoomAt(getCurrentScale() * IMAGE_ZOOM_STEP)}
+      >
+        +
+      </button>
+      <a
+        className={styles.download}
+        href={url}
+        download={fileName}
+        aria-label={t("imageViewerDownload", { name: fileName })}
+      >
+        {t("fileViewerDownload" as never)}
+      </a>
+    </div>
+  );
 
   return (
-    <div className={cx(styles.viewer, navigation && styles.hasNavigation)}>
-      <div
-        className={styles.toolbar}
-        role="toolbar"
-        aria-label={t("imageViewerControls")}
-      >
-        <button
-          type="button"
-          className={styles.control}
-          aria-pressed={viewMode === "fit"}
-          onClick={fitImage}
-        >
-          {t("imageViewerFit")}
-        </button>
-        <button
-          type="button"
-          className={styles.control}
-          aria-pressed={viewMode === "zoom" && scale === 1}
-          onClick={() => zoomAt(1)}
-        >
-          {t("imageViewerActualSize")}
-        </button>
-        <button
-          type="button"
-          className={styles.control}
-          aria-label={t("imageViewerZoomOut")}
-          onClick={() => zoomAt(getCurrentScale() / IMAGE_ZOOM_STEP)}
-        >
-          −
-        </button>
-        <output className={styles.zoomLevel} aria-live="polite">
-          {zoomLabel}
-        </output>
-        <button
-          type="button"
-          className={styles.control}
-          aria-label={t("imageViewerZoomIn")}
-          onClick={() => zoomAt(getCurrentScale() * IMAGE_ZOOM_STEP)}
-        >
-          +
-        </button>
-        <a
-          className={styles.download}
-          href={url}
-          download={fileName}
-          aria-label={t("imageViewerDownload", { name: fileName })}
-        >
-          {t("fileViewerDownload" as never)}
-        </a>
-        <button
-          type="button"
-          className={styles.close}
-          aria-label={t("imageViewerClose")}
-          onClick={onClose}
-        >
-          {t("modalClose")}
-        </button>
-      </div>
+    <div
+      className={cx(
+        styles.viewer,
+        navigation && styles.hasNavigation,
+        toolbarHost !== undefined && styles.toolbarPortaled,
+      )}
+    >
+      {toolbarHost === undefined
+        ? toolbar
+        : toolbarHost
+          ? createPortal(toolbar, toolbarHost)
+          : null}
       <div
         className={styles.stageShell}
         onPointerMoveCapture={(event) => {

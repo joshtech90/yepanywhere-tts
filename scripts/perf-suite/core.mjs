@@ -11,6 +11,7 @@ const DEFAULT_RATCHETS_PATH = new URL("./ratchets.json", import.meta.url);
 export function parseArgs(argv) {
   const options = {
     checkout: null,
+    "cohort-parent-marker": null,
     config: DEFAULT_CONFIG_PATH,
     driver: "server",
     "fixture-repository": null,
@@ -26,6 +27,7 @@ export function parseArgs(argv) {
       console.log(
         "Usage: node run.mjs --checkout PATH --scenario NAME " +
           "[--driver server|browser|built-client|specialized] " +
+          "[--cohort-parent-marker MARKER] " +
           "[--fixture-repository PATH] [--label LABEL] [--config FILE] " +
           "[--ratchets FILE] [--output FILE] [--history FILE]",
       );
@@ -101,6 +103,19 @@ export function validateScenario(scenario, name) {
       `scenarios.${name}.browserWorkingSetSessions`,
     );
   }
+  if (
+    scenario.browserViewport !== undefined &&
+    (typeof scenario.browserViewport !== "object" ||
+      scenario.browserViewport === null ||
+      !Number.isInteger(scenario.browserViewport.width) ||
+      scenario.browserViewport.width <= 0 ||
+      !Number.isInteger(scenario.browserViewport.height) ||
+      scenario.browserViewport.height <= 0)
+  ) {
+    throw new Error(
+      `scenarios.${name}.browserViewport must have positive integer dimensions`,
+    );
+  }
   for (const field of ["streamChunks", "streamChunkBytes", "idleReapSeconds"]) {
     if (scenario[field] !== undefined) {
       requirePositiveInteger(scenario[field], `scenarios.${name}.${field}`);
@@ -112,6 +127,63 @@ export function validateScenario(scenario, name) {
   ) {
     throw new Error(
       `scenarios.${name}.streamDelayMs must be a nonnegative integer`,
+    );
+  }
+  if (scenario.browserSettings !== undefined) {
+    if (
+      !scenario.browserSettings ||
+      typeof scenario.browserSettings !== "object" ||
+      Array.isArray(scenario.browserSettings) ||
+      Object.entries(scenario.browserSettings).some(
+        ([key, value]) => key.length === 0 || typeof value !== "string",
+      )
+    ) {
+      throw new Error(
+        `scenarios.${name}.browserSettings must be a string-to-string object`,
+      );
+    }
+  }
+  if (
+    scenario.interactionTrace !== undefined &&
+    (typeof scenario.interactionTrace !== "object" ||
+      scenario.interactionTrace === null ||
+      scenario.interactionTrace.enabled !== true ||
+      !Number.isInteger(scenario.interactionTrace.tooltipDelayMs) ||
+      scenario.interactionTrace.tooltipDelayMs < 0 ||
+      !Number.isInteger(scenario.interactionTrace.hoverCardDelayMs) ||
+      scenario.interactionTrace.hoverCardDelayMs < 0 ||
+      !["full", "scale-control", "sidebar-switch"].includes(
+        scenario.interactionTrace.scope,
+      ) ||
+      (scenario.interactionTrace.scope === "sidebar-switch" &&
+        (!Number.isInteger(scenario.interactionTrace.sidebarSwitchRounds) ||
+          scenario.interactionTrace.sidebarSwitchRounds <= 0)) ||
+      (scenario.interactionTrace.beforeAndAfterAppend !== undefined &&
+        (scenario.interactionTrace.scope !== "sidebar-switch" ||
+          scenario.interactionTrace.beforeAndAfterAppend !== true ||
+          !Number.isInteger(
+            scenario.interactionTrace.idleBeforeSecondSwitchMs,
+          ) ||
+          scenario.interactionTrace.idleBeforeSecondSwitchMs < 0)) ||
+      (scenario.interactionTrace.alternateCausalArms !== undefined &&
+        (scenario.interactionTrace.alternateCausalArms !== true ||
+          scenario.interactionTrace.beforeAndAfterAppend !== true)) ||
+      (scenario.interactionTrace.requireRetainedAfterFirstSwitch !==
+        undefined &&
+        (scenario.interactionTrace.scope !== "sidebar-switch" ||
+          scenario.interactionTrace.requireRetainedAfterFirstSwitch !== true)))
+  ) {
+    throw new Error(
+      `scenarios.${name}.interactionTrace has invalid scope or timing`,
+    );
+  }
+  if (
+    scenario.interactionTraceOnly !== undefined &&
+    (scenario.interactionTraceOnly !== true ||
+      scenario.interactionTrace?.enabled !== true)
+  ) {
+    throw new Error(
+      `scenarios.${name}.interactionTraceOnly requires an enabled interactionTrace`,
     );
   }
 }

@@ -14,11 +14,24 @@ distinct from the proposed
 canonical single-writer session and its provider bundle move between equal YA
 peers so the target server resumes the provider locally.
 
+The proposed [managed remote executor](../../topics/managed-remote-executors.md)
+is the successor direction for new controller-owned remote work. It keeps
+manual SSH as the least-common-denominator target transport, but injects a
+provider-neutral runner, creates an exact remote Git workspace without a
+matching checkout/path requirement, validates Codex first, and fetches remote
+commits back without giving the target upstream credentials. This document
+continues to describe the released Claude-family behavior; no proposal
+retroactively changes its session metadata or resume contract.
+
 ## Assumptions
 
 1. User has SSH config aliases set up (`~/.ssh/config`)
 2. Claude CLI is installed on remote machines
-3. Project paths are symmetric (`$HOME/code/project` exists on both machines)
+3. Project paths are symmetric relative to the user's home
+   (`$HOME/code/project` exists on both machines). A local POSIX, Windows-drive,
+   or UNC home maps only its actual descendants to remote `$HOME`; containment
+   uses the local path flavor and never rewrites a sibling that merely shares a
+   string prefix.
 4. Remote has valid Claude credentials (`~/.claude/.credentials.json` or `ANTHROPIC_API_KEY`)
 5. rsync 3.0 or newer is installed locally and remotely; session paths use
    protected arguments so shell metacharacters remain literal

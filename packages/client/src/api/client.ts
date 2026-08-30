@@ -11,6 +11,8 @@ import type {
   ClientDefaults,
   CodexReasoningSummary,
   ConnectionsResponse,
+  CreatePublicFileShareRequest,
+  CreatePublicFileShareResponse,
   CreateProjectWorkstreamRequest,
   CreateProjectWorkstreamResponse,
   CreateProjectQueueItemRequest,
@@ -34,6 +36,7 @@ import type {
   ProjectQueueResponse,
   ProjectSessionDefaultsResponse,
   ProjectWorkstreamsResponse,
+  PublicFileShareListResponse,
   PublicShareManagementListResponse,
   PublicShareStorageState,
   WorkstreamCheckoutPreviewResponse,
@@ -256,6 +259,8 @@ export interface SessionOptions {
   executor?: string;
   /** Default-off YA host filesystem confinement for a newly created session. */
   sandboxLevel?: SessionSandboxLevel;
+  /** Public-only egress boundary for project-write sessions. */
+  sandboxNetworkFirewall?: boolean;
   /** Recap behavior for future away-return triggers in this session. */
   recapMode?: RecapMode;
   /** Browser-away duration before YA asks this session for a recap. */
@@ -521,6 +526,7 @@ export const api = {
     return fetchJSON<{
       session: SessionMetadata;
       messages: Message[];
+      transcriptSnapshotUpdatedAt?: string;
       ownership: SessionStatus;
       pendingInputRequest?: InputRequest | null;
       providerRuntimeStatus?: ProviderRuntimeStatus;
@@ -716,6 +722,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
+        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -753,6 +760,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
+        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -790,6 +798,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
+        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -822,6 +831,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
+        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -959,6 +969,7 @@ export const api = {
         provider: options?.provider,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
+        sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
         recapMode: options?.recapMode,
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
@@ -1603,11 +1614,11 @@ export const api = {
   // Read-only file-access info (env-pin state + resolved hint paths)
   getFileAccessInfo: () => fetchJSON<FileAccessInfo>("/settings/file-access"),
 
-  getCacheMissBillingEvents: (limit = 200) =>
+  getCacheMissBillingEvents: (limit = 200, includeExpectedExpiry = false) =>
     fetchJSON<{ events: CacheMissBillingRecord[] }>(
       `/settings/cache-miss-billing/events?limit=${encodeURIComponent(
         String(limit),
-      )}`,
+      )}${includeExpectedExpiry ? "&includeExpectedExpiry=1" : ""}`,
     ),
 
   discoverHelperTargetModels: (baseUrl: string) =>
@@ -1714,6 +1725,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  getPublicFileShares: (projectId: UrlProjectId, path: string) => {
+    const params = new URLSearchParams({ projectId, path });
+    return fetchJSON<PublicFileShareListResponse>(
+      `/public-file-shares?${params}`,
+    );
+  },
+
+  createPublicFileShare: (body: CreatePublicFileShareRequest) =>
+    fetchJSON<CreatePublicFileShareResponse>("/public-file-shares", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  revokePublicFileShare: (shareId: string) =>
+    fetchJSON<RevokePublicShareResponse>(
+      `/public-file-shares/${encodeURIComponent(shareId)}`,
+      { method: "DELETE" },
+    ),
 
   revokePublicSessionShares: (projectId: string, sessionId: string) =>
     fetchJSON<RevokePublicSessionSharesResponse>(

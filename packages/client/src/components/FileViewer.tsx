@@ -1,6 +1,8 @@
 import {
   fromUrlProjectId,
   isUrlProjectId,
+  PUBLIC_FILE_SHARES_CAPABILITY,
+  serverHasCapability,
   type FileContentResponse,
   type GitFileDiffMode,
 } from "@yep-anywhere/shared";
@@ -8,21 +10,31 @@ import {
   memo,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useQuoteReply } from "../contexts/QuoteReplyContext";
+import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
+import { useSessionViewerComment } from "../contexts/SessionViewerCommentContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useFileVersionControl } from "../hooks/useFileVersionControl";
+import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
+import { useQuoteReplyButtonMode } from "../hooks/useQuoteReplyButtonMode";
 import { useSelectionActions } from "../hooks/useMessageListSelectionQuote";
 import { useRegisterQuoteableTextSource } from "../hooks/useQuoteableTextSource";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useSessionFileComments } from "../hooks/useSessionFileComments";
+import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import {
@@ -30,17 +42,22 @@ import {
   writeClipboardText,
   writeClipboardTextLater,
 } from "../lib/clipboard";
-import { createCommentAnchor } from "../lib/commentAnchors";
 import { getEmbeddedFileMediaBlob } from "../lib/embeddedFileMedia";
 import { downloadBlob } from "../lib/imageActions";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
-import { getMarkdownSnippetForSubElement } from "../lib/markdownSelectionCopy";
+import { extractMarkdownSnippetsFromSelection } from "../lib/markdownSelectionCopy";
 import { getRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
 import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
 import {
   annotateShikiSourceOffsets,
   compactShikiLineBreaks,
+  splitHighlightedSourceAfterLine,
 } from "../lib/shikiHtml";
+import {
+  SESSION_FILE_COMMENT_MODE_ATTR,
+  sessionFileCommentDraftKey,
+  type SessionFileCommentDraft,
+} from "../lib/sessionFileComments";
 import {
   getAbsoluteFilePath,
   getProjectRelativePath,
@@ -51,6 +68,11 @@ import {
   stripTrailingPathSeparators,
 } from "../lib/text";
 import { GitDiffBody } from "../pages/GitStatusDiffPreview";
+import { ReviewCommentEditor } from "../pages/ReviewCommentWindow";
+import {
+  ReviewCommentInlineLayout,
+  ReviewCommentSplitLayout,
+} from "../pages/ReviewCommentSplitLayout";
 import {
   fetchMediaBlob,
   LocalFileModal,
@@ -65,6 +87,7 @@ import {
   type FileViewSelection,
 } from "./FileDiffViewLinks";
 import { FileRevisionLink } from "./FileRevisionLink";
+import { PublicFileShareModal } from "./PublicFileShareModal";
 import {
   FilePathContextMenu,
   type FileViewPresentation,
@@ -85,6 +108,7 @@ import {
 } from "./MarkdownPreview";
 import { Modal } from "./ui/Modal";
 import { ViewerSelectAllButton } from "./ViewerSelectAllButton";
+import { ParagraphQuoteRail } from "./ParagraphQuoteRail";
 
 export interface FileViewerSource {
   loadFile: (
@@ -122,6 +146,8 @@ interface FileViewerProps {
   onClose?: () => void;
   /** Temporarily return the modal viewer to the session toolbar. */
   onMinimize?: () => void;
+  /** Existing managed modal that owns nested media parking. */
+  parentViewerId?: string;
   /** If true, renders as standalone page layout instead of modal content */
   standalone?: boolean;
   /** Line number to scroll to and highlight (1-indexed) */
@@ -137,9 +163,6 @@ interface FileViewerProps {
 }
 
 export type FileViewerMode = "full" | "range";
-
-const MARKDOWN_COMMENT_BLOCK_SELECTOR =
-  "p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, tr";
 
 /**
  * Format file size for display.
@@ -257,6 +280,185 @@ function getContentWindowLabel(fileData: FileContentResponse): string | null {
   return `Showing lines ${getContentStartLine(fileData)}-${endLine}${total}`;
 }
 
+function fileCommentLocation(
+  filePath: string,
+  lineStart?: number,
+  lineEnd?: number,
+): string {
+  if (lineStart === undefined) return filePath;
+  return `${filePath}:${lineStart}${lineEnd && lineEnd > lineStart ? `-${lineEnd}` : ""}`;
+}
+
+function sourceLineCommentAnchor(
+  content: string,
+  contentStartLine: number,
+  filePath: string,
+  lineNumber: number,
+) {
+  const lines = content.split("\n");
+  const lineIndex = lineNumber - contentStartLine;
+  if (lineIndex < 0 || lineIndex >= lines.length) return null;
+  const snippetStart = Math.max(0, lineIndex - 3);
+  const snippetEnd = Math.min(lines.length, lineIndex + 4);
+  return {
+    location: fileCommentLocation(filePath, lineNumber),
+    quote: lines.slice(snippetStart, snippetEnd).join("\n"),
+    afterLine: lineNumber,
+  };
+}
+
+function markdownSelectionAfterBlock(
+  preview: HTMLElement,
+  range: Range,
+): number | undefined {
+  const blocks = Array.from(
+    preview.querySelectorAll<HTMLElement>(
+      ".markdown-rendered > :not([data-review-comment-inline-host])",
+    ),
+  );
+  let lastIntersecting: number | undefined;
+  for (let index = 0; index < blocks.length; index += 1) {
+    try {
+      if (range.intersectsNode(blocks[index]!)) lastIntersecting = index;
+    } catch {
+      // A detached range is no longer a usable placement anchor.
+    }
+  }
+  return lastIntersecting;
+}
+
+function MarkdownInlineCommentHost({
+  afterBlock,
+  children,
+  editor,
+  previewRef,
+}: {
+  afterBlock: number | undefined;
+  children: ReactNode;
+  editor: ReactNode | null;
+  previewRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [portalTarget, setPortalTarget] = useState<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (afterBlock === undefined) {
+      setPortalTarget(null);
+      return;
+    }
+    const preview = previewRef.current;
+    if (!preview) {
+      setPortalTarget(null);
+      return;
+    }
+    const host = preview.ownerDocument.createElement("div");
+    host.dataset.reviewCommentInlineHost = "";
+    const mount = () => {
+      const blocks = preview.querySelectorAll<HTMLElement>(
+        ".markdown-rendered > :not([data-review-comment-inline-host])",
+      );
+      const block = blocks.item(afterBlock);
+      if (block && block.nextElementSibling !== host) block.after(host);
+    };
+    mount();
+    if (!host.isConnected) {
+      setPortalTarget(null);
+      return;
+    }
+    const observer = new MutationObserver(mount);
+    observer.observe(preview, { childList: true, subtree: true });
+    setPortalTarget(host);
+    return () => {
+      observer.disconnect();
+      host.remove();
+    };
+  }, [afterBlock, previewRef]);
+
+  return (
+    <div ref={previewRef}>
+      {children}
+      {portalTarget
+        ? createPortal(
+            <ReviewCommentInlineLayout editor={editor} />,
+            portalTarget,
+            "session-file-comment-editor",
+          )
+        : null}
+    </div>
+  );
+}
+
+function SessionFileCommentEditor({
+  busy,
+  cancelLabel,
+  draft,
+  error,
+  onCancel,
+  onChange,
+  onPersist,
+  onSend,
+  placeholder,
+  sendLabel,
+}: {
+  busy: boolean;
+  cancelLabel: string;
+  draft: SessionFileCommentDraft;
+  error: string | null;
+  onCancel: (id: string) => void;
+  onChange: (id: string, text: string) => void;
+  onPersist: () => void;
+  onSend: (id: string) => void;
+  placeholder: string;
+  sendLabel: string;
+}) {
+  const [text, setText] = useState(draft.text);
+  return (
+    <ReviewCommentEditor
+      anchorLabel={draft.location}
+      snippet={draft.quote}
+      text={text}
+      placeholder={placeholder}
+      autoFocus={!draft.preserveSelection}
+      error={error}
+      onBlur={onPersist}
+      onChange={(nextText) => {
+        setText(nextText);
+        onChange(draft.id, nextText);
+      }}
+      onKeyDown={(event) => {
+        if (
+          event.key !== "Enter" ||
+          event.shiftKey ||
+          event.nativeEvent.isComposing
+        ) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        onSend(draft.id);
+      }}
+      actions={
+        <>
+          <button
+            type="button"
+            onClick={() => onCancel(draft.id)}
+            disabled={busy}
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            className={viewerStyles.commentSend}
+            onClick={() => onSend(draft.id)}
+            disabled={!text.trim() || busy}
+          >
+            {sendLabel}
+          </button>
+        </>
+      }
+    />
+  );
+}
+
 function annotateHighlightedHtmlLines(
   html: string | undefined,
   contentStartLine: number,
@@ -267,11 +469,7 @@ function annotateHighlightedHtmlLines(
     return html;
   }
   const range = getHighlightRange(lineNumber, lineEnd);
-  if (!range) {
-    return html;
-  }
-
-  const singleLine = range.start === range.end;
+  const singleLine = range?.start === range?.end;
   let currentLine = 0;
   return html.replace(/<span class="([^"]*)">/g, (match, className: string) => {
     if (!className.split(/\s+/).includes("line")) {
@@ -279,12 +477,13 @@ function annotateHighlightedHtmlLines(
     }
     currentLine += 1;
     const actualLine = contentStartLine + currentLine - 1;
-    const inRange = actualLine >= range.start && actualLine <= range.end;
+    const inRange =
+      range !== null && actualLine >= range.start && actualLine <= range.end;
     const classes = [
       className,
       singleLine && inRange ? "highlighted-line" : "",
-      actualLine === range.start ? "highlighted-line-start" : "",
-      actualLine === range.end ? "highlighted-line-end" : "",
+      actualLine === range?.start ? "highlighted-line-start" : "",
+      actualLine === range?.end ? "highlighted-line-end" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -355,6 +554,7 @@ export const FileViewer = memo(function FileViewer({
   openInNewTabUrl,
   onClose,
   onMinimize,
+  parentViewerId,
   standalone = false,
   lineNumber,
   lineEnd,
@@ -364,9 +564,15 @@ export const FileViewer = memo(function FileViewer({
 }: FileViewerProps) {
   const { t } = useI18n();
   const quoteTextBlock = useQuoteReply();
-  const transport = useCurrentSourceRuntime().transport;
+  const sendSessionViewerComment = useSessionViewerComment();
+  const sessionMetadata = useOptionalSessionMetadata();
+  const { quoteReplyButtonMode } = useQuoteReplyButtonMode();
+  const sourceRuntime = useCurrentSourceRuntime();
+  const transport = sourceRuntime.transport;
   const publicShareContext = usePublicShareContext();
   const viewIdentity = `${projectId}\0${filePath}\0${diffMode ?? "source"}`;
+  const [showPreview, setShowPreview] = useState(false);
+  const explicitSourceIdentityRef = useRef<string | null>(null);
   const [storedView, setStoredView] = useState<{
     identity: string;
     view: FileViewSelection;
@@ -377,6 +583,10 @@ export const FileViewer = memo(function FileViewer({
       : (diffMode ?? "source");
   const selectView = useCallback(
     (view: FileViewSelection) => {
+      if (view === "source") {
+        explicitSourceIdentityRef.current = viewIdentity;
+        setShowPreview(false);
+      }
       setStoredView({ identity: viewIdentity, view });
     },
     [viewIdentity],
@@ -402,7 +612,12 @@ export const FileViewer = memo(function FileViewer({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
+  const [fileShareAnchor, setFileShareAnchor] = useState<DOMRect | null>(null);
+  const loadedSourceRef = useRef<{
+    identity: string;
+    source: FileViewerSource;
+  } | null>(null);
+  const [commentMode, setCommentMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -427,17 +642,38 @@ export const FileViewer = memo(function FileViewer({
     }
     return getProjectRelativePath(filePath, projectPath);
   }, [filePath, projectPath]);
+  const viewerCommentPath = projectRelativeCopyPath ?? filePath;
   const quoteableSourceContext = useMemo(
-    () =>
-      projectRelativeCopyPath
-        ? {
-            projectId,
-            filePath: projectRelativeCopyPath,
-            contentStartLine: fileData ? getContentStartLine(fileData) : 1,
-          }
-        : undefined,
-    [fileData, projectId, projectRelativeCopyPath],
+    () => ({
+      projectId,
+      filePath: viewerCommentPath,
+      contentStartLine: fileData ? getContentStartLine(fileData) : 1,
+    }),
+    [fileData, projectId, viewerCommentPath],
   );
+  const commentStorageKey = useMemo(
+    () =>
+      sessionMetadata && sendSessionViewerComment
+        ? sessionFileCommentDraftKey({
+            sourceKey: sourceRuntime.sourceKey,
+            sessionId: sessionMetadata.sessionId,
+            projectId,
+            filePath,
+          })
+        : null,
+    [
+      filePath,
+      projectId,
+      sendSessionViewerComment,
+      sessionMetadata,
+      sourceRuntime.sourceKey,
+    ],
+  );
+  const sessionFileComments = useSessionFileComments({
+    active: commentMode,
+    storageKey: commentStorageKey,
+    sendComment: sendSessionViewerComment,
+  });
   const fileViewerBodyRef = useRef<HTMLDivElement>(null);
   useRegisterQuoteableTextSource(
     fileViewerBodyRef,
@@ -465,6 +701,20 @@ export const FileViewer = memo(function FileViewer({
   } = useLocalResourceClick({
     projectContext: { projectId, projectPath },
   });
+  const localResourceClickRef = useRef(handleLocalResourceClick);
+  const localResourceContextMenuRef = useRef(handleLocalResourceContextMenu);
+  localResourceClickRef.current = handleLocalResourceClick;
+  localResourceContextMenuRef.current = handleLocalResourceContextMenu;
+  const handleMarkdownLocalResourceClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) =>
+      localResourceClickRef.current(event),
+    [],
+  );
+  const handleMarkdownLocalResourceContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) =>
+      localResourceContextMenuRef.current(event),
+    [],
+  );
   const handleLocalResourceKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.key !== " ") return;
@@ -478,13 +728,159 @@ export const FileViewer = memo(function FileViewer({
     },
     [],
   );
-  const handleMarkdownPreviewClick = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      handleLocalResourceClick(event);
+  const handleViewerBodyPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
       if (
-        event.defaultPrevented ||
-        !quoteTextBlock ||
-        !(event.target instanceof Element) ||
+        event.button > 0 ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            "button, input, textarea, select, a[href], [contenteditable='true']",
+          ))
+      ) {
+        return;
+      }
+      event.currentTarget.focus({ preventScroll: true });
+    },
+    [],
+  );
+  const handleViewerBodyMouseDownCapture = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (
+        event.button !== 0 ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            "button, input, textarea, select, a[href], [contenteditable='true']",
+          ))
+      ) {
+        return;
+      }
+      const selection = event.currentTarget.ownerDocument.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        return;
+      }
+      const selectionBelongsToViewer =
+        (selection.anchorNode !== null &&
+          event.currentTarget.contains(selection.anchorNode)) ||
+        (selection.focusNode !== null &&
+          event.currentTarget.contains(selection.focusNode));
+      if (selectionBelongsToViewer) selection.removeAllRanges();
+    },
+    [],
+  );
+  const commentModeSupported = Boolean(
+    sendSessionViewerComment &&
+      sessionMetadata &&
+      onClose &&
+      !standalone &&
+      publicShareContext === null &&
+      !diffActive &&
+      fileData?.metadata.isText &&
+      fileData.content !== undefined &&
+      !(showPreview && isHtmlLikeFile(filePath, fileData.metadata.mimeType)),
+  );
+  useEffect(() => {
+    if (!commentMode || commentModeSupported) return;
+    void sessionFileComments.flush();
+    setCommentMode(false);
+  }, [commentMode, commentModeSupported, sessionFileComments.flush]);
+
+  const openSelectionComment = useCallback(() => {
+    const body = fileViewerBodyRef.current;
+    if (!commentMode || !commentModeSupported || !body) return;
+    const snippets = extractMarkdownSnippetsFromSelection(body);
+    if (snippets.length === 0) return;
+    const sourceLocations = snippets
+      .map((snippet) => snippet.sourceLocation)
+      .filter((location) => location?.filePath === viewerCommentPath);
+    const lineStart =
+      sourceLocations.length === snippets.length
+        ? Math.min(
+            ...sourceLocations.map((location) => location?.lineStart ?? 1),
+          )
+        : undefined;
+    const lineEnd =
+      sourceLocations.length === snippets.length
+        ? Math.max(...sourceLocations.map((location) => location?.lineEnd ?? 1))
+        : undefined;
+    const afterBlock = showPreview
+      ? markdownSelectionAfterBlock(
+          markdownPreviewRef.current ?? body,
+          snippets.at(-1)!.range,
+        )
+      : undefined;
+    sessionFileComments.open({
+      location: fileCommentLocation(viewerCommentPath, lineStart, lineEnd),
+      quote: snippets.map((snippet) => snippet.markdown).join("\n\n"),
+      preserveSelection: true,
+      ...(!showPreview && lineEnd !== undefined ? { afterLine: lineEnd } : {}),
+      ...(afterBlock === undefined ? {} : { afterBlock }),
+    });
+  }, [
+    commentMode,
+    commentModeSupported,
+    sessionFileComments.open,
+    showPreview,
+    viewerCommentPath,
+  ]);
+
+  useEffect(() => {
+    if (!commentMode || !commentModeSupported) return;
+    const body = fileViewerBodyRef.current;
+    const doc = body?.ownerDocument;
+    if (!body || !doc) return;
+    let pointerSelecting = false;
+    let scheduled = 0;
+    const scheduleOpen = () => {
+      window.clearTimeout(scheduled);
+      scheduled = window.setTimeout(openSelectionComment, 0);
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        event.button === 0 &&
+        event.target instanceof Node &&
+        body.contains(event.target) &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest("button, input, textarea, select, a[href]")
+        )
+      ) {
+        pointerSelecting = true;
+      }
+    };
+    const handlePointerUp = () => {
+      if (!pointerSelecting) return;
+      pointerSelecting = false;
+      scheduleOpen();
+    };
+    const handleSelectionChange = () => {
+      const activeElement = doc.activeElement;
+      if (
+        activeElement instanceof Element &&
+        activeElement.closest('[data-markdown-copy-ignore="true"]')
+      ) {
+        return;
+      }
+      if (!pointerSelecting) scheduleOpen();
+    };
+    doc.addEventListener("pointerdown", handlePointerDown, true);
+    doc.addEventListener("pointerup", handlePointerUp, true);
+    doc.addEventListener("pointercancel", handlePointerUp, true);
+    doc.addEventListener("selectionchange", handleSelectionChange);
+    scheduleOpen();
+    return () => {
+      window.clearTimeout(scheduled);
+      doc.removeEventListener("pointerdown", handlePointerDown, true);
+      doc.removeEventListener("pointerup", handlePointerUp, true);
+      doc.removeEventListener("pointercancel", handlePointerUp, true);
+      doc.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [commentMode, commentModeSupported, openSelectionComment]);
+
+  const handleViewerBodyClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (!commentMode || !commentModeSupported || !fileData?.content) return;
+      if (
+        event.target instanceof Element &&
         event.target.closest(
           "button, input, textarea, select, a[href], [contenteditable='true']",
         )
@@ -492,30 +888,58 @@ export const FileViewer = memo(function FileViewer({
         return;
       }
       const selection = event.currentTarget.ownerDocument.getSelection();
-      if (selection && !selection.isCollapsed) {
-        return;
-      }
-      const sourceElement = fileViewerBodyRef.current;
-      const blockElement = event.target.closest<HTMLElement>(
-        MARKDOWN_COMMENT_BLOCK_SELECTOR,
+      if (selection && !selection.isCollapsed) return;
+      const line =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-line]")
+          : null;
+      const lineNumber = Number(line?.dataset.line);
+      if (!Number.isInteger(lineNumber)) return;
+      const anchor = sourceLineCommentAnchor(
+        fileData.content,
+        getContentStartLine(fileData),
+        viewerCommentPath,
+        lineNumber,
       );
-      if (
-        !sourceElement ||
-        !blockElement ||
-        !event.currentTarget.contains(blockElement)
-      ) {
-        return;
-      }
-      const snippet = getMarkdownSnippetForSubElement(
-        sourceElement,
-        blockElement,
-      );
-      if (snippet) {
-        quoteTextBlock(createCommentAnchor(snippet));
-      }
+      if (anchor) sessionFileComments.open(anchor);
     },
-    [handleLocalResourceClick, quoteTextBlock],
+    [
+      commentMode,
+      commentModeSupported,
+      fileData,
+      sessionFileComments.open,
+      viewerCommentPath,
+    ],
   );
+
+  const handleCommentModeToggle = useCallback(() => {
+    setCommentMode((current) => {
+      if (current) void sessionFileComments.flush();
+      return !current;
+    });
+  }, [sessionFileComments.flush]);
+  const handleViewerBlur = useCallback(
+    (event: React.FocusEvent<HTMLDivElement>) => {
+      if (!commentMode) return;
+      const next = event.relatedTarget;
+      if (!(next instanceof Node)) {
+        sessionFileComments.persist();
+        return;
+      }
+      const viewerScope =
+        event.currentTarget.closest("dialog") ?? event.currentTarget;
+      if (!viewerScope.contains(next)) void sessionFileComments.flush();
+    },
+    [commentMode, sessionFileComments.flush, sessionFileComments.persist],
+  );
+  const handleClose = useCallback(() => {
+    void sessionFileComments.flush();
+    onClose?.();
+  }, [onClose, sessionFileComments.flush]);
+  const handleMinimize = useCallback(() => {
+    void sessionFileComments.flush();
+    onMinimize?.();
+  }, [onMinimize, sessionFileComments.flush]);
   const mediaSource = useMemo(
     () => source.createMediaSource?.(fileData),
     [fileData, source],
@@ -531,6 +955,29 @@ export const FileViewer = memo(function FileViewer({
         )
       : fileData.renderedMarkdownHtml;
   }, [fileData, source]);
+  const renderedMarkdownPreview = useMemo(
+    () =>
+      renderedMarkdownHtml ? (
+        <MarkdownPreview
+          html={renderedMarkdownHtml}
+          sourcePath={filePath}
+          density={markdownDensity}
+          ariaLabel={t("fileViewerPreview" as never)}
+          onClick={handleMarkdownLocalResourceClick}
+          onContextMenu={handleMarkdownLocalResourceContextMenu}
+          onKeyDown={handleLocalResourceKeyDown}
+        />
+      ) : null,
+    [
+      filePath,
+      handleLocalResourceKeyDown,
+      handleMarkdownLocalResourceClick,
+      handleMarkdownLocalResourceContextMenu,
+      markdownDensity,
+      renderedMarkdownHtml,
+      t,
+    ],
+  );
   const renderedClipboardPayload = useMemo(
     () =>
       fileData
@@ -566,6 +1013,8 @@ export const FileViewer = memo(function FileViewer({
         ? null
         : highlightedHtml;
 
+  const sourceIdentity = `${projectId}\0${filePath}\0${lineNumber ?? ""}\0${lineEnd ?? ""}\0${viewMode}`;
+
   useEffect(() => {
     if (activeView === "source" || fileVersionControl.loading) return;
     if (
@@ -579,10 +1028,18 @@ export const FileViewer = memo(function FileViewer({
   useEffect(() => {
     let cancelled = false;
     if (diffActive) {
-      setFileData(null);
       setLoading(false);
       setError(null);
       setHighlightedLineRef(null);
+      return;
+    }
+    if (
+      fileData &&
+      loadedSourceRef.current?.identity === sourceIdentity &&
+      loadedSourceRef.current.source === source
+    ) {
+      setLoading(false);
+      setError(null);
       return;
     }
     setLoading(true);
@@ -601,6 +1058,7 @@ export const FileViewer = memo(function FileViewer({
       )
       .then((data) => {
         if (!cancelled) {
+          loadedSourceRef.current = { identity: sourceIdentity, source };
           setFileData(data);
           const markdownPreviewAvailable =
             isMarkdownLikeFile(filePath) && Boolean(data.renderedMarkdownHtml);
@@ -608,10 +1066,12 @@ export const FileViewer = memo(function FileViewer({
             data.content !== undefined &&
             isHtmlLikeFile(filePath, data.metadata.mimeType);
           setShowPreview(
-            initialPresentation
-              ? initialPresentation === "preview" &&
+            explicitSourceIdentityRef.current === viewIdentity
+              ? false
+              : initialPresentation
+                ? initialPresentation === "preview" &&
                   (markdownPreviewAvailable || htmlPreviewAvailable)
-              : markdownPreviewAvailable,
+                : markdownPreviewAvailable,
           );
           setLoading(false);
         }
@@ -635,7 +1095,10 @@ export const FileViewer = memo(function FileViewer({
     filePath,
     initialPresentation,
     source,
+    sourceIdentity,
     t,
+    viewIdentity,
+    fileData,
   ]);
 
   useEffect(() => {
@@ -890,6 +1353,40 @@ export const FileViewer = memo(function FileViewer({
     metadata !== undefined &&
     isHtmlLikeFile(filePath, metadata.mimeType);
   const hasFilePreview = hasMarkdownPreview || hasHtmlPreview;
+  const activeCommentDraft = commentMode
+    ? sessionFileComments.activeDraft
+    : null;
+  const activeCommentSending = activeCommentDraft
+    ? sessionFileComments.sendingIds.has(activeCommentDraft.id)
+    : false;
+  const commentEditor = activeCommentDraft ? (
+    <SessionFileCommentEditor
+      key={activeCommentDraft.id}
+      draft={activeCommentDraft}
+      placeholder={t("fileViewerCommentPlaceholder" as never)}
+      error={
+        sessionFileComments.error
+          ? t("fileViewerCommentSendFailed" as never)
+          : null
+      }
+      busy={activeCommentSending}
+      cancelLabel={t("cancel")}
+      sendLabel={t("toolbarSend")}
+      onCancel={sessionFileComments.cancel}
+      onChange={sessionFileComments.update}
+      onPersist={sessionFileComments.persist}
+      onSend={(id) => void sessionFileComments.sendOne(id)}
+    />
+  ) : null;
+  const splitCommentAfterLine =
+    commentEditor && !showPreview ? activeCommentDraft?.afterLine : undefined;
+  const splitCommentAfterBlock =
+    commentEditor &&
+    showPreview &&
+    renderedMarkdownHtml &&
+    activeCommentDraft?.afterBlock !== undefined
+      ? activeCommentDraft.afterBlock
+      : undefined;
 
   // Render content based on file type
   const renderContent = () => {
@@ -951,19 +1448,13 @@ export const FileViewer = memo(function FileViewer({
       // Show rendered markdown preview
       if (showPreview && hasMarkdownPreview && renderedMarkdownHtml) {
         return (
-          <MarkdownPreview
-            className={
-              quoteTextBlock ? viewerStyles.commentableMarkdown : undefined
-            }
-            html={renderedMarkdownHtml}
-            sourcePath={filePath}
-            density={markdownDensity}
-            ariaLabel={t("fileViewerPreview" as never)}
-            onClick={handleMarkdownPreviewClick}
-            onContextMenu={handleLocalResourceContextMenu}
-            onKeyDown={handleLocalResourceKeyDown}
-            ref={markdownPreviewRef}
-          />
+          <MarkdownInlineCommentHost
+            afterBlock={commentEditor ? splitCommentAfterBlock : undefined}
+            editor={commentEditor}
+            previewRef={markdownPreviewRef}
+          >
+            {renderedMarkdownPreview}
+          </MarkdownInlineCommentHost>
         );
       }
 
@@ -984,6 +1475,24 @@ export const FileViewer = memo(function FileViewer({
       // Server-rendered syntax highlighting (preferred)
       if (highlightedHtml) {
         const contentWindowLabel = getContentWindowLabel(fileData);
+        const commentSplit =
+          splitCommentAfterLine !== undefined
+            ? splitHighlightedSourceAfterLine(
+                highlightedHtml,
+                splitCommentAfterLine,
+              )
+            : null;
+        const highlightedPart = (html: string) => (
+          // biome-ignore lint/a11y/noStaticElementInteractions: delegation target for anchors in server-rendered HTML
+          <div
+            className="shiki-container"
+            onClick={handleLocalResourceClick}
+            onContextMenu={handleLocalResourceContextMenu}
+            onKeyDown={handleLocalResourceKeyDown}
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        );
         return (
           <div
             className="file-viewer-code file-viewer-code-highlighted"
@@ -993,18 +1502,16 @@ export const FileViewer = memo(function FileViewer({
             {/* Source content carries project-path links too, so it needs the
                 same interception the Markdown preview has — otherwise a path
                 inside a JSON manifest would navigate away from the viewer
-                instead of opening beside it. The handlers delegate to the
-                anchors inside, which carry their own roles and keyboard
-                behaviour. */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: delegation target for anchors in server-rendered HTML */}
-            <div
-              className="shiki-container"
-              onClick={handleLocalResourceClick}
-              onContextMenu={handleLocalResourceContextMenu}
-              onKeyDown={handleLocalResourceKeyDown}
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
-              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-            />
+                instead of opening beside it. */}
+            {commentSplit && commentEditor ? (
+              <ReviewCommentSplitLayout
+                before={highlightedPart(commentSplit.before)}
+                editor={commentEditor}
+                after={highlightedPart(commentSplit.after)}
+              />
+            ) : (
+              highlightedPart(highlightedHtml)
+            )}
             {fileData.highlightedTruncated && (
               <div className="file-viewer-truncated">
                 {t("fileViewerHighlightTruncated" as never)}
@@ -1027,6 +1534,59 @@ export const FileViewer = memo(function FileViewer({
       );
       const singleLineHighlight = highlightStart === highlightEnd;
       const contentWindowLabel = getContentWindowLabel(fileData);
+      const renderPlainLines = (startIndex: number, endIndex: number) => {
+        const visibleLines = lines.slice(startIndex, endIndex);
+        return visibleLines.length > 0 ? (
+          <div className="code-highlighter-plain">
+            <div className="code-line-numbers">
+              {visibleLines.map((_, index) => {
+                const num = contentStartLine + startIndex + index;
+                return <div key={`ln-${num}`}>{num}</div>;
+              })}
+            </div>
+            <pre className="code-content">
+              <code>
+                {visibleLines.map((line, index) => {
+                  const num = contentStartLine + startIndex + index;
+                  const inRange =
+                    effectiveLineNumber !== undefined &&
+                    num >= highlightStart &&
+                    num <= highlightEnd;
+                  const classes = [
+                    singleLineHighlight && inRange ? "highlighted-line" : "",
+                    num === highlightStart ? "highlighted-line-start" : "",
+                    num === highlightEnd ? "highlighted-line-end" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <div
+                      key={`line-${num}`}
+                      ref={
+                        effectiveLineNumber !== undefined &&
+                        num === highlightStart
+                          ? (element) => setHighlightedLineRef(element)
+                          : undefined
+                      }
+                      className={classes || undefined}
+                      data-line={num}
+                    >
+                      {line || " "}
+                    </div>
+                  );
+                })}
+              </code>
+            </pre>
+          </div>
+        ) : null;
+      };
+      const plainSplitIndex =
+        splitCommentAfterLine === undefined
+          ? null
+          : Math.min(
+              lines.length,
+              Math.max(0, splitCommentAfterLine - contentStartLine + 1),
+            );
 
       return (
         <div
@@ -1034,48 +1594,14 @@ export const FileViewer = memo(function FileViewer({
           data-language={language}
           style={sourceStyle}
         >
-          {lines.length > 0 ? (
-            <div className="code-highlighter-plain">
-              <div className="code-line-numbers">
-                {lines.map((_, i) => {
-                  const num = contentStartLine + i;
-                  return <div key={`ln-${num}`}>{num}</div>;
-                })}
-              </div>
-              <pre className="code-content">
-                <code>
-                  {lines.map((line, i) => {
-                    const num = contentStartLine + i;
-                    const inRange =
-                      effectiveLineNumber !== undefined &&
-                      num >= highlightStart &&
-                      num <= highlightEnd;
-                    const classes = [
-                      singleLineHighlight && inRange ? "highlighted-line" : "",
-                      num === highlightStart ? "highlighted-line-start" : "",
-                      num === highlightEnd ? "highlighted-line-end" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ");
-                    return (
-                      <div
-                        key={`line-${num}`}
-                        ref={
-                          effectiveLineNumber !== undefined &&
-                          num === highlightStart
-                            ? (el) => setHighlightedLineRef(el)
-                            : undefined
-                        }
-                        className={classes || undefined}
-                        data-line={num}
-                      >
-                        {line || " "}
-                      </div>
-                    );
-                  })}
-                </code>
-              </pre>
-            </div>
+          {plainSplitIndex !== null && commentEditor ? (
+            <ReviewCommentSplitLayout
+              before={renderPlainLines(0, plainSplitIndex)}
+              editor={commentEditor}
+              after={renderPlainLines(plainSplitIndex, lines.length)}
+            />
+          ) : lines.length > 0 ? (
+            renderPlainLines(0, lines.length)
           ) : (
             <div className="file-viewer-empty-content">No content read</div>
           )}
@@ -1117,7 +1643,7 @@ export const FileViewer = memo(function FileViewer({
         <button
           type="button"
           className={`file-viewer-action ${viewerStyles.backButton}`}
-          onClick={onClose}
+          onClick={handleClose}
           title={t("actionBack")}
           aria-label={t("actionBack")}
         >
@@ -1187,6 +1713,18 @@ export const FileViewer = memo(function FileViewer({
             <RawSourceIcon />
           </button>
         )}
+        {commentModeSupported && (
+          <button
+            type="button"
+            className={`file-viewer-action ${viewerStyles.commentToggle}`}
+            aria-label={t("fileViewerCommentMode" as never)}
+            aria-pressed={commentMode}
+            title={t("fileViewerCommentMode" as never)}
+            onClick={handleCommentModeToggle}
+          >
+            <CommentIcon />
+          </button>
+        )}
         {!diffActive && metadata?.isText && content !== undefined && (
           <FileViewerDensityControls
             zoom={viewerDensity.zoom}
@@ -1219,6 +1757,9 @@ export const FileViewer = memo(function FileViewer({
             {copied ? <CheckIcon /> : <CopyIcon />}
           </button>
         )}
+        {publicShareContext === null &&
+          source === DEFAULT_FILE_VIEWER_SOURCE &&
+          !diffActive && <PublicFileShareButton onOpen={setFileShareAnchor} />}
         {publicShareContext === null && (
           <button
             type="button"
@@ -1230,10 +1771,16 @@ export const FileViewer = memo(function FileViewer({
           </button>
         )}
         {!standalone && (
-          <button
-            type="button"
+          <a
             className="file-viewer-action"
-            onClick={handleOpenInNewTab}
+            href={imageOpenUrl ?? standaloneViewerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={
+              imageOpenUrl
+                ? openImageInNewTabLabel
+                : t("fileViewerOpenNewTab" as never)
+            }
             title={
               imageOpenUrl
                 ? openImageInNewTabLabel
@@ -1241,13 +1788,13 @@ export const FileViewer = memo(function FileViewer({
             }
           >
             <ExternalLinkIcon />
-          </button>
+          </a>
         )}
         {onMinimize && (
           <button
             type="button"
             className={`file-viewer-action file-viewer-minimize ${viewerStyles.minimizeButton}`}
-            onClick={onMinimize}
+            onClick={handleMinimize}
             title={t("fileViewerMinimize" as never)}
             aria-label={t("fileViewerMinimize" as never)}
           >
@@ -1280,7 +1827,7 @@ export const FileViewer = memo(function FileViewer({
           <button
             type="button"
             className="file-viewer-action file-viewer-close"
-            onClick={onClose}
+            onClick={handleClose}
             title={t("modalClose")}
           >
             <CloseIcon />
@@ -1300,8 +1847,17 @@ export const FileViewer = memo(function FileViewer({
     .join(" ");
 
   return (
-    <div className={viewerClass}>
+    <div className={viewerClass} onBlurCapture={handleViewerBlur}>
       {header}
+      {fileShareAnchor && (
+        <PublicFileShareModal
+          anchorRect={fileShareAnchor}
+          filePath={filePath}
+          projectId={projectId}
+          title={fileName}
+          onClose={() => setFileShareAnchor(null)}
+        />
+      )}
       {contextMenu && (
         <FilePathContextMenu
           x={contextMenu.x}
@@ -1350,11 +1906,41 @@ export const FileViewer = memo(function FileViewer({
       )}
       {localResourceContextMenu}
       {loadedIsImage ? imageActions.contextMenuElement : null}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: delegated source-line clicks complement keyboard text-selection comments; the focusable body retains native keyboard scrolling */}
       <div
-        className={`file-viewer-body ${viewerStyles.body}`}
+        className={`file-viewer-body ${viewerStyles.body} ${
+          quoteTextBlock && showPreview && hasMarkdownPreview
+            ? viewerStyles.quoteReplySurface
+            : ""
+        }`}
         ref={fileViewerBodyRef}
+        tabIndex={-1}
+        {...(commentMode ? { [SESSION_FILE_COMMENT_MODE_ATTR]: "true" } : {})}
+        onClick={handleViewerBodyClick}
+        onMouseDownCapture={handleViewerBodyMouseDownCapture}
+        onPointerDown={handleViewerBodyPointerDown}
       >
-        {renderContent()}
+        {commentEditor &&
+        splitCommentAfterLine === undefined &&
+        splitCommentAfterBlock === undefined ? (
+          <ReviewCommentSplitLayout
+            before={renderContent()}
+            editor={commentEditor}
+          />
+        ) : (
+          renderContent()
+        )}
+        {!commentMode && quoteTextBlock && showPreview && hasMarkdownPreview ? (
+          <ParagraphQuoteRail
+            alwaysShowQuoteCircle={quoteReplyButtonMode === "paragraph-always"}
+            contentRef={markdownPreviewRef}
+            layoutKey={`${filePath}\0${renderedMarkdownHtml ?? ""}`}
+            onQuoteBlock={quoteTextBlock}
+            paragraphQuoteCirclesEnabled={quoteReplyButtonMode !== "block"}
+            sourceRef={fileViewerBodyRef}
+            surfaceRef={fileViewerBodyRef}
+          />
+        ) : null}
         {standalone ? (
           <FileViewerSelectionActions
             containerRef={fileViewerBodyRef}
@@ -1372,6 +1958,9 @@ export const FileViewer = memo(function FileViewer({
           mediaType={localMediaModal.mediaType}
           mediaSource={mediaSource}
           dismissOnBack
+          parentViewerId={
+            localMediaModal.mediaType === "image" ? parentViewerId : undefined
+          }
           onClose={closeLocalMediaModal}
         />
       ) : null}
@@ -1488,6 +2077,51 @@ function CopyIcon() {
   );
 }
 
+function PublicFileShareButton({
+  onOpen,
+}: {
+  onOpen: (anchor: DOMRect) => void;
+}) {
+  const { t } = useI18n();
+  const { version } = useVersion();
+  const { status } = usePublicShareStatus();
+  if (
+    status?.canCreate !== true ||
+    !serverHasCapability(version, PUBLIC_FILE_SHARES_CAPABILITY)
+  ) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className="file-viewer-action"
+      onClick={(event) => onOpen(event.currentTarget.getBoundingClientRect())}
+      title={t("fileViewerSharePublicly")}
+      aria-label={t("fileViewerSharePublicly")}
+    >
+      <PublicLinkIcon />
+    </button>
+  );
+}
+
+function PublicLinkIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m8 12 4-4M6.5 14.5l-1 1a2.8 2.8 0 0 1-4-4l3-3a2.8 2.8 0 0 1 4 0M13.5 5.5l1-1a2.8 2.8 0 1 1 4 4l-3 3a2.8 2.8 0 0 1-4 0" />
+    </svg>
+  );
+}
+
 function CheckIcon() {
   return (
     <svg
@@ -1521,6 +2155,24 @@ function PlusCircleIcon() {
     >
       <circle cx="8" cy="8" r="6" />
       <path d="M8 5v6M5 8h6" />
+    </svg>
+  );
+}
+
+function CommentIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" />
     </svg>
   );
 }

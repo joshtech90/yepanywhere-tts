@@ -267,3 +267,20 @@ file, and it never restricted lookup: a path under an excluded directory always
 linked when the file existed. A project still holding one is unaffected, since
 the index now hydrates only the directory components a displayed candidate
 names. See [Project path links](project-path-links.md) § The index.
+
+2026-08-28 `auth.json` browser sessions — version 2 stores a domain-separated
+SHA-256 verifier of each high-entropy browser session token instead of the
+bearer token itself. On first load of version 1, YA preserves the account,
+password hash, enabled state, and localhost-access setting but intentionally
+invalidates all browser sessions; users must log in again. This closes the
+readable-session-token path from a project-write sandbox without changing the
+password or desktop authentication contract.
+
+2026-08-29 project-write session network firewall — add the permanent,
+version-implied `session-sandbox-network-firewall` capability rather than
+expanding `session-sandboxing`. Current clients require all three sandbox
+signals before showing either control and send neither field to older servers.
+For older clients and legacy metadata, a missing firewall value defaults on
+only when `sandboxLevel` is `project-write`; explicit false stays authoritative,
+and true without project-write is rejected. Audited stable releases `v0.7.0`
+and `v0.6.2` lack the complete sandbox and firewall contracts.

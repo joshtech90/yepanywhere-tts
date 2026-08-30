@@ -16,7 +16,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -220,15 +220,11 @@ describe("CodexProvider", () => {
       expect(typeof status.enabled).toBe("boolean");
     });
 
-    it("should return authenticated=false if auth.json does not exist", async () => {
-      // This test relies on the auth file not existing in the test environment
-      const authPath = join(homedir(), ".codex", "auth.json");
-      if (!existsSync(authPath)) {
-        const status = await provider.getAuthStatus();
-        // If CLI is not installed, everything should be false
-        // If CLI is installed but no auth, installed=true but auth=false
-        expect(status.authenticated).toBe(false);
-      }
+    it("uses CLI installation as the conservative authentication signal", async () => {
+      const status = await provider.getAuthStatus();
+
+      expect(status.authenticated).toBe(status.installed);
+      expect(status.enabled).toBe(status.installed);
     });
   });
 
@@ -350,6 +346,59 @@ describe("CodexProvider", () => {
         expect(
           requests.some((request) => request.method === "turn/start"),
         ).toBe(false);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("logs in with an in-memory external ChatGPT projection", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-external-auth-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexHome = join(tempDir, "isolated-codex-home");
+      mkdirSync(codexHome, { mode: 0o700 });
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-external-auth",
+        buildFakeCodexAppServer(logPath),
+      );
+      const testProvider = new CodexProvider({
+        codexPath,
+        codexHome,
+        externalChatgptAuth: {
+          initialProjection: {
+            accessToken: "external-access-token",
+            chatgptAccountId: "account-one",
+            chatgptPlanType: "plus",
+          },
+          refresh: async () => ({
+            accessToken: "refreshed-access-token",
+            chatgptAccountId: "account-one",
+            chatgptPlanType: "plus",
+          }),
+        },
+      });
+      const session = await testProvider.startSession({ cwd: tempDir });
+
+      try {
+        await expect(session.iterator.next()).resolves.toMatchObject({
+          value: {
+            type: "system",
+            subtype: "init",
+            session_id: "thread-1",
+          },
+        });
+        const login = readFakeCodexRequests(logPath).find(
+          (request) => request.method === "account/login/start",
+        );
+        expect(login?.params).toEqual({
+          type: "chatgptAuthTokens",
+          accessToken: "external-access-token",
+          chatgptAccountId: "account-one",
+          chatgptPlanType: "plus",
+        });
+        expect(existsSync(join(codexHome, "auth.json"))).toBe(false);
       } finally {
         await session.abort();
         await session.iterator.return?.(undefined);
@@ -874,6 +923,104 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
+  it("updates model and effort during a live turn and retains both", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-settings-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-settings",
+      buildFakeCodexPermissionAppServer(logPath, 2),
+    );
+    const testProvider = new CodexProvider({ codexPath });
+    const session = await testProvider.startSession({
+      cwd: tempDir,
+      initialMessage: { text: "live settings turn" },
+      effort: "low",
+    });
+
+    try {
+      const firstTurn = consumeCodexTurn(session.iterator);
+      await waitForFakeCodexRequest(logPath, "turn/start");
+      expect(session.effortUpdatesActiveTurn).toBe(true);
+      expect(session.setModel).toBeTypeOf("function");
+
+      await session.setEffort?.("high");
+      await session.setModel?.("gpt-5.4");
+      await firstTurn;
+
+      session.queue.push({ text: "retained settings turn" });
+      await consumeCodexTurn(session.iterator);
+
+      const requests = readFakeCodexRequests(logPath);
+      expect(
+        requests
+          .filter((request) => request.method === "turn/settings/update")
+          .map((request) => request.params),
+      ).toEqual([
+        {
+          threadId: "thread-policy",
+          turnId: "turn-1",
+          effort: "high",
+        },
+        {
+          threadId: "thread-policy",
+          turnId: "turn-1",
+          model: "gpt-5.4",
+        },
+      ]);
+      expect(
+        requests
+          .filter((request) => request.method === "turn/start")
+          .map((request) => ({
+            model: request.params?.model,
+            effort: request.params?.effort,
+          })),
+      ).toEqual([
+        { model: null, effort: "low" },
+        { model: "gpt-5.4", effort: "high" },
+      ]);
+    } finally {
+      await session.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retains a setting when the live turn target is unavailable", async () => {
+    const tempDir = mkdtempSync(
+      join(tmpdir(), "codex-provider-settings-race-"),
+    );
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-settings-race",
+      buildFakeCodexPermissionAppServer(logPath, 1, "targetUnavailable"),
+    );
+    const testProvider = new CodexProvider({ codexPath });
+    const session = await testProvider.startSession({
+      cwd: tempDir,
+      initialMessage: { text: "racing settings turn" },
+    });
+
+    try {
+      const firstTurn = consumeCodexTurn(session.iterator);
+      await waitForFakeCodexRequest(logPath, "turn/start");
+      await session.setModel?.("gpt-5.4");
+      await firstTurn;
+
+      session.queue.push({ text: "fallback settings turn" });
+      await consumeCodexTurn(session.iterator);
+
+      expect(
+        readFakeCodexRequests(logPath)
+          .filter((request) => request.method === "turn/start")
+          .map((request) => request.params?.model),
+      ).toEqual([null, "gpt-5.4"]);
+    } finally {
+      await session.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("discovers and dispatches Codex skills with canonical text and metadata", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-skills-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -1351,17 +1498,75 @@ describe("CodexProvider app-server lifecycle", () => {
         expectedTurnId: "turn-active",
       });
       expect(warn).toHaveBeenCalledWith(
-        {
+        expect.objectContaining({
           component: "codex-provider",
           sessionId: "thread-race",
           expectedTurnId: "turn-submission",
           actualTurnId: "turn-active",
           notificationMethod: "turn/plan/updated",
-        },
+          notificationSource: "provider",
+        }),
         "Resynchronized Codex turn id from provider notification",
       );
     } finally {
       await session?.abort();
+      await consume?.catch(() => undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses stale turn notifications queued before a new turn", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-stale-turn-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-stale-turn",
+      buildFakeCodexAppServerWithStaleTurnBacklog(logPath),
+    );
+
+    let session: Awaited<ReturnType<CodexProvider["startSession"]>> | undefined;
+    let consume: Promise<void> | undefined;
+
+    try {
+      const testProvider = new CodexProvider({ codexPath });
+      session = await testProvider.startSession({
+        cwd: tempDir,
+        initialMessage: { text: "start after stale notifications" },
+        effort: "low",
+      });
+      const messages: Array<Record<string, unknown>> = [];
+      consume = (async () => {
+        for await (const message of session?.iterator ?? []) {
+          messages.push(message);
+          if (message.type === "result") break;
+        }
+      })();
+
+      await consume;
+
+      expect(JSON.stringify(messages)).not.toContain("stale turn marker");
+      expect(JSON.stringify(messages)).toContain("current turn marker");
+      const suppressionWarnings = warn.mock.calls.filter(
+        ([, message]) =>
+          message ===
+          "Suppressed stale Codex notifications queued before turn start",
+      );
+      expect(suppressionWarnings).toHaveLength(1);
+      expect(suppressionWarnings[0]?.[0]).toMatchObject({
+        sessionId: "thread-stale-backlog",
+        expectedTurnId: "turn-current",
+        count: 2,
+        firstTurnId: "turn-old",
+        lastTurnId: "turn-old",
+        firstMethod: "turn/plan/updated",
+        lastMethod: "turn/completed",
+        reason: "turn-scoped notification reached",
+      });
+    } finally {
+      session?.abort();
       await consume?.catch(() => undefined);
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -2060,6 +2265,9 @@ function handleMessage(message) {
         requiresOpenaiAuth: true,
       });
       break;
+    case "account/login/start":
+      respond(message.id, { type: "chatgptAuthTokens" });
+      break;
     case "account/rateLimits/read":
       respond(message.id, {
         rateLimits: {
@@ -2247,6 +2455,107 @@ process.stdin.on("data", (chunk) => {
 `;
 }
 
+function buildFakeCodexAppServerWithStaleTurnBacklog(logPath: string): string {
+  return `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const logPath = ${JSON.stringify(logPath)};
+let buffer = "";
+
+function write(payload) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
+}
+
+function respond(id, result) {
+  write({ id, result });
+}
+
+function notify(method, params) {
+  write({ method, params });
+}
+
+function logRequest(message) {
+  appendFileSync(logPath, JSON.stringify({
+    id: message.id,
+    method: message.method,
+    params: message.params,
+  }) + "\\n");
+}
+
+function completedTurn(id) {
+  return {
+    id,
+    items: [],
+    status: "completed",
+    error: null,
+    startedAt: 1,
+    completedAt: 2,
+    durationMs: 1,
+  };
+}
+
+function handleMessage(message) {
+  if (!message || typeof message !== "object") return;
+  logRequest(message);
+  if (message.id === undefined) return;
+
+  switch (message.method) {
+    case "initialize":
+      respond(message.id, { userAgent: "fake-codex" });
+      break;
+    case "skills/list":
+      respond(message.id, { data: [] });
+      break;
+    case "thread/start":
+      notify("turn/plan/updated", {
+        threadId: "thread-stale-backlog",
+        turnId: "turn-old",
+        explanation: null,
+        plan: [{ step: "stale turn marker", status: "completed" }],
+      });
+      notify("turn/completed", {
+        threadId: "thread-stale-backlog",
+        turn: completedTurn("turn-old"),
+      });
+      respond(message.id, {
+        thread: { id: "thread-stale-backlog" },
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+      });
+      break;
+    case "turn/start":
+      respond(message.id, {
+        turn: { id: "turn-current", status: "inProgress", error: null },
+      });
+      notify("turn/plan/updated", {
+        threadId: "thread-stale-backlog",
+        turnId: "turn-current",
+        explanation: null,
+        plan: [{ step: "current turn marker", status: "completed" }],
+      });
+      notify("turn/completed", {
+        threadId: "thread-stale-backlog",
+        turn: completedTurn("turn-current"),
+      });
+      break;
+    default:
+      respond(message.id, {});
+      break;
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString("utf-8");
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() || "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    handleMessage(JSON.parse(line));
+  }
+});
+`;
+}
+
 function buildFakeCodexFailureAppServer(
   logPath: string,
   codexErrorInfo: "serverOverloaded" | "usageLimitExceeded",
@@ -2381,13 +2690,20 @@ process.stdin.on("data", (chunk) => {
 `;
 }
 
-function buildFakeCodexPermissionAppServer(logPath: string): string {
+function buildFakeCodexPermissionAppServer(
+  logPath: string,
+  liveSettingsUpdates = 0,
+  liveSettingsStatus: "applied" | "targetUnavailable" = "applied",
+): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 
 const logPath = ${JSON.stringify(logPath)};
 let buffer = "";
 let turnSequence = 0;
+const liveSettingsUpdates = ${JSON.stringify(liveSettingsUpdates)};
+const liveSettingsStatus = ${JSON.stringify(liveSettingsStatus)};
+let observedSettingsUpdates = 0;
 let effectiveApprovalPolicy = "on-request";
 const configuredWorkspaceWritePolicy = {
   type: "workspaceWrite",
@@ -2478,10 +2794,32 @@ function handleMessage(message) {
       respond(message.id, {
         turn: {
           id: \`turn-\${turnSequence}\`,
-          status: "completed",
+          status:
+            turnSequence === 1 && liveSettingsUpdates > 0
+              ? "inProgress"
+              : "completed",
           error: null,
         },
       });
+      break;
+    }
+    case "turn/settings/update": {
+      observedSettingsUpdates += 1;
+      respond(message.id, { status: liveSettingsStatus });
+      if (observedSettingsUpdates === liveSettingsUpdates) {
+        write({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-policy",
+            turn: {
+              id: message.params.turnId,
+              items: [],
+              status: "completed",
+              error: null,
+            },
+          },
+        });
+      }
       break;
     }
     default:
@@ -3958,6 +4296,50 @@ describe("CodexProvider Event Normalization", () => {
     ]);
   });
 
+  it("shows live standalone function outputs without inventing a call", () => {
+    const provider = createTestProvider() as unknown as {
+      normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
+      convertItemToSDKMessages: (
+        item: unknown,
+        sessionId: string,
+        turnId: string,
+        sourceEvent: "item/started" | "item/completed",
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const normalized = provider.normalizeThreadItem({
+      id: "function-output-1",
+      type: "functionCallOutput",
+      name: "notifications",
+      namespace: "slack",
+      output: [{ type: "input_text", text: "new message" }],
+    });
+
+    expect(normalized).toMatchObject({
+      id: "function-output-1",
+      type: "function_call_output",
+      name: "notifications",
+      namespace: "slack",
+    });
+    expect(
+      provider.convertItemToSDKMessages(
+        normalized,
+        "session-1",
+        "turn-1",
+        "item/completed",
+      ),
+    ).toMatchObject([
+      {
+        type: "system",
+        subtype: "tool_output",
+        uuid: "function-output-1",
+        content: "new message",
+        codexToolName: "notifications",
+        codexToolNamespace: "slack",
+      },
+    ]);
+  });
+
   it("surfaces subagent activity items as visible system messages", () => {
     const provider = createTestProvider() as unknown as {
       normalizeThreadItem: (item: unknown) => Record<string, unknown> | null;
@@ -5421,6 +5803,52 @@ describe("CodexProvider Event Normalization", () => {
       codexAdditionalDetails: "stream disconnected before completion",
       codexWillRetry: true,
       codexErrorScope: "turn",
+    });
+  });
+
+  it("surfaces a misalignment explanation as the codex error detail", () => {
+    const provider = createTestProvider() as unknown as {
+      convertNotificationToSDKMessages: (
+        notification: { method: string; params?: unknown },
+        sessionId: string,
+        usageByTurnId: Map<string, unknown>,
+        liveEventState: ReturnType<typeof createLiveEventState>,
+      ) => Array<Record<string, unknown>>;
+    };
+
+    const messages = provider.convertNotificationToSDKMessages(
+      {
+        method: "error",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          willRetry: false,
+          error: {
+            message:
+              "This request was blocked due to a misalignment policy violation.",
+            codexErrorInfo: "misalignmentPolicyViolation",
+            misalignment: {
+              errorType: "some_new_category",
+              detailedExplanation:
+                "The requested change would disable an audit control.",
+              steer: { message: "Continue without disabling the control." },
+            },
+          },
+        },
+      },
+      "session-1",
+      new Map(),
+      createLiveEventState(),
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "error",
+      error: "This request was blocked due to a misalignment policy violation.",
+      codexErrorInfo: "misalignmentPolicyViolation",
+      codexAdditionalDetails:
+        "The requested change would disable an audit control.",
+      codexWillRetry: false,
     });
   });
 

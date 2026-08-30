@@ -15,10 +15,17 @@ const ANCHORED_MODAL_MARGIN_PX = 8;
 const ANCHORED_MODAL_MIN_VIEWPORT_WIDTH_PX = 600;
 let modalHistoryEntrySequence = 0;
 let modalBackspaceOwnerSequence = 0;
+let modalLayerOwnerSequence = 0;
 const modalBackspaceOwners: Array<{
   id: number;
   close: () => void;
 }> = [];
+const modalLayerOwners: Array<{
+  id: number;
+  close: () => void;
+}> = [];
+let bodyScrollOwners = 0;
+let bodyOverflowBeforeModal: string | null = null;
 
 export interface ModalAnchorRect {
   bottom: number;
@@ -32,6 +39,8 @@ export interface ModalAnchorRect {
 interface ModalProps {
   title: ReactNode;
   actions?: ReactNode;
+  headerActionsClassName?: string;
+  headerClassName?: string;
   children: ReactNode;
   onClose: () => void;
   onMinimize?: () => void;
@@ -73,11 +82,76 @@ function handleModalBackspace(event: KeyboardEvent): void {
   ) {
     return;
   }
-  const owner = modalBackspaceOwners.at(-1);
+  const owner = latestModalOwner(modalBackspaceOwners);
   if (!owner) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   owner.close();
+}
+
+function handleModalEscape(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  const owner = latestModalOwner(modalLayerOwners);
+  if (!owner) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  owner.close();
+}
+
+function latestModalOwner<T extends { id: number }>(
+  owners: readonly T[],
+): T | undefined {
+  let latest: T | undefined;
+  for (const owner of owners) {
+    if (!latest || owner.id > latest.id) latest = owner;
+  }
+  return latest;
+}
+
+/** Own topmost Escape dismissal and one share of the document scroll lock. */
+export function useModalLayer(onClose: () => void, enabled = true): void {
+  const onCloseRef = useRef(onClose);
+  const ownerIdRef = useRef<number | null>(null);
+  onCloseRef.current = onClose;
+  if (ownerIdRef.current === null) {
+    modalLayerOwnerSequence += 1;
+    ownerIdRef.current = modalLayerOwnerSequence;
+  }
+
+  useEffect(() => {
+    if (!enabled) return;
+    const ownerId = ownerIdRef.current;
+    if (ownerId === null) return;
+    const owner = {
+      id: ownerId,
+      close: () => onCloseRef.current(),
+    };
+    const needsEscapeListener = modalLayerOwners.length === 0;
+    modalLayerOwners.push(owner);
+    if (needsEscapeListener) {
+      document.addEventListener("keydown", handleModalEscape, true);
+    }
+    if (bodyScrollOwners === 0) {
+      bodyOverflowBeforeModal = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+    }
+    bodyScrollOwners += 1;
+
+    return () => {
+      const ownerIndex = modalLayerOwners.findIndex(
+        (candidate) => candidate.id === owner.id,
+      );
+      if (ownerIndex >= 0) modalLayerOwners.splice(ownerIndex, 1);
+      if (modalLayerOwners.length === 0) {
+        document.removeEventListener("keydown", handleModalEscape, true);
+      }
+      bodyScrollOwners -= 1;
+      if (bodyScrollOwners === 0) {
+        document.body.style.overflow = bodyOverflowBeforeModal ?? "";
+        bodyOverflowBeforeModal = null;
+      }
+    };
+  }, [enabled]);
 }
 
 /** Own the topmost Backspace dismissal slot while a viewer is visible. */
@@ -195,6 +269,8 @@ export function useModalBackGesture(
 export function Modal({
   title,
   actions,
+  headerActionsClassName,
+  headerClassName,
   children,
   onClose,
   onMinimize,
@@ -212,34 +288,13 @@ export function Modal({
   const overlayPointerStartedOnOverlayRef = useRef(false);
   useModalBackGesture(onClose, Boolean(closeOnBackGesture && !minimized));
   useModalBackspace(onClose, Boolean(closeOnBackspace && !minimized));
+  useModalLayer(onClose, !minimized);
   const isAnchored =
     !!anchorRect &&
     typeof window !== "undefined" &&
     (anchorAtAnyWidth ||
       window.innerWidth > ANCHORED_MODAL_MIN_VIEWPORT_WIDTH_PX);
   const [anchorStyle, setAnchorStyle] = useState<CSSProperties | null>(null);
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !minimized) {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [minimized, onClose]);
-
-  // Prevent body scroll when modal is open
-  useEffect(() => {
-    if (minimized) return;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [minimized]);
 
   // Focus the close button on mount for accessibility
   useEffect(() => {
@@ -345,17 +400,25 @@ export function Modal({
           isAnchored ? (anchorStyle ?? { visibility: "hidden" }) : undefined
         }
       >
-        <div className="modal-header">
+        <div
+          className={`modal-header${headerClassName ? ` ${headerClassName}` : ""}`}
+        >
           <span className="modal-title">{title}</span>
           <span
-            className="modal-header-actions"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.375rem",
-              marginLeft: "auto",
-              flexShrink: 0,
-            }}
+            className={`modal-header-actions${
+              headerActionsClassName ? ` ${headerActionsClassName}` : ""
+            }`}
+            style={
+              headerActionsClassName
+                ? undefined
+                : {
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.375rem",
+                    marginLeft: "auto",
+                    flexShrink: 0,
+                  }
+            }
           >
             {actions}
             {onMinimize && (

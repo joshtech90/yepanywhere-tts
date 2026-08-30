@@ -10,11 +10,14 @@ import {
   getSessionDetailRetentionDefaults,
 } from "../../lib/sessionDetail/sessionDetailStore";
 import type { SessionRouteSnapshot } from "../../lib/sessionRouteSnapshots";
+import {
+  readSessionScrollMemory,
+  writeSessionScrollMemory,
+} from "../../lib/sessionScrollMemoryStorage";
 import { UI_KEYS } from "../../lib/storageKeys";
 import {
   getLastSessionTranscriptBytes,
   getSessionActiveWindowTrimEnabled,
-  getSessionOffscreenTranscriptRenderingEnabled,
   getSessionScrollBehaviorMode,
   getSessionDomLingerEnabled,
   getSessionTranscriptMemoryStats,
@@ -67,6 +70,10 @@ describe("useSessionPerformanceSettings", () => {
       removeItem: (key: string) => {
         storage.delete(key);
       },
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size;
+      },
       clear: () => {
         storage.clear();
       },
@@ -88,16 +95,12 @@ describe("useSessionPerformanceSettings", () => {
     expect(result.current.sessionTranscriptCacheEnabled).toBe(false);
     expect(result.current.sessionTranscriptCacheTtlHours).toBe(1);
     expect(result.current.sessionScrollBehaviorMode).toBe("live-tail");
-    expect(result.current.sessionOffscreenTranscriptRenderingEnabled).toBe(
-      false,
-    );
     expect(result.current.sessionActiveWindowTrimEnabled).toBe(true);
     expect(getSessionDomLingerEnabled()).toBe(false);
     expect(getSessionTranscriptCacheEnabled()).toBe(false);
     expect(getSessionTranscriptCacheBudgetMb()).toBe(0);
     expect(getSessionTranscriptCacheTtlHours()).toBe(1);
     expect(getSessionScrollBehaviorMode()).toBe("live-tail");
-    expect(getSessionOffscreenTranscriptRenderingEnabled()).toBe(false);
     expect(getSessionActiveWindowTrimEnabled()).toBe(true);
   });
 
@@ -132,26 +135,6 @@ describe("useSessionPerformanceSettings", () => {
     });
 
     expect(result.current.sessionActiveWindowTrimEnabled).toBe(false);
-  });
-
-  it("persists and publishes off-screen transcript rendering updates", () => {
-    const { result: first } = renderHook(() => useSessionPerformanceSettings());
-    const { result: second } = renderHook(() =>
-      useSessionPerformanceSettings(),
-    );
-
-    act(() => {
-      first.current.setSessionOffscreenTranscriptRenderingEnabled(true);
-    });
-
-    expect(first.current.sessionOffscreenTranscriptRenderingEnabled).toBe(true);
-    expect(second.current.sessionOffscreenTranscriptRenderingEnabled).toBe(
-      true,
-    );
-    expect(getSessionOffscreenTranscriptRenderingEnabled()).toBe(true);
-    expect(
-      localStorage.getItem(UI_KEYS.sessionOffscreenTranscriptRendering),
-    ).toBe("true");
   });
 
   it("seeds the budget from the legacy boolean toggle", () => {
@@ -304,6 +287,16 @@ describe("useSessionPerformanceSettings", () => {
     expect(
       defaultSessionDetailMemoryCache.readScrollSnapshot(storeKey),
     ).toBeDefined();
+    writeSessionScrollMemory(storeKey, {
+      atBottom: true,
+      scrollTop: 400,
+      scrollHeight: 800,
+      clientHeight: 400,
+      completedTurn: { id: "turn-1", timestampMs: 20 },
+      following: true,
+      updatedAtMs: 20,
+    });
+    expect(readSessionScrollMemory(storeKey)).not.toBeNull();
 
     act(() => {
       result.current.setSessionScrollBehaviorMode("no-memory");
@@ -320,5 +313,16 @@ describe("useSessionPerformanceSettings", () => {
     expect(
       defaultSessionDetailMemoryCache.readScrollSnapshot(storeKey),
     ).toBeUndefined();
+    expect(readSessionScrollMemory(storeKey)).toBeNull();
+  });
+
+  it("migrates the retired manual-follow value to remember-place", () => {
+    localStorage.setItem(UI_KEYS.sessionScrollBehavior, "manual-follow");
+    invalidateLocalStorageValues(UI_KEYS.sessionScrollBehavior);
+
+    const { result } = renderHook(() => useSessionPerformanceSettings());
+
+    expect(result.current.sessionScrollBehaviorMode).toBe("remember-place");
+    expect(getSessionScrollBehaviorMode()).toBe("remember-place");
   });
 });

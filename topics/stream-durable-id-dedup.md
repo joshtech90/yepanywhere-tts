@@ -36,10 +36,13 @@ interrupted to deliver a queued steer is double-displayed."
    **2s** (default and replay): a human does not send two identical turns
    that fast, so this minimizes the real risk — silently merging two
    genuinely-distinct identical messages (the old 90s replay window made
-   that risk large). This is unavailable to Codex: repeated wait/status turns
-   and responses are commonly byte-identical, and every provider log row is a
-   distinct turn unless a shared provider identity proves otherwise. The
-   optional capability `approxDedupExcludesTools` (codex-oss) removes
+   that risk large). Current Codex servers with
+   `codex-stream-durable-id-alignment` do not use this: repeated wait/status
+   turns and responses are commonly byte-identical, and every provider log row
+   is a distinct turn unless a shared provider identity proves otherwise. A
+   current client temporarily enables the same two-second backstop, excluding
+   tools, when that server capability is absent or still unknown. The optional
+   provider capability `approxDedupExcludesTools` (codex-oss) removes
    tool_use/tool_result messages from this
    backstop entirely: native tool uuids are deterministic (`call_id`), while
    the code-mode `commandExecution` exception uses a separately scoped exact
@@ -170,17 +173,29 @@ the backstop, which already covers the case — revisit only if the
 YA drives Codex over the app-server **thread-item** stream
 (`thread/start` with `experimentalRawEvents: false`), so the live render
 path is `item/started`/`item/completed` → `convertItemToSDKMessages`
-(not the opt-in `rawResponseItem/*` path). Codex 0.149 carries provider ids on
-the live thread item and persists those ids in rollout response items. The one
+(not the opt-in `rawResponseItem/*` path). Codex carries provider ids on the
+live thread item and persists those ids in rollout response items. The one
 YA-supplied identity is `clientUserMessageId`, which Codex persists on the
-paired `user_message` event.
+paired user-turn event.
+
+The permanent server capability `codex-stream-durable-id-alignment` (ID 48,
+version-implied from YA 0.7.2) gates whether the client may rely on these ids.
+Source-ahead servers advertise the ID explicitly. Stable servers `v0.6.0`,
+`v0.6.1`, `v0.6.2`, and `v0.7.0` predate the contract. Against them—or while
+version metadata is pending—the client restores the former two-second
+content/timestamp reconciliation for non-tool rows, legacy steer pairing, and
+timestamp-watermark replay suppression. This avoids routine duplicate rows at
+the deliberate old-server risk of merging genuinely distinct identical turns.
+The fallback makes no new request and remains until a separate
+compatibility-floor review approves its removal.
 
 | Item | Live thread `item.id` | Durable rollout id | Aligned? |
 |---|---|---|---|
 | Native tool calls/results | `payload.call_id` (`id: payload.call_id.clone()`) | `call_id` on the response item | **Yes** — both key on `call_id` |
 | Code-mode nested command | inner `commandExecution` id (`exec-*`) | outer `custom_tool_call.call_id` (`call_*`) | **No direct id** — scoped reconciliation below |
+| Code-mode image view | inner `imageView` item id | outer `custom_tool_call.call_id` (`call_*`) | **No direct id** — scoped reconciliation below |
 | Checklist update | transient YA id for `turn/plan/updated` (notification has no item id) | `function_call.call_id` or outer `custom_tool_call.call_id` (`call_*`) | **No direct id** — scoped reconciliation below |
-| User turns | YA queue `message.uuid` | paired event_msg `client_id` | **Yes** — YA sends it on start and steer |
+| User turns | YA queue `message.uuid` | paired `user_message.client_id` through 0.150; paired `item_completed.item.client_id` from 0.151 | **Yes** — YA sends it on start and steer |
 | Assistant / reasoning | response item id (`msg_*` / `rs_*`) | `response_item.payload.id` | **Yes** — both preserve the provider id |
 
 The provider id is the identity. A repeated row with the same role, content,
@@ -199,9 +214,9 @@ turn — `call_id` is globally unique, so no turn scoping is needed:
 - Live (`codex.ts`): `convertItemToSDKMessages` routes tool-backed thread
   items (`isToolBackedThreadItem`) through `buildItemToolUuid(item.id)` /
   `buildItemResultUuid(callId)`; message/reasoning items keep `item.id`
-  unchanged. A code-mode command temporarily uses its inner
-  `exec-*` item id until the scoped reconciliation below. The streaming-result
-  and (opt-in) rawResponse paths use the same helpers.
+  unchanged. A code-mode command or image view temporarily uses its inner item
+  id until the scoped reconciliation below. The streaming-result and (opt-in)
+  rawResponse paths use the same helpers.
 - Durable (`normalization.ts`): `codexDurableResponseItemUuid` maps
   `function_call`/`custom_tool_call`/`web_search_call` →
   `call_id`, `*_output` → `${call_id}-result`; the `exec_command_end`
@@ -221,6 +236,17 @@ turn — `call_id` is globally unique, so no turn scoping is needed:
   with exactly equal normalized name/input/actions, one-to-one by nearest
   timestamp within 10s, then adopts `call_*` / `call_*-result` as canonical.
   The durable row remains authoritative and no YA record is persisted.
+- Image-view exception (verified 2026-08-26): app-server exposes a nested
+  code-mode image inspection as an `imageView` thread item while rollout stores
+  the enclosing `custom_tool_call`. Both representations canonicalize to
+  `ViewImage`; ephemeral correlation metadata lets the client pair exact
+  same-turn name/path matches and adopt the outer `call_*` identity. Matching
+  deliberately ignores view options such as `detail` because Codex includes
+  them only in the durable outer call, not in the live `imageView` item. The
+  tool result and its media stay under that one canonical parent, so live
+  overlap and persisted reload each render exactly one visible image row.
+  Repeated views remain distinct because pairing is one-to-one and
+  turn-scoped.
 - Checklist exception (verified against Codex 0.146.0): app-server emits
   `turn/plan/updated` with the full plan but no item/call id, while code-mode
   rollout stores the enclosing `custom_tool_call` (ordinary tool mode uses a
@@ -231,28 +257,39 @@ turn — `call_id` is globally unique, so no turn scoping is needed:
   parents cannot be assigned safely to one outer call by id. The explored
   projection may make their default visual group converge, but raw parent
   structure and active-tail collapse identity may replace once rollout lands.
-- General approximate dedup is disabled for Codex. Native ids plus the scoped
-  code-mode reconciler carry the known tool exceptions without treating equal
-  content or nearby timestamps as identity.
+- General approximate dedup is disabled for Codex when the connected server
+  advertises stream/durable id alignment. Native ids plus the scoped code-mode
+  reconciler carry the known tool exceptions without treating equal content or
+  nearby timestamps as identity. The documented old-server compatibility path
+  is the only exception, and it continues to exclude tools.
 
 ### Done: user-turn id alignment
 
 YA sends the queue `message.uuid` as `clientUserMessageId` on both
-`turn/start` and `turn/steer`. Codex persists it as the adjacent event_msg
-`user_message.client_id`; `codex-user-turn-provenance.ts` pairs that witness
-with the rich response-item user payload. Normalization uses the persisted
-`client_id` as the rendered uuid, then falls back to the response-item id and
-finally the JSONL position for historical transcripts.
+`turn/start` and `turn/steer`. Through Codex 0.150, the adjacent provenance
+witness is `event_msg/user_message` and carries `client_id` on its payload.
+Codex 0.151 persists the canonical witness as
+`event_msg/item_completed(UserMessage)` and carries `client_id` on the nested
+item. `codex-user-turn-provenance.ts` recognizes both representations and
+pairs either one with the rich response-item user payload. Normalization uses
+the persisted `client_id` as the rendered uuid, then falls back to the
+response-item id and finally the JSONL position for historical transcripts.
+
+The response item and its witness can straddle two incremental file reads.
+When that happens, Codex normalization reprocesses the trailing response after
+the witness arrives, replacing its provisional or hidden classification with
+the paired client identity.
 
 The optimistic opening turn and a later durable row therefore meet by exact id
 even when provider startup takes longer than any plausible time window.
 
 An in-turn steer can remain optimistic for minutes before Codex consumes it.
 `Process` still retains accepted steer echoes through the provider turn
-boundary, but durable confirmation now uses the persisted client id. Codex no
-longer invokes `reconcileCodexSteerEchoes` or any text/timestamp substitute.
-Against an older server that omitted `clientUserMessageId`, a current client
-may show both copies; it must not erase a possibly real repeated turn.
+boundary, but durable confirmation now uses the persisted client id. Against a
+server advertising `codex-stream-durable-id-alignment`, Codex never invokes
+`reconcileCodexSteerEchoes` or any text/timestamp substitute. Against an older
+server that omitted `clientUserMessageId`, the capability-gated legacy path
+pairs the echo and durable row so the hosted client does not show both copies.
 
 ### Historical: first-turn duplicate with attachments
 

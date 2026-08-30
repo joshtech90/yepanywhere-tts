@@ -24,6 +24,7 @@ describe("Auth routes - POST /enable", () => {
   });
 
   afterEach(async () => {
+    await authService.flushPendingWrites();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
@@ -104,6 +105,31 @@ describe("Auth routes - POST /enable", () => {
       false,
     );
   });
+
+  it("refuses to relax authentication while a project-write sandbox is active", async () => {
+    await authService.enableAuth("current-password");
+    const loginRes = await postLogin("current-password");
+    const cookie = loginRes.headers.get("set-cookie") ?? "";
+    routes = createAuthRoutes({
+      authService,
+      isAuthenticationRelaxationBlocked: () => true,
+    });
+
+    const disable = await routes.request("/disable", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    expect(disable.status).toBe(409);
+    expect(authService.isEnabled()).toBe(true);
+
+    const openLocalhost = await routes.request("/localhost-access", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ open: true }),
+    });
+    expect(openLocalhost.status).toBe(409);
+    expect(authService.isLocalhostOpen()).toBe(false);
+  });
 });
 
 describe("Auth routes - cookie secure flag", () => {
@@ -123,6 +149,7 @@ describe("Auth routes - cookie secure flag", () => {
   });
 
   afterEach(async () => {
+    await authService.flushPendingWrites();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 

@@ -55,7 +55,10 @@ session. Browser Back/back-swipe and an unmodified, non-repeating Backspace use
 the same topmost-only rule. Backspace never dismisses a viewer while its event
 target is an input, textarea, select, editable region, or textbox. Each child
 file or resource modal owns its own browser-history entry so browser Back does
-not skip from a nested file past its parent.
+not skip from a nested file past its parent. Escape likewise dismisses only the
+topmost visible modal. Every visible modal shares one reference-counted document
+scroll lock: dismissing a child keeps scrolling locked for its parent, and the
+last dismissal restores the body overflow value that preceded the stack.
 
 The capability is authenticated-session UI. Live and frozen public shares do
 not expose parking controls, consistent with their lack of an authenticated
@@ -120,6 +123,8 @@ was.
   document ends above the separate composer row, so its final line can always
   scroll completely clear of those controls without overlay-compensation
   padding.
+- Changing the viewport width keeps an open viewer open. Responsive relayout
+  must not implicitly minimize or close it.
 - Its reduced form reuses the existing measured narrowing and overflow system;
   it does not introduce another user-configurable priority tier. Send and Mic
   remain non-displaceable, while the controller may move any other optional
@@ -171,13 +176,19 @@ both must not duplicate document state or let the two controls disagree.
 
 ## Managed detail viewers
 
-Expanded Bash/Ran, Edit, Write, Grep, Web, and WriteStdin details and the
-provider-child transcript selector participate in the same `open`, `parked`,
-and `closed` state model and use the same composer controller. Their controller
-label describes the detail rather than a file; the file-only right-click
-copy-path action is not present. Provider-child detail additionally retains its
-selected child and loaded transcript across parking, and its header count can
-restore the same viewer.
+Expanded Bash/Ran, Edit, Write, Grep, Web, and WriteStdin details, the
+provider-child transcript selector, and path-backed full image viewers
+participate in the same `open`, `parked`, and `closed` state model and use the
+same composer controller. An image uses its semantic path as file identity and
+retains its decoded bytes and fit/zoom position across parking; pathless media
+does not manufacture a file controller. A detail controller label describes the
+detail rather than a file, and the file-only right-click copy-path action is not
+present. Provider-child detail additionally retains its selected child and
+loaded transcript across parking, and its header count can restore the same
+viewer. In the full image viewer, a two-touch gesture applies both changes in
+finger separation and movement of their shared center: separation scales the
+image while center movement pans it horizontally and vertically. Lifting one
+finger continues as the existing one-finger pan.
 
 The session owns one managed-panel host beside the message list, inside the same
 session metadata and agent-content providers as the transcript. A tool row or
@@ -198,28 +209,29 @@ Tool renderers used outside this explicit session-viewer provider retain the
 ordinary close-only modal. Session metadata by itself does not opt a surface
 into a host that may not exist.
 
-## Open ownership defect: rich-text replacement
+## Stable ownership through rich-text replacement
 
-The current file link owns both its local open state and the mounted modal.
-When session rich text replaces that link component, React destroys an open or
-parked viewer even though the user did not close it. Reproduction evidence is
-tracked in
-[`gaps/rich-text-replacement-closes-file-viewer.md`](../gaps/rich-text-replacement-closes-file-viewer.md).
+Every authenticated session file link publishes its viewer descriptor and
+content to the stable session-level host. The link is only an activation
+surface; it does not own the mounted viewer. Session rich-text replacement,
+transcript virtualization, or removal of the originating tool row therefore
+must not close or reconstruct a viewer while it is open or parked.
 
-The repair belongs at the session ownership boundary established above:
+The host owns the managed viewer and its browser-history lifetime until one of
+these explicit transitions occurs:
 
-- mount one stable session-level viewer host and keep the open viewer
-  descriptor there;
-- make every authenticated file-link surface invoke that host rather than
-  mounting its own modal;
-- keep history-entry ownership with the host so link replacement cannot leave
-  stale viewer history or close the wrong file; and
-- cover replacement while open and parked, opening a second file, browser
-  history navigation, and an explicit close.
+- opening another authenticated session file replaces the current managed
+  viewer and its controller;
+- Back, browser history navigation, Escape, or the close control dismisses the
+  current viewer according to the modal-stack rules above; or
+- leaving the session destroys the host.
 
-This work changes viewer ownership, not only presentation. The gap remains open
-until every authenticated file-link caller uses the shared host and replacement
-no longer changes viewer lifetime.
+The same mounted viewer remains available through source-link replacement in
+both open and parked states, including its loaded content, scroll and selection
+state, presentation mode, and controller. File links outside an explicit
+session-viewer provider and links in public shares retain their local,
+close-only modal ownership; session metadata alone never publishes into a host
+that is not present.
 
 ## Evaluation
 

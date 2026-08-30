@@ -9,6 +9,7 @@ import {
   mergeJSONLMessages,
   mergeStreamMessage,
 } from "../../client/src/lib/mergeMessages.ts";
+import { reconcileCodexToolMessages } from "../../client/src/lib/codexToolReconciliation.ts";
 import { compileTranscriptProjection } from "../../client/src/lib/transcriptProjection/compiler.ts";
 import type { Message as ClientMessage } from "../../client/src/types.ts";
 import { CodexProvider } from "../src/sdk/providers/codex.js";
@@ -398,6 +399,37 @@ const CLAUDE_MULTI_TEXT_FIXTURE: ClaudeSessionEntry[] = [
         { type: "text", text: "First **block**." },
         { type: "text", text: "Second block:\n\n```ts\nconst two = 2;\n```" },
       ],
+    },
+  },
+];
+
+const EMBEDDED_HTML_MARKDOWN = [
+  "<table>",
+  "  <thead>",
+  '    <tr><th rowspan="2">Runtime</th><th colspan="2">Latency</th></tr>',
+  "    <tr><th>Cold</th><th>Warm</th></tr>",
+  "  </thead>",
+  "  <tbody>",
+  '    <tr><td rowspan="2">Desktop</td><td>120 ms</td><td>45 ms</td></tr>',
+  '    <tr><td colspan="2">Stable</td></tr>',
+  "  </tbody>",
+  "</table>",
+].join("\n");
+
+const CLAUDE_EMBEDDED_HTML_FIXTURE: ClaudeSessionEntry[] = [
+  {
+    type: "user",
+    uuid: "claude-html-user-1",
+    parentUuid: null,
+    message: { role: "user", content: "Compare the runtimes." },
+  },
+  {
+    type: "assistant",
+    uuid: "claude-html-assistant-1",
+    parentUuid: "claude-html-user-1",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: EMBEDDED_HTML_MARKDOWN }],
     },
   },
 ];
@@ -906,6 +938,91 @@ describe("Render Parity Harness", () => {
     expect(summaryTextCount).toBe(1);
   });
 
+  it("renders one Codex code-mode image view live and persisted", () => {
+    const provider = new CodexProvider() as unknown as CodexProviderBridge;
+    const turnId = "turn-image-view";
+    const callId = "call_image_view";
+    const itemId = "item-image-view";
+    const imagePath = "/workspace/capture.png";
+    const timestamp = new Date().toISOString();
+    const metadata = {
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    };
+    const persistedMessages = normalizeSession(
+      buildLoadedCodexSession([
+        {
+          type: "response_item",
+          timestamp,
+          payload: {
+            type: "custom_tool_call",
+            call_id: callId,
+            name: "exec",
+            input: `const r = await tools.view_image({ path: ${JSON.stringify(imagePath)}, detail: "original" }); image(r.image_url);`,
+            ...metadata,
+          },
+        },
+        {
+          type: "response_item",
+          timestamp,
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: callId,
+            output: [
+              { type: "input_text", text: "Image loaded" },
+              {
+                type: "input_image",
+                image_url: "data:image/png;base64,iVBORw0KGgo=",
+              },
+            ],
+            ...metadata,
+          },
+        },
+      ]),
+    ).messages;
+    const imageItem = {
+      id: itemId,
+      type: "image_view" as const,
+      path: imagePath,
+    };
+    const liveMessages = reconcileCodexToolMessages([
+      ...(persistedMessages as ClientMessage[]),
+      ...(provider.convertItemToSDKMessages(
+        imageItem,
+        "codex-image-view-live",
+        turnId,
+        "item/started",
+      ) as ClientMessage[]),
+      ...(provider.convertItemToSDKMessages(
+        imageItem,
+        "codex-image-view-live",
+        turnId,
+        "item/completed",
+      ) as ClientMessage[]),
+    ]);
+
+    const persistedRows = compileTranscriptProjection(
+      persistedMessages as ClientMessage[],
+    ).filter((item) => item.type === "tool_call");
+    const liveRows = compileTranscriptProjection(liveMessages).filter(
+      (item) => item.type === "tool_call",
+    );
+
+    expect(persistedRows).toHaveLength(1);
+    expect(liveRows).toHaveLength(1);
+    expect(persistedRows[0]).toMatchObject({
+      id: callId,
+      toolName: "ViewImage",
+      toolInput: { path: imagePath },
+      status: "complete",
+    });
+    expect(liveRows[0]).toMatchObject({
+      id: callId,
+      toolName: "ViewImage",
+      toolInput: { path: imagePath },
+      status: "complete",
+    });
+  });
+
   it("keeps Claude stream and persisted rendering equivalent", async () => {
     const persisted = await runPersistedPipeline(
       buildLoadedClaudeSession(CLAUDE_FIXTURE),
@@ -975,6 +1092,34 @@ describe("Render Parity Harness", () => {
     expect(textItems[0]?.augmentHtml).toContain("<strong>block</strong>");
     expect(textItems[1]?.augmentHtml).toContain("<p>Second block:</p>");
     expect(textItems[1]?.augmentHtml).toContain('class="shiki css-variables"');
+  });
+
+  it("keeps embedded HTML tables identical live and after persisted reload", async () => {
+    const persisted = await runPersistedPipeline(
+      buildLoadedClaudeSession(CLAUDE_EMBEDDED_HTML_FIXTURE),
+    );
+    const stream = await runStreamPipeline(
+      CLAUDE_EMBEDDED_HTML_FIXTURE as unknown as Array<Record<string, unknown>>,
+    );
+
+    assertRenderParity(
+      "claude-embedded-html",
+      persisted.renderItems,
+      stream.renderItems,
+      {
+        persisted: { includeSourceRelationships: true },
+        stream: { includeSourceRelationships: true },
+      },
+    );
+
+    const textItem = normalizeRenderItemsForComparison(
+      persisted.renderItems,
+    ).find(
+      (item): item is Record<string, unknown> =>
+        typeof item === "object" && item !== null && item.type === "text",
+    );
+    expect(textItem?.augmentHtml).toContain('<th colspan="2">Latency</th>');
+    expect(textItem?.augmentHtml).toContain('<td rowspan="2">Desktop</td>');
   });
 
   it("keeps chained Claude Edit branches visible after persisted reload", async () => {

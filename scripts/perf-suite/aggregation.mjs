@@ -15,6 +15,11 @@ export function aggregateRuns(runs) {
     "latency.providerFirstTextDelta.p95Ms",
     "latency.providerFinalRaw.p95Ms",
     "latency.providerFinalEnriched.p95Ms",
+    "latency.semanticActionHumanVisible.p95Ms",
+    "latency.semanticActionReplayTotal.p95Ms",
+    "latency.semanticActionReplayVisible.p95Ms",
+    "latency.semanticActionMessageAcceptRoundTrip.p95Ms",
+    "latency.semanticActionProviderFirstTextDelta.p95Ms",
     "latency.idleOwnershipRelease.p95Ms",
     "latency.publicShareMetadata.p95Ms",
     "latency.publicShareHerd.p95Ms",
@@ -211,6 +216,32 @@ export function aggregateBrowserRuns(runs) {
       const pageTelemetry = modes.flatMap((mode) => mode.telemetry);
       const cacheTelemetry = modes.flatMap((mode) => mode.warmCacheTelemetry);
       const clientProfileMetrics = {};
+      const interactionMetrics = {};
+      for (const metricPath of [
+        "conversation.typingKeyToFrameP95.p95Ms",
+        "conversation.scrollFrameP95.p95Ms",
+        "conversation.scrollMissedFrameFraction.p95Ms",
+        "full.typingKeyToFrameP95.p95Ms",
+        "full.scrollFrameP95.p95Ms",
+        "full.scrollMissedFrameFraction.p95Ms",
+        "hoverCardWorkAfterDelay.p95Ms",
+        "olderHistoryNextPaint.p95Ms",
+        "projectionNextPaint.p95Ms",
+        "sidebarSwitchNextPaint.p95Ms",
+        "sidebarSwitchRetainedNextPaint.p95Ms",
+        "tooltipWorkAfterDelay.p95Ms",
+      ]) {
+        const values = modes
+          .map((mode) =>
+            getMetric(mode.interactionTrace?.aggregate, metricPath),
+          )
+          .filter((value) => typeof value === "number");
+        if (values.length > 0) {
+          interactionMetrics[`interaction.${metricPath}`] = round(
+            percentile(values, 0.5),
+          );
+        }
+      }
       for (const kind of ["coldNavigation", "warmNavigation", "append"]) {
         for (const group of [
           "nonOverlappingPhases",
@@ -240,6 +271,7 @@ export function aggregateBrowserRuns(runs) {
         String(cacheBudgetMiB),
         {
           ...clientProfileMetrics,
+          ...interactionMetrics,
           "latency.coldTail.p95Ms": round(
             percentile(
               modes.map((mode) => mode.latency.coldTail.p95Ms),

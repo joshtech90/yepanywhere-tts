@@ -13,6 +13,7 @@ import type {
   UserQuestionAnswers,
 } from "@yep-anywhere/shared";
 import {
+  CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -54,7 +55,6 @@ import { PendingToolWarning } from "../components/PendingToolWarning";
 import { ProviderChildSessionControl } from "../components/ProviderChildSessionControl";
 import type {
   FullPaneComposerControls,
-  MessageSubmissionMetadata,
   UploadProgress,
 } from "../components/MessageInput";
 import { MessageInputToolbar } from "../components/MessageInputToolbar";
@@ -67,12 +67,11 @@ import { RecentSessionsDropdown } from "../components/RecentSessionsDropdown";
 import { RestartSessionModal } from "../components/RestartSessionModal";
 import { SessionHeartbeatModal } from "../components/SessionHeartbeatModal";
 import { SessionMenu } from "../components/SessionMenu";
+import { SessionPublicShareControls } from "../components/SessionPublicShareControls";
 import { SessionRecapModal } from "../components/SessionRecapModal";
-import { SessionShareModal } from "../components/SessionShareModal";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { ToolApprovalPanel } from "../components/ToolApprovalPanel";
 import type { ModalAnchorRect } from "../components/ui/Modal";
-import { ViewerCountIndicator } from "../components/ViewerCountIndicator";
 import { AgentContentProvider } from "../contexts/AgentContentContext";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { RenderModeProvider } from "../contexts/RenderModeContext";
@@ -106,7 +105,6 @@ import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProject, useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
-import { usePublicSessionShareStatus } from "../hooks/usePublicSessionShareStatus";
 import { recordSessionVisit } from "../hooks/useRecentSessions";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
@@ -131,6 +129,7 @@ import {
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { toBrowserAppHref } from "../lib/appHref";
+import { requiresAttachmentOnlyServerUpdate } from "../lib/attachmentSubmission";
 import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import {
   useActiveProjectSessionIds,
@@ -151,6 +150,11 @@ import { buildCorrectionText } from "../lib/correctionText";
 import { logSessionUiTrace } from "../lib/diagnostics/uiTrace";
 import { isEffortLevel } from "../lib/effortLevels";
 import {
+  executeSemanticUiComposerAction,
+  isSemanticUiActionHarnessEnabled,
+  registerSemanticUiComposerExecutors,
+} from "../lib/semanticUiActions";
+import {
   liveThinkingSelectionFromProcess,
   thinkingOptionFromProcess,
   thinkingOptionFromSelection,
@@ -160,6 +164,7 @@ import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
 import { parseThinkingConfig } from "../lib/sourceControlNavigationState";
+import type { MessageSubmissionMetadata } from "../types/messageSubmission";
 import {
   type ComposerAttachment,
   isComposerStagedAttachment,
@@ -172,6 +177,7 @@ import {
   collectComposerAttachmentsForSubmission as collectComposerAttachmentsForSubmissionHelper,
   createComposerDraftAttachmentState,
   getComposerTransferReplacement,
+  hasComposerDraftContent,
   materializeComposerAttachmentsForSubmission,
   splitComposerAttachmentsForSubmission,
   type PreparedComposerSubmission,
@@ -374,6 +380,10 @@ export interface SessionPageProps {
   sessionId?: string;
   routeLocation?: SessionPageRouteLocation;
   isDomLingerParked?: boolean;
+  progressiveRenderPauseSignal?: {
+    readonly current: boolean;
+    supportsCompaction?: boolean;
+  };
 }
 
 export function SessionPage({
@@ -381,6 +391,7 @@ export function SessionPage({
   sessionId: sessionIdProp,
   routeLocation,
   isDomLingerParked = false,
+  progressiveRenderPauseSignal,
 }: SessionPageProps = {}) {
   const params = useParams<{
     projectId: string;
@@ -406,6 +417,7 @@ export function SessionPage({
             sessionId={sessionId}
             routeLocation={routeLocation}
             isDomLingerParked={isDomLingerParked}
+            progressiveRenderPauseSignal={progressiveRenderPauseSignal}
           />
         </RenderModeProvider>
       </StreamingMarkdownProvider>
@@ -443,11 +455,13 @@ function SessionPageContent({
   sessionId,
   routeLocation,
   isDomLingerParked,
+  progressiveRenderPauseSignal,
 }: {
   projectId: string;
   sessionId: string;
   routeLocation?: SessionPageRouteLocation;
   isDomLingerParked: boolean;
+  progressiveRenderPauseSignal?: { readonly current: boolean };
 }) {
   const { t } = useI18n();
   const { showToast } = useToastContext();
@@ -498,6 +512,10 @@ function SessionPageContent({
     versionInfo,
     PROJECT_CODE_NAMES_CAPABILITY,
   );
+  const supportsCodexStreamDurableIdAlignment = serverHasCapability(
+    versionInfo,
+    CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
+  );
   const projectQueueProjectIds = useMemo(
     () =>
       supportsProjectQueue ? [projectId] : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
@@ -526,10 +544,7 @@ function SessionPageContent({
     clientTailParams.tailTurns !== undefined ||
     clientTailParams.tailFrom !== undefined;
   const { sessionLoadingProgressEnabled } = useSessionLoadingProgress();
-  const {
-    sessionOffscreenTranscriptRenderingEnabled,
-    sessionScrollBehaviorMode,
-  } = useSessionPerformanceSettings();
+  const { sessionScrollBehaviorMode } = useSessionPerformanceSettings();
   const [
     sessionLoadingProgressDetailsVisible,
     setSessionLoadingProgressDetailsVisible,
@@ -553,6 +568,7 @@ function SessionPageContent({
     () => ({
       ...clientTailParams,
       detailedLoadingProgress: sessionLoadingProgressEnabled,
+      codexStreamDurableIdAlignment: supportsCodexStreamDurableIdAlignment,
       backgroundEffectsPaused: isDomLingerParked,
       onConfigurationError: (failure: { setting: "effort" }) => {
         if (failure.setting === "effort") {
@@ -565,6 +581,7 @@ function SessionPageContent({
       isDomLingerParked,
       sessionLoadingProgressEnabled,
       showToast,
+      supportsCodexStreamDurableIdAlignment,
       t,
     ],
   );
@@ -655,6 +672,7 @@ function SessionPageContent({
     loadingOlder,
     olderLoadContinuationRequired,
     loadOlderMessages,
+    readOlderSearchPage,
     initialScrollSnapshot,
     updateRouteScrollSnapshot,
     updateActiveWindowFollowingBottom,
@@ -2049,7 +2067,10 @@ function SessionPageContent({
     }
 
     const outgoingText = outgoingTextFor(slashTurn.text);
-    if (!outgoingText) {
+    if (
+      outgoingText === null ||
+      !hasComposerDraftContent(outgoingText, attachmentsRef.current.length)
+    ) {
       return null;
     }
 
@@ -2073,13 +2094,6 @@ function SessionPageContent({
   );
   const [shareModalAnchor, setShareModalAnchor] =
     useState<ModalAnchorRect | null>(null);
-  const { status: publicShareStatus, updateStatus: setPublicShareStatus } =
-    usePublicSessionShareStatus({
-      enabled: publicSharesEnabled,
-      projectId,
-      sessionId: actualSessionId,
-      storageState: publicShareGlobalStatus?.storageState,
-    });
   const canCreatePublicShares = publicShareGlobalStatus?.canCreate ?? false;
   const publicShareManagementAvailable = serverHasCapability(
     versionInfo,
@@ -2087,10 +2101,6 @@ function SessionPageContent({
   );
   const publicShareActionAvailable =
     publicShareManagementAvailable || canCreatePublicShares;
-  const showPublicShareIndicator =
-    canCreatePublicShares ||
-    (publicShareStatus?.activeCount ?? 0) > 0 ||
-    (publicShareManagementAvailable && publicSharesEnabled);
   const [pendingElsewhereDismissedToolId, setPendingElsewhereDismissedToolId] =
     useState<string | null>(null);
 
@@ -2240,12 +2250,25 @@ function SessionPageContent({
   const handleSend = async (
     text: string,
     metadata?: MessageSubmissionMetadata,
-  ) => {
+    options: { preserveComposer?: boolean } = {},
+  ): Promise<boolean> => {
     const prepared = prepareComposerSubmission(text);
     if (!prepared) {
-      return;
+      return false;
     }
+    const preserveComposer = options.preserveComposer === true;
     const { outgoingText, slashCommand } = prepared;
+    if (
+      !preserveComposer &&
+      requiresAttachmentOnlyServerUpdate({
+        version: versionInfo,
+        text: outgoingText,
+        attachmentCount: attachmentsRef.current.length,
+      })
+    ) {
+      showToast(t("attachmentOnlyRequiresServerUpdate"), "error");
+      return false;
+    }
     const thinking = prepared.thinking ?? getImplicitComposerThinking();
     // Display preference for thinking rows; sent for compatibility while the
     // server requests provider summaries independently.
@@ -2272,21 +2295,25 @@ function SessionPageContent({
       thinking,
       slashCommand: slashCommand ?? null,
       textLength: outgoingText.length,
-      attachmentCount: attachments.length,
-      hasCorrectionDraft: !!correctionDraft,
+      attachmentCount: preserveComposer ? 0 : attachments.length,
+      hasCorrectionDraft: preserveComposer ? false : !!correctionDraft,
       clientTimestamp,
       serverOffsetMs: getEstimatedServerOffsetMs(),
     });
 
-    let currentAttachments = [...attachmentsRef.current];
+    let currentAttachments = preserveComposer
+      ? []
+      : [...attachmentsRef.current];
     let uploadedAttachments: UploadedFile[] = [];
 
     try {
-      currentAttachments = await collectComposerAttachmentsForSubmission({
-        pendingMessageId: tempId,
-      });
-      uploadedAttachments =
-        await materializeComposerAttachments(currentAttachments);
+      if (!preserveComposer) {
+        currentAttachments = await collectComposerAttachmentsForSubmission({
+          pendingMessageId: tempId,
+        });
+        uploadedAttachments =
+          await materializeComposerAttachments(currentAttachments);
+      }
       if (uploadedAttachments.length > 0) {
         updatePendingMessage(tempId, { attachments: uploadedAttachments });
       }
@@ -2396,11 +2423,14 @@ function SessionPageContent({
         }
       }
       // Success - clear the draft from localStorage
-      rememberSentSubmission(text, tempId);
-      draftControlsRef.current?.confirmInputClear();
-      revokeAttachmentPreviewUrls(currentAttachments);
-      setCorrectionDraft(null);
-      clearQuoteAnchors();
+      if (!preserveComposer) {
+        rememberSentSubmission(text, tempId);
+        draftControlsRef.current?.confirmInputClear();
+        revokeAttachmentPreviewUrls(currentAttachments);
+        setCorrectionDraft(null);
+        clearQuoteAnchors();
+      }
+      return true;
     } catch (err) {
       console.error("Failed to send:", err);
       let finalError: unknown = err;
@@ -2463,12 +2493,14 @@ function SessionPageContent({
             modeVersion: result.modeVersion,
             recapAfterSeconds: result.recapAfterSeconds,
           });
-          rememberSentSubmission(text, tempId);
-          draftControlsRef.current?.confirmInputClear();
-          revokeAttachmentPreviewUrls(currentAttachments);
-          setCorrectionDraft(null);
-          clearQuoteAnchors();
-          return;
+          if (!preserveComposer) {
+            rememberSentSubmission(text, tempId);
+            draftControlsRef.current?.confirmInputClear();
+            revokeAttachmentPreviewUrls(currentAttachments);
+            setCorrectionDraft(null);
+            clearQuoteAnchors();
+          }
+          return true;
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
           finalError = retryErr;
@@ -2484,8 +2516,10 @@ function SessionPageContent({
 
       // Remove from pending queue and restore draft on error
       removePendingMessage(tempId);
-      draftControlsRef.current?.restoreFromStorage();
-      setComposerAttachments(currentAttachments, { persistDraft: false });
+      if (!preserveComposer) {
+        draftControlsRef.current?.restoreFromStorage();
+        setComposerAttachments(currentAttachments, { persistDraft: false });
+      }
       setProcessState("idle");
       const errorMsg =
         finalError instanceof Error ? finalError.message : String(finalError);
@@ -2502,10 +2536,16 @@ function SessionPageContent({
       } else {
         showToast(t("sessionSendFailed", { message: errorMsg }), "error");
       }
+      return false;
     }
   };
   const handleSendRef = useRef(handleSend);
   handleSendRef.current = handleSend;
+  const handleSessionViewerCommentSend = useCallback(
+    (text: string) =>
+      handleSendRef.current(text, undefined, { preserveComposer: true }),
+    [],
+  );
 
   // !! bang commands: local shell runs in the project dir, never provider
   // ingress; persisted as transcript display objects (topics/bang-commands.md).
@@ -2729,6 +2769,16 @@ function SessionPageContent({
       return;
     }
     const { outgoingText, slashCommand } = prepared;
+    if (
+      requiresAttachmentOnlyServerUpdate({
+        version: versionInfo,
+        text: outgoingText,
+        attachmentCount: attachmentsRef.current.length,
+      })
+    ) {
+      showToast(t("attachmentOnlyRequiresServerUpdate"), "error");
+      return;
+    }
     const thinking = prepared.thinking ?? getImplicitComposerThinking();
     // Display preference for thinking rows; sent for compatibility while the
     // server requests provider summaries independently.
@@ -2903,6 +2953,59 @@ function SessionPageContent({
       }
     }
   };
+
+  const handleQueueRef = useRef(handleQueue);
+  handleQueueRef.current = handleQueue;
+  const executeComposerSend = useCallback(
+    (text: string, metadata?: MessageSubmissionMetadata) =>
+      handleSendRef.current(text, metadata),
+    [],
+  );
+  const executeComposerDefer = useCallback(
+    (text: string, metadata?: MessageSubmissionMetadata) =>
+      handleQueueRef.current(text, metadata),
+    [],
+  );
+  useEffect(() => {
+    if (!isSemanticUiActionHarnessEnabled()) return undefined;
+    return registerSemanticUiComposerExecutors(
+      clientSummarySourceKey,
+      sessionId,
+      {
+        send: executeComposerSend,
+        defer: executeComposerDefer,
+      },
+    );
+  }, [
+    clientSummarySourceKey,
+    executeComposerDefer,
+    executeComposerSend,
+    sessionId,
+  ]);
+  const handleSemanticComposerSend = useCallback(
+    (text: string, metadata?: MessageSubmissionMetadata) =>
+      executeSemanticUiComposerAction(
+        clientSummarySourceKey,
+        sessionId,
+        "send",
+        text,
+        metadata,
+        executeComposerSend,
+      ),
+    [clientSummarySourceKey, executeComposerSend, sessionId],
+  );
+  const handleSemanticComposerDefer = useCallback(
+    (text: string, metadata?: MessageSubmissionMetadata) =>
+      executeSemanticUiComposerAction(
+        clientSummarySourceKey,
+        sessionId,
+        "defer",
+        text,
+        metadata,
+        executeComposerDefer,
+      ),
+    [clientSummarySourceKey, executeComposerDefer, sessionId],
+  );
 
   const queueComposerForProject = async (
     text: string,
@@ -5151,32 +5254,30 @@ function SessionPageContent({
               processState={processState}
             />
             <ClientLogRecordingBadge inline />
-            {showPublicShareIndicator && (
-              <ViewerCountIndicator
-                className="session-header-viewer-count"
-                count={
-                  publicShareStatus && publicShareStatus.liveCount > 0
-                    ? publicShareStatus.activeViewerCount
-                    : null
-                }
-                label={
-                  publicShareStatus
-                    ? t("sessionShareViewerSummary", {
-                        active: publicShareStatus.activeViewerCount,
-                        total: publicShareStatus.viewers.length,
-                        live: publicShareStatus.liveCount,
-                        frozen: publicShareStatus.frozenCount,
-                      })
-                    : t("sessionShareOpenTitle")
-                }
-                onClick={handleShareIndicatorClick}
-                onContextMenu={
-                  publicShareManagementAvailable
-                    ? handleShareIndicatorContextMenu
-                    : undefined
-                }
-              />
-            )}
+            <SessionPublicShareControls
+              enabled={publicSharesEnabled}
+              projectId={projectId}
+              sessionId={actualSessionId}
+              storageState={publicShareGlobalStatus?.storageState}
+              canCreateShares={canCreatePublicShares}
+              managementAvailable={publicShareManagementAvailable}
+              modalOpen={showShareModal}
+              modalAnchorRect={shareModalAnchor}
+              modalInitialView={shareModalView}
+              initialPrompt={publicShareInitialPrompt}
+              title={displayTitle}
+              onIndicatorClick={handleShareIndicatorClick}
+              onIndicatorContextMenu={
+                publicShareManagementAvailable
+                  ? handleShareIndicatorContextMenu
+                  : undefined
+              }
+              onCloseModal={() => {
+                setShowShareModal(false);
+                setShareModalAnchor(null);
+              }}
+              t={t}
+            />
             {canStopOwnedProcess && (
               <ThinkingIndicator
                 variant="icon"
@@ -5270,24 +5371,6 @@ function SessionPageContent({
                 : prev,
             );
             showToast(t("sessionRecapSaved"), "success");
-          }}
-        />
-      )}
-
-      {showShareModal && (
-        <SessionShareModal
-          anchorRect={shareModalAnchor}
-          projectId={projectId}
-          sessionId={actualSessionId}
-          initialPrompt={publicShareInitialPrompt}
-          title={displayTitle}
-          canCreateShares={canCreatePublicShares}
-          initialView={shareModalView}
-          managementAvailable={publicShareManagementAvailable}
-          onStatusChange={setPublicShareStatus}
-          onClose={() => {
-            setShowShareModal(false);
-            setShareModalAnchor(null);
           }}
         />
       )}
@@ -5441,6 +5524,7 @@ function SessionPageContent({
                 <SessionViewerProvider
                   sessionId={actualSessionId}
                   inactive={isDomLingerParked}
+                  onSendComment={handleSessionViewerCommentSend}
                 >
                   <MessageList
                     messages={messages}
@@ -5514,21 +5598,20 @@ function SessionPageContent({
                       olderLoadContinuationRequired
                     }
                     onLoadOlderMessages={loadOlderMessages}
+                    onReadOlderSearchPage={readOlderSearchPage}
                     clientTailActive={clientTailActive}
                     progressiveRenderEnabled={sessionLoadingProgressEnabled}
                     progressiveRenderStatusVisible={
                       sessionLoadingProgressDetailsVisible
                     }
                     progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                    progressiveRenderPauseSignal={progressiveRenderPauseSignal}
                     conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
                     initialScrollSnapshot={initialScrollSnapshot}
                     onScrollSnapshotChange={updateRouteScrollSnapshot}
                     onFollowingBottomChange={updateActiveWindowFollowingBottom}
                     onFollowCurrent={handleFollowCurrent}
                     scrollBehaviorMode={sessionScrollBehaviorMode}
-                    offscreenTranscriptRenderingEnabled={
-                      sessionOffscreenTranscriptRenderingEnabled
-                    }
                     getForkSummaryTargetHref={getForkSummaryTargetHref}
                     onCancelForkSummary={handleCancelForkSummary}
                     onToggleForkSummaryAutoOpen={
@@ -5684,14 +5767,14 @@ function SessionPageContent({
                   mainComposerForAside
                     ? (text) => handleFocusedBtwSend(text, "main")
                     : primaryComposerAction === "steer"
-                      ? handleSend
+                      ? handleSemanticComposerSend
                       : shouldDeferMessages
-                        ? handleQueue
-                        : handleSend
+                        ? handleSemanticComposerDefer
+                        : handleSemanticComposerSend
                 }
                 onQueue={
                   !mainComposerForAside && shouldDeferMessages
-                    ? handleQueue
+                    ? handleSemanticComposerDefer
                     : undefined
                 }
                 onProjectQueue={

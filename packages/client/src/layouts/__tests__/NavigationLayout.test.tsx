@@ -4,6 +4,8 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
+  within,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
@@ -51,10 +53,12 @@ const mocks = vi.hoisted(() => ({
     ({
       isDesktop,
       onMinimize,
+      onClose,
       currentSessionId,
     }: {
       isDesktop?: boolean;
       onMinimize?: () => void;
+      onClose: () => void;
       currentSessionId?: string;
     }) => (
       <div
@@ -64,6 +68,11 @@ const mocks = vi.hoisted(() => ({
         {onMinimize && (
           <button type="button" onClick={onMinimize}>
             Minimize sidebar
+          </button>
+        )}
+        {!isDesktop && (
+          <button type="button" onClick={onClose}>
+            Close sidebar
           </button>
         )}
       </div>
@@ -87,7 +96,20 @@ vi.mock("../../hooks/useSidebarSessionFeeds", () => ({
 import {
   NavigationLayout,
   SessionDomLingerRouteMarker,
+  useNavigationLayout,
 } from "../NavigationLayout";
+
+function ContentFrameRoute() {
+  const { openSidebar } = useNavigationLayout();
+  return (
+    <div data-testid="file-frame">
+      <button type="button" onClick={openSidebar}>
+        Open file sidebar
+      </button>
+      <Link to="/projects/project-1/sessions/session-1">Session 1</Link>
+    </div>
+  );
+}
 
 function renderNavigationLayout(path = "/agents") {
   render(
@@ -115,6 +137,7 @@ function renderNavigationLayoutWithSessionLinger(
   path = "/projects/project-1/sessions/session-1",
   options: {
     onSessionRender?: (parked: boolean, sessionId: string) => void;
+    sessionElementCount?: number | ((sessionId: string) => number);
   } = {},
 ) {
   render(
@@ -124,7 +147,7 @@ function renderNavigationLayoutWithSessionLinger(
           <Route
             element={
               <NavigationLayout
-                sessionElement={(route, { parked }) => {
+                sessionElement={(route, { onSessionNavigate, parked }) => {
                   options.onSessionRender?.(parked, route.sessionId);
                   return (
                     <div
@@ -136,9 +159,45 @@ function renderNavigationLayoutWithSessionLinger(
                       <Link to="/projects/project-1/file?path=README.md">
                         File
                       </Link>
-                      <Link to="/projects/project-1/sessions/session-2">
+                      <Link
+                        to="/projects/project-1/sessions/session-2"
+                        onClick={(event) =>
+                          onSessionNavigate({
+                            event,
+                            href: "/projects/project-1/sessions/session-2",
+                            projectId: "project-1",
+                            sessionId: "session-2",
+                          })
+                        }
+                      >
                         Session 2
                       </Link>
+                      {route.sessionId === "session-2" && (
+                        <Link
+                          to="/projects/project-1/sessions/session-1"
+                          onClick={(event) =>
+                            onSessionNavigate({
+                              event,
+                              href: "/projects/project-1/sessions/session-1",
+                              projectId: "project-1",
+                              sessionId: "session-1",
+                            })
+                          }
+                        >
+                          Session 1
+                        </Link>
+                      )}
+                      {Array.from(
+                        {
+                          length:
+                            typeof options.sessionElementCount === "function"
+                              ? options.sessionElementCount(route.sessionId)
+                              : (options.sessionElementCount ?? 0),
+                        },
+                        (_, index) => (
+                          <span key={index} />
+                        ),
+                      )}
                     </div>
                   );
                 }}
@@ -157,13 +216,7 @@ function renderNavigationLayoutWithSessionLinger(
             />
             <Route
               path="/projects/:projectId/file"
-              element={
-                <div data-testid="file-frame">
-                  <Link to="/projects/project-1/sessions/session-1">
-                    Session 1
-                  </Link>
-                </div>
-              }
+              element={<ContentFrameRoute />}
             />
             <Route
               path="/projects/:projectId/sessions/:sessionId"
@@ -263,6 +316,7 @@ describe("NavigationLayout", () => {
     cleanup();
     vi.useRealTimers();
     window.localStorage.clear();
+    delete window.__YA_RELOAD_PERF_PROBE__;
   });
 
   it("mounts sidebar session coverage once, above everything that reads it", () => {
@@ -422,7 +476,7 @@ describe("NavigationLayout", () => {
     expect(window.localStorage.getItem(UI_KEYS.sidebarMinimized)).toBe("false");
   });
 
-  it("parks one session DOM layer under a non-session route and reveals it", () => {
+  it("parks one session DOM layer under a non-session route and reveals it", async () => {
     enableSessionDomLinger();
     renderNavigationLayoutWithSessionLinger();
 
@@ -434,22 +488,36 @@ describe("NavigationLayout", () => {
 
     expect(screen.getByTestId("route-content")).toBeTruthy();
     expect(screen.getByTestId("session-layer")).toBe(sessionLayer);
-    expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
     expect(
       screen
         .getByTestId("session-layer")
         .closest("[data-session-dom-linger]")
         ?.getAttribute("data-session-dom-linger"),
     ).toBe("parked");
+    await waitFor(() => {
+      expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    });
 
     fireEvent.click(screen.getByText("Session 1"));
 
     expect(screen.getByTestId("session-layer")).toBe(sessionLayer);
-    expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
+    expect(
+      sessionLayer
+        .closest("[data-session-dom-linger]")
+        ?.getAttribute("data-session-dom-linger"),
+    ).toBe("active");
+    await waitFor(() => {
+      expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
+    });
   });
 
-  it("parks the session DOM under a full-frame project file route", () => {
+  it("parks the session DOM under a full-frame project file route", async () => {
     enableSessionDomLinger();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1400,
+    });
     renderNavigationLayoutWithSessionLinger();
 
     const sessionLayer = screen.getByTestId("session-layer");
@@ -458,19 +526,51 @@ describe("NavigationLayout", () => {
 
     expect(screen.getByTestId("file-frame")).toBeTruthy();
     expect(screen.getByTestId("session-layer")).toBe(sessionLayer);
-    expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
+    expect(screen.queryByTestId("desktop-sidebar")).toBeNull();
     expect(screen.queryByTestId("mobile-sidebar")).toBeNull();
+    expect(
+      screen.getByTestId("sidebar-session-feeds-provider").dataset.enabled,
+    ).toBe("false");
     expect(
       screen
         .getByTestId("session-layer")
         .closest("[data-session-dom-linger]")
         ?.getAttribute("data-session-dom-linger"),
     ).toBe("parked");
+    await waitFor(() => {
+      expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    });
+
+    fireEvent.click(screen.getByText("Open file sidebar"));
+
+    expect(screen.queryByTestId("desktop-sidebar")).toBeNull();
+    expect(screen.getByTestId("mobile-sidebar")).toBeTruthy();
+    expect(
+      screen.getByTestId("sidebar-session-feeds-provider").dataset.enabled,
+    ).toBe("true");
+    expect(screen.getByTestId("file-frame")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Close sidebar"));
+
+    expect(screen.queryByTestId("mobile-sidebar")).toBeNull();
+    expect(
+      screen.getByTestId("sidebar-session-feeds-provider").dataset.enabled,
+    ).toBe("false");
+    expect(screen.getByTestId("file-frame")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Session 1"));
 
     expect(screen.getByTestId("session-layer")).toBe(sessionLayer);
-    expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
+    expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    expect(
+      sessionLayer
+        .closest("[data-session-dom-linger]")
+        ?.getAttribute("data-session-dom-linger"),
+    ).toBe("active");
+    await waitFor(() => {
+      expect(screen.getByTestId("session-layer").dataset.parked).toBe("false");
+    });
   });
 
   it("parks the parent session under a read-only child page and keeps sidebar highlight", () => {
@@ -498,7 +598,12 @@ describe("NavigationLayout", () => {
     renderNavigationLayoutWithSessionLinger();
 
     fireEvent.click(screen.getByText("Agents"));
-    expect(screen.getByTestId("session-layer").dataset.parked).toBe("true");
+    expect(
+      screen
+        .getByTestId("session-layer")
+        .closest("[data-session-dom-linger]")
+        ?.getAttribute("data-session-dom-linger"),
+    ).toBe("parked");
 
     act(() => {
       vi.advanceTimersByTime(60_000);
@@ -526,17 +631,118 @@ describe("NavigationLayout", () => {
     expect(screen.getByTestId("route-content")).toBeTruthy();
   });
 
-  it("does not park the old session when navigating directly to another session", () => {
+  it("parks one compact session during direct session switching and reuses it", async () => {
     enableSessionDomLinger();
+    const mark = vi.fn();
+    window.__YA_RELOAD_PERF_PROBE__ = { mark };
     renderNavigationLayoutWithSessionLinger();
 
     const firstSessionLayer = screen.getByTestId("session-layer");
     fireEvent.click(screen.getByText("Session 2"));
 
-    const secondSessionLayer = screen.getByTestId("session-layer");
+    const switchedLayers = screen.getAllByTestId("session-layer");
+    const secondSessionLayer = switchedLayers.find(
+      (layer) => layer.dataset.sessionId === "session-2",
+    );
+    const parkedFirstSessionLayer = switchedLayers.find(
+      (layer) => layer.dataset.sessionId === "session-1",
+    );
+    expect(switchedLayers).toHaveLength(2);
+    expect(parkedFirstSessionLayer).toBe(firstSessionLayer);
+    expect(parkedFirstSessionLayer?.dataset.parked).toBe("false");
+    expect(
+      parkedFirstSessionLayer
+        ?.closest("[data-session-dom-linger]")
+        ?.getAttribute("data-session-dom-linger"),
+    ).toBe("parked");
     expect(secondSessionLayer).not.toBe(firstSessionLayer);
-    expect(secondSessionLayer.dataset.sessionId).toBe("session-2");
-    expect(secondSessionLayer.dataset.parked).toBe("false");
+    expect(secondSessionLayer?.dataset.parked).toBe("false");
+    await waitFor(() => {
+      expect(parkedFirstSessionLayer?.dataset.parked).toBe("true");
+    });
+
+    fireEvent.click(
+      within(secondSessionLayer as HTMLElement).getByText("Session 1"),
+    );
+
+    const returnedLayers = screen.getAllByTestId("session-layer");
+    expect(returnedLayers).toHaveLength(2);
+    expect(
+      returnedLayers.find((layer) => layer.dataset.sessionId === "session-1"),
+    ).toBe(firstSessionLayer);
+    expect(firstSessionLayer.dataset.parked).toBe("true");
+    expect(secondSessionLayer?.dataset.parked).toBe("false");
+    expect(
+      firstSessionLayer
+        .closest("[data-session-dom-linger]")
+        ?.getAttribute("data-session-dom-linger"),
+    ).toBe("active");
+    await waitFor(() => {
+      expect(firstSessionLayer.dataset.parked).toBe("false");
+      expect(secondSessionLayer?.dataset.parked).toBe("true");
+    });
+    expect(mark).toHaveBeenCalledWith("session_dom_linger_visual_swap", {
+      sessionId: "session-1",
+    });
+  });
+
+  it("expires a directly parked session while the next session stays active", () => {
+    enableSessionDomLinger();
+    vi.useFakeTimers();
+    renderNavigationLayoutWithSessionLinger();
+
+    fireEvent.click(screen.getByText("Session 2"));
+    expect(screen.getAllByTestId("session-layer")).toHaveLength(2);
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    const remainingLayer = screen.getByTestId("session-layer");
+    expect(remainingLayer.dataset.sessionId).toBe("session-2");
+    expect(remainingLayer.dataset.parked).toBe("false");
+  });
+
+  it("does not retain an oversized session beside another session", () => {
+    enableSessionDomLinger();
+    renderNavigationLayoutWithSessionLinger(undefined, {
+      sessionElementCount: 5_001,
+    });
+
+    fireEvent.click(screen.getByText("Session 2"));
+
+    const remainingLayer = screen.getByTestId("session-layer");
+    expect(remainingLayer.dataset.sessionId).toBe("session-2");
+    expect(remainingLayer.dataset.parked).toBe("false");
+  });
+
+  it("discards an oversized outgoing session before rendering it parked", () => {
+    enableSessionDomLinger();
+    const sessionRenders: string[] = [];
+    renderNavigationLayoutWithSessionLinger(undefined, {
+      onSessionRender: (parked, sessionId) => {
+        sessionRenders.push(`${sessionId}:${parked ? "parked" : "active"}`);
+      },
+      sessionElementCount: (sessionId) =>
+        sessionId === "session-2" ? 5_001 : 0,
+    });
+
+    fireEvent.click(screen.getByText("Session 2"));
+    expect(screen.getAllByTestId("session-layer")).toHaveLength(2);
+    sessionRenders.length = 0;
+
+    fireEvent.click(
+      within(
+        screen
+          .getAllByTestId("session-layer")
+          .find((layer) => layer.dataset.sessionId === "session-2")!,
+      ).getByText("Session 1"),
+    );
+
+    expect(sessionRenders).not.toContain("session-2:parked");
+    const remainingLayer = screen.getByTestId("session-layer");
+    expect(remainingLayer.dataset.sessionId).toBe("session-1");
+    expect(remainingLayer.dataset.parked).toBe("false");
   });
 
   it("retains one project glossary owner across same-project sessions", () => {

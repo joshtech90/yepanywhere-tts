@@ -2307,7 +2307,7 @@ a.sidebar-nav-item {
 
 .session-messages {
   flex: 1;
-  overflow: clip auto;
+  overflow: auto;
   scrollbar-gutter: stable;
   padding: 1rem;
   padding-inline-end: var(--turn-rail-content-padding-inline-end);
@@ -2603,7 +2603,7 @@ a.sidebar-nav-item {
     grid-area: messages;
     min-width: 0;
     min-height: 0;
-    overflow-x: hidden;
+    overflow-x: auto;
   }
 
   .session-split.session-split-with-aside > .session-input {
@@ -3319,18 +3319,6 @@ a.sidebar-nav-item {
 
 .message-render-row {
   position: relative;
-}
-
-.message-list-offscreen-rendering .message-render-row {
-  /* Experimental only; default off. The browser can skip off-screen layout,
-     but correcting the fallback to a row's real height caused confirmed mobile
-     scroll jumps. See topics/transcript-virtualization.md. */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
-}
-
-.message-list-offscreen-rendering .explored-message-row {
-  contain-intrinsic-size: auto var(--explored-group-intrinsic-height, 120px);
 }
 
 .queued-context-return {
@@ -9950,7 +9938,7 @@ a.sidebar-nav-item {
 
 /* Filtering: inside search panes only matched rows render visible; hints,
    warnings, and grouped sub-rows that are not row-owned stay hidden. */
-.settings-search-pane .settings-item:not(.settings-search-match) {
+.settings-search-pane [data-settings-item]:not(.settings-search-match) {
   display: none;
 }
 
@@ -9961,10 +9949,6 @@ a.sidebar-nav-item {
 }
 
 /* Collapse structures left with no matched row, and whole matchless panes. */
-.settings-search-pane .settings-item-group:not(:has(.settings-search-match)) {
-  display: none;
-}
-
 .settings-search-pane .settings-group:not(:has(.settings-search-match)) {
   display: none;
 }
@@ -15391,10 +15375,6 @@ body:has(.session-page)
   gap: var(--space-2);
   flex-wrap: wrap;
   justify-content: flex-end;
-}
-
-.session-header-viewer-count {
-  flex-shrink: 0;
 }
 
 .session-header-thinking {

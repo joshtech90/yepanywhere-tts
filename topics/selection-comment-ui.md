@@ -31,7 +31,10 @@ exact formatted-source selection and activity-overlay placement landed
 2026-08-14; mobile long-press selection ownership restored 2026-08-15;
 session-file Markdown block clicks and live-drag deferral landed
 2026-08-20; viewer toolbar select-all landed 2026-08-22; collapsed-preview
-selection and live-tail suspension landed 2026-08-23.**
+selection and live-tail suspension landed 2026-08-23; session-file inline
+Comment mode landed 2026-08-25; selection-event coalescing and file-viewer
+reselection landed 2026-08-28; transcript and registered-surface reselection
+landed 2026-08-29.**
 Assistant text blocks can be quoted via selection typing, a floating selection
 `>` action, or per-paragraph `>` circles; the resulting `>` block is inserted
 into the composer and the selected source span is tinted until that quote is
@@ -86,7 +89,11 @@ The early Phase 1 gaps were fixed 2026-06-23, verified in the running app.
   collision-aware local placement. A pointer drag does not render or reposition
   the cluster while the button remains pressed; the final range produces one
   stable placement after release. Presses on the cluster itself remain exempt
-  so its controls can consume their preserved selection snapshot.
+  so its controls can consume their preserved selection snapshot. Non-pointer
+  range-change bursts place the first position immediately, then discard
+  intermediate positions and place at most the latest range once per bounded
+  interval. Resize and scroll bursts follow the same leading/latest cadence
+  instead of queuing one placement for every browser event.
 - **Activity-detail placement uses the selected range — fixed 2026-08-14.**
   For a selection inside a tall expanded Bash/Edit/Read-style detail surface,
   the below/above candidates and fallback-space ranking are anchored to the
@@ -144,7 +151,12 @@ menu.
    semantic rich text, or open a same-project new-session composer. A control
    press preserves a snapshot of the selected source snippets and DOM ranges,
    so the action remains valid when the native highlight collapses during the
-   press.
+   press. The cluster never replays intermediate positions from a burst of
+   selection, resize, or scroll events; it reflects the latest usable range.
+   A primary mouse drag beginning in an existing read-only registered selection
+   clears that old range before the browser chooses its text-drag path, so the
+   press starts a fresh selection. Editable controls retain native selected-text
+   dragging for moving text within the composer or another field.
 3. **Context menu over selected text.** Right-clicking inside a non-empty,
    registered selection opens direct **Copy text**, **Copy source**, **Quote
    reply**, and **New session** rows, omitting actions whose destination is not
@@ -169,14 +181,61 @@ menu.
    highlight text — or right-drag
    to select lines (see the line-select helper below) — to comment on a specific
    sub-range instead of the whole paragraph.
-5. **Rendered session-file block click.** In a session-owned rendered Markdown
-   preview, clicking a paragraph, list item, quote, code block, heading, or
-   table row sends that authored block through the same quote-comment pipeline.
-   The viewer stays open, the visible session composer receives and focuses the
-   quote, and the clicked block gets the ordinary comment tint. Links and other
-   interactive controls retain their own actions. A non-collapsed native text
-   selection wins over the click, so releasing a drag never also quotes the
-   block under the pointer.
+5. **Rendered session-file reply affordances.** A rendered Markdown file in a
+   session viewer uses the same quote-reply button mode as transcript prose:
+   block-only shows the whole-document `>` circle, paragraph-hover reveals one
+   circle per top-level rendered block, and paragraph-always keeps those
+   circles visible. Activating a circle quotes through the same source-aware
+   reply pipeline. Long previews keep circles live only for visible blocks,
+   then follow the viewer scroll so every block receives the same control when
+   reached. Responsive width changes and asynchronous preview enrichment keep
+   those controls aligned without dismissing the viewer.
+   Ordinary primary clicks only focus or select viewer content; neither the
+   paragraph layer nor selection actions may turn that click into a quote or
+   composer focus transfer. Links and other interactive controls retain their
+   own actions. A primary mouse drag that begins inside an existing viewer
+   selection starts a fresh native text selection rather than dragging the old
+   selected text.
+
+### Session-file Comment mode
+
+A private, session-owned textual file modal with a live destination exposes a
+top-bar **Comment** toggle. It is default-off and is absent from standalone,
+public-share, binary, HTML-preview, and diff projections. With Comment off,
+the rendered-file reply affordances above remain the complete click contract.
+
+With Comment on:
+
+- whole-document and paragraph `>` circles are suppressed; ordinary source
+  line clicks open the Source Control inline editor at `path:line` with up to
+  three neighboring lines on either side;
+- selecting rendered or source text opens that editor with the exact
+  source-aware quote and `path:line` or `path:start-end` when the mapping is
+  known. Independently enabled selection-copy, source-copy, rich-copy, and
+  new-session bubbles remain available, while **Quote reply** and
+  type-over-selection quote insertion are suppressed so one selection cannot
+  start two comment workflows;
+- **Cancel** removes the active editor, including an untouched empty editor.
+  Opening a different anchor also discards the prior active editor when it is
+  empty, but retains it as a draft when it has text;
+- `Enter` sends the active nonempty comment immediately to the current session;
+  `Shift+Enter` inserts a newline. This send does not clear, submit, quote,
+  attach, or otherwise consume the main composer state. The editor remains
+  editable during the request; success clears only the submitted snapshot, so
+  text changed while that request was in flight remains as an unsent draft;
+- editor blur saves nonempty drafts in browser-local storage scoped by source,
+  session, project, and file. Moving focus outside the viewer, minimizing or
+  closing it, or turning Comment off sends all remaining nonempty drafts in
+  one turn, in creation order, separated by `---`; and
+- each sent item contains only its location, `>`-quoted source, and the
+  reviewer comment/question. It deliberately omits Source Control review
+  boilerplate and durable review-site metadata. A failed send leaves the draft
+  stored and shows the failure inline so it can be retried.
+
+The editor shell and source-splitting layout are the same components used by
+Source Control comments. Session-file comments intentionally have a smaller
+turn grammar and browser-local lifetime: they are direct session messages, not
+entries in the durable Source Review accumulator.
 
 The **Appearance** rows immediately after `> Reply Buttons` separately control
 selection quote, visible-text copy, source copy, rich copy, and new session.
@@ -233,12 +292,21 @@ The quote block itself:
   `Ctrl/Cmd+A`; a viewer that does not own focus does not intercept it. The
   floating controls mount outside the content-owning render subtree, so their
   appearance and pointer hover must not remount that content or collapse the
-  native selection before an action is reached.
+  native selection before an action is reached. An expanded activity detail
+  retains the content instance captured when it opened until it closes; live
+  transcript/source rerenders neither refresh that detail nor displace a range
+  inside it.
 - While a primary pointer is dragging a selection, selection controls remain
-  absent and do not chase the changing range. Pointer release publishes the
-  completed range once, including for upward drags. Keyboard and programmatic
-  selections still publish from `selectionchange`, and pressing an already
-  visible selection control does not dismiss it before its action fires.
+  absent and do not chase the changing range. After pointer-down clears any
+  prior controls, intermediate `selectionchange` events do no React state work.
+  Pointer release publishes the completed range once, including for upward
+  drags. Keyboard and programmatic selections still publish from
+  `selectionchange`, and pressing an already visible selection control does not
+  dismiss it before its action fires. Resize and scroll events only reposition
+  a still-usable native range; if the browser drops that range without a
+  `selectionchange`, they retain the captured action snapshot. A
+  `selectionchange` that reports no usable range, or an explicit dismissal,
+  owns removal.
 - In a collapsed textual activity preview, a non-collapsed native selection
   wins over click-to-expand. Forward and upward drags both leave the detail
   closed and preserve the selected text for copying. Forming a transcript
@@ -375,10 +443,12 @@ without mutating the DOM, so it does not fight React re-renders or the
 streaming-markdown container swaps inside `TextBlock`.
 
 Robustness is **best-effort by design**: the tint is a reminder of what you
-quoted, not load-bearing. If a re-render or virtualization drops a range it
-re-resolves after the registered source DOM mutates from the anchor descriptor.
-Exact source-offset anchors resolve the original occurrence even when the same
-text appears elsewhere. The source-mode
+quoted, not load-bearing. Each transcript anchor records its render id and its
+registered copy-source index. While that anchor is live, the transcript render
+window retains the owning semantic row as a sparse island; if React replaces
+the source element, the descriptor re-resolves it in the remounted row. Exact
+source-offset anchors resolve the original occurrence even when the same text
+appears elsewhere. The source-mode
 `<pre className="text-block-source">` case is trivial — wrap the offset range
 directly.
 

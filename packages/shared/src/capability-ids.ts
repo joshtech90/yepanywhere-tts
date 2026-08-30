@@ -306,6 +306,36 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "git-file-revision",
     introducedIn: "0.7.2",
   },
+  codexStreamDurableIdAlignment: {
+    id: 48,
+    direction: "server",
+    name: "codex-stream-durable-id-alignment",
+    introducedIn: "0.7.2",
+  },
+  cacheMissBillingExpectedExpiry: {
+    id: 49,
+    direction: "server",
+    name: "cache-miss-billing-expected-expiry",
+    introducedIn: "0.7.2",
+  },
+  attachmentOnlySessionMessages: {
+    id: 50,
+    direction: "server",
+    name: "attachment-only-session-messages",
+    introducedIn: "0.7.2",
+  },
+  publicFileShares: {
+    id: 51,
+    direction: "server",
+    name: "public-file-shares",
+    introducedIn: "0.7.2",
+  },
+  sessionSandboxNetworkFirewall: {
+    id: 52,
+    direction: "server",
+    name: "session-sandbox-network-firewall",
+    introducedIn: "0.7.2",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

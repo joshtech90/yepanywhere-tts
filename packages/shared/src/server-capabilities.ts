@@ -241,6 +241,41 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients can outpace source and installed servers whose management surface supports revocation but not exact live-link freezing.",
     },
   },
+  publicFileShares: {
+    id: CAPABILITY_ID_ALLOCATIONS.publicFileShares.id,
+    name: "public-file-shares",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server creates, lists, and revokes live bearer-link grants for one project file and its bounded render assets.",
+    clientFallback:
+      "Hide file-share controls and make no public-file-share request.",
+    serverContract: {
+      routes: [
+        "GET /api/public-file-shares",
+        "POST /api/public-file-shares",
+        "DELETE /api/public-file-shares/:shareId",
+      ],
+      routeModules: ["packages/server/src/routes/public-file-shares.ts"],
+      requestFields: [
+        "publicFileShare.projectId",
+        "publicFileShare.path",
+        "publicFileShare.title",
+      ],
+      responseFields: [
+        "publicFileShares.items",
+        "publicFileShare.url",
+        "publicFileShare.shareId",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers that have session shares but no standalone file-grant registry.",
+    },
+  },
   glossaryTooltips: {
     id: CAPABILITY_ID_ALLOCATIONS.glossaryTooltips.id,
     name: "glossary-tooltips",
@@ -384,6 +419,30 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Hosted clients may outpace installed servers, and older servers do not expose the Codex reasoning-summary policy.",
+    },
+  },
+  codexStreamDurableIdAlignment: {
+    id: CAPABILITY_ID_ALLOCATIONS.codexStreamDurableIdAlignment.id,
+    name: "codex-stream-durable-id-alignment",
+    kind: "permanent",
+    area: "providers",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server aligns Codex live and durable transcript rows on provider or client message identity when that identity exists.",
+    clientFallback:
+      "Use the legacy Codex non-tool content/timestamp reconciliation, steer pairing, and timestamp-watermark replay suppression.",
+    serverContract: {
+      responseFields: [
+        "sessionDetail.messages[].uuid",
+        "sessionMessage.message.uuid",
+      ],
+      events: ["session-message"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers whose Codex stream and durable transcript ids do not align.",
     },
   },
   toolResultMediaPreservationPolicy: {
@@ -912,6 +971,58 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Older servers interpret recentActivityMinutes as a lower no-alert window, so the upper cutoff requires an additive field and permanent client gate.",
+    },
+  },
+  cacheMissBillingExpectedExpiry: {
+    id: CAPABILITY_ID_ALLOCATIONS.cacheMissBillingExpectedExpiry.id,
+    name: "cache-miss-billing-expected-expiry",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server records post-freshness cache reads and input costs as expected expiry evidence behind an opt-in query and live event.",
+    clientFallback:
+      "Hide the expected-expiry evidence toggle, omit the query field, and listen only for ordinary cache-billing events.",
+    serverContract: {
+      routes: ["GET /api/settings/cache-miss-billing/events"],
+      requestFields: ["includeExpectedExpiry"],
+      responseFields: [
+        "events[].expectedInputCost.freshEnough",
+        "events[].outcome",
+      ],
+      events: ["cache-miss-billing-expected-expiry"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older clients must not receive expected long-idle evidence through the legacy response or alert-oriented live event.",
+    },
+  },
+  attachmentOnlySessionMessages: {
+    id: CAPABILITY_ID_ALLOCATIONS.attachmentOnlySessionMessages.id,
+    name: "attachment-only-session-messages",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Direct session start, resume, and queue routes accept an empty text field when the submitted message contains an uploaded attachment.",
+    clientFallback:
+      "Keep the attachment draft and require text instead of sending an empty-message request to an older server.",
+    serverContract: {
+      routes: [
+        "POST /api/projects/:projectId/sessions",
+        "POST /api/sessions",
+        "POST /api/projects/:projectId/sessions/:sessionId/resume",
+        "POST /api/sessions/:sessionId/messages",
+      ],
+      requestFields: ["message", "attachments"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers reject an empty message before inspecting attachments, so current clients need a permanent gate for attachment-only submission.",
     },
   },
   gitLiveWorktreeSetting: {
@@ -1524,6 +1635,56 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients need to distinguish protocol-aware but unsupported hosts and intermediate development servers from hosts with a verified usable backend.",
     },
   },
+  sessionSandboxNetworkFirewall: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionSandboxNetworkFirewall.id,
+    name: "session-sandbox-network-firewall",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.7.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server accepts, persists, inherits, enforces, and reports the project-write session network firewall selection.",
+    clientFallback:
+      "Hide all session sandbox controls and omit both sandbox launch fields.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "POST /api/projects/:projectId/sessions",
+        "POST /api/projects/:projectId/sessions/create",
+        "POST /api/projects/:projectId/queue",
+        "POST /api/projects/:projectId/sessions/:sessionId/resume",
+        "POST /api/projects/:projectId/sessions/:sessionId/reactivate",
+        "POST /api/projects/:projectId/sessions/:sessionId/recap",
+        "POST /api/projects/:projectId/sessions/:sessionId/restart",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork",
+        "POST /api/projects/:projectId/sessions/:sessionId/retitle",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork-summary",
+        "POST /api/sessions",
+        "POST /api/sessions/create",
+      ],
+      requestFields: [
+        "settings.newSessionDefaults.sandboxNetworkFirewall",
+        "sessionStart.sandboxNetworkFirewall",
+        "sessionCreate.sandboxNetworkFirewall",
+        "projectQueue.target.sandboxNetworkFirewall",
+        "sessionRestart.sandboxNetworkFirewall",
+      ],
+      responseFields: [
+        "settings.newSessionDefaults.sandboxNetworkFirewall",
+        "sessionStart.sandboxEnforcement.networkFirewall",
+        "sessionResume.sandboxEnforcement.networkFirewall",
+        "sessionReactivate.sandboxEnforcement.networkFirewall",
+        "sessionRestart.sandboxEnforcement.networkFirewall",
+        "process.sandboxEnforcement.networkFirewall",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Self-hosted clients and servers can remain version-skewed indefinitely, and omission on older servers cannot prove this security boundary.",
+    },
+  },
   projectQueue: {
     name: "projectQueue",
     kind: "permanent",
@@ -1908,12 +2069,16 @@ export const PUBLIC_SHARE_MANAGEMENT_CAPABILITY =
   SERVER_CAPABILITIES.publicShareManagement.name;
 export const PUBLIC_SHARE_MANAGEMENT_FREEZE_CAPABILITY =
   SERVER_CAPABILITIES.publicShareManagementFreeze.name;
+export const PUBLIC_FILE_SHARES_CAPABILITY =
+  SERVER_CAPABILITIES.publicFileShares.name;
 export const IDLE_REAP_HOURS_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.idleReapHoursSetting.name;
 export const SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.subagentMaxDepthSetting.name;
 export const CODEX_REASONING_SUMMARY_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.codexReasoningSummarySetting.name;
+export const CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY =
+  SERVER_CAPABILITIES.codexStreamDurableIdAlignment.name;
 export const GLOSSARY_TOOLTIPS_CAPABILITY =
   SERVER_CAPABILITIES.glossaryTooltips.name;
 export const TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY =
@@ -1964,6 +2129,10 @@ export const GIT_LIVE_WORKTREE_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.gitLiveWorktreeSetting.name;
 export const CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY =
   SERVER_CAPABILITIES.cacheMissBillingIgnoreAfter.name;
+export const CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY =
+  SERVER_CAPABILITIES.cacheMissBillingExpectedExpiry.name;
+export const ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY =
+  SERVER_CAPABILITIES.attachmentOnlySessionMessages.name;
 export const GIT_INCOMING_COMMITS_CAPABILITY =
   SERVER_CAPABILITIES.gitIncomingCommits.name;
 export const GIT_SOURCE_REVIEW_CAPABILITY =
@@ -2025,6 +2194,9 @@ export const SESSION_SANDBOXING_CAPABILITY =
 
 export const SESSION_SANDBOXING_STATUS_CAPABILITY =
   SERVER_CAPABILITIES.sessionSandboxingStatus.name;
+
+export const SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY =
+  SERVER_CAPABILITIES.sessionSandboxNetworkFirewall.name;
 
 export const SESSION_FORK_TURN_INTENTS_CAPABILITY =
   SERVER_CAPABILITIES.sessionForkTurnIntents.name;

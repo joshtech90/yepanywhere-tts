@@ -65,8 +65,13 @@ the control immediately closes the tab-local lease, clears its live warning,
 and sends a best-effort server revocation; server confirmation is not a
 prerequisite for the client to stop polling or accepting commands. The control
 remains visible while active even if its stored toolbar preference changes.
-Its timer performs the same local close at expiry, and navigation to a
-different YA session closes it immediately as well. A response from a poll
+Local close also invalidates a pending reload-handoff lock acquisition. A late
+lock result is released without restoring controller authority,
+instrumentation, warning state, or polling.
+Its timer performs the same local close at expiry. Selecting another YA session
+in the same tab preserves the active control, controller authority, original
+expiry, instrumentation, and poll; the lease is tab-scoped rather than owned by
+the session toolbar instance that happens to render it. A response from a poll
 that was already in flight at local close is ignored. A page hide suspends the
 tab's poll and instrumentation without revoking the lease; a new enable action
 creates new secrets, and one tab's grant never identifies or authorizes another
@@ -76,10 +81,13 @@ The tab keeps a versioned session-storage continuation marker containing the
 controller factor, source identity, session identity, and expiry, but not the
 agent's grant secret. Enabling fails closed when that marker cannot be stored
 or the browser cannot provide an exclusive page lock for the lease. Only a
-browser navigation identified as a reload may restore the marker; a duplicated
-or newly opened tab discards its cloned marker. The restoring page must also
-acquire the lease's exclusive page lock before it receives the controller
-factor or begins polling, so two live page controllers cannot share authority.
+native browser reload or the active control's matching one-shot reload intent
+may restore the marker; a duplicated or newly opened tab discards its cloned
+marker. The restoring page must also acquire the lease's exclusive page lock
+before it receives the controller factor or begins polling, so two live page
+controllers cannot share authority. Concurrent restore requests in one page
+share the same in-flight lock acquisition rather than competing with each
+other.
 After a browser reload, the client immediately restores the red active warning,
 reinstalls collection, and resumes the existing lease against its originating
 source. The lease id, grant, and original expiry remain unchanged; reload never
@@ -328,9 +336,11 @@ weaken or ambiguously redefine the deliberately full-access v1 contract.
 - A compatible local hosted session retained across Hono replacement publishes
   the provider-host boot's two allowlisted debugging values to later Bash tool
   shells, while its launch-time factor remains valid through the replacement.
-- Manual close, expiry, or session navigation immediately removes the live
-  warning and prevents the tab from executing another command, even while
-  best-effort server revocation is unresolved or an earlier poll returns late.
+- Manual close or expiry immediately removes the live warning and prevents the
+  tab from executing another command, even while best-effort server revocation
+  is unresolved or an earlier poll returns late.
+- Sidebar selection between YA sessions in one tab preserves the active warning,
+  lease id, original expiry, and command connection.
 - Explicitly confirmed revoke, local close, expiry, or server restart prevents
   further grant use.
 - Reload keeps the same lease id and original expiry, resumes its poll without

@@ -1,9 +1,8 @@
-import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
+import { Readable } from "node:stream";
 import { parseLineColumn } from "@yep-anywhere/shared";
 import { Hono } from "hono";
-import { stream } from "hono/streaming";
 import { renderMarkdownFilePreview } from "../augments/markdown-file-preview.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import {
@@ -11,12 +10,21 @@ import {
   LOCAL_FILE_CONTENT_TYPES,
   LOCAL_MEDIA_EXTENSIONS,
 } from "./local-resource-policy.js";
+import {
+  createMutableFileCacheMetadata,
+  createNotModifiedResponse,
+  isMutableFileNotModified,
+  mutableFileCacheHeaders,
+  type MutableFileOpener,
+  openMutableFileSnapshot,
+} from "./mutable-file-cache.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
 
 interface LocalFileDeps {
   allowedPaths: string[] | (() => string[]);
   scanner?: Pick<ProjectScanner, "listProjects">;
   includeProjects?: () => boolean;
+  openFile?: MutableFileOpener;
 }
 
 interface LocalFileReference {
@@ -37,15 +45,6 @@ function getLocalFileContentType(filePath: string): string | null {
     return null;
   }
   return LOCAL_FILE_CONTENT_TYPES[ext] ?? "text/plain; charset=utf-8";
-}
-
-function applyHeaders(
-  setHeader: (name: string, value: string) => void,
-  headers: Headers,
-): void {
-  headers.forEach((value, name) => {
-    setHeader(name, value);
-  });
 }
 
 function escapeHtml(text: string): string {
@@ -451,12 +450,12 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
       if (!resolved.ok) {
         return c.json({ error: resolved.error }, resolved.status);
       }
-      const { resolvedPath, stats } = resolved.file;
-
-      if (
+      const { resolvedPath } = resolved.file;
+      const renderMarkdown =
         (c.req.query("render") === "1" || requested.hadInlineLocation) &&
-        isMarkdownPath(resolvedPath)
-      ) {
+        isMarkdownPath(resolvedPath);
+
+      if (renderMarkdown) {
         const markdown = await readFile(resolvedPath, "utf-8");
         const requestedRange =
           requested.lineNumber === undefined
@@ -484,7 +483,7 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
 
         c.header("Content-Type", "text/html; charset=utf-8");
         c.header("Content-Disposition", "inline");
-        c.header("Cache-Control", "private, max-age=60");
+        c.header("Cache-Control", "private, no-store");
         c.header("X-Content-Type-Options", "nosniff");
         return c.html(
           renderMarkdownDocument(
@@ -495,25 +494,39 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
         );
       }
 
-      applyHeaders(
-        (name, value) => c.header(name, value),
-        createUntrustedFileResponseHeaders({
-          baseHeaders: {
-            "Cache-Control": "private, max-age=60",
-            "Content-Length": stats.size.toString(),
-          },
-          contentType,
-          disposition: "inline",
-          filePath: resolvedPath,
-        }),
+      const snapshot = await openMutableFileSnapshot(
+        resolvedPath,
+        deps.openFile,
       );
-
-      return stream(c, async (s) => {
-        const readable = createReadStream(resolvedPath);
-        for await (const chunk of readable) {
-          await s.write(chunk);
-        }
+      if (!snapshot) {
+        return c.json({ error: "Path is not a file" }, 400);
+      }
+      let fileHandle: FileHandle | undefined = snapshot.handle;
+      const cacheMetadata = createMutableFileCacheMetadata(snapshot.stats);
+      const headers = createUntrustedFileResponseHeaders({
+        baseHeaders: {
+          ...mutableFileCacheHeaders(cacheMetadata),
+          "Content-Length": snapshot.stats.size.toString(),
+        },
+        contentType,
+        disposition: "inline",
+        filePath: resolvedPath,
       });
+      try {
+        if (isMutableFileNotModified(c.req.raw.headers, cacheMetadata)) {
+          return createNotModifiedResponse(headers);
+        }
+        const stream = fileHandle.createReadStream({
+          autoClose: true,
+          start: 0,
+        });
+        const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+        const response = new Response(body, { headers });
+        fileHandle = undefined;
+        return response;
+      } finally {
+        await fileHandle?.close();
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return c.json({ error: "File not found" }, 404);

@@ -19,6 +19,7 @@ import { getSessionSandboxSettingsError } from "../session-sandbox.js";
 import type { RecoveredSessionLaunchSettings } from "../sessions/types.js";
 import type { PermissionMode } from "../sdk/types.js";
 import type { Process } from "./Process.js";
+import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 
 /** Launch and live configuration settings for a session. */
 export interface ModelSettings {
@@ -66,6 +67,8 @@ export interface ModelSettings {
   claudeAutoCompactPercentOverride?: number;
   /** Settled YA host filesystem confinement for this session. */
   sandboxLevel?: SessionSandboxLevel;
+  /** Public-only egress boundary; absent means on for project-write. */
+  sandboxNetworkFirewall?: boolean;
   /** Opaque project-private provider-state key restored from metadata. */
   sandboxStateKey?: string;
 }
@@ -442,11 +445,7 @@ export class SessionActivationCoordinator {
     }
     if (Object.hasOwn(updates, "sandboxLevel")) {
       await service.setSessionSandbox(process.sessionId, {
-        level: process.sandboxEnforcement?.effective ?? "none",
-        stateKey: process.sandboxStateKey,
-        projectPath: process.sandboxProjectPath ?? process.projectPath,
-        projectId: process.projectId,
-        provider: process.provider,
+        ...persistedSandboxFromProcess(process),
       });
       wroteMetadata = true;
     }
@@ -806,6 +805,9 @@ export class SessionActivationCoordinator {
       helperSideModel: updates.helperSideModel ?? process.helperSideModel,
       sandboxLevel:
         updates.sandboxLevel ?? process.sandboxEnforcement?.effective,
+      sandboxNetworkFirewall:
+        updates.sandboxNetworkFirewall ??
+        process.sandboxEnforcement?.networkFirewall,
       sandboxStateKey: updates.sandboxStateKey ?? process.sandboxStateKey,
     };
   }
@@ -839,6 +841,11 @@ export class SessionActivationCoordinator {
     const desiredSandboxStateKey = Object.hasOwn(updates, "sandboxStateKey")
       ? updates.sandboxStateKey
       : process.sandboxStateKey;
+    const desiredSandboxNetworkFirewall =
+      desiredSandboxLevel === "project-write" &&
+      (Object.hasOwn(updates, "sandboxNetworkFirewall")
+        ? updates.sandboxNetworkFirewall !== false
+        : process.sandboxEnforcement?.networkFirewall !== false);
     const desiredPromptSuggestionMode = Object.hasOwn(
       updates,
       "promptSuggestionMode",
@@ -871,7 +878,10 @@ export class SessionActivationCoordinator {
         (process.sandboxEnforcement?.effective ?? "none") ||
       (desiredSandboxLevel === "project-write" &&
         desiredSandboxStateKey !== undefined &&
-        desiredSandboxStateKey !== process.sandboxStateKey)
+        desiredSandboxStateKey !== process.sandboxStateKey) ||
+      (desiredSandboxLevel === "project-write" &&
+        desiredSandboxNetworkFirewall !==
+          (process.sandboxEnforcement?.networkFirewall !== false))
         ? "sandbox"
         : undefined,
       desiredPromptSuggestionMode !== process.promptSuggestionMode
@@ -902,6 +912,7 @@ export class SessionActivationCoordinator {
           recapAfterSeconds: desiredRecapAfterSeconds,
           helperSideModel: desiredHelperSideModel,
           sandboxLevel: desiredSandboxLevel,
+          sandboxNetworkFirewall: desiredSandboxNetworkFirewall,
           sandboxStateKey: desiredSandboxStateKey,
         },
       );

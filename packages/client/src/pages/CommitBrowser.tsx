@@ -18,6 +18,7 @@ import { useCommitReadWatermark } from "../hooks/useCommitReadWatermark";
 import { useProjectReviewComments } from "../hooks/useProjectReviewComments";
 import {
   isEditableKeyboardTarget,
+  suppressSourceKeyboardTooltips,
   useSourceSearchShortcut,
 } from "../hooks/useSourceKeyboard";
 import { CommitFilesPane, formatCommitDateTime } from "./CommitFilesPane";
@@ -48,6 +49,11 @@ export function CommitBrowser({
   isWideScreen,
   supportsUntrackedCache = false,
   untrackedFiles = null,
+  untrackedLoading = false,
+  untrackedError = null,
+  inventoryPending = false,
+  inventoryLoading = false,
+  inventoryError = null,
   initialSha,
   initialPath,
   initialBlame = false,
@@ -63,6 +69,7 @@ export function CommitBrowser({
   ignoreWhitespace = false,
   onToggleIgnoreWhitespace = NOOP,
   onProjectionUnavailable = NOOP,
+  onProjectionRequestFailure = NOOP,
   t,
 }: {
   projectId: string;
@@ -71,6 +78,11 @@ export function CommitBrowser({
   isWideScreen: boolean;
   supportsUntrackedCache?: boolean;
   untrackedFiles?: GitUntrackedFileListResult | null;
+  untrackedLoading?: boolean;
+  untrackedError?: Error | null;
+  inventoryPending?: boolean;
+  inventoryLoading?: boolean;
+  inventoryError?: Error | null;
   /** Direct commit selection, e.g. from an asynchronously populated blame hash. */
   initialSha?: string;
   /** Direct file selection within the initial commit. */
@@ -94,6 +106,7 @@ export function CommitBrowser({
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
   onProjectionUnavailable?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
 }) {
   const diffPreviewRef = useRef<GitDiffPreviewHandle>(null);
@@ -103,6 +116,12 @@ export function CommitBrowser({
   const mobileListScrollTopRef = useRef(0);
   const restoreMobileListScrollRef = useRef(false);
   const [showBlame, setShowBlame] = useState(initialBlame);
+  const [fileFocusRequest, setFileFocusRequest] = useState(0);
+  const [workingTreeFileFocusRequest, setWorkingTreeFileFocusRequest] =
+    useState(0);
+  const [pendingFileListCommit, setPendingFileListCommit] = useState<
+    string | null
+  >(null);
   useEffect(() => {
     if (initialBlame) setShowBlame(true);
   }, [initialBlame]);
@@ -153,6 +172,7 @@ export function CommitBrowser({
     initialPath,
     supportsInclusiveToHead,
     onProjectionUnavailable,
+    onProjectionRequestFailure,
     t,
   });
 
@@ -206,8 +226,11 @@ export function CommitBrowser({
     return states;
   }, [siteStates]);
 
-  const openRevision = useCallback(
-    (key: string) => {
+  const selectRevision = useCallback(
+    (key: string, enterFileList: boolean) => {
+      setPendingFileListCommit(
+        enterFileList && key !== WORKING_TREE_KEY ? key : null,
+      );
       if (!isWideScreen) {
         const scroller = browserRef.current?.closest<HTMLElement>(
           ".page-scroll-container",
@@ -218,6 +241,26 @@ export function CommitBrowser({
       onSelectRevision?.(key === WORKING_TREE_KEY ? null : key);
     },
     [isWideScreen, onSelectRevision, setSelectedKey],
+  );
+  const openRevision = useCallback(
+    (key: string) => selectRevision(key, false),
+    [selectRevision],
+  );
+  const enterRevision = useCallback(
+    (key: string) => {
+      selectRevision(key, true);
+      if (key === WORKING_TREE_KEY) {
+        setWorkingTreeFileFocusRequest((current) => current + 1);
+      }
+    },
+    [selectRevision],
+  );
+  const focusRevision = useCallback(
+    (key: string) => {
+      setPendingFileListCommit(null);
+      setSelectedKey(key);
+    },
+    [setSelectedKey],
   );
 
   const blameRevision =
@@ -277,7 +320,6 @@ export function CommitBrowser({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
-        event.key !== "Escape" ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
@@ -286,6 +328,46 @@ export function CommitBrowser({
       ) {
         return;
       }
+      if (
+        isWideScreen &&
+        !event.shiftKey &&
+        selectedSha &&
+        (event.key === "[" || event.key === "]")
+      ) {
+        const files = selectedFiles.filter((file) => !file.path.endsWith("/"));
+        const currentIndex = messageView
+          ? -1
+          : files.findIndex(
+              (file) =>
+                file.path === selectedPath || file.origPath === selectedPath,
+            );
+        const nextIndex =
+          currentIndex < 0 ? 0 : currentIndex + (event.key === "]" ? 1 : -1);
+        const nextFile = files[nextIndex];
+        if (!nextFile) return;
+        event.preventDefault();
+        suppressSourceKeyboardTooltips();
+        setShowBlame(false);
+        setSelectedPath(nextFile.path);
+        setMessageView(false);
+        setFileFocusRequest((current) => current + 1);
+        return;
+      }
+      if (
+        isWideScreen &&
+        !event.shiftKey &&
+        !messageView &&
+        !showBlame &&
+        (event.key === "PageDown" || event.key === "PageUp")
+      ) {
+        const preview = diffPreviewRef.current;
+        if (!preview) return;
+        event.preventDefault();
+        suppressSourceKeyboardTooltips();
+        preview.scrollByPage(event.key === "PageDown" ? 1 : -1);
+        return;
+      }
+      if (event.key !== "Escape") return;
       if (!isWideScreen && selectedKey) {
         event.preventDefault();
         handleMobileBack();
@@ -302,9 +384,43 @@ export function CommitBrowser({
   }, [
     handleMobileBack,
     isWideScreen,
+    messageView,
     searchQuery,
+    selectedFiles,
     selectedKey,
+    selectedPath,
+    selectedSha,
+    setMessageView,
+    setSelectedPath,
     setSearchQuery,
+    showBlame,
+  ]);
+
+  useEffect(() => {
+    if (
+      !pendingFileListCommit ||
+      pendingFileListCommit !== selectedSha ||
+      loadingDetail ||
+      !detail
+    ) {
+      return;
+    }
+    const firstFile = selectedFiles.find((file) => !file.path.endsWith("/"));
+    setPendingFileListCommit(null);
+    if (!firstFile) return;
+    suppressSourceKeyboardTooltips();
+    setShowBlame(false);
+    setSelectedPath(firstFile.path);
+    setMessageView(false);
+    setFileFocusRequest((current) => current + 1);
+  }, [
+    detail,
+    loadingDetail,
+    pendingFileListCommit,
+    selectedFiles,
+    selectedSha,
+    setMessageView,
+    setSelectedPath,
   ]);
 
   useLayoutEffect(() => {
@@ -362,10 +478,11 @@ export function CommitBrowser({
             onSearchQueryChange={setSearchQuery}
             onSearchIndexRequested={() => setSearchIndexRequested(true)}
             onOpenRevision={openRevision}
+            onEnterRevision={enterRevision}
             revisionHref={(key) =>
               revisionHref(key === WORKING_TREE_KEY ? null : key)
             }
-            onFocusRevision={setSelectedKey}
+            onFocusRevision={focusRevision}
             onLoadMore={() => {
               void loadMore();
             }}
@@ -384,7 +501,13 @@ export function CommitBrowser({
             isWideScreen={isWideScreen}
             supportsUntrackedCache={supportsUntrackedCache}
             untrackedFiles={untrackedFiles}
+            untrackedLoading={untrackedLoading}
+            untrackedError={untrackedError}
+            inventoryPending={inventoryPending}
+            inventoryLoading={inventoryLoading}
+            inventoryError={inventoryError}
             embeddedInHistory
+            fileFocusRequest={workingTreeFileFocusRequest}
             onBackToRevisions={
               !showRevisionPane
                 ? onBrowseHistory
@@ -424,6 +547,7 @@ export function CommitBrowser({
             messageView={messageView}
             selectedFiles={selectedFiles}
             selectedPath={selectedPath}
+            fileFocusRequest={fileFocusRequest}
             fileCommentCount={fileCommentCount}
             reviewStatesByPath={reviewStatesByPath}
             revisionNavigation={
@@ -454,6 +578,9 @@ export function CommitBrowser({
               setShowBlame(false);
               setMessageView(true);
             }}
+            onPageDiff={(direction) =>
+              diffPreviewRef.current?.scrollByPage(direction)
+            }
             onFocusFile={(file) => {
               setSelectedPath(file.path);
               setMessageView(false);

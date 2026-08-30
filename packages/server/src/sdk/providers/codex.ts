@@ -50,6 +50,7 @@ import {
 import { findCodexCliPath, getCodexCliVersion } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
+import { stripYaControlPlaneCredentials } from "./env-filter.js";
 import type {
   ProviderActivitySnapshot,
   ProviderCommandResult,
@@ -89,6 +90,8 @@ import type {
   ToolRequestUserInputResponse,
   TurnInterruptParams,
   TurnInterruptResponse,
+  TurnSettingsUpdateParams,
+  TurnSettingsUpdateResponse,
   TurnStartParams,
   TurnStartResponse,
   TurnSteerParams,
@@ -128,6 +131,7 @@ import {
   asCodexTurnPlanUpdatedNotification,
   isCodexLiveDeltaNotificationMethod,
   isCodexLiveDeltaSuppressionEnabled,
+  readCodexTurnErrorDetail,
 } from "./codex-notification-guards.js";
 import {
   captureCodexSummaryTextFromNotification,
@@ -350,6 +354,13 @@ interface JsonRpcNotification {
   params?: unknown;
 }
 
+interface CodexNotificationReceipt {
+  sequence: number;
+  receivedAtMs: number;
+  queuedAhead: number;
+  source: "provider" | "synthetic";
+}
+
 interface JsonRpcServerRequest extends JsonRpcNotification {
   id: JsonRpcId;
 }
@@ -365,6 +376,7 @@ interface TokenUsageSnapshot {
 interface CodexTurnRuntimeState {
   threadId: string;
   resolvedModel: string;
+  turnModelOverride: string | null;
   latestTokenUsage?: TokenUsageSnapshot;
   activeTurnId: string | null;
   activePermissionMode: PermissionMode;
@@ -399,6 +411,25 @@ function getCodexNotificationTurnId(
   // produced for that live turn. Keeping this structural avoids silently
   // missing a newly added item/delta notification method.
   return typeof params.turnId === "string" ? params.turnId : null;
+}
+
+function getCodexNotificationTurnStartedAt(
+  notification: JsonRpcNotification,
+): number | null {
+  if (
+    (notification.method !== "turn/started" &&
+      notification.method !== "turn/completed") ||
+    !notification.params ||
+    typeof notification.params !== "object"
+  ) {
+    return null;
+  }
+  const turn = (notification.params as Record<string, unknown>).turn;
+  if (!turn || typeof turn !== "object") return null;
+  const startedAt = (turn as Record<string, unknown>).startedAt;
+  return typeof startedAt === "number" && Number.isFinite(startedAt)
+    ? startedAt
+    : null;
 }
 
 function getCodexActiveTurnMismatchId(error: unknown): string | null {
@@ -597,6 +628,13 @@ type NormalizedThreadItem =
       content_items?: unknown[] | null;
       success?: boolean | null;
     }
+  | {
+      id: string;
+      type: "function_call_output";
+      name: string;
+      namespace?: string | null;
+      output: unknown;
+    }
   | { id: string; type: "web_search"; query: string }
   | {
       id: string;
@@ -629,6 +667,24 @@ export interface CodexProviderConfig {
   installationCoordinator?: ProviderInstallationCoordinator;
   /** Overload retry timer (injectable for deterministic tests). */
   overloadRetryWait?: CodexOverloadRetryWait;
+  /** Target-local Codex state root for an isolated managed session. */
+  codexHome?: string;
+  /** In-memory ChatGPT subscription projection owned by a host application. */
+  externalChatgptAuth?: CodexExternalChatgptAuth;
+}
+
+export interface CodexExternalChatgptAuthProjection {
+  accessToken: string;
+  chatgptAccountId: string;
+  chatgptPlanType: string | null;
+}
+
+export interface CodexExternalChatgptAuth {
+  initialProjection: CodexExternalChatgptAuthProjection;
+  refresh: (request: {
+    reason: string;
+    previousAccountId: string;
+  }) => Promise<CodexExternalChatgptAuthProjection>;
 }
 
 class AsyncQueue<T> {
@@ -640,6 +696,10 @@ class AsyncQueue<T> {
     onAbort?: () => void;
   }> = [];
   private closedError: Error | null = null;
+
+  get size(): number {
+    return this.items.length;
+  }
 
   push(item: T): void {
     if (this.closedError) return;
@@ -710,6 +770,11 @@ class CodexAppServerClient {
   private process: ChildProcess | null = null;
   private stdoutBuffer = "";
   private closePromise: Promise<void> | null = null;
+  private notificationReceiptSequence = 0;
+  private readonly notificationReceipts = new WeakMap<
+    JsonRpcNotification,
+    CodexNotificationReceipt
+  >();
 
   /** OS PID of the spawned app-server child process */
   get pid(): number | undefined {
@@ -748,6 +813,16 @@ class CodexAppServerClient {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  get lastNotificationReceiptSequence(): number {
+    return this.notificationReceiptSequence;
+  }
+
+  getNotificationReceipt(
+    notification: JsonRpcNotification,
+  ): CodexNotificationReceipt | null {
+    return this.notificationReceipts.get(notification) ?? null;
   }
 
   setServerRequestHandler(handler: AppServerRequestHandler): void {
@@ -869,7 +944,7 @@ class CodexAppServerClient {
       }
 
       this.recordRawProviderEvent(`codex:notification:${method}`);
-      this.notifications.push(notification);
+      this.enqueueNotification(notification, "provider");
       return;
     }
 
@@ -970,11 +1045,25 @@ class CodexAppServerClient {
   }
 
   injectNotification(notification: JsonRpcNotification): void {
-    this.notifications.push(notification);
+    this.enqueueNotification(notification, "synthetic");
   }
 
   async nextNotification(signal?: AbortSignal): Promise<JsonRpcNotification> {
     return await this.notifications.shift(signal);
+  }
+
+  private enqueueNotification(
+    notification: JsonRpcNotification,
+    source: CodexNotificationReceipt["source"],
+  ): void {
+    const receipt = {
+      sequence: ++this.notificationReceiptSequence,
+      receivedAtMs: Date.now(),
+      queuedAhead: this.notifications.size,
+      source,
+    } satisfies CodexNotificationReceipt;
+    this.notificationReceipts.set(notification, receipt);
+    this.notifications.push(notification);
   }
 
   async close(): Promise<void> {
@@ -1007,14 +1096,17 @@ class CodexAppServerClient {
     this.pendingRequests.clear();
 
     // Emit a terminal error notification so consumers can surface it.
-    this.notifications.push({
-      method: "error",
-      params: {
-        error: { message: error.message },
-        willRetry: false,
-        codexProcessExit: true,
+    this.enqueueNotification(
+      {
+        method: "error",
+        params: {
+          error: { message: error.message },
+          willRetry: false,
+          codexProcessExit: true,
+        },
       },
-    });
+      "synthetic",
+    );
     this.notifications.close(error);
     this.process = null;
   }
@@ -1064,6 +1156,11 @@ export class CodexProvider implements AgentProvider {
     DEFAULT_SUBAGENT_MAX_DEPTH;
 
   constructor(config: CodexProviderConfig = {}) {
+    if (config.externalChatgptAuth && (config.apiKey || config.baseUrl)) {
+      throw new Error(
+        "Managed Codex external authentication cannot use API key or endpoint overrides",
+      );
+    }
     this.config = config;
     this.installationCoordinator =
       config.installationCoordinator ?? providerInstallationCoordinator;
@@ -1133,7 +1230,7 @@ export class CodexProvider implements AgentProvider {
    * Build environment overrides for Codex subprocesses.
    */
   private getCodexEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const env = stripYaControlPlaneCredentials(process.env);
     delete env.YEP_SESSION_WAKE_TOKEN;
     delete env.YEP_SESSION_WAKE_URL;
     if (this.config.baseUrl) {
@@ -1141,6 +1238,15 @@ export class CodexProvider implements AgentProvider {
     }
     if (this.config.apiKey) {
       env.OPENAI_API_KEY = this.config.apiKey;
+    }
+    if (this.config.externalChatgptAuth) {
+      delete env.OPENAI_API_KEY;
+      delete env.CODEX_API_KEY;
+      delete env.CODEX_ACCESS_TOKEN;
+      delete env.OPENAI_BASE_URL;
+    }
+    if (this.config.codexHome) {
+      env.CODEX_HOME = this.config.codexHome;
     }
     return env;
   }
@@ -1539,6 +1645,7 @@ export class CodexProvider implements AgentProvider {
     const runtimeState: CodexTurnRuntimeState = {
       threadId: options.resumeSessionId ?? "",
       resolvedModel: options.model ?? "default",
+      turnModelOverride: options.model ?? null,
       activeTurnId: null,
       activePermissionMode: this.normalizePermissionMode(
         options.permissionMode,
@@ -1597,6 +1704,30 @@ export class CodexProvider implements AgentProvider {
       }
     })();
 
+    const updateActiveTurnSettings = async (
+      settings: Pick<TurnSettingsUpdateParams, "model" | "effort">,
+    ): Promise<void> => {
+      const client = activeClient;
+      const threadId = runtimeState.threadId;
+      const turnId = runtimeState.activeTurnId;
+      if (!client || !threadId || !turnId) return;
+
+      const response = await client.request<TurnSettingsUpdateResponse>(
+        "turn/settings/update",
+        {
+          threadId,
+          turnId,
+          ...settings,
+        } satisfies TurnSettingsUpdateParams,
+      );
+      if (response.status === "targetUnavailable") {
+        log.debug(
+          { threadId, turnId, settings },
+          "Codex active turn ended before its settings update; retaining the selection for the next turn",
+        );
+      }
+    };
+
     return {
       iterator,
       queue,
@@ -1643,7 +1774,23 @@ export class CodexProvider implements AgentProvider {
         );
       },
       setEffort: async (effort) => {
+        if (effort !== undefined) {
+          await updateActiveTurnSettings({
+            effort: this.mapEffortToReasoningEffort(
+              effort,
+              options.thinking,
+              runtimeState.turnModelOverride ?? runtimeState.resolvedModel,
+            ),
+          });
+        }
         runtimeState.turnEffortOverride = effort ?? null;
+      },
+      effortUpdatesActiveTurn: true,
+      setModel: async (model) => {
+        if (model !== undefined) {
+          await updateActiveTurnSettings({ model });
+        }
+        runtimeState.turnModelOverride = model ?? null;
       },
       setSessionOptions: async (requested) =>
         inactiveProviderSessionOptionsResult(
@@ -2174,6 +2321,9 @@ export class CodexProvider implements AgentProvider {
     };
 
     appServer.setServerRequestHandler(async (request) => {
+      if (request.method === "account/chatgptAuthTokens/refresh") {
+        return await this.refreshExternalChatgptAuth(request);
+      }
       return await this.handleServerRequestApproval(
         request,
         options,
@@ -2188,8 +2338,10 @@ export class CodexProvider implements AgentProvider {
       const experimentalApiEnabled = await this.initializeAppServer(
         appServer,
         options.clientName,
+        Boolean(this.config.externalChatgptAuth),
       );
       appServer.notify("initialized");
+      await this.loginWithExternalChatgptAuth(appServer);
       await this.refreshCodexSkills(
         appServer,
         options.cwd,
@@ -2273,6 +2425,7 @@ export class CodexProvider implements AgentProvider {
       const consumeTurn = async function* (
         provider: CodexProvider,
         turn: CodexThreadTurn,
+        notificationBarrierSequence: number,
       ): AsyncGenerator<
         SDKMessage,
         { overloadError: SDKMessage | null },
@@ -2286,6 +2439,35 @@ export class CodexProvider implements AgentProvider {
         let turnComplete = turn.status !== "inProgress";
         let emittedTurnError = false;
         let overloadError: SDKMessage | null = null;
+        let suppressedPreTurnNotifications: {
+          count: number;
+          firstSequence: number;
+          lastSequence: number;
+          firstTurnId: string;
+          lastTurnId: string;
+          firstMethod: string;
+          lastMethod: string;
+          firstStartedAt: number | null;
+          lastStartedAt: number | null;
+          maxQueueAgeMs: number;
+          maxQueuedAhead: number;
+        } | null = null;
+
+        const logSuppressedPreTurnNotifications = (reason: string): void => {
+          if (!suppressedPreTurnNotifications) return;
+          log.warn(
+            {
+              sessionId,
+              expectedTurnId: runtimeState.activeTurnId ?? activeTurnId,
+              expectedTurnStartedAt: turn.startedAt,
+              notificationBarrierSequence,
+              ...suppressedPreTurnNotifications,
+              reason,
+            },
+            "Suppressed stale Codex notifications queued before turn start",
+          );
+          suppressedPreTurnNotifications = null;
+        };
 
         while (!turnComplete && !signal.aborted) {
           const notification = await appServer.nextNotification(signal);
@@ -2294,6 +2476,65 @@ export class CodexProvider implements AgentProvider {
           ) {
             continue;
           }
+          const notificationReceipt =
+            appServer.getNotificationReceipt(notification);
+          const currentActiveTurnId: string =
+            runtimeState.activeTurnId ?? activeTurnId;
+          const observedTurnId = getCodexNotificationTurnId(
+            notification,
+            runtimeState.threadId,
+          );
+          const queuedBeforeTurnStart =
+            notificationReceipt !== null &&
+            notificationReceipt.sequence <= notificationBarrierSequence;
+          if (
+            observedTurnId &&
+            observedTurnId !== currentActiveTurnId &&
+            queuedBeforeTurnStart
+          ) {
+            const queueAgeMs = Math.max(
+              0,
+              Date.now() - notificationReceipt.receivedAtMs,
+            );
+            const startedAt = getCodexNotificationTurnStartedAt(notification);
+            if (suppressedPreTurnNotifications) {
+              suppressedPreTurnNotifications.count += 1;
+              suppressedPreTurnNotifications.lastSequence =
+                notificationReceipt.sequence;
+              suppressedPreTurnNotifications.lastTurnId = observedTurnId;
+              suppressedPreTurnNotifications.lastMethod = notification.method;
+              suppressedPreTurnNotifications.lastStartedAt = startedAt;
+              suppressedPreTurnNotifications.maxQueueAgeMs = Math.max(
+                suppressedPreTurnNotifications.maxQueueAgeMs,
+                queueAgeMs,
+              );
+              suppressedPreTurnNotifications.maxQueuedAhead = Math.max(
+                suppressedPreTurnNotifications.maxQueuedAhead,
+                notificationReceipt.queuedAhead,
+              );
+            } else {
+              suppressedPreTurnNotifications = {
+                count: 1,
+                firstSequence: notificationReceipt.sequence,
+                lastSequence: notificationReceipt.sequence,
+                firstTurnId: observedTurnId,
+                lastTurnId: observedTurnId,
+                firstMethod: notification.method,
+                lastMethod: notification.method,
+                firstStartedAt: startedAt,
+                lastStartedAt: startedAt,
+                maxQueueAgeMs: queueAgeMs,
+                maxQueuedAhead: notificationReceipt.queuedAhead,
+              };
+            }
+            continue;
+          }
+          if (observedTurnId) {
+            logSuppressedPreTurnNotifications(
+              "turn-scoped notification reached",
+            );
+          }
+
           logRawNotification(notification);
           if (notification.method === "skills/changed") {
             skillInventory.stale = true;
@@ -2314,7 +2555,6 @@ export class CodexProvider implements AgentProvider {
             } as SDKMessage);
             continue;
           }
-          const currentActiveTurnId = runtimeState.activeTurnId ?? activeTurnId;
           failureTrace.activeTurnId = currentActiveTurnId;
 
           if (notification.method === "thread/tokenUsage/updated") {
@@ -2330,10 +2570,6 @@ export class CodexProvider implements AgentProvider {
             provider.describeNotificationForFailureTrace(notification),
           );
 
-          const observedTurnId = getCodexNotificationTurnId(
-            notification,
-            runtimeState.threadId,
-          );
           if (observedTurnId && observedTurnId !== runtimeState.activeTurnId) {
             log.warn(
               {
@@ -2341,6 +2577,17 @@ export class CodexProvider implements AgentProvider {
                 expectedTurnId: runtimeState.activeTurnId,
                 actualTurnId: observedTurnId,
                 notificationMethod: notification.method,
+                notificationBarrierSequence,
+                notificationReceiptSequence:
+                  notificationReceipt?.sequence ?? null,
+                notificationQueueAgeMs: notificationReceipt
+                  ? Math.max(0, Date.now() - notificationReceipt.receivedAtMs)
+                  : null,
+                notificationQueuedAhead:
+                  notificationReceipt?.queuedAhead ?? null,
+                notificationSource: notificationReceipt?.source ?? null,
+                notificationTurnStartedAt:
+                  getCodexNotificationTurnStartedAt(notification),
               },
               "Resynchronized Codex turn id from provider notification",
             );
@@ -2402,6 +2649,7 @@ export class CodexProvider implements AgentProvider {
             turnComplete = true;
           }
         }
+        logSuppressedPreTurnNotifications("turn consumption ended");
         runtimeState.activeTurnId = null;
         failureTrace.activeTurnId = null;
 
@@ -2420,7 +2668,7 @@ export class CodexProvider implements AgentProvider {
             session_id: sessionId,
             error: turn.error.message,
             codexErrorInfo: turn.error.codexErrorInfo ?? null,
-            codexAdditionalDetails: turn.error.additionalDetails ?? null,
+            codexAdditionalDetails: readCodexTurnErrorDetail(turn.error),
             codexWillRetry: false,
             codexTurnId: turn.id,
             codexFailureTrace: provider.snapshotCodexFailureTrace(failureTrace),
@@ -2523,9 +2771,12 @@ export class CodexProvider implements AgentProvider {
             options,
             turnPolicy,
             runtimeState.workspaceWriteSandboxPolicy,
+            runtimeState.turnModelOverride,
             runtimeState.turnEffortOverride,
             message.uuid,
           );
+          let notificationBarrierSequence =
+            appServer.lastNotificationReceiptSequence;
           let turnResult = await appServer.request<TurnStartResponse>(
             "turn/start",
             turnStartParams,
@@ -2545,7 +2796,11 @@ export class CodexProvider implements AgentProvider {
           );
           let overloadRetryAttempt = 0;
           while (!signal.aborted) {
-            const { overloadError } = yield* consumeTurn(this, turnResult.turn);
+            const { overloadError } = yield* consumeTurn(
+              this,
+              turnResult.turn,
+              notificationBarrierSequence,
+            );
             if (!overloadError) break;
 
             overloadRetryAttempt += 1;
@@ -2579,7 +2834,7 @@ export class CodexProvider implements AgentProvider {
               {
                 sessionId,
                 turnId: overloadError.codexTurnId,
-                model: options.model ?? runtimeState.resolvedModel,
+                model: turnStartParams.model ?? runtimeState.resolvedModel,
                 retryAttempt: overloadRetryAttempt,
                 retryDelayMs,
               },
@@ -2596,8 +2851,11 @@ export class CodexProvider implements AgentProvider {
               options,
               turnPolicy,
               runtimeState.workspaceWriteSandboxPolicy,
+              runtimeState.turnModelOverride,
               runtimeState.turnEffortOverride,
             );
+            notificationBarrierSequence =
+              appServer.lastNotificationReceiptSequence;
             turnResult = await appServer.request<TurnStartResponse>(
               "turn/start",
               retryTurnStartParams,
@@ -2607,7 +2865,7 @@ export class CodexProvider implements AgentProvider {
                 sessionId,
                 turnId: turnResult.turn.id,
                 turnStatus: turnResult.turn.status,
-                model: options.model ?? runtimeState.resolvedModel,
+                model: retryTurnStartParams.model ?? runtimeState.resolvedModel,
                 retryAttempt: overloadRetryAttempt,
                 approvalPolicy: turnPolicy.approvalPolicy,
                 sandboxPolicy: retryTurnStartParams.sandboxPolicy,
@@ -2802,6 +3060,7 @@ export class CodexProvider implements AgentProvider {
   private async initializeAppServer(
     appServer: CodexAppServerClient,
     clientName?: string,
+    requireExperimentalApi = false,
   ): Promise<boolean> {
     try {
       await appServer.request<{ userAgent: string }>(
@@ -2810,6 +3069,12 @@ export class CodexProvider implements AgentProvider {
       );
       return true;
     } catch (error) {
+      if (requireExperimentalApi) {
+        throw new Error(
+          "Target Codex external-token protocol is incompatible",
+          { cause: error },
+        );
+      }
       log.info(
         {
           event: "codex_experimental_api_unavailable",
@@ -2822,6 +3087,76 @@ export class CodexProvider implements AgentProvider {
         this.createInitializeParams(false, clientName),
       );
       return false;
+    }
+  }
+
+  private async loginWithExternalChatgptAuth(
+    appServer: CodexAppServerClient,
+  ): Promise<void> {
+    const externalAuth = this.config.externalChatgptAuth;
+    if (!externalAuth) return;
+    const projection = externalAuth.initialProjection;
+    this.assertExternalChatgptAuthProjection(projection);
+    try {
+      await appServer.request("account/login/start", {
+        type: "chatgptAuthTokens",
+        accessToken: projection.accessToken,
+        chatgptAccountId: projection.chatgptAccountId,
+        chatgptPlanType: projection.chatgptPlanType,
+      });
+    } catch (error) {
+      throw new Error("Managed Codex external-token login failed", {
+        cause: error,
+      });
+    }
+  }
+
+  private async refreshExternalChatgptAuth(
+    request: JsonRpcServerRequest,
+  ): Promise<CodexExternalChatgptAuthProjection> {
+    const externalAuth = this.config.externalChatgptAuth;
+    if (!externalAuth) {
+      throw new Error("Managed Codex external authentication is unavailable");
+    }
+    const params =
+      request.params && typeof request.params === "object"
+        ? (request.params as Record<string, unknown>)
+        : {};
+    const previousAccountId =
+      typeof params.previousAccountId === "string"
+        ? params.previousAccountId
+        : "";
+    const expectedAccountId = externalAuth.initialProjection.chatgptAccountId;
+    if (!previousAccountId || previousAccountId !== expectedAccountId) {
+      throw new Error("Managed Codex refresh account mismatch");
+    }
+    const projection = await externalAuth.refresh({
+      reason:
+        typeof params.reason === "string" ? params.reason : "unauthorized",
+      previousAccountId,
+    });
+    this.assertExternalChatgptAuthProjection(projection);
+    if (projection.chatgptAccountId !== expectedAccountId) {
+      throw new Error("Managed Codex refresh changed account");
+    }
+    return projection;
+  }
+
+  private assertExternalChatgptAuthProjection(
+    projection: CodexExternalChatgptAuthProjection,
+  ): void {
+    if (
+      !projection ||
+      typeof projection.accessToken !== "string" ||
+      projection.accessToken.length === 0 ||
+      typeof projection.chatgptAccountId !== "string" ||
+      projection.chatgptAccountId.length === 0 ||
+      !(
+        projection.chatgptPlanType === null ||
+        typeof projection.chatgptPlanType === "string"
+      )
+    ) {
+      throw new Error("Managed Codex auth projection is invalid");
     }
   }
 
@@ -3157,13 +3492,14 @@ export class CodexProvider implements AgentProvider {
     options: StartSessionOptions,
     turnPolicy: CodexThreadPolicy | null = null,
     workspaceWriteSandboxPolicy: CodexSandboxPolicy | null = null,
+    modelOverride: string | null = options.model ?? null,
     effortOverride: EffortLevel | null | undefined = options.effort,
     clientUserMessageId?: string,
   ): TurnStartParams {
     return {
       threadId,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
-      model: options.model ?? null,
+      model: modelOverride,
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       input,
       effort:
@@ -3172,7 +3508,7 @@ export class CodexProvider implements AgentProvider {
           : this.mapEffortToReasoningEffort(
               effortOverride,
               options.thinking,
-              options.model,
+              modelOverride ?? undefined,
             ),
       ...this.buildTurnPermissionParams(
         turnPolicy,
@@ -3828,7 +4164,8 @@ export class CodexProvider implements AgentProvider {
           phase: "completed",
           errorMessage: params?.turn.error?.message,
           codexErrorInfo: params?.turn.error?.codexErrorInfo ?? undefined,
-          additionalDetails: params?.turn.error?.additionalDetails ?? undefined,
+          additionalDetails:
+            readCodexTurnErrorDetail(params?.turn.error) ?? undefined,
           openaiRequestId: this.extractOpenAIRequestId(
             params?.turn.error,
             params?.turn.error?.additionalDetails,
@@ -3863,7 +4200,7 @@ export class CodexProvider implements AgentProvider {
             fallbackError?.codexErrorInfo ??
             undefined,
           additionalDetails:
-            params?.error.additionalDetails ??
+            readCodexTurnErrorDetail(params?.error) ??
             this.getOptionalString(fallbackError?.additionalDetails) ??
             undefined,
           openaiRequestId: this.extractOpenAIRequestId(
@@ -4731,7 +5068,7 @@ export class CodexProvider implements AgentProvider {
             fallbackError?.codexErrorInfo ??
             null,
           codexAdditionalDetails:
-            params?.error.additionalDetails ??
+            readCodexTurnErrorDetail(params?.error) ??
             this.getOptionalString(fallbackError?.additionalDetails) ??
             null,
           codexWillRetry: willRetry,
@@ -4926,6 +5263,18 @@ export class CodexProvider implements AgentProvider {
       case "plan": {
         const text = this.getOptionalString(itemRecord.text) ?? "";
         return { id, type: "agent_message", text };
+      }
+
+      case "function_call_output": {
+        const name = this.getOptionalString(itemRecord.name);
+        if (!name) return null;
+        return {
+          id,
+          type: "function_call_output",
+          name,
+          namespace: this.getOptionalString(itemRecord.namespace),
+          output: itemRecord.output,
+        };
       }
 
       case "command_execution": {
@@ -5704,13 +6053,15 @@ export class CodexProvider implements AgentProvider {
   ): SDKMessage[] {
     const isComplete = sourceEvent === "item/completed";
     const observedAt = new Date().toISOString();
-    // Native tool items key the uuid on call_id (item.id). Code-mode
-    // commandExecution items temporarily key on exec-* and carry correlation
-    // metadata for adoption of the outer durable call_* id client-side.
+    // Native tool items key the uuid on call_id (item.id). Nested code-mode
+    // commands and image views temporarily key on their inner item id and
+    // carry correlation metadata for adoption of the outer durable call_* id.
     // Message/reasoning item ids are the provider ids persisted in rollout.
     const uuid = this.isToolBackedThreadItem(item)
       ? this.buildItemToolUuid(item.id)
-      : item.type === "agent_message" || item.type === "reasoning"
+      : item.type === "agent_message" ||
+          item.type === "reasoning" ||
+          item.type === "function_call_output"
         ? item.id
         : `${item.id}-${turnId}`;
 
@@ -5761,6 +6112,35 @@ export class CodexProvider implements AgentProvider {
           turnId,
           itemId: item.id,
           phase: isComplete ? "completed" : "started",
+          sourceEvent,
+        });
+        return [message];
+      }
+
+      case "function_call_output": {
+        if (!isComplete) return [];
+        const normalized = normalizeCodexToolOutputWithContext(item.output);
+        const message = withCodexTimestamp(
+          {
+            type: "system",
+            subtype: "tool_output",
+            session_id: sessionId,
+            uuid,
+            content: normalized.content,
+            codexToolName: item.name,
+            ...(item.namespace ? { codexToolNamespace: item.namespace } : {}),
+            ...(normalized.structured !== undefined
+              ? { toolUseResult: normalized.structured }
+              : {}),
+          } as SDKMessage,
+          observedAt,
+        );
+        attachToolResultMediaCandidates(message, normalized.mediaCandidates);
+        logSdkCorrelationDebug(sessionId, message, {
+          eventKind: "tool_result",
+          turnId,
+          itemId: item.id,
+          phase: "completed",
           sourceEvent,
         });
         return [message];
@@ -6229,6 +6609,11 @@ export class CodexProvider implements AgentProvider {
             type: "assistant",
             session_id: sessionId,
             uuid,
+            [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+              "image_view",
+              turnId,
+              item.id,
+            ),
             message: {
               role: "assistant",
               content: [
@@ -6258,6 +6643,11 @@ export class CodexProvider implements AgentProvider {
               type: "user",
               session_id: sessionId,
               uuid: `${uuid}-result`,
+              [CODEX_TOOL_CORRELATION_FIELD]: createCodexToolCorrelation(
+                "image_view",
+                turnId,
+                item.id,
+              ),
               message: {
                 role: "user",
                 content: [

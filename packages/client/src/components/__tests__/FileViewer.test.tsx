@@ -10,6 +10,9 @@ import { toUrlProjectId, type FileContentResponse } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { QuoteReplyProvider } from "../../contexts/QuoteReplyContext";
+import { SessionMetadataProvider } from "../../contexts/SessionMetadataContext";
+import { SessionViewerCommentProvider } from "../../contexts/SessionViewerCommentContext";
+import { setQuoteReplyButtonModePreference } from "../../hooks/useQuoteReplyButtonMode";
 import { I18nProvider } from "../../i18n";
 import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
 import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
@@ -101,6 +104,14 @@ describe("FileViewer", () => {
       callback(0);
       return 1;
     });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe = vi.fn();
+        disconnect = vi.fn();
+      },
+    );
+    setQuoteReplyButtonModePreference("paragraph-hover");
   });
 
   it("makes cumulative diff override source line ranges", async () => {
@@ -168,6 +179,60 @@ describe("FileViewer", () => {
         "range",
       ),
     );
+  });
+
+  it("returns from a diff to the retained raw source without loading", async () => {
+    mocks.useFileVersionControl.mockReturnValue({
+      cumulativeFile: null,
+      loading: false,
+      relativePath: "notes.md",
+      supported: true,
+      worktreeFile: {
+        path: "notes.md",
+        status: "M",
+        staged: false,
+        linesAdded: 1,
+        linesDeleted: 0,
+      },
+    });
+    const source: FileViewerSource = {
+      loadFile: vi
+        .fn()
+        .mockResolvedValueOnce({
+          metadata: {
+            path: "notes.md",
+            size: 8,
+            mimeType: "text/markdown",
+            isText: true,
+          },
+          rawUrl: "",
+          content: "# Notes\n",
+          highlightedHtml:
+            '<pre class="shiki"><code><span class="line"># Notes</span></code></pre>',
+          renderedMarkdownHtml: "<h1>Notes</h1>",
+        })
+        .mockReturnValueOnce(new Promise(() => {})),
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="notes.md"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
+    fireEvent.click(screen.getByText("vs HEAD"));
+    expect(await screen.findByTestId("file-diff-body")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("link", { name: "Source" }));
+
+    expect(container.querySelector(".shiki-container")).toBeTruthy();
+    expect(screen.queryByText("Loading notes.md...")).toBeNull();
+    expect(source.loadFile).toHaveBeenCalledTimes(1);
   });
 
   it("offers a Back control that closes a modal viewer", async () => {
@@ -246,6 +311,7 @@ describe("FileViewer", () => {
       await waitFor(() =>
         expect(screen.getAllByRole("dialog")).toHaveLength(2),
       );
+      expect(document.body.style.overflow).toBe("hidden");
       const backButtons = screen.getAllByRole("button", { name: "Back" });
       const childBack = backButtons.at(-1);
       if (!childBack) throw new Error("Nested file viewer has no Back control");
@@ -254,6 +320,18 @@ describe("FileViewer", () => {
         expect(screen.getAllByRole("dialog")).toHaveLength(1),
       );
       expect(onClose).not.toHaveBeenCalled();
+      expect(document.body.style.overflow).toBe("hidden");
+
+      fireEvent.click(screen.getByRole("link", { name: "child.yml" }));
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(2),
+      );
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() =>
+        expect(screen.getAllByRole("dialog")).toHaveLength(1),
+      );
+      expect(onClose).not.toHaveBeenCalled();
+      expect(document.body.style.overflow).toBe("hidden");
 
       fireEvent.click(screen.getByRole("link", { name: "child.yml" }));
       await waitFor(() =>
@@ -832,7 +910,7 @@ describe("FileViewer", () => {
     }
   });
 
-  it("quotes a clicked rendered Markdown block into the session", async () => {
+  it("keeps primary Markdown clicks in the viewer and quotes from circles", async () => {
     const onQuoteTextBlock = vi.fn();
     const source: FileViewerSource = {
       loadFile: vi.fn(async () => ({
@@ -861,14 +939,83 @@ describe("FileViewer", () => {
       </I18nProvider>,
     );
 
+    const paragraph = await screen.findByText("Selected text");
+    const viewerBody = paragraph.closest<HTMLElement>(".file-viewer-body");
+    expect(viewerBody?.tabIndex).toBe(-1);
+
     document.getSelection()?.removeAllRanges();
-    fireEvent.click(await screen.findByText("Selected text"));
+    fireEvent.pointerDown(paragraph, { button: 0 });
+    fireEvent.click(paragraph);
+
+    expect(document.activeElement).toBe(viewerBody);
+    expect(onQuoteTextBlock).not.toHaveBeenCalled();
+    const pageDown = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "PageDown",
+    });
+    viewerBody?.dispatchEvent(pageDown);
+    expect(pageDown.defaultPrevented).toBe(false);
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: /Quote this paragraph/ }),
+      ).toHaveLength(2),
+    );
+    const quoteButtons = screen.getAllByRole("button", {
+      name: /Quote this paragraph/,
+    });
+    fireEvent.click(quoteButtons[1]!);
 
     expect(onQuoteTextBlock).toHaveBeenCalledTimes(1);
     expect(onQuoteTextBlock.mock.calls[0]?.[0]).toMatchObject({
       quotedText: "> Selected text",
       selectedText: "Selected text",
     });
+  });
+
+  it("uses one whole-document quote circle in block-only mode", async () => {
+    setQuoteReplyButtonModePreference("block");
+    const onQuoteTextBlock = vi.fn();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.md",
+          size: 21,
+          mimeType: "text/markdown",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "# Title\n\nSelected text",
+        renderedMarkdownHtml: "<h1>Title</h1><p>Selected text</p>",
+      })),
+    };
+
+    render(
+      <I18nProvider>
+        <QuoteReplyProvider onQuoteTextBlock={onQuoteTextBlock}>
+          <FileViewer
+            projectId="project-id"
+            filePath="notes.md"
+            initialPresentation="preview"
+            source={source}
+          />
+        </QuoteReplyProvider>
+      </I18nProvider>,
+    );
+
+    await screen.findByText("Selected text");
+    const quoteButtons = screen.getAllByRole("button", {
+      name: /Quote this paragraph/,
+    });
+    expect(quoteButtons).toHaveLength(1);
+    expect(quoteButtons[0]?.classList).toContain("text-block-quote-fallback");
+    fireEvent.click(quoteButtons[0]!);
+    expect(onQuoteTextBlock).toHaveBeenCalledTimes(1);
+    const anchor = onQuoteTextBlock.mock.calls[0]?.[0];
+    expect(anchor?.quotedText).toContain("# Title");
+    expect(anchor?.quotedText).toContain("Selected text");
+    expect(anchor?.selectedText).not.toContain(">");
   });
 
   it("opens Quarto files rendered and maps include selections to source", async () => {
@@ -1064,10 +1211,9 @@ describe("FileViewer", () => {
     );
     expect(imageLink.getAttribute("target")).toBe("_blank");
     expect(imageLink.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(
-      screen.getByRole("img", { name: "result.png" }).getAttribute("src"),
-    ).toBe("blob:file-viewer-image");
-    fireEvent.contextMenu(screen.getByRole("img", { name: "result.png" }));
+    const image = await screen.findByRole("img", { name: "result.png" });
+    expect(image.getAttribute("src")).toBe("blob:file-viewer-image");
+    fireEvent.contextMenu(image);
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
     ).toEqual([
@@ -1080,16 +1226,204 @@ describe("FileViewer", () => {
     ]);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss image menu" }));
 
-    const openButton = container.querySelector<HTMLButtonElement>(
+    const openLink = container.querySelector<HTMLAnchorElement>(
       '.file-viewer-actions .file-viewer-action[title="Open image in new tab"]',
     );
-    expect(openButton).not.toBeNull();
-    fireEvent.click(openButton as HTMLButtonElement);
-
-    expect(openMock).toHaveBeenCalledWith(
+    expect(openLink?.getAttribute("href")).toBe(
       "/api/projects/project-id/files/raw?path=screenshots%2Fresult.png",
-      "_blank",
-      "noopener",
     );
+    expect(openLink?.getAttribute("target")).toBe("_blank");
+    expect(openLink?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(openMock).not.toHaveBeenCalled();
+  });
+
+  it("sends source-line comments without using the paragraph quote rail", async () => {
+    const onSendComment = vi.fn(async () => true);
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "src/example.ts",
+          size: 34,
+          mimeType: "text/typescript",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "const first = 1;\nconst second = 2;\nreturn first;",
+        highlightedHtml:
+          '<pre class="shiki"><code><span class="line">const first = 1;</span>\n<span class="line">const second = 2;</span>\n<span class="line">return first;</span></code></pre>',
+      })),
+    };
+    const projectId = toUrlProjectId("/workspace");
+    const { container } = render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath="/workspace"
+          sessionId="session-id"
+        >
+          <SessionViewerCommentProvider onSendComment={onSendComment}>
+            <QuoteReplyProvider onQuoteTextBlock={vi.fn()}>
+              <FileViewer
+                projectId={projectId}
+                filePath="src/example.ts"
+                source={source}
+                onClose={vi.fn()}
+              />
+            </QuoteReplyProvider>
+          </SessionViewerCommentProvider>
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    const toggle = await screen.findByRole("button", { name: "Comment" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(
+      screen.queryByRole("button", { name: /Quote this paragraph/ }),
+    ).toBeNull();
+
+    const secondLine = container.querySelector<HTMLElement>('[data-line="2"]');
+    expect(secondLine).toBeTruthy();
+    fireEvent.click(secondLine!);
+    const editor = await screen.findByPlaceholderText(
+      "Comment or ask a question…",
+    );
+    expect(screen.getByText("src/example.ts:2")).toBeTruthy();
+    fireEvent.change(editor, {
+      target: { value: "Should these share a name?" },
+    });
+    fireEvent.keyDown(editor, { key: "Enter", shiftKey: true });
+    expect(onSendComment).not.toHaveBeenCalled();
+    fireEvent.keyDown(editor, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(onSendComment).toHaveBeenCalledWith(
+        "src/example.ts:2\n\n> const first = 1;\n> const second = 2;\n> return first;\n\nShould these share a name?",
+      ),
+    );
+    await waitFor(() => expect(editor.isConnected).toBe(false));
+  });
+
+  it("flushes unsent source comments as one grouped session turn", async () => {
+    const onSendComment = vi.fn(async () => true);
+    const onClose = vi.fn();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "src/example.ts",
+          size: 13,
+          mimeType: "text/typescript",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "one\ntwo\nthree",
+        highlightedHtml:
+          '<pre class="shiki"><code><span class="line">one</span>\n<span class="line">two</span>\n<span class="line">three</span></code></pre>',
+      })),
+    };
+    const projectId = toUrlProjectId("/workspace");
+    const { container } = render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath="/workspace"
+          sessionId="session-id"
+        >
+          <SessionViewerCommentProvider onSendComment={onSendComment}>
+            <FileViewer
+              projectId={projectId}
+              filePath="src/example.ts"
+              source={source}
+              onClose={onClose}
+            />
+          </SessionViewerCommentProvider>
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
+    fireEvent.click(container.querySelector<HTMLElement>('[data-line="1"]')!);
+    fireEvent.change(
+      await screen.findByPlaceholderText("Comment or ask a question…"),
+      { target: { value: "First comment" } },
+    );
+    fireEvent.click(container.querySelector<HTMLElement>('[data-line="3"]')!);
+    fireEvent.change(
+      await screen.findByPlaceholderText("Comment or ask a question…"),
+      { target: { value: "Second comment" } },
+    );
+    fireEvent.click(screen.getByTitle("Close"));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onSendComment).toHaveBeenCalledTimes(1));
+    expect(onSendComment).toHaveBeenCalledWith(
+      "src/example.ts:1\n\n> one\n> two\n> three\n\nFirst comment\n\n---\n\nsrc/example.ts:3\n\n> one\n> two\n> three\n\nSecond comment",
+    );
+  });
+
+  it("opens the comment composer from a rendered-text selection", async () => {
+    const onSendComment = vi.fn(async () => true);
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.md",
+          size: 22,
+          mimeType: "text/markdown",
+          isText: true,
+        },
+        rawUrl: "",
+        content: "# Title\n\nSelected words",
+        renderedMarkdownHtml: "<h1>Title</h1><p>Selected words</p>",
+      })),
+    };
+    const projectId = toUrlProjectId("/workspace");
+    render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath="/workspace"
+          sessionId="session-id"
+        >
+          <SessionViewerCommentProvider onSendComment={onSendComment}>
+            <QuoteReplyProvider onQuoteTextBlock={vi.fn()}>
+              <FileViewer
+                projectId={projectId}
+                filePath="notes.md"
+                initialPresentation="preview"
+                source={source}
+                onClose={vi.fn()}
+              />
+            </QuoteReplyProvider>
+          </SessionViewerCommentProvider>
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
+    const selectedText = screen.getByText("Selected words");
+    const range = document.createRange();
+    range.selectNodeContents(selectedText);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    act(() => document.dispatchEvent(new Event("selectionchange")));
+
+    const editor = await screen.findByPlaceholderText(
+      "Comment or ask a question…",
+    );
+    expect(editor).toBeTruthy();
+    expect(screen.getByText("notes.md:3")).toBeTruthy();
+    const selectedCopies = screen.getAllByText("Selected words");
+    expect(selectedCopies.length).toBeGreaterThan(1);
+    const renderedSelection = selectedCopies.find(
+      (element) => element.tagName === "P",
+    );
+    expect(renderedSelection?.nextElementSibling?.contains(editor)).toBe(true);
+    expect(editor.closest("[data-review-comment-inline]")).toBeTruthy();
+    expect(document.activeElement).not.toBe(editor);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(editor.isConnected).toBe(false));
+    expect(onSendComment).not.toHaveBeenCalled();
   });
 });

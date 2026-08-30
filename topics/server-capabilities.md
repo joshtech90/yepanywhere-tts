@@ -74,6 +74,35 @@ omit file-revision chrome and make no metadata request. Existing capability
 meanings and older capable behavior remain unchanged. It is version-implied
 from `0.7.2`.
 
+`public-file-shares` owns authenticated exact-file list, create, and revoke
+routes plus the dedicated live-file grant semantics on existing public file
+reads. The ordinary optional-feature corpus is `v0.7.0` (2026-07-25) and
+`v0.6.2` (2026-07-11); both lack these routes and permanent ID 51. Without it,
+the client hides the File Viewer share action and makes no file-share request;
+session sharing and existing public file reads keep their prior behavior. It is
+version-implied from `0.7.2`.
+
+`codex-stream-durable-id-alignment` owns the meaning of existing Codex
+`message.uuid` values across streamed `session-message` events and REST session
+detail rows. The core corpus `v0.6.0`, `v0.6.1`, `v0.6.2`, and `v0.7.0` lacks
+the alignment contract and permanent ID 48. Without it, the client uses the
+legacy two-second non-tool reconciliation, Codex steer pairing, and
+timestamp-watermark replay suppression; it adds no request. With it, equal
+content or timestamps never substitute for provider/client identity. The
+capability is version-implied from `0.7.2`, while source-ahead servers advertise
+the positive ID explicitly. Its fallback remains until a separate
+compatibility-floor review approves removal.
+
+The additive top-level `transcriptSnapshotUpdatedAt` field on existing session
+detail responses is a reader snapshot receipt, not a new feature capability.
+The core compatibility corpus `v0.6.0`, `v0.6.1`, `v0.6.2`, and `v0.7.0`
+lacks it. A current client connected to one of those servers sends no new
+request and leaves its heartbeat-reconciliation watermark unchanged, accepting
+bounded extra refreshes rather than letting unrelated `session.updatedAt`
+metadata suppress a needed catch-up. Older clients ignore the additive field.
+No existing capability meaning changes. The Maintainer approved this
+self-gated response-field fallback on 2026-08-28.
+
 `git-working-tree-files` owns the current-content inventory, persistent
 untracked-cache route, and cache-backed status request. Releases `0.6.2` and
 `0.7.0` have none of them. Without the permanent capability, the client retains
@@ -144,6 +173,28 @@ and omits the additive field from writes and undo restores. Existing capability
 meanings and older behavior remain unchanged. It is version-implied from
 `0.7.2`.
 
+`cache-miss-billing-expected-expiry` owns the additive
+`includeExpectedExpiry=1` query on
+`GET /api/settings/cache-miss-billing/events`, the post-window outcome and
+`expectedInputCost.freshEnough: false` records it reveals, and the distinct
+`cache-miss-billing-expected-expiry` live event. The ordinary optional-feature
+corpus is `v0.7.0` (2026-07-25) and `v0.6.2` (2026-07-11); both lack the query,
+records, event, and capability. Without permanent ID 49, the client hides the
+default-off evidence toggle, omits the query, and listens only for the legacy
+live event. The legacy route filters expected-expiry evidence before applying
+its limit, and the legacy live event never carries it. Existing capability
+meanings and older behavior remain unchanged. It is version-implied from
+`0.7.2`.
+
+`attachment-only-session-messages` owns empty-text submissions that carry at
+least one uploaded attachment across direct session start, detached start,
+resume, and live queue routes. Stable releases `v0.7.0` (2026-07-25) and
+`v0.6.2` (2026-07-11) reject these requests before inspecting attachments.
+Without permanent ID 50, a current client retains the attachment draft,
+explains that the server must be updated or text added, and makes no empty-text
+request. Text-bearing attachment sends keep their existing behavior. It is
+version-implied from `0.7.2`.
+
 `project-code-names` owns the additive `codeName` field on project list,
 detail, and create responses; `PATCH /api/projects/:projectId/code-name`; and
 the `project-code-names-changed` invalidation event. The ordinary optional
@@ -184,6 +235,16 @@ Without either capability, the existing provider-command fallback remains.
 The already-advertised done capability and older capable behavior remain
 unchanged.
 
+`glossary-tooltips` owns artifact version 2's additive
+`terminals[].caseSensitiveForms` field and its lowercase-insensitive,
+all-caps-exact, and mixed-case matching semantics. The ordinary optional
+corpus `v0.7.0` and `v0.6.2` lacks the glossary route and capability entirely;
+without permanent ID 10, the client requests no artifact and renders ordinary
+prose. A version-1 artifact from a briefly advertised source-ahead server lacks
+the field, so the current matcher preserves its legacy case-insensitive
+behavior. The Maintainer approved correcting this capability before its first
+stable release on 2026-08-27; `introducedIn` remains `0.7.1`.
+
 `serverHasCapability` accepts release implication, encoding-1 IDs, and both
 legacy representations. This union keeps old installed servers usable without
 making a new capability depend on its textual name.
@@ -221,6 +282,16 @@ host-preflight contract while `session-sandboxing` is dynamic and means the
 local host currently has a usable enforcement backend. Clients require both
 and an `available` status before showing or sending the optional launch field;
 the launch path still rechecks and fails closed.
+
+`session-sandbox-network-firewall` permanently gates the additive network
+selection and enforcement status. Current clients require it together with the
+two sandbox capabilities before showing either sandbox control, and otherwise
+send neither launch field. It is version-implied from 0.7.2 because every
+official build from that release owns the setting, session/queue fields,
+derivative inheritance, and public-only egress boundary. Stable releases
+`v0.7.0` and `v0.6.2` lack the complete sandbox contract. An omitted firewall
+value on a project-write request defaults on at the new server; explicit false
+is preserved. No existing capability meaning changes.
 
 For session copying, `session-fork-turn-intents` advertises the additive
 `forkKind` / `sourceMessageId` contract on the existing project-session fork
@@ -357,9 +428,14 @@ the same ledger:
 | 45 | server | 0.7.2 | `synthetic-terminate-command` |
 | 46 | server | 0.7.2 | `project-code-names` |
 | 47 | server | 0.7.2 | `git-file-revision` |
+| 48 | server | 0.7.2 | `codex-stream-durable-id-alignment` |
+| 49 | server | 0.7.2 | `cache-miss-billing-expected-expiry` |
+| 50 | server | 0.7.2 | `attachment-only-session-messages` |
+| 51 | server | 0.7.2 | `public-file-shares` |
+| 52 | server | 0.7.2 | `session-sandbox-network-firewall` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 48; retired rows stay in the ledger as reserved IDs.
+ID 53; retired rows stay in the ledger as reserved IDs.
 
 ## When To Add One
 

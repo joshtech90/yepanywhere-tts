@@ -174,6 +174,9 @@ grow until the inter-pane gap and splitter handles would cease to remain fully
 visible and operable; do not reserve an unrelated minimum width for the detail
 pane. The user naturally stops after exposing as much path text as desired,
 and the still-visible splitter is the recovery path from an extreme choice.
+Pointer drag reflows the panes live but coalesces high-frequency movement to at
+most one width update per animation frame; releasing the pointer commits the
+final width.
 
 A content-derived natural maximum is optional, not required. If added, compute
 it from the widest untruncated row in the **complete file corpus**, including
@@ -336,11 +339,17 @@ The same capability owns
 `GET /api/projects/:projectId/git?untracked=cache`. Cache-backed polling asks Git
 for tracked/staged state with untracked enumeration disabled, then merges the
 retained untracked snapshot. One root request is shared in flight, so a polling
-tick cannot overlap it. Background replacement retains the current file corpus,
-selected row, mounted detail, scroll/view state, and explicit folder/outline
-disclosures until replacement data is ready. A changed compact-folder corpus
-adds or removes available groups without resetting choices for groups that
-remain.
+tick cannot overlap it. The tracked/staged response mounts the workbench
+immediately; until the first untracked snapshot arrives, an inline loading or
+error state replaces any premature clean-tree or empty-corpus claim. When live
+monitoring defers its first snapshot until the document receives attention, the
+available static status still mounts this workbench instead of a page-level
+loader. Untracked rows then enrich the mounted corpus in place. Retention expiry,
+eviction, a file update, and every background check keep the last successful
+mounted corpus, selected row, detail, scroll/view state, and explicit
+folder/outline disclosures visible until replacement data is ready. A changed
+compact-folder corpus adds or removes available groups without resetting choices
+for groups that remain.
 
 The route-mounted status owner refreshes early when a managed process in the
 selected project reaches idle or waiting-for-input, coalescing completion events
@@ -564,12 +573,50 @@ activation opens the verbatim message only when the release did not complete a
 selection, while Enter and Space remain keyboard activation. Phone detail keeps
 the full subject above its compact full-message action. **‹ Commit history** is
 styled as an actionable parent link rather than a full-width section label.
+On desktop, a long message card scrolls within a bounded part of the files pane
+before file selection and while the full-message view is open, so the file
+outline remains visible throughout review entry. Moving keyboard focus to a
+file reveals it only within that outline's scrollport; it must not scroll the
+outer Source Control page or move the selected revision and diff workbench
+offscreen.
 
-Source lists support Up/Down selection, Enter drill-in, Escape return, and `/`
-to focus search when focus is outside an editor. Diff navigation supports
-previous/next hunk and a visible current-hunk indicator. Browser shortcuts must
-not copy native GitHub Desktop accelerators that collide with browser tabs,
-Find, or the address bar.
+Source lists support Up/Down selection, Escape return, and `/` to focus search
+when focus is outside an editor. Once desktop commit history has loaded, its
+selected commit or Working tree row owns initial keyboard focus instead of the
+application sidebar. Enter on that revision row enters its file outline at the
+first selectable file once the detail is available. That Enter intent is tied
+to the current revision visit: moving to another revision by any other action
+cancels it, and later returning does not enter the file outline. In a commit
+file outline, Enter expands every structural path group when any is collapsed;
+otherwise it collapses every group except the selected file's ancestors, which
+keeps the focused file mounted. It does not activate the file row's pointer
+action.
+
+In a file outline, Up/Down traverse the visible rows; Right expands a collapsed
+group or enters its first child, while Left collapses an expanded group or
+returns to its parent. Left/Right on a leaf is still consumed rather than
+scrolling a neighboring pane. These keys apply only while an outline row owns
+focus, so a focused source scroller keeps native arrow-key scrolling.
+Unmodified `[` and `]` select, reveal, and visibly focus the previous or next
+file diff in the same depth-first order shown by the path outline. Either key
+from commit-message view enters at the first file; the outline expands the
+target's ancestors, so collapsed path groups and unmounted rows cannot block
+either transition.
+The files pane shows the selected file's complete display path in a sticky
+tooltip-style box even when its grouped row is collapsed. At desktop width its
+right edge stays inside the files pane while the box may grow left over the
+revision pane; it never covers the diff. It prefers wrapping after path
+separators and may break an individually overlong segment rather than truncate
+the identity.
+
+Unmodified Page Up/Page Down scrolls the adjacent commit diff by one viewport
+without moving focus, whether invoked from its changed-file list or source
+scroller. Commit-file bracket/page navigation dismisses any visible tooltip;
+fresh pointer movement may reveal hover detail again. Other source-list row
+navigation and Enter likewise dismiss the current tooltip and suppress a
+destination focus reveal. Diff navigation supports previous/next hunk and a
+visible current-hunk indicator. Browser shortcuts must not copy native GitHub
+Desktop accelerators that collide with browser tabs, Find, or the address bar.
 
 Unified/Split and full-context controls stay in the diff pane. **Hide removed
 lines** loads that same full-context projection, suppresses every old-side
@@ -590,6 +637,13 @@ clears the selection merely because its rows have not arrived yet.
 Direct selected-tree-to-HEAD remains a different, clearly labelled per-file
 context-menu action. It retains the established direct-comparison route and
 capability semantics rather than overloading **To HEAD**.
+
+Projection availability and projection execution are distinct failure classes.
+When the server lacks the advertised projection capability, the client sends no
+unsupported request and may show update/restart guidance. When an advertised
+projection request fails, the client returns to ordinary Source Control and
+shows the request's retryable error; it never recasts that failure as an
+outdated-server notice.
 
 A comparison comment cites the endpoint that contains the clicked projection:
 an old-side line anchors to the fixed base SHA (or has no old lines for the
@@ -741,9 +795,17 @@ Selecting a projection replaces the source body in the existing file viewer.
 While a diff is active, source line and line-range requests are inapplicable:
 the diff URL omits `line`, `lineEnd`, and `view=range`, and the viewer neither
 loads nor highlights that source window. Returning to **Source** restores the
-original source range. Diff rendering retains full-context, unified/split,
-Markdown-preview, hunk-navigation, and review-projection behavior from the
-shared Source Control renderer.
+original source range as fixed-font source, even when Markdown would ordinarily
+open rendered. An already loaded source stays resident while a projection is
+shown, so returning to it does not fetch or enter Loading again. Diff rendering
+retains full-context, unified/split, Markdown-preview, hunk-navigation, and
+review-projection behavior from the shared Source Control renderer.
+
+A working-tree refresh keeps the last completed file projection mounted until
+the projection for the new status snapshot is ready, then replaces it in one
+render. A late response for an older snapshot cannot displace the current one.
+If the new projection no longer contains the path, the viewer returns to its
+resident source without first blanking the document.
 
 The permanent `git-file-diff-projections` capability owns
 `GET /api/projects/:projectId/git/file-projections` and
@@ -763,7 +825,16 @@ resolves from `HEAD`. A not-yet-committed rename follows its original path.
 Live content adds **dirty** only when its bytes differ from the committed blob;
 a rename with identical content is not dirty. Immutable revision views are
 never dirty. An untracked file says **uncommitted** and receives no invented
-hash or link. A non-Git project omits the chrome.
+hash or link. A non-Git project omits the chrome. Only Git's explicit
+not-a-repository, unborn-HEAD, missing-working-file, and missing-blob outcomes
+map to those ordinary absence states; process launch, permission, and other Git
+execution failures surface as request errors rather than fabricated absence or
+dirty content.
+
+Revision requests are scoped by source as well as project, path, and revision.
+Switching between local and remote sources starts a request against the new
+source even when those other fields match, and a late response from the prior
+source cannot replace the new source's provenance.
 
 The hash is a regular anchor to Changes with the resolved commit and file
 selected in the default diff view; blame and full context remain opt-in from

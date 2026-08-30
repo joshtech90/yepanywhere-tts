@@ -47,6 +47,36 @@ Follow intent fixed that race on 2026-08-18. Treat a repeat on the reloaded
 client as new evidence and first determine whether follow intent was already
 active or was deliberately released.
 
+## Reproduced old-turn data injection
+
+On 2026-08-27, one live tab showed a much older completed turn at its bottom and
+omitted the user's accepted `status` steer, while a fresh tab reconstructed the
+correct tail from provider persistence. The Codex app-server notification queue
+still contained notifications for the old turn when YA started consuming the
+current one. The adapter treated the first different turn id as a live Core-id
+correction, published the old content with receipt-time timestamps, and stopped
+on that old turn's terminal event.
+
+The provider adapter now records a monotonic receipt sequence on every
+notification and captures a barrier before `turn/start`. Different-turn
+notifications already queued at that barrier are suppressed and logged once as
+a stale aggregate; post-barrier id changes retain the real Core-id race repair.
+This closes the proved data-injection mechanism without closing the separate
+unproved compaction-trim paint candidate that keeps this gap open.
+
+## Reproduced steering paint gap
+
+On 2026-08-26, steering an in-progress Conversation view turn while following
+reproduced a transient geometry defect on current `main`. After the optimistic
+user row committed, a layout-phase probe still observed the old bottom; the
+send path did not write the new bottom until its passive effect ran after
+paint. Moving that first write into the committing layout phase removes the
+intermediate position while retaining the existing delayed catch-up writes.
+
+The parked resume-position retry introduced by `cbf796fe` was not active in
+this reproduction. The separate compaction-driven prefix-trim candidate above
+remains unproved and keeps this gap open.
+
 ## Evidence to collect on recurrence
 
 - Record whether the event followed a backend reattach, a natural compaction,

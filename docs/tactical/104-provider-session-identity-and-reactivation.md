@@ -4,8 +4,9 @@
 > directory from durable or provider-native evidence, then report resume
 > success only after the provider has actually attached to that session.
 
-Status: planned. The three source defects remain open; this document
-consolidates their remediation and acceptance boundary before implementation.
+Status: completed 2026-08-30. Existing-session identity resolution supplies
+native provider, transcript project, and working project to move, resume, and
+reactivate. Direct-message resume now waits for native attachment readiness.
 
 Related contracts and plans:
 
@@ -18,32 +19,24 @@ Related contracts and plans:
 
 Source defects:
 
-- [`gaps/provider-resume-readiness.md`](../../gaps/provider-resume-readiness.md)
-- [`gaps/reactivate-provider-resolution.md`](../../gaps/reactivate-provider-resolution.md)
-- [`gaps/session-transcript-project-from-launch-cwd.md`](../../gaps/session-transcript-project-from-launch-cwd.md)
+- `gaps/provider-resume-readiness.md` — fixed and retired 2026-08-30.
+- `gaps/reactivate-provider-resolution.md` — fixed and retired 2026-08-30.
+- `gaps/session-transcript-project-from-launch-cwd.md` — fixed and retired
+  2026-08-30.
 
-## Current fault
+## Resolved faults
 
-Existing-session actions currently reconstruct one identity from three
-different kinds of evidence:
+Move, resume, and reactivate now use one route-independent identity resolver.
+Codex, Grok, and pi expose their exact native project path; Codex reads it from
+`session_meta.cwd`. A durable working-project override selects launch cwd,
+otherwise the native transcript project does. Neither the request URL nor a
+live process launch project supplies transcript location for those providers.
 
-- The resume route can recover a provider from native readers, but derives its
-  launch directory from the project in the request URL unless durable sandbox
-  metadata overrides it.
-- The reactivate route uses persisted YA provider metadata and otherwise falls
-  through to the selected project's default provider. An externally created
-  native session has no YA launch record, so this fallback can start the wrong
-  backend.
-- Project reclassification records the live process's project as the transcript
-  project when no earlier pointer exists. A process project is its launch or
-  effective working directory; it is not evidence of where a provider stores
-  the transcript.
-
-Resume has a second, independent timing fault. The route returns
-`resume.outcome: "started"` after the Supervisor creates a `Process`. Providers
-whose native load occurs when their session iterator is first consumed can
-reject the session id after that response. Process existence therefore proves
-YA work admission, not successful provider attachment.
+Resume also had an independent timing fault. The route returned
+`resume.outcome: "started"` after the Supervisor created a `Process`. Providers
+whose native load occurs when their session iterator is first consumed could
+reject the session id after that response. Process existence proved YA work
+admission, not successful provider attachment.
 
 ## Identity contract
 
@@ -103,6 +96,20 @@ turn to become visible. Message-less reactivation may construct an idle process
 without eagerly touching a provider. Its response must state only what that
 operation establishes unless the provider is deliberately initialized and the
 same attachment settlement is awaited.
+
+As implemented, `Process` retains the provider initialization settlement so a
+lazy iterator's success, failure, or completion cannot race past a later
+waiter. Direct-message resume waits up to 60 seconds for that settlement and
+requires the provider-reported native id to match the requested id. Failure or
+silent replacement aborts and unregisters the admitted process; the route
+returns `409` instead of `resume.outcome: "started"`. Capacity-delayed requests
+retain the distinct `queued` outcome, and message-less reactivation does not
+claim native attachment.
+
+Compatibility review covered core releases `v0.6.0`, `v0.6.1`, `v0.6.2`, and
+`v0.7.0`. The response schema and request remain unchanged, so no capability
+gate is needed; a current client against an older server keeps the legacy early
+acknowledgement.
 
 ## Recommended implementation order
 

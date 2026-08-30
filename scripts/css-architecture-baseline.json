@@ -21,6 +21,6 @@
       "reason": "Shared tool-row state and generated renderer composition."
     }
   },
-  "updated": "2026-08-23",
+  "updated": "2026-08-30",
   "note": "Chapter 11 containment baseline for authored non-module CSS under packages/client/src. Limits may only ratchet downward. New client stylesheets must be CSS Modules unless a reviewed generated-content or truly global exception is added here with a reason. Fork note: index.css/renderers.css limits are raised above upstream only by the read-aloud (TTS) feature; they still ratchet downward from here."
 }

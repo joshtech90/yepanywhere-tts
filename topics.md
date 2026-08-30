@@ -187,6 +187,8 @@
   metrics and read-only external provider process discovery for Agents.
 - session-sandboxing - Default-off, all-provider Project writes only
   confinement; Linux v1 requires Bubblewrap with provider defense in depth.
+- session-sandbox-network-boundary - Optional sandbox network firewall that
+  denies host/local destinations and private YA/provider control paths.
 - interactives - Zero-setup container for agent-built project web apps:
   opinionated template, committed project files, registry, icon links,
   YA-server-only reach (relay core, with optional globally configured
@@ -334,6 +336,8 @@
   fallback.
 - at-session-launching - Opt-in scanner that launches due at/ queue jobs
   across projects through at-queue.
+- yacron - A generally running local scheduler and agent CLI for durable future
+  prompts targeting existing or fresh YA sessions through the provider host.
 - mobile-ime-delivery - Android IME-safe composer delivery and the default-off
   preference for retaining keyboard focus afterward.
 - server-cache-concurrency-safety - Per-key async ownership, bounded source
@@ -351,3 +355,9 @@
   and sidebar labels, with deterministic collision reassignment.
 - server-side-settings - Server-owned policy, cross-client coherence, demand
   leases, warm retention, and environment fallback or pinning.
+- managed-runner-execution-targets - Default-off controller-owned sessions on
+  injected target runners, exact committed worktrees, and synchronized incoming
+  Git heads.
+- managed-remote-executors - Manual-SSH-first managed execution with an
+  injected provider-neutral runner, controller-prepared Git workspaces,
+  Codex-first proof, and no target upstream credentials.

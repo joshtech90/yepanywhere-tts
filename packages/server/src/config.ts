@@ -216,6 +216,10 @@ export function loadConfig(): Config {
   // Snapshot the documented env for the Environment settings panel before any
   // secrets are harvested/stripped below, redacting secrets at capture time.
   captureStartupEnvSettings();
+  const authCookieSecret = process.env.AUTH_COOKIE_SECRET;
+  const desktopAuthToken = process.env.DESKTOP_AUTH_TOKEN || undefined;
+  delete process.env.AUTH_COOKIE_SECRET;
+  delete process.env.DESKTOP_AUTH_TOKEN;
   // These are parent-session capabilities, never YA server configuration.
   // A server launched from an agent shell must not relay that parent's wake
   // credential into provider children it starts later.
@@ -436,7 +440,7 @@ export function loadConfig(): Config {
     fileAccessEnvPaths,
     // Auth disabled override (for recovery if user forgets password)
     authDisabled: process.env.AUTH_DISABLED === "true",
-    authCookieSecret: process.env.AUTH_COOKIE_SECRET,
+    authCookieSecret,
     authSessionTtlMs:
       parseIntOrDefault(process.env.AUTH_SESSION_TTL_DAYS, 30) *
       24 *
@@ -453,7 +457,7 @@ export function loadConfig(): Config {
     httpsSelfSigned: process.env.HTTPS_SELF_SIGNED === "true",
     tlsCertPath: process.env.TLS_CERT_PATH || undefined,
     tlsKeyPath: process.env.TLS_KEY_PATH || undefined,
-    desktopAuthToken: process.env.DESKTOP_AUTH_TOKEN || undefined,
+    desktopAuthToken,
   };
 }
 

@@ -17,6 +17,15 @@ const projectId = Buffer.from(sourceControlProjectPath).toString("base64url");
 const cleanLandingKey = "yep-anywhere-source-control-clean-landing";
 const longSearchLine =
   "prefix/that/is/intentionally/long/enough/to/be/truncated/while/searching/ZebraNeedle/and/a/long/trailing/suffix/for/the/source/control/result";
+const tooltipFixtureName =
+  "modified_keyboard_navigation_filename_long_enough_for_path_tooltip.ts";
+const outlineOrderProcessorPath = "src/interleaved/name-postprocessor.json";
+const outlineOrderReadmePath = "src/interleaved/Generic/README.md";
+const tallCommitBody = Array.from(
+  { length: 24 },
+  (_, index) =>
+    `Review paragraph ${index + 1} keeps enough prose in the selected commit to exceed the files pane height.`,
+).join("\n\n");
 
 test.use({ serviceWorkers: "block" });
 
@@ -136,7 +145,13 @@ async function openSourceControl(page: Page, baseURL: string) {
 
 function prepareBrowsingFixture() {
   const groupedDirectory = join(sourceControlProjectPath, "src", "grouped");
+  const interleavedDirectory = join(
+    sourceControlProjectPath,
+    "src",
+    "interleaved",
+  );
   mkdirSync(groupedDirectory, { recursive: true });
+  mkdirSync(join(interleavedDirectory, "Generic"), { recursive: true });
   const headSubject = execFileSync("git", ["log", "-1", "--format=%s"], {
     cwd: sourceControlProjectPath,
     encoding: "utf8",
@@ -144,13 +159,28 @@ function prepareBrowsingFixture() {
   if (headSubject !== "Add grouped browser fixture") {
     writeFileSync(
       join(groupedDirectory, "modified.ts"),
-      "export const value = 1;\n",
+      `${Array.from(
+        { length: 160 },
+        (_, index) => `export const reviewLine${index + 1} = ${index + 1};`,
+      ).join("\n")}\n`,
     );
     writeFileSync(
       join(groupedDirectory, "unchanged.ts"),
       "export const stable = true;\n",
     );
-    execFileSync("git", ["add", "src/grouped"], {
+    writeFileSync(
+      join(groupedDirectory, tooltipFixtureName),
+      "export const tooltipFixture = true;\n",
+    );
+    writeFileSync(
+      join(sourceControlProjectPath, outlineOrderProcessorPath),
+      "{}\n",
+    );
+    writeFileSync(
+      join(sourceControlProjectPath, outlineOrderReadmePath),
+      "# Nested fixture\n",
+    );
+    execFileSync("git", ["add", "src/grouped", "src/interleaved"], {
       cwd: sourceControlProjectPath,
     });
     execFileSync(
@@ -163,6 +193,8 @@ function prepareBrowsingFixture() {
         "commit",
         "-m",
         "Add grouped browser fixture",
+        "-m",
+        tallCommitBody,
       ],
       { cwd: sourceControlProjectPath },
     );
@@ -255,6 +287,68 @@ test("clean Changes landing and latest-commit preference stay distinct", async (
   await capture(page, "source-control-clean-mobile-375x812.png");
 });
 
+test("retention eviction preserves the mounted workbench", async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await installPageAttention(page);
+  const statusRequests = countGitStatusRequests(page);
+  await openSourceControl(page, baseURL);
+  await expect(
+    page.getByText("Working tree clean", { exact: true }),
+  ).toBeVisible();
+  await expect.poll(statusRequests.settled).toBe(true);
+
+  await setPageAttention(page, "hidden", false);
+  await page.evaluate(() => {
+    const retention = window.__YA_ROUTE_RETENTION__;
+    if (!retention) {
+      throw new Error("Route retention developer API was not published");
+    }
+    retention.clear();
+  });
+  await expect(
+    page.getByText("Working tree clean", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Loading...", { exact: true })).toHaveCount(0);
+  await capture(page, "source-control-retention-desktop-1000x600.png");
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(
+    page.getByText("Working tree clean", { exact: true }),
+  ).toBeVisible();
+  await capture(page, "source-control-retention-mobile-375x812.png");
+});
+
+test("unfocused cold load keeps the static workbench mounted", async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await installPageAttention(page, {
+    visibility: "visible",
+    focused: false,
+  });
+  await openSourceControl(page, baseURL);
+
+  await expect(page.getByTestId("working-tree-browser")).toBeVisible();
+  await expect(page.locator(".page-content-inner > .loading")).toHaveCount(0);
+  await expect(page.getByText("Loading...", { exact: true })).toBeVisible();
+  await expect(page.getByText("No matches.", { exact: true })).toHaveCount(0);
+  await capture(page, "source-control-unfocused-load-desktop-1000x600.png");
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.getByTestId("working-tree-browser")).toBeVisible();
+  await capture(page, "source-control-unfocused-load-mobile-375x812.png");
+
+  await setPageAttention(page, "visible", true);
+  await expect(
+    page.getByText("Working tree clean", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Loading...", { exact: true })).toHaveCount(0);
+});
+
 test("status refresh follows route and page attention", async ({
   page,
   context,
@@ -273,12 +367,16 @@ test("status refresh follows route and page attention", async ({
   expect(statusRequests()).toBe(initialRequests);
   await page.clock.fastForward(25_000);
   await expect.poll(statusRequests).toBeGreaterThan(initialRequests);
+  await expect.poll(statusRequests.settled).toBe(true);
 
   await page.evaluate(() => {
     history.pushState(null, "", "/sessions");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await expect(page).toHaveURL(/\/sessions$/);
+  await expect(
+    page.getByText("Working tree clean", { exact: true }),
+  ).toHaveCount(0);
   const requestsAfterLeaving = statusRequests();
   await page.clock.fastForward(60_000);
   expect(statusRequests()).toBe(requestsAfterLeaving);
@@ -454,7 +552,7 @@ test("groups semantic file sections and keeps current-content browsing distinct"
   await expect(inclusive).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("button", {
-      name: /^(?:Collapse|Expand) src\/grouped\/ \(2 files\)$/,
+      name: /^(?:Collapse|Expand) src\/grouped\/ \(3 files\)$/,
     }),
   ).toBeVisible();
   await capture(page, "source-control-browsing-range-desktop-1000x600.png");
@@ -462,6 +560,223 @@ test("groups semantic file sections and keeps current-content browsing distinct"
   await page.setViewportSize({ width: 375, height: 812 });
   await expect(inclusive).toBeVisible();
   await capture(page, "source-control-browsing-range-mobile-375x812.png");
+});
+
+test("reviews collapsed commit files with bracket navigation", async ({
+  page,
+  baseURL,
+}) => {
+  prepareBrowsingFixture();
+  await page.setViewportSize({ width: 1200, height: 600 });
+  await openSourceControl(page, baseURL);
+  await page.getByRole("button", { name: "Commit history" }).click();
+  await page
+    .getByText("Add grouped browser fixture", { exact: true })
+    .first()
+    .click();
+
+  const message = page.getByRole("button", {
+    name: /^Add grouped browser fixture/,
+  });
+  const selectedRevision = page.locator(".commit-list-item.selected");
+  await page.reload();
+  await expect(selectedRevision).toBeVisible();
+  await expect(selectedRevision).toBeFocused();
+  const pageScroller = page.locator(".page-scroll-container");
+  const pageScrollTop = await pageScroller.evaluate(
+    (element) => element.scrollTop,
+  );
+  await page.keyboard.press("Enter");
+  await expect(
+    page.locator("button[data-source-file-item]").first(),
+  ).toBeFocused();
+  expect(await pageScroller.evaluate((element) => element.scrollTop)).toBe(
+    pageScrollTop,
+  );
+  await expect(selectedRevision).toBeInViewport();
+  await expect(page.locator(".git-diff-preview-pane")).toBeInViewport();
+  await expect(message).toBeInViewport();
+  await expect
+    .poll(() =>
+      message.evaluate(
+        (element) => element.scrollHeight > element.clientHeight,
+      ),
+    )
+    .toBe(true);
+  await message.focus();
+  await message.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.keyboard.press("ArrowDown");
+  expect(await pageScroller.evaluate((element) => element.scrollTop)).toBe(
+    pageScrollTop,
+  );
+  await expect(selectedRevision).toBeInViewport();
+  await expect(page.locator(".git-diff-preview-pane")).toBeInViewport();
+
+  await expect(message).toBeVisible();
+
+  const filePaths = page.locator(
+    "button[data-source-file-item] [data-source-path]",
+  );
+  const groupedFilePaths = page.locator(
+    'button[data-source-file-item] [data-source-path^="src/grouped/"]',
+  );
+  const firstPath = "src/grouped/modified.ts";
+  const groupedFiles = page.getByRole("button", {
+    name: /^Collapse src\/grouped\/ \(3 files\)$/,
+  });
+  await groupedFiles.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(
+    page.locator("button[data-source-file-item]").first(),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(groupedFiles).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(groupedFilePaths).toHaveCount(0);
+
+  await message.click();
+  await expect(
+    page.locator(".git-diff-preview-body:has(.commit-message-view)"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: /^Expand src\/grouped\/ \(3 files\)$/,
+    }),
+  ).toBeInViewport();
+  await expect(selectedRevision).toBeInViewport();
+  expect(await pageScroller.evaluate((element) => element.scrollTop)).toBe(
+    pageScrollTop,
+  );
+  await page.keyboard.press("]");
+  const selectedPath = page.locator("[data-source-selected-path]");
+  await expect(selectedPath).toHaveAttribute(
+    "data-source-selected-path",
+    firstPath,
+  );
+  await expect(
+    page.locator("button[data-source-file-item]").first(),
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(filePaths).toHaveCount(5);
+  const orderedPaths = await filePaths.evaluateAll((paths) =>
+    paths.map((path) => path.getAttribute("data-source-path") ?? ""),
+  );
+
+  const diffBody = page.locator(".git-diff-preview-body");
+  await expect
+    .poll(() =>
+      diffBody.evaluate(
+        (element) => element.scrollHeight > element.clientHeight,
+      ),
+    )
+    .toBe(true);
+  const beforePage = await diffBody.evaluate((element) => element.scrollTop);
+  await page.keyboard.press("PageDown");
+  await expect
+    .poll(() => diffBody.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(beforePage);
+  await expect(selectedPath).toHaveAttribute(
+    "data-source-selected-path",
+    firstPath,
+  );
+
+  const tooltipFile = page.locator(
+    `button[data-source-file-item]:has([data-source-path="src/grouped/${tooltipFixtureName}"])`,
+  );
+  await tooltipFile.click();
+  await diffBody.hover({ position: { x: 10, y: 10 } });
+  await page.waitForTimeout(120);
+  await tooltipFile.hover();
+  await expect(page.getByRole("tooltip")).toContainText(
+    `src/grouped/${tooltipFixtureName}`,
+  );
+  const tooltipPath = `src/grouped/${tooltipFixtureName}`;
+  const tooltipIndex = orderedPaths.indexOf(tooltipPath);
+  const stepKey = tooltipIndex < orderedPaths.length - 1 ? "]" : "[";
+  const returnKey = stepKey === "]" ? "[" : "]";
+  const steppedPath = orderedPaths[tooltipIndex + (stepKey === "]" ? 1 : -1)]!;
+  await page.keyboard.press(stepKey);
+  await expect(selectedPath).toHaveAttribute(
+    "data-source-selected-path",
+    steppedPath,
+  );
+  await expect(
+    page.locator(
+      `button[data-source-file-item]:has([data-source-path="${steppedPath}"])`,
+    ),
+  ).toBeFocused();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await page.waitForTimeout(150);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await page.keyboard.press(returnKey);
+  await expect(selectedPath).toHaveAttribute(
+    "data-source-selected-path",
+    tooltipPath,
+  );
+  await expect(selectedPath).toContainText(tooltipPath);
+  await expect(diffBody.locator("[data-diff-line]").first()).toBeVisible();
+
+  await page
+    .locator(
+      `button[data-source-file-item]:has([data-source-path="${outlineOrderReadmePath}"])`,
+    )
+    .click();
+  await page.keyboard.press("[");
+  await expect(selectedPath).toHaveAttribute(
+    "data-source-selected-path",
+    outlineOrderProcessorPath,
+  );
+  await expect(
+    page.locator(
+      `button[data-source-file-item]:has([data-source-path="${outlineOrderProcessorPath}"])`,
+    ),
+  ).toBeFocused();
+  await expect(diffBody.locator("[data-diff-line]").first()).toBeVisible();
+
+  const selectedPathBox = selectedPath.locator("span").first();
+  const [pathBounds, diffBounds] = await Promise.all([
+    selectedPathBox.boundingBox(),
+    diffBody.boundingBox(),
+  ]);
+  expect(pathBounds).not.toBeNull();
+  expect(diffBounds).not.toBeNull();
+  if (pathBounds && diffBounds) {
+    expect(pathBounds.x + pathBounds.width).toBeLessThanOrEqual(
+      diffBounds.x + 0.5,
+    );
+  }
+  await capture(page, "source-control-keyboard-review-desktop-1200x600.png");
+
+  await page.setViewportSize({ width: 1000, height: 600 });
+  const responsiveDialog = page.getByRole("dialog");
+  await expect(responsiveDialog).toBeVisible();
+  await responsiveDialog.getByRole("button", { name: "Close" }).click();
+  await expect(responsiveDialog).toBeHidden();
+  const shortcutHelp = page.getByRole("button", {
+    name: "Keyboard shortcuts",
+  });
+  await shortcutHelp.click();
+  await expect(page.getByRole("tooltip")).toContainText(
+    "Previous or next file diff",
+  );
+  await expect(page.getByRole("tooltip")).toContainText("Scroll diff by page");
+  await capture(page, "source-control-keyboard-desktop-1000x600.png");
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await openSourceControl(page, baseURL);
+  await page.getByRole("button", { name: "Commit history" }).click();
+  await page
+    .getByText("Add grouped browser fixture", { exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: /^(?:Collapse|Expand) src\/grouped\/ \(3 files\)$/,
+    }),
+  ).toBeVisible();
+  await capture(page, "source-control-keyboard-mobile-375x812.png");
 });
 
 async function expectMatchInsidePreview(

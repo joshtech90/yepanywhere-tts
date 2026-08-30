@@ -92,6 +92,8 @@ export interface GitDiffPreviewHandle {
   jumpToNextHunk: () => boolean;
   /** Move to the previous rendered diff hunk, wrapping at the start. */
   jumpToPreviousHunk: () => boolean;
+  /** Scroll the rendered diff by one viewport without moving keyboard focus. */
+  scrollByPage: (direction: -1 | 1) => void;
 }
 
 interface HunkNavigationHandlers {
@@ -112,7 +114,7 @@ interface GitDiffPreviewProps
   captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionRequestFailure?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
 }
 
@@ -291,6 +293,15 @@ export const GitDiffPreview = forwardRef<
     () => ({
       jumpToNextHunk: () => hunkNavigationRef.current?.next() ?? false,
       jumpToPreviousHunk: () => hunkNavigationRef.current?.previous() ?? false,
+      scrollByPage: (direction) => {
+        const body = bodyRef.current;
+        if (!body) return;
+        const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+        body.scrollTop = Math.min(
+          maxScrollTop,
+          Math.max(0, body.scrollTop + direction * body.clientHeight),
+        );
+      },
     }),
     [],
   );
@@ -392,7 +403,7 @@ export function GitDiffModal({
   captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionRequestFailure?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
   onClose: () => void;
 }) {
@@ -472,7 +483,7 @@ export function GitDiffBody({
   captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionRequestFailure?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   retainedScrollRatio?: number;
   scrollContainerRef?: RefObject<HTMLElement | null>;
   t: TranslationFn;
@@ -623,7 +634,7 @@ export function GitDiffBody({
             sourceKind === "comparison" ||
             sourceKind === "inclusive-comparison"
           ) {
-            onProjectionRequestFailure?.();
+            onProjectionRequestFailure?.(err);
           }
           const message = err.message || t("gitStatusLoadDiffFailed");
           setLoadState((current) =>
@@ -728,7 +739,7 @@ function GitDiffContent({
   captureReviewProjections?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionRequestFailure?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
 } & GitDiffPreviewRetentionProps) {
   const [showFullContext, setShowFullContext] = useState(
@@ -935,7 +946,7 @@ function GitDiffContent({
           sourceKind === "comparison" ||
           sourceKind === "inclusive-comparison"
         ) {
-          onProjectionRequestFailure?.();
+          onProjectionRequestFailure?.(err);
         }
         const message =
           err instanceof Error ? err.message : t("gitStatusLoadContextFailed");

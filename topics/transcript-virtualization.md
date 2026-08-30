@@ -18,15 +18,18 @@ See also:
 
 Topic: transcript-virtualization
 
-Status: 2026-07-09. Stage 1 item 1 landed (stabilize MessageList's callback
-props): idle CPU ~22% → ~9%, per-second O(rows) re-render gone. Stage 2 landed
-via `content-visibility: auto` on `.message-render-row`: laid-out render tree
-bounded to the viewport — **layout objects ~70,100 → ~2,750 at 1532 rows (25×)**,
-RSS lower, with no functional regressions (turn-rail markers, click-to-jump,
-scroll-to-bottom, and hover affordances all verified; no paint-containment
-clipping). Tradeoff: idle *style-recalc* roughly doubled, because the per-second widget
-layouts now also re-evaluate content-visibility state (native, high count but
-~1% CPU duration).
+Status: Stage 1 removed the per-second O(rows) re-render. The Stage 2
+`content-visibility: auto` experiment was retired on 2026-08-26 after confirmed
+scroll-position failures and severe amplification in a real long-session
+reload. The bounded semantic client data window is shipped. A measured-height
+semantic render window landed on 2026-08-29 after a 360-turn profile still
+settled at roughly 19,000 elements. Its accepted three-repetition browser trace
+ended at eight mounted rows and 435 elements, with the exact latency and
+trade-off record in the
+[`2026-08-29 system-observed follow-up`](performance-regression-suite.runs/20260829-system-observed-followups.md).
+Bounded whole-session isearch is also shipped: explicit continuation scans old
+compact pages off the main thread, and committing an old result mounts only its
+page as a disjoint semantic window.
 
 2026-07-09 (follow-up, measured): **Stage 1 items 2–3 are moot, not
 "re-prioritized."** Direct render-count instrumentation on the full-transcript
@@ -70,13 +73,16 @@ dev server's load/highlight timing is noisy; only quiescence-gated samples
 (DOM-mutation rate below threshold before measuring) are trustworthy — a fixed
 settle sometimes catches load-time shiki highlighting.
 
-## Problem (one line)
+## Historical problem
 
-`MessageList` mounts every message as live DOM and re-renders the whole list
-~once per second even when idle, so both DOM footprint and per-tick main-thread
-work are O(transcript length). Native browser memory (Blink style/layout/paint,
-allocator high-water) grows over hours to many GB while the V8 heap stays flat.
-Full measurement and evidence: `memory-growth.md`.
+Before Stage 1 and the measured-height render window landed, `MessageList`
+mounted every loaded message as live DOM and the surrounding session tree could
+re-enter large historical subtrees during active output. DOM footprint and
+render work therefore scaled with transcript length; native browser memory
+(Blink style/layout/paint and allocator high-water) could grow to many GB while
+the V8 heap stayed flat. The current client instead combines a bounded semantic
+data window with a measured-height mounted window. Full baseline evidence:
+`memory-growth.md`.
 
 ## Measurement harness (reproduce before and after each stage)
 
@@ -155,7 +161,7 @@ Goal: a very long transcript should cost the browser (Blink style/layout/paint/
 raster memory, and any per-tick layout) only for what's near the viewport, not
 for the whole history.
 
-### Rejected default experiment: `content-visibility: auto`
+### Retired experiment: `content-visibility: auto`
 
 Experimented 2026-07-09; default rejected 2026-07-10.
 
@@ -205,18 +211,26 @@ finished session. That falsifies the behavior-preserving premise: variable row
 heights and bottom-anchored transcript scrolling make first-reveal geometry
 corrections user-visible.
 
-Decision: default the experiment off immediately. Keep the browser-local toggle
-only for explicit comparison while the longer-term design is considered. The
-~150 MB RSS reduction measured above does not justify fighting the reader's
-scroll position, and the experiment does not bound retained transcript data.
+Decision: default the experiment off immediately. The ~150 MB RSS reduction
+measured above does not justify fighting the reader's scroll position, and the
+experiment does not bound retained transcript data.
 
 2026-07-10 explored-rendering hardening: grouped exploration rows publish a
 bounded intrinsic-height estimate derived from their visible entry/detail-row
-count, capped at the group's existing scrollable-body height. The override is
-consumed only when this default-off experiment is explicitly enabled; it does
-not change the default or weaken the decision above.
+count, capped at the group's existing scrollable-body height.
 
-### Approved direction: bounded semantic client window
+2026-08-26 retirement: a 45,103-message Codex session reopened with the
+experiment enabled at 3,461 rendered rows and roughly 178,000 DOM elements.
+The tab spent about 60% of its observed lifetime in long tasks, with frame gaps
+up to 11.9 seconds, while intrinsic-height correction also left the reader at
+the start of the compact tail. After disabling the experiment and remounting
+against the bounded active window, the page held 310 rows and roughly 13,750
+elements, with a 237 ms worst frame gap. The row reduction came from the active
+window rather than CSS, but the experiment amplified the unbounded state and
+made scroll recovery unreliable. The comparison toggle, preference plumbing,
+and transcript CSS were removed; no runtime path now enables this experiment.
+
+### Shipped bounded semantic client window
 
 Do not hide an unbounded transcript behind estimated-height spacers. Keep the
 full transcript canonical on the server and model the active client transcript
@@ -227,8 +241,7 @@ semantic compaction/turn limits rather than a byte bound; one unusually large
 retained turn may therefore remain large. Trimming must also prune
 message-associated augment and tool/agent maps.
 
-This direction is approved for implementation but has not landed. The tactical
-contract is
+This direction is shipped. Its original tactical contract is
 [`060-bounded-active-transcript-window.md`](../docs/tactical/060-bounded-active-transcript-window.md):
 default-on with a Performance setting to disable it, only while following the
 bottom, a greater-than-60-second boundary-age guard, two-compaction retention,
@@ -247,73 +260,98 @@ Implement it against:
   which already warned that `content-visibility` risked scroll height, browser
   find, selection, and search anchors.
 
-The JS spacer-window design below remains research, not the chosen fallback. It
-preserves a continuous synthetic scroll range but shares the same hard geometry
-and anchoring problems that invalidated the CSS shortcut.
+This data bound and the render window below compose. The data window limits
+what the client retains; the render window limits live DOM for the loaded rows
+without hiding or dropping them from search and navigation.
 
-### Open architecture: whole-session search across a bounded window
+### Whole-session search across a bounded window
 
-The current in-session Ctrl+R, Ctrl+S, and Ctrl+Alt+S search operates only on
-loaded render items. The bounded defect is tracked in
-[`gaps/isearch-stops-at-loaded-transcript.md`](../gaps/isearch-stops-at-loaded-transcript.md):
-an exhausted reverse search can request older user-turn-bounded pages and rerun
-the existing projection while preserving query, direction, selection, and
-scroll restoration.
+Ctrl+R, Ctrl+S, and Ctrl+Alt+S initially search only the loaded semantic
+window. When older durable history exists and the query has at least two
+characters, the search panel offers **Search older**, then **More**. Each
+activation reads exactly one existing compact session page. A lazily loaded Web
+Worker compiles that page through the canonical transcript and Conversation
+View projections and applies the active scope, query, case, and Thinking
+visibility. The main thread retains only stable match ids, target ids, short
+previews, timestamps, and source-page cursors; it does not merge scanned page
+bodies into the active session store.
 
-A later whole-session search design should avoid making repeated search load
-and retain every full message. One option is a server-owned session digest in
-which each durable searchable row contributes a stable source id/cursor,
-searchable excerpt, and approximate rendered or cumulative height. Selecting a
-digest match would hydrate a bounded real-transcript window around its cursor,
-preserve search state, and replace estimated geometry with measured row heights
-as content mounts. The loaded rows remain authoritative; height metadata is an
-approximation and cannot become a layout contract.
+One page returns at most 200 matches and one search retains at most 512. A
+truncated page or aggregate limit stops continuation and asks the reader to
+refine the query. Changing query, case, scope, projection, or session
+invalidates the old excerpts. If ordinary pagination was already in flight,
+newly loaded ids supersede duplicate excerpts while continuation keeps moving
+toward older history. Closing search terminates its worker and releases the
+excerpt set. Before explicit continuation, ordinary transcript use and
+loaded-window search perform no history request, worker construction, or
+historical-page compilation.
 
-Before choosing an endpoint, compare a compact digest transferred once for
-client-side search with server-side query results plus a coarse full-session
-height index. A digest makes repeated search responsive but may remain large
-for extreme sessions. Server-side queries bound transfer but add round trips
-and require explicit ordering and version consistency while the transcript
-grows. This is a single-session windowing concern. The independent
-cross-session corpus and indexing proposal remains in
+An unhydrated historical result is deliberately preview-only. It has no turn
+rail marker and no estimated transcript coordinate: a page-local height would
+misrepresent its position across omitted history. Committing the selected
+result refetches that result's page and mounts that one page before the recent
+loaded tail. An explicit unloaded-history marker separates them when an
+intervening region remains; an adjacent page joins without claiming an
+omission. The result's stable render id then enters the measured-height render
+window; after the React commit, the normal reveal and settled real-row geometry
+own centering. Closing isearch preserves that row while nonmatching rows expand
+around it, so the selected anchor does not move under the reader.
+
+Only one historical page is mounted. It is outside the canonical active
+session store, and trim, fork, and store-backed copy actions are unavailable on
+its turns. Ordinary older-page controls and automatic pagination stay suspended
+while this disjoint page is mounted, so a visible historical target cannot
+trigger background prepends that move it. **Follow**, Ctrl+End, a session
+change, or a Conversation View state change removes it and returns to the
+recent tail. The compact-page semantic bound still permits one unusually large
+turn; whole-session indexing remains a possible later optimization if that real
+case justifies a separate index and consistency contract. Cross-session
+indexing remains independently scoped in
 [`all-session-content-search.md`](all-session-content-search.md).
 
-### Research design: JS windowed rendering
+### Measured-height semantic render window
 
-Render only rows near the viewport (plus a small overscan); replace off-screen
-runs with spacer elements sized from measured/estimated row heights. Bounds both
-DOM size and per-tick work to the viewport.
+`MessageList` keeps every loaded timeline row in its semantic model but mounts
+only the viewport, 1.25 viewports of overscan, and at most 48 ordinary rows.
+Windowing activates only at 200 units of semantic render weight, so the short
+session path keeps its original DOM. One top-level user, assistant, standalone,
+or `/btw` row is the identity and measurement unit; an assistant row's weight
+includes its display subrows. A single unusually large turn can therefore
+remain larger than the ordinary bound.
 
-This is not a drop-in list virtualizer — it must integrate with existing
-transcript machinery. Known couplings to solve (each currently assumes all rows
-are in the DOM):
+Off-window runs become spacer elements. Boundary markers measure mounted row
+heights, keyed by stable timeline-row keys; unmeasured rows use a fixed
+weight-based estimate. Before a window shift or height-model correction, the
+first visible render-row anchor is captured and restored in the layout phase.
+Follow-bottom remains owned by `MessageList` rather than the window hook.
 
-- **Variable row heights.** Text/tool/code/thinking rows differ widely and
-  reflow (ResizeObserver in `TextBlock`, media previews, code highlight). Need a
-  measured-height cache keyed by stable row id, with estimate-then-correct so the
-  scrollbar and anchoring don't jump.
-- **Scroll anchoring / follow-bottom.** `MessageList` already has substantial
-  anchor/follow/snapshot logic (rect reads, `isAtScrollBottom`, scroll snapshot
-  publish). Virtualization changes what "scrollHeight" means; anchoring must be
-  driven by the height model, not by rects of rows that may be unmounted.
-- **Turn rail (`UserTurnNavigator`).** It computes marker positions by calling
-  `getBoundingClientRect` on every user-turn row (`UserTurnNavigator.tsx` ~519).
-  Off-screen rows won't exist. Marker layout must derive from the height model /
-  row offsets, not live DOM rects. This is a real, required sub-task.
-- **In-transcript search / isearch** (`useMessageListIsearch`) scans and scrolls
-  to matches across the whole transcript. Jumping to a match must mount its row
-  (scroll the height model to it), and match highlighting must survive
-  mount/unmount.
-- **Selection, quote anchors, comment anchors** reference live DOM; ensure
-  anchors resolve after a row remounts (store by row id + offset, re-resolve on
-  mount).
-- **Progressive initial render** (`getProgressiveTimelineVisibility`) already
-  stages the first paint; fold it into the window model rather than layering a
-  second mechanism.
+Every render id maps to its owning semantic row and cumulative height-model
+offset. Search, recall, route restoration, keyboard turn navigation, and turn
+rail marker clicks can therefore position an unmounted target, mount its row,
+and settle on the real DOM geometry. `UserTurnNavigator` uses live rects when a
+row is mounted and height-model offsets otherwise. Progressive initial render
+still controls which semantic rows are available; once their aggregate weight
+crosses the threshold, the render window bounds the mounted subset.
 
-Default/rollout: keep behavior identical for short sessions (window ≥ list ⇒ no
-change). Gate behind a setting or size threshold initially so the non-buggy
-short-session path is untouched (see the UI-changes-preserve-defaults rule).
+Comment anchors record their owning render id and copy-source index. Rows with
+live quote anchors are retained as sparse semantic islands even when the main
+viewport window moves elsewhere, preserving DOM-backed tint ranges without
+mounting the intervening transcript. Disclosure state remains in the existing
+remembered-disclosure registry, outside row component lifetime, so unmounting a
+row does not reset explicit activity/tool disclosure.
+
+The 2026-08-29 unit contract covers the 48-row bound, waking a distant requested
+turn, virtual turn-rail geometry, short-session DOM identity, older-page
+chunking, scroll/snapshot behavior, and retaining a distant live quote anchor.
+The same-day system trace reduced the 360-turn final state from 722 mounted
+rows, 18,985 elements, and roughly 26,500 layout objects to eight rows, 435
+elements, and 451–454 layout objects. Yielded older-history work completed
+without a multi-second task or control timeout; its longest tasks were
+118–127 ms. Tooltip long-task time fell from 186–299 ms to zero. Full-mode
+scroll frame p95 rose from 16.8 to 33.4 ms without a long task, and the
+Conversation scroll's numeric starting edge changed as measured heights
+settled; those accepted limitations remain explicit in the report while row
+anchor preservation and wake behavior remain unit-contract requirements.
 
 ## Non-goals
 

@@ -7,11 +7,11 @@
 
 Topic: session-dom-linger-speedup
 
-Status: First one-session underlay linger slice implemented 2026-07-01. The
-current `SessionRouteSnapshot` implementation remains the fallback safety net,
-not the final latency target. User-observed warm returns can take over
-0.5 seconds when React remounts the transcript and deterministic renderers
-rebuild DOM, so the implemented fast path keeps the already-mounted session DOM
+Status: One-session underlay linger implemented 2026-07-01; bounded direct
+session A/B reuse implemented 2026-08-29. The current `SessionRouteSnapshot`
+implementation remains the fallback safety net. User-observed warm returns can
+take over 0.5 seconds when React remounts the transcript and deterministic
+renderers rebuild DOM, so the fast path keeps one eligible prior session DOM
 alive for a bounded grace window.
 
 ## Problem
@@ -63,9 +63,9 @@ Initial scope:
 
 - one lingered session entry only
 - session -> non-session route -> same session within 60 seconds
-- direct session A -> session B navigation does not park A; it unmounts or
-  expires the parked slot and relies on `SessionRouteSnapshot` if the user later
-  returns
+- direct session A -> session B navigation may park A when its rendered tree is
+  below the direct-linger admission cap; returning to A swaps the active and
+  parked trees without remounting either
 - same source, auth state, project id, YA session id, route params, and
   tail-window params only
 - no cross-tab, reload, or durable persistence
@@ -75,16 +75,22 @@ Do not expand this into a generic keep-alive wrapper for all routes. Session
 detail is the latency problem and the resource-risk problem; solving it with a
 narrow session host keeps the behavior inspectable.
 
-Do not start with two parked sessions. A second parked transcript tree adds the
-riskiest failure modes first: duplicate live streams, focus and shortcut
-ambiguity, confusing ownership of scroll/composer-adjacent state, and mobile
-memory spikes. If a later pass wants two entries, it needs separate memory and
-resource evidence after the one-entry path is proven.
+Do not retain two parked sessions. Direct switching is bounded to one active
+tree and one parked tree. The parked tree releases its activity listener,
+focused session watch, and owned-session stream, and remains inert and hidden.
+Trees above 5,000 descendant elements are admitted beside an active session
+only when Conversation View can compact a bottom-following transcript to its
+bounded tail. A scrolled-away or otherwise non-compactable tree falls back to
+`SessionRouteSnapshot` remount behavior so direct reuse cannot silently move
+the user's scroll position.
 
 ## Resource Contract
 
 - Bounded grace: default candidate 60 seconds.
-- Bounded entries: one session first; two only after memory testing.
+- Bounded entries: one active session plus at most one parked session.
+- Bounded direct-session size: at most 5,000 descendant elements in the parked
+  tree while another session is active, unless the parked bottom-following
+  Conversation View is compacted to the 120-render-item tail.
 - Same-tab only; no durable persistence and no cross-source reuse.
 - Hidden DOM must not survive a closed tab or browser reload.
 - The hidden route must be inert to the foreground route: no pointer events,
@@ -98,7 +104,7 @@ resource evidence after the one-entry path is proven.
 
 ## Implementation Shape
 
-Introduce a small `SessionDomLingerHost` near route layout, keyed by source,
+`SessionDomLingerHost` sits beside route layout, keyed by source,
 project, session id, route params, and query params. When leaving a session
 route for a non-session route, park the route subtree in the host instead of
 unmounting it. Prefer the underlay shape for the first pass:
@@ -131,9 +137,9 @@ foreground route data loading must continue to behave as if normal navigation
 happened. DOM linger is an implementation detail of route rendering, not a
 second navigation stack.
 
-This first version is default-on because the user explicitly selected it as the
-needed speed path and the one-entry/60-second caps make it bounded. Do not infer
-from that that generic hidden keep-alive is generally safe.
+This speed layer remains an explicit, default-off performance preference. Do
+not infer from its bounded direct-session reuse that generic hidden keep-alive
+is safe.
 
 ## Content-Frame Contract
 
@@ -149,6 +155,14 @@ Full-frame built-in viewers belong inside `NavigationLayout` as content-frame
 routes, not as sibling routes that unmount the layout. They may cover 100% of
 the app frame and suppress sidebar chrome, but the session linger host must stay
 mounted. `/projects/:projectId/file` is the current concrete example.
+
+An authenticated standalone content-frame viewer must still expose the normal
+sidebar launcher. Activating it opens the shared sidebar as a temporary overlay
+at every viewport width; dismissing the overlay returns to the unchanged viewer,
+while selecting a destination performs normal app navigation. The content frame
+stays full-width and sidebar session feeds remain disabled until that overlay is
+actually opened, so a new-tab file view neither waits for sidebar discovery nor
+changes the default presentation merely because sidebar access is available.
 
 External offsite links that navigate the browser away from YA are outside this
 contract. If YA later adds a built-in offsite/web viewer, that viewer must follow
@@ -244,6 +258,9 @@ still cannot share the session DOM.
   existing session within one animation frame on development hardware. If the
   route still takes hundreds of milliseconds, the implementation is falling
   back to remount or doing synchronous foreground work on reveal.
+- Direct-session performance check: after both eligible sessions are warm,
+  quiet A/B sidebar switches must reuse the retained layer and reach the first
+  readable frame within a 200 ms p95 ceiling.
 - Back/reselect parity: browser Back and sidebar/session-list reselection of
   the same session should hit the same linger-reveal path.
 - Expiry test: after the grace period, the subtree unmounts and the normal
@@ -255,10 +272,11 @@ still cannot share the session DOM.
 
 ## 2026-07-01 Implementation Notes
 
-`NavigationLayout` owns the linger layer. Session routes render through that
-layout-owned layer; the React Router child route is only a marker. Non-session
-routes continue through the normal `Outlet` as the foreground layer. Session
-route identity is parsed from `location.pathname`, not inherited child
+`SessionDomLingerHost` owns route identity, keyed layers, expiry, admission,
+resource deferral, and pre-navigation visual swaps. `NavigationLayout` composes
+sidebar and foreground layout around that host; the React Router child route is
+only a marker. Non-session routes continue through the normal `Outlet` as the
+foreground layer. Session route identity is parsed from `location.pathname`, not inherited child
 `useParams()`, because a parent layout can otherwise retain stale session params
 after navigation to `/git-status`.
 
@@ -326,3 +344,46 @@ session detail took 0.17 ms. That establishes both ownership fixes: parked
 optional work waits for foreground, and the normal foreground session-detail
 path prepopulates the compact mapping rather than making recovery rediscover or
 reparse the session.
+
+## 2026-08-29 Direct-session reuse
+
+The direct A/B path keeps the outgoing compact session mounted before React can
+discard it, then swaps the two keyed layers on return. Admission happens in a
+layout effect before paint: one active session may retain one same-source,
+same-project prior session only when the outgoing tree has at most 5,000
+descendant elements. A route-parameter mismatch, source/project mismatch,
+expiry, preference disable, or larger tree destroys the parked entry and uses
+the retained snapshot path.
+
+Parked sessions keep component, DOM, scroll, and draft state but release their
+activity-bus consumer, focused file watch, and owned-session stream. Revealing
+the session recreates the applicable consumer; the focused watch performs its
+normal open catch-up and an owned stream resumes from the hook's retained event
+cursor. The wrapper is `inert`, `aria-hidden`, invisible, and pointer-disabled
+while parked, so only the active layer owns focus and interaction.
+
+The performance trace records route click, snapshot lookup/hit and message
+identity, state queue, MessageList preprocessing/grouping/commit, readable
+paint, remount versus DOM reuse, active/parked layer counts, active session
+consumers, cache bytes, heap, listeners, and browser process memory. Its causal
+mode alternates idle and immediate-append arms by repetition so elapsed idle
+time is not silently attributed to session activity.
+
+Sidebar rows publish typed project/session/href navigation intent to
+`SessionDomLingerHost`. The host performs wrapper visibility, `inert`,
+accessibility, and pause-signal swaps synchronously before urgent router
+navigation; it does not discover navigation through the Sidebar's CSS classes.
+The keyed session subtree is memoized, so that navigation can commit without
+traversing the retained transcript. Background-resource state follows after
+the first paint, on the next animation frame plus 500 ms, and is cancelled if
+another switch supersedes it.
+
+A completed, bottom-following Conversation View compacts to the existing
+120-render-item progressive tail while parked. On reveal, that useful tail is
+immediately readable; after a 1.5-second grace, the rest returns in 12-item
+batches. Every queued batch and final reveal rechecks the synchronous pause
+signal, so parking the session again cancels obsolete hydration. A scrolled-away
+view does not opt into compaction and therefore remains subject to the 5,000-
+element admission cap. The smaller batch applies only to retained rehydration;
+ordinary initial progressive restoration keeps its 90-item batch so an
+off-tail remembered scroll anchor mounts promptly.

@@ -60,8 +60,10 @@ the defect this topic addresses.
 - Retention is source-scoped. A local source, remote source, project id,
   provider session id, auth state, and route parameter set must not reuse
   another source's retained view.
-- A browser reload remains a cold start unless another durable feature
-  explicitly provides persistence.
+- A browser reload remains a cold start for route data and exact DOM geometry.
+  Session scroll memory is the narrow durable exception: site storage preserves
+  the device-specific furthest-seen content anchor and follow state, not the
+  transcript snapshot.
 
 ## Boundaries
 
@@ -248,24 +250,55 @@ when the user immediately bounces away and back.
 
 ## Contract: Coming Back To Where You Left Off
 
-Maintainer-confirmed contract (2026-07-03; previously a 2026-07-02 lean):
-returning to a session resumes at *what the user last viewed*. Landing on
-never-seen content is the failure to avoid; output that arrived while away
-belongs below the restored viewport (surfaced by the new-output-below
-follow affordance), not silently scrolled past.
+Maintainer-confirmed contract (2026-07-03, clarified 2026-08-26; previously a
+2026-07-02 lean): returning to a session resumes at the *furthest position the
+user has seen*. Landing on never-seen content is the failure to avoid; output
+that arrived while away belongs below the restored viewport (surfaced by the
+new-output-below follow affordance), not silently scrolled past.
+
+For browser reloads and multiple tabs, the return point is a device-specific
+high-water mark: each visible tab may advance it, and site storage keeps the
+furthest turn seen by any tab without granting an exclusive lease. An active
+turn counts before it completes. Within the winning turn, expanded view keeps
+the furthest activity and content offset; Conversation View keeps the turn as
+the return context. Scrolling upward never moves the durable return point
+backward, even within that turn. Different sessions have different keys, so
+split-screen viewing advances both independently. Exact DOM pixel geometry
+remains an in-tab hint; the content anchor and follow state survive reload.
+Cross-device/server sharing is not yet part of this contract.
+
+Concurrent tabs publish independently keyed immutable observations rather than
+overwriting one shared snapshot. Readers merge those observations by the same
+furthest-seen ordering, and opportunistic cleanup retains a winning observation
+before removing dominated ones. An interleaved nearer write therefore cannot
+erase a farther cursor.
+
+The retained anchor remains authoritative while the initial transcript is
+still growing asynchronously. Before the reader takes control, every observed
+height change reapplies that anchor so an early browser clamp cannot strand the
+viewport above the saved content. A user scroll or explicit Follow action ends
+that retry and transfers ownership to the reader. Because the high-water mark
+lives in site storage, a same-origin server process restart followed by reload
+restores it without depending on server memory or route-cache state.
 
 Which mode *engages* the restore is policy (`sessionScrollBehavior.ts`;
 mode decisions in
 [`docs/tactical/047-session-scroll-memory-policy.md`](../docs/tactical/047-session-scroll-memory-policy.md)):
-the default `live-tail` deliberately returns bottom snapshots to the live
-tail, while `remember-place` restores the last-viewed anchor. The capture
+the default `live-tail` returns cursors recorded while following to the live
+tail, while `remember-place` restores the furthest-seen anchor. A parked
+`live-tail` cursor also restores its anchor. The capture
 machinery is load-bearing regardless of active mode: anchors are captured
 even at bottom, each anchor carries neighbor row ids and a timestamp for
 recovery when the exact row is gone, and snapshot publication is gated to
-settled (post-hydration) content. A change that stops capturing at-bottom
-anchors, overwrites settled snapshots with transient hydration geometry,
-or drops the context fallbacks breaks this contract even while the
-`live-tail` default hides the loss.
+settled (post-hydration) content. A visible incomplete turn advances the turn
+frontier; new visible activities advance the expanded-view position. Completing
+a turn while visibly following must publish a fresh observation even without a
+scroll event. Activating Follow is itself a return-state transition: it must
+publish the resulting live-tail observation immediately, before a route switch
+or reload can unmount the view. A change that stops capturing at-bottom anchors,
+overwrites settled snapshots with transient hydration geometry, or drops the
+context fallbacks breaks this contract even while the `live-tail` default hides
+the loss.
 
 ## Known Divergence Risks: Warm Restore vs Cold Reload (2026-07-02)
 
@@ -274,18 +307,19 @@ intermittent scroll-reset investigation (upstream commit `45279b9b`). The
 question: can a cached return with delta catch-up land the viewport somewhere
 a cold reload never would, especially when the server moved while the user was
 away? Four gaps, ordered by user impact. Correctness criterion: the restore
-target is *what the user last viewed*, even if follow mode was engaged when
-they left (§ Contract: Coming Back To Where You Left Off).
+target is the furthest position the user saw in any visible tab, even if follow
+mode was engaged when they left (§ Contract: Coming Back To Where You Left
+Off).
 
-1. **Follow-mode returns can still choose newest-bottom over last-viewed
+1. **Follow-mode returns can still choose newest-bottom over furthest-seen
    content.** Before 2026-07-03, `captureScrollSnapshot` suppressed anchor
    capture when `atBottom`, so the data needed to do better was never captured.
    The 2026-07-03 scroll-memory slice now captures anchors even when the
    viewport is at bottom and routes restore through a browser-local policy.
-   The default `live-tail` policy still maps `atBottom` to scroll-to-bottom
-   with follow re-engaged, so when the server moved while away a warm return
-   can still intentionally land at the *new* bottom. The `remember-place`
-   policy can instead restore the captured last-viewed anchor.
+   The default `live-tail` policy maps recorded follow intent to
+   scroll-to-bottom with follow re-engaged, so when the server moved while away
+   a warm return can still intentionally land at the *new* bottom. The
+   `remember-place` policy can instead restore the captured high-water anchor.
 2. **Anchor miss falls back to stale pixel geometry.** When `findRenderRow`
    misses the anchor id, restore clamps the captured `scrollTop` into the
    current `scrollHeight`. After a delta merge, partial progressive hydration,
@@ -294,16 +328,15 @@ they left (§ Contract: Coming Back To Where You Left Off).
    hydrated yet, when the anchor message was deleted server-side (edit-turn
    truncation, rewritten history), or when the row id belonged to
    restructured agent content.
-3. **The restore is one-shot and races progressive hydration.** The restore
-   effect fires at the first non-empty `displayRenderItems` and clears
-   `isInitialLoadRef`; if the anchor is not mounted yet, the pixel fallback
-   runs and nothing re-anchors when later chunks mount. On the capture side,
-   snapshots can be published mid-hydration with transient geometry. The
-   2026-07-02 fixes (`Ignore top anchored session scroll snapshots`, `Keep
-   cached session restores at the tail`) discard the worst captures at
-   restore time, but the mid-hydration capture window and the
-   restore-before-anchor-mounts window both remain. This combination is the
-   likeliest mechanism for the intermittent scroll resets.
+3. **One-shot restore race — fixed 2026-08-26.** The progressive-hydration
+   wait already delayed restore until the anchor row mounted, but that mounted
+   row could still grow after the first restore as markdown and transcript
+   content finished rendering. Chrome clamped the early target to the short
+   document's current maximum (often zero), then left the viewport there as
+   the document grew. The retained anchor now remains pending through
+   `ResizeObserver` height changes until a user scroll or explicit Follow takes
+   ownership. A focused 500-to-5500-pixel growth test and browser coverage for
+   sidebar A -> B -> A, reload, and same-origin server restart guard the fix.
 4. **The delta merge is union-only, so rewritten histories diverge in
    content, not just position.** On cursor miss the server returns the full
    list (`sliceAfterMessageIdWithMatch` with `found: false`) without
@@ -318,9 +351,9 @@ they left (§ Contract: Coming Back To Where You Left Off).
 ## Gap-Closing Plan: Position-Faithful Warm Restore
 
 Target invariant: a warm restore resolves to the same content position a cold
-reload would produce given the same reading history — the last-viewed row when
-one is recorded, else the tail — and snapshots are captured only from settled
-content.
+reload would produce given the same reading history — the furthest-seen row
+when one is recorded, else the tail — and snapshots are captured only from
+settled content.
 
 **Slice 1 — capture side (partially landed 2026-07-03).**
 
@@ -353,6 +386,10 @@ content.
   row, then nearest timestamped row. Raw pixel `scrollTop` remains only as the
   final fallback for a transcript with no surviving reference points, and
   should fire the slice-1 diagnostic once diagnostics land.
+- Keep the resolved restore pending while its mounted content grows. This
+  landed on 2026-08-26: transcript height changes reapply the retained anchor
+  until the reader scrolls or activates Follow, covering late markdown/render
+  growth after both warm navigation and cold reload.
 
 **Slice 3 — truth reconciliation.**
 
@@ -373,7 +410,7 @@ content.
 **Slice 4 — the follow-mode semantic (needs upstream alignment).**
 
 - With anchors always captured, add the restore policy for `atBottom` returns
-  when the server moved: restore the last-viewed anchor, leave follow
+  when the server moved: restore the furthest-seen anchor, leave follow
   disengaged, rely on the existing jump-to-latest affordance, and optionally
   render a new-messages divider at the old watermark.
 - Default: ship opt-in. The current follow-to-new-bottom return is a

@@ -106,6 +106,17 @@ section below for what would have to change at higher fan-out.
   — vision for explicit per-source client runtimes so local/direct/relay YA
   servers can own their API transport, activity stream, summary stores, and
   session-detail services without hidden current-source globals.
+- [`topics/managed-remote-executors.md`](topics/managed-remote-executors.md)
+  — default-off manual-SSH baseline for controller-owned remote sessions:
+  injected provider-neutral runners, controller-prepared Git workspaces,
+  Codex-first validation, and fetched incoming heads without target upstream
+  credentials; staged implementation is tracked in
+  [`docs/tactical/119-managed-ssh-executor-baseline.md`](docs/tactical/119-managed-ssh-executor-baseline.md).
+- [`topics/managed-runner-execution-targets.md`](topics/managed-runner-execution-targets.md)
+  — broader target-provider proposal extending managed remote execution with
+  Machine Control discovery, claims, VM lifecycle, and location-correct project
+  UI boundaries; its implementation tactical is deferred until the manual-SSH
+  baseline works.
 - [`topics/federated-super-sessions.md`](topics/federated-super-sessions.md)
   — proposal for one canonical, single-writer YA session that can transfer a
   provider-specific portable bundle and active ownership between trusted YA
@@ -117,6 +128,10 @@ section below for what would have to change at higher fan-out.
   host/worker protocols, stable same-user discovery, headless bootstrap,
   attach-or-start recovery, bounded session turns, receipts, and the
   authenticated Hono adapter.
+- [`topics/yacron.md`](topics/yacron.md) — proposal for a generally running
+  scheduler/CLI with provider-host-integrated and standalone variants. Only the
+  integrated variant owns YA queues, atomic project admission, canonical
+  session dispatch, and the retained launch request usable by Project Queue.
 - [`topics/provider-installation-updates.md`](topics/provider-installation-updates.md)
   — shared installation-family lifecycle for provider update mutation,
   runtime leases, verified generations, and catalog/cache convergence.
@@ -357,22 +372,19 @@ pinned by emit.
 
 ### Client transcript bounding and virtualization
 
-**Problem today.** `MessageList` renders the full message array. Typical
-sessions are <50 messages; a mounted long-running session can keep appending
-past the bounded tail that a fresh page load would receive and grow into the
-hundreds or low thousands.
+**Current shape.** The server retains the canonical transcript. The client
+keeps a contiguous loaded semantic window, while `MessageList` mounts only a
+measured-height viewport window once the loaded rows cross the activation
+threshold. Off-window loaded rows remain searchable and navigable through
+render-id wake requests; native browser Find can see only mounted rows.
 
-**Proposal.** First bound the mounted session-detail store to approximately the
-same semantic tail as a fresh page load. While the reader follows the bottom,
-silently drop an old prefix at compact/user-turn boundaries, preserve the older
-page cursor, and prune associated retained state. A mount that explicitly loads
-older history is pinned until unmount. See
-[`docs/tactical/060-bounded-active-transcript-window.md`](docs/tactical/060-bounded-active-transcript-window.md).
-
-Row virtualization remains a separate fallback if profiles later show that the
-bounded semantic window is still too expensive. It must preserve the existing
-`stabilizeRenderItems` identity contract and solve variable-height scroll,
-find/search, selection, and turn-rail behavior.
+The semantic data window drops an old prefix only at safe turn boundaries while
+preserving pagination and associated state. The render window keeps semantic
+rows loaded while replacing off-window runs with height-model spacers. Search,
+recall, route restoration, keyboard turn navigation, and the turn rail wake a
+target row before aligning against real DOM geometry. Live quote anchors remain
+mounted as sparse islands. See
+[`topics/transcript-virtualization.md`](topics/transcript-virtualization.md).
 
 **Cost.** Medium for semantic window trimming because pagination, scroll
 following, and message-associated maps must change atomically. Higher for row
@@ -382,12 +394,11 @@ anchors, and the augment-on-DOM streaming path.
 **Benefit.** A session that stays mounted for days does not retain every message
 since mount, while full provider history remains recoverable through Load older.
 
-**Trigger.** The semantic-window trigger has been met: a real long-session tab
-reached multi-gigabyte native browser memory, and the initial-load tail alone
-does not bound subsequent live growth. The auto-trim policy is approved for
-implementation, default-on with a browser-local Performance setting to disable
-it. Defer row virtualization until the bounded-window implementation is measured
-and a remaining viewport-scaling problem is demonstrated.
+**Accepted trade-off.** A 360-turn trace reduced the final mounted state from
+722 rows and 18,985 elements to eight rows and 435 elements. Native browser Find
+cannot discover an off-window row; that accepted limitation remains tracked in
+[`gaps/transcript-render-window-native-find.md`](gaps/transcript-render-window-native-find.md),
+while YA's in-session search must continue to wake off-window matches.
 
 ### Portable transcript compiler / native render boundary
 

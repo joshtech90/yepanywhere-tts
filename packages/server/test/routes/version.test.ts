@@ -3,6 +3,7 @@ import {
   APPROVAL_AUDIT_LOG_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
+  CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
   CACHE_MISS_BILLING_IGNORE_AFTER_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
@@ -22,9 +23,11 @@ import {
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  PUBLIC_FILE_SHARES_CAPABILITY,
   PROVIDER_HOST_CONTROL_CAPABILITY,
   RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
+  SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
   SIDEBAR_SESSION_RESUME_CAPABILITY,
@@ -149,23 +152,32 @@ describe("Version Routes", () => {
     );
   });
 
-  it("advertises sandbox status but only advertises use when preflight passes", () => {
+  it("advertises expected cache-expiry evidence", () => {
+    expect(getServerCapabilities()).toContain(
+      CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
+    );
+  });
+
+  it("advertises sandbox protocols only when preflight passes", () => {
     expect(getServerCapabilities()).toContain(
       SESSION_SANDBOXING_STATUS_CAPABILITY,
     );
     expect(getServerCapabilities()).not.toContain(
       SESSION_SANDBOXING_CAPABILITY,
     );
-    expect(
-      getServerCapabilities({
-        sessionSandboxAvailability: {
-          state: "available",
-          platform: "linux",
-          backend: "bubblewrap",
-          version: "0.4.0",
-        },
-      }),
-    ).toContain(SESSION_SANDBOXING_CAPABILITY);
+    expect(getServerCapabilities()).toContain(
+      SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
+    );
+    const capabilities = getServerCapabilities({
+      sessionSandboxAvailability: {
+        state: "available",
+        platform: "linux",
+        backend: "bubblewrap",
+        version: "0.4.0",
+      },
+    });
+    expect(capabilities).toContain(SESSION_SANDBOXING_CAPABILITY);
+    expect(capabilities).toContain(SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY);
   });
 
   it("advertises server-resolved session fork intents", () => {
@@ -184,6 +196,10 @@ describe("Version Routes", () => {
     expect(getServerCapabilities()).toContain(
       PROJECT_SESSION_DEFAULTS_CAPABILITY,
     );
+  });
+
+  it("advertises live public file shares", () => {
+    expect(getServerCapabilities()).toContain(PUBLIC_FILE_SHARES_CAPABILITY);
   });
 
   it("advertises provider-host control only while registered", () => {

@@ -87,7 +87,13 @@ Keyboard-visible focus uses the same configured delay. Pointer-generated focus,
 including touch focus, does not open a tooltip after activation. Escape,
 primary click, blur, and a deliberate pointer departure dismiss the tooltip.
 Other keystrokes, including modifier combinations used to capture a screenshot,
-leave a visible tooltip alone unless they edit a composer. Every composer edit
+leave a visible tooltip alone unless they edit a composer or navigate a Source
+Control list. Unmodified Up/Down in row-navigating lists and unmodified
+Left/Right/Enter in the file outline, and unmodified `[`/`]`/Page Up/Page Down
+in selected-commit review dismiss the current tooltip and suppress an immediate
+focus reveal so source content stays unobscured. The commit files pane's
+persistent selected-path box is file identity, not a hover tooltip. It may grow
+left over the revision pane but never right over the source diff. Every composer edit
 dismisses visible YA-rendered text, rich, and session-preview tooltips, cancels
 their pending reveals, clears tooltip warmth, and suppresses new pointer/focus
 activation for 100 ms after the latest edit. Suppression never schedules an
@@ -153,12 +159,13 @@ is the fallback when neither side fits.
 
 Plain text tooltips retain familiar tooltip geometry: a compact monochrome
 surface with maximum black/white contrast and polarity opposite the active
-light or dark color scheme, a visible border and modest shadow, UI font, tight
-unzoomed line spacing, and no decorative animation. The ordinary themed
-tooltip is one pixel larger than the compact `--font-size-xs` UI token; the
-secondary-click enlargement still advances to `--font-size-sm`. Multiline
-content preserves line breaks. Content taller than the viewport-relative cap
-scrolls inside the tooltip rather than being clipped.
+light or dark color scheme, a visible border and modest shadow, 500-weight UI
+text for legible glyph strokes, tight unzoomed line spacing, and no decorative
+animation. The ordinary themed tooltip is one pixel larger than the compact
+`--font-size-xs` UI token; its enlarged treatment advances to half a pixel above
+`--font-size-sm`. Glossary text retains its additional one-pixel offset in both
+states. Multiline content preserves line breaks. Content taller than the
+viewport-relative cap scrolls inside the tooltip rather than being clipped.
 
 The shared layer consumes both legacy static `title=` hints and explicit
 `data-tooltip` hints. New and pointer-computed producers assign exactly one
@@ -244,15 +251,15 @@ internal scroll position: the tooltip rectangle, word wrapping, and underlying
 page position remain fixed, including at the tooltip's scroll boundary. A non-
 overflowing tooltip does not consume wheel input.
 
-Explicit glossary-term activation begins in the same enlarged treatment because
-the activation expresses reading intent; passive pointer hover remains compact.
-Glossary context adds one pixel to both corresponding text sizes, without
-changing ordinary themed tooltips. Long definitions use the shared tooltip's
-contained scrolling. Because primary activation already copies the exact
-definition, the activated definition does not intercept a secondary click or
-touch long-press; the browser keeps those gestures for text selection and its
-normal context menu. Tapping or selecting inside the tooltip does not dismiss
-it; Escape or activation outside the term and tooltip does.
+Explicit primary or secondary glossary-term activation begins in the same
+enlarged treatment and copies the exact definition because activation expresses
+reading intent; passive pointer hover remains compact. Glossary context adds one
+pixel to both corresponding text sizes, without changing ordinary themed
+tooltips. Long definitions use the shared tooltip's contained scrolling. The
+activated definition itself does not intercept a secondary click or touch
+long-press; the browser keeps those gestures for text selection and its normal
+context menu. Tapping or selecting inside the tooltip does not dismiss it;
+Escape or activation outside the term and tooltip does.
 
 Rich explanatory tooltips may retain structured content while using the same
 dwell/warmth coordinator and the same keyboard-visible versus pointer-generated
@@ -283,7 +290,9 @@ not the surface into a card.
   pointer-generated focus while retaining their activation-to-dialog path.
 - Once visible, a tooltip survives same-target pointer motion, transcript
   follow-scroll, scroll-generated pointer boundary events, and non-Escape
-  keystrokes that do not edit a composer. Composer edits dismiss every
+  keystrokes that neither edit a composer nor navigate a Source Control list.
+  Source-list navigation dismisses the current tooltip and does not open one on
+  destination focus. Composer edits dismiss every
   YA-rendered tooltip owner and suppress pending/new reveals for 100 ms after
   the latest edit; nothing reopens without a later pointer/focus event.
 - Exact visible-content hints are absent only when every measurable exact-text
@@ -316,6 +325,9 @@ not the surface into a card.
   ordinary browser tooltips.
 - Touch activation of a session row or Recent Sessions link navigates without
   opening, warming, or leaving behind a session preview or text tooltip.
+- Primary or secondary activation of a glossary term reveals and copies its
+  enlarged definition; an existing text selection wins, and secondary-clicking
+  inside the activated definition remains browser-owned.
 - Secondary-click inside passive tooltip bounds copies/enlarges the presented
   text while respecting existing-selection and app-context-menu exclusions. A
   producer's zoom-only headline/detail replaces the compact hint only after

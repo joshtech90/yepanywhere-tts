@@ -54,15 +54,34 @@ read-only in Settings; it still does not create an agent sandbox. See
 [`docs/tactical/018-file-access-scoping.md`](../docs/tactical/018-file-access-scoping.md).
 
 The separate **Sandbox session / Project writes only** launch option is the
-current host-enforced boundary. On supported local Linux Claude-family and
-Codex sessions, Bubblewrap prevents ordinary persistent writes outside the
-canonical project and YA-owned private state. It is default-off, permits reads
-outside the project and network access, does not claim general hostile-code or
-confidentiality isolation, and fails closed when requested but unavailable.
-Unsupported providers, non-Linux hosts, and SSH executors cannot use it. Even
-an enforced sandbox limits one provider process; it does not reduce the
-authority of an authenticated operator who may create another unsandboxed
-session. See [`session-sandboxing.md`](session-sandboxing.md).
+intended host-enforced boundary. On supported local Linux Claude-family and
+Codex sessions, Bubblewrap prevents direct persistent writes outside the
+canonical project and YA-owned private state. It is default-off and permits
+reads outside the project. Its subordinate, default-selected **Network
+firewall** preserves public IPv4 egress while denying host-local and private
+destinations; explicit opt-out restores shared host networking. Neither mode
+claims general hostile-code, confidentiality, credential-isolation, or
+exfiltration protection. Unsupported providers, non-Linux hosts, and SSH
+executors cannot use it.
+
+YA advertises and launches **Project writes only** only while local operator
+authentication is enforced: password or desktop authentication must be
+present, `--auth-disable` must be off, and localhost-open access must be off.
+This remains required because a user may explicitly disable the network
+firewall and because authentication is independent defense in depth. While a
+project-write sandbox is launching or active, the auth routes reject disabling
+authentication or opening localhost access.
+
+Browser bearer tokens never appear in `auth.json`; it stores domain-separated
+SHA-256 verifiers of the random tokens instead. Provider environments omit the
+auth-cookie secret, desktop token, and provider-runtime control credentials.
+A sandbox may read password hashes and session verifiers, but that material
+does not authorize an operator request. With the firewall enabled it also
+cannot reach the listener, local-network services, provider control sockets,
+or host abstract sockets. Public remote services remain reachable, so network
+confidentiality, credential isolation, and exfiltration resistance remain
+outside this boundary. See [`session-sandboxing.md`](session-sandboxing.md) and
+[`session-sandbox-network-boundary.md`](session-sandbox-network-boundary.md).
 
 Agent-authored active documents are therefore significant defense-in-depth
 hardening—important, but not a new general trust boundary—specifically for a
@@ -349,10 +368,18 @@ creation means full server-account authority.
   records the proposed content-aware redaction layer for public transcript
   output.
 - [`session-sandboxing.md`](session-sandboxing.md) defines the implemented
-  Linux project-write boundary and the additional admission work a
-  future interactive “locked to this session” share would require.
+  Linux project-write mechanism, its localhost authentication invariant, and
+  the additional admission work a future interactive “locked to this session”
+  share would require.
 - [`relay-client-mux.md`](relay-client-mux.md) keeps each host's authentication
   and encryption independent while sharing a physical relay connection.
+- [`managed-runner-execution-targets.md`](managed-runner-execution-targets.md)
+  records the default-off controller/subordinate trust shape, target-side
+  runner lease, credential boundaries, and future restricted collaborator
+  requirements.
+- [`managed-remote-executors.md`](managed-remote-executors.md) defines the
+  manual-SSH-first subordinate runner, controller-mediated Git transfer,
+  no-forwarded-credential baseline, and target-account trust boundary.
 - [`cross-host-delegation.md`](cross-host-delegation.md) and
   [`federated-super-sessions.md`](federated-super-sessions.md) record the
   proposed server-to-server trust and orchestration shapes.

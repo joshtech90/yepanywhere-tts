@@ -8,6 +8,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+import { sourceOutlineDisplayOrder } from "../components/SourceFileOutline";
 import { useCommitSearchIndex } from "../hooks/useCommitSearchIndex";
 import type { TranslationFn } from "../i18n";
 
@@ -28,6 +29,7 @@ export function useCommitBrowserModel({
   initialPath,
   supportsInclusiveToHead,
   onProjectionUnavailable,
+  onProjectionRequestFailure,
   t,
 }: {
   projectId: string;
@@ -37,6 +39,7 @@ export function useCommitBrowserModel({
   initialPath?: string;
   supportsInclusiveToHead: boolean;
   onProjectionUnavailable: () => void;
+  onProjectionRequestFailure: (error: unknown) => void;
   t: TranslationFn;
 }) {
   const [commits, setCommits] = useState<GitRecentCommit[]>([]);
@@ -190,15 +193,18 @@ export function useCommitBrowserModel({
     }
   }, [commits.length, projectId, t]);
 
-  const handleProjectionRequestFailure = useCallback(() => {
-    directComparisonRequestRef.current += 1;
-    setDirectComparison(null);
-    setDirectComparisonFile(null);
-    setCompareToHead(false);
-    setComparison(null);
-    setLoadingComparison(false);
-    onProjectionUnavailable();
-  }, [onProjectionUnavailable]);
+  const handleProjectionRequestFailure = useCallback(
+    (error: unknown) => {
+      directComparisonRequestRef.current += 1;
+      setDirectComparison(null);
+      setDirectComparisonFile(null);
+      setCompareToHead(false);
+      setComparison(null);
+      setLoadingComparison(false);
+      onProjectionRequestFailure(error);
+    },
+    [onProjectionRequestFailure],
+  );
 
   const openDirectComparison = useCallback(
     async (file: GitFileChange) => {
@@ -227,14 +233,12 @@ export function useCommitBrowserModel({
             linesDeleted: null,
           },
         );
-      } catch {
+      } catch (error) {
         if (requestId !== directComparisonRequestRef.current) return;
-        setDirectComparison(null);
-        setDirectComparisonFile(null);
-        onProjectionUnavailable();
+        handleProjectionRequestFailure(error);
       }
     },
-    [onProjectionUnavailable, projectId, selectedSha],
+    [handleProjectionRequestFailure, projectId, selectedSha],
   );
 
   const toggleComparison = useCallback(() => {
@@ -298,7 +302,8 @@ export function useCommitBrowserModel({
       setComparison(null);
       setLoadingComparison(false);
       if (compareToHead && !supportsInclusiveToHead) {
-        handleProjectionRequestFailure();
+        setCompareToHead(false);
+        onProjectionUnavailable();
       }
       return;
     }
@@ -312,9 +317,9 @@ export function useCommitBrowserModel({
         setComparison(result);
         setLoadingComparison(false);
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
-        handleProjectionRequestFailure();
+        handleProjectionRequestFailure(error);
       });
     return () => {
       cancelled = true;
@@ -322,13 +327,17 @@ export function useCommitBrowserModel({
   }, [
     compareToHead,
     handleProjectionRequestFailure,
+    onProjectionUnavailable,
     projectId,
     selectedSha,
     supportsInclusiveToHead,
   ]);
 
   const selectedFiles = useMemo(
-    () => (compareToHead ? (comparison?.files ?? []) : (detail?.files ?? [])),
+    () =>
+      sourceOutlineDisplayOrder(
+        compareToHead ? (comparison?.files ?? []) : (detail?.files ?? []),
+      ),
     [compareToHead, comparison?.files, detail?.files],
   );
 
@@ -347,7 +356,10 @@ export function useCommitBrowserModel({
           )
         : undefined;
       return (
-        linkedFile?.path ?? retainedFile?.path ?? selectedFiles[0]?.path ?? null
+        linkedFile?.path ??
+        retainedFile?.path ??
+        selectedFiles.find((file) => !file.path.endsWith("/"))?.path ??
+        null
       );
     });
   }, [

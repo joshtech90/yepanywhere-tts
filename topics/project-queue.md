@@ -14,6 +14,11 @@ a proposed lane-aware extension where Project Queue items can target a
 specific lane — the canonical main checkout or a separate lane checkout —
 instead of waiting for the whole project.
 
+The candidate replacement for Hono's in-memory launch callback lives in
+[Project Queue sketches](project-queue.sketches.md#provider-host-yacron-launch-requests).
+It requires provider-host-integrated yacron and preserves this topic's complete
+idle predicate; standalone yacron is explicitly ineligible.
+
 ## Core Semantics
 
 - Project Queue items are persisted on the server. Clients must not mirror the

@@ -14,9 +14,9 @@
   <a href="https://yepanywhere.com">yepanywhere.com</a>
 </p>
 
-A durable, browser-based interface for Claude Code and Codex. Supervise agents
-from another computer, a tablet, or a phone while they run on the machines you
-control.
+A complete browser interface for Claude Code and Codex. Start and supervise
+agents from another computer, a tablet, or a phone while they run on the
+machines you control.
 
 Use an eligible Claude or ChatGPT plan through the account already signed in to
 the official provider tool. Yep Anywhere can also show current subscription
@@ -24,25 +24,23 @@ limits when the provider exposes them.
 
 ## Features
 
-- **Persistent, interoperable sessions** — View and resume compatible work from
-  CLIs, VS Code, and first-party desktop apps. Client disconnects do not stop
-  server-owned processes.
-- **Separately usable provider layer** — On Linux source checkouts, run the
-  provider host with the non-watch development wrapper or by itself in a
-  foreground terminal, then submit bounded turns through its stable
-  [headless local protocol](topics/provider-host-api.md).
-- **Mobile supervision** — Approve tools, answer questions, upload files and
-  photos, use voice input, and receive attention notifications.
-- **Multi-agent coordination** — Use the tiered inbox, global activity view,
-  mid-turn steering, follow-up queues, search, recaps, forks, and clones.
-- **Review and source control** — Browse working-tree and commit diffs, tracked
-  files, and blame; bundle line comments into agent sessions; check remotes,
-  fast-forward pull, push, or share a session read-only.
-- **Remote device control** — Stream Android devices and Apple Simulators over
-  peer-to-peer WebRTC with touch controls and adaptive quality.
-- **Flexible remote access** — Connect directly or enable the end-to-end
-  encrypted public relay and sign in from any modern browser without device
-  pairing, a VPN, or port forwarding.
+- **All your sessions, in one place** — Find and resume every Claude Code and
+  Codex session, including those started from CLIs, VS Code, and first-party
+  desktop apps. Disconnect or switch devices without interrupting active work.
+- **See the whole session** — Follow the complete conversation, tool calls, and
+  available thinking, or use a condensed view when you only need the result.
+- **Work comfortably from a phone** — Approve tools, answer questions, upload
+  files and photos, use voice input, and receive attention notifications.
+- **Keep many agents organized** — See every project in one inbox, watch
+  activity across sessions, steer active work, queue follow-ups, search older
+  sessions, catch up with recaps, and fork or clone conversations.
+- **Review and ship** — Browse files, diffs, and blame; send line comments to an
+  agent; check remotes, fast-forward pull, push, or share a session read-only.
+- **Control test devices remotely** — Stream Android devices and Apple
+  Simulators with touch controls and adaptive quality.
+- **Connect your way** — Use a direct connection or the end-to-end encrypted
+  public relay, with no device pairing, VPN, or port forwarding required for
+  the relay path.
 
 See the [complete feature catalog](https://yepanywhere.com/features) and
 [public documentation](https://yepanywhere.com/docs) for availability and setup.
@@ -54,8 +52,9 @@ See the [complete feature catalog](https://yepanywhere.com/features) and
 | Claude Code | Full | Yes | Yes | Primary provider, full feature support |
 | Codex | Full | Yes | Yes | Full support including diffs and approvals |
 
-OpenCode, Grok Build, Claude + Ollama, Gemini, and pi integrations are
-experimental; capabilities vary. See the
+OpenCode, Grok Build, Gemini, and pi integrations are experimental. Claude
+Gateway is an advanced opt-in route, while Claude + Ollama remains available
+only for legacy compatibility. Capabilities vary. See the
 [provider guide](https://yepanywhere.com/docs/providers).
 
 ## Screenshots
@@ -135,49 +134,6 @@ pnpm build
 
 Then restart the server with `pnpm start`.
 
-## Voice Input and STT Keys
-
-Browser-native voice input works without extra configuration. To use
-server-mediated STT, export the provider key in the Yep Anywhere server
-environment before starting the app:
-
-```bash
-export YEP_STT_XAI_API_KEY="xai-..."
-export YEP_STT_DEEPGRAM_API_KEY="deepgram-..."
-```
-
-Providing `YEP_STT_XAI_API_KEY` auto-enables the `ya-grok` backend; providing
-`YEP_STT_DEEPGRAM_API_KEY` auto-enables the `ya-deepgram` backend. These
-`YEP_<MODULE>_<NAME>` secrets are consumed by Yep Anywhere and stripped from
-child agent environments. The STT-specific xAI key is preferred over a general
-`XAI_API_KEY`, which lets speech transcription use different billing from any
-Grok model or CLI usage.
-
-Local STT backends are opt-in and use the committed pixi `stt` environment:
-
-```bash
-# Enable one or more local backends before starting the server:
-export YEP_VOICE_BACKENDS=ya-whisper
-export YEP_VOICE_BACKENDS=ya-whisper,ya-parakeet
-export YEP_VOICE_BACKENDS=ya-whisper,ya-parakeet,ya-nemo
-```
-
-When `ya-whisper`, `ya-parakeet`, or `ya-nemo` is enabled, startup
-creates/updates the pixi environment if needed, installs the matching local STT
-Python requirements, and downloads the selected model on first load. `ya-nemo`
-uses the heavier optional `stt-bootstrap-nemo` add-on. If setup and model
-validation succeed, the STT backend menu includes the local backend; otherwise
-the server logs repair hints and hides the unavailable option.
-
-If you already exported xAI's standard `XAI_API_KEY`, Yep Anywhere will also use
-it for Grok STT and scrub it from child agent environments. Grok Build does not
-receive `XAI_API_KEY` by default, avoiding accidental pay-as-you-go provider
-billing; Settings > Providers has an explicit opt-in to pass that key to Grok
-Build. For backend behavior and retention details, see the
-[server-mediated STT topic](topics/pluggable-speech-recognition.md); for the
-broader environment variable table, see
-[topics/ya-env-vars.md](topics/ya-env-vars.md).
-
 ## Remote Access
 
 **Easiest:** Use our free public relay when you want passworded,
@@ -201,7 +157,7 @@ Anywhere server from the phone.
 
 **Self-hosted web access:** Prefer to run your own public infrastructure? Use
 Caddy or any reverse proxy with SSL termination. See the
-[remote access docs](docs/project/remote-access.md) for details.
+[remote access guide](https://yepanywhere.com/docs/remote-access) for details.
 
 ## Why not just use the terminal?
 
@@ -213,9 +169,10 @@ There are a lot of projects in this space. We track them all: **[docs/competitiv
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for build instructions, configuration options, and more.
-For client render/update architecture and performance invariants, see
-[packages/client/RENDERING_PERFORMANCE.md](packages/client/RENDERING_PERFORMANCE.md).
+See [DEVELOPMENT.md](DEVELOPMENT.md) for build instructions, configuration
+options, and contributor guidance. For deeper technical context, see the
+[project architecture](ARCHITECTURE.md) and
+[client rendering and performance guide](packages/client/RENDERING_PERFORMANCE.md).
 
 ## TOS Compliance
 

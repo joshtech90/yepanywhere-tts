@@ -518,6 +518,7 @@ describe("CommitBrowser", () => {
       new Error("server is stale"),
     );
     const onProjectionUnavailable = vi.fn();
+    const onProjectionRequestFailure = vi.fn();
     render(
       <MemoryRouter>
         <CommitBrowser
@@ -526,6 +527,7 @@ describe("CommitBrowser", () => {
           supportsProjections
           supportsInclusiveToHead
           onProjectionUnavailable={onProjectionUnavailable}
+          onProjectionRequestFailure={onProjectionRequestFailure}
           t={t}
         />
       </MemoryRouter>,
@@ -536,7 +538,12 @@ describe("CommitBrowser", () => {
       screen.getByRole("button", { name: "sourceCompareToHead" }),
     );
 
-    await waitFor(() => expect(onProjectionUnavailable).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(onProjectionRequestFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "server is stale" }),
+      ),
+    );
+    expect(onProjectionUnavailable).not.toHaveBeenCalled();
     expect(sourcePath("src/x.ts")).toBeDefined();
     expect(
       screen
@@ -549,6 +556,7 @@ describe("CommitBrowser", () => {
     primeApis();
     getGitComparisonDiff.mockRejectedValueOnce(new Error("server is stale"));
     const onProjectionUnavailable = vi.fn();
+    const onProjectionRequestFailure = vi.fn();
     render(
       <MemoryRouter>
         <CommitBrowser
@@ -557,6 +565,7 @@ describe("CommitBrowser", () => {
           supportsProjections
           supportsInclusiveToHead
           onProjectionUnavailable={onProjectionUnavailable}
+          onProjectionRequestFailure={onProjectionRequestFailure}
           t={t}
         />
       </MemoryRouter>,
@@ -578,7 +587,12 @@ describe("CommitBrowser", () => {
       }),
     );
 
-    await waitFor(() => expect(onProjectionUnavailable).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(onProjectionRequestFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "server is stale" }),
+      ),
+    );
+    expect(onProjectionUnavailable).not.toHaveBeenCalled();
     await waitFor(() => expect(getGitCommitDiff).toHaveBeenCalled());
     expect(getGitInclusiveComparison).not.toHaveBeenCalled();
   });
@@ -719,6 +733,13 @@ describe("CommitBrowser", () => {
     const workingTreeRow = document.querySelector(".commit-list-working-tree");
     expect(workingTreeRow?.textContent).toContain("sourceUncommitted");
     expect(workingTreeRow?.textContent).toContain("sourceChangedFileCount");
+    const workingTreeLink = workingTreeRow?.querySelector("a");
+    await waitFor(() => expect(document.activeElement).toBe(workingTreeLink));
+    fireEvent.keyDown(workingTreeLink!, { key: "Enter" });
+    const workingTreeFile = await findSourcePath("src/dirty.ts");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(workingTreeFile.closest("button")),
+    );
     await waitFor(() =>
       expect(getGitDiff).toHaveBeenCalledWith(
         "p1",
@@ -1459,6 +1480,298 @@ describe("CommitBrowser", () => {
       );
     },
   );
+
+  it("enters a commit at its first file", async () => {
+    primeApis();
+    render(
+      <MemoryRouter>
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
+      </MemoryRouter>,
+    );
+
+    const commit = await screen.findByText("first commit");
+    const commitRow = commit.closest("a")!;
+    await waitFor(() => expect(document.activeElement).toBe(commitRow));
+    fireEvent.keyDown(commitRow, { key: "Enter" });
+
+    const firstFilePath = await findSourcePath("src/x.ts");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(firstFilePath.closest("button")),
+    );
+  });
+
+  it("abandons Enter when revision focus leaves before detail loads", async () => {
+    const older = "b".repeat(40);
+    const firstDetail = {
+      hash: SHA,
+      shortHash: "aaaaaaa",
+      subject: "first commit",
+      authorName: "Dev",
+      authorDate: "2026-07-26T00:00:00Z",
+      body: "",
+      files: [
+        {
+          path: "src/x.ts",
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+      ],
+    } as const;
+    let resolveFirstDetail!: (detail: typeof firstDetail) => void;
+    const firstDetailRequest = new Promise<typeof firstDetail>((resolve) => {
+      resolveFirstDetail = resolve;
+    });
+    primeApis();
+    getGitCommits.mockResolvedValue({
+      commits: [
+        {
+          hash: SHA,
+          shortHash: "aaaaaaa",
+          subject: "first commit",
+          authorName: "Dev",
+          authorDate: "2026-07-26T00:00:00Z",
+        },
+        {
+          hash: older,
+          shortHash: "bbbbbbb",
+          subject: "older commit",
+          authorName: "Dev",
+          authorDate: "2026-07-25T00:00:00Z",
+        },
+      ],
+      hasMore: false,
+    });
+    getGitCommit.mockImplementation((_projectId: string, sha: string) =>
+      sha === SHA
+        ? firstDetailRequest
+        : Promise.resolve({
+            hash: older,
+            shortHash: "bbbbbbb",
+            subject: "older commit",
+            authorName: "Dev",
+            authorDate: "2026-07-25T00:00:00Z",
+            body: "",
+            files: [],
+          }),
+    );
+    render(
+      <MemoryRouter>
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
+      </MemoryRouter>,
+    );
+
+    const firstRow = (await screen.findByText("first commit")).closest("a")!;
+    const olderRow = screen.getByText("older commit").closest("a")!;
+    await waitFor(() => expect(document.activeElement).toBe(firstRow));
+    fireEvent.keyDown(firstRow, { key: "Enter" });
+    fireEvent.keyDown(firstRow, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(olderRow);
+    fireEvent.keyDown(olderRow, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(firstRow);
+
+    await act(async () => {
+      resolveFirstDetail(firstDetail);
+      await firstDetailRequest;
+    });
+    await findSourcePath("src/x.ts");
+    expect(document.activeElement).toBe(firstRow);
+  });
+
+  it("reveals stepped commit files and pages the diff in place", async () => {
+    primeApis();
+    getGitCommit.mockResolvedValue({
+      hash: SHA,
+      shortHash: "aaaaaaa",
+      subject: "first commit",
+      authorName: "Dev",
+      authorDate: "2026-07-26T00:00:00Z",
+      body: "message body",
+      files: [
+        {
+          path: "src/first.ts",
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+        {
+          path: "src/second.ts",
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
+      </MemoryRouter>,
+    );
+
+    const message = await screen.findByTitle("sourceShowFullMessage");
+    const first = (await findSourcePath("src/first.ts")).closest("button")!;
+    const second = (await findSourcePath("src/second.ts")).closest("button")!;
+    await waitFor(() =>
+      expect(document.querySelector('[data-diff-line="0"]')).not.toBeNull(),
+    );
+
+    const group = screen.getByRole("button", {
+      name: "sourceCollapsePathGroup",
+    });
+    group.focus();
+    fireEvent.keyDown(group, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(group);
+    fireEvent.keyDown(group, { key: "ArrowLeft" });
+    expect(sourcePath("src/first.ts")).toBeUndefined();
+    expect(sourcePath("src/second.ts")).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "sourceFilterFiles" }));
+    const fileFilter = screen.getByPlaceholderText("sourceFilterFiles");
+    fireEvent.change(fileFilter, { target: { value: "second" } });
+    expect(sourcePath("src/first.ts")).toBeUndefined();
+    expect(sourcePath("src/second.ts")).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(message);
+    });
+    await waitFor(() =>
+      expect(document.querySelector(".commit-message-view")).not.toBeNull(),
+    );
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "]" });
+    });
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-source-selected-path]")
+          ?.getAttribute("data-source-selected-path"),
+      ).toBe("src/first.ts"),
+    );
+    expect(document.querySelector(".commit-message-view")).toBeNull();
+    const revealedFirst = await findSourcePath("src/first.ts");
+    expect(document.activeElement).toBe(revealedFirst.closest("button"));
+    expect(sourcePath("src/second.ts")).toBeDefined();
+    expect((fileFilter as HTMLInputElement).value).toBe("");
+    expect(
+      document.querySelectorAll("[data-source-selected-path] wbr"),
+    ).toHaveLength(1);
+
+    const diffBody = document.querySelector<HTMLElement>(
+      ".git-diff-preview-body",
+    )!;
+    Object.defineProperties(diffBody, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 600 },
+    });
+    diffBody.scrollTop = 100;
+
+    fireEvent.keyDown(diffBody, { key: "PageDown" });
+    expect(diffBody.scrollTop).toBe(300);
+    fireEvent.keyDown(diffBody, { key: "PageUp" });
+    expect(diffBody.scrollTop).toBe(100);
+
+    expect(fireEvent.keyDown(diffBody, { key: "ArrowDown" })).toBe(true);
+    expect(
+      document
+        .querySelector("[data-source-selected-path]")
+        ?.getAttribute("data-source-selected-path"),
+    ).toBe("src/first.ts");
+
+    fireEvent.keyDown(diffBody, { key: "]" });
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-source-selected-path]")
+          ?.getAttribute("data-source-selected-path"),
+      ).toBe("src/second.ts"),
+    );
+    expect(document.activeElement).toBe(
+      sourcePath("src/second.ts")?.closest("button"),
+    );
+    fireEvent.keyDown(diffBody, { key: "[" });
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-source-selected-path]")
+          ?.getAttribute("data-source-selected-path"),
+      ).toBe("src/first.ts"),
+    );
+    expect(document.activeElement).toBe(
+      sourcePath("src/first.ts")?.closest("button"),
+    );
+  });
+
+  it("steps through files in rendered outline order", async () => {
+    primeApis();
+    const readmePath = "RegressionTests/resources/Privacy/Generic/README.md";
+    const processorPath =
+      "RegressionTests/resources/Privacy/name-postprocessor.json";
+    getGitCommit.mockResolvedValue({
+      hash: SHA,
+      shortHash: "aaaaaaa",
+      subject: "first commit",
+      authorName: "Dev",
+      authorDate: "2026-07-26T00:00:00Z",
+      body: "message body",
+      files: [
+        {
+          path: readmePath,
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+        {
+          path: processorPath,
+          status: "M",
+          staged: false,
+          linesAdded: 1,
+          linesDeleted: 0,
+        },
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <CommitBrowser projectId="p1" isWideScreen={true} t={t} />
+      </MemoryRouter>,
+    );
+
+    const message = await screen.findByTitle("sourceShowFullMessage");
+    await findSourcePath(processorPath);
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-source-selected-path]")
+          ?.getAttribute("data-source-selected-path"),
+      ).toBe(processorPath),
+    );
+
+    fireEvent.click(message);
+    fireEvent.keyDown(window, { key: "[" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        sourcePath(processorPath)?.closest("button"),
+      ),
+    );
+    fireEvent.keyDown(window, { key: "]" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        sourcePath(readmePath)?.closest("button"),
+      ),
+    );
+    fireEvent.keyDown(window, { key: "[" });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        sourcePath(processorPath)?.closest("button"),
+      ),
+    );
+  });
 
   it("toggles revision blame in place without losing the commit view", async () => {
     primeApis();

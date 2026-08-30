@@ -49,18 +49,28 @@ interface Props {
   onSearchMatchSelect?: (id: string, targetId: string) => void;
   /** "Show from": load the client transcript from this turn (drop earlier). */
   onTrimAnchor?: (id: string) => void;
+  /** Whether "Show from" is valid for a particular loaded turn. */
+  canTrimAnchor?: (id: string) => boolean;
   /** Fork the session before this turn. */
   onForkBeforeAnchor?: (id: string) => void;
   /** Whether a before-turn boundary exists for a particular anchor. */
   canForkBeforeAnchor?: (id: string) => boolean;
   /** Fork after this completed turn. */
   onForkAfterAnchor?: (id: string) => void;
+  /** Whether an after-turn fork is valid for a particular loaded turn. */
+  canForkAfterAnchor?: (id: string) => boolean;
   /** Disable after-turn actions while the selected/latest response is active. */
   forkAfterDisabled?: boolean;
   /** Copy this turn's text to the clipboard. */
   onCopyAnchor?: (id: string) => void;
+  /** Whether the external copy callback can resolve a particular turn. */
+  canCopyAnchor?: (id: string) => boolean;
   /** Reports the timestamp for a hovered/focused turn marker, if any. */
   onPreviewTimestampChange?: (timestampMs: number | null) => void;
+  /** Estimated transcript offset for a render row outside the mounted window. */
+  getRenderIdTop?: (id: string) => number | null;
+  /** Mount the semantic transcript row that owns this render id. */
+  revealRenderId?: (id: string) => boolean;
   searchState?: UserTurnNavSearchState | null;
 }
 
@@ -481,6 +491,7 @@ function measureLayout(
   anchors: UserTurnNavAnchor[],
   messageList: HTMLDivElement | null,
   minAnchors = MIN_NAV_ANCHORS,
+  getRenderIdTop?: (id: string) => number | null,
 ): UserTurnNavLayout | null {
   if (anchors.length < minAnchors || !messageList) {
     return null;
@@ -502,13 +513,16 @@ function measureLayout(
   const rowsById = indexRenderRowsById(messageList);
 
   for (const anchor of anchors) {
-    const row = rowsById.get(anchor.targetId ?? anchor.id);
-    if (!row) {
+    const targetId = anchor.targetId ?? anchor.id;
+    const row = rowsById.get(targetId);
+    const virtualTop = row ? null : getRenderIdTop?.(targetId);
+    if (!row && (virtualTop === null || virtualTop === undefined)) {
       continue;
     }
-    const rowRect = row.getBoundingClientRect();
-    const scrollTopPx =
-      scrollContainer.scrollTop + rowRect.top - scrollRect.top;
+    const rowRect = row?.getBoundingClientRect();
+    const scrollTopPx = rowRect
+      ? scrollContainer.scrollTop + rowRect.top - scrollRect.top
+      : (virtualTop ?? 0);
     const topPct = clamp(scrollTopPx / scrollHeight, 0, 1);
     markers.push({
       ...anchor,
@@ -734,12 +748,17 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   onNavigateStart,
   onSearchMatchSelect,
   onTrimAnchor,
+  canTrimAnchor,
   onForkBeforeAnchor,
   canForkBeforeAnchor,
   onForkAfterAnchor,
+  canForkAfterAnchor,
   forkAfterDisabled = false,
   onCopyAnchor,
+  canCopyAnchor,
   onPreviewTimestampChange,
+  getRenderIdTop,
+  revealRenderId,
   searchState,
 }: Props) {
   const { t } = useI18n();
@@ -769,6 +788,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
     useState<UserTurnNavMotionCue | null>(null);
   const anchorsRef = useRef(anchors);
   const frameRef = useRef<number | null>(null);
+  const jumpFrameRef = useRef<number | null>(null);
   const pendingUpdateKindRef = useRef<LayoutUpdateKind>("scroll");
   const motionCueTokenRef = useRef(0);
   const motionCueClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -801,11 +821,18 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
       nextAnchors,
       messageListRef.current,
       minAnchorCount,
+      getRenderIdTop,
     );
     setLayout((previous) =>
       previous?.signature === nextLayout?.signature ? previous : nextLayout,
     );
-  }, [messageListRef, minAnchorCount, resolveAnchors, shouldMeasure]);
+  }, [
+    getRenderIdTop,
+    messageListRef,
+    minAnchorCount,
+    resolveAnchors,
+    shouldMeasure,
+  ]);
 
   const updateScrollLayout = useCallback(() => {
     if (!shouldMeasure) {
@@ -824,6 +851,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
           anchorsRef.current,
           messageListRef.current,
           minAnchorCount,
+          getRenderIdTop,
         );
       }
       const nextLayout = updateScrollPosition(previous, scrollContainer);
@@ -831,7 +859,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
         ? previous
         : nextLayout;
     });
-  }, [messageListRef, minAnchorCount, shouldMeasure]);
+  }, [getRenderIdTop, messageListRef, minAnchorCount, shouldMeasure]);
 
   const scheduleLayoutUpdate = useCallback(
     (kind: LayoutUpdateKind = "scroll") => {
@@ -946,6 +974,9 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
       if (motionCueClearTimerRef.current !== null) {
         clearTimeout(motionCueClearTimerRef.current);
       }
+      if (jumpFrameRef.current !== null) {
+        cancelAnimationFrame(jumpFrameRef.current);
+      }
     },
     [],
   );
@@ -970,23 +1001,56 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
       const messageList = messageListRef.current;
       const scrollContainer = getScrollContainer(messageList);
       const row = findRenderRow(messageList, targetId);
-      if (!scrollContainer || !row) return;
+      const virtualTop = row ? null : getRenderIdTop?.(targetId);
+      if (
+        !scrollContainer ||
+        (!row && (virtualTop === null || virtualTop === undefined))
+      ) {
+        return;
+      }
 
       onNavigateStart?.();
       const scrollRect = scrollContainer.getBoundingClientRect();
-      const rowRect = row.getBoundingClientRect();
+      const rowRect = row?.getBoundingClientRect();
       const nextTop = Math.max(
         0,
-        scrollContainer.scrollTop + rowRect.top - scrollRect.top - 12,
+        rowRect
+          ? scrollContainer.scrollTop + rowRect.top - scrollRect.top - 12
+          : (virtualTop ?? 0) - 12,
       );
       const direction = nextTop < scrollContainer.scrollTop ? "up" : "down";
       showInternalMotionCue(direction);
+      if (!row) {
+        revealRenderId?.(targetId);
+      }
       scrollContainer.scrollTo({ top: nextTop, behavior: "auto" });
-      scheduleLayoutUpdate("scroll");
+      if (jumpFrameRef.current !== null) {
+        cancelAnimationFrame(jumpFrameRef.current);
+      }
+      jumpFrameRef.current = requestAnimationFrame(() => {
+        jumpFrameRef.current = null;
+        const revealedList = messageListRef.current;
+        const revealedContainer = getScrollContainer(revealedList);
+        const revealedRow = findRenderRow(revealedList, targetId);
+        if (revealedContainer && revealedRow) {
+          const containerRect = revealedContainer.getBoundingClientRect();
+          const revealedRect = revealedRow.getBoundingClientRect();
+          revealedContainer.scrollTop = Math.max(
+            0,
+            revealedContainer.scrollTop +
+              revealedRect.top -
+              containerRect.top -
+              12,
+          );
+        }
+        scheduleLayoutUpdate("full");
+      });
     },
     [
+      getRenderIdTop,
       messageListRef,
       onNavigateStart,
+      revealRenderId,
       scheduleLayoutUpdate,
       showInternalMotionCue,
     ],
@@ -1386,7 +1450,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
             >
               <span className={styles.markerLine} />
             </button>
-            {onTrimAnchor && (
+            {onTrimAnchor && (canTrimAnchor?.(marker.id) ?? true) && (
               <button
                 type="button"
                 className={styles.trimMarker}
@@ -1517,23 +1581,24 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
                     {t("turnNotchForkBefore")}
                   </button>
                 )}
-              {onForkAfterAnchor && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={forkAfterDisabled}
-                  title={
-                    forkAfterDisabled ? t("forkTurnAfterDisabled") : undefined
-                  }
-                  onClick={() => {
-                    onForkAfterAnchor(notchMenu.id);
-                    closeNotchMenu();
-                  }}
-                >
-                  {t("turnNotchForkAfter")}
-                </button>
-              )}
-              {onCopyAnchor && (
+              {onForkAfterAnchor &&
+                (canForkAfterAnchor?.(notchMenu.id) ?? true) && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={forkAfterDisabled}
+                    title={
+                      forkAfterDisabled ? t("forkTurnAfterDisabled") : undefined
+                    }
+                    onClick={() => {
+                      onForkAfterAnchor(notchMenu.id);
+                      closeNotchMenu();
+                    }}
+                  >
+                    {t("turnNotchForkAfter")}
+                  </button>
+                )}
+              {onCopyAnchor && (canCopyAnchor?.(notchMenu.id) ?? true) && (
                 <button
                   type="button"
                   role="menuitem"
@@ -1545,7 +1610,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
                   {t("turnNotchCopy")}
                 </button>
               )}
-              {onTrimAnchor && (
+              {onTrimAnchor && (canTrimAnchor?.(notchMenu.id) ?? true) && (
                 <button
                   type="button"
                   role="menuitem"

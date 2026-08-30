@@ -11,12 +11,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as zlib from "node:zlib";
-import type { UrlProjectId } from "@yep-anywhere/shared";
+import type { CodexSessionEntry, UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import { normalizeSession } from "../../src/sessions/normalization.js";
 import type { SummaryParserClient } from "../../src/sessions/summary-parser-worker-client.js";
+import type { SessionSummary } from "../../src/supervisor/types.js";
+import { getCodexRolloutActivityTimeMs } from "../../src/utils/codexRolloutFiles.js";
 import { isZstdJsonlSupported } from "../../src/utils/jsonl.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +36,12 @@ const itIfWindows = process.platform === "win32" ? it : it.skip;
 
 interface CodexEntryReadInternals {
   entryReadOwners: Map<string, { joinedCallers: number }>;
+  buildSessionSummaryFromEntries(
+    sessionId: string,
+    projectId: UrlProjectId,
+    entries: CodexSessionEntry[],
+    transcriptSnapshotUpdatedAt: string,
+  ): Promise<SessionSummary | null>;
   readFileRange(
     filePath: string,
     start: number,
@@ -1400,6 +1408,377 @@ describe("CodexSessionReader - OSS Support", () => {
     ).toHaveLength(2);
   });
 
+  it("reuses the normalized Codex prefix after an append", async () => {
+    const sessionId = "normalized-append-cache";
+    const now = new Date().toISOString();
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const initialEntries = [
+      {
+        type: "session_meta",
+        timestamp: now,
+        payload: {
+          id: sessionId,
+          cwd: "/test/project",
+          timestamp: now,
+          model_provider: "openai",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: now,
+        payload: { type: "user_message", message: "first" },
+      },
+      ...Array.from({ length: 1_000 }, (_, index) => ({
+        type: "response_item",
+        timestamp: now,
+        payload: {
+          id: `assistant-${index}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `response ${index}` }],
+        },
+      })),
+    ];
+    await writeFile(
+      sessionPath,
+      `${initialEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+
+    const first = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(first).not.toBeNull();
+    if (!first) throw new Error("Expected the initial Codex detail read");
+    const firstNormalized = normalizeSession(first);
+
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "response_item",
+        timestamp: now,
+        payload: {
+          id: "assistant-appended",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "appended" }],
+        },
+      })}\n`,
+    );
+
+    const second = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+      "assistant-999",
+    );
+    expect(second).not.toBeNull();
+    if (!second) throw new Error("Expected the appended Codex detail read");
+    const secondNormalized = normalizeSession(second);
+
+    expect(secondNormalized.messages).not.toBe(firstNormalized.messages);
+    expect(secondNormalized.messages[0]).toBe(firstNormalized.messages[0]);
+    expect(secondNormalized.messages[1_000]).toBe(
+      firstNormalized.messages[1_000],
+    );
+    expect(firstNormalized.messages).toHaveLength(1_001);
+    expect(secondNormalized.messages).toHaveLength(1_002);
+    expect(secondNormalized.messages.at(-1)?.uuid).toBe("assistant-appended");
+  });
+
+  it("resolves a user response whose event arrives in the next append", async () => {
+    const sessionId = "split-user-turn-append";
+    const now = new Date().toISOString();
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    await writeFile(
+      sessionPath,
+      `${[
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: now,
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp: now,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: now,
+          payload: { type: "user_message", message: "first" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: now,
+          payload: {
+            id: "user-response",
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "second" }],
+          },
+        }),
+      ].join("\n")}\n`,
+    );
+
+    const first = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(first).not.toBeNull();
+    if (!first) throw new Error("Expected the provisional Codex detail read");
+    const firstNormalized = normalizeSession(first);
+    expect(firstNormalized.messages).toHaveLength(1);
+
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        timestamp: now,
+        payload: {
+          type: "user_message",
+          message: "second",
+          client_id: "client-second",
+        },
+      })}\n`,
+    );
+
+    const second = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(second).not.toBeNull();
+    if (!second) throw new Error("Expected the completed Codex detail read");
+    const secondNormalized = normalizeSession(second);
+
+    expect(firstNormalized.messages).toHaveLength(1);
+    expect(secondNormalized.messages).toHaveLength(2);
+    expect(secondNormalized.messages[0]).toBe(firstNormalized.messages[0]);
+    expect(secondNormalized.messages[1]).toMatchObject({
+      uuid: "client-second",
+      codexUserTurnProvenance: "paired",
+    });
+  });
+
+  it("resolves a Codex 0.151 user item in the next append", async () => {
+    const sessionId = "split-completed-user-turn-append";
+    const now = new Date().toISOString();
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    await writeFile(
+      sessionPath,
+      `${[
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: now,
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp: now,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: now,
+          payload: {
+            id: "first-user-response",
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "first" }],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: now,
+          payload: {
+            type: "item_completed",
+            thread_id: sessionId,
+            turn_id: "turn-1",
+            item: {
+              type: "UserMessage",
+              id: "first-user-item",
+              client_id: "first-optimistic-user",
+              content: [{ type: "text", text: "first", text_elements: [] }],
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: now,
+          payload: {
+            id: "second-user-response",
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "peer is clear" }],
+          },
+        }),
+      ].join("\n")}\n`,
+    );
+
+    const first = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(first).not.toBeNull();
+    if (!first) throw new Error("Expected the provisional Codex detail read");
+    const firstNormalized = normalizeSession(first);
+    expect(firstNormalized.messages).toHaveLength(1);
+    expect(firstNormalized.messages[0]?.uuid).toBe("first-optimistic-user");
+
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        timestamp: now,
+        payload: {
+          type: "item_completed",
+          thread_id: sessionId,
+          turn_id: "turn-2",
+          item: {
+            type: "UserMessage",
+            id: "item-user-1",
+            client_id: "optimistic-user-1",
+            content: [
+              { type: "text", text: "peer is clear", text_elements: [] },
+            ],
+          },
+        },
+      })}\n`,
+    );
+
+    const second = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(second).not.toBeNull();
+    if (!second) throw new Error("Expected the completed Codex detail read");
+    const secondNormalized = normalizeSession(second);
+
+    expect(secondNormalized.messages).toHaveLength(2);
+    expect(secondNormalized.messages[0]).toBe(firstNormalized.messages[0]);
+    expect(secondNormalized.messages[1]).toMatchObject({
+      uuid: "optimistic-user-1",
+      codexUserTurnProvenance: "paired",
+    });
+  });
+
+  it("carries tool normalization state across an append without mutating the prior projection", async () => {
+    const sessionId = "tool-state-append";
+    const now = new Date().toISOString();
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const patch =
+      "*** Begin Patch\n*** Add File: /repo/demo.txt\n+new\n*** End Patch";
+    await writeFile(
+      sessionPath,
+      `${[
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: now,
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp: now,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: now,
+          payload: { type: "user_message", message: "edit" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: now,
+          payload: {
+            type: "custom_tool_call",
+            call_id: "edit-call",
+            name: "exec",
+            input: `const patch = ${JSON.stringify(patch)}; text(await tools.apply_patch(patch));`,
+          },
+        }),
+      ].join("\n")}\n`,
+    );
+
+    const first = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(first).not.toBeNull();
+    if (!first) throw new Error("Expected the initial tool detail read");
+    const firstNormalized = normalizeSession(first);
+    const firstToolContent = firstNormalized.messages[1]?.message?.content;
+    const firstToolUse = Array.isArray(firstToolContent)
+      ? firstToolContent[0]
+      : undefined;
+    expect(firstToolUse).toMatchObject({
+      type: "tool_use",
+      input: { _rawPatch: patch },
+    });
+    expect(firstToolUse).not.toHaveProperty("input.changes");
+
+    await appendFile(
+      sessionPath,
+      `${[
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: now,
+          payload: {
+            type: "patch_apply_end",
+            call_id: "provider-edit-call",
+            turn_id: "turn-1",
+            stdout: "Done!",
+            stderr: "",
+            success: true,
+            status: "completed",
+            changes: {
+              "/repo/demo.txt": {
+                type: "add",
+                unified_diff: "@@ -0,0 +1 @@\n+new",
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: now,
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: "edit-call",
+            output: [
+              { type: "input_text", text: "Script completed\nOutput:\n{}" },
+            ],
+          },
+        }),
+      ].join("\n")}\n`,
+    );
+
+    const second = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(second).not.toBeNull();
+    if (!second) throw new Error("Expected the completed tool detail read");
+    const secondNormalized = normalizeSession(second);
+    const secondToolContent = secondNormalized.messages[1]?.message?.content;
+    const secondToolUse = Array.isArray(secondToolContent)
+      ? secondToolContent[0]
+      : undefined;
+
+    expect(secondNormalized.messages[0]).toBe(firstNormalized.messages[0]);
+    expect(secondNormalized.messages[1]).not.toBe(firstNormalized.messages[1]);
+    expect(firstToolUse).not.toHaveProperty("input.changes");
+    expect(secondToolUse).toMatchObject({
+      type: "tool_use",
+      input: {
+        _rawPatch: patch,
+        changes: [{ path: "/repo/demo.txt", type: "add" }],
+      },
+    });
+    expect(secondNormalized.messages[2]).toMatchObject({
+      uuid: "edit-call-result",
+      type: "user",
+    });
+  });
+
   it("accepts a complete final entry without a trailing newline", async () => {
     const sessionId = "complete-unterminated-entry";
     const now = new Date().toISOString();
@@ -1626,6 +2005,22 @@ describe("CodexSessionReader - OSS Support", () => {
       "test-project" as UrlProjectId,
     );
     expect(retained?.data.session.entries).toEqual(first?.data.session.entries);
+    expect(retained).not.toBeNull();
+    if (!retained) throw new Error("Expected the retained detail read");
+    expect(normalizeSession(retained).messages).toBe(normalized.messages);
+
+    const reordered = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(reordered).not.toBeNull();
+    if (!reordered) throw new Error("Expected a reorderable detail read");
+    const reorderedEntries = reordered.data.session.entries;
+    [reorderedEntries[1], reorderedEntries[2]] = [
+      reorderedEntries[2],
+      reorderedEntries[1],
+    ];
+    expect(normalizeSession(reordered).messages).not.toBe(normalized.messages);
     expect(rangeSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1707,6 +2102,86 @@ describe("CodexSessionReader - OSS Support", () => {
           entry.payload.message === "appended",
       ),
     ).toHaveLength(1);
+  });
+
+  it("binds the transcript version to rows accepted before summary work", async () => {
+    const sessionId = "summary-race-snapshot";
+    const timestamp = "2026-08-28T06:00:00.000Z";
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    await writeFile(
+      sessionPath,
+      `${[
+        JSON.stringify({
+          type: "session_meta",
+          timestamp,
+          payload: {
+            id: sessionId,
+            cwd: "/test/project",
+            timestamp,
+            model_provider: "openai",
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp,
+          payload: { type: "user_message", message: "initial" },
+        }),
+      ].join("\n")}\n`,
+    );
+    const firstStats = await stat(sessionPath);
+    const expectedFirstVersion = new Date(
+      getCodexRolloutActivityTimeMs(sessionPath, firstStats),
+    ).toISOString();
+
+    const internals = reader as unknown as CodexEntryReadInternals;
+    const originalBuildSummary =
+      internals.buildSessionSummaryFromEntries.bind(reader);
+    let signalSummaryStarted!: () => void;
+    const summaryStarted = new Promise<void>((resolve) => {
+      signalSummaryStarted = resolve;
+    });
+    let releaseSummary!: () => void;
+    const summaryGate = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    vi.spyOn(internals, "buildSessionSummaryFromEntries").mockImplementation(
+      async (...args) => {
+        signalSummaryStarted();
+        await summaryGate;
+        return originalBuildSummary(...args);
+      },
+    );
+
+    const firstRead = reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    await summaryStarted;
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-08-28T06:01:00.000Z",
+        payload: { type: "agent_message", message: "appended" },
+      })}\n`,
+    );
+    releaseSummary();
+
+    const beforeAppendPass = await firstRead;
+    expect(beforeAppendPass?.data.session.entries).toHaveLength(2);
+    expect(beforeAppendPass?.transcriptSnapshotUpdatedAt).toBe(
+      expectedFirstVersion,
+    );
+    expect(beforeAppendPass?.summary.updatedAt).toBe(expectedFirstVersion);
+
+    const afterAppendPass = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    expect(afterAppendPass?.data.session.entries).toHaveLength(3);
+    expect(afterAppendPass?.transcriptSnapshotUpdatedAt).not.toBe(
+      expectedFirstVersion,
+    );
   });
 
   it("does not publish an entry read invalidated while it is in flight", async () => {

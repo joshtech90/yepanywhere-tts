@@ -124,8 +124,12 @@ vi.mock("../WorkingTreeBrowser", async () => {
       status: GitStatusInfo;
       initialWorkingTreePath?: string;
       ignoreWhitespace?: boolean;
+      inventoryPending?: boolean;
+      inventoryLoading?: boolean;
+      inventoryError?: Error | null;
       supportsLastEditor?: boolean;
       onToggleIgnoreWhitespace?: () => void;
+      onProjectionRequestFailure?: (error: unknown) => void;
       onBrowseHistory?: () => void;
     }) => {
       mocks.renderWorkingTreeBrowser({
@@ -137,6 +141,14 @@ vi.mock("../WorkingTreeBrowser", async () => {
           {props.status.isClean ? "clean-changes" : "dirty-changes"}
           <button type="button" onClick={props.onToggleIgnoreWhitespace}>
             gitStatusIgnoreWhitespace
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              props.onProjectionRequestFailure?.(new Error("projection failed"))
+            }
+          >
+            projection-request-failure
           </button>
           <button type="button" onClick={props.onBrowseHistory}>
             sourceCommitHistory
@@ -677,6 +689,28 @@ describe("GitStatusPage source header", () => {
     expect(screen.getByTestId("working-tree-browser")).toBeDefined();
   });
 
+  it("reports capable projection request failures without an upgrade notice", async () => {
+    renderPage();
+    await screen.findByTestId("working-tree-browser");
+    fireEvent.click(
+      screen.getByRole("button", { name: "gitStatusIgnoreWhitespace" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "projection-request-failure" }),
+    );
+
+    expect(
+      await screen.findByText(
+        'sourceProjectionRequestError {"error":"projection failed"}',
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText("sourceProjectionUpgradeNotice")).toBeNull();
+    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ignoreWhitespace: false }),
+    );
+    expect(screen.getByTestId("working-tree-browser")).toBeDefined();
+  });
+
   it("gates dirty-file session links independently", async () => {
     mocks.useVersion.mockReturnValue({
       version: {
@@ -949,6 +983,43 @@ describe("GitStatusPage source header", () => {
       { tracked: true, untracked: true, ignored: false },
       true,
       true,
+    );
+  });
+
+  it("mounts static status while the live inventory waits for attention", async () => {
+    mocks.documentAttentive = false;
+    mocks.useVersion.mockReturnValue({
+      version: {
+        capabilities: [
+          GIT_SOURCE_REVIEW_CAPABILITY,
+          GIT_STATUS_ENHANCED_CAPABILITY,
+          GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
+          GIT_WORKING_TREE_SECTIONS_CAPABILITY,
+        ],
+      },
+      loading: false,
+      error: null,
+    });
+    mocks.useProjectWorktree.mockReturnValue({
+      loading: true,
+      error: null,
+      generation: null,
+      headSha: null,
+      baseSha: null,
+      files: [],
+      directories: [],
+      truncated: false,
+    });
+
+    renderPage();
+
+    await screen.findByTestId("working-tree-browser");
+    expect(mocks.renderWorkingTreeBrowser).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        inventoryPending: true,
+        inventoryLoading: true,
+        inventoryError: null,
+      }),
     );
   });
 

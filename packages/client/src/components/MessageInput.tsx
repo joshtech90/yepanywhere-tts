@@ -15,7 +15,6 @@ import {
   type SessionLivenessSnapshot,
   type SlashCommand,
   type ThinkingMode,
-  type UserMessageCompositionMetadata,
   type UserMessageDeliveryIntent,
   type UserMessageSpeechMetadata,
 } from "@yep-anywhere/shared";
@@ -104,11 +103,13 @@ import {
 } from "../lib/speechTargets";
 import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
+import { hasComposerDraftContent } from "../lib/sessionComposerSubmission";
 import type {
   ContextUsage,
   PermissionMode,
   ProviderRuntimeStatus,
 } from "../types";
+import type { MessageSubmissionMetadata } from "../types/messageSubmission";
 import { AttachmentChip } from "./AttachmentChip";
 import chipStyles from "./AttachmentChip.module.css";
 import { DeliveryGlyph } from "./DeliveryGlyph";
@@ -150,13 +151,7 @@ export interface FullPaneComposerControls {
   restore: () => void;
 }
 
-export interface MessageSubmissionMetadata {
-  deliveryIntent: UserMessageDeliveryIntent;
-  patienceSeconds?: number;
-  steerNow?: boolean;
-  composition: UserMessageCompositionMetadata;
-  speech?: UserMessageSpeechMetadata;
-}
+export type { MessageSubmissionMetadata } from "../types/messageSubmission";
 
 interface PendingSpeechFinal {
   timer: ReturnType<typeof setTimeout>;
@@ -556,6 +551,12 @@ export function MessageInput({
 
   // Panel is collapsed if user collapsed it OR if externally collapsed (approval panel showing)
   const collapsed = userCollapsed || externalCollapsed;
+  const hasNonTextComposerContent =
+    attachments.length > 0 || uploadProgress.length > 0;
+  const composerIsEmpty = !hasComposerDraftContent(
+    text,
+    attachments.length + uploadProgress.length,
+  );
   const invocationQuery = getInvocationCompletionQuery(text, composerCursor);
   const slashQueryKey = invocationQuery
     ? `${invocationQuery.start}:${invocationQuery.end}:${invocationQuery.sigil}:${invocationQuery.query}`
@@ -593,6 +594,7 @@ export function MessageInput({
     !collapsed &&
     !disabled &&
     invocationQuery !== null &&
+    !(invocationQuery.leading && hasNonTextComposerContent) &&
     !hasExactSlashCommand &&
     dismissedSlashQuery !== slashQueryKey &&
     matchingSlashCommands.length > 0;
@@ -671,8 +673,7 @@ export function MessageInput({
       attachments.length === 0 &&
       uploadProgress.length === 0
     : !!(
-        text.trim() ||
-        attachments.length > 0 ||
+        hasComposerDraftContent(text, attachments.length) ||
         speechPending !== null ||
         interimTranscript
       );
@@ -1479,7 +1480,10 @@ export function MessageInput({
 
       if (bangSupport) {
         const bangDraft = resolveComposerBangDraft(finalText);
-        if (bangDraft.kind === "empty") {
+        if (
+          bangDraft.kind === "empty" &&
+          !hasComposerDraftContent(finalText, attachments.length)
+        ) {
           return;
         }
         if (bangDraft.kind === "bang" && !disabled) {
@@ -1505,7 +1509,7 @@ export function MessageInput({
         }
       }
 
-      const hasContent = finalText.trim() || attachments.length > 0;
+      const hasContent = hasComposerDraftContent(finalText, attachments.length);
       if (hasContent && !disabled) {
         const message = prependSpeechMessagePrefix(
           finalText,
@@ -1588,7 +1592,7 @@ export function MessageInput({
         return;
       }
 
-      const hasContent = finalText.trim() || attachments.length > 0;
+      const hasContent = hasComposerDraftContent(finalText, attachments.length);
       if (hasContent && !disabled && queueHandler) {
         const metadata = buildSubmissionMetadata(
           patientQueueEnabled ? "patient" : "deferred",
@@ -1657,7 +1661,7 @@ export function MessageInput({
         return;
       }
 
-      const hasContent = finalText.trim() || attachments.length > 0;
+      const hasContent = hasComposerDraftContent(finalText, attachments.length);
       if (hasContent && !disabled) {
         const metadata = buildSubmissionMetadata(
           "deferred",
@@ -2230,7 +2234,11 @@ export function MessageInput({
   // current draft (empty draft → all). No-op with nothing to show. Shared by
   // Ctrl+↑ and the mobile open button. Returns whether it opened.
   const openRecallDrawer = (): boolean => {
-    if (!turnRecall || turnRecall.entries.length === 0) {
+    if (
+      hasNonTextComposerContent ||
+      !turnRecall ||
+      turnRecall.entries.length === 0
+    ) {
       return false;
     }
     const matches = filterComposerTurnRecall(turnRecall.entries, text);
@@ -2292,7 +2300,7 @@ export function MessageInput({
       !e.altKey &&
       bangSupport &&
       bangSupport.history.length > 0 &&
-      (text === "" || text.startsWith("!!"))
+      (composerIsEmpty || text.startsWith("!!"))
     ) {
       e.preventDefault();
       const nextIndex = Math.min(
@@ -2506,6 +2514,21 @@ export function MessageInput({
       !e.metaKey &&
       !e.shiftKey &&
       !e.altKey &&
+      correctionActive &&
+      onCancelCorrection
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      onCancelCorrection();
+      return;
+    }
+
+    if (
+      e.key === "Escape" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
       isRunning &&
       isThinking &&
       onStop
@@ -2623,7 +2646,7 @@ export function MessageInput({
       !e.shiftKey &&
       !e.altKey &&
       promptSuggestion &&
-      !text.trim()
+      composerIsEmpty
     ) {
       e.preventDefault();
       noteDraftTextChange(text, promptSuggestion, {
@@ -2878,7 +2901,7 @@ export function MessageInput({
           return false;
         }
       } else {
-        if (disabled || (!text.trim() && attachments.length === 0))
+        if (!hasComposerDraftContent(text, attachments.length) || disabled)
           return false;
         void handleSubmit(text, undefined, !hasCoarsePointer(), true);
       }
@@ -3781,7 +3804,7 @@ export function MessageInput({
           onChange={handleFileSelect}
         />
 
-        {!collapsed && promptSuggestion && (
+        {!collapsed && composerIsEmpty && promptSuggestion && (
           <div className="prompt-suggestion">
             <button
               type="button"
@@ -4001,6 +4024,7 @@ export function MessageInput({
               {toolbarVisibility.composerRecall &&
                 turnRecall &&
                 turnRecall.entries.length > 0 &&
+                !hasNonTextComposerContent &&
                 !recallDrawer &&
                 bangQuery === null && (
                   // Touch-keyboard opener for the recall drawer, where there is

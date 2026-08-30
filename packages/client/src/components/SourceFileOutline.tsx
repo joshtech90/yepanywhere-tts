@@ -1,5 +1,6 @@
 import {
   type HTMLAttributes,
+  type KeyboardEvent,
   type ReactNode,
   useLayoutEffect,
   useMemo,
@@ -7,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { TranslationFn } from "../i18n";
+import { suppressSourceKeyboardTooltips } from "../hooks/useSourceKeyboard";
 import styles from "./SourceFileOutline.module.css";
 import { SourceFileStatusBadge } from "./SourceFileRow";
 
@@ -53,9 +55,16 @@ type SourceOutlineEntry<T> =
     };
 
 interface PathNode<T> {
-  files: SourceOutlineItem<T>[];
+  files: T[];
   directories: Map<string, PathNode<T>>;
   directory?: SourceOutlineDirectory;
+}
+
+/** Files in the same depth-first order used by the rendered outline. */
+export function sourceOutlineDisplayOrder<T extends { path: string }>(
+  items: readonly T[],
+): T[] {
+  return collectItems(buildPathTree(items, EMPTY_OUTLINE_DIRECTORIES));
 }
 
 export function SourceFileSectionDivider({
@@ -102,8 +111,12 @@ export function SourceFileOutline<T>({
   scopeKey,
   query,
   className,
+  activeItemId,
+  focusRequest = 0,
+  toggleAllOnEnter = false,
   renderFile,
   t,
+  onKeyDown: onListKeyDown,
   ...listProps
 }: Omit<HTMLAttributes<HTMLUListElement>, "children"> & {
   items: SourceOutlineItem<T>[];
@@ -112,6 +125,9 @@ export function SourceFileOutline<T>({
   onToggleDirectory?: (path: string, expanded: boolean) => void;
   scopeKey: string;
   query?: string;
+  activeItemId?: string | null;
+  focusRequest?: number;
+  toggleAllOnEnter?: boolean;
   renderFile: (
     item: SourceOutlineItem<T>,
     visiblePath: string,
@@ -120,6 +136,8 @@ export function SourceFileOutline<T>({
   t: TranslationFn;
 }) {
   const listRef = useRef<HTMLUListElement>(null);
+  const handledFocusRequest = useRef(0);
+  const pendingFocusItem = useRef<string | null>(null);
   const automaticExpansion = useRef(new Map<string, boolean>());
   const [explicitExpansion, setExplicitExpansion] = useState<
     Record<string, boolean>
@@ -189,11 +207,88 @@ export function SourceFileOutline<T>({
     if (changed) setExplicitExpansion((current) => ({ ...current }));
   }, [availableRows, entries]);
 
+  useLayoutEffect(() => {
+    if (
+      focusRequest <= handledFocusRequest.current ||
+      activeItemId === null ||
+      activeItemId === undefined ||
+      !items.some((item) => item.id === activeItemId)
+    ) {
+      return;
+    }
+    handledFocusRequest.current = focusRequest;
+    pendingFocusItem.current = activeItemId;
+    const containingGroups = collectGroups(entries).filter(
+      (group) =>
+        !group.directory &&
+        group.items.some((item) => item.id === activeItemId),
+    );
+    if (containingGroups.length === 0) return;
+    setExplicitExpansion((current) => ({
+      ...current,
+      ...Object.fromEntries(containingGroups.map((group) => [group.key, true])),
+    }));
+  }, [activeItemId, entries, focusRequest, items]);
+
+  useLayoutEffect(() => {
+    const itemId = pendingFocusItem.current;
+    const list = listRef.current;
+    if (!itemId || !list) return;
+    const path = Array.from(
+      list.querySelectorAll<HTMLElement>("[data-source-outline-id]"),
+    ).find((candidate) => candidate.dataset.sourceOutlineId === itemId);
+    const row = path?.closest<HTMLElement>("[data-source-list-item]");
+    if (!row) return;
+    pendingFocusItem.current = null;
+    row.focus({ preventScroll: true });
+    revealRowWithinViewport(row, findScrollViewport(list));
+  });
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (
+      toggleAllOnEnter &&
+      event.key === "Enter" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      event.target instanceof HTMLElement &&
+      event.target.closest("[data-source-list-item]")
+    ) {
+      event.preventDefault();
+      suppressSourceKeyboardTooltips();
+      if (event.repeat) return;
+      const groups = collectGroups(entries).filter((group) => !group.directory);
+      const expandAll = groups.some(
+        (group) =>
+          !(
+            explicitExpansion[group.key] ??
+            automaticExpansion.current.get(group.key) ??
+            false
+          ),
+      );
+      if (groups.length > 0) {
+        setExplicitExpansion((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            groups.map((group) => [
+              group.key,
+              expandAll || group.items.some((item) => item.id === activeItemId),
+            ]),
+          ),
+        }));
+      }
+      return;
+    }
+    onListKeyDown?.(event);
+  };
+
   return (
     <ul
       {...listProps}
       ref={listRef}
       className={[styles.outline, className].filter(Boolean).join(" ")}
+      onKeyDown={handleKeyDown}
     >
       {renderEntries(
         entries,
@@ -218,6 +313,13 @@ function buildSourceOutline<T>(
   directories: readonly SourceOutlineDirectory[],
   scopeKey: string,
 ): SourceOutlineEntry<T>[] {
+  return emitNode(buildPathTree(items, directories), "", scopeKey);
+}
+
+function buildPathTree<T extends { path: string }>(
+  items: readonly T[],
+  directories: readonly SourceOutlineDirectory[],
+): PathNode<T> {
   const root: PathNode<T> = { files: [], directories: new Map() };
   for (const item of items) {
     const segments = item.path.split("/").filter(Boolean);
@@ -250,11 +352,11 @@ function buildSourceOutline<T>(
     }
     node.directory = directory;
   }
-  return emitNode(root, "", scopeKey);
+  return root;
 }
 
 function emitNode<T>(
-  node: PathNode<T>,
+  node: PathNode<SourceOutlineItem<T>>,
   prefix: string,
   scopeKey: string,
 ): SourceOutlineEntry<T>[] {
@@ -273,7 +375,7 @@ function emitNode<T>(
       child.directories.size === 1
     ) {
       const next = child.directories.entries().next().value as
-        | [string, PathNode<T>]
+        | [string, PathNode<SourceOutlineItem<T>>]
         | undefined;
       if (!next) break;
       groupPath += `${next[0]}/`;
@@ -311,7 +413,7 @@ function relativeDisplayPath<T>(item: SourceOutlineItem<T>, prefix: string) {
     .join(" → ");
 }
 
-function collectItems<T>(node: PathNode<T>): SourceOutlineItem<T>[] {
+function collectItems<T>(node: PathNode<T>): T[] {
   return [
     ...node.files,
     ...Array.from(node.directories.values()).flatMap(collectItems),
@@ -445,11 +547,25 @@ function renderEntries<T>(
 }
 
 function findScrollViewport(element: HTMLElement): HTMLElement | null {
-  let current = element.parentElement;
+  let current: HTMLElement | null = element;
   while (current) {
     const overflowY = getComputedStyle(current).overflowY;
     if (overflowY === "auto" || overflowY === "scroll") return current;
     current = current.parentElement;
   }
   return element.parentElement;
+}
+
+function revealRowWithinViewport(
+  row: HTMLElement,
+  viewport: HTMLElement | null,
+) {
+  if (!viewport) return;
+  const rowBounds = row.getBoundingClientRect();
+  const viewportBounds = viewport.getBoundingClientRect();
+  if (rowBounds.top < viewportBounds.top) {
+    viewport.scrollTop -= viewportBounds.top - rowBounds.top;
+  } else if (rowBounds.bottom > viewportBounds.bottom) {
+    viewport.scrollTop += rowBounds.bottom - viewportBounds.bottom;
+  }
 }

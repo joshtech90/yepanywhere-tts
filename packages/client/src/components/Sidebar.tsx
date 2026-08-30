@@ -12,6 +12,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { GlobalSessionItem } from "../api/client";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useNewSessionDraft } from "../hooks/useDrafts";
+import { useProjectCodeNamePreferences } from "../hooks/useProjectCodeNamePreferences";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProjects } from "../hooks/useProjects";
 import { useProcesses } from "../hooks/useProcesses";
@@ -53,6 +54,7 @@ import { getSessionDisplayTitle } from "../utils";
 import { AgentsNavItem } from "./AgentsNavItem";
 import { CompactResumeButton } from "./CompactResumeButton";
 import { SessionListItem } from "./SessionListItem";
+import type { SessionNavigationIntent } from "./SessionListItem";
 import sidebarStyles from "./Sidebar.module.css";
 import { SidebarLauncher } from "./SidebarLauncher";
 import {
@@ -292,6 +294,7 @@ interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigate: () => void;
+  onSessionNavigate?: (intent: SessionNavigationIntent) => void;
 
   /** Current session ID (for highlighting in sidebar) */
   currentSessionId?: string;
@@ -318,6 +321,7 @@ export function Sidebar({
   isOpen,
   onClose,
   onNavigate,
+  onSessionNavigate,
   currentSessionId,
   // Desktop mode props
   isDesktop = false,
@@ -387,6 +391,7 @@ export function Sidebar({
     versionInfo,
     PROJECT_CODE_NAMES_CAPABILITY,
   );
+  const { projectCodeNamesEnabled } = useProjectCodeNamePreferences();
   const supportsSourceControl = serverHasCapability(
     versionInfo,
     GIT_STATUS_ENHANCED_CAPABILITY,
@@ -655,12 +660,14 @@ export function Sidebar({
       new Map(
         projects.map((project) => [
           project.id,
-          supportsProjectCodeNames && project.codeName
+          supportsProjectCodeNames &&
+          projectCodeNamesEnabled &&
+          project.codeName
             ? project.codeName
             : project.name,
         ]),
       ),
-    [projects, supportsProjectCodeNames],
+    [projectCodeNamesEnabled, projects, supportsProjectCodeNames],
   );
   const pendingProjectQueueItems = useMemo(
     () =>
@@ -888,6 +895,7 @@ export function Sidebar({
         isCurrent={session.id === currentSessionId}
         activity={getSidebarRowActivity(session)}
         onNavigate={onNavigate}
+        onSessionNavigate={onSessionNavigate}
         showProjectName
         projectName={
           projectNameById.get(session.projectId) ?? session.projectName

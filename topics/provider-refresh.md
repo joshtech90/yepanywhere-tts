@@ -163,6 +163,120 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
+Current source refresh, 2026-08-29:
+
+- Installed Codex is `0.151.0`; the official `rust-v0.151.0` source is commit
+  `d8673cb68e349c208659b986697773d3145dbb14`. Root compatibility and
+  expected-protocol markers now record `0.151.0`.
+- Regeneration adds `CyberAccessProgram`, `MisalignmentErrorDetails`,
+  `MisalignmentSteer`, and `TurnToolOutput`, and changes seven files in YA's
+  checked-in app-server subset. `TurnStartParams` gains `turnTrigger`,
+  `toolOutput`, `serviceTierForTurn`, and `cyberAccessProgram`; all are optional
+  and YA sends none.
+- `CodexErrorInfo` adds `rateLimitExceeded`. Codex classifies it as retryable,
+  so it usually arrives as an intermediate retry, but a terminal one previously
+  normalized to `unknown`. YA now maps it to `rate_limit` alongside
+  `usageLimitExceeded` and `sessionBudgetExceeded`.
+- `TurnError` adds `misalignment`, carrying an open-ended `errorType`, the
+  substantive `detailedExplanation`, and a `steer` message. App-server fills
+  `additionalDetails` only for retryable stream errors and leaves it null for
+  terminal ones, so the two never coexist: YA reads `additionalDetails` first
+  and falls back to the explanation, keeping retry diagnostics unchanged while
+  making a misalignment block's reason visible. Offering Codex's continuation
+  steer remains a separate interaction design.
+- `ThreadItem` adds a `functionCallOutput` variant with no call id, the live
+  counterpart of the standalone persisted outputs seen in 0.150.0. YA still
+  declines to invent an orphaned tool result, so both forms remain unrendered;
+  showing them as their own visible block is captured in
+  `gaps/codex-orphaned-tool-results-hidden.md`.
+- Core MCP results now always convert to content items, so a text-only MCP tool
+  result persists as a single `input_text` item instead of a serialized JSON
+  string. The durable schema's item union accepted only `input_text` and
+  `input_image`; it now also accepts `input_audio` and `encrypted_content`,
+  which the same upstream path can produce. Rendering such an array as a JSON
+  envelope predates 0.151 and is captured in
+  `gaps/codex-mcp-text-results-render-as-json.md`.
+- The experimental request list adds `thread/turns/list`, `thread/items/list`,
+  `thread/revert`, and `turn/settings/update`. Full-history hydration is now
+  documented as deprecated for paginated threads; YA already sends
+  `excludeTurns` under the experimental capability and reads rollouts itself,
+  so no resume or fork change is required. Mid-turn settings publication is a
+  product decision rather than compatibility work and is captured in
+  `gaps/codex-mid-turn-settings-update.md`.
+- The current account's no-token `model/list` returns the same eight
+  account-visible models and consumed metadata as 0.150.1, with Sol default and
+  `priority` its only service tier. The generated `Model` type is unchanged
+  between the two tags.
+- All 2,373,786 lines across 1,012 local Codex rollouts validate after the
+  schema widening, with no malformed lines. No local 0.151.0 rollout exists yet
+  — every rollout written since 2026-08-28 reports `0.150.1` — so the new item
+  and content-item shapes are grounded in the tagged source rather than a local
+  sample. Re-run the census once a 0.151.0 session has written one.
+
+Status: Codex 0.151.0 app-server protocol, error taxonomy, error-detail
+surfacing, and persisted tool-output schema compatibility is refreshed. The
+model catalog required no change.
+
+Current no-op refresh, 2026-08-27:
+
+- Installed Codex is `0.150.1`; the official `rust-v0.150.1` source is commit
+  `90854393966b21e9ebfd21b122334eb09a20c93d`. Root compatibility is recorded
+  through `0.150.1`, while `expectedVersion` remains `0.150.0` because the
+  checked-in app-server protocol subset did not change.
+- The patch makes Codex's retained-image compaction budget stable and enabled
+  by default. Provider-native `thread/compact/start` can now trim older retained
+  images when they exceed the remote-compaction token budget. YA already
+  delegates that operation to Codex and neither sets nor interprets the feature,
+  so no provider-control or transcript change is required.
+- The current account's no-token `model/list` still returns the eight
+  YA-recognized models and only metadata the dynamic catalog already preserves.
+  Sol currently advertises `priority` rather than the additional `ultrafast`
+  tier observed during the 0.150.0 refresh; this account/server-side catalog
+  variation requires no fallback change.
+- A new YA session launched by the already-running provider host reports
+  0.150.1, confirming that each fresh worker resolves the installed Codex
+  executable without a host restart. Today's three sampled rollouts contain
+  3,191 entries across 0.150.0 and 0.150.1; all 23 authored user turns retain
+  provenance, with no malformed lines or audit exceptions.
+- The project-local Codex reference checkout remains dirty and was preserved.
+  The exact release tags were compared in the librarian cache instead.
+
+Status: Codex 0.150.1 app-server, model-catalog, provider-native compaction, and
+persisted-transcript compatibility is refreshed with no YA runtime source
+change.
+
+Current source refresh, 2026-08-26:
+
+- Installed Codex is `0.150.0`; the official `rust-v0.150.0` source is commit
+  `9bdd7a39c5034657dfbbb89381cd9364f61eee11`. Root compatibility and
+  expected-protocol markers now record `0.150.0`.
+- Regeneration adds `CommandExecutionApprovalKind` and changes six files in
+  YA's checked-in app-server subset. Command approvals now identify command
+  execution versus terminal input, collaboration tools add message, follow-up,
+  interrupt, and list operations, collaboration status adds `interrupted`,
+  subagent activity adds `completed`, and skill metadata adds its owning plugin
+  id. These are additive for YA's existing request and item handlers. The
+  tagged runtime contains terminal-input approval protocol groundwork but does
+  not yet produce that approval kind.
+- `function_call_output` can now omit `call_id` and instead carry a tool `name`
+  and `namespace`. Codex classifies these standalone outputs as external model
+  context, not a response paired with a visible tool call. YA's durable schema
+  accepts the shape, its child-session correlation requires a real call id, and
+  transcript normalization does not invent an orphaned user-facing tool result.
+- The current account's no-token `model/list` returns Sol, Terra, Luna, GPT-5.5,
+  and GPT-5.2. Sol now advertises an `ultrafast` service tier in addition to
+  `priority`; the existing dynamic catalog path preserves it without a fallback
+  change. Bundled definitions also add hidden Daybreak Blue and Red entries,
+  whose account-variable availability does not justify exposing either when
+  live catalog discovery fails.
+- New app-server MCP event-stream, realtime-item, browser/computer-use,
+  permission-profile, and runtime-status surfaces are outside YA's current
+  requests. Message content-kind and context-window metadata remain compatible
+  with the persisted schema's metadata passthrough.
+
+Status: Codex 0.150.0 app-server, live model-catalog, and persisted-transcript
+compatibility is refreshed.
+
 Current no-op refresh, 2026-08-24:
 
 - Installed Codex and npm `@openai/codex` `latest` are `0.149.1`; the official
@@ -553,6 +667,36 @@ Previous-model registry review:
    auto-migrate them.
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
+
+Current source refresh, 2026-08-29:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.223` to `0.3.251`;
+  its SDK-bundled executable reports Claude Code `2.1.251`. The independently
+  installed `claude` also reports `2.1.251`, but YA continues to resolve the
+  SDK-bundled executable first.
+- An authenticated no-turn handshake returns `default`, `opus[1m]`,
+  `claude-fable-5[1m]`, `sonnet`, and `haiku`. YA now transfers the concrete
+  Fable row's live capabilities to its stable `fable` selection, avoiding a
+  duplicate picker row; the other stable aliases and fallback order remain
+  unchanged.
+- System init now identifies terminal-only slash commands. YA omits those from
+  its remote command inventory while retaining the older-SDK fallback when the
+  field is absent. The richer `supportedCommands()` result remains the primary
+  provider-curated inventory.
+- Claude now emits a full background-task replacement snapshot and marks
+  housekeeping tasks as ambient. Provider retention uses the nonambient
+  snapshot once observed, so a live-update watcher or missed terminal edge
+  cannot indefinitely retain an idle session; older task-edge and Stop-hook
+  evidence remains the pre-snapshot compatibility path.
+- The changed PDF Read placement is already accepted by YA's nested
+  tool-result media materializer. New queued-turn, reply-correlation, usage,
+  and pricing fields pass through as additive metadata; the updated SDK types,
+  server provider tests, and shared Claude schema tests require no further
+  compatibility changes.
+
+Status: Claude Code 2.1.251 / SDK 0.3.251 package, command inventory,
+background-task retention, model catalog, and message compatibility is
+refreshed.
 
 Current source refresh, 2026-08-06:
 
@@ -979,7 +1123,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.223` | `0.3.223` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.251` | `0.3.251` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

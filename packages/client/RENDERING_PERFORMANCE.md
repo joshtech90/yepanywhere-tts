@@ -41,10 +41,19 @@ stable component identity, and lower update cadence.
    while urgent composer updates proceed; the session-detail store still
    retains every received message and the latest snapshot always renders.
    Older-page insertion and active-window prefix trimming bypass deferral so
-   their scroll-anchor bookkeeping commits with the structural change.
-6. `RenderItemComponent` routes exactly one render item to one block/tool
+   their scroll-anchor bookkeeping commits with the structural change. A
+   large older page enters the DOM in bounded turn-aligned commits separated
+   by animation-frame yields; each commit restores the original visible
+   anchor in its layout phase before paint.
+6. At 200 units of semantic row weight, `useTranscriptRenderWindow` replaces
+   distant loaded rows with measured-height spacers and mounts the viewport,
+   1.25 viewports of overscan, and at most 48 ordinary timeline rows. Search,
+   turn navigation, route restoration, and live quote anchors wake or retain
+   rows through the same render-id-to-height-model mapping. Short transcripts
+   keep the unmodified full-DOM path.
+7. `RenderItemComponent` routes exactly one render item to one block/tool
    renderer: text, thinking, tool call, user prompt, session setup, or system.
-7. Rich renderers operate on block/tool-sized input:
+8. Rich renderers operate on block/tool-sized input:
    - text blocks use server markdown HTML when available, streaming markdown
      DOM while live, and local fixed-font math as fallback after completion;
    - tool renderers receive one tool input/result or one file/diff/output
@@ -84,10 +93,22 @@ stable component identity, and lower update cadence.
   current-message updates. User and assistant timeline entries are memoized at
   the turn boundary: a live-tail replacement may enter the changed current
   turn, but must not re-enter historical turn galleries or render items.
+- Loaded transcript length must not determine mounted DOM length once semantic
+  row weight reaches the render-window threshold. Off-window geometry comes
+  from stable-key height measurements or conservative estimates. A scroll
+  shift or estimate correction preserves the visible render-row anchor;
+  explicit search/turn/route targets mount before their exact alignment pass,
+  and rows carrying live quote anchors remain mounted as sparse islands.
 - Native transcript scroll handlers perform only constant-time follow/intent
   bookkeeping and schedule one trailing position read. Transcript-position
   context is measured after 200 ms of scroll rest, indexes rendered rows once,
   and must not publish intermediate positions through session-page React state.
+- Selection-action geometry always reads the latest native range. Pointer drags
+  defer placement until release. Non-pointer range-change, resize, and scroll
+  bursts use a bounded leading/latest cadence: the first scan is immediate,
+  then at most one latest scan is pending per interval. Browser events must
+  never enqueue a geometry scan for every intermediate selection or viewport
+  position.
 - Ordinary session-composer edits are local to the composer. They must not
   render `MessageList`, `RenderItemComponent`, `MessageAge`, or historical
   transcript rows, regardless of transcript size or whether the edit crosses
@@ -253,6 +274,17 @@ causal control that bypassed only those repeated row queries took 0.70 seconds,
 with steady steps at 21–29 ms after two transition frames. This established the
 scroll-rest measurement and one-index-per-measurement invariant above; it is
 diagnostic evidence, not a portable timing ceiling.
+
+A ratchet-grade three-repetition 360-turn trace on 2026-08-29 accepted the
+measured-height semantic render window and eight-unit yielded prepend. Final
+mounted rows fell from 722 to eight, elements from 18,985 to 435, and layout
+objects from roughly 26,500 to 451–454. Full-projection typing maxima fell from
+239.5–244.3 ms to 18.8–21.2 ms, prepend-associated longest tasks reached
+118–127 ms without a control timeout, and tooltip long-task time fell to zero.
+The result is not uniform: full-mode scroll frame p95 rose from 16.8 to 33.4 ms,
+though maximum frames remained 33.4–50.1 ms with no long task. The complete
+identity, limitations, and augmentation control are in the
+[`2026-08-29 system-observed follow-up`](../../topics/performance-regression-suite.runs/20260829-system-observed-followups.md).
 
 ## Review Checklist
 

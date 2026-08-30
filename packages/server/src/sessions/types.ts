@@ -102,6 +102,8 @@ export interface GetSessionSummaryOptions {
 // Return type that includes both the computed summary and the raw provider data
 export interface LoadedSession {
   summary: SessionSummary;
+  /** Source timestamp captured with the transcript rows in this snapshot. */
+  transcriptSnapshotUpdatedAt: string;
   data: UnifiedSession;
 }
 
@@ -247,6 +249,9 @@ export interface ISessionReader {
    * Returns null if the session is not found.
    */
   getSessionFilePath?(sessionId: string): Promise<string | null>;
+
+  /** Resolve the provider-native project path recorded by this session. */
+  getSessionProjectPath?(sessionId: string): Promise<string | null>;
 
   /**
    * Enumerate session files in a directory with their IDs.

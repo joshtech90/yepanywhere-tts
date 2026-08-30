@@ -1,8 +1,18 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLocalImageRoutes } from "../../src/routes/local-image.js";
+import { createMutableFileCacheMetadata } from "../../src/routes/mutable-file-cache.js";
 
 describe("Local image routes", () => {
   let tempDir: string;
@@ -37,7 +47,59 @@ describe("Local image routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("cache-control")).toBe("private, no-cache");
+    expect(response.headers.get("etag")).toMatch(/^W\/"/);
+    expect(response.headers.get("last-modified")).not.toBeNull();
     expect(await response.text()).toBe("png-bytes");
+
+    const etag = response.headers.get("etag");
+    expect(etag).not.toBeNull();
+    const unchanged = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+      { headers: { "If-None-Match": etag ?? "" } },
+    );
+    expect(unchanged.status).toBe(304);
+    expect(unchanged.headers.get("cache-control")).toBe("private, no-cache");
+    expect(unchanged.headers.get("content-length")).toBeNull();
+
+    await writeFile(filePath, "new-png-bytes");
+    const changed = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+      { headers: { "If-None-Match": etag ?? "" } },
+    );
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("etag")).not.toBe(etag);
+    expect(await changed.text()).toBe("new-png-bytes");
+  });
+
+  it("derives validators and bytes from one opened file snapshot", async () => {
+    const allowedDir = path.join(tempDir, "allowed");
+    await mkdir(allowedDir, { recursive: true });
+    const filePath = path.join(allowedDir, "mutable.png");
+    await writeFile(filePath, "old");
+    const oldMetadata = createMutableFileCacheMetadata(await stat(filePath));
+
+    const routes = createLocalImageRoutes({
+      allowedPaths: [allowedDir],
+      openFile: async (resolvedPath) => {
+        await rename(filePath, `${filePath}.old`);
+        await writeFile(filePath, "replacement image bytes");
+        return open(resolvedPath, "r");
+      },
+    });
+
+    const response = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+    );
+    const replacementMetadata = createMutableFileCacheMetadata(
+      await stat(filePath),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-length")).toBe("23");
+    expect(response.headers.get("etag")).toBe(replacementMetadata.etag);
+    expect(response.headers.get("etag")).not.toBe(oldMetadata.etag);
+    await expect(response.text()).resolves.toBe("replacement image bytes");
   });
 
   it("serves media files from discovered project directories", async () => {

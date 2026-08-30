@@ -58,6 +58,27 @@ The recurring bug is any surface that skips this and emits a bare API URL: it
 works on the developer's own machine (direct mode) and 404s for everyone on a
 phone through the relay. The base64 `data:` surfaces are immune (no network).
 
+## Mutable path freshness
+
+Filesystem paths are mutable coordinates, not content identities. Raw bytes
+from `/api/local-image`, `/api/local-file`, and
+`/api/projects/:id/files/raw` use `Cache-Control: private, no-cache` with a
+weak stat validator (`ETag`) and `Last-Modified`. Every direct-client access
+therefore reaches the server to revalidate the current file: unchanged bytes
+may return `304 Not Modified`, while a changed size, mtime, or ctime returns the
+new body. Each response opens the file once, derives its validator and length
+from that descriptor, and streams that same descriptor, so a pathname
+replacement cannot pair metadata for one file with bytes from another. The
+localhost transport also requests `cache: "no-cache"` for these routes so an
+older positive-TTL browser entry cannot hide the new policy after an upgrade.
+
+Rendered `/api/local-file` Markdown documents are `private, no-store` rather
+than stat-validated because their HTML also depends on the running renderer,
+not only on source-file metadata. Relay fetches continue to request the source
+server on every access; the relay protocol does not maintain a browser HTTP
+cache. Opaque transient session-media handles remain `no-store`, while
+content-addressed preserved media may remain explicitly immutable.
+
 ## Where media appears in the UI
 
 Each surface below is named by *what the user is looking at*, then the component
@@ -117,6 +138,14 @@ File-viewer modals own one same-URL browser-history entry: Back dismisses the
 viewer without leaving the underlying session, while opening or React effect
 replay must never traverse pre-modal history.
 
+The visible file-viewer body is the document's normal scroll owner at every
+supported width. When an input, textarea, select, or editable region does not
+own focus, wheel/trackpad input and ordinary keyboard navigation scroll that
+body at native browser speed. Selection and quote-reply handlers may observe
+the document, but they must not retain hidden composer focus, consume
+navigation keys, or turn a click in unselected viewer content into a composer
+transfer.
+
 An authenticated FileViewer modal can be parked without discarding loaded
 content, presentation mode, scroll position, or quoteable source registration.
 Its persistent session-level controller lets the user move between document and
@@ -145,6 +174,10 @@ vocabulary even though their authorization routes remain distinct:
   one **Raw source** icon button whose pressed state means the source is
   showing; the local-file modal takes its initial representation from the
   context menu in this first convergence step.
+- The project `FileViewer` toolbar's **Open in new tab** action is a real link
+  to the stable viewer route. Ordinary activation, middle-click, browser
+  context-menu opening, and native modifier-click therefore keep their normal
+  browser meanings instead of depending on a left-click handler.
 - Copy actions are direct root-menu rows with a copy glyph and a full command
   label: **Copy project-relative path**, **Copy absolute file path**, **Copy
   file path** when the client cannot classify it more strongly, **Copy viewer
@@ -363,14 +396,23 @@ full-size inspection.
 
 The shared image viewer uses the useful viewport rather than the generic modal
 preview ceiling. Selecting a thumbnail enters one maximized viewer state.
-Activating the modal **×** or visible **Close** control, or pressing Escape,
-returns to the prior transcript/gallery state. Clicking or tapping the image
-stage never dismisses the viewer. Toolbar controls remain operable without
+Activating the modal **×**, pressing Escape or an unmodified Backspace, or
+using browser Back/back-swipe returns to the prior transcript/gallery state.
+The header has no second text-labelled Close action. Clicking or tapping the
+image stage never dismisses the viewer. Toolbar controls remain operable without
 dismissing it. When a turn gallery supplies context, previous/next buttons and
 the Left/Right arrow keys move through eligible images in original transcript
 order and wrap at either end. The viewer shows the source-order position in
 reserved space outside the image stage, even when compact packing visually
 reorders the thumbnails.
+
+In an authenticated session, a path-backed image viewer participates in the
+shared managed-viewer state. Its header minimize control parks the same mounted
+image and its fit/zoom position into the bottom composer controller; restore
+does not reload or reconstruct it. Pathless media and public-share viewers do
+not manufacture a file identity or parking control. An image opened from an
+already managed file viewer parks that existing viewer rather than replacing
+it, so closing or navigating Back from the image returns to the mounted parent.
 
 The previous/next buttons and position are transient viewer chrome. They appear
 briefly when the viewer opens. Fine-pointer movement over the image stage shows
@@ -403,9 +445,12 @@ practical touch targets; tapping the stage reveals them and full-screen
 horizontal swipe navigation is not required.
 
 The viewer header exposes the basename as a link to the fetched full-resolution
-image, and its explicit **Download** action saves those same fetched bytes under
-that basename. Both use the relay-safe object URL; neither navigates the browser
-to a bare API route.
+image. When viewport width permits, Fit, 1:1, zoom, **Download**, minimize, and
+the single **×** close action occupy that same title row. At phone width the
+image controls move together to a second header row while minimize and close
+remain beside the title. **Download** saves the fetched bytes under the
+basename. The title link and Download both use the relay-safe object URL;
+neither navigates the browser to a bare API route.
 
 The compact-gallery goals, in priority order, are:
 

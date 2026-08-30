@@ -15,10 +15,10 @@ import {
   createLocalStorageBoolean,
   createLocalStorageValue,
 } from "../lib/localStorageValue";
+import { clearSessionScrollMemory } from "../lib/sessionScrollMemoryStorage";
 import { UI_KEYS } from "../lib/storageKeys";
 
 const DEFAULT_SESSION_DOM_LINGER_ENABLED = false;
-const DEFAULT_SESSION_OFFSCREEN_TRANSCRIPT_RENDERING_ENABLED = false;
 const DEFAULT_SESSION_ACTIVE_WINDOW_TRIM_ENABLED = true;
 
 /** Budget 0 disables the cache (matching the old default-off toggle). */
@@ -72,10 +72,6 @@ const sessionScrollBehaviorStore =
     DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
     parseSessionScrollBehaviorMode,
   );
-const sessionOffscreenTranscriptRenderingStore = createLocalStorageBoolean(
-  UI_KEYS.sessionOffscreenTranscriptRendering,
-  DEFAULT_SESSION_OFFSCREEN_TRANSCRIPT_RENDERING_ENABLED,
-);
 const sessionActiveWindowTrimStore = createLocalStorageBoolean(
   UI_KEYS.sessionActiveWindowTrim,
   DEFAULT_SESSION_ACTIVE_WINDOW_TRIM_ENABLED,
@@ -85,7 +81,6 @@ const performancePreferenceStores = [
   sessionTranscriptCacheBudgetMbStore,
   sessionTranscriptCacheTtlHoursStore,
   sessionScrollBehaviorStore,
-  sessionOffscreenTranscriptRenderingStore,
   sessionActiveWindowTrimStore,
 ] as const;
 
@@ -139,20 +134,13 @@ function getSnapshot() {
     String(getSessionTranscriptCacheBudgetMb()),
     String(getSessionTranscriptCacheTtlHours()),
     getSessionScrollBehaviorMode(),
-    getSessionOffscreenTranscriptRenderingEnabled() ? "1" : "0",
     getSessionActiveWindowTrimEnabled() ? "1" : "0",
   ].join(":");
 }
 
 function parseSnapshot(snapshot: string) {
-  const [
-    domLinger,
-    budgetMb,
-    ttlHours,
-    scrollBehavior,
-    offscreenTranscriptRendering,
-    activeWindowTrim,
-  ] = snapshot.split(":");
+  const [domLinger, budgetMb, ttlHours, scrollBehavior, activeWindowTrim] =
+    snapshot.split(":");
   const parsedBudget = Number(budgetMb);
   const parsedTtl = Number(ttlHours);
   const sessionTranscriptCacheBudgetMb = Number.isFinite(parsedBudget)
@@ -166,8 +154,6 @@ function parseSnapshot(snapshot: string) {
       ? parsedTtl
       : DEFAULT_TRANSCRIPT_CACHE_TTL_HOURS,
     sessionScrollBehaviorMode: parseSessionScrollBehaviorMode(scrollBehavior),
-    sessionOffscreenTranscriptRenderingEnabled:
-      offscreenTranscriptRendering !== "0",
     sessionActiveWindowTrimEnabled: activeWindowTrim !== "0",
   };
 }
@@ -190,10 +176,6 @@ export function getSessionTranscriptCacheEnabled(): boolean {
 
 export function getSessionScrollBehaviorMode(): SessionScrollBehaviorMode {
   return sessionScrollBehaviorStore.read();
-}
-
-export function getSessionOffscreenTranscriptRenderingEnabled(): boolean {
-  return sessionOffscreenTranscriptRenderingStore.read();
 }
 
 export function getSessionActiveWindowTrimEnabled(): boolean {
@@ -225,12 +207,6 @@ sessionTranscriptCacheTtlHoursStore.subscribe(
 
 export function setSessionDomLingerPreference(enabled: boolean): void {
   sessionDomLingerStore.set(enabled);
-}
-
-export function setSessionOffscreenTranscriptRenderingPreference(
-  enabled: boolean,
-): void {
-  sessionOffscreenTranscriptRenderingStore.set(enabled);
 }
 
 export function setSessionActiveWindowTrimPreference(enabled: boolean): void {
@@ -266,6 +242,7 @@ export function setSessionScrollBehaviorModePreference(
   sessionScrollBehaviorStore.set(normalized);
   if (!shouldRetainSessionScrollMemory(normalized)) {
     clearDefaultSessionDetailMemoryCacheScrollSnapshots();
+    clearSessionScrollMemory();
   }
 }
 
@@ -305,7 +282,7 @@ export function useSessionPerformanceSettings() {
   const snapshot = useSyncExternalStore(
     subscribe,
     getSnapshot,
-    () => `0:0:1:${DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE}:1:1`,
+    () => `0:0:1:${DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE}:1`,
   );
   const settings = useMemo(() => parseSnapshot(snapshot), [snapshot]);
 
@@ -325,10 +302,6 @@ export function useSessionPerformanceSettings() {
     setSessionScrollBehaviorModePreference,
     [],
   );
-  const setSessionOffscreenTranscriptRenderingEnabled = useCallback(
-    setSessionOffscreenTranscriptRenderingPreference,
-    [],
-  );
   const setSessionActiveWindowTrimEnabled = useCallback(
     setSessionActiveWindowTrimPreference,
     [],
@@ -340,7 +313,6 @@ export function useSessionPerformanceSettings() {
     setSessionTranscriptCacheBudgetMb,
     setSessionTranscriptCacheTtlHours,
     setSessionScrollBehaviorMode,
-    setSessionOffscreenTranscriptRenderingEnabled,
     setSessionActiveWindowTrimEnabled,
   };
 }

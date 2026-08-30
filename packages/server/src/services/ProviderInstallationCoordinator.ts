@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -14,10 +13,19 @@ import {
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getLogger } from "../logging/logger.js";
 import { enforceOwnerOnlyPathPermissionsStrict } from "../utils/filePermissions.js";
+import {
+  defaultOwnerProbe,
+  type InstallationOwnerProbe,
+} from "./installationOwnerProbe.js";
+
+export {
+  createDefaultOwnerProbe,
+  defaultOwnerProbe,
+  type InstallationOwnerProbe,
+} from "./installationOwnerProbe.js";
 
 export const CODEX_INSTALLATION_FAMILY = "codex-cli";
 
@@ -62,17 +70,6 @@ interface GateRecord {
   pid: number;
   ownerStartId: string | null;
   createdAt: number;
-}
-
-/**
- * How stale-record cleanup verifies the recorded owner process. Injectable so
- * tests can model dead, sleeping, and PID-reused owners deterministically.
- */
-export interface InstallationOwnerProbe {
-  /** Whether any process currently occupies the PID. */
-  aliveState(pid: number): "alive" | "missing" | "other-user";
-  /** Platform start identity for the PID; null when unavailable. */
-  startId(pid: number): Promise<string | null>;
 }
 
 interface FamilyState {
@@ -469,6 +466,9 @@ export class ProviderInstallationCoordinator {
       const familyDir = join(this.rootDir, family);
       await mkdir(familyDir, { recursive: true, mode: 0o700 });
       await enforceOwnerOnlyPathPermissionsStrict(familyDir, "directory");
+      await this.withGate(familyDir, async () => {
+        await this.collectActiveLeases(familyDir);
+      });
       return familyDir;
     })();
     this.preparedDirectories.set(family, preparation);
@@ -498,7 +498,7 @@ export class ProviderInstallationCoordinator {
         }
         if (Date.now() >= deadline) {
           throw new Error(
-            `Timed out acquiring provider installation gate: ${familyDir}`,
+            `Timed out acquiring provider installation gate: ${familyDir} ${await this.describeGateHolder(gatePath)}`,
           );
         }
         await delay(this.pollMs);
@@ -513,7 +513,10 @@ export class ProviderInstallationCoordinator {
         } satisfies GateRecord);
         break;
       } catch (error) {
-        await rmdir(gatePath).catch(() => undefined);
+        // A gate directory left behind without its owner record is only
+        // recoverable on the stale-gate timer, so give the claim back now.
+        await unlink(gateOwnerPath).catch(() => undefined);
+        await this.removeGateDirectory(gatePath);
         throw error;
       }
     }
@@ -527,23 +530,37 @@ export class ProviderInstallationCoordinator {
     }
   }
 
+  /**
+   * Recover a gate whose owner is gone, returning true when the directory is
+   * free for another `mkdir` attempt.
+   *
+   * Two abandoned shapes exist. An owner record whose recorded process is
+   * verifiably dead is the ordinary one. The second is a gate directory with
+   * no owner record at all, left by a process that died between claiming the
+   * directory and writing the record — nothing heartbeats it, so the
+   * directory's own mtime is the only age evidence available. A live claimant
+   * crosses that window in adjacent statements, far inside the stale
+   * threshold, so an owner-less directory older than the threshold is
+   * abandoned. Without this branch it is unrecoverable and permanently wedges
+   * the family for every YA process owned by this user.
+   */
   private async clearStaleGate(gatePath: string): Promise<boolean> {
     const ownerPath = join(gatePath, "owner.json");
     try {
+      if (!(await this.pathExists(ownerPath))) {
+        if (!(await this.isStale(gatePath, this.gateStaleMs))) return false;
+        return this.removeGateDirectory(gatePath);
+      }
       if (!(await this.isStale(ownerPath, this.gateStaleMs))) return false;
       if (!(await this.staleRecordOwnerGone(ownerPath))) return false;
-      await unlink(ownerPath);
-      await rmdir(gatePath);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-      if (!(await this.isStale(gatePath, this.gateStaleMs))) return false;
-      try {
-        await rmdir(gatePath);
-        return true;
-      } catch {
-        return false;
-      }
+      await unlink(ownerPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      return this.removeGateDirectory(gatePath);
+    } catch {
+      // Recovery is a probe: anything that stops us proving the gate is
+      // abandoned means keep waiting, and the admission deadline reports it.
+      return false;
     }
   }
 
@@ -561,12 +578,51 @@ export class ProviderInstallationCoordinator {
         return;
       }
       await unlink(ownerPath);
-      await rmdir(gatePath);
     } catch (error) {
-      log.warn(
-        { error, gatePath, gateId },
-        "Failed to release provider installation gate",
-      );
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(
+          { error, gatePath, gateId },
+          "Failed to release provider installation gate owner record",
+        );
+      }
+    }
+    // Drop the directory even when its owner record had already vanished:
+    // leaving it behind is what blocks every later admission attempt.
+    await this.removeGateDirectory(gatePath);
+  }
+
+  /** True once the gate directory is gone, whichever process removed it. */
+  private async removeGateDirectory(gatePath: string): Promise<boolean> {
+    try {
+      await rmdir(gatePath);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+
+  /** Names the current gate holder for an admission-timeout diagnostic. */
+  private async describeGateHolder(gatePath: string): Promise<string> {
+    const ownerPath = join(gatePath, "owner.json");
+    try {
+      const info = await stat(ownerPath);
+      const record = JSON.parse(await readFile(ownerPath, "utf8")) as {
+        pid?: unknown;
+      };
+      const heartbeatAgeMs = Date.now() - info.mtimeMs;
+      return `(held by pid ${String(record.pid)}, last heartbeat ${Math.round(heartbeatAgeMs / 1000)}s ago)`;
+    } catch {
+      return "(gate directory has no owner record; it clears itself once stale)";
+    }
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
     }
   }
 
@@ -754,90 +810,6 @@ export class ProviderInstallationCoordinator {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-const execFileAsync = promisify(execFile);
-
-interface DefaultOwnerProbeOptions {
-  platform?: NodeJS.Platform;
-  execFile?: (
-    command: string,
-    args: string[],
-    options: { encoding: "utf8"; timeout: number },
-  ) => Promise<{ stdout: string }>;
-}
-
-export function createDefaultOwnerProbe(
-  options: DefaultOwnerProbeOptions = {},
-): InstallationOwnerProbe {
-  const platform = options.platform ?? process.platform;
-  const runFile =
-    options.execFile ??
-    (async (command, args, commandOptions) => {
-      const { stdout } = await execFileAsync(command, args, commandOptions);
-      return { stdout: String(stdout) };
-    });
-
-  return {
-    aliveState(pid: number): "alive" | "missing" | "other-user" {
-      try {
-        process.kill(pid, 0);
-        return "alive";
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EPERM") {
-          return "other-user";
-        }
-        return "missing";
-      }
-    },
-
-    async startId(pid: number): Promise<string | null> {
-      if (platform === "linux") {
-        try {
-          const statLine = await readFile(`/proc/${pid}/stat`, "utf8");
-          // Fields after the parenthesized comm: overall field 22 is the
-          // process start time in clock ticks since boot.
-          const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
-          const startTime = afterComm.split(" ")[19];
-          return startTime || null;
-        } catch {
-          return null;
-        }
-      }
-      if (platform !== "win32") {
-        // macOS and other POSIX hosts have no /proc; ps runs only on the rare
-        // stale-cleanup path, never per admission.
-        try {
-          const { stdout } = await runFile(
-            "ps",
-            ["-p", String(pid), "-o", "lstart="],
-            { encoding: "utf8", timeout: 5_000 },
-          );
-          return stdout.trim() || null;
-        } catch {
-          return null;
-        }
-      }
-      try {
-        const { stdout } = await runFile(
-          "powershell.exe",
-          [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `((Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks)`,
-          ],
-          { encoding: "utf8", timeout: 5_000 },
-        );
-        return stdout.trim() || null;
-      } catch {
-        return null;
-      }
-    },
-  };
-}
-
-export const defaultOwnerProbe = createDefaultOwnerProbe();
 
 export const providerInstallationCoordinator =
   new ProviderInstallationCoordinator();

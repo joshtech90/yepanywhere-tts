@@ -44,6 +44,11 @@ import type {
 import { FakeSourceTransport } from "../../lib/transport";
 import { UI_KEYS } from "../../lib/storageKeys";
 import type { SessionRouteScrollSnapshot } from "../../lib/sessionRouteSnapshots";
+import {
+  createSessionScrollMemoryStorageKey,
+  readSessionScrollMemory,
+  writeSessionScrollMemory,
+} from "../../lib/sessionScrollMemoryStorage";
 import type { Message, SessionMetadata } from "../../types";
 
 const apiMocks = vi.hoisted(() => ({
@@ -83,6 +88,23 @@ function scrollSnapshot(): SessionRouteScrollSnapshot {
   };
 }
 
+function deviceScrollSnapshot(
+  id: string,
+  timestampMs: number,
+  following = false,
+): SessionRouteScrollSnapshot {
+  return {
+    atBottom: following,
+    scrollTop: timestampMs,
+    scrollHeight: 1000,
+    clientHeight: 500,
+    anchor: { id: `answer-${id}`, topOffset: 10, timestampMs },
+    completedTurn: { id, timestampMs },
+    following,
+    updatedAtMs: timestampMs,
+  };
+}
+
 function sessionResponse(messageId: string): GetSessionResult {
   const ownership = { owner: "self" as const, processId: "pid-test" };
   return {
@@ -105,6 +127,7 @@ function sessionResponse(messageId: string): GetSessionResult {
         message: { role: "assistant", content: messageId },
       },
     ],
+    transcriptSnapshotUpdatedAt: "2026-05-04T00:00:00.000Z",
     ownership,
     pendingInputRequest: null,
     slashCommands: null,
@@ -1922,6 +1945,147 @@ describe("useSessionMessages cache", () => {
     await waitFor(() => expect(second.result.current.loading).toBe(false));
   });
 
+  it("restores a remembered place without a warm transcript cache", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const reference = {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      projectId: "proj-1",
+      sessionId: "sess-1",
+    };
+    const retainedScroll = {
+      ...deviceScrollSnapshot("turn-2", 200),
+      scrollTop: 240,
+      anchor: { id: "answer-mid-turn-2", topOffset: 10, timestampMs: 250 },
+      completedTurn: undefined,
+      seenTurn: { id: "turn-2", timestampMs: 200, activityIndex: 1 },
+      updatedAtMs: 300,
+    };
+    writeSessionScrollMemory(reference, retainedScroll);
+
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+
+    expect(rendered.result.current.initialScrollSnapshot).toEqual(
+      retainedScroll,
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+    expect(rendered.result.current.initialScrollSnapshot).toEqual(
+      retainedScroll,
+    );
+  });
+
+  it("advances storage on completed turns and reconciles another tab", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const reference = {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      projectId: "proj-1",
+      sessionId: "sess-1",
+    };
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+
+    const first = deviceScrollSnapshot("turn-1", 100);
+    act(() => {
+      rendered.result.current.updateRouteScrollSnapshot(first);
+    });
+    expect(readSessionScrollMemory(reference)).toEqual(first);
+
+    const second = deviceScrollSnapshot("turn-2", 200, true);
+    writeSessionScrollMemory(reference, second);
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: createSessionScrollMemoryStorageKey(reference),
+          newValue: JSON.stringify(second),
+        }),
+      );
+    });
+
+    expect(
+      defaultSessionDetailMemoryCache.readScrollSnapshot(
+        defaultStoreEntryKey(),
+      ),
+    ).toEqual(second);
+  });
+
+  it("does not persist a viewport without a seen-turn cursor", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const reference = {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      projectId: "proj-1",
+      sessionId: "sess-1",
+    };
+    const rememberedPlace = {
+      ...deviceScrollSnapshot("turn-1", 100),
+      scrollTop: 240,
+      anchor: { id: "answer-mid-turn-1", topOffset: 10, timestampMs: 150 },
+      completedTurn: undefined,
+      updatedAtMs: 300,
+    };
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+
+    act(() => {
+      rendered.result.current.updateRouteScrollSnapshot(rememberedPlace);
+    });
+
+    expect(readSessionScrollMemory(reference)).toBeNull();
+  });
+
+  it("persists an active seen turn before it completes", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const reference = {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      projectId: "proj-1",
+      sessionId: "sess-1",
+    };
+    const activeTurn = {
+      ...deviceScrollSnapshot("turn-2", 200),
+      completedTurn: undefined,
+      seenTurn: { id: "turn-2", timestampMs: 200, activityIndex: 1 },
+    };
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+
+    act(() => {
+      rendered.result.current.updateRouteScrollSnapshot(activeTurn);
+    });
+
+    expect(readSessionScrollMemory(reference)).toEqual(activeTurn);
+  });
+
+  it("does not advance the device cursor from a hidden tab", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const reference = {
+      sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+      projectId: "proj-1",
+      sessionId: "sess-1",
+    };
+    const rendered = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(rendered.result.current.loading).toBe(false));
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+
+    act(() => {
+      rendered.result.current.updateRouteScrollSnapshot(
+        deviceScrollSnapshot("turn-1", 100, true),
+      );
+    });
+
+    expect(readSessionScrollMemory(reference)).toBeNull();
+    visibility.mockRestore();
+  });
+
   it("reuses the warm session cache before a slow delta fetch resolves", async () => {
     enableSessionTranscriptCache();
 
@@ -2841,6 +3005,7 @@ describe("useSessionMessages cache", () => {
   });
 
   it("mirrors incremental catch-up messages into the session detail store", async () => {
+    const onTranscriptReconciled = vi.fn();
     apiMocks.getSession.mockResolvedValueOnce({
       session: {
         provider: "claude",
@@ -2854,6 +3019,7 @@ describe("useSessionMessages cache", () => {
           message: { role: "user", content: "hello" },
         },
       ],
+      transcriptSnapshotUpdatedAt: "2026-05-04T00:00:00.000Z",
       ownership: { owner: "self" },
       pendingInputRequest: null,
       slashCommands: null,
@@ -2869,10 +3035,15 @@ describe("useSessionMessages cache", () => {
       useSessionMessages({
         projectId: "proj-1",
         sessionId: "sess-1",
+        onTranscriptReconciled,
       }),
     );
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(onTranscriptReconciled).toHaveBeenCalledWith(
+      "2026-05-04T00:00:00.000Z",
+    );
+    onTranscriptReconciled.mockClear();
 
     act(() => {
       defaultSessionDetailMemoryCache.dispatch(defaultStoreEntryKey(), {
@@ -2906,6 +3077,7 @@ describe("useSessionMessages cache", () => {
           message: { role: "assistant", content: "hi" },
         },
       ],
+      transcriptSnapshotUpdatedAt: "2026-05-04T00:00:59.000Z",
       ownership: { owner: "self" },
       pendingInputRequest: null,
       slashCommands: null,
@@ -2926,6 +3098,33 @@ describe("useSessionMessages cache", () => {
       "msg-2",
     ]);
     expect(readStoreMessageIds()).toEqual(["msg-1", "store-only-msg", "msg-2"]);
+    expect(onTranscriptReconciled).toHaveBeenCalledWith(
+      "2026-05-04T00:00:59.000Z",
+    );
+  });
+
+  it("does not advance the transcript watermark for an empty delta", async () => {
+    const onTranscriptReconciled = vi.fn();
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+
+    const { result } = renderHook(() =>
+      useSessionMessages({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+        onTranscriptReconciled,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    onTranscriptReconciled.mockClear();
+
+    apiMocks.getSession.mockResolvedValueOnce({
+      ...sessionResponse("unused"),
+      messages: [],
+      transcriptSnapshotUpdatedAt: "2026-05-04T00:01:00.000Z",
+    });
+    await act(async () => result.current.fetchNewMessages());
+
+    expect(onTranscriptReconciled).not.toHaveBeenCalled();
   });
 
   it("coalesces concurrent incremental refreshes into one trailing pass", async () => {

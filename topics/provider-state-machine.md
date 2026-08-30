@@ -27,15 +27,26 @@ hint after that process has become idle.
 The session heartbeat repeats the authoritative process state inside its
 liveness snapshot. Each heartbeat reconciles `processState`, so a missed
 one-shot status or activity event cannot leave active controls and animation
-stuck indefinitely. When `lastProviderMessageAt` is newer than the loaded
-session's durable `updatedAt`, the heartbeat also requests an incremental
-transcript catch-up. That comparison keeps retrying on later heartbeats until a
-durable refresh closes the gap. Provider-retained work remains active through
-the liveness derived status even when the underlying process state is idle.
+stuck indefinitely. When `lastProviderMessageAt` is newer than the last applied
+reader-owned `transcriptSnapshotUpdatedAt`, the heartbeat also requests an
+incremental transcript catch-up. Empty or unversioned responses do not advance
+that watermark, so the comparison keeps retrying until a row-bearing durable
+refresh closes the gap. Provider-retained work remains active through the
+liveness derived status even when the underlying process state is idle.
 Codex's durable `task_complete` event normalizes to the same hidden
 `turn_complete` boundary as the live stream, allowing transcript reload and
 catch-up to settle stale active presentation without inferring completion from
 assistant text.
+
+Session-detail runtime snapshots obey event-versus-snapshot freshness. A
+metadata request started for reconnect, phone wake, initial navigation-hint
+reconciliation, or stream-error recovery may update lifecycle fields only when
+no ownership, process-state, pending-input, liveness, or local lifecycle
+observation arrived after that request started. Among overlapping runtime
+snapshots, only the newest-started request may update lifecycle fields. This
+keeps an older `in-turn` snapshot from restoring thinking/Stop UI after a newer
+idle event, while a later reconnect or visibility refresh can still heal a
+missed event.
 
 `terminated` is a derived/diagnostic condition for unhealthy termination; it is
 shown through liveness status (`needs-attention`) and server recovery workflows

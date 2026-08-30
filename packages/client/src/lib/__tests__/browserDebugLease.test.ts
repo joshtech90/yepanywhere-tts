@@ -180,6 +180,7 @@ describe("browserDebugLeaseController", () => {
     );
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
   });
 
   afterEach(async () => {
@@ -441,17 +442,47 @@ describe("browserDebugLeaseController", () => {
     );
   });
 
+  it("cancels reload handoff ownership when disabled during acquisition", async () => {
+    await browserDebugLeaseController.enable("session-1");
+    window.dispatchEvent(new Event("pagehide"));
+    const lockName = "ya:browser-debug-active-lease:lease-1";
+    heldPageLocks.add(lockName);
+    const pollCount = mocks.calls.filter((call) =>
+      call.path.endsWith("/poll"),
+    ).length;
+    const reloadedController = new BrowserDebugLeaseController({
+      canRestorePersistedLease: () => true,
+    });
+    extraControllers.push(reloadedController);
+
+    const reconcile = reloadedController.reconcilePersistedLease();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await reloadedController.disable({ notifyServer: false });
+    heldPageLocks.delete(lockName);
+    await reconcile;
+
+    expect(reloadedController.getSnapshot().phase).toBe("inactive");
+    expect(
+      mocks.calls.filter((call) => call.path.endsWith("/poll")),
+    ).toHaveLength(pollCount);
+    expect(
+      window.sessionStorage.getItem("ya:browser-debug-active-lease-v1"),
+    ).toBeNull();
+  });
+
   it("resumes a reloaded lease with its original expiry", async () => {
     await browserDebugLeaseController.enable("session-1");
     const expiresAtMs = browserDebugLeaseController.getSnapshot().expiresAtMs;
     const livePoll = mocks.calls.find((call) => call.path.endsWith("/poll"));
+    const reloadUrl = browserDebugLeaseController.prepareFrontendReload(
+      window.location.href,
+      "reload-1",
+    );
     window.dispatchEvent(new Event("pagehide"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.history.replaceState(null, "", reloadUrl);
 
     expect(livePoll?.options?.signal?.aborted).toBe(true);
-    const reloadedController = new BrowserDebugLeaseController({
-      canRestorePersistedLease: () => true,
-    });
+    const reloadedController = new BrowserDebugLeaseController();
     extraControllers.push(reloadedController);
 
     expect(reloadedController.getSnapshot()).toMatchObject({
@@ -461,7 +492,10 @@ describe("browserDebugLeaseController", () => {
       expiresAtMs,
     });
 
-    await reloadedController.reconcilePersistedLease();
+    await Promise.all([
+      reloadedController.reconcilePersistedLease(),
+      reloadedController.reconcilePersistedLease(),
+    ]);
     expect(reloadedController.getSnapshot()).toMatchObject({
       phase: "active",
       connected: false,

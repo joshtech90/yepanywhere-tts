@@ -60,6 +60,7 @@ import {
 import {
   type CodexUserResponseEntry,
   buildCodexUserTurnProvenance,
+  codexUserMessageEventText,
   codexUserResponseText,
   countCodexUserTurns,
   findFirstCodexUserTurn,
@@ -67,7 +68,10 @@ import {
   isCodexUserMessageEventEntry,
   isCodexUserResponseEntry,
 } from "./codex-user-turn-provenance.js";
-import { normalizeSession } from "./normalization.js";
+import {
+  normalizeSession,
+  tagCodexEntriesNormalizationSource,
+} from "./normalization.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
 import type {
   SummaryParserWorkerMode,
@@ -206,9 +210,16 @@ export interface CodexSessionReaderScanMetrics {
 interface CodexEntryCache {
   filePath: string;
   mtimeMs: number;
+  ctimeMs: number;
   size: number;
   entries: CodexSessionEntry[];
   partialLine: string;
+  normalizationSource: object;
+}
+
+interface CodexEntrySnapshot {
+  entries: CodexSessionEntry[];
+  transcriptSnapshotUpdatedAt: string;
 }
 
 interface CodexEntryReadOwner {
@@ -494,6 +505,7 @@ class CodexAgentMappingCollector {
 
     if (
       payload.type !== "function_call_output" ||
+      !payload.call_id ||
       !this.spawnAgentCallIds.has(payload.call_id) ||
       this.seenToolUseIds.has(payload.call_id)
     ) {
@@ -788,15 +800,20 @@ export class CodexSessionReader implements ISessionReader {
     if (!sessionFile) return null;
 
     try {
-      const entries = await this.readEntries(sessionId, sessionFile.filePath, {
-        purpose: "detail",
-        cache: true,
-      });
+      const transcriptSnapshot = await this.readEntries(
+        sessionId,
+        sessionFile.filePath,
+        {
+          purpose: "detail",
+          cache: true,
+        },
+      );
+      const { entries, transcriptSnapshotUpdatedAt } = transcriptSnapshot;
       const summary = await this.buildSessionSummaryFromEntries(
         sessionId,
         projectId,
-        sessionFile,
         entries,
+        transcriptSnapshotUpdatedAt,
       );
       if (!summary) return null;
 
@@ -811,6 +828,7 @@ export class CodexSessionReader implements ISessionReader {
 
       return {
         summary,
+        transcriptSnapshotUpdatedAt,
         data: {
           provider: this.determineProviderFromEntries(entries),
           session: {
@@ -994,10 +1012,14 @@ export class CodexSessionReader implements ISessionReader {
     const sessionFile = await this.findSessionFile(agentId);
     if (!sessionFile) return null;
 
-    const entries = await this.readEntries(agentId, sessionFile.filePath, {
-      purpose: "subagent",
-      cache: true,
-    });
+    const { entries, transcriptSnapshotUpdatedAt } = await this.readEntries(
+      agentId,
+      sessionFile.filePath,
+      {
+        purpose: "subagent",
+        cache: true,
+      },
+    );
     if (entries.length === 0) return null;
 
     const metaEntry = entries.find((e) => e.type === "session_meta") as
@@ -1020,6 +1042,7 @@ export class CodexSessionReader implements ISessionReader {
     };
     const loaded: LoadedSession = {
       summary,
+      transcriptSnapshotUpdatedAt,
       data: {
         provider,
         session: { entries },
@@ -1358,6 +1381,11 @@ export class CodexSessionReader implements ISessionReader {
     return sessionFile?.filePath ?? null;
   }
 
+  async getSessionProjectPath(sessionId: string): Promise<string | null> {
+    const sessionFile = await this.findSessionFile(sessionId);
+    return sessionFile ? canonicalizeProjectPath(sessionFile.cwd) : null;
+  }
+
   getIndexScopeKey(sessionDir: string): string {
     return `codex::${sessionDir}::${this.projectIdentityKey ?? "*"}`;
   }
@@ -1400,7 +1428,7 @@ export class CodexSessionReader implements ISessionReader {
     sessionId: string,
     filePath: string,
     options?: CodexReadEntriesOptions,
-  ): Promise<CodexSessionEntry[]> {
+  ): Promise<CodexEntrySnapshot> {
     const purpose = options?.purpose ?? "detail";
     const shouldWriteCache = options?.cache ?? true;
     const startedAt = Date.now();
@@ -1414,7 +1442,8 @@ export class CodexSessionReader implements ISessionReader {
         cached &&
         cached.filePath === filePath &&
         cached.size === stats.size &&
-        cached.mtimeMs === stats.mtimeMs
+        cached.mtimeMs === stats.mtimeMs &&
+        cached.ctimeMs === stats.ctimeMs
       ) {
         this.cacheAgentMappingsFromEntries(
           sessionId,
@@ -1435,7 +1464,7 @@ export class CodexSessionReader implements ISessionReader {
           parsedEntries: cached.entries.length,
           dedupedEntries: cached.entries.length,
         });
-        return cached.entries.slice();
+        return this.copyEntrySnapshot(cached);
       }
 
       if (!shouldWriteCache) {
@@ -1475,9 +1504,22 @@ export class CodexSessionReader implements ISessionReader {
 
       const refreshed = await promise;
       if (refreshed && this.entryCache.get(sessionId) === refreshed) {
-        return refreshed.entries.slice();
+        return this.copyEntrySnapshot(refreshed);
       }
     }
+  }
+
+  private copyEntrySnapshot(cached: CodexEntryCache): CodexEntrySnapshot {
+    return {
+      entries: tagCodexEntriesNormalizationSource(
+        cached.entries.slice(),
+        cached.normalizationSource,
+        cached.entries,
+      ),
+      transcriptSnapshotUpdatedAt: new Date(
+        getCodexRolloutActivityTimeMs(cached.filePath, cached),
+      ).toISOString(),
+    };
   }
 
   private async refreshEntryCache(options: {
@@ -1497,7 +1539,8 @@ export class CodexSessionReader implements ISessionReader {
       cached &&
       cached.filePath === filePath &&
       cached.size === stats.size &&
-      cached.mtimeMs === stats.mtimeMs
+      cached.mtimeMs === stats.mtimeMs &&
+      cached.ctimeMs === stats.ctimeMs
     ) {
       return cached;
     }
@@ -1530,6 +1573,7 @@ export class CodexSessionReader implements ISessionReader {
       cached.partialLine = parsed.partialLine;
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
+      cached.ctimeMs = stats.ctimeMs;
       this.cacheAgentMappingsFromEntries(
         sessionId,
         filePath,
@@ -1568,9 +1612,11 @@ export class CodexSessionReader implements ISessionReader {
     const refreshed: CodexEntryCache = {
       filePath,
       mtimeMs: stats.mtimeMs,
+      ctimeMs: stats.ctimeMs,
       size: stats.size,
       entries: parsed.entries,
       partialLine: parsed.partialLine,
+      normalizationSource: {},
     };
     this.entryCache.set(sessionId, refreshed);
     const cacheStoreMs = Date.now() - cacheStoreStartedAt;
@@ -1608,7 +1654,7 @@ export class CodexSessionReader implements ISessionReader {
     filePath: string;
     purpose: CodexEntryReadPurpose;
     stats: Awaited<ReturnType<typeof stat>>;
-  }): Promise<CodexSessionEntry[]> {
+  }): Promise<CodexEntrySnapshot> {
     const { startedAt, memoryBefore, sessionId, filePath, purpose, stats } =
       options;
     const parsed = await this.readEntrySnapshot(filePath, stats);
@@ -1635,7 +1681,12 @@ export class CodexSessionReader implements ISessionReader {
       dedupedEntries: parsed.entries.length,
       maxLineLength: parsed.maxLineLength,
     });
-    return parsed.entries.slice();
+    return {
+      entries: parsed.entries.slice(),
+      transcriptSnapshotUpdatedAt: new Date(
+        getCodexRolloutActivityTimeMs(filePath, stats),
+      ).toISOString(),
+    };
   }
 
   private async readEntrySnapshot(
@@ -1903,7 +1954,7 @@ export class CodexSessionReader implements ISessionReader {
         state.eventUserMessageCount += 1;
         if (!state.firstEventUserTitle) {
           const fullTitle =
-            entry.payload.message.trim() ||
+            codexUserMessageEventText(entry) ||
             (precedingResponseUser
               ? codexUserResponseText(precedingResponseUser.payload)
               : "");
@@ -2063,8 +2114,8 @@ export class CodexSessionReader implements ISessionReader {
   private async buildSessionSummaryFromEntries(
     sessionId: string,
     projectId: UrlProjectId,
-    sessionFile: CodexSessionFile,
     entries: CodexSessionEntry[],
+    transcriptSnapshotUpdatedAt: string,
   ): Promise<SessionSummary | null> {
     if (entries.length === 0) return null;
 
@@ -2073,7 +2124,6 @@ export class CodexSessionReader implements ISessionReader {
       | undefined;
     if (!metaEntry) return null;
 
-    const stats = await stat(sessionFile.filePath);
     const { title, fullTitle } = this.extractTitle(entries);
     const messageCount = this.countMessages(entries);
     const model = this.extractModel(entries);
@@ -2093,9 +2143,7 @@ export class CodexSessionReader implements ISessionReader {
       title,
       fullTitle,
       createdAt: metaEntry.payload.timestamp,
-      updatedAt: new Date(
-        getCodexRolloutActivityTimeMs(sessionFile.filePath, stats),
-      ).toISOString(),
+      updatedAt: transcriptSnapshotUpdatedAt,
       messageCount,
       ownership: { owner: "none" },
       contextUsage,

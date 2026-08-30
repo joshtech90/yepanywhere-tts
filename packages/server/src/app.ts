@@ -39,8 +39,10 @@ import type {
 } from "./metadata/index.js";
 import { ToolResultMediaStore } from "./media/ToolResultMediaStore.js";
 import {
+  applySessionSandboxAuthRequirement,
   getClaudeSandboxProjectDir,
   getCodexSandboxSessionsDir,
+  getSessionSandboxAvailability,
 } from "./session-sandbox.js";
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
@@ -133,6 +135,7 @@ import { createProjectsRoutes } from "./routes/projects.js";
 import { createProjectSessionDefaultsRoutes } from "./routes/project-session-defaults.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
+import { createPublicFileShareRoutes } from "./routes/public-file-shares.js";
 import {
   createPublicSharePublicRoutes,
   createPublicShareRoutes,
@@ -266,6 +269,8 @@ export interface AppOptions {
   grokSessionsDir?: string; // override for testing
   piSessionsDir?: string; // override for testing
   idleTimeoutMs?: number;
+  /** Test-only session-detail augmentation delay for performance clock probes. */
+  persistedAugmentDelayMs?: number;
   defaultPermissionMode?: PermissionMode;
   /** EventBus for file change events */
   eventBus?: EventBus;
@@ -488,6 +493,15 @@ function getPreservedRestartWork(
 }
 
 export function createApp(options: AppOptions): AppResult {
+  let supervisor!: Supervisor;
+  const isSessionSandboxAuthEnforced = (): boolean =>
+    options.authDisabled !== true &&
+    options.authService !== undefined &&
+    !options.authService.isLocalhostOpen() &&
+    (options.authService.isEnabled() ||
+      Boolean(options.desktopAuthToken || options.desktopBootstrapService));
+  const isAuthenticationRelaxationBlocked = (): boolean =>
+    supervisor.isAuthenticationRelaxationBlocked();
   const getConfiguredSubagentMaxDepth = () => {
     const configured =
       options.serverSettingsService?.getSetting("subagentMaxDepth");
@@ -622,6 +636,7 @@ export function createApp(options: AppOptions): AppResult {
         authDisabled: options.authDisabled,
         desktopAuthToken: options.desktopAuthToken,
         desktopBootstrapService: options.desktopBootstrapService,
+        isAuthenticationRelaxationBlocked,
       }),
     );
   }
@@ -1036,7 +1051,6 @@ export function createApp(options: AppOptions): AppResult {
     );
     return resolved?.summary ?? null;
   };
-  let supervisor: Supervisor;
   const browserDebugService = new BrowserDebugService(
     Date.now,
     undefined,
@@ -1214,6 +1228,7 @@ export function createApp(options: AppOptions): AppResult {
     toolResultMediaStore,
     dirtyFileEditorService: options.dirtyFileEditorService,
     sandboxStateRoot: join(effectiveDataDir, "session-sandboxes"),
+    isSessionSandboxAuthEnforced,
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
       ? (sessionId, executor) =>
@@ -1562,6 +1577,11 @@ export function createApp(options: AppOptions): AppResult {
         options.speechBackendRegistry?.enabledCapabilities() ?? {},
       getClientDefaults: () =>
         options.serverSettingsService?.getSetting("clientDefaults"),
+      getSessionSandboxAvailability: async (availabilityOptions) =>
+        applySessionSandboxAuthRequirement(
+          await getSessionSandboxAvailability(availabilityOptions),
+          isSessionSandboxAuthEnforced(),
+        ),
       desktopRuntime: options.desktopRuntime,
       providerHostControlAvailable: isProviderRuntimeHostAvailable(),
       isLiveWorktreeMonitoringEnabled: () =>
@@ -1807,6 +1827,7 @@ export function createApp(options: AppOptions): AppResult {
       sessionQueuePersistenceService: options.sessionQueuePersistenceService,
       toolResultMediaStore,
       dataDir: options.dataDir,
+      persistedAugmentDelayMs: options.persistedAugmentDelayMs,
       resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
     }),
   );
@@ -2507,6 +2528,7 @@ export function createApp(options: AppOptions): AppResult {
     };
 
     app.route("/api/public-shares", createPublicShareRoutes(publicShareDeps));
+    app.route("/api", createPublicFileShareRoutes(publicShareDeps));
     app.route(
       "/api",
       createPublicShareManagementRoutes({

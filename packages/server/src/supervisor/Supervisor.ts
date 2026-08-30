@@ -27,6 +27,7 @@ import { getProjectName } from "../projects/paths.js";
 import {
   getSessionSandboxSettingsError,
   prepareSessionSandbox,
+  type PrepareSessionSandboxOptions,
 } from "../session-sandbox.js";
 import { getProvider } from "../sdk/providers/index.js";
 import { CacheMissBillingMonitor } from "../services/CacheMissBillingMonitor.js";
@@ -86,6 +87,7 @@ import {
   thinkingConfigsEqual,
 } from "./SessionActivationCoordinator.js";
 import { HeartbeatSweepScheduler, earliestDueAt } from "./heartbeatSchedule.js";
+import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 import {
   type QueuedRequestInfo,
   type QueuedResponse,
@@ -148,6 +150,17 @@ const ACTIVE_HEARTBEAT_DOUBT_STATUSES = new Set([
   "long-silent-unverified",
 ]);
 const RESUME_COMPACT_WAIT_MS = 3 * 60 * 1000;
+
+type SessionSandboxLaunchOptions = Omit<
+  PrepareSessionSandboxOptions,
+  "authEnforced"
+>;
+
+interface SessionSandboxLaunchTransaction {
+  options: (
+    options: SessionSandboxLaunchOptions,
+  ) => PrepareSessionSandboxOptions;
+}
 
 export type ResumeMode = "full" | "compact-first";
 
@@ -433,7 +446,7 @@ export interface SessionLaunchOptions {
   onRetryableFailure?: (reason: string) => void | Promise<void>;
   /** Classify provider startup rejection as retryable for a durable caller. */
   retryProviderStartupFailure?: boolean;
-  /** Do not accept a temporary YA id as successful provider startup. */
+  /** Await provider init and reject a resumed session whose native id changed. */
   requireProviderSessionId?: boolean;
 }
 
@@ -567,6 +580,8 @@ export interface SupervisorOptions {
   dirtyFileEditorService?: DirtyFileEditorService;
   /** Root for persistent project-private provider state. */
   sandboxStateRoot?: string;
+  /** Whether local YA requests currently require non-readable credentials. */
+  isSessionSandboxAuthEnforced?: () => boolean;
 }
 
 export type { SessionDoneResult };
@@ -644,6 +659,8 @@ export class Supervisor {
   private toolResultMediaStore?: ToolResultMediaStore;
   private dirtyFileEditorService?: DirtyFileEditorService;
   private sandboxStateRoot?: string;
+  private isSessionSandboxAuthEnforced?: () => boolean;
+  private pendingSessionSandboxAuthReservations = 0;
   // In-flight forked recaps, keyed by process id. The AbortController cancels
   // the generator-fork helper turn when the parent becomes active again, so a
   // returning user's new turn is never shadowed by a stale recap. See
@@ -694,6 +711,7 @@ export class Supervisor {
     this.toolResultMediaStore = options.toolResultMediaStore;
     this.dirtyFileEditorService = options.dirtyFileEditorService;
     this.sandboxStateRoot = options.sandboxStateRoot;
+    this.isSessionSandboxAuthEnforced = options.isSessionSandboxAuthEnforced;
     this.activationCoordinator = new SessionActivationCoordinator({
       defaultPermissionMode: this.defaultPermissionMode,
       sessionMetadataService: this.sessionMetadataService,
@@ -741,6 +759,38 @@ export class Supervisor {
 
     if (!this.provider && !this.sdk && !this.realSdk) {
       throw new Error("Either provider, sdk, or realSdk must be provided");
+    }
+  }
+
+  /** Prevent local auth from being relaxed during or after a sandbox launch. */
+  isAuthenticationRelaxationBlocked(): boolean {
+    return (
+      this.pendingSessionSandboxAuthReservations > 0 ||
+      this.getAllProcesses().some(
+        (process) => process.sandboxEnforcement?.effective === "project-write",
+      )
+    );
+  }
+
+  private async withSessionSandboxLaunchTransaction<T>(
+    level: SessionSandboxLevel | undefined,
+    action: (transaction: SessionSandboxLaunchTransaction) => Promise<T>,
+  ): Promise<T> {
+    const authEnforced =
+      level === "project-write" &&
+      this.isSessionSandboxAuthEnforced?.() === true;
+    const transaction: SessionSandboxLaunchTransaction = {
+      options: (options) => ({ ...options, authEnforced }),
+    };
+    if (!authEnforced) {
+      return action(transaction);
+    }
+
+    this.pendingSessionSandboxAuthReservations++;
+    try {
+      return await action(transaction);
+    } finally {
+      this.pendingSessionSandboxAuthReservations--;
     }
   }
 
@@ -1091,12 +1141,34 @@ export class Supervisor {
    * Create a session using the real SDK without an initial message.
    * The session is created and waits for a message to be queued.
    */
-  private async createRealSession(
+  private createRealSession(
     projectPath: string,
     projectId: UrlProjectId,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
     resumeSessionId?: string,
+  ): Promise<Process> {
+    return this.withSessionSandboxLaunchTransaction(
+      modelSettings?.sandboxLevel,
+      (sandboxLaunch) =>
+        this.createRealSessionWithinSandboxLaunch(
+          projectPath,
+          projectId,
+          permissionMode,
+          modelSettings,
+          resumeSessionId,
+          sandboxLaunch,
+        ),
+    );
+  }
+
+  private async createRealSessionWithinSandboxLaunch(
+    projectPath: string,
+    projectId: UrlProjectId,
+    permissionMode: PermissionMode | undefined,
+    modelSettings: ModelSettings | undefined,
+    resumeSessionId: string | undefined,
+    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     if (!this.realSdk) {
       throw new Error("realSdk is not available");
@@ -1109,15 +1181,18 @@ export class Supervisor {
       { supportsNativePromptSuggestions: true },
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
-    const sessionSandbox = await prepareSessionSandbox({
-      level: modelSettings?.sandboxLevel,
-      provider: "claude",
-      projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
-      resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    });
+    const sessionSandbox = await prepareSessionSandbox(
+      sandboxLaunch.options({
+        level: modelSettings?.sandboxLevel,
+        networkFirewall: modelSettings?.sandboxNetworkFirewall,
+        provider: "claude",
+        projectPath,
+        executor: modelSettings?.executor,
+        stateKey: modelSettings?.sandboxStateKey,
+        resumeSessionId,
+        stateRoot: this.sandboxStateRoot,
+      }),
+    );
     // Start session WITHOUT an initial message - agent will wait
     const result = await this.realSdk.startSession({
       cwd: projectPath,
@@ -1193,6 +1268,7 @@ export class Supervisor {
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       setEffortFn: setEffort,
+      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
@@ -1260,6 +1336,7 @@ export class Supervisor {
   private async settleProviderSessionId(
     process: Process,
     required: boolean,
+    expectedSessionId?: string,
   ): Promise<void> {
     if (!required) {
       await process.waitForSessionId();
@@ -1267,7 +1344,15 @@ export class Supervisor {
     }
 
     try {
-      await process.waitForProviderSessionId();
+      const providerSessionId = await process.waitForProviderSessionId();
+      if (
+        expectedSessionId !== undefined &&
+        providerSessionId !== expectedSessionId
+      ) {
+        throw new Error(
+          `Provider attached session ${providerSessionId} instead of ${expectedSessionId}`,
+        );
+      }
     } catch (error) {
       try {
         await process.abort();
@@ -1698,13 +1783,37 @@ export class Supervisor {
   /**
    * Start a session using the real SDK with full features.
    */
-  private async startRealSession(
+  private startRealSession(
     projectPath: string,
     projectId: UrlProjectId,
     message: UserMessage,
     resumeSessionId?: string,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
+  ): Promise<Process> {
+    return this.withSessionSandboxLaunchTransaction(
+      modelSettings?.sandboxLevel,
+      (sandboxLaunch) =>
+        this.startRealSessionWithinSandboxLaunch(
+          projectPath,
+          projectId,
+          message,
+          resumeSessionId,
+          permissionMode,
+          modelSettings,
+          sandboxLaunch,
+        ),
+    );
+  }
+
+  private async startRealSessionWithinSandboxLaunch(
+    projectPath: string,
+    projectId: UrlProjectId,
+    message: UserMessage,
+    resumeSessionId: string | undefined,
+    permissionMode: PermissionMode | undefined,
+    modelSettings: ModelSettings | undefined,
+    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const tempSessionId = resumeSessionId ?? randomUUID();
 
@@ -1723,15 +1832,18 @@ export class Supervisor {
       modelSettings?.promptSuggestionMode,
       { supportsNativePromptSuggestions: true },
     );
-    const sessionSandbox = await prepareSessionSandbox({
-      level: modelSettings?.sandboxLevel,
-      provider: "claude",
-      projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
-      resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    });
+    const sessionSandbox = await prepareSessionSandbox(
+      sandboxLaunch.options({
+        level: modelSettings?.sandboxLevel,
+        networkFirewall: modelSettings?.sandboxNetworkFirewall,
+        provider: "claude",
+        projectPath,
+        executor: modelSettings?.executor,
+        stateKey: modelSettings?.sandboxStateKey,
+        resumeSessionId,
+        stateRoot: this.sandboxStateRoot,
+      }),
+    );
     const result = await this.realSdk.startSession({
       cwd: projectPath,
       resumeSessionId,
@@ -1807,6 +1919,7 @@ export class Supervisor {
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       setEffortFn: setEffort,
+      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
@@ -1869,7 +1982,7 @@ export class Supervisor {
    * Create a session using the provider interface without an initial message.
    * The session is created and waits for a message to be queued.
    */
-  private async createProviderSession(
+  private createProviderSession(
     projectPath: string,
     projectId: UrlProjectId,
     permissionMode?: PermissionMode,
@@ -1878,6 +1991,34 @@ export class Supervisor {
     resumeSessionId?: string,
     retryProviderStartupFailure = false,
     requireProviderSessionId = false,
+  ): Promise<Process> {
+    return this.withSessionSandboxLaunchTransaction(
+      modelSettings?.sandboxLevel,
+      (sandboxLaunch) =>
+        this.createProviderSessionWithinSandboxLaunch(
+          projectPath,
+          projectId,
+          permissionMode,
+          modelSettings,
+          provider,
+          resumeSessionId,
+          retryProviderStartupFailure,
+          requireProviderSessionId,
+          sandboxLaunch,
+        ),
+    );
+  }
+
+  private async createProviderSessionWithinSandboxLaunch(
+    projectPath: string,
+    projectId: UrlProjectId,
+    permissionMode: PermissionMode | undefined,
+    modelSettings: ModelSettings | undefined,
+    provider: AgentProvider | undefined,
+    resumeSessionId: string | undefined,
+    retryProviderStartupFailure: boolean,
+    requireProviderSessionId: boolean,
+    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const activeProvider = provider ?? this.provider;
     if (!activeProvider) {
@@ -1905,8 +2046,9 @@ export class Supervisor {
       modelSettings,
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
-    const sessionSandbox = await prepareSessionSandbox({
+    const sessionSandboxOptions = sandboxLaunch.options({
       level: modelSettings?.sandboxLevel,
+      networkFirewall: modelSettings?.sandboxNetworkFirewall,
       provider: activeProvider.name,
       projectPath,
       executor: modelSettings?.executor,
@@ -1914,15 +2056,7 @@ export class Supervisor {
       resumeSessionId,
       stateRoot: this.sandboxStateRoot,
     });
-    const sessionSandboxOptions = {
-      level: modelSettings?.sandboxLevel,
-      provider: activeProvider.name,
-      projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
-      resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    } as const;
+    const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     // Start session WITHOUT an initial message - agent will wait
     const start = activeProvider.startSession({
@@ -2021,6 +2155,7 @@ export class Supervisor {
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       setEffortFn: setEffort,
+      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       steerFn: steer,
       supportedModelsFn: supportedModels,
@@ -2042,6 +2177,7 @@ export class Supervisor {
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
       executor: modelSettings?.executor,
+      execution: result.execution,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
@@ -2077,7 +2213,7 @@ export class Supervisor {
   /**
    * Start a session using the provider interface with full features.
    */
-  private async startProviderSession(
+  private startProviderSession(
     projectPath: string,
     projectId: UrlProjectId,
     message: UserMessage,
@@ -2087,6 +2223,36 @@ export class Supervisor {
     provider?: AgentProvider,
     retryProviderStartupFailure = false,
     requireProviderSessionId = false,
+  ): Promise<Process> {
+    return this.withSessionSandboxLaunchTransaction(
+      modelSettings?.sandboxLevel,
+      (sandboxLaunch) =>
+        this.startProviderSessionWithinSandboxLaunch(
+          projectPath,
+          projectId,
+          message,
+          resumeSessionId,
+          permissionMode,
+          modelSettings,
+          provider,
+          retryProviderStartupFailure,
+          requireProviderSessionId,
+          sandboxLaunch,
+        ),
+    );
+  }
+
+  private async startProviderSessionWithinSandboxLaunch(
+    projectPath: string,
+    projectId: UrlProjectId,
+    message: UserMessage,
+    resumeSessionId: string | undefined,
+    permissionMode: PermissionMode | undefined,
+    modelSettings: ModelSettings | undefined,
+    provider: AgentProvider | undefined,
+    retryProviderStartupFailure: boolean,
+    requireProviderSessionId: boolean,
+    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const activeProvider = provider ?? this.provider;
     if (!activeProvider) {
@@ -2117,8 +2283,9 @@ export class Supervisor {
       modelSettings,
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
-    const sessionSandbox = await prepareSessionSandbox({
+    const sessionSandboxOptions = sandboxLaunch.options({
       level: modelSettings?.sandboxLevel,
+      networkFirewall: modelSettings?.sandboxNetworkFirewall,
       provider: activeProvider.name,
       projectPath,
       executor: modelSettings?.executor,
@@ -2126,15 +2293,7 @@ export class Supervisor {
       resumeSessionId,
       stateRoot: this.sandboxStateRoot,
     });
-    const sessionSandboxOptions = {
-      level: modelSettings?.sandboxLevel,
-      provider: activeProvider.name,
-      projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
-      resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    } as const;
+    const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     const start = activeProvider.startSession({
       cwd: projectPath,
@@ -2232,6 +2391,7 @@ export class Supervisor {
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
       setEffortFn: setEffort,
+      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       steerFn: steer,
       supportedModelsFn: supportedModels,
@@ -2253,6 +2413,7 @@ export class Supervisor {
       thinking: modelSettings?.thinking,
       effort: modelSettings?.effort,
       executor: modelSettings?.executor,
+      execution: result.execution,
       permissions: modelSettings?.permissions,
       recapMode: modelSettings?.recapMode,
       recapAfterSeconds: modelSettings?.recapAfterSeconds,
@@ -2571,10 +2732,22 @@ export class Supervisor {
       const provider = this.resolveProvider(resolved.modelSettings);
       const resumeMode = resolved.modelSettings.resumeMode ?? "full";
 
+      let process: Process;
+
       // Use provider if available (preferred)
       if (provider) {
         if (resumeMode === "compact-first") {
-          return this.startCompactFirstProviderResume(
+          process = await this.startCompactFirstProviderResume(
+            projectPath,
+            projectId,
+            message,
+            sessionId,
+            resolved.permissionMode,
+            resolved.modelSettings,
+            provider,
+          );
+        } else {
+          process = await this.startProviderSession(
             projectPath,
             projectId,
             message,
@@ -2584,22 +2757,19 @@ export class Supervisor {
             provider,
           );
         }
-
-        return this.startProviderSession(
-          projectPath,
-          projectId,
-          message,
-          sessionId,
-          resolved.permissionMode,
-          resolved.modelSettings,
-          provider,
-        );
-      }
-
-      // Use real SDK if available
-      if (this.realSdk) {
+      } else if (this.realSdk) {
+        // Use real SDK if available
         if (resumeMode === "compact-first") {
-          return this.startCompactFirstRealResume(
+          process = await this.startCompactFirstRealResume(
+            projectPath,
+            projectId,
+            message,
+            sessionId,
+            resolved.permissionMode,
+            resolved.modelSettings,
+          );
+        } else {
+          process = await this.startRealSession(
             projectPath,
             projectId,
             message,
@@ -2608,8 +2778,20 @@ export class Supervisor {
             resolved.modelSettings,
           );
         }
+      } else {
+        // Fall back to legacy mock SDK
+        if (resumeMode === "compact-first") {
+          throw new ResumeCompactionError({
+            sessionId,
+            provider: "claude",
+            attempt: {
+              status: "unavailable",
+              reason: "legacy mock SDK does not support compact-first resume",
+            },
+          });
+        }
 
-        return this.startRealSession(
+        process = await this.startLegacySession(
           projectPath,
           projectId,
           message,
@@ -2619,26 +2801,10 @@ export class Supervisor {
         );
       }
 
-      // Fall back to legacy mock SDK
-      if (resumeMode === "compact-first") {
-        throw new ResumeCompactionError({
-          sessionId,
-          provider: "claude",
-          attempt: {
-            status: "unavailable",
-            reason: "legacy mock SDK does not support compact-first resume",
-          },
-        });
+      if (launchOptions?.requireProviderSessionId) {
+        await this.settleProviderSessionId(process, true, sessionId);
       }
-
-      return this.startLegacySession(
-        projectPath,
-        projectId,
-        message,
-        sessionId,
-        resolved.permissionMode,
-        resolved.modelSettings,
-      );
+      return process;
     });
   }
 
@@ -2656,7 +2822,7 @@ export class Supervisor {
    * primitive — fork must not be emulated (see
    * topics/session-context-actions.md).
    */
-  async forkSession(options: {
+  forkSession(options: {
     sessionId: string;
     projectPath: string;
     providerName?: ProviderName;
@@ -2664,8 +2830,34 @@ export class Supervisor {
     boundary?: ProviderForkBoundary;
     title?: string;
     sandboxLevel?: SessionSandboxLevel;
+    sandboxNetworkFirewall?: boolean;
     sandboxStateKey?: string;
   }): Promise<{
+    sessionId: string;
+    sandboxStateKey?: string;
+    sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
+  }> {
+    return this.withSessionSandboxLaunchTransaction(
+      options.sandboxLevel,
+      (sandboxLaunch) =>
+        this.forkSessionWithinSandboxLaunch(options, sandboxLaunch),
+    );
+  }
+
+  private async forkSessionWithinSandboxLaunch(
+    options: {
+      sessionId: string;
+      projectPath: string;
+      providerName?: ProviderName;
+      upToMessageId?: string;
+      boundary?: ProviderForkBoundary;
+      title?: string;
+      sandboxLevel?: SessionSandboxLevel;
+      sandboxNetworkFirewall?: boolean;
+      sandboxStateKey?: string;
+    },
+    sandboxLaunch: SessionSandboxLaunchTransaction,
+  ): Promise<{
     sessionId: string;
     sandboxStateKey?: string;
     sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
@@ -2679,13 +2871,16 @@ export class Supervisor {
     if (typeof provider.forkSession !== "function") {
       throw new Error(`${provider.name} does not support transcript fork`);
     }
-    const sessionSandbox = await prepareSessionSandbox({
-      level: options.sandboxLevel,
-      provider: provider.name,
-      projectPath: options.projectPath,
-      stateKey: options.sandboxStateKey,
-      stateRoot: this.sandboxStateRoot,
-    });
+    const sessionSandbox = await prepareSessionSandbox(
+      sandboxLaunch.options({
+        level: options.sandboxLevel,
+        networkFirewall: options.sandboxNetworkFirewall,
+        provider: provider.name,
+        projectPath: options.projectPath,
+        stateKey: options.sandboxStateKey,
+        stateRoot: this.sandboxStateRoot,
+      }),
+    );
     const fork = await provider.forkSession({
       sessionId: options.sessionId,
       cwd: options.projectPath,
@@ -2755,11 +2950,8 @@ export class Supervisor {
       process.sandboxStateKey
     ) {
       await this.sessionMetadataService.setSessionSandbox(childSessionId, {
+        ...persistedSandboxFromProcess(process, providerName),
         level: "project-write",
-        stateKey: process.sandboxStateKey,
-        projectPath: process.sandboxProjectPath ?? process.projectPath,
-        projectId: process.projectId,
-        provider: providerName,
       });
     }
   }
@@ -4891,11 +5083,8 @@ export class Supervisor {
     }
     try {
       await this.sessionMetadataService.setSessionSandbox(process.sessionId, {
-        provider: process.provider,
+        ...persistedSandboxFromProcess(process),
         level: "project-write",
-        stateKey: process.sandboxStateKey,
-        projectPath: process.sandboxProjectPath ?? process.projectPath,
-        projectId: process.projectId,
       });
     } catch (error) {
       await process.abort();
@@ -4930,7 +5119,15 @@ export class Supervisor {
       requested === "project-write" &&
       modelSettings?.sandboxStateKey !== undefined &&
       modelSettings.sandboxStateKey !== process.sandboxStateKey;
-    if (requested !== effective || stateKeyChanged) {
+    const requestedNetworkFirewall =
+      requested === "project-write" &&
+      modelSettings?.sandboxNetworkFirewall !== false;
+    const effectiveNetworkFirewall =
+      effective === "project-write" &&
+      process.sandboxEnforcement?.networkFirewall !== false;
+    const networkFirewallChanged =
+      requestedNetworkFirewall !== effectiveNetworkFirewall;
+    if (requested !== effective || stateKeyChanged || networkFirewallChanged) {
       throw new Error(
         "The live process does not match this session's settled sandbox configuration.",
       );

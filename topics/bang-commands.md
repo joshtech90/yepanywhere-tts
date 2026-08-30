@@ -58,7 +58,7 @@ project directory:
   transcript position where they were run, documenting what the human
   checked and when, interleaved with the agent work it was checking.
 - **Agent-tool synergy.** The same acli-style tools built for agents
-  (`~/agents` `topics/agent-cli.md`; `agentctl` is the flagship) are exactly
+  (`~/agents` `topics/acli.md`; `agentctl` is the flagship) are exactly
   the compact, non-interactive commands a phone-bound supervisor wants.
 
 ## Contracts
@@ -229,7 +229,7 @@ keeps the submitted draft intact so the user can correct or retry it.
   `..` escapes refused).
 - **acli per-tool completion**: the server invokes
   `tool --acli-complete <argv-prefix...>` (protocol defined in `~/agents`
-  `topics/agent-cli.md` § Completion protocol) for the last pipeline
+  `topics/acli.md` § Completion protocol) for the last pipeline
   segment's command — but **only for allowlisted tools**
   (`YA_BANG_ACLI_COMPLETERS` env, comma-separated basenames, plus the
   built-in `harness-check`). Tab must never execute an arbitrary program: a
@@ -248,8 +248,9 @@ keeps the submitted draft intact so the user can correct or retry it.
   revision — history records stay immutable and the composer remains the
   single editing surface. Keyboard path: Ctrl+ArrowUp cycles back through
   this session's prior bang commands (newest first, deduplicated),
-  Ctrl+ArrowDown forward; any divergent edit resets the cycle. The same
-  shortcut is expected to be useful beyond bang commands; general composer
+  Ctrl+ArrowDown forward, but only from a text-and-attachment-empty composer or
+  an active `!!` draft; any divergent edit resets the cycle. The same shortcut
+  is expected to be useful beyond bang commands; general composer
   message-history recall is a natural later extension.
 - **Re-run.** Runs the unchanged command as a new block at the current
   tail; the old block stays as the record of what was true then.

@@ -11,6 +11,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,7 +46,10 @@ import {
   useChangesetFileFilter,
 } from "../hooks/useChangesetFileFilter";
 import { useProjectReviewComments } from "../hooks/useProjectReviewComments";
-import { handleSourceListKeyDown } from "../hooks/useSourceKeyboard";
+import {
+  handleSourceListKeyDown,
+  suppressSourceKeyboardTooltips,
+} from "../hooks/useSourceKeyboard";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import type { TranslationFn } from "../i18n";
@@ -166,8 +170,9 @@ const WorkingTreeFileRow = memo(function WorkingTreeFileRow({
         className={`commit-file-item ${selected ? "selected" : ""}`}
         disabled={isFolder}
         data-source-list-item
+        data-source-file-item
         onFocus={() => {
-          if (isWideScreen && !isFolder) {
+          if (isWideScreen && !isFolder && !selected) {
             onActivateFile(file, selected);
           }
         }}
@@ -227,8 +232,14 @@ export function WorkingTreeBrowser({
   isWideScreen,
   supportsUntrackedCache = false,
   untrackedFiles = null,
+  untrackedLoading = false,
+  untrackedError = null,
+  inventoryPending = false,
+  inventoryLoading = false,
+  inventoryError = null,
   initialWorkingTreePath,
   embeddedInHistory = false,
+  fileFocusRequest = 0,
   onBackToRevisions,
   revisionNavigation,
   onBrowseHistory,
@@ -245,10 +256,17 @@ export function WorkingTreeBrowser({
   isWideScreen: boolean;
   supportsUntrackedCache?: boolean;
   untrackedFiles?: GitUntrackedFileListResult | null;
+  untrackedLoading?: boolean;
+  untrackedError?: Error | null;
+  inventoryPending?: boolean;
+  inventoryLoading?: boolean;
+  inventoryError?: Error | null;
   /** One-shot deep link to a dirty file from a session Edit block. */
   initialWorkingTreePath?: string;
   /** Let Commits place these same files/diff in its revision-detail columns. */
   embeddedInHistory?: boolean;
+  /** Move keyboard focus from the selected revision into its first file. */
+  fileFocusRequest?: number;
   /** Narrow-history drill-in returns to the revision list through this path. */
   onBackToRevisions?: () => void;
   /** Adjacent-revision controls supplied by the history owner. */
@@ -260,7 +278,7 @@ export function WorkingTreeBrowser({
   supportsLastEditor?: boolean;
   ignoreWhitespace?: boolean;
   onToggleIgnoreWhitespace?: () => void;
-  onProjectionRequestFailure?: () => void;
+  onProjectionRequestFailure?: (error: unknown) => void;
   t: TranslationFn;
 }) {
   const [expandedUntrackedFolders, setExpandedUntrackedFolders] = useState<
@@ -293,6 +311,8 @@ export function WorkingTreeBrowser({
   const retainedDiffViewRef = useRef(new Map<string, GitDiffViewState>());
   const retainedScrollRatioRef = useRef(new Map<string, number>());
   const diffPreviewRef = useRef<GitDiffPreviewHandle>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const handledFileFocusRequest = useRef(0);
   const navigate = useNavigate();
   const navigateRef = useRef(navigate);
   useEffect(() => {
@@ -708,6 +728,17 @@ export function WorkingTreeBrowser({
     visiblePreviewableFiles,
   ]);
 
+  useLayoutEffect(() => {
+    if (fileFocusRequest <= handledFileFocusRequest.current) return;
+    const firstFile = rootRef.current?.querySelector<HTMLElement>(
+      "[data-source-file-item]",
+    );
+    if (!firstFile) return;
+    handledFileFocusRequest.current = fileFocusRequest;
+    suppressSourceKeyboardTooltips();
+    firstFile.focus({ preventScroll: true });
+  }, [fileFocusRequest]);
+
   const fileCommentCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const comment of pending) {
@@ -948,12 +979,27 @@ export function WorkingTreeBrowser({
   const historyParentLink = openHistory ? (
     <CommitHistoryParentLink onClick={openHistory} t={t} />
   ) : null;
+  const untrackedCacheIncomplete =
+    supportsUntrackedCache && untrackedFiles === null;
+  const effectiveInventoryPending =
+    inventoryPending || untrackedCacheIncomplete;
+  const effectiveInventoryLoading =
+    (inventoryPending && inventoryLoading) ||
+    (untrackedCacheIncomplete && untrackedLoading);
+  const effectiveInventoryError =
+    (inventoryPending ? inventoryError : null) ??
+    (untrackedCacheIncomplete ? untrackedError : null);
   if (
     (status.isClean || currentFiles.length === 0) &&
-    !hasRetainedEditorTarget
+    !hasRetainedEditorTarget &&
+    !effectiveInventoryPending
   ) {
     return (
-      <div className={rootClassName} data-testid="working-tree-browser">
+      <div
+        ref={rootRef}
+        className={rootClassName}
+        data-testid="working-tree-browser"
+      >
         {historyParentLink}
         {embeddedInHistory ? (
           <div className="working-tree-clean-state working-tree-history-clean">
@@ -983,7 +1029,11 @@ export function WorkingTreeBrowser({
   }
 
   return (
-    <div className={rootClassName} data-testid="working-tree-browser">
+    <div
+      ref={rootRef}
+      className={rootClassName}
+      data-testid="working-tree-browser"
+    >
       {historyParentLink}
       <ResizableSourceColumns
         layout="files"
@@ -1035,6 +1085,16 @@ export function WorkingTreeBrowser({
                   loaded: untrackedFolderScan.loaded,
                   total: untrackedFolderScan.total,
                 })}
+              </span>
+            )}
+            {effectiveInventoryLoading && (
+              <span className={styles.scanProgress} role="status">
+                {t("gitStatusLoading")}
+              </span>
+            )}
+            {effectiveInventoryPending && effectiveInventoryError && (
+              <span className={styles.scanProgress} role="alert">
+                {t("gitStatusErrorPrefix")} {effectiveInventoryError.message}
               </span>
             )}
             {supportsUntrackedCache && untrackedFiles?.truncated && (
@@ -1215,7 +1275,7 @@ export function WorkingTreeBrowser({
               </>
             )}
           </div>
-          {listEntries.length === 0 && (
+          {listEntries.length === 0 && !effectiveInventoryPending && (
             <div className="git-status-empty">{t("sourceNoMatches")}</div>
           )}
         </div>

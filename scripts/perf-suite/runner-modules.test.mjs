@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { performance } from "node:perf_hooks";
-import { aggregateRuns } from "./aggregation.mjs";
-import { waitWithTimeout } from "./browser-driver.mjs";
+import { aggregateBrowserRuns, aggregateRuns } from "./aggregation.mjs";
+import {
+  summarizeInteractionTrials,
+  waitWithTimeout,
+} from "./browser-driver.mjs";
 import { measureServerUsefulReadiness } from "./built-client-driver.mjs";
 import { deterministicPayload, validateScenario } from "./core.mjs";
-import { harnessSourceFiles } from "./process-fixture.mjs";
+import {
+  assertLiveCohortParent,
+  harnessSourceFiles,
+  stopServer,
+} from "./process-fixture.mjs";
 import {
   evaluateMetricTargets,
   evaluateRatchets,
@@ -33,6 +41,118 @@ test("core validates scenario shape and creates exact-size fixture text", () => 
     () => validateScenario({ ...scenario, repetitions: 0 }, "unit"),
     /positive integer/,
   );
+  assert.doesNotThrow(() =>
+    validateScenario(
+      {
+        ...scenario,
+        browserSettings: { "yep-anywhere-theme": "verydark" },
+        browserViewport: { height: 600, width: 1000 },
+        interactionTrace: {
+          enabled: true,
+          hoverCardDelayMs: 240,
+          scope: "full",
+          tooltipDelayMs: 80,
+        },
+        interactionTraceOnly: true,
+      },
+      "unit",
+    ),
+  );
+  assert.throws(
+    () =>
+      validateScenario(
+        { ...scenario, browserSettings: { invalid: true } },
+        "unit",
+      ),
+    /browserSettings must be a string-to-string object/,
+  );
+  assert.doesNotThrow(() =>
+    validateScenario(
+      {
+        ...scenario,
+        interactionTrace: {
+          alternateCausalArms: true,
+          beforeAndAfterAppend: true,
+          enabled: true,
+          hoverCardDelayMs: 240,
+          idleBeforeSecondSwitchMs: 65_000,
+          requireRetainedAfterFirstSwitch: true,
+          scope: "sidebar-switch",
+          sidebarSwitchRounds: 3,
+          tooltipDelayMs: 80,
+        },
+      },
+      "sidebar-switch",
+    ),
+  );
+});
+
+test("browser interaction trials retain projection-specific distributions", () => {
+  const trial = (typingMs, scrollMs, missedFraction) => ({
+    conversation: {
+      scroll: { frameP95Ms: scrollMs, missedFrameFraction: missedFraction },
+      typing: { keyToFrameP95Ms: typingMs },
+    },
+    full: {
+      scroll: {
+        frameP95Ms: scrollMs * 2,
+        missedFrameFraction: missedFraction * 2,
+      },
+      typing: { keyToFrameP95Ms: typingMs * 2 },
+    },
+    hoverCard: { workAfterDelayMs: 3 },
+    olderHistory: { nextPaintMs: 30 },
+    projectionTransition: { nextPaintMs: 20 },
+    sidebarSwitch: {
+      switches: [
+        { dom: { reused: false }, nextPaintMs: typingMs * 4 },
+        { dom: { reused: true }, nextPaintMs: typingMs * 3 },
+      ],
+    },
+    tooltip: { workAfterDelayMs: 2 },
+  });
+  const aggregate = summarizeInteractionTrials([
+    trial(10, 16, 0.1),
+    trial(14, 18, 0.2),
+  ]);
+  assert.equal(aggregate.conversation.typingKeyToFrameP95.p95Ms, 14);
+  assert.equal(aggregate.full.scrollMissedFrameFraction.medianMs, 0.2);
+  assert.equal(aggregate.sidebarSwitchNextPaint.p95Ms, 56);
+  assert.equal(aggregate.sidebarSwitchRetainedNextPaint.p95Ms, 42);
+
+  const browserAggregate = aggregateBrowserRuns([
+    {
+      browser: {
+        modes: [
+          {
+            cacheBudgetMiB: 256,
+            interactionTrace: { aggregate },
+            profiles: {},
+            telemetry: [],
+            warmCacheTelemetry: [],
+            latency: {
+              appendedLiveFinalHighlight: { p95Ms: 1 },
+              appendedLiveTail: { p95Ms: 1 },
+              coldFinalHighlight: { p95Ms: 1 },
+              coldTail: { p95Ms: 1 },
+              warmFinalHighlight: { p95Ms: 1 },
+              warmTail: { p95Ms: 1 },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(
+    browserAggregate["256"][
+      "interaction.conversation.typingKeyToFrameP95.p95Ms"
+    ],
+    14,
+  );
+  assert.equal(
+    browserAggregate["256"]["interaction.sidebarSwitchRetainedNextPaint.p95Ms"],
+    42,
+  );
 });
 
 test("telemetry preserves one non-overlapping request profile", () => {
@@ -45,7 +165,7 @@ test("telemetry preserves one non-overlapping request profile", () => {
         "ya-read;dur=2",
         "ya-normalize;dur=1",
         "ya-route;dur=1",
-        "ya-augment;dur=3",
+        'ya-augment;dur=3;desc="messages=6 changed=3 cache-hit=2 cache-join=1 cache-miss=4"',
         "ya-total;dur=10",
       ].join(","),
     },
@@ -57,6 +177,13 @@ test("telemetry preserves one non-overlapping request profile", () => {
   assert.equal(profile.frameworkSerializeLoopbackMs, 10);
   assert.equal(profile.serverPhaseResidualMs, 2);
   assert.equal(profile.coverage.fraction, 1);
+  assert.deepEqual(profile.augmentation, {
+    inputMessages: 6,
+    changedMessages: 3,
+    cacheHits: 2,
+    cacheJoins: 1,
+    cacheMisses: 4,
+  });
 });
 
 test("browser driver deadlines settle and reject independently", async () => {
@@ -65,6 +192,63 @@ test("browser driver deadlines settle and reject independently", async () => {
     waitWithTimeout(new Promise(() => {}), 5, "unit browser wait"),
     /unit browser wait timed out/,
   );
+});
+
+test("cohort admission requires a matching live parent lease", () => {
+  const marker = "ya-perf-suite-cohort-unit-1";
+  assert.doesNotThrow(() =>
+    assertLiveCohortParent(marker, {
+      expectedMarker: marker,
+      parentPid: "123",
+      signal(pid, signal) {
+        assert.equal(pid, 123);
+        assert.equal(signal, 0);
+      },
+    }),
+  );
+  assert.throws(
+    () =>
+      assertLiveCohortParent(marker, {
+        expectedMarker: "ya-perf-suite-cohort-other",
+        parentPid: "123",
+        signal() {},
+      }),
+    /does not match/,
+  );
+});
+
+test("server teardown reaps a process group after its leader exits", {
+  skip: process.platform === "win32",
+}, async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      [
+        'const { spawn } = require("node:child_process");',
+        'const worker = spawn(process.execPath, ["-e", "process.on(\'SIGTERM\', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+        'worker.once("spawn", () => process.stdout.write("ready\\n"));',
+        'process.on("SIGTERM", () => process.exit(0));',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    ],
+    { detached: true, stdio: ["ignore", "pipe", "inherit"] },
+  );
+
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.stdout.once("data", resolve);
+    });
+    await stopServer(child, null, 100);
+    assert.throws(() => process.kill(-child.pid, 0), { code: "ESRCH" });
+  } finally {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // stopServer or the process-group assertion remains the primary result.
+    }
+  }
 });
 
 test("built-client server readiness uses the selected response marker", async () => {
@@ -159,6 +343,7 @@ test("harness identity covers every extracted implementation module", () => {
     "process-fixture.mjs",
     "ratchet-evaluation.mjs",
     "request-clients.mjs",
+    "run-cohort.mjs",
     "run.mjs",
     "server-driver.mjs",
     "specialized-driver.mjs",

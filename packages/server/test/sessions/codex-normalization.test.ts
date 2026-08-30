@@ -123,6 +123,47 @@ describe("Codex Normalization", () => {
     });
   });
 
+  it("aligns Codex 0.151 completed user items with optimistic ids", () => {
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2026-08-30T08:46:03.691Z",
+        payload: {
+          id: "msg-provider-user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "peer is clear" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-30T08:46:03.729Z",
+        payload: {
+          type: "item_completed",
+          thread_id: "thread-1",
+          turn_id: "turn-1",
+          item: {
+            type: "UserMessage",
+            id: "item-user-1",
+            client_id: "optimistic-user-1",
+            content: [
+              { type: "text", text: "peer is clear", text_elements: [] },
+            ],
+          },
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      uuid: "optimistic-user-1",
+      type: "user",
+      codexUserTurnProvenance: "paired",
+    });
+  });
+
   it("preserves identical provider log rows with distinct ids", () => {
     const repeatedPrompt = "wait 10 minutes";
     const repeatedResponse = "Still waiting.";
@@ -267,6 +308,47 @@ describe("Codex Normalization", () => {
       type: "tool_result",
       tool_use_id: "call-1",
       content: "Exit code: 0",
+    });
+  });
+
+  it("shows standalone function outputs without inventing a tool exchange", () => {
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2026-08-26T00:00:01Z",
+        payload: {
+          type: "function_call_output",
+          name: "notifications",
+          namespace: "slack",
+          output: "new message",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-26T00:00:02Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "visible reply" }],
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]).toMatchObject({
+      type: "system",
+      subtype: "tool_output",
+      content: "new message",
+      codexToolName: "notifications",
+      codexToolNamespace: "slack",
+    });
+    expect(result.messages[0]?.message).toBeUndefined();
+    const content = result.messages[1]?.message?.content;
+    expect(Array.isArray(content) ? content[0] : content).toEqual({
+      type: "text",
+      text: "visible reply",
     });
   });
 

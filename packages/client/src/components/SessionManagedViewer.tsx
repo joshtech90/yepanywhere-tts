@@ -8,6 +8,10 @@ import {
   useRef,
 } from "react";
 import {
+  type SendSessionViewerComment,
+  SessionViewerCommentProvider,
+} from "../contexts/SessionViewerCommentContext";
+import {
   clearSessionViewer,
   presentSessionViewer,
   useSessionViewerController,
@@ -89,21 +93,25 @@ export function SessionManagedPanel({
 export function SessionViewerProvider({
   sessionId,
   inactive = false,
+  onSendComment,
   children,
 }: {
   sessionId: string;
   inactive?: boolean;
+  onSendComment?: SendSessionViewerComment;
   children: ReactNode;
 }) {
   return (
     <SessionViewerContext.Provider value={sessionId}>
-      {children}
-      <SessionManagedPanelHost sessionId={sessionId} inactive={inactive} />
+      <SessionViewerCommentProvider onSendComment={onSendComment}>
+        {children}
+        <SessionManagedViewerHost sessionId={sessionId} inactive={inactive} />
+      </SessionViewerCommentProvider>
     </SessionViewerContext.Provider>
   );
 }
 
-export function SessionManagedPanelHost({
+export function SessionManagedViewerHost({
   sessionId,
   inactive = false,
 }: {
@@ -116,6 +124,12 @@ export function SessionManagedPanelHost({
   controllerRef.current = controller;
   const panel =
     controller?.kind === "panel" && controller.sessionId === sessionId
+      ? controller
+      : null;
+  const file =
+    controller?.kind === "file" &&
+    controller.sessionId === sessionId &&
+    controller.renderContent
       ? controller
       : null;
 
@@ -136,6 +150,7 @@ export function SessionManagedPanelHost({
     };
   }, [sessionId]);
 
+  if (file) return file.renderContent(inactive);
   if (!panel) return null;
   return (
     <Modal

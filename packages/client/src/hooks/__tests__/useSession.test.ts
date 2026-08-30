@@ -28,7 +28,10 @@ const apiMocks = vi.hoisted(() => ({
 
 const sessionMessagesMock = vi.hoisted(() => ({
   messages: [] as Array<Record<string, unknown>>,
+  loading: false,
   provider: "codex",
+  sessionUpdatedAt: "2026-04-24T00:00:00.000Z",
+  reconciledSessionUpdatedAt: "2026-04-24T00:00:00.000Z",
 }));
 
 const fetchNewMessages = vi.fn(async () => {});
@@ -44,6 +47,7 @@ const updateSession = vi.fn();
 
 let fileActivityOptions:
   | {
+      enabled?: boolean;
       onSessionStatusChange?: (event: SessionStatusEvent) => void;
       onSessionUpdated?: (event: SessionUpdatedEvent) => void;
       onFileChange?: (event: FileChangeEvent) => void;
@@ -59,10 +63,13 @@ let sessionWatchOptions:
       onReconnect?: () => void;
     }
   | undefined;
+let sessionWatchTarget: { sessionId: string } | null | undefined;
 
 let sessionStreamHandler:
   | ((data: { eventType: string; [key: string]: unknown }) => void)
   | null = null;
+let sessionStreamSessionId: string | null | undefined;
+let sessionStreamErrorHandler: (() => void | Promise<void>) | null = null;
 
 let streamingContentOptions:
   | {
@@ -76,6 +83,7 @@ let streamingContentOptions:
 let sessionMessagesOptions:
   | {
       onLoadComplete?: (result: SessionLoadResult) => void;
+      onTranscriptReconciled?: (updatedAt: string) => void;
     }
   | undefined;
 
@@ -159,13 +167,16 @@ function installVisibilityStateMock(initial: DocumentVisibilityState) {
 vi.mock("../useSessionMessages", () => ({
   useSessionMessages: vi.fn((options) => {
     sessionMessagesOptions = options;
+    options.onTranscriptReconciled?.(
+      sessionMessagesMock.reconciledSessionUpdatedAt,
+    );
     return {
       messages: sessionMessagesMock.messages,
       agentContent: {},
       toolUseToAgent: new Map(),
       markdownAugments: {},
       applyFinalMarkdownAugment,
-      loading: false,
+      loading: sessionMessagesMock.loading,
       sessionLoadProgress: {
         stage: "complete",
         messageCount: sessionMessagesMock.messages.length,
@@ -176,7 +187,7 @@ vi.mock("../useSessionMessages", () => ({
         projectId: "proj-1",
         provider: sessionMessagesMock.provider,
         model: "gpt-5.4",
-        updatedAt: "2026-04-24T00:00:00.000Z",
+        updatedAt: sessionMessagesMock.sessionUpdatedAt,
         messages: [],
       },
       updateSession,
@@ -210,14 +221,17 @@ vi.mock("../useFileActivity", () => ({
 }));
 
 vi.mock("../useSessionStream", () => ({
-  useSessionStream: vi.fn((_sessionId, options) => {
+  useSessionStream: vi.fn((sessionId, options) => {
+    sessionStreamSessionId = sessionId;
     sessionStreamHandler = options.onMessage;
+    sessionStreamErrorHandler = options.onError;
     return { connected: true, reconnect: vi.fn() };
   }),
 }));
 
 vi.mock("../useSessionWatchStream", () => ({
-  useSessionWatchStream: vi.fn((_target, options) => {
+  useSessionWatchStream: vi.fn((target, options) => {
+    sessionWatchTarget = target;
     sessionWatchOptions = options;
     return { connected: false };
   }),
@@ -260,11 +274,17 @@ describe("useSession completion reconciliation", () => {
     installLocalStorageMock();
     fileActivityOptions = undefined;
     sessionWatchOptions = undefined;
+    sessionWatchTarget = undefined;
     sessionMessagesOptions = undefined;
     sessionStreamHandler = null;
+    sessionStreamSessionId = undefined;
+    sessionStreamErrorHandler = null;
     streamingContentOptions = undefined;
     sessionMessagesMock.messages = [];
+    sessionMessagesMock.loading = false;
     sessionMessagesMock.provider = "codex";
+    sessionMessagesMock.sessionUpdatedAt = "2026-04-24T00:00:00.000Z";
+    sessionMessagesMock.reconciledSessionUpdatedAt = "2026-04-24T00:00:00.000Z";
   });
 
   afterEach(() => {
@@ -424,6 +444,18 @@ describe("useSession completion reconciliation", () => {
     });
 
     expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not duplicate the pending initial load when the watch opens", () => {
+    sessionMessagesMock.loading = true;
+    renderHook(() => useSession(PROJECT_ID, "sess-1", undefined));
+
+    act(() => {
+      sessionWatchOptions?.onOpen?.();
+      sessionWatchOptions?.onReconnect?.();
+    });
+
+    expect(fetchNewMessages).not.toHaveBeenCalled();
   });
 
   it("surfaces deferred effort configuration failures", () => {
@@ -656,6 +688,34 @@ describe("useSession completion reconciliation", () => {
     expect(apiMocks.getAgentMappings).toHaveBeenCalledTimes(1);
   });
 
+  it("releases live session consumers while the session DOM is parked", () => {
+    const { rerender } = renderHook(
+      ({ paused }) =>
+        useSession(
+          PROJECT_ID,
+          "sess-1",
+          { owner: "self", processId: "proc-1" },
+          undefined,
+          { backgroundEffectsPaused: paused },
+        ),
+      { initialProps: { paused: false } },
+    );
+
+    expect(fileActivityOptions?.enabled).toBe(true);
+    expect(sessionStreamSessionId).toBe("sess-1");
+
+    rerender({ paused: true });
+
+    expect(fileActivityOptions?.enabled).toBe(false);
+    expect(sessionStreamSessionId).toBeNull();
+    expect(sessionWatchTarget).toBeNull();
+
+    rerender({ paused: false });
+
+    expect(fileActivityOptions?.enabled).toBe(true);
+    expect(sessionStreamSessionId).toBe("sess-1");
+  });
+
   it("routes agent context usage through the action wrapper", () => {
     renderHook(() =>
       useSession(PROJECT_ID, "sess-1", {
@@ -816,6 +876,99 @@ describe("useSession completion reconciliation", () => {
     });
     expect(result.current.processState).toBe("idle");
     expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps idle activity newer than a phone-wake runtime snapshot", async () => {
+    let resolveMetadata:
+      | ((value: {
+          session: Record<string, never>;
+          ownership: { owner: "self"; processId: string };
+          processState: "in-turn";
+          pendingInputRequest: null;
+        }) => void)
+      | undefined;
+    apiMocks.getSessionMetadata.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMetadata = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    let wakeReconciliation: void | Promise<void>;
+    act(() => {
+      wakeReconciliation = fileActivityOptions?.onReconnect?.();
+    });
+
+    act(() => {
+      fileActivityOptions?.onProcessStateChange?.({
+        type: "process-state-changed",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        activity: "idle",
+        timestamp: "2026-08-29T10:40:00.202Z",
+      });
+    });
+    expect(result.current.processState).toBe("idle");
+
+    await act(async () => {
+      resolveMetadata?.({
+        session: {},
+        ownership: { owner: "self", processId: "proc-1" },
+        processState: "in-turn",
+        pendingInputRequest: null,
+      });
+      await wakeReconciliation;
+    });
+
+    expect(result.current.processState).toBe("idle");
+  });
+
+  it("keeps newer live activity over an older failed stream check", async () => {
+    let rejectMetadata: ((reason?: unknown) => void) | undefined;
+    apiMocks.getSessionMetadata.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectMetadata = reject;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    let streamRecovery: void | Promise<void>;
+    act(() => {
+      streamRecovery = sessionStreamErrorHandler?.();
+    });
+
+    act(() => {
+      fileActivityOptions?.onProcessStateChange?.({
+        type: "process-state-changed",
+        sessionId: "sess-1",
+        projectId: PROJECT_ID,
+        activity: "in-turn",
+        timestamp: "2026-08-29T10:40:01.000Z",
+      });
+    });
+
+    await act(async () => {
+      rejectMetadata?.(new Error("connection replaced"));
+      await streamRecovery;
+    });
+
+    expect(result.current.status).toMatchObject({
+      owner: "self",
+      processId: "proc-1",
+    });
+    expect(result.current.processState).toBe("in-turn");
   });
 
   it("reconciles a replayed busy navigation hint with retained idle state", async () => {
@@ -1360,6 +1513,50 @@ describe("useSession completion reconciliation", () => {
   });
 
   it("catches up when a heartbeat reports progress newer than durable state", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "heartbeat",
+        liveness: mockLiveness({
+          lastProviderMessageAt: "2026-04-24T00:06:00.000Z",
+        }),
+      });
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the same heartbeat until transcript rows advance the watermark", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+    const heartbeat = {
+      eventType: "heartbeat",
+      liveness: mockLiveness({
+        lastProviderMessageAt: "2026-04-24T00:06:00.000Z",
+      }),
+    };
+
+    act(() => sessionStreamHandler?.(heartbeat));
+    expect(fetchNewMessages).toHaveBeenCalledTimes(1);
+
+    act(() => vi.advanceTimersByTime(500));
+    act(() => sessionStreamHandler?.(heartbeat));
+    expect(fetchNewMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let activity metadata suppress transcript catch-up", () => {
+    sessionMessagesMock.sessionUpdatedAt = "2026-04-24T00:06:00.000Z";
+
     renderHook(() =>
       useSession(PROJECT_ID, "sess-1", {
         owner: "self",

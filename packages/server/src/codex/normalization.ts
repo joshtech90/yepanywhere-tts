@@ -29,6 +29,7 @@ export const CODEX_TOOL_NAME_ALIASES: Record<string, string> = {
   wait: "WriteStdin",
   update_plan: "UpdatePlan",
   apply_patch: "Edit",
+  view_image: "ViewImage",
   web_search_call: "WebSearch",
   search_query: "WebSearch",
   // Code-mode flattening of the namespaced `web.run` browsing tool.
@@ -620,9 +621,44 @@ function extractSessionIdFromText(output: string): number | undefined {
   return Number.parseInt(taskId, 10);
 }
 
+function extractTextOnlyFunctionCallOutput(
+  output: unknown,
+): string | undefined {
+  if (!Array.isArray(output) || output.length === 0) {
+    return undefined;
+  }
+
+  let content = "";
+  for (const item of output) {
+    if (
+      !isRecord(item) ||
+      item.type !== "input_text" ||
+      typeof item.text !== "string"
+    ) {
+      return undefined;
+    }
+    content += item.text;
+  }
+  return content;
+}
+
 function normalizeCodexToolOutput(
   output: unknown,
 ): NormalizedCodexToolOutputWithExitCode {
+  const functionCallText = extractTextOnlyFunctionCallOutput(output);
+  if (functionCallText !== undefined) {
+    const sanitized = sanitizeInlineImageData(output);
+    return {
+      content:
+        extractTextOnlyFunctionCallOutput(sanitized.value) ?? functionCallText,
+      structured: sanitized.value,
+      isError: false,
+      ...(sanitized.candidates.length > 0
+        ? { mediaCandidates: sanitized.candidates }
+        : {}),
+    };
+  }
+
   const codeModeText = extractCodexCodeModeTextOutput(output);
   if (codeModeText !== undefined) {
     return normalizeCodexToolOutput(codeModeText);
@@ -663,8 +699,11 @@ function normalizeCodexToolOutput(
       } else if (Array.isArray(structured)) {
         const sanitized = sanitizeInlineImageData(structured);
         mediaCandidates = sanitized.candidates;
-        if (sanitized.changed) {
-          structured = sanitized.value;
+        structured = sanitized.value;
+        const textContent = extractTextOnlyFunctionCallOutput(structured);
+        if (textContent !== undefined) {
+          content = textContent;
+        } else if (sanitized.changed) {
           content = JSON.stringify(structured, null, 2);
         }
       }
@@ -713,8 +752,9 @@ function normalizeCodexToolOutput(
       (structured.is_error === true ||
         (exitCode ?? 0) !== 0 ||
         hasFailedStatus(structured));
+    const textContent = extractTextOnlyFunctionCallOutput(structured);
     return {
-      content: JSON.stringify(structured, null, 2),
+      content: textContent ?? JSON.stringify(structured, null, 2),
       structured,
       isError,
       exitCode,

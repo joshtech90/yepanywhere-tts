@@ -1,8 +1,11 @@
 import {
   mkdir,
   mkdtemp,
+  open,
   realpath,
+  rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -10,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLocalFileRoutes } from "../../src/routes/local-file.js";
+import { createMutableFileCacheMetadata } from "../../src/routes/mutable-file-cache.js";
 
 describe("Local file routes", () => {
   let tempDir: string;
@@ -41,8 +45,48 @@ describe("Local file routes", () => {
     expect(response.headers.get("content-type")).toBe(
       "text/plain; charset=utf-8",
     );
+    expect(response.headers.get("cache-control")).toBe("private, no-cache");
+    expect(response.headers.get("etag")).toMatch(/^W\/"/);
+    expect(response.headers.get("last-modified")).not.toBeNull();
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await response.text()).toBe("# Notes\n\nText");
+
+    const unchanged = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+      { headers: { "If-None-Match": response.headers.get("etag") ?? "" } },
+    );
+    expect(unchanged.status).toBe(304);
+    expect(unchanged.headers.get("content-length")).toBeNull();
+  });
+
+  it("derives validators and bytes from one opened file snapshot", async () => {
+    const allowedDir = path.join(tempDir, "allowed");
+    await mkdir(allowedDir, { recursive: true });
+    const filePath = path.join(allowedDir, "mutable.txt");
+    await writeFile(filePath, "old");
+    const oldMetadata = createMutableFileCacheMetadata(await stat(filePath));
+
+    const routes = createLocalFileRoutes({
+      allowedPaths: [allowedDir],
+      openFile: async (resolvedPath) => {
+        await rename(filePath, `${filePath}.old`);
+        await writeFile(filePath, "replacement bytes");
+        return open(resolvedPath, "r");
+      },
+    });
+
+    const response = await routes.request(
+      `/?path=${encodeURIComponent(filePath)}`,
+    );
+    const replacementMetadata = createMutableFileCacheMetadata(
+      await stat(filePath),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-length")).toBe("17");
+    expect(response.headers.get("etag")).toBe(replacementMetadata.etag);
+    expect(response.headers.get("etag")).not.toBe(oldMetadata.etag);
+    await expect(response.text()).resolves.toBe("replacement bytes");
   });
 
   it("downloads active HTML and serves PDF inline from allowed directories", async () => {
@@ -136,6 +180,8 @@ describe("Local file routes", () => {
     expect(response.headers.get("content-type")?.toLowerCase()).toBe(
       "text/html; charset=utf-8",
     );
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("etag")).toBeNull();
     const html = await response.text();
     expect(html).toContain("<h1>Notes</h1>");
     expect(html).toContain("<table>");

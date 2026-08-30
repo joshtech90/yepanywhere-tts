@@ -10,7 +10,7 @@ Status: **implemented (2026-08-02); demand-driven cache and turn-text
 annotation landed 2026-08-05; authenticated absolute-path probes landed
 2026-08-10; command, tool-result, and user-turn annotations landed
 2026-08-16; viewed-file-relative and external-file-relative links landed
-2026-08-25.**
+2026-08-25; prefix-causal basename aliases landed 2026-08-30.**
 Highlighted file content, assistant turn text, completed command text, and
 completed tool-result bodies link exact project files through a demand-driven,
 watcher-backed directory cache — the same cache that now also decides the
@@ -215,14 +215,25 @@ file with the warm it configured.
 
 ## Rendering
 
-Linkification runs server-side over already-highlighted HTML, in the same
-response that produces it, so the client needs no path corpus and no second
-request. A first pass collects distinct candidates. The project index resolves
+Path discovery is advisory and must never gate the first readable source or
+preview. A file response renders highlighted and Markdown text from already
+known path facts; cold project-root, viewed-file-relative, and authenticated
+absolute-path probes continue outside that display-critical response. The
+current view may therefore stay plain and a later refresh may gain anchors.
+This is the viewed-file form of the established session-text contract: live or
+optimistic text appears before its settled, server-confirmed path annotation.
+
+Foreground linkification runs server-side over already-highlighted HTML using
+only cached membership facts, so the client needs no project path corpus and a
+cold scanner cannot extend response latency. After constructing the response,
+one deferred pass collects distinct candidates. The project index resolves
 relative candidates in bounded directory batches, while the authenticated
-allow-set resolver directly probes bounded absolute candidates. A second pass
-rewrites only confirmed files. Project-relative matches retain the existing
-local-file markup; absolute matches use private project-file markup so both
-open in the FileViewer belonging to the active session project.
+allow-set resolver directly probes bounded absolute candidates. That pass
+warms the authoritative caches; it does not mutate the response already being
+returned. A later request rewrites only confirmed files. Project-relative
+matches retain the existing local-file markup; absolute matches use private
+project-file markup so both open in the FileViewer belonging to the active
+session project.
 
 Highlighted file content also resolves relative tokens from the viewed file's
 containing directory when the same token is not an existing project-root path.
@@ -278,6 +289,11 @@ degrades to plain content rather than failing the view.
 - **Expand bounded target aliases into the existing index batch** (vs. client
   path corpora or a second filesystem oracle): the watcher-backed index keeps
   membership, invalidation, and I/O batching authoritative in one place.
+- **Replay basename aliases from earlier confirmed links** (vs. server-side
+  transcript state): the browser already sees the ordered, authorized links and
+  can derive the small contextual table without a protocol change or path
+  corpus. Replay is strictly prefix-causal; a later link never changes an
+  earlier basename.
 
 ## Turn text
 
@@ -363,6 +379,36 @@ are annotated only in the remaining plain-text segments. Neither glossary
 matching nor URL matching enters or splits a file anchor. Missing annotations,
 older servers, and public shares retain plain text and make no follow-up file
 request.
+
+## Recent basename aliases
+
+The authenticated web client remembers the target of each linked full path in
+the loaded transcript under its basename. A later bare occurrence of that
+basename links to the most recently preceding target. A later full-path link
+with the same basename changes only subsequent occurrences; recompiling after
+new transcript rows arrive must not retarget an earlier occurrence.
+
+Only confirmed project-file links seed the table. A basename-expanded link does
+not feed itself back into the table, and a bare project-root link likewise does
+not replace the remembered full-path target. The browser derives this during
+ordered replay, so stable servers need no new field or capability. Public
+shares remain excluded from authenticated project-file links.
+
+The table covers only the currently loaded semantic transcript window. An
+unloaded full-path link immediately above the older-page seam cannot seed a
+basename below it; `gaps/project-path-basename-alias-pagination-seam.md` records
+that low-priority edge. Only the basename is retained today. Matching longer
+path suffixes is separately deferred in `gaps/project-path-suffix-aliases.md`
+until its replay and memory cost is measured. The initial browser
+implementation uses a simple basename map plus an additional token scan over
+loaded bodies; `gaps/project-path-basename-replay-scan.md` keeps the possible
+versioned-index/trie replacement contingent on measured cost.
+
+Extensionless basenames deliberately remain eligible. This can link an
+ordinary word when it happens to equal a recently established filename even
+though the assistant did not mean the file. That accepted provisional cost is
+tracked in `gaps/project-path-basename-common-word-false-positives.md`; a common
+filename denylist needs user-frustration evidence before it narrows linking.
 
 ## Version-control affordances
 

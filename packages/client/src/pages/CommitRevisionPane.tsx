@@ -1,5 +1,12 @@
 import type { GitRecentCommit, GitStatusInfo } from "@yep-anywhere/shared";
-import { type MouseEvent, type RefObject, useCallback } from "react";
+import {
+  type KeyboardEvent,
+  type MouseEvent,
+  type RefObject,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import {
   SourceRowMenuTrigger,
   sourceRowMenuSurface,
@@ -8,7 +15,10 @@ import {
 } from "../components/SourceContextMenu";
 import { SearchMatchText } from "../components/SearchMatchText";
 import { SourceShortcutHelp } from "../components/SourceShortcutHelp";
-import { handleSourceListKeyDown } from "../hooks/useSourceKeyboard";
+import {
+  handleSourceListKeyDown,
+  suppressSourceKeyboardTooltips,
+} from "../hooks/useSourceKeyboard";
 import { writeClipboardText } from "../lib/clipboard";
 import type { CommitSearchMatch } from "../lib/commitSearchIndex";
 import { findTextMatch } from "../lib/searchMatch";
@@ -45,6 +55,7 @@ export function CommitRevisionPane({
   onSearchQueryChange,
   onSearchIndexRequested,
   onOpenRevision,
+  onEnterRevision,
   revisionHref,
   onFocusRevision,
   onLoadMore,
@@ -78,6 +89,7 @@ export function CommitRevisionPane({
   onSearchQueryChange: (query: string) => void;
   onSearchIndexRequested: () => void;
   onOpenRevision: (key: string) => void;
+  onEnterRevision: (key: string) => void;
   revisionHref: (key: string) => string;
   onFocusRevision: (key: string) => void;
   onLoadMore: () => void;
@@ -86,6 +98,8 @@ export function CommitRevisionPane({
   t: TranslationFn;
 }) {
   const revisionMenu = useSourceContextMenu(t);
+  const revisionListRef = useRef<HTMLOListElement>(null);
+  const initialRevisionFocusPending = useRef(true);
   const revisionMenuActions = useCallback(
     (key: string, commit?: GitRecentCommit): SourceContextMenuAction[] => {
       const index = displayedKeys.indexOf(key);
@@ -163,6 +177,23 @@ export function CommitRevisionPane({
     workingTreeMenuActions,
     () => onOpenRevision(WORKING_TREE_KEY),
   );
+  useLayoutEffect(() => {
+    if (loadingList) {
+      initialRevisionFocusPending.current = true;
+      return;
+    }
+    if (!isWideScreen || !initialRevisionFocusPending.current || !selectedKey) {
+      return;
+    }
+    const selectedRevision =
+      revisionListRef.current?.querySelector<HTMLElement>(
+        ".commit-list-item.selected",
+      );
+    if (!selectedRevision) return;
+    initialRevisionFocusPending.current = false;
+    suppressSourceKeyboardTooltips();
+    selectedRevision.focus({ preventScroll: true });
+  }, [isWideScreen, loadingList, selectedKey]);
   return (
     <>
       <div className="commit-list-column">
@@ -213,7 +244,11 @@ export function CommitRevisionPane({
           </div>
         ) : (
           <>
-            <ol className="commit-list" onKeyDown={handleSourceListKeyDown}>
+            <ol
+              ref={revisionListRef}
+              className="commit-list"
+              onKeyDown={handleSourceListKeyDown}
+            >
               {showWorkingTreeRevision && (
                 <li
                   className={`commit-list-row commit-list-working-tree ${sourceRowMenuSurface}`}
@@ -232,6 +267,14 @@ export function CommitRevisionPane({
                       if (isWideScreen) onFocusRevision(WORKING_TREE_KEY);
                     }}
                     {...workingTreeTargetProps}
+                    onKeyDown={(event) => {
+                      workingTreeTargetProps.onKeyDown(event);
+                      handleRevisionEnter(
+                        event,
+                        WORKING_TREE_KEY,
+                        onEnterRevision,
+                      );
+                    }}
                     onClick={(event) => {
                       if (isModifiedLinkActivation(event)) return;
                       event.preventDefault();
@@ -310,6 +353,14 @@ export function CommitRevisionPane({
                         if (isWideScreen) onFocusRevision(commit.hash);
                       }}
                       {...targetProps}
+                      onKeyDown={(event) => {
+                        targetProps.onKeyDown(event);
+                        handleRevisionEnter(
+                          event,
+                          commit.hash,
+                          onEnterRevision,
+                        );
+                      }}
                       onClick={(event) => {
                         if (isModifiedLinkActivation(event)) return;
                         event.preventDefault();
@@ -398,6 +449,25 @@ export function CommitRevisionPane({
       {revisionMenu.menu}
     </>
   );
+}
+
+function handleRevisionEnter(
+  event: KeyboardEvent<HTMLAnchorElement>,
+  key: string,
+  onEnterRevision: (key: string) => void,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.key !== "Enter" ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  ) {
+    return;
+  }
+  event.preventDefault();
+  if (!event.repeat) onEnterRevision(key);
 }
 
 function isModifiedLinkActivation(

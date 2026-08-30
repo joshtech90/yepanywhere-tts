@@ -30,6 +30,7 @@ import type {
 } from "../../src/sessions/types.js";
 import {
   ResumeCompactionError,
+  RetryableSessionLaunchError,
   SessionConfigurationConflictError,
 } from "../../src/supervisor/Supervisor.js";
 import type {
@@ -358,6 +359,46 @@ describe("Sessions metadata route", () => {
         },
       ],
     });
+  });
+
+  it("queues an attachment without accompanying text", async () => {
+    const attachment = {
+      id: "attachment-only",
+      originalName: "trace.txt",
+      name: "attachment-only-trace.txt",
+      path: "/tmp/attachment-only-trace.txt",
+      size: 24,
+      mimeType: "text/plain",
+    };
+    const deferMessage = vi.fn(() => ({ success: true, deferred: true }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          isTerminated: false,
+          noteInputIntent: vi.fn(),
+          primeSupportedCommandsForMessage: vi.fn(async () => {}),
+          deferMessage,
+          waitForPatientQueuePersistenceIdle: vi.fn(async () => {}),
+          getDeferredQueueSummary: vi.fn(() => []),
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+    });
+
+    const response = await routes.request("/sessions/sess-1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "",
+        attachments: [attachment],
+        deferred: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(deferMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "", attachments: [attachment] }),
+      { promoteIfReady: true, placement: undefined },
+    );
   });
 
   it("retains recovered work when a deferred-message response adds live work", async () => {
@@ -1781,6 +1822,77 @@ describe("Sessions metadata route", () => {
     }
   });
 
+  it("reclassifies from Codex native cwd instead of live launch cwd", async () => {
+    const launchProjectPath = "/tmp/launch-project";
+    const transcriptProjectPath = "/tmp/transcript-project";
+    const targetProjectPath = "/tmp/target-project";
+    const launchProject = {
+      ...createProject(),
+      id: encodeProjectId(launchProjectPath),
+      path: launchProjectPath,
+    };
+    const transcriptProject = {
+      ...createProject(),
+      id: encodeProjectId(transcriptProjectPath),
+      path: transcriptProjectPath,
+      provider: "codex" as ProviderName,
+    };
+    const targetProject = {
+      ...createProject(),
+      id: encodeProjectId(targetProjectPath),
+      path: targetProjectPath,
+    };
+    const setWorkingProject = vi.fn(async () => undefined);
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          projectId: launchProject.id,
+          projectPath: launchProject.path,
+          provider: "codex",
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(
+          async (projectId: UrlProjectId) =>
+            [launchProject, transcriptProject, targetProject].find(
+              (project) => project.id === projectId,
+            ) ?? null,
+        ),
+      } as unknown as SessionsDeps["scanner"],
+      codexScanner: {
+        getSessionProjectPath: vi.fn(async () => transcriptProjectPath),
+      },
+      readerFactory: vi.fn(
+        () =>
+          ({ getSessionSummary: vi.fn(async () => null) }) as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ provider: "codex" as ProviderName })),
+        setWorkingProject,
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${launchProject.id}/sessions/sess-1/project`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: targetProject.id }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(setWorkingProject).toHaveBeenCalledWith(
+      "sess-1",
+      targetProject.id,
+      transcriptProject.id,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      projectId: targetProject.id,
+      transcriptProjectId: transcriptProject.id,
+    });
+  });
+
   it("isolates public and private Markdown projections in either order", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "ya-detached-augment-"));
     const project: Project = {
@@ -1963,6 +2075,7 @@ describe("Sessions metadata route", () => {
           appliedPermissionMode: "default",
           modeVersion: 0,
           recapAfterSeconds: undefined,
+          startedAt: new Date("2026-03-10T09:46:00.000Z"),
           state: { type: "idle", since: new Date("2026-03-10T09:47:00.000Z") },
           provider: "claude",
           resolvedModel: "claude-sonnet-4-6",
@@ -2061,6 +2174,71 @@ describe("Sessions metadata route", () => {
     });
     expect(json.ownership).not.toHaveProperty("state");
     expect(json.processState).toBe("idle");
+  });
+
+  it("keeps metadata viewable when dynamic command discovery disconnects", async () => {
+    const project = { ...createProject(), provider: "codex" as const };
+    const supportedCommands = vi.fn(async () => {
+      throw new Error("Provider worker is disconnected");
+    });
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-1",
+          sessionId: "sess-1",
+          permissionMode: "default",
+          modeVersion: 0,
+          state: { type: "idle", since: new Date("2026-03-10T09:47:00.000Z") },
+          provider: "codex",
+          supportsDynamicCommands: true,
+          supportedCommands,
+          getDeferredQueueSummary: vi.fn(() => []),
+          getProviderRuntimeStatus: vi.fn(() => null),
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => createSummary()),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+        getProvider: vi.fn(() => "codex"),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/metadata`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(supportedCommands).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "session_dynamic_commands_unavailable",
+        sessionId: "sess-1",
+        processId: "proc-1",
+        provider: "codex",
+        error: "Provider worker is disconnected",
+      }),
+      "Falling back to static commands for session read",
+    );
+    const json = await response.json();
+    expect(json.session.provider).toBe("codex");
+    expect(json.slashCommands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "compact" }),
+        expect.objectContaining({ name: "status" }),
+      ]),
+    );
   });
 
   it("returns static Codex slash commands for stopped sessions", async () => {
@@ -2280,6 +2458,140 @@ describe("Sessions metadata route", () => {
       expect.objectContaining({ text: "continue" }),
       undefined,
       expect.objectContaining({ providerName: "codex" }),
+      { requireProviderSessionId: true },
+    );
+  });
+
+  it("returns attachment rejection before claiming resume started", async () => {
+    const warn = vi
+      .spyOn(getLogger(), "warn")
+      .mockImplementation(() => undefined);
+    const project = createProject();
+    const resumeSession = vi.fn(async () => {
+      throw new RetryableSessionLaunchError(
+        new Error("native session is missing"),
+      );
+    });
+    const routes = createSessionsRoutes({
+      supervisor: {
+        resumeSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+            getSessionFilePath: vi.fn(
+              async () => "/home/user/.codex/sessions/sess-1.jsonl",
+            ),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "codex"),
+        getRequestedModel: vi.fn(() => undefined),
+        setRequestedModel: vi.fn(async () => undefined),
+        getExecutor: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/resume`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "continue" }),
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error:
+        "Provider session startup did not settle: native session is missing",
+    });
+    expect(resumeSession).toHaveBeenCalledWith(
+      "sess-1",
+      project.path,
+      expect.objectContaining({ text: "continue" }),
+      undefined,
+      expect.objectContaining({ providerName: "codex" }),
+      { requireProviderSessionId: true },
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "provider_resume_attachment_failed",
+        sessionId: "sess-1",
+        projectId: project.id,
+        providerName: "codex",
+      }),
+      "Provider resume failed before native session attachment",
+    );
+  });
+
+  it("resumes from the Codex transcript cwd instead of the request project", async () => {
+    const requestProjectPath = "/tmp/stale-project";
+    const transcriptProjectPath = "/tmp/native-project";
+    const requestProject = {
+      ...createProject(),
+      id: encodeProjectId(requestProjectPath),
+      path: requestProjectPath,
+    };
+    const transcriptProject = {
+      ...createProject(),
+      id: encodeProjectId(transcriptProjectPath),
+      path: transcriptProjectPath,
+      provider: "codex" as ProviderName,
+    };
+    const resumeSession = vi.fn(async () => ({
+      id: "proc-1",
+      sessionId: "sess-1",
+      permissionMode: "default",
+      modeVersion: 0,
+    }));
+    const routes = createSessionsRoutes({
+      supervisor: { resumeSession } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async (projectId: UrlProjectId) =>
+          projectId === requestProject.id
+            ? requestProject
+            : projectId === transcriptProject.id
+              ? transcriptProject
+              : null,
+        ),
+      } as unknown as SessionsDeps["scanner"],
+      codexScanner: {
+        getSessionProjectPath: vi.fn(async () => transcriptProjectPath),
+      },
+      readerFactory: vi.fn(
+        () =>
+          ({ getSessionSummary: vi.fn(async () => null) }) as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ provider: "codex" as ProviderName })),
+        getProvider: vi.fn(() => "codex"),
+        getRequestedModel: vi.fn(() => undefined),
+        getExecutor: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${requestProject.id}/sessions/sess-1/resume`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "continue" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(resumeSession).toHaveBeenCalledWith(
+      "sess-1",
+      transcriptProjectPath,
+      expect.objectContaining({ text: "continue" }),
+      undefined,
+      expect.objectContaining({ providerName: "codex" }),
+      { requireProviderSessionId: true },
     );
   });
 
@@ -2375,6 +2687,7 @@ describe("Sessions metadata route", () => {
       expect.objectContaining({ text: "continue" }),
       undefined,
       expect.objectContaining({ providerName: "claude" }),
+      { requireProviderSessionId: true },
     );
   });
 
@@ -2592,6 +2905,7 @@ describe("Sessions metadata route", () => {
         providerName: "claude",
         resumeSessionAt: goodUuid,
       }),
+      { requireProviderSessionId: true },
     );
   });
 
@@ -2656,6 +2970,7 @@ describe("Sessions metadata route", () => {
         providerName: "claude",
         resumeMode: "compact-first",
       }),
+      { requireProviderSessionId: true },
     );
     const json = await response.json();
     expect(json.recovery).toBe("full-resume");
@@ -3148,12 +3463,12 @@ describe("Sessions metadata route", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error:
-        "A restarted session inherits the source sandbox level and cannot change it",
+        "A restarted session inherits the source sandbox boundary and cannot change it",
     });
     expect(startSession).not.toHaveBeenCalled();
   });
 
-  it("forks the transcript instead of handing off when restartMode is fork", async () => {
+  it("preserves a firewall opt-out when restartMode is fork", async () => {
     const project = createProject();
     const forkSession = vi.fn(async () => ({
       sessionId: "sess-fork",
@@ -3225,6 +3540,7 @@ describe("Sessions metadata route", () => {
         getMetadata: vi.fn(() => ({
           customTitle: "Refactor session",
           sandboxLevel: "project-write",
+          sandboxNetworkFirewall: false,
           sandboxStateKey: "project-sandbox",
           sandboxProjectPath: project.path,
           effectiveLaunchSettings: {
@@ -3285,6 +3601,7 @@ describe("Sessions metadata route", () => {
       upToMessageId: "msg-uuid-7",
       title: "Fork: Refactor session",
       sandboxLevel: "project-write",
+      sandboxNetworkFirewall: false,
       sandboxStateKey: "project-sandbox",
     });
     expect(startSession).not.toHaveBeenCalled();
@@ -3301,11 +3618,13 @@ describe("Sessions metadata route", () => {
         effort: "high",
         providerName: "claude",
         sandboxLevel: "project-write",
+        sandboxNetworkFirewall: false,
         sandboxStateKey: "project-sandbox",
       }),
     );
     expect(setSessionSandbox).toHaveBeenCalledWith("sess-fork", {
       level: "project-write",
+      networkFirewall: false,
       stateKey: "project-sandbox",
       projectPath: project.path,
       projectId: project.id,
@@ -3386,8 +3705,10 @@ describe("Sessions metadata route", () => {
       projectPath: project.path,
       providerName: "claude",
       upToMessageId: "msg-uuid-3",
+      boundary: undefined,
       title: "Fork: Refactor session",
       sandboxLevel: "project-write",
+      sandboxNetworkFirewall: true,
       sandboxStateKey: "project-sandbox",
     });
     // Fork-only: no process is started or resumed, no message sent.
@@ -3396,6 +3717,7 @@ describe("Sessions metadata route", () => {
     expect(setProvider).toHaveBeenCalledWith("sess-fork", "claude");
     expect(setSessionSandbox).toHaveBeenCalledWith("sess-fork", {
       level: "project-write",
+      networkFirewall: true,
       stateKey: "project-sandbox",
       projectPath: project.path,
       projectId: project.id,
@@ -4206,6 +4528,7 @@ describe("Sessions metadata route", () => {
       providerName: "claude",
       title: "Fork summary generator",
       sandboxLevel: "project-write",
+      sandboxNetworkFirewall: true,
       sandboxStateKey: "project-sandbox",
     });
     expect(generateSummary).toHaveBeenCalledWith(
@@ -4233,6 +4556,7 @@ describe("Sessions metadata route", () => {
       },
       title: "Refactor continuation",
       sandboxLevel: "project-write",
+      sandboxNetworkFirewall: true,
       sandboxStateKey: "project-sandbox",
     });
     expect(resumeSession).toHaveBeenCalledWith(
@@ -5747,6 +6071,9 @@ describe("Session reactivation route", () => {
       } as unknown as SessionsDeps["scanner"],
       readerFactory,
       projectQueueScheduler: { reserveUserSessionStart },
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ provider: "claude" as ProviderName })),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
     });
 
     const responsePromise = routes.request(reactivatePath, { method: "POST" });
@@ -5776,12 +6103,142 @@ describe("Session reactivation route", () => {
       projectQueueScheduler: {
         reserveUserSessionStart: vi.fn(() => release),
       },
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ provider: "claude" as ProviderName })),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
     });
 
     const response = await routes.request(reactivatePath, { method: "POST" });
 
     expect(response.status).toBe(503);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("resolves an external session from exact native provider evidence", async () => {
+    const primaryReader = {
+      getSessionSummary: vi.fn(async () => null),
+    } as unknown as ISessionReader;
+    const grokReader = {
+      getSessionSummary: vi.fn(async () => ({
+        ...createSummary(),
+        provider: "grok" as ProviderName,
+      })),
+    } as unknown as GrokSessionReader;
+    const process = {
+      id: "process-grok",
+      permissionMode: "default",
+      appliedPermissionMode: "default",
+      modeVersion: 0,
+    };
+    const reactivateSession = vi.fn(async () => process);
+    const routes = createSessionsRoutes({
+      supervisor: {
+        reactivateSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => primaryReader),
+      grokReaderFactory: vi.fn(() => grokReader),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(reactivatePath, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(reactivateSession).toHaveBeenCalledWith(
+      project.path,
+      "sess-1",
+      undefined,
+      expect.objectContaining({ providerName: "grok" }),
+      { requestedOverrides: {} },
+    );
+  });
+
+  it("reactivates from the Codex transcript cwd instead of the request project", async () => {
+    const transcriptProjectPath = "/tmp/native-codex-project";
+    const transcriptProject = {
+      ...project,
+      id: encodeProjectId(transcriptProjectPath),
+      path: transcriptProjectPath,
+      provider: "codex" as ProviderName,
+    };
+    const process = {
+      id: "process-codex",
+      permissionMode: "default",
+      appliedPermissionMode: "default",
+      modeVersion: 0,
+    };
+    const reactivateSession = vi.fn(async () => process);
+    const reserveUserSessionStart = vi.fn(() => vi.fn());
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => undefined),
+        reactivateSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async (requestedId: UrlProjectId) =>
+          requestedId === project.id
+            ? project
+            : requestedId === transcriptProject.id
+              ? transcriptProject
+              : null,
+        ),
+      } as unknown as SessionsDeps["scanner"],
+      codexScanner: {
+        getSessionProjectPath: vi.fn(async () => transcriptProjectPath),
+      },
+      readerFactory,
+      projectQueueScheduler: { reserveUserSessionStart },
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({ provider: "codex" as ProviderName })),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(reactivatePath, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(reactivateSession).toHaveBeenCalledWith(
+      transcriptProjectPath,
+      "sess-1",
+      undefined,
+      expect.objectContaining({ providerName: "codex" }),
+      { requestedOverrides: {} },
+    );
+    expect(reserveUserSessionStart).toHaveBeenCalledWith(
+      transcriptProject.id,
+      "sess-1",
+    );
+  });
+
+  it("does not fall back to the project provider for an unknown session", async () => {
+    const emptyReader = {
+      getSessionSummary: vi.fn(async () => null),
+    } as unknown as ISessionReader;
+    const reactivateSession = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        reactivateSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => emptyReader),
+      grokReaderFactory: vi.fn(
+        () => emptyReader as unknown as GrokSessionReader,
+      ),
+      piReaderFactory: vi.fn(() => emptyReader),
+    });
+
+    const response = await routes.request(reactivatePath, { method: "POST" });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Session not found",
+    });
+    expect(reactivateSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -5904,6 +6361,7 @@ describe("Session reactivation route", () => {
             executor: "build-host",
             permissions: { deny: ["Bash(rm *)"] },
             sandboxLevel: "none",
+            sandboxNetworkFirewall: false,
             sandboxStateKey: undefined,
             recapMode: "fork",
             recapAfterSeconds: 45,

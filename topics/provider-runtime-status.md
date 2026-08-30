@@ -43,18 +43,27 @@ Changing models while `retrying` is an explicit recovery override. Interrupt
 the provider-owned retry wait first so its model-control RPC cannot remain
 blocked behind that wait, then apply the new model through the retained session
 before releasing queued messages. Clear the retry status only after the
-interrupt is accepted and the model applies. A model change during an ordinary active turn
-remains a next-turn setting and must not truncate useful output. If a provider
-can change models dynamically but cannot interrupt a retrying request, YA must
-restart that provider process rather than leave the old-model retry clock in
-control.
+interrupt is accepted and the model applies. A model change during an ordinary
+active turn must not truncate useful output. Codex 0.151 and later publishes a
+non-default model through its experimental `turn/settings/update` control; the
+selection also seeds later turns. Providers without an active-turn control
+retain the selection for the next turn. If a provider can change models
+dynamically but cannot interrupt a retrying request, YA must restart that
+provider process rather than leave the old-model retry clock in control.
 
-Likewise, changing Claude effort during an ordinary active turn is a
-next-turn setting. YA accepts the selection immediately, applies it at the
-provider idle boundary before queued work, and never interrupts the current
-turn. Manual stop remains independently available; treating a configuration
-choice as a stop can discard nearly completed, already-paid-for reasoning on a
-high-cost turn.
+Changing Claude effort during an ordinary active turn remains a next-turn
+setting. YA accepts the selection immediately, applies it at the provider idle
+boundary before queued work, and never interrupts the current turn. Codex
+0.151 and later instead publishes a non-default effort through
+`turn/settings/update` while preserving the same no-interrupt rule, then
+retains it for later turns. Codex may have already captured child sessions or
+other work under the old settings; an `applied` response promises publication,
+not retroactive replacement. If the turn ends first and answers
+`targetUnavailable`, the selection still applies to the next turn. Clearing a
+model or effort override also takes effect at the next turn because Codex
+treats `null` as "leave this running turn unchanged." Manual stop remains
+independently available; treating a configuration choice as a stop can discard
+nearly completed, already-paid-for reasoning on a high-cost turn.
 
 Effort control writes are serialized and latest-selection-wins: a slower older
 provider call cannot overwrite a newer choice. At a turn boundary, failure to
@@ -69,7 +78,8 @@ turn can still report progress and completion.
 YA's initial Codex `CodexErrorInfo` normalization maps as follows:
 
 - `serverOverloaded` -> `overloaded`
-- `usageLimitExceeded` and `sessionBudgetExceeded` -> `rate_limit`
+- `usageLimitExceeded`, `sessionBudgetExceeded`, and `rateLimitExceeded` ->
+  `rate_limit`
 - `internalServerError` -> `server_error`
 - HTTP/response-stream connection and disconnect variants -> `network`
 - all other terminal errors -> `unknown`
@@ -97,10 +107,14 @@ turn does not imply that the retained provider process crashed.
 ## Codex 0.149.0 source audit
 
 The findings in this section were checked against the official Codex source at
-tag `rust-v0.149.0`, matching root `package.json`
-`yepAnywhere.codexCli.expectedVersion`. Run `pnpm references:sync` to put the
-gitignored `references/codex` checkout at that tag, or `pnpm references:check`
-to verify an existing checkout without changing it.
+tag `rust-v0.149.0`. Root `package.json`
+`yepAnywhere.codexCli.expectedVersion` has since advanced; the error-taxonomy
+and detail-string changes checked at later tags are folded into the mapping and
+table above, and each version's evidence is in
+[provider-refresh](provider-refresh.md). Run `pnpm references:sync` to put the
+gitignored `references/codex` checkout at the currently expected tag, or `pnpm
+references:check` to verify an existing checkout without changing it; state the
+mismatch explicitly when reading a different tag than the one a claim cites.
 
 The most useful upstream coordinates are:
 
@@ -196,8 +210,10 @@ copy, and suggested action.
 | `contextWindowExceeded` | Model context is full. | `context`; suggest clearing earlier history or starting a new thread. |
 | `sessionBudgetExceeded` | Configured shared rollout token budget is exhausted. | `budget`; do not describe it as subscription credits. |
 | `usageLimitExceeded` | Usage, quota, or plan inclusion limit. | `rate_limit`; retain provider/account guidance. |
+| `rateLimitExceeded` | Upstream rate limit inside the response stream. Codex treats it as retryable, so it normally arrives with `willRetry: true` and is terminal only after Codex gives up. | `rate_limit`; the same account/quota copy as `usageLimitExceeded`. |
 | `serverOverloaded` | Selected model is at capacity. Codex itself does not retry it. | `overloaded`; YA retries the same model under the bounded adapter policy above. |
 | `cyberPolicy` | Cyber-safety policy ended the turn. | `policy`; mirror the first-party dedicated safety notice. |
+| `misalignmentPolicyViolation` | A misalignment policy blocked the request. | `policy`; the top-level message can be a generic fallback, so show `misalignment.detailedExplanation` as the detail. |
 | `httpConnectionFailed` | HTTP connection failed after retries. | `network`; retain `httpStatusCode`. |
 | `responseStreamConnectionFailed` | Response stream could not be established after retries. | `network`; retain `httpStatusCode`. |
 | `responseStreamDisconnected` | Response stream disconnected before completion. | `network`; normally intermediate when `willRetry` is true, terminal if false. |
@@ -207,6 +223,19 @@ copy, and suggested action.
 | `badRequest` | Unsupported operation, missing thread, agent limit, or another rejected request. | `request`; raw provider text is important because the category is broad. |
 | `sandboxError` | Codex sandbox execution/setup failed. | `sandbox`; distinguish it from user denial and point toward the permission/environment boundary in [codex-permission-mode](codex-permission-mode.md). |
 | `other` or absent | No stable public classification. | `unknown`; always preserve the provider message and request id. |
+
+App-server fills the error's `additionalDetails` only on retryable stream
+errors; for a terminal error it leaves that field null and, since Codex 0.151,
+carries a misalignment block's substantive explanation in `misalignment`
+instead. The two never arrive together, so YA reads one detail string —
+`additionalDetails` when present, otherwise `misalignment.detailedExplanation` —
+and shows it wherever the provider detail already appears. Retry diagnostics are
+unchanged by that fallback.
+
+`misalignment.steer.message` is the text Codex expects a client to submit as the
+next user turn if the user chooses to continue. YA does not offer that
+continuation: doing so is a deliberate interaction design, not a detail string,
+and Codex requires showing the explanation before offering it at all.
 
 `threadRollbackFailed` and `activeTurnNotSteerable` explicitly return false
 from `affects_turn_status`. App-server normally resolves or suppresses them as
@@ -313,6 +342,9 @@ Coverage should prove:
 - changing models during retry interrupts the held wait before model control,
   applies the model before queued delivery, and clears the retry status;
 - changing models during an ordinary active turn does not interrupt it;
+- Codex publishes active-turn model and effort selections through
+  `turn/settings/update`, retains them for later turns, and falls back to the
+  next turn when the live target is unavailable;
 - Codex `willRetry: false` errors become terminal status with the right reason;
 - terminal status survives `result`, idle transition, and idle process reap;
 - the Supervisor serves retained terminal status without a live process;

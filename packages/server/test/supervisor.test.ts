@@ -420,6 +420,126 @@ describe("Supervisor", () => {
       expect(process.sessionId).toBe("sess-123");
     });
 
+    it("waits for provider attachment before accepting a required resume", async () => {
+      let releaseAttachment!: () => void;
+      const attachmentGate = new Promise<void>((resolve) => {
+        releaseAttachment = resolve;
+      });
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            for await (const message of queue) {
+              void message;
+              await attachmentGate;
+              yield {
+                type: "system" as const,
+                subtype: "init" as const,
+                session_id: options.resumeSessionId,
+              };
+            }
+          }
+          return { iterator: iterator(), queue, abort: () => {} };
+        },
+      );
+      const providerSupervisor = new Supervisor({
+        provider: testProvider(startSession),
+      });
+      const settled = vi.fn();
+
+      const resume = providerSupervisor.resumeSession(
+        "native-session",
+        "/tmp/test",
+        { text: "continue" },
+        undefined,
+        undefined,
+        { requireProviderSessionId: true },
+      );
+      void resume.then(settled);
+      await waitFor(() => expect(startSession).toHaveBeenCalledOnce());
+      expect(settled).not.toHaveBeenCalled();
+
+      releaseAttachment();
+      const process = await resume;
+
+      expect(settled).toHaveBeenCalledWith(process);
+      expect(process).toMatchObject({ sessionId: "native-session" });
+    });
+
+    it("rejects and unregisters a required resume when attachment fails", async () => {
+      const errorLog = vi
+        .spyOn(getLogger(), "error")
+        .mockImplementation(() => undefined);
+      const abort = vi.fn();
+      const provider = testProvider(async () => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          for await (const message of queue) {
+            void message;
+            yield await Promise.reject(new Error("native session is missing"));
+          }
+        }
+        return { iterator: iterator(), queue, abort };
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      await expect(
+        providerSupervisor.resumeSession(
+          "missing-session",
+          "/tmp/test",
+          { text: "continue" },
+          undefined,
+          undefined,
+          { requireProviderSessionId: true },
+        ),
+      ).rejects.toEqual(
+        expect.objectContaining({
+          name: RetryableSessionLaunchError.name,
+          message: expect.stringContaining("native session is missing"),
+        }),
+      );
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(providerSupervisor.getAllProcesses()).toEqual([]);
+      errorLog.mockRestore();
+    });
+
+    it("rejects a required resume that attaches a different native session", async () => {
+      const abort = vi.fn();
+      const provider = testProvider(async () => {
+        const queue = new MessageQueue();
+        async function* iterator() {
+          for await (const message of queue) {
+            void message;
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: "replacement-session",
+            };
+            return;
+          }
+        }
+        return { iterator: iterator(), queue, abort };
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      await expect(
+        providerSupervisor.resumeSession(
+          "missing-session",
+          "/tmp/test",
+          { text: "continue" },
+          undefined,
+          undefined,
+          { requireProviderSessionId: true },
+        ),
+      ).rejects.toThrow(
+        "Provider attached session replacement-session instead of missing-session",
+      );
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(providerSupervisor.getAllProcesses()).toEqual([]);
+    });
+
     it("inherits durable settings on a cold direct-message resume", async () => {
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -1677,6 +1797,109 @@ describe("Supervisor", () => {
   });
 
   describe("reactivateSession", () => {
+    it("retains managed placement across queueing, shutdown, and resume", async () => {
+      let generation = 0;
+      const delivered: string[] = [];
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          generation += 1;
+          const runnerGeneration = `runner-${generation}`;
+          const queue = new MessageQueue();
+          let alive = true;
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "managed-native-session",
+            };
+            for await (const message of queue) {
+              if (!alive) return;
+              const text =
+                typeof message.message.content === "string"
+                  ? message.message.content
+                  : "non-text provider message";
+              delivered.push(text);
+              yield {
+                type: "assistant" as const,
+                message: { content: `reply to ${text}` },
+              };
+              yield {
+                type: "result" as const,
+                session_id: options.resumeSessionId ?? "managed-native-session",
+              };
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            execution: {
+              kind: "managed-ssh" as const,
+              targetId: "linux-testbed",
+              workspaceId: "managed-workspace",
+              runnerGeneration,
+            },
+            abort: () => {
+              alive = false;
+              queue.push({ text: "__abort__" });
+            },
+            isProcessAlive: () => alive,
+          };
+        },
+      );
+      const providerSupervisor = new Supervisor({
+        provider: testProvider(startSession),
+        idleTimeoutMs: 60000,
+      });
+
+      const first = await providerSupervisor.reactivateSession(
+        "/tmp/managed-workspace",
+        "managed-native-session",
+        undefined,
+        { providerName: "claude" },
+      );
+
+      expect(first.execution).toEqual({
+        kind: "managed-ssh",
+        targetId: "linux-testbed",
+        workspaceId: "managed-workspace",
+        runnerGeneration: "runner-1",
+      });
+      expect(first.executor).toBeUndefined();
+      expect(first.queueMessage({ text: "managed queue turn" })).toEqual(
+        expect.objectContaining({ success: true }),
+      );
+      await waitFor(() => {
+        expect(delivered).toContain("managed queue turn");
+        expect(first.state.type).toBe("idle");
+      });
+      await expect(
+        providerSupervisor.abortProcessWithVerification(first.id),
+      ).resolves.toMatchObject({
+        processId: first.id,
+        verifiedStopped: true,
+        verification: "provider",
+      });
+
+      const resumed = await providerSupervisor.reactivateSession(
+        "/tmp/managed-workspace",
+        "managed-native-session",
+        undefined,
+        { providerName: "claude" },
+      );
+
+      expect(resumed.sessionId).toBe("managed-native-session");
+      expect(resumed.execution).toEqual({
+        kind: "managed-ssh",
+        targetId: "linux-testbed",
+        workspaceId: "managed-workspace",
+        runnerGeneration: "runner-2",
+      });
+      await expect(
+        providerSupervisor.abortProcessWithVerification(resumed.id),
+      ).resolves.toMatchObject({ verifiedStopped: true });
+      expect(startSession).toHaveBeenCalledTimes(2);
+    });
+
     it("spawns a live owned process for an existing session with no user turn", async () => {
       const startSession = vi.fn(
         async (options: Parameters<AgentProvider["startSession"]>[0]) => {
@@ -4580,6 +4803,7 @@ describe("Supervisor", () => {
       // Only the recap floor and the fork-archival path touch the metadata
       // service here; back the stub with a swappable recap row list.
       let persistedRecaps: unknown[] = [];
+      const setSessionSandbox = vi.fn(async () => undefined);
       const metadataStub = {
         getMetadata: () => undefined,
         recordEffectiveLaunchSettings: async () => ({
@@ -4597,6 +4821,7 @@ describe("Supervisor", () => {
         setProvider: async () => {},
         setExecutor: async () => {},
         setRequestedModel: async () => {},
+        setSessionSandbox,
         addRecapMessage: async () => {},
       } as unknown as ConstructorParameters<
         typeof Supervisor
@@ -4675,6 +4900,49 @@ describe("Supervisor", () => {
         text: "forked summary",
       });
       expect(forkSession).toHaveBeenCalled();
+
+      Object.assign(process, {
+        sandboxEnforcement: {
+          requested: "project-write",
+          effective: "project-write",
+          state: "enforced",
+          networkFirewall: false,
+        },
+        sandboxStateKey: "project-sandbox",
+        sandboxProjectPath: "/tmp/test",
+      });
+      const sandboxPersistence = supervisorWithMetadata as unknown as {
+        persistProcessSandboxOrAbort: (p: typeof process) => Promise<void>;
+        archiveHelperFork: (
+          childSessionId: string,
+          sourceSessionId: string,
+          title: string,
+          providerName: "claude",
+          p: typeof process,
+        ) => Promise<void>;
+      };
+      await sandboxPersistence.persistProcessSandboxOrAbort(process);
+      await sandboxPersistence.archiveHelperFork(
+        "sandbox-helper-fork",
+        process.sessionId,
+        "Sandbox helper",
+        "claude",
+        process,
+      );
+      expect(setSessionSandbox).toHaveBeenCalledWith(
+        process.sessionId,
+        expect.objectContaining({
+          level: "project-write",
+          networkFirewall: false,
+        }),
+      );
+      expect(setSessionSandbox).toHaveBeenCalledWith(
+        "sandbox-helper-fork",
+        expect.objectContaining({
+          level: "project-write",
+          networkFirewall: false,
+        }),
+      );
       expect(events).toContainEqual(
         expect.objectContaining({
           type: "session-metadata-changed",

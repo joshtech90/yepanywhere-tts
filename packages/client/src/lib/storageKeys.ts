@@ -93,8 +93,6 @@ export const UI_KEYS = {
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",
   sessionLoadingProgress: "yep-anywhere-session-loading-progress-enabled",
   sessionDomLinger: "yep-anywhere-session-dom-linger-enabled",
-  sessionOffscreenTranscriptRendering:
-    "yep-anywhere-session-offscreen-transcript-rendering-enabled",
   sessionActiveWindowTrim: "yep-anywhere-session-active-window-trim-enabled",
   // Legacy boolean toggle; seeds the budget preference until the slider
   // is first used, and stays coherent for older bundles.
@@ -120,6 +118,9 @@ export const UI_KEYS = {
   emulatorAdaptiveFps: "yep-anywhere-emulator-adaptive-fps",
   attachmentUploadQuality: "yep-anywhere-attachment-upload-quality",
   tabTitleActivityEnabled: "yep-anywhere-tab-title-activity-enabled",
+  projectCodeNamesEnabled: "yep-anywhere-project-code-names-enabled",
+  projectCodeNameActivityPulseEnabled:
+    "yep-anywhere-project-code-name-activity-pulse-enabled",
   settingsIconStyle: "yep-anywhere-settings-icon-style",
   // Legacy key from the first checkbox version of this client-local setting.
   flatSettingsIcons: "yep-anywhere-flat-settings-icons-enabled",

@@ -172,6 +172,36 @@ describe("Sessions API", () => {
       expect(json.processId).toBeDefined();
     });
 
+    it("starts a session from an attachment without text", async () => {
+      mockSdk.addScenario(createMockScenario("attachment-session", "Seen"));
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(`/api/projects/${projectId}/sessions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Yep-Anywhere": "true",
+        },
+        body: JSON.stringify({
+          message: "",
+          attachments: [
+            {
+              id: "attachment-1",
+              originalName: "image.png",
+              name: "attachment-1-image.png",
+              path: "/tmp/attachment-1-image.png",
+              size: 12,
+              mimeType: "image/png",
+            },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.processId).toBeDefined();
+    });
+
     it("accepts permission mode parameter", async () => {
       mockSdk.addScenario(createMockScenario("new-session", "Hello!"));
       const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
@@ -305,6 +335,39 @@ describe("Sessions API", () => {
             "X-Yep-Anywhere": "true",
           },
           body: JSON.stringify({ message: "continue" }),
+        },
+      );
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.processId).toBeDefined();
+    });
+
+    it("resumes a session from an attachment without text", async () => {
+      mockSdk.addScenario(createMockScenario("sess-123", "Resumed!"));
+      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/sessions/sess-123/resume`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({
+            message: "",
+            attachments: [
+              {
+                id: "attachment-2",
+                originalName: "note.txt",
+                name: "attachment-2-note.txt",
+                path: "/tmp/attachment-2-note.txt",
+                size: 8,
+                mimeType: "text/plain",
+              },
+            ],
+          }),
         },
       );
 
@@ -473,6 +536,7 @@ describe("Sessions API", () => {
 
       expect(res.status).toBe(200);
       const json = await res.json();
+      expect(json.transcriptSnapshotUpdatedAt).toEqual(expect.any(String));
       expect(
         json.messages.map((message: { uuid?: string }) => message.uuid),
       ).toEqual(["cb2", "u3", "a3", "cb3", "u4"]);
@@ -486,7 +550,11 @@ describe("Sessions API", () => {
 
     it("reports additive detail phases through Server-Timing", async () => {
       await writeCompactedSession("sess-timed");
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: testDir,
+        persistedAugmentDelayMs: 50,
+      });
 
       const res = await app.request(
         `/api/projects/${projectId}/sessions/sess-timed`,
@@ -494,9 +562,10 @@ describe("Sessions API", () => {
       );
 
       expect(res.status).toBe(200);
+      const serverTiming = res.headers.get("Server-Timing") ?? "";
       const entries = Object.fromEntries(
-        (res.headers.get("Server-Timing") ?? "").split(", ").map((entry) => {
-          const match = /^(ya-[a-z]+);dur=([0-9.]+)$/.exec(entry);
+        serverTiming.split(", ").map((entry) => {
+          const match = /^(ya-[a-z]+);dur=([0-9.]+)/.exec(entry);
           expect(match).not.toBeNull();
           return [match?.[1], Number(match?.[2])];
         }),
@@ -516,6 +585,10 @@ describe("Sessions API", () => {
           entries["ya-route"] +
           entries["ya-augment"] -
           0.5,
+      );
+      expect(entries["ya-augment"]).toBeGreaterThanOrEqual(45);
+      expect(serverTiming).toMatch(
+        /ya-augment;dur=[0-9.]+;desc="messages=5 changed=[0-5] cache-hit=[0-9]+ cache-join=[0-9]+ cache-miss=[0-9]+"/,
       );
     });
 

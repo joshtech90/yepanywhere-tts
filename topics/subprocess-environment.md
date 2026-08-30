@@ -21,6 +21,10 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
 - Consume-and-strip YA-private module variables before launching providers.
   Provider-specific child builders may then filter, retain, or inject values
   according to that provider's contract.
+- Consume server operator credentials before launching providers. In
+  particular, children never inherit `AUTH_COOKIE_SECRET`,
+  `DESKTOP_AUTH_TOKEN`, or `YEP_PROVIDER_RUNTIME_TOKEN`; those authorize YA
+  control paths rather than a provider API.
 - An environment overlay such as `{ ...process.env, ...overrides }` can replace
   a value but cannot express removal. A child launcher that must block an
   inherited name needs an explicit filter or denylist after merging.
@@ -84,8 +88,11 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
   restore it. For subprocess tests, construct a dedicated child environment
   and scrub conflicting inherited names before applying the values under test.
 - `HOME` belongs to the safe-home test launcher, and deliberate harness gates
-  such as real-SDK opt-ins remain under their owning test scripts. Do not add
-  either category to the general config scrub list.
+  such as real-SDK opt-ins remain under their owning test scripts. The ordinary
+  server unit-test command gives the complete Vitest process a launcher-owned
+  disposable `HOME` and `USERPROFILE`, then removes that exact directory.
+  Real-SDK integration commands retain the operator home behind their explicit
+  opt-in gates. Do not add either category to the general config scrub list.
 - Hermeticity includes descriptors and working directory when behavior depends
   on them; a clean environment object alone is not sufficient.
 

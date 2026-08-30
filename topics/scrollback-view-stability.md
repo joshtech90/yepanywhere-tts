@@ -21,11 +21,15 @@ differs between them:
 - **Following the tail** — pinned at/near the bottom, watching live output.
   `shouldAutoScrollRef` is true; `isScrolledToBottom` is true. Here the view
   *should* track new content: appended rows and the streaming current turn may
-  freely change height, and the view re-pins to the bottom.
+  freely change height, and the view re-pins to the bottom. Settled visible
+  positions advance that session's device-specific turn/activity high-water
+  mark and record that it was following; an active turn counts before
+  completion, and whole-turn completion also publishes without a scroll event.
 - **Scrolled back** — the reader has scrolled up to read or review earlier
   content. `shouldAutoScrollRef` is false. Here the view *must hold still*: no
   streaming growth, expand/collapse, hydration, late markdown/highlight, or
-  background heuristic may move the content the reader is looking at.
+  background heuristic may move the content the reader is looking at. This
+  transient reading position must not lower the durable resume high-water mark.
 
 The boundary between regimes is itself a policy decision (see "Near-bottom
 re-engage" below) and is the source of the worst current bug.
@@ -129,7 +133,9 @@ Consequences:
   *acted-on element* (the Σ fixed-font toggle) — correct for that one control.
 - **`ResizeObserver`** (MessageList.tsx) re-pins to bottom on every height
   increase while `shouldAutoScrollRef` is true. During streaming this fires at
-  the flush cadence (~200ms).
+  the flush cadence (~200ms). During initial parked restoration, it instead
+  reapplies the pending retained anchor through asynchronous content growth;
+  the first user scroll or explicit Follow action ends that retry.
 - **Near-bottom re-engage** — historical behavior let size/resize paths
   re-arm `shouldAutoScrollRef` whenever `isNearScrollBottom` held, i.e. within
   `BOTTOM_FOLLOW_VIEWPORT_FRACTION` (0.45) of the viewport, capped at
@@ -144,7 +150,9 @@ Consequences:
   fallen behind transcript growth re-pins rather than canceling follow. A
   `scrollTop` movement upward from that write releases follow even if no wheel,
   touch, scrollbar, or keyboard precursor was observed. Ordinary bottom geometry
-  can still acquire follow when it was already off.
+  can still acquire follow when it was already off. Follow also publishes its
+  live-tail route snapshot synchronously; programmatic scroll events are
+  suppressed and cannot be the persistence trigger.
 - **`RENDERING_PERFORMANCE.md` "Transcript Layout Stability"** is the
   kzahel-side statement of the invariant (no timers/visibility/stream-status
   effects changing historical row height; tidy only via explicit user control).
@@ -159,11 +167,19 @@ Consequences:
   anchor (content position, sub-item granularity) when not following — not just
   the one path currently wired.
 - Following the tail ⇒ appended/current-turn growth re-pins to bottom; this is
-  the only regime allowed to chase height.
+  the only regime allowed to chase height. A direct or steering send performs
+  its first bottom write in the committing layout phase, so the optimistic row
+  cannot paint once against the previous bottom before catch-up begins.
 - The explicit **Follow** action also restores a full-pane composer to ordinary
   size so the reclaimed transcript remains visible. Composer maximize/restore
   and one-line collapse actions do not change transcript position or follow
   intent.
+- The explicit **Follow** action commits live-tail return state before a route
+  switch or reload can unmount the session view.
+- Initial parked restore keeps its retained anchor authoritative through late
+  transcript growth. Browser clamping against incomplete layout must not turn
+  a saved position into the beginning of the transcript; user scroll or
+  explicit Follow transfers ownership and cancels further restore retries.
 - The collapse/tidy trigger is a UX choice; jitter-safety is a separate,
   always-required property.
 - Committing in-session search (Enter on the highlighted match, or a click
@@ -194,15 +210,15 @@ as preferences would resolve much of the "is this a bug or intended?" ambiguity:
   the only thing that ever moves the view to the tail).
 
 Design caution: expose these as a **small set of named modes** (currently
-`live-tail`, `remember-place`, `manual-follow`, and `no-memory` internally), not
+`live-tail`, `remember-place`, and `no-memory` internally), not
 four orthogonal toggles — orthogonal toggles are 2⁴ states to reason about and
-test, whereas the internal model can stay axis-based. The first hidden policy
-value persists via the existing `UI_KEYS` localStorage pattern already used for
-`sessionThinkingVisible` / `sessionThinkingLatestOnly`; settings UI exposure is
-deferred until the copy and advanced-placement story are settled. This does not
-substitute for fixing the bugs — a broken default is broken under every
-preference — but it clarifies which behaviors are bugs versus legitimately
-user-dependent.
+test, whereas the internal model can stay axis-based. The browser-local policy
+value persists via the existing `UI_KEYS` localStorage pattern and ships as
+a visible, searchable Development setting. Its advanced placement keeps the
+ordinary provider-like default unobtrusive without making the recovery modes
+hard to refind. This does not substitute for fixing the bugs — a broken default
+is broken under every preference — but it clarifies which behaviors are bugs
+versus legitimately user-dependent.
 
 ## Planned improvements
 

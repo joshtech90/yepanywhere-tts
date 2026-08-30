@@ -85,6 +85,19 @@ generation from the process creation time and refuses to create new
 coordination records when it cannot obtain one; PID liveness alone is never
 sufficient there because Windows can reuse a PID.
 
+Every abandoned gate shape must be recoverable without operator intervention.
+A claim exists briefly before its owner record does, and releasing the record
+is not the same act as releasing the claim, so a process death or a failed
+write can leave a claim carrying no owner identity. Such a claim is recovered
+on its own age once it exceeds the heartbeat deadline, because no record
+exists to probe and a live claimant crosses that window in adjacent
+statements. Releasing the gate always drops the claim, including when the
+owner record has already vanished. A gate that no live process holds must
+never require deleting app-data by hand: an unrecoverable claim wedges every
+provider read, launch, and update for every YA process owned by that user,
+not only the update that created it. An admission timeout names the recorded
+holder, or reports the missing owner record, rather than only the path.
+
 An external package manager or provider-native self-updater cannot be required
 to honor YA's lock. Detection therefore still needs typed transient failures,
 bounded retry, and short negative retention, but YA must not pretend it can
@@ -106,6 +119,13 @@ holds a runtime lease until its process and queued/provider-retained work have
 actually ended. The provider host must report the same lease even when Hono is
 replaced. The coordinator must not infer safety merely from the absence of an
 in-Hono `Process`.
+
+The first preparation of an installation-family directory in each coordinator
+process sweeps abandoned reader and runtime lease records while holding that
+family's admission gate. This bounds crash residue without putting a directory
+scan and owner-liveness probes on every catalog read or session launch. A live
+record remains authoritative through the same PID and process-start-generation
+checks used before an update.
 
 Automatic updates do not interrupt active, waiting-input, queued, or retained
 provider runtimes. They remain `waiting-for-safe` and acquire writer intent
