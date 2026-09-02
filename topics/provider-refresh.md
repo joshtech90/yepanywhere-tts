@@ -163,6 +163,51 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
+Current source refresh, 2026-09-02:
+
+- Installed Codex is `0.152.1`; the official `rust-v0.152.0` and
+  `rust-v0.152.1` annotated tag objects are
+  `7f6bee13af649d0da23ac0c2bf5c83f571fcd611` and
+  `3c6cfbab81e44218c729dc8c6b304cb760d1b8a1`; they peel to commits
+  `316795b3cf2a45e90d121d9f46499d4658b2645c` and
+  `5adb68a49933ae446bf11935662c83dba55a0804`, respectively. Root
+  compatibility and expected-protocol markers now record `0.152.1`.
+- Codex 0.152 makes `update_plan` opt-in. YA continues to render emitted
+  `turn/plan/updated` notifications as checklist progress. **Settings →
+  Providers → Codex → Plan checklist tool** persists `provider-default`,
+  `disabled`, or `enabled`; an unset preference inherits
+  `YEP_CODEX_UPDATE_PLAN`, whose default is `provider-default`. Provider
+  default adds no thread override. Explicit disabled or enabled values inject
+  the matching `tools.update_plan.enabled` value for every new, resumed, and
+  forked YA thread. Enabling makes the tool available but does not force Codex
+  to publish a plan; disabling removes structured checklist updates without
+  suppressing ordinary prose planning. Existing checklist rows are unchanged.
+- `pnpm codex:protocol:check` is clean: none of the generated types in YA's
+  consumed subset changed. The wider app-server protocol adds optional shell
+  command timeouts, two authentication-recovery notifications, account and
+  rate-limit banner metadata, and an `openaiForm` MCP elicitation variant.
+  YA does not call `thread/shellCommand`; its rate-limit normalizers tolerate
+  the extra fields; and authentication progress and MCP form presentation
+  remain separate UI design work rather than compatibility requirements.
+- App-server's new notification-media omission is disabled by default, and YA
+  does not enable it, so live image and audio notification behavior is
+  unchanged. The restored-thread working-directory fix also does not alter YA:
+  every start, resume, and fork request already supplies an explicit `cwd`.
+- The no-token `model/list` probe returns the same eight visible model ids,
+  with Sol default and `priority` as the only advertised service tier. Dynamic
+  upgrade metadata now points GPT-5.4 and GPT-5.4 Mini to Terra and Luna; YA's
+  existing catalog normalizer already accepts those targets, so fallback
+  models need no change.
+- All 2,445,815 entries across 1,041 local Codex rollouts parse with no malformed
+  lines, now including 0.151.0 sessions. No 0.152.x rollout has been written
+  yet. The stricter provenance audit still reports two old unpaired user events
+  from 2026-04-17 and 2026-04-18; they predate this upgrade and are not schema
+  failures.
+
+Status: Codex 0.152.1 app-server compatibility is refreshed, and plan-tool
+availability follows provider behavior unless the operator selects an explicit
+YA override.
+
 Current source refresh, 2026-08-29:
 
 - Installed Codex is `0.151.0`; the official `rust-v0.151.0` source is commit
@@ -185,24 +230,24 @@ Current source refresh, 2026-08-29:
   making a misalignment block's reason visible. Offering Codex's continuation
   steer remains a separate interaction design.
 - `ThreadItem` adds a `functionCallOutput` variant with no call id, the live
-  counterpart of the standalone persisted outputs seen in 0.150.0. YA still
-  declines to invent an orphaned tool result, so both forms remain unrendered;
-  showing them as their own visible block is captured in
-  `gaps/codex-orphaned-tool-results-hidden.md`.
+  counterpart of the standalone persisted outputs seen in 0.150.0. YA declines
+  to invent an orphaned tool-result relationship and instead renders both forms
+  as standalone system output.
 - Core MCP results now always convert to content items, so a text-only MCP tool
   result persists as a single `input_text` item instead of a serialized JSON
   string. The durable schema's item union accepted only `input_text` and
   `input_image`; it now also accepts `input_audio` and `encrypted_content`,
-  which the same upstream path can produce. Rendering such an array as a JSON
-  envelope predates 0.151 and is captured in
-  `gaps/codex-mcp-text-results-render-as-json.md`.
+  which the same upstream path can produce. YA flattens text-only arrays for
+  display while retaining structured content and media safeguards.
 - The experimental request list adds `thread/turns/list`, `thread/items/list`,
   `thread/revert`, and `turn/settings/update`. Full-history hydration is now
   documented as deprecated for paginated threads; YA already sends
   `excludeTurns` under the experimental capability and reads rollouts itself,
-  so no resume or fork change is required. Mid-turn settings publication is a
-  product decision rather than compatibility work and is captured in
-  `gaps/codex-mid-turn-settings-update.md`.
+  so no resume or fork change is required. YA publishes model and effort
+  changes to an active turn through `turn/settings/update`, retaining them for
+  the next turn when the active target is unavailable. A setting selected after
+  `turn/start` is sent but before its response waits for that response's turn id
+  rather than being silently skipped.
 - The current account's no-token `model/list` returns the same eight
   account-visible models and consumed metadata as 0.150.1, with Sol default and
   `priority` its only service tier. The generated `Model` type is unchanged
@@ -213,9 +258,12 @@ Current source refresh, 2026-08-29:
   and content-item shapes are grounded in the tagged source rather than a local
   sample. Re-run the census once a 0.151.0 session has written one.
 
+The current observable contracts are [provider output](provider-output-contract.md)
+and [provider runtime status](provider-runtime-status.md).
+
 Status: Codex 0.151.0 app-server protocol, error taxonomy, error-detail
-surfacing, and persisted tool-output schema compatibility is refreshed. The
-model catalog required no change.
+surfacing, persisted and standalone tool output, MCP text display, and active
+turn settings are refreshed. The model catalog required no change.
 
 Current no-op refresh, 2026-08-27:
 
@@ -667,6 +715,41 @@ Previous-model registry review:
    auto-migrate them.
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
+
+Current source refresh, 2026-09-02:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.251` to `0.3.258`;
+  the SDK-native executable reports Claude Code `2.1.258`. Claude Code 2.1.257
+  made `claude-fable-5-1` the default Fable model; 2.1.258 contains follow-up
+  launch and remote-session fixes.
+- An authenticated no-turn handshake reports the concrete model as
+  `claude-fable-5-1[1m]`, with display name `Fable` and description `Fable 5.1
+  · Most capable for your hardest and longest-running tasks`. The existing
+  family matcher folds that row into YA's stable `fable` selection while
+  retaining the live description, 1M context, and provider capabilities.
+- The public `SDKMessage` union has no added or removed members. Additive SDK
+  fields and controls are `ModelUsage.thinkingTokens`, system-prompt snapshots,
+  `Query.updateSettings()`, summary/full context-usage detail, model-catalog
+  `behavesAs`, time-format/time-zone settings, and background MCP task
+  `resource_links`. Existing messages and unknown fields continue to pass
+  through; the specialized MCP links are not yet presented and are tracked in
+  `gaps/claude-task-resource-links.md`.
+- Fable 5.1's user-facing progress updates are non-empty `thinking` blocks
+  immediately before tool calls, not Claude `task_progress` lifecycle events
+  and not Codex `UpdatePlan` checklists. YA already requests `display:
+  "summarized"` whenever thinking is enabled and renders every non-empty
+  thinking block, so no message normalization or new renderer is required.
+  The API's dedicated `display: "updates"` beta would permit a progress-only
+  status presentation, but Agent SDK 0.3.258's types expose only `summarized`
+  and `omitted`, and bundled Claude Code 2.1.258 rejects
+  `--thinking-display updates`. YA does not route around that unsupported
+  surface. Recheck when the Agent SDK exposes `updates`.
+- No token-consuming Fable turn was run. The no-turn handshake, SDK declaration
+  diff, bundled-binary version check, and a no-turn CLI rejection probe establish
+  the catalog and supported control surface without spending model tokens.
+
+Status: Claude Code 2.1.258 / SDK 0.3.258 package, Fable 5.1 catalog, message
+union, controls, and progress-display compatibility are refreshed.
 
 Current source refresh, 2026-08-29:
 
@@ -1123,7 +1206,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.251` | `0.3.251` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.258` | `0.3.258` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

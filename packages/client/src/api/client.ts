@@ -9,6 +9,7 @@ import type {
   ClaudeAdditionalModelSelection,
   ClaudeSteerBackgroundBashSettings,
   ClientDefaults,
+  CodexPlanToolMode,
   CodexReasoningSummary,
   ConnectionsResponse,
   CreatePublicFileShareRequest,
@@ -95,9 +96,11 @@ import { fetchJSON } from "./sourceApiFetch";
 /** Pagination metadata for compact-boundary-based session loading */
 export interface PaginationInfo {
   hasOlderMessages: boolean;
+  /** Full-session count unless the provider omitted a known-hidden prefix. */
   totalMessageCount: number;
   returnedMessageCount: number;
   truncatedBeforeMessageId?: string;
+  /** Full-session count unless the provider omitted a known-hidden prefix. */
   totalCompactions: number;
   totalUserTurns?: number;
   truncatedBy?: "compact_boundary" | "user_turn";
@@ -1983,6 +1986,8 @@ export interface ServerSettings {
   lifecycleWebhookDryRun?: boolean;
   /** Reasoning-summary mode applied when Codex app-server sessions start. */
   codexReasoningSummary?: CodexReasoningSummary;
+  /** Stored Codex plan-tool override; null clears it to the startup fallback. */
+  codexPlanToolMode?: CodexPlanToolMode | null;
   /** How the server handles Codex CLI updates */
   codexUpdatePolicy?: "auto" | "notify" | "off";
   /** Keep eligible local Linux Codex runtimes across YA server reloads. */

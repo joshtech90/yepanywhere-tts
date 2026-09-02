@@ -2462,6 +2462,13 @@ export class Process {
       return; // Already terminated
     }
 
+    this.rejectProviderSessionId(
+      error ??
+        new Error(
+          `Process terminated before reporting a provider session id: ${reason}`,
+        ),
+    );
+
     const log = getLogger();
     const durationMs = Date.now() - this.startedAt.getTime();
     const pendingApprovalCount = this.pendingToolApprovals.size;

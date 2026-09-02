@@ -5,6 +5,7 @@
 import {
   CODEX_REASONING_SUMMARIES,
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+  CODEX_PLAN_TOOL_MODES,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
@@ -17,6 +18,7 @@ import {
   isHostAwakeBatteryFloorPercent,
   isHostAwakeMode,
   isCodexReasoningSummary,
+  isCodexPlanToolMode,
   isSubagentMaxDepth,
   normalizeAutoSessionTitleSettings,
   normalizeYaClientBaseUrl,
@@ -865,6 +867,24 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           );
         }
         updates.codexReasoningSummary = body.codexReasoningSummary;
+      }
+
+      if ("codexPlanToolMode" in body) {
+        if (
+          body.codexPlanToolMode === undefined ||
+          body.codexPlanToolMode === null
+        ) {
+          updates.codexPlanToolMode = undefined;
+        } else if (isCodexPlanToolMode(body.codexPlanToolMode)) {
+          updates.codexPlanToolMode = body.codexPlanToolMode;
+        } else {
+          return c.json(
+            {
+              error: `codexPlanToolMode must be one of: ${CODEX_PLAN_TOOL_MODES.join(", ")}, or null`,
+            },
+            400,
+          );
+        }
       }
 
       if ("codexUpdatePolicy" in body) {

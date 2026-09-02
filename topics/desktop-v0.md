@@ -19,6 +19,9 @@ First launch must not download or install YA, Bun, Claude Code, Codex, or a
 package manager. A desktop update replaces the shell, runtime, and bundled YA
 artifact together. Provider software remains externally managed.
 
+The [agent command runtime sketch](agent-command-runtime.sketches.md) records a
+candidate that must preserve this distribution contract.
+
 The desktop release and bundled YA build remain independently versioned. In a
 desktop-created dashboard, **Settings → About** reports both values as
 **Desktop** and **Bundled YA**. The native package metadata is authoritative
@@ -218,13 +221,17 @@ malicious same-user process able to inspect YA or Bun process memory.
 
 ## Windows Lifecycle And Install Contract
 
-The NSIS executable is the primary v0 Windows installer and supports quiet
-installation. If an MSI is published, its quiet installation path is tested
-too.
+The NSIS executable is the only v0 Windows installer and supports quiet
+installation. It is a current-user install, and `/S` does not require
+elevation. Windows releases must not publish an MSI or another installer that
+requires administrator access.
 
-NSIS is a current-user install and `/S` does not require elevation. Tauri's
-WiX MSI is an all-users managed-deployment artifact; `/qn` therefore runs from
-an elevated deployment context.
+The x64 Windows package runs on native x64 and Windows ARM64. It carries both
+hash-pinned Windows Bun architectures as private immutable resources. The
+native shell uses the adjacent x64 runtime on x64 Windows and selects the
+bundled native ARM64 runtime when the x64 shell is emulated on Windows ARM64;
+it does not execute x64 Bun under ARM64 emulation or download a runtime on
+first launch.
 
 The server and every descendant belong to an app-owned Windows process group
 or Job Object. Quit, restart, update, and uninstall attempt graceful shutdown
@@ -239,7 +246,12 @@ Windows user profile.
 
 The app checks the signed Tauri updater automatically and asks before
 installing/relaunching. A tagged release fails if its signed updater artifact
-or Windows entry in `latest.json` is missing.
+or Windows entry in `latest.json` is missing, or if an MSI artifact or updater
+entry is present.
+
+The canonical `windows-x86_64` updater entry uses the signed NSIS artifact so
+ordinary per-user installations remain non-elevated NSIS installations across
+updates. The app does not offer or migrate to a machine-wide installer.
 
 An available update opens and foregrounds the trusted native updater surface
 before asking to install and relaunch. A manual check also foregrounds that

@@ -36,6 +36,10 @@ exclude only hides the symptom from `git status`; it does not address checkout
 growth, synchronization, backups, privacy, or ownership of the project
 namespace.
 
+Candidate private-input behavior is recorded separately in the
+[agent command runtime sketch](agent-command-runtime.sketches.md); it is not a
+current attachment-storage contract.
+
 ## Release History And Pre-Correction Behavior
 
 Before this correction there was no implemented attachment storage setting.
@@ -184,6 +188,7 @@ behavior.
 ## Related Topics
 
 - [Project Directory Storage](project-directory-storage.md)
+- [Agent Command Runtime Sketch](agent-command-runtime.sketches.md)
 - [Storage Settings](storage-settings.md)
 - [Session Media Handles](session-media-handles.md)
 - [Security](security.md)

@@ -300,6 +300,24 @@ describe("renderSafeMarkdown — embedded HTML", () => {
     expect(html).not.toMatch(/\s(?:on\w+|style)=/i);
     expect(html).not.toMatch(/(?:href|src)="(?:javascript|data):/i);
   });
+
+  it("does not admit SVG animation links", () => {
+    const html = renderSafeMarkdown(`
+<svg>
+  <a href="#safe">
+    <animate
+      attributeName="href"
+      values="#safe;javascript:alert(1)"
+      dur="1ms"
+      fill="freeze"
+    ></animate>
+    <text>open</text>
+  </a>
+</svg>
+`);
+
+    expect(html).not.toMatch(/<(?:svg|animate|text)\b/i);
+  });
 });
 
 describe("parseMarkdownSourceSpans", () => {
@@ -432,6 +450,34 @@ describe("renderSafeMarkdown — local file links", () => {
     expect(html).toContain('data-expanded="false"');
     expect(html).toContain('aria-label="Expand video"');
     expect(html).toContain('data-ya-media-type="video"');
+  });
+
+  it.each([
+    ["apng", "image"],
+    ["avif", "image"],
+    ["bmp", "image"],
+    ["gif", "image"],
+    ["ico", "image"],
+    ["jpeg", "image"],
+    ["jpg", "image"],
+    ["png", "image"],
+    ["svg", "image"],
+    ["tif", "image"],
+    ["tiff", "image"],
+    ["webp", "image"],
+    ["avi", "video"],
+    ["mkv", "video"],
+    ["mov", "video"],
+    ["mp4", "video"],
+    ["ogv", "video"],
+    ["webm", "video"],
+  ])("recognizes .%s as local %s media", (extension, mediaType) => {
+    const html = renderSafeMarkdown(
+      `[asset](/tmp/rendered-media.${extension})`,
+    );
+
+    expect(html).toContain('data-ya-resource="local-media"');
+    expect(html).toContain(`data-ya-media-type="${mediaType}"`);
   });
 
   it("resolves relative local file links against a base directory", () => {

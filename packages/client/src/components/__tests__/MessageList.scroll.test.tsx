@@ -10,6 +10,7 @@ import {
 import { useLayoutEffect, useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { setConversationViewPreference } from "../../hooks/useConversationView";
+import { createTranscriptPositionStore } from "../../lib/transcriptPositionStore";
 import {
   installMessageListTestEnvironment,
   assistantMessage,
@@ -737,6 +738,16 @@ describe("MessageList scroll and follow", () => {
 
   it("indexes transcript rows once after scrolling settles", () => {
     const onTranscriptPositionTimestampChange = vi.fn();
+    let pendingPositionFrame: FrameRequestCallback | null = null;
+    const transcriptPositionStore = createTranscriptPositionStore({
+      request: (callback) => {
+        pendingPositionFrame = callback;
+        return 1;
+      },
+      cancel: () => {
+        pendingPositionFrame = null;
+      },
+    });
     const assistantEnd = "2026-04-26T12:04:00.000Z";
     const { container } = render(
       <MessageList
@@ -753,6 +764,7 @@ describe("MessageList scroll and follow", () => {
         onTranscriptPositionTimestampChange={
           onTranscriptPositionTimestampChange
         }
+        transcriptPositionStore={transcriptPositionStore}
       />,
     );
     Object.defineProperty(container, "scrollTop", {
@@ -841,6 +853,11 @@ describe("MessageList scroll and follow", () => {
           ([selector]) => selector === "[data-render-id]",
         ),
       ).toHaveLength(1);
+      act(() => {
+        const frame = pendingPositionFrame;
+        pendingPositionFrame = null;
+        frame?.(0);
+      });
       expect(onTranscriptPositionTimestampChange).toHaveBeenLastCalledWith(
         new Date(assistantEnd).getTime(),
       );
@@ -1837,6 +1854,37 @@ describe("MessageList scroll and follow", () => {
 
     expect(container.scrollTop).toBe(500);
     expect(onFollowingBottomChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("cancels live follow only once during a transcript selection drag", () => {
+    const onFollowingBottomChange = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          userMessage("user-1", "earlier request"),
+          assistantMessage("assistant-1", "current response"),
+        ]}
+        onFollowingBottomChange={onFollowingBottomChange}
+      />,
+    );
+
+    const output = screen.getByText("current response");
+    fireEvent.pointerDown(output, { button: 0 });
+    const range = document.createRange();
+    range.selectNodeContents(output);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    onFollowingBottomChange.mockClear();
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+      document.dispatchEvent(new Event("selectionchange"));
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+
+    expect(onFollowingBottomChange).toHaveBeenCalledTimes(1);
+    expect(onFollowingBottomChange).toHaveBeenCalledWith(false);
   });
 
   it("lets an upward scroll movement cancel live follow", async () => {

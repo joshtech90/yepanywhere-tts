@@ -188,6 +188,11 @@ UI should state directly.
   sessions and queued messages; a session is excluded only when its reload-safe
   provider host can detach without losing YA-owned queued input.
 
+## Proposed setting placement
+
+- Candidate private-input controls and placement are recorded in the
+  [agent command runtime sketch](agent-command-runtime.sketches.md).
+
 ## Server-definitive settings and constants
 
 Status: **contract, not yet implemented (2026-08-05).** No option or constant

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  CodexPlanToolMode,
   CodexReasoningSummary,
   SubagentMaxDepth,
 } from "@yep-anywhere/shared";
@@ -102,5 +103,53 @@ describe("provider runtime settings", () => {
       model_reasoning_summary: "none",
     });
     expect(getSetting).toHaveBeenCalledWith("codexReasoningSummary");
+  });
+
+  it.each([
+    ["provider-default", undefined],
+    ["disabled", false],
+    ["enabled", true],
+  ] as const)("applies the %s Codex plan-tool mode", (mode, enabled) => {
+    createApp({
+      sdk: new MockClaudeSDK(),
+      codexPlanToolMode: mode,
+    });
+
+    const config = getCodexThreadConfig();
+    if (enabled === undefined) {
+      expect(config).not.toHaveProperty("tools.update_plan");
+    } else {
+      expect(config).toMatchObject({
+        tools: { update_plan: { enabled } },
+      });
+    }
+  });
+
+  it("prefers the saved Codex plan-tool mode over the startup fallback", () => {
+    let codexPlanToolMode: CodexPlanToolMode | undefined;
+    const getSetting = vi.fn((key: keyof ServerSettings) =>
+      key === "codexPlanToolMode" ? codexPlanToolMode : undefined,
+    );
+    const serverSettingsService = {
+      getSetting,
+      onSettingsChanged: vi.fn(() => () => {}),
+    } as unknown as ServerSettingsService;
+
+    createApp({
+      sdk: new MockClaudeSDK(),
+      serverSettingsService,
+      codexPlanToolMode: "enabled",
+    });
+    expect(getCodexThreadConfig()).toMatchObject({
+      tools: { update_plan: { enabled: true } },
+    });
+
+    codexPlanToolMode = "disabled";
+    expect(getCodexThreadConfig()).toMatchObject({
+      tools: { update_plan: { enabled: false } },
+    });
+
+    codexPlanToolMode = "provider-default";
+    expect(getCodexThreadConfig()).not.toHaveProperty("tools.update_plan");
   });
 });

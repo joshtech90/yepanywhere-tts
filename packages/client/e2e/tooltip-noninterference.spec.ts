@@ -57,6 +57,11 @@ async function installTooltipFixture(page: Page, baseURL: string) {
         Long scrollable hint
       </button>
       <output id="scroll-status" style="display:block;margin-top:8px">scroll: 0</output>
+      <div id="scan-targets" style="display:flex;gap:8px;margin-top:20px">
+        <button type="button" data-tooltip="Sweep target one">Sweep one</button>
+        <button type="button" data-tooltip="Sweep target two">Sweep two</button>
+        <button type="button" data-tooltip="Sweep target three">Sweep three</button>
+      </div>
     `;
     document.body.append(fixture);
 
@@ -100,7 +105,7 @@ function intersectionPoint(
 }
 
 for (const viewport of [
-  { name: "desktop", width: 1920, height: 1080 },
+  { name: "desktop", width: 1000, height: 600 },
   { name: "phone", width: 375, height: 812 },
 ] as const) {
   test(`passive tooltips preserve activation and scrolling at ${viewport.name} width`, async ({
@@ -134,6 +139,83 @@ for (const viewport of [
     const coveredPoint = intersectionPoint(coveredBox, coveredTooltipBox);
     await page.mouse.click(coveredPoint.x, coveredPoint.y);
     await expect(page.locator("#covered-count")).toHaveText("covered: 0");
+
+    await own.hover({ position: { x: 20, y: 20 } });
+    await expect(tooltip).toHaveText("Open the intended card action");
+    const sweepTargets = page.locator("#scan-targets button");
+    await sweepTargets.evaluateAll((targets) => {
+      for (const target of targets) {
+        target.setAttribute(
+          "data-pending-tooltip",
+          target.getAttribute("data-tooltip") ?? "",
+        );
+        target.removeAttribute("data-tooltip");
+      }
+    });
+    await sweepTargets.nth(2).hover();
+    await sweepTargets.evaluateAll((targets) => {
+      for (const target of targets) {
+        target.setAttribute(
+          "data-tooltip",
+          target.getAttribute("data-pending-tooltip") ?? "",
+        );
+        target.removeAttribute("data-pending-tooltip");
+      }
+    });
+    const sweep = await page.evaluate(async () => {
+      const tooltip = document.querySelector("#ya-global-tooltip");
+      const targets = Array.from(
+        document.querySelectorAll<HTMLElement>("#scan-targets button"),
+      );
+      if (!(tooltip instanceof HTMLElement) || targets.length !== 3) {
+        throw new Error("missing tooltip sweep fixture");
+      }
+      const observed = [tooltip.textContent ?? ""];
+      const observer = new MutationObserver(() => {
+        observed.push(tooltip.textContent ?? "");
+      });
+      observer.observe(tooltip, {
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
+      const frameText: string[] = [];
+      for (const [index, target] of targets.entries()) {
+        target.dispatchEvent(
+          new PointerEvent("pointerover", {
+            bubbles: true,
+            buttons: 0,
+            clientX: 4,
+            clientY: 8 + index * 32,
+            pointerType: "mouse",
+          }),
+        );
+        if (index === 0) {
+          const busyUntil = performance.now() + 120;
+          while (performance.now() < busyUntil) {
+            // Keep the first stale publication queued behind a long render.
+          }
+        }
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        frameText.push(tooltip.textContent ?? "");
+      }
+      observer.disconnect();
+      return {
+        finalText: tooltip.textContent ?? "",
+        frameText,
+        observed,
+      };
+    });
+    expect(sweep.finalText).toBe("Sweep target three");
+    expect(sweep.frameText[0]).not.toBe("Sweep target one");
+    expect(sweep.frameText[1]).not.toBe("Sweep target two");
+    expect(sweep.observed).not.toContain("Sweep target one");
+    expect(sweep.observed).not.toContain("Sweep target two");
 
     await page.mouse.move(4, 4);
     const long = page.locator("#long-trigger");

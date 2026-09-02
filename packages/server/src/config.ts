@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Level as LogLevel } from "pino";
-import { ALL_PERMISSION_MODES } from "@yep-anywhere/shared";
+import {
+  ALL_PERMISSION_MODES,
+  CODEX_PLAN_TOOL_MODES,
+  isCodexPlanToolMode,
+  type CodexPlanToolMode,
+} from "@yep-anywhere/shared";
 import "./startupEnv.js";
 import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "./defaults.js";
 import { captureStartupEnvSettings } from "./envSettings.js";
@@ -13,6 +18,14 @@ import {
   type SummaryParserWorkerMode,
 } from "./sessions/summary-parser-worker-protocol.js";
 import { getModuleEnv, harvestYaModuleEnv } from "./yaModuleEnv.js";
+
+function parseCodexPlanToolMode(value: string | undefined): CodexPlanToolMode {
+  if (value === undefined) return "provider-default";
+  if (isCodexPlanToolMode(value)) return value;
+  throw new Error(
+    `YEP_CODEX_UPDATE_PLAN must be one of: ${CODEX_PLAN_TOOL_MODES.join(", ")}`,
+  );
+}
 
 /**
  * Get the data directory for yep-anywhere state files.
@@ -44,6 +57,8 @@ export interface Config {
   desktopRuntime: boolean;
   /** Desktop-provided Codex CLI path. When set, it is authoritative. */
   codexCliPath?: string;
+  /** Startup fallback for Codex update_plan availability. */
+  codexPlanToolMode: CodexPlanToolMode;
   /** Directory where Claude projects are stored */
   claudeProjectsDir: string;
   /** Claude sessions directory (~/.claude/projects) */
@@ -323,6 +338,9 @@ export function loadConfig(): Config {
     dataDir,
     desktopRuntime,
     codexCliPath,
+    codexPlanToolMode: parseCodexPlanToolMode(
+      process.env.YEP_CODEX_UPDATE_PLAN,
+    ),
     claudeProjectsDir: process.env.CLAUDE_PROJECTS_DIR ?? claudeSessionsDir,
     claudeSessionsDir,
     geminiSessionsDir,

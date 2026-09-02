@@ -9,6 +9,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import {
   CODEX_TOOL_CORRELATION_FIELD,
+  type CodexPlanToolMode,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_SUBAGENT_MAX_DEPTH,
   canonicalInvocationName,
@@ -379,6 +380,7 @@ interface CodexTurnRuntimeState {
   turnModelOverride: string | null;
   latestTokenUsage?: TokenUsageSnapshot;
   activeTurnId: string | null;
+  pendingTurnStart: Promise<string | null> | null;
   activePermissionMode: PermissionMode;
   turnEffortOverride: EffortLevel | null | undefined;
   workspaceWriteSandboxPolicy: CodexSandboxPolicy | null;
@@ -1152,6 +1154,8 @@ export class CodexProvider implements AgentProvider {
   } | null = null;
   private getConfiguredReasoningSummary: () => CodexReasoningSummary = () =>
     DEFAULT_CODEX_REASONING_SUMMARY;
+  private getConfiguredPlanToolMode: () => CodexPlanToolMode = () =>
+    "provider-default";
   private getConfiguredSubagentMaxDepth: () => SubagentMaxDepth = () =>
     DEFAULT_SUBAGENT_MAX_DEPTH;
 
@@ -1173,6 +1177,10 @@ export class CodexProvider implements AgentProvider {
 
   setReasoningSummaryGetter(getter: () => CodexReasoningSummary): void {
     this.getConfiguredReasoningSummary = getter;
+  }
+
+  setPlanToolModeGetter(getter: () => CodexPlanToolMode): void {
+    this.getConfiguredPlanToolMode = getter;
   }
 
   setSubagentMaxDepthGetter(getter: () => SubagentMaxDepth): void {
@@ -1647,6 +1655,7 @@ export class CodexProvider implements AgentProvider {
       resolvedModel: options.model ?? "default",
       turnModelOverride: options.model ?? null,
       activeTurnId: null,
+      pendingTurnStart: null,
       activePermissionMode: this.normalizePermissionMode(
         options.permissionMode,
       ),
@@ -1708,8 +1717,11 @@ export class CodexProvider implements AgentProvider {
       settings: Pick<TurnSettingsUpdateParams, "model" | "effort">,
     ): Promise<void> => {
       const client = activeClient;
+      let turnId = runtimeState.activeTurnId;
+      if (!turnId && runtimeState.pendingTurnStart) {
+        turnId = await runtimeState.pendingTurnStart;
+      }
       const threadId = runtimeState.threadId;
-      const turnId = runtimeState.activeTurnId;
       if (!client || !threadId || !turnId) return;
 
       const response = await client.request<TurnSettingsUpdateResponse>(
@@ -2777,10 +2789,28 @@ export class CodexProvider implements AgentProvider {
           );
           let notificationBarrierSequence =
             appServer.lastNotificationReceiptSequence;
-          let turnResult = await appServer.request<TurnStartResponse>(
-            "turn/start",
-            turnStartParams,
-          );
+          let settlePendingTurnStart: (turnId: string | null) => void =
+            () => {};
+          const pendingTurnStart = new Promise<string | null>((resolve) => {
+            settlePendingTurnStart = resolve;
+          });
+          runtimeState.pendingTurnStart = pendingTurnStart;
+          let turnResult: TurnStartResponse;
+          try {
+            turnResult = await appServer.request<TurnStartResponse>(
+              "turn/start",
+              turnStartParams,
+            );
+            runtimeState.activeTurnId = turnResult.turn.id;
+            settlePendingTurnStart(turnResult.turn.id);
+          } catch (error) {
+            settlePendingTurnStart(null);
+            throw error;
+          } finally {
+            if (runtimeState.pendingTurnStart === pendingTurnStart) {
+              runtimeState.pendingTurnStart = null;
+            }
+          }
           options.onPermissionModeApplied?.(turnPermissionMode);
 
           log.info(
@@ -3355,6 +3385,14 @@ export class CodexProvider implements AgentProvider {
         ],
       },
     };
+    const planToolMode = this.getConfiguredPlanToolMode();
+    if (planToolMode !== "provider-default") {
+      config.tools = {
+        update_plan: {
+          enabled: planToolMode === "enabled",
+        },
+      };
+    }
     const subagentMaxDepth = this.getConfiguredSubagentMaxDepth();
     if (subagentMaxDepth !== null) {
       config.agents = { max_depth: subagentMaxDepth };

@@ -31,6 +31,7 @@ import { useWiderConversationActivityPreviews } from "../hooks/useWiderConversat
 import { useMessageListIsearch } from "../hooks/useMessageListIsearch";
 import { useMessageListSelectionQuote } from "../hooks/useMessageListSelectionQuote";
 import { useRelativeNow } from "../hooks/useRelativeNow";
+import { useRecentProjectPathLinks } from "../hooks/useRecentProjectPathLinks";
 import { useTranscriptRenderWindow } from "../hooks/useTranscriptRenderWindow";
 import { useI18n } from "../i18n";
 import {
@@ -50,6 +51,10 @@ import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import { selectionIntersectsElement } from "../lib/domSelection";
 import { getMessageId } from "../lib/mergeMessages";
 import type { GetSessionResult } from "../lib/sourceRuntime";
+import {
+  createTranscriptPositionStore,
+  type TranscriptPositionStore,
+} from "../lib/transcriptPositionStore";
 import {
   formatCompactRelativeAge,
   getEarliestMessageTimestampMs,
@@ -880,6 +885,7 @@ interface Props {
   onFollowingBottomChange?: (followingBottom: boolean) => void;
   scrollBehaviorMode?: SessionScrollBehaviorMode;
   inert?: boolean;
+  transcriptPositionStore?: TranscriptPositionStore;
   onTranscriptPositionTimestampChange?: (timestampMs: number | null) => void;
   getForkSummaryTargetHref?: (targetSessionId: string) => string;
   onCancelForkSummary?: (objectId: string) => void;
@@ -1459,6 +1465,7 @@ export const MessageList = memo(function MessageList({
   onFollowingBottomChange,
   scrollBehaviorMode = DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
   inert = false,
+  transcriptPositionStore,
   onTranscriptPositionTimestampChange,
   getForkSummaryTargetHref,
   onCancelForkSummary,
@@ -1466,18 +1473,28 @@ export const MessageList = memo(function MessageList({
   onFollowForkSummary,
   bangCommandHandlers,
 }: Props) {
+  const { recentProjectPathLinksEnabled } = useRecentProjectPathLinks();
   const transcriptRenderStartedAtMs = isBrowserDebugPerformanceRecording()
     ? highResolutionNowMs()
     : null;
   const firstMessageId = messages[0] ? getMessageId(messages[0]) : null;
+  const [conversationViewEnabled, setConversationViewEnabled] = useState(
+    getConversationViewPreference,
+  );
+  const effectiveConversationViewEnabled =
+    conversationViewEnabledOverride ?? conversationViewEnabled;
+  const historySearchStateKey = JSON.stringify([
+    conversationViewStateKey,
+    effectiveConversationViewEnabled,
+  ]);
   const [storedHistorySearchWindow, setHistorySearchWindow] = useState<{
     cursor: string;
     messages: Message[];
-    stateKey: string | undefined;
+    stateKey: string;
     transcriptDisplayObjects: readonly TranscriptDisplayObject[];
   } | null>(null);
   const historySearchWindow =
-    storedHistorySearchWindow?.stateKey === conversationViewStateKey
+    storedHistorySearchWindow?.stateKey === historySearchStateKey
       ? storedHistorySearchWindow
       : null;
   const clearHistorySearchWindow = useCallback(() => {
@@ -1501,12 +1518,26 @@ export const MessageList = memo(function MessageList({
       setHistorySearchWindow({
         cursor,
         messages: page.messages,
-        stateKey: conversationViewStateKey,
+        stateKey: historySearchStateKey,
         transcriptDisplayObjects: pageDisplayObjects,
       });
     },
-    [conversationViewStateKey],
+    [historySearchStateKey],
   );
+  useLayoutEffect(() => {
+    if (
+      inert ||
+      (storedHistorySearchWindow &&
+        storedHistorySearchWindow.stateKey !== historySearchStateKey)
+    ) {
+      clearHistorySearchWindow();
+    }
+  }, [
+    clearHistorySearchWindow,
+    historySearchStateKey,
+    inert,
+    storedHistorySearchWindow,
+  ]);
   const transcriptSnapshot = useMemo(
     () => ({
       activeWindowTrimRevision,
@@ -1590,11 +1621,6 @@ export const MessageList = memo(function MessageList({
   });
   const [olderPageLoadCompletionRevision, setOlderPageLoadCompletionRevision] =
     useState(0);
-  const [conversationViewEnabled, setConversationViewEnabled] = useState(
-    getConversationViewPreference,
-  );
-  const effectiveConversationViewEnabled =
-    conversationViewEnabledOverride ?? conversationViewEnabled;
   const previousConversationViewEnabledRef = useRef(
     effectiveConversationViewEnabled,
   );
@@ -1632,16 +1658,50 @@ export const MessageList = memo(function MessageList({
   const [navMotionCue, setNavMotionCue] = useState<UserTurnNavMotionCue | null>(
     null,
   );
-  const [hoveredMarkerTimestampMs, setHoveredMarkerTimestampMs] = useState<
-    number | null
-  >(null);
-  const [hoveredRowTimestampMs, setHoveredRowTimestampMs] = useState<
-    number | null
-  >(null);
-  const [scrollPositionTimestampMs, setScrollPositionTimestampMs] = useState<
-    number | null
-  >(null);
+  const internalTranscriptPositionStore = useMemo(
+    createTranscriptPositionStore,
+    [],
+  );
+  const effectiveTranscriptPositionStore =
+    transcriptPositionStore ?? internalTranscriptPositionStore;
+  const hoveredMarkerTimestampMsRef = useRef<number | null>(null);
+  const hoveredRowTimestampMsRef = useRef<number | null>(null);
+  const scrollPositionTimestampMsRef = useRef<number | null>(null);
+  const publishTranscriptPosition = useCallback(() => {
+    effectiveTranscriptPositionStore.publish(
+      hoveredMarkerTimestampMsRef.current ??
+        hoveredRowTimestampMsRef.current ??
+        scrollPositionTimestampMsRef.current,
+    );
+  }, [effectiveTranscriptPositionStore]);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(true);
+  useEffect(
+    () => () => {
+      if (
+        effectiveTranscriptPositionStore === internalTranscriptPositionStore
+      ) {
+        internalTranscriptPositionStore.dispose();
+      } else {
+        effectiveTranscriptPositionStore.publish(null);
+      }
+    },
+    [effectiveTranscriptPositionStore, internalTranscriptPositionStore],
+  );
+  useEffect(() => {
+    if (!onTranscriptPositionTimestampChange) return;
+    onTranscriptPositionTimestampChange(
+      effectiveTranscriptPositionStore.getSnapshot(),
+    );
+    const unsubscribe = effectiveTranscriptPositionStore.subscribe(() => {
+      onTranscriptPositionTimestampChange(
+        effectiveTranscriptPositionStore.getSnapshot(),
+      );
+    });
+    return () => {
+      unsubscribe();
+      onTranscriptPositionTimestampChange(null);
+    };
+  }, [effectiveTranscriptPositionStore, onTranscriptPositionTimestampChange]);
   const [newOutputBelowVisible, setNewOutputBelowVisible] = useState(false);
   const rememberedDisclosureStateRegistry = useMemo(() => {
     // The registry belongs to one mounted session view, even though its
@@ -1717,7 +1777,8 @@ export const MessageList = memo(function MessageList({
       lastFollowScrollTopRef.current = top;
       setIsScrolledToBottom(true);
       reportFollowingBottom(true);
-      setScrollPositionTimestampMs(null);
+      scrollPositionTimestampMsRef.current = null;
+      publishTranscriptPosition();
       setNewOutputBelowVisible(false);
 
       // Clear programmatic flag after scroll events have fired
@@ -1765,7 +1826,7 @@ export const MessageList = memo(function MessageList({
         }
       }, 50);
     },
-    [reportFollowingBottom],
+    [publishTranscriptPosition, reportFollowingBottom],
   );
 
   const clearForcedCurrentScrollTimers = useCallback(() => {
@@ -1872,6 +1933,7 @@ export const MessageList = memo(function MessageList({
       activeToolApproval,
       transcriptDisplayObjects,
       previousRenderItems: previousRenderItemsRef.current,
+      recentProjectPathLinksEnabled,
     });
     let nextRenderItems = loadedRenderItems;
     if (historySearchWindow) {
@@ -1886,6 +1948,7 @@ export const MessageList = memo(function MessageList({
         provider,
         transcriptDisplayObjects: historySearchWindow.transcriptDisplayObjects,
         previousRenderItems: previousRenderItemsRef.current,
+        recentProjectPathLinksEnabled,
       });
       if (historicalRenderItems.length > 0) {
         const gapItems: RenderItem[] =
@@ -1928,6 +1991,7 @@ export const MessageList = memo(function MessageList({
     markdownAugments,
     activeToolApproval,
     transcriptDisplayObjects,
+    recentProjectPathLinksEnabled,
     t,
   ]);
   useEffect(() => {
@@ -1935,13 +1999,16 @@ export const MessageList = memo(function MessageList({
   }, [renderItems]);
   const historySearchSourceMessageIds = useMemo(() => {
     if (!historySearchWindow) return EMPTY_RENDER_ID_SET;
+    const loadedMessageIds = new Set(
+      renderedTranscriptMessages.map((message) => getMessageId(message)),
+    );
     const ids = new Set<string>();
     for (const message of historySearchWindow.messages) {
       const id = getMessageId(message);
-      if (id) ids.add(id);
+      if (id && !loadedMessageIds.has(id)) ids.add(id);
     }
     return ids;
-  }, [historySearchWindow]);
+  }, [historySearchWindow, renderedTranscriptMessages]);
   const historySearchRenderIds = useMemo(() => {
     if (historySearchSourceMessageIds.size === 0) return EMPTY_RENDER_ID_SET;
     return new Set(
@@ -2182,6 +2249,7 @@ export const MessageList = memo(function MessageList({
     active: searchActive,
     scope: searchScope,
     visibleTurnGroups,
+    cancelSearchTargetPreparation,
     getNavigatorAnchors,
     searchState: userTurnNavSearchState,
     searchPanel,
@@ -2200,12 +2268,13 @@ export const MessageList = memo(function MessageList({
     displayRenderItems,
     hasOlderMessages,
     historySearchCursor: olderMessagesCursor,
-    historySearchContextKey: conversationViewStateKey,
+    historySearchContextKey: historySearchStateKey,
     hydratedHistoryCursor: historySearchWindow?.cursor ?? null,
     inert,
     onHydrateHistorySearchPage: hydrateHistorySearchPage,
     onReadOlderSearchPage,
     provider,
+    recentProjectPathLinksEnabled,
     thinkingItemsVisible,
     turnGroups,
   });
@@ -2260,7 +2329,8 @@ export const MessageList = memo(function MessageList({
     const container = content?.parentElement;
     if (!content || !container) return;
     if (isAtScrollBottom(container, content)) {
-      setScrollPositionTimestampMs(null);
+      scrollPositionTimestampMsRef.current = null;
+      publishTranscriptPosition();
       return;
     }
     const startedAtMs = isBrowserDebugPerformanceRecording()
@@ -2278,8 +2348,9 @@ export const MessageList = memo(function MessageList({
         category: "settled",
       });
     }
-    setScrollPositionTimestampMs(timestampMs);
-  }, []);
+    scrollPositionTimestampMsRef.current = timestampMs;
+    publishTranscriptPosition();
+  }, [publishTranscriptPosition]);
 
   const captureScrollSnapshot = useCallback(
     (container: HTMLElement, content: HTMLDivElement) => {
@@ -2326,9 +2397,10 @@ export const MessageList = memo(function MessageList({
 
   useEffect(() => {
     if (isScrolledToBottom) {
-      setScrollPositionTimestampMs(null);
+      scrollPositionTimestampMsRef.current = null;
+      publishTranscriptPosition();
     }
-  }, [isScrolledToBottom]);
+  }, [isScrolledToBottom, publishTranscriptPosition]);
 
   // Row-start times for the transcript hover override: hovering a row (or a
   // turn-rail marker, which wins) retargets the composer "at N ago" from the
@@ -2365,36 +2437,22 @@ export const MessageList = memo(function MessageList({
         }
         row = row.parentElement?.closest?.("[data-render-id]") ?? null;
       }
-      setHoveredRowTimestampMs((current) =>
-        current === timestampMs ? current : timestampMs,
-      );
+      hoveredRowTimestampMsRef.current = timestampMs;
+      publishTranscriptPosition();
     },
-    [rowStartTimestampsById],
+    [publishTranscriptPosition, rowStartTimestampsById],
   );
 
   const handleTranscriptPointerLeave = useCallback(() => {
-    setHoveredRowTimestampMs(null);
-  }, []);
-
-  useEffect(() => {
-    const contextualTimestampMs =
-      hoveredMarkerTimestampMs ??
-      hoveredRowTimestampMs ??
-      (isScrolledToBottom ? null : scrollPositionTimestampMs);
-    onTranscriptPositionTimestampChange?.(contextualTimestampMs);
-  }, [
-    hoveredMarkerTimestampMs,
-    hoveredRowTimestampMs,
-    isScrolledToBottom,
-    onTranscriptPositionTimestampChange,
-    scrollPositionTimestampMs,
-  ]);
-
-  useEffect(
-    () => () => {
-      onTranscriptPositionTimestampChange?.(null);
+    hoveredRowTimestampMsRef.current = null;
+    publishTranscriptPosition();
+  }, [publishTranscriptPosition]);
+  const handlePreviewTimestampChange = useCallback(
+    (timestampMs: number | null) => {
+      hoveredMarkerTimestampMsRef.current = timestampMs;
+      publishTranscriptPosition();
     },
-    [onTranscriptPositionTimestampChange],
+    [publishTranscriptPosition],
   );
   const {
     anchoredRenderIds,
@@ -3360,11 +3418,16 @@ export const MessageList = memo(function MessageList({
 
   const scrollToCurrent = useCallback(() => {
     setNewOutputBelowVisible(false);
+    cancelSearchTargetPreparation();
     clearHistorySearchWindow();
     forceScrollToCurrent(FOLLOW_CATCH_UP_DELAYS_MS, {
       allowThinkingDeltas: true,
     });
-  }, [clearHistorySearchWindow, forceScrollToCurrent]);
+  }, [
+    cancelSearchTargetPreparation,
+    clearHistorySearchWindow,
+    forceScrollToCurrent,
+  ]);
 
   const navigateToAdjacentHiddenUserTurn = useCallback(
     (direction: "previous" | "next", requestOlderWhenMissing = true) => {
@@ -3859,7 +3922,7 @@ export const MessageList = memo(function MessageList({
     };
 
     const handleSelectionChange = () => {
-      if (selectionIntersectsElement(content)) {
+      if (shouldAutoScrollRef.current && selectionIntersectsElement(content)) {
         stopFollowingForUserScroll(container);
       }
     };
@@ -4249,7 +4312,7 @@ export const MessageList = memo(function MessageList({
         forkAfterDisabled={forkAfterUserMessageDisabled}
         onCopyAnchor={onCopyUserMessage}
         canCopyAnchor={canTrimHistoryAnchor}
-        onPreviewTimestampChange={setHoveredMarkerTimestampMs}
+        onPreviewTimestampChange={handlePreviewTimestampChange}
         getRenderIdTop={transcriptRenderWindow.getRenderIdTop}
         revealRenderId={transcriptRenderWindow.revealRenderId}
         searchState={userTurnNavSearchState}

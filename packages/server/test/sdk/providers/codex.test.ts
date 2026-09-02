@@ -29,6 +29,7 @@ import {
   it,
   vi,
 } from "vitest";
+import type { CodexPlanToolMode } from "@yep-anywhere/shared";
 import { compileTranscriptProjection } from "../../../../client/src/lib/transcriptProjection/compiler.ts";
 import { getLogger } from "../../../src/logging/logger.js";
 import { getCodexCommonPaths } from "../../../src/sdk/cli-detection.js";
@@ -929,7 +930,7 @@ describe("CodexProvider app-server lifecycle", () => {
     const codexPath = createFakeCodexCommand(
       tempDir,
       "fake-codex-settings",
-      buildFakeCodexPermissionAppServer(logPath, 2),
+      buildFakeCodexPermissionAppServer(logPath, 2, "applied", 100),
     );
     const testProvider = new CodexProvider({ codexPath });
     const session = await testProvider.startSession({
@@ -944,8 +945,9 @@ describe("CodexProvider app-server lifecycle", () => {
       expect(session.effortUpdatesActiveTurn).toBe(true);
       expect(session.setModel).toBeTypeOf("function");
 
-      await session.setEffort?.("high");
-      await session.setModel?.("gpt-5.4");
+      const effortUpdate = session.setEffort?.("high");
+      const modelUpdate = session.setModel?.("gpt-5.4");
+      await Promise.all([effortUpdate, modelUpdate]);
       await firstTurn;
 
       session.queue.push({ text: "retained settings turn" });
@@ -2694,6 +2696,7 @@ function buildFakeCodexPermissionAppServer(
   logPath: string,
   liveSettingsUpdates = 0,
   liveSettingsStatus: "applied" | "targetUnavailable" = "applied",
+  turnStartResponseDelayMs = 0,
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -2703,6 +2706,7 @@ let buffer = "";
 let turnSequence = 0;
 const liveSettingsUpdates = ${JSON.stringify(liveSettingsUpdates)};
 const liveSettingsStatus = ${JSON.stringify(liveSettingsStatus)};
+const turnStartResponseDelayMs = ${JSON.stringify(turnStartResponseDelayMs)};
 let observedSettingsUpdates = 0;
 let effectiveApprovalPolicy = "on-request";
 const configuredWorkspaceWritePolicy = {
@@ -2791,16 +2795,19 @@ function handleMessage(message) {
       break;
     case "turn/start": {
       turnSequence += 1;
-      respond(message.id, {
-        turn: {
-          id: \`turn-\${turnSequence}\`,
-          status:
-            turnSequence === 1 && liveSettingsUpdates > 0
-              ? "inProgress"
-              : "completed",
-          error: null,
-        },
-      });
+      const turn = {
+        id: \`turn-\${turnSequence}\`,
+        status:
+          turnSequence === 1 && liveSettingsUpdates > 0
+            ? "inProgress"
+            : "completed",
+        error: null,
+      };
+      if (turnStartResponseDelayMs > 0) {
+        setTimeout(() => respond(message.id, { turn }), turnStartResponseDelayMs);
+      } else {
+        respond(message.id, { turn });
+      }
       break;
     }
     case "turn/settings/update": {
@@ -4846,6 +4853,58 @@ describe("CodexProvider Event Normalization", () => {
     expect(resume).toMatchObject({ config: expectedConfig });
     expect(fork).toMatchObject({ config: expectedConfig });
   });
+
+  it.each([
+    ["provider-default", undefined],
+    ["disabled", false],
+    ["enabled", true],
+  ] as const)(
+    "applies %s plan-tool mode to every thread path",
+    (mode, enabled) => {
+      const provider = createTestProvider() as unknown as {
+        setPlanToolModeGetter: (getter: () => CodexPlanToolMode) => void;
+        createThreadStartParams: (
+          options: { cwd: string },
+          policy: { approvalPolicy: string; sandbox: string },
+        ) => Record<string, unknown>;
+        createThreadResumeParams: (
+          options: { resumeSessionId: string; cwd: string },
+          sessionId: string,
+          policy: { approvalPolicy: string; sandbox: string },
+        ) => Record<string, unknown>;
+        createThreadForkParams: (
+          options: { sessionId: string; cwd: string },
+          policy: { approvalPolicy: string; sandbox: string },
+        ) => Record<string, unknown>;
+      };
+      const policy = {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      };
+      provider.setPlanToolModeGetter(() => mode);
+
+      const start = provider.createThreadStartParams({ cwd: "/tmp" }, policy);
+      const resume = provider.createThreadResumeParams(
+        { resumeSessionId: "thread-1", cwd: "/tmp" },
+        "thread-1",
+        policy,
+      );
+      const fork = provider.createThreadForkParams(
+        { sessionId: "thread-1", cwd: "/tmp" },
+        policy,
+      );
+
+      for (const request of [start, resume, fork]) {
+        if (enabled === undefined) {
+          expect(request).not.toHaveProperty("config.tools.update_plan");
+        } else {
+          expect(request).toMatchObject({
+            config: { tools: { update_plan: { enabled } } },
+          });
+        }
+      }
+    },
+  );
 
   it("pins thread-scope reasoning effort via config when effort is requested", () => {
     const provider = createTestProvider() as unknown as {

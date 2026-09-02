@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- Windows releases and automatic updates now use only the per-user NSIS installer; the elevated MSI is no longer published.
+
+## [0.2.0] - 2026-08-31
+
+### Fixed
+- Reopening the running macOS app now restores its dashboard instead of leaving the tray-only process hidden.
+- The x64 Windows installer now includes and selects a native ARM64 Bun runtime on Windows ARM64, preventing the bundled server from crashing under x64 emulation.
+- Desktop release builds now preserve workspace-level dependency overrides while assembling the bundled server, keeping frozen-lockfile CI builds reproducible.
+- Windows runtime preparation now uses the built-in archive tool instead of legacy Windows PowerShell modules, including on ARM64 development and smoke-test machines.
+
 ## [0.1.3] - 2026-08-01
 
 ### Fixed

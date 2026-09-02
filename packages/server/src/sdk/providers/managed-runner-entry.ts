@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_SUBAGENT_MAX_DEPTH,
+  type CodexPlanToolMode,
   type CodexReasoningSummary,
   type SubagentMaxDepth,
 } from "@yep-anywhere/shared";
@@ -31,6 +32,7 @@ import {
 } from "./provider-runtime-stdio.js";
 
 interface ManagedRunnerRuntimeConfig {
+  codexPlanToolMode?: CodexPlanToolMode;
   codexReasoningSummary?: CodexReasoningSummary;
   subagentMaxDepth?: SubagentMaxDepth;
 }
@@ -87,6 +89,9 @@ async function createSession(
   });
   provider.setReasoningSummaryGetter(
     () => config.codexReasoningSummary ?? DEFAULT_CODEX_REASONING_SUMMARY,
+  );
+  provider.setPlanToolModeGetter(
+    () => config.codexPlanToolMode ?? "provider-default",
   );
   provider.setSubagentMaxDepthGetter(
     () => config.subagentMaxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH,

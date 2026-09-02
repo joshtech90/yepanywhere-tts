@@ -421,6 +421,28 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients may outpace installed servers, and older servers do not expose the Codex reasoning-summary policy.",
     },
   },
+  codexPlanToolSetting: {
+    id: CAPABILITY_ID_ALLOCATIONS.codexPlanToolSetting.id,
+    name: "codex-plan-tool-setting",
+    kind: "permanent",
+    area: "providers",
+    introducedIn: "0.8.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server persists the Codex plan-tool mode applied when app-server sessions start, resume, or fork.",
+    clientFallback:
+      "Hide the Codex plan-tool control and make no unsupported settings write.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.codexPlanToolMode"],
+      responseFields: ["settings.codexPlanToolMode"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients may outpace installed servers, and older servers do not expose the Codex plan-tool policy.",
+    },
+  },
   codexStreamDurableIdAlignment: {
     id: CAPABILITY_ID_ALLOCATIONS.codexStreamDurableIdAlignment.id,
     name: "codex-stream-durable-id-alignment",
@@ -2050,7 +2072,7 @@ export const SERVER_CAPABILITIES = {
     },
     lifecycle: {
       kind: "transitional",
-      reviewAfter: "2026-09-01",
+      reviewAfter: "2026-10-01",
       removeClientGateWhen:
         "The optional hosted-client support corpus contains no server without server-resolved fork intents and the Maintainer approves removal.",
       removeServerAdvertisementWhen:
@@ -2077,6 +2099,8 @@ export const SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.subagentMaxDepthSetting.name;
 export const CODEX_REASONING_SUMMARY_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.codexReasoningSummarySetting.name;
+export const CODEX_PLAN_TOOL_SETTING_CAPABILITY =
+  SERVER_CAPABILITIES.codexPlanToolSetting.name;
 export const CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY =
   SERVER_CAPABILITIES.codexStreamDurableIdAlignment.name;
 export const GLOSSARY_TOOLTIPS_CAPABILITY =

@@ -66,6 +66,7 @@ import {
 } from "../sessions/provider-child-sessions.js";
 import {
   detachSessionMessageProjection,
+  getCodexMessageSourceByteCursor,
   getCodexProviderForkTurnId,
   normalizeSession,
 } from "../sessions/normalization.js";
@@ -100,7 +101,11 @@ import {
   findSessionSummaryAcrossProviders,
   getSessionSources,
 } from "../sessions/provider-resolution.js";
-import type { ISessionReader, LoadedSession } from "../sessions/types.js";
+import type {
+  GetSessionOptions,
+  ISessionReader,
+  LoadedSession,
+} from "../sessions/types.js";
 import { getProvider } from "../sdk/providers/index.js";
 import { getStaticSlashCommandsForProvider } from "../sdk/providers/staticSlashCommands.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
@@ -2304,18 +2309,29 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     projectId: UrlProjectId,
     preferredProvider: ProviderName | undefined,
     afterMessageId?: string,
-    options?: { includeOrphans?: boolean },
+    options?: GetSessionOptions,
   ): Promise<LoadedSession | null> => {
     for (const source of getSessionSources(
       project,
       providerResolutionDeps(deps),
       preferredProvider,
     )) {
+      const summaryHint =
+        options?.tailCompactions !== undefined &&
+        source.provider === "codex" &&
+        deps.sessionIndexService
+          ? await deps.sessionIndexService.getCachedSessionSummary(
+              source.sessionDir,
+              projectId,
+              sessionId,
+              source.reader,
+            )
+          : null;
       const loaded = await source.reader.getSession(
         sessionId,
         projectId,
         afterMessageId,
-        options,
+        summaryHint ? { ...options, summaryHint } : options,
       );
       if (loaded) {
         return loaded;
@@ -2787,14 +2803,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const identity = await resolveExistingSessionIdentity({
       sessionId,
       requestProjectId: projectId,
-      metadata,
+      metadata: metadata
+        ? { ...metadata, workingProjectId: undefined }
+        : undefined,
       scanner: deps.scanner,
       providerDeps: providerResolutionDeps(deps),
     });
     if (!identity) {
       return c.json({ error: "Session not found" }, 404);
     }
-    const previousWorkingProjectId = identity.workingProjectId;
+    const previousWorkingProjectId =
+      metadata?.workingProjectId ?? identity.workingProjectId;
     const transcriptProjectId = identity.transcriptProjectId;
 
     const storedWorkingProjectId =
@@ -3030,6 +3049,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         // 2. No active process (tools aren't potentially in progress)
         // When we own the session, tools without results might be pending approval
         includeOrphans: wasEverOwned && !process,
+        ...(!fullHistory &&
+        !afterMessageId &&
+        effectiveTailCompactions !== undefined
+          ? {
+              tailCompactions: effectiveTailCompactions,
+              ...(beforeMessageId ? { beforeMessageId } : {}),
+            }
+          : {}),
       },
     );
 
@@ -3265,7 +3292,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // Apply pagination BEFORE expensive augmentation. Compact boundaries set
     // the authorized history scope by default; turn selectors may narrow that
     // scope but cannot broaden it unless fullHistory=1 removed the default.
-    // Skip initial-window slicing for incremental forward fetches.
+    // Skip initial-window slicing for incremental forward fetches. A provider-
+    // bounded older page already ends before its requested cursor.
+    const providerBoundedOlderPage =
+      loadedSession.readWindow?.kind === "compact-page";
     let paginationInfo: PaginationInfo | undefined;
     if (
       !afterMessageId &&
@@ -3297,17 +3327,50 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const sliced = sliceAtCompactBoundaries(
         session.messages,
         effectiveTailCompactions,
-        beforeMessageId,
+        providerBoundedOlderPage ? undefined : beforeMessageId,
       );
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
+    }
+    if (
+      loadedSession.readWindow &&
+      paginationInfo?.hasOlderMessages &&
+      (session.provider === "codex" || session.provider === "codex-oss")
+    ) {
+      const firstMessage = session.messages[0];
+      const sourceCursor = firstMessage
+        ? getCodexMessageSourceByteCursor(firstMessage)
+        : undefined;
+      if (!sourceCursor) {
+        throw new Error(
+          "Provider compact-window read did not expose its source cursor",
+        );
+      }
+      paginationInfo = {
+        ...paginationInfo,
+        truncatedBeforeMessageId: sourceCursor,
+      };
+    }
+    if (
+      loadedSession.readWindow &&
+      (paginationInfo?.hasOlderMessages !==
+        loadedSession.readWindow.omittedPrefix ||
+        (loadedSession.readWindow.omittedPrefix &&
+          paginationInfo.truncatedBeforeMessageId === undefined))
+    ) {
+      throw new Error(
+        "Provider compact-window read did not preserve its older-history boundary",
+      );
     }
     // Codex normalized IDs can drift between stream and JSONL. If an
     // incremental request misses its anchor, never return the full historical
     // session into a compact-tail client; bound the fallback to the same tail
     // window used for initial loads.
     if (providerAfterMessageId && !incrementalAnchorFound) {
-      const sliced = sliceAtCompactBoundaries(session.messages, 2);
+      const sliced = sliceAtCompactBoundaries(
+        session.messages,
+        effectiveTailCompactions ?? DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
+      );
       session = { ...session, messages: sliced.messages };
       paginationInfo = sliced.pagination;
     }
@@ -4178,7 +4241,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const identity = await resolveExistingSessionIdentity({
       sessionId,
       requestProjectId: projectId,
-      preferredProvider: metadataProvider ?? body.provider,
+      preferredProvider: body.provider,
       requestFallbackProvider: requestProject.provider,
       metadata: persistedMetadata,
       scanner: deps.scanner,
@@ -4292,7 +4355,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const globalInstructions = getGlobalInstructions();
 
-    const providerName = metadataProvider ?? body.provider ?? identity.provider;
+    const providerName = body.provider ?? metadataProvider ?? identity.provider;
     const previousProcess = deps.supervisor.getProcessForSession?.(sessionId);
     const resumeDiagnostics = {
       requestedMode: resumeMode,

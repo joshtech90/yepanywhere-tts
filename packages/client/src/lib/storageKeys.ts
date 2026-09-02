@@ -94,6 +94,8 @@ export const UI_KEYS = {
   sessionLoadingProgress: "yep-anywhere-session-loading-progress-enabled",
   sessionDomLinger: "yep-anywhere-session-dom-linger-enabled",
   sessionActiveWindowTrim: "yep-anywhere-session-active-window-trim-enabled",
+  sessionInitialHistoryCompactions:
+    "yep-anywhere-session-initial-history-compactions",
   // Legacy boolean toggle; seeds the budget preference until the slider
   // is first used, and stays coherent for older bundles.
   sessionTranscriptCache: "yep-anywhere-session-transcript-cache-enabled",
@@ -111,6 +113,7 @@ export const UI_KEYS = {
   inlineMediaExpandedByDefault: "yep-anywhere-inline-images-enabled",
   compactMultiImageGalleries:
     "yep-anywhere-compact-multi-image-galleries-enabled",
+  recentProjectPathLinks: "yep-anywhere-recent-project-path-links-enabled",
   schemaValidation: "yep-anywhere-schema-validation",
   emulatorMaxFps: "yep-anywhere-emulator-max-fps",
   emulatorMaxWidth: "yep-anywhere-emulator-max-width",

@@ -110,11 +110,12 @@ closes, entering another target within six times the configured delay opens the
 adjacent tooltip immediately. “Adjacent” is temporal: no geometry test is
 needed. Casually crossing targets that never opened does not warm anything.
 Visibility ownership is global across the delegated text layer, rich
-explanations, and session hovercards: granting it to a new tooltip synchronously
-dismisses the prior owner. A genuine move between warm text targets hands the
-single surface directly to the new target, while small or absent pointer
-movement cannot switch it during scroll or layout re-hit-testing. Neither path
-can flash two tooltips or an intermediate blank tooltip. A passive ordinary
+explanations, and session hovercards: granting it to a different tooltip
+surface synchronously dismisses the prior owner. A genuine move between warm
+text targets hands the delegated surface directly to the latest target in the
+next animation frame, while small or absent pointer movement cannot switch it
+during scroll or layout re-hit-testing. Neither path can flash two tooltips or
+an intermediate blank tooltip. A passive ordinary
 tooltip is visually frontmost but pointer-transparent. Its measured rectangle
 still belongs to the active hover region: pointer motion inside it cannot warm
 or switch to a tooltip target geometrically underneath it. Primary, middle,
@@ -129,10 +130,30 @@ the active hover region; up to four CSS pixels is treated as hand/sensor jitter
 rather than an intent to switch targets or dismiss.
 
 An explicit tooltip target nested inside another tooltip target owns the hover
-at its own text. Entering that child switches immediately from the enclosing
-hint even within the boundary-jitter allowance. This lets glossary definitions,
-file paths, and other annotated output remain discoverable when the enclosing
-output block also exposes a hidden-tail hint.
+at its own text. Entering that child selects it for the next publication frame
+even within the boundary-jitter allowance. This lets glossary definitions, file
+paths, and other annotated output remain discoverable when the enclosing output
+block also exposes a hidden-tail hint.
+
+All YA-rendered pointer tooltip surfaces share one pending publication slot.
+This includes delegated text, rich explanations, and session hover cards. A
+new target replaces any unpublished dwell intent from any of those surfaces;
+zero-delay and warm handoffs share one animation-frame callback and publish
+only its final target. At publication, the target must still match the
+browser's current `:hover` state. Keyboard-visible focus is the deliberate
+non-pointer exception. Thus queued pointer events processed after a main-thread
+stall cannot replay an obsolete tooltip or trigger an obsolete session-preview
+refresh.
+
+For a warm delegated-tooltip handoff, the layer releases at most the previously
+published target and publishes only the final connected target. No intermediate
+target may become visible or acquire the shared tooltip description. Leaving
+the pending target before that frame cancels its handoff; the previously
+published target keeps ownership until the ordinary departure dismissal runs.
+Cold targets use the same replaceable publication slot with their dwell delay,
+so crossing them before reveal remains silent. Browser-native titles and
+CSS-only hover affordances remain browser-owned and need no application
+publication queue.
 
 Pointer transparency, not early dismissal, is the mechanism here. WCAG 2.2
 success criterion 1.4.13 requires author-rendered hover content to stay
@@ -307,6 +328,9 @@ not the surface into a card.
 - Only visible tooltips enable immediate temporally adjacent reveals.
 - At most one delegated, rich, or session-preview tooltip is visible, and warm
   handoff changes ownership without a blank or dual-tooltip frame.
+- Crossing several warm delegated-tooltip targets before one animation frame
+  publishes only the final target; intermediate targets never become visible
+  or acquire the shared tooltip description.
 - Boundary jitter within four CSS pixels neither switches tooltip content nor
   starts departure dismissal, except that entering a nested explicit target
   immediately gives that child ownership over its enclosing target.
