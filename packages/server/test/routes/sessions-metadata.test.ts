@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   CodexSessionEntry,
+  DurableLocalCommandMessage,
   DurableRecapMessage,
   ProviderName,
   TranscriptDisplayObject,
@@ -533,7 +534,9 @@ describe("Sessions metadata route", () => {
     });
 
     await vi.waitFor(() => {
-      expect(runProviderCommand).toHaveBeenCalledWith("compact", "");
+      expect(runProviderCommand).toHaveBeenCalledWith("compact", "", {
+        tempId: undefined,
+      });
     });
     expect(noteInputIntent).toHaveBeenCalledOnce();
 
@@ -541,6 +544,73 @@ describe("Sessions metadata route", () => {
     const response = await request;
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ queued: true });
+  });
+
+  it.each([false, true])(
+    "dispatches goal controls outside turn delivery (deferred=%s)",
+    async (deferred) => {
+      const runProviderCommand = vi.fn(async () => ({ handled: true }));
+      const deferMessage = vi.fn();
+      const queueMessage = vi.fn();
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => ({
+            isTerminated: false,
+            noteInputIntent: vi.fn(),
+            runProviderCommand,
+            deferMessage,
+            queueMessage,
+          })),
+        } as unknown as SessionsDeps["supervisor"],
+      });
+      const response = await routes.request("/sessions/sess-1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "/goal Keep working",
+          deferred,
+          tempId: "goal-send",
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(runProviderCommand).toHaveBeenCalledWith("goal", "Keep working", {
+        tempId: "goal-send",
+      });
+      expect(deferMessage).not.toHaveBeenCalled();
+      expect(queueMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("surfaces the provider's reason when a native command is rejected", async () => {
+    const reason = "Cannot compact while a turn is in progress";
+    const runProviderCommand = vi.fn(async () => ({
+      handled: true,
+      error: reason,
+    }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          isTerminated: false,
+          noteInputIntent: vi.fn(),
+          runProviderCommand,
+        })),
+      } as unknown as SessionsDeps["supervisor"],
+    });
+
+    const response = await routes.request("/sessions/sess-1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/compact" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(runProviderCommand).toHaveBeenCalledWith("compact", "", {
+      tempId: undefined,
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      error: reason,
+      reason,
+    });
   });
 
   it("reports immediate promotion when returned by the process", async () => {
@@ -646,6 +716,62 @@ describe("Sessions metadata route", () => {
       "sess-1",
       project.id,
     );
+  });
+
+  it("returns durable model settings after the live process is gone", async () => {
+    const project = createProject();
+    const summary = createSummary();
+    const claudeReader = {
+      getSessionSummary: vi.fn(async () => null),
+    } as unknown as ISessionReader;
+    const codexReader = {
+      getSessionSummary: vi.fn(async () => summary),
+    } as unknown as ISessionReader;
+
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getProject: vi.fn(async () => project),
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => claudeReader),
+      codexSessionsDir: "/tmp/codex-sessions",
+      codexReaderFactory: vi.fn(
+        () => codexReader as unknown as CodexSessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => ({
+          provider: "codex",
+          effectiveLaunchSettings: {
+            schemaVersion: 1,
+            revision: 2,
+            permissionMode: "default",
+            requestedModel: "gpt-5-codex",
+            serviceTier: null,
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "high",
+          },
+        })),
+        getProvider: vi.fn(() => "codex"),
+        getRecapMessages: vi.fn(() => []),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1/metadata`,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      session: { effectiveModelSettings?: unknown };
+    };
+    expect(body.session.effectiveModelSettings).toEqual({
+      requestedModel: "gpt-5-codex",
+      thinking: { type: "adaptive", display: "summarized" },
+      effort: "high",
+    });
   });
 
   it("attaches provider children to session metadata", async () => {
@@ -2253,47 +2379,88 @@ describe("Sessions metadata route", () => {
     );
   });
 
-  it("returns static Codex slash commands for stopped sessions", async () => {
-    const project = { ...createProject(), provider: "codex" as const };
+  it.each([undefined, "Finish the durable goal", null])(
+    "restores stopped Codex goal inventory: %s",
+    async (objective) => {
+      const project = { ...createProject(), provider: "codex" as const };
+      const codexGoalCommand =
+        objective === undefined
+          ? undefined
+          : {
+              name: "goal",
+              description:
+                "Keep working toward a verifiable end state until it is met",
+              argumentHint: "<verifiable end state>",
+              providerDetails: { codex: { goalObjective: objective } },
+              argumentCompletions: [
+                ...(objective
+                  ? [{ value: objective, description: "Current goal" }]
+                  : []),
+                { value: "clear", description: "Remove the current goal" },
+                { value: "pause", description: "Pause the current goal" },
+                { value: "resume", description: "Resume the current goal" },
+              ],
+            };
 
-    const routes = createSessionsRoutes({
-      supervisor: {
-        getProcessForSession: vi.fn(() => null),
-        wasEverOwned: vi.fn(() => false),
-      } as unknown as SessionsDeps["supervisor"],
-      scanner: {
-        getOrCreateProject: vi.fn(async () => project),
-      } as unknown as SessionsDeps["scanner"],
-      readerFactory: vi.fn(
-        () =>
-          ({
-            getSession: vi.fn(async () => createLoadedCodexSession()),
-          }) as unknown as ISessionReader,
-      ),
-      sessionMetadataService: {
-        getMetadata: vi.fn(() => undefined),
-        getProvider: vi.fn(() => "codex"),
-        getRequestedModel: vi.fn(() => undefined),
-        setRequestedModel: vi.fn(async () => undefined),
-      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
-    });
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => null),
+          wasEverOwned: vi.fn(() => false),
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: vi.fn(async () => project),
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: vi.fn(
+          () =>
+            ({
+              getSession: vi.fn(async () => createLoadedCodexSession()),
+            }) as unknown as ISessionReader,
+        ),
+        sessionMetadataService: {
+          getMetadata: vi.fn(() => ({ codexGoalCommand })),
+          getProvider: vi.fn(() => "codex"),
+          getRequestedModel: vi.fn(() => undefined),
+          setRequestedModel: vi.fn(async () => undefined),
+        } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+      });
 
-    const response = await routes.request(
-      `/projects/${project.id}/sessions/sess-1`,
-    );
-    expect(response.status).toBe(200);
+      const response = await routes.request(
+        `/projects/${project.id}/sessions/sess-1`,
+      );
+      expect(response.status).toBe(200);
 
-    const json = await response.json();
-    expect(json.ownership).toEqual({ owner: "none" });
-    expect(json.slashCommands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "compact" }),
-        expect.objectContaining({ name: "goal" }),
-        expect.objectContaining({ name: "status" }),
-        expect.objectContaining({ name: "usage" }),
-      ]),
-    );
-  });
+      const json = await response.json();
+      expect(json.ownership).toEqual({ owner: "none" });
+      expect(json.slashCommands).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "compact" }),
+          expect.objectContaining({
+            name: "goal",
+            description:
+              "Keep working toward a verifiable end state until it is met",
+            argumentHint: "<verifiable end state>",
+            argumentCompletions: [
+              ...(objective
+                ? [expect.objectContaining({ value: objective })]
+                : []),
+              expect.objectContaining({ value: "clear" }),
+              expect.objectContaining({ value: "pause" }),
+              expect.objectContaining({ value: "resume" }),
+            ],
+          }),
+          expect.objectContaining({ name: "status" }),
+          expect.objectContaining({ name: "usage" }),
+        ]),
+      );
+      if (codexGoalCommand) {
+        expect(
+          json.slashCommands.find(
+            (command: { name: string }) => command.name === "goal",
+          ),
+        ).toEqual(codexGoalCommand);
+      }
+    },
+  );
 
   it("passes cached summary hints into bounded Codex detail reads", async () => {
     const project = { ...createProject(), provider: "codex" as const };
@@ -2831,6 +2998,58 @@ describe("Sessions metadata route", () => {
       updatedAt: recap.timestamp,
       hasUnread: false,
     });
+  });
+
+  it("returns saved goal receipts in place and accepts their ids as forward cursors", async () => {
+    const project = { ...createProject(), provider: "grok" as const };
+    const receipt: DurableLocalCommandMessage = {
+      type: "system",
+      subtype: "local_command",
+      content: "/goal",
+      details: ["Finish the work", "Goal set"],
+      timestamp: "2026-03-10T09:45:00.000Z",
+      id: "goal-1",
+      uuid: "goal-1",
+      session_id: "sess-1",
+      isSynthetic: true,
+      placementAfterMessageId: "provider-1",
+    };
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        wasEverOwned: vi.fn(() => false),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSession: vi.fn(async () => createLoadedGrokSession()),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
+        getProvider: vi.fn(() => "grok"),
+        getLocalCommandMessages: vi.fn(() => [receipt]),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+    for (let reload = 0; reload < 2; reload++) {
+      const response = await routes.request(
+        `/projects/${project.id}/sessions/sess-1`,
+      );
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(
+        json.messages.map((message: Message) => message.uuid ?? message.id),
+      ).toEqual(["provider-1", "goal-1"]);
+      expect(json.messages[1]).toMatchObject(receipt);
+    }
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1?afterMessageId=goal-1`,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).messages).toEqual([]);
   });
 
   it("handles durable recap ids as overlay cursors", async () => {

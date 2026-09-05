@@ -100,6 +100,28 @@ Codex plan-tool control and make no unsupported settings write. It is
 version-implied from `0.8.1`; existing settings and capability meanings are
 unchanged.
 
+`codex-paginated-rollout-lineage` owns complete logical reads of Codex
+rollouts whose `session_meta.history_base` references a frozen prefix in
+another rollout. Stable releases `v0.8.0` and `v0.7.0` can issue the existing
+native fork request but cannot list, summarize, or load the resulting
+reference-backed child; they lack permanent ID 54. Without this capability, a
+current client keeps Codex Clone and per-turn Fork visible but disabled with
+server-update guidance and makes no fork request. Other providers retain the
+existing `session-fork-turn-intents` gate. The capability owns no new route:
+it strengthens the existing session list/detail and fork-route product as a
+single contract, is version-implied from `0.8.1`, and does not broaden any
+older capability meaning.
+
+`project-queue-attachment-editing` owns the existing Project Queue update
+route's ability to atomically combine retained queue-owned staged references
+with newly uploaded draft references, including individual removal. The
+ordinary optional-feature corpus is `v0.8.0` (2026-08-31) and `v0.7.0`
+(2026-07-25); both have Project Queue updates and staging but lack this mixed
+ownership update semantic and permanent ID 55. Without the capability, the
+projects-page editor remains text-only, preserves its original attachment
+fields, and starts no attachment upload or mutation request. It is
+version-implied from `0.8.1`; no route or request-field shape changes.
+
 The additive top-level `transcriptSnapshotUpdatedAt` field on existing session
 detail responses is a reader snapshot receipt, not a new feature capability.
 The core compatibility corpus `v0.6.0`, `v0.6.1`, `v0.6.2`, and `v0.7.0`
@@ -109,6 +131,17 @@ bounded extra refreshes rather than letting unrelated `session.updatedAt`
 metadata suppress a needed catch-up. Older clients ignore the additive field.
 No existing capability meaning changes. The Maintainer approved this
 self-gated response-field fallback on 2026-08-28.
+
+The additive `session.effectiveModelSettings` field on existing session
+metadata and detail responses is a durable model-state receipt, not a new
+feature capability. The core compatibility corpus `v0.6.0`, `v0.6.1`,
+`v0.6.2`, `v0.7.0`, and `v0.8.0` lacks it. A current client connected to one
+of those servers sends no new request and retains the released live-process,
+initial Codex acknowledgement, and global-default fallbacks. Older clients
+ignore the additive field. Newer servers expose only requested model,
+thinking, and effort; retained permission and service-tier settings remain
+internal. No existing capability meaning changes. The Maintainer approved
+this self-gated response-field fallback on 2026-09-04.
 
 `git-working-tree-files` owns the current-content inventory, persistent
 untracked-cache route, and cache-backed status request. Releases `0.6.2` and
@@ -446,9 +479,11 @@ the same ledger:
 | 51 | server | 0.7.2 | `public-file-shares` |
 | 52 | server | 0.7.2 | `session-sandbox-network-firewall` |
 | 53 | server | 0.8.1 | `codex-plan-tool-setting` |
+| 54 | server | 0.8.1 | `codex-paginated-rollout-lineage` |
+| 55 | server | 0.8.1 | `project-queue-attachment-editing` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 54; retired rows stay in the ledger as reserved IDs.
+ID 56; retired rows stay in the ledger as reserved IDs.
 
 ## When To Add One
 

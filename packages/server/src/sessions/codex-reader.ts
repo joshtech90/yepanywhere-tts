@@ -13,8 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { open, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { TextDecoder } from "node:util";
+import { basename, dirname, join } from "node:path";
 import {
   type CodexSessionEntry,
   type CodexSessionMetaEntry,
@@ -43,6 +42,8 @@ import type {
 import {
   codexRolloutRepresentation,
   getCodexRolloutActivityTimeMs,
+  getCodexRolloutSessionId,
+  isCompressedCodexRolloutPath,
   isCodexRolloutFileName,
   preferPlainCodexRollouts,
 } from "../utils/codexRolloutFiles.js";
@@ -70,11 +71,25 @@ import {
   isCodexUserResponseEntry,
 } from "./codex-user-turn-provenance.js";
 import {
+  getCodexAsyncAgentMessageItem,
   normalizeSession,
-  parseCodexSourceByteCursor,
   tagCodexEntriesNormalizationSource,
-  tagCodexEntrySourceByteOffset,
 } from "./normalization.js";
+import {
+  type CodexLineageReadMetrics,
+  type CodexRolloutLineage,
+  iterateCodexRolloutLineageEntries,
+  readCodexRolloutLineageEntries,
+  readCodexSessionMeta,
+  resolveCodexRolloutLineage,
+} from "./codex-rollout-lineage.js";
+import {
+  type CodexCompactPageSnapshot,
+  type CodexCompactTailSnapshot,
+  type CodexCompactWindowSnapshot,
+  type CodexParsedEntrySnapshot,
+  CodexRolloutWindowReader,
+} from "./codex-rollout-window.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
 import type {
   SummaryParserWorkerMode,
@@ -125,13 +140,7 @@ const DEFAULT_SLOW_LOG_THRESHOLD_MS = 250;
 const CODEX_HEAD_SUMMARY_MAX_LINES = 200;
 const CODEX_HEAD_SUMMARY_MAX_BYTES = 1024 * 1024;
 const CODEX_FULL_SUMMARY_CACHE_MAX_ENTRIES = 256;
-const CODEX_ENTRY_READ_CHUNK_BYTES = 1024 * 1024;
-const CODEX_COMPACT_TAIL_ESTIMATED_BYTES_PER_BOUNDARY = 2 * 1024 * 1024;
 const LOG_ENTRY_READS = process.env.CODEX_READER_LOG_PARSE === "true";
-
-function isCompressedCodexSessionFile(filePath: string): boolean {
-  return filePath.endsWith(".jsonl.zst");
-}
 
 interface CodexScanOptions {
   activeAfterMs?: number;
@@ -218,8 +227,13 @@ interface CodexEntryCache {
   ctimeMs: number;
   size: number;
   entries: CodexSessionEntry[];
-  partialLine: string;
+  partialLine: Buffer;
+  nextLeafOrdinal?: number;
   normalizationSource: object;
+}
+
+interface CodexReadEntrySnapshot extends CodexParsedEntrySnapshot {
+  nextLeafOrdinal?: number;
 }
 
 interface CodexEntrySnapshot {
@@ -227,37 +241,31 @@ interface CodexEntrySnapshot {
   transcriptSnapshotUpdatedAt: string;
 }
 
-interface CodexCompactTailSnapshot extends CodexEntrySnapshot {
-  kind: "compact-tail";
-  omittedPrefix: true;
-  startByte: number;
-  compactBoundaries: number;
+function validateContiguousCodexOrdinals(
+  entries: readonly CodexSessionEntry[],
+  filePath: string,
+  expectedOrdinal?: number,
+): number | undefined {
+  let nextOrdinal = expectedOrdinal;
+  for (const entry of entries) {
+    const ordinal = (entry as { ordinal?: unknown }).ordinal;
+    if (!Number.isSafeInteger(ordinal) || Number(ordinal) < 0) {
+      throw new Error(`Codex rollout has an unsafe leaf ordinal: ${filePath}`);
+    }
+    const numericOrdinal = Number(ordinal);
+    if (nextOrdinal !== undefined && numericOrdinal !== nextOrdinal) {
+      throw new Error(
+        `Codex rollout has a non-contiguous leaf ordinal: ${filePath}`,
+      );
+    }
+    nextOrdinal = numericOrdinal + 1;
+  }
+  return nextOrdinal;
 }
-
-interface CodexCompactPageSnapshot extends CodexEntrySnapshot {
-  kind: "compact-page";
-  omittedPrefix: boolean;
-  startByte: number;
-  endByte: number;
-  compactBoundaries: number;
-}
-
-type CodexCompactWindowSnapshot =
-  | CodexCompactTailSnapshot
-  | CodexCompactPageSnapshot;
 
 interface CodexEntryReadOwner {
   promise: Promise<CodexEntryCache | null>;
   joinedCallers: number;
-}
-
-interface CodexParsedEntrySnapshot {
-  entries: CodexSessionEntry[];
-  partialLine: string;
-  readLinesMs: number;
-  parseMs: number;
-  lineCount: number;
-  maxLineLength: number;
 }
 
 interface CodexAgentMapping {
@@ -547,6 +555,8 @@ export class CodexSessionReader implements ISessionReader {
   private entryReadOwners: Map<string, CodexEntryReadOwner> = new Map();
   private entryCacheRevision = 0;
   private agentMappingCache: Map<string, CodexAgentMappingCache> = new Map();
+  private rolloutPathById: Map<string, string> = new Map();
+  private readonly rolloutWindowReader: CodexRolloutWindowReader;
 
   constructor(options: CodexSessionReaderOptions) {
     this.sessionsDir = options.sessionsDir;
@@ -566,6 +576,9 @@ export class CodexSessionReader implements ISessionReader {
     );
     this.summaryParserWorkerMode = options.summaryParserWorkerMode ?? "off";
     this.summaryParserClient = options.summaryParserClient;
+    this.rolloutWindowReader = new CodexRolloutWindowReader(
+      (filePath, start, length) => this.readFileRange(filePath, start, length),
+    );
   }
 
   async close(): Promise<void> {
@@ -579,6 +592,7 @@ export class CodexSessionReader implements ISessionReader {
     this.sessionFileCache.clear();
     this.entryCache.clear();
     this.agentMappingCache.clear();
+    this.rolloutPathById.clear();
     for (const key of this.providerChildProjectionKeys) {
       codexProviderChildProjections.invalidate(key);
     }
@@ -788,6 +802,7 @@ export class CodexSessionReader implements ISessionReader {
       const beforeMessageId = options?.beforeMessageId;
       const summaryHint = options?.summaryHint;
       let compactWindow: CodexCompactWindowSnapshot | null = null;
+      let referenceBackedHistory = false;
       if (
         afterMessageId === undefined &&
         Number.isInteger(requestedTailCompactions) &&
@@ -796,11 +811,18 @@ export class CodexSessionReader implements ISessionReader {
         (summaryHint?.provider === "codex" ||
           summaryHint?.provider === "codex-oss")
       ) {
+        referenceBackedHistory = Boolean(
+          (await readCodexSessionMeta(sessionFile.filePath)).payload
+            .history_base,
+        );
         const stats = await stat(sessionFile.filePath);
         const snapshotUpdatedAt = new Date(
           getCodexRolloutActivityTimeMs(sessionFile.filePath, stats),
         ).toISOString();
-        if (summaryHint.updatedAt === snapshotUpdatedAt) {
+        if (
+          !referenceBackedHistory &&
+          summaryHint.updatedAt === snapshotUpdatedAt
+        ) {
           compactWindow = beforeMessageId
             ? await this.readCompactPageSnapshot(
                 sessionFile.filePath,
@@ -1360,7 +1382,64 @@ export class CodexSessionReader implements ISessionReader {
   private hydrateSessionFileCache(sessions: CodexSessionFile[]): void {
     for (const session of sessions) {
       this.sessionFileCache.set(session.id, session);
+      this.cacheRolloutPath(session.filePath);
     }
+  }
+
+  private cacheRolloutPath(filePath: string, overwrite = true): void {
+    const rolloutId = getCodexRolloutSessionId(filePath);
+    if (rolloutId && (overwrite || !this.rolloutPathById.has(rolloutId))) {
+      this.rolloutPathById.set(rolloutId, filePath);
+    }
+  }
+
+  private async findRolloutPathById(rolloutId: string): Promise<string | null> {
+    const cached = this.rolloutPathById.get(rolloutId);
+    if (cached) {
+      try {
+        await stat(cached);
+        return cached;
+      } catch {
+        // Codex may archive or unarchive an immutable referenced ancestor.
+        // Drop only the stale path and search both provider-owned roots again.
+        this.rolloutPathById.delete(rolloutId);
+      }
+    }
+
+    // Ordinary detail reads have already scanned active sessions. Direct
+    // summary-worker reads have not, so populate the immutable rollout-id map
+    // on demand before checking the archived sibling root.
+    const activeFiles = await this.findJsonlFiles(this.sessionsDir);
+    for (const filePath of activeFiles) {
+      this.cacheRolloutPath(filePath);
+    }
+    const active = this.rolloutPathById.get(rolloutId);
+    if (active) return active;
+
+    await this.hydrateArchivedRolloutPaths();
+    return this.rolloutPathById.get(rolloutId) ?? null;
+  }
+
+  private async hydrateArchivedRolloutPaths(): Promise<void> {
+    if (basename(this.sessionsDir) !== "sessions") return;
+    const archivedDir = join(dirname(this.sessionsDir), "archived_sessions");
+    const archivedFiles = await this.findJsonlFiles(archivedDir);
+    for (const filePath of archivedFiles) {
+      // An active representation wins if both roots briefly contain the same
+      // rollout during an archive transition.
+      this.cacheRolloutPath(filePath, false);
+    }
+  }
+
+  private resolveRolloutLineage(
+    sessionId: string,
+    filePath: string,
+  ): Promise<CodexRolloutLineage> {
+    return resolveCodexRolloutLineage({
+      requestedSessionId: sessionId,
+      leafFilePath: filePath,
+      resolveRolloutPath: (rolloutId) => this.findRolloutPathById(rolloutId),
+    });
   }
 
   private filterVisibleSessionsForScanMetrics(
@@ -1406,6 +1485,7 @@ export class CodexSessionReader implements ISessionReader {
     const files = await this.findJsonlFiles(this.sessionsDir, metrics);
 
     for (const filePath of files) {
+      this.cacheRolloutPath(filePath);
       const activeWindowSkipsBefore = metrics?.discovery.activeWindowSkips ?? 0;
       const session = await this.readSessionMeta(filePath, options, metrics);
       if (session) {
@@ -1597,16 +1677,24 @@ export class CodexSessionReader implements ISessionReader {
     if (
       cached &&
       cached.filePath === filePath &&
-      !isCompressedCodexSessionFile(filePath) &&
+      !isCompressedCodexRolloutPath(filePath) &&
       cached.size < stats.size
     ) {
-      const parsed = await this.readPlainEntryRange(
+      const parsed = await this.rolloutWindowReader.readEntryRange(
         filePath,
         cached.size,
         stats.size - cached.size,
         Date.now(),
         cached.partialLine,
       );
+      const nextLeafOrdinal =
+        cached.nextLeafOrdinal === undefined
+          ? undefined
+          : validateContiguousCodexOrdinals(
+              parsed.entries,
+              filePath,
+              cached.nextLeafOrdinal,
+            );
 
       if (
         revision !== this.entryCacheRevision ||
@@ -1617,6 +1705,7 @@ export class CodexSessionReader implements ISessionReader {
 
       cached.entries.push(...parsed.entries);
       cached.partialLine = parsed.partialLine;
+      cached.nextLeafOrdinal = nextLeafOrdinal;
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       cached.ctimeMs = stats.ctimeMs;
@@ -1646,7 +1735,7 @@ export class CodexSessionReader implements ISessionReader {
       return cached;
     }
 
-    const parsed = await this.readEntrySnapshot(filePath, stats);
+    const parsed = await this.readEntrySnapshot(sessionId, filePath, stats);
     if (
       revision !== this.entryCacheRevision ||
       this.entryCache.get(sessionId) !== cached
@@ -1662,6 +1751,7 @@ export class CodexSessionReader implements ISessionReader {
       size: stats.size,
       entries: parsed.entries,
       partialLine: parsed.partialLine,
+      nextLeafOrdinal: parsed.nextLeafOrdinal,
       normalizationSource: {},
     };
     this.entryCache.set(sessionId, refreshed);
@@ -1703,7 +1793,7 @@ export class CodexSessionReader implements ISessionReader {
   }): Promise<CodexEntrySnapshot> {
     const { startedAt, memoryBefore, sessionId, filePath, purpose, stats } =
       options;
-    const parsed = await this.readEntrySnapshot(filePath, stats);
+    const parsed = await this.readEntrySnapshot(sessionId, filePath, stats);
     this.cacheAgentMappingsFromEntries(
       sessionId,
       filePath,
@@ -1736,11 +1826,79 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   private async readEntrySnapshot(
+    sessionId: string,
     filePath: string,
     stats: Awaited<ReturnType<typeof stat>>,
-  ): Promise<CodexParsedEntrySnapshot> {
+  ): Promise<CodexReadEntrySnapshot> {
     const readStartedAt = Date.now();
-    if (isCompressedCodexSessionFile(filePath)) {
+    const lineage = await this.resolveRolloutLineage(sessionId, filePath);
+    if (lineage.referenceBacked) {
+      if (!isCompressedCodexRolloutPath(filePath)) {
+        const leafSegment = lineage.segments.at(-1);
+        if (
+          !leafSegment ||
+          leafSegment.filePath !== filePath ||
+          leafSegment.end
+        ) {
+          throw new Error(`Invalid Codex leaf segment for ${sessionId}`);
+        }
+        const inherited = await readCodexRolloutLineageEntries({
+          ...lineage,
+          segments: lineage.segments.slice(0, -1),
+        });
+        const leaf = await this.rolloutWindowReader.readEntryRange(
+          filePath,
+          0,
+          Number(stats.size),
+          readStartedAt,
+        );
+        const leafMeta = leaf.entries[0];
+        if (
+          leafMeta?.type !== "session_meta" ||
+          leafMeta.payload.id !== sessionId
+        ) {
+          throw new Error(
+            `Codex rollout has no matching leaf metadata: ${filePath}`,
+          );
+        }
+        const nextLeafOrdinal = validateContiguousCodexOrdinals(
+          leaf.entries,
+          filePath,
+        );
+        const localEntries: CodexSessionEntry[] = [];
+        for (const entry of leaf.entries) {
+          const numericOrdinal = Number(
+            (entry as { ordinal?: unknown }).ordinal,
+          );
+          if (
+            entry.type !== "session_meta" &&
+            numericOrdinal >= leafSegment.startOrdinal
+          ) {
+            localEntries.push(entry);
+          }
+        }
+        const parseMs = inherited.parseMs + leaf.parseMs;
+        return {
+          entries: [...inherited.entries, ...localEntries],
+          partialLine: leaf.partialLine,
+          nextLeafOrdinal,
+          readLinesMs: Math.max(0, Date.now() - readStartedAt - parseMs),
+          parseMs,
+          lineCount: inherited.lineCount + leaf.lineCount,
+          maxLineLength: Math.max(inherited.maxLineLength, leaf.maxLineLength),
+        };
+      }
+      const parsed = await readCodexRolloutLineageEntries(lineage);
+      return {
+        entries: parsed.entries,
+        partialLine: Buffer.alloc(0),
+        readLinesMs: Math.max(0, Date.now() - readStartedAt - parsed.parseMs),
+        parseMs: parsed.parseMs,
+        lineCount: parsed.lineCount,
+        maxLineLength: parsed.maxLineLength,
+      };
+    }
+    if (isCompressedCodexRolloutPath(filePath)) {
       const lines = await readJsonlLines(filePath);
       const readLinesMs = Date.now() - readStartedAt;
       const entries: CodexSessionEntry[] = [];
@@ -1755,7 +1913,7 @@ export class CodexSessionReader implements ISessionReader {
       }
       return {
         entries,
-        partialLine: "",
+        partialLine: Buffer.alloc(0),
         readLinesMs,
         parseMs: Date.now() - parseStartedAt,
         lineCount: lines.length,
@@ -1763,7 +1921,7 @@ export class CodexSessionReader implements ISessionReader {
       };
     }
 
-    return this.readPlainEntryRange(
+    return this.rolloutWindowReader.readEntryRange(
       filePath,
       0,
       Number(stats.size),
@@ -1771,107 +1929,16 @@ export class CodexSessionReader implements ISessionReader {
     );
   }
 
-  private async findCompactTailStart(
-    filePath: string,
-    fileSize: number,
-    compactBoundaries: number,
-  ): Promise<number | null> {
-    let position = fileSize;
-    let rightPartial = Buffer.alloc(0);
-    let found = 0;
-
-    while (position > 0) {
-      const start = Math.max(0, position - CODEX_ENTRY_READ_CHUNK_BYTES);
-      const block = await this.readFileRange(filePath, start, position - start);
-      const combined =
-        rightPartial.length > 0 ? Buffer.concat([block, rightPartial]) : block;
-      const firstNewline = combined.indexOf(0x0a);
-      if (start > 0 && firstNewline < 0) {
-        rightPartial = Buffer.from(combined);
-        position = start;
-        continue;
-      }
-
-      const completeStart = start === 0 ? 0 : firstNewline + 1;
-      let lineEnd = combined.length;
-      while (lineEnd > completeStart) {
-        if (combined[lineEnd - 1] === 0x0a) {
-          lineEnd -= 1;
-          continue;
-        }
-        const previousNewline = combined.lastIndexOf(0x0a, lineEnd - 1);
-        const lineStart = Math.max(completeStart, previousNewline + 1);
-        const line = combined.subarray(lineStart, lineEnd);
-        if (line.includes('"compacted"')) {
-          try {
-            const candidate = JSON.parse(line.toString("utf8")) as {
-              type?: unknown;
-            };
-            if (candidate.type === "compacted") {
-              found += 1;
-              if (found === compactBoundaries) {
-                return start + lineStart;
-              }
-            }
-          } catch {
-            // A provisional or malformed line is not a usable boundary.
-          }
-        }
-        lineEnd = previousNewline >= completeStart ? previousNewline : 0;
-      }
-
-      rightPartial =
-        start > 0
-          ? Buffer.from(combined.subarray(0, firstNewline))
-          : Buffer.alloc(0);
-      position = start;
-    }
-
-    return null;
-  }
-
   private async readCompactTailSnapshot(
     filePath: string,
     stats: Awaited<ReturnType<typeof stat>>,
     compactBoundaries: number,
   ): Promise<CodexCompactTailSnapshot | null> {
-    const fileSize = Number(stats.size);
-    if (
-      isCompressedCodexSessionFile(filePath) ||
-      fileSize <=
-        CODEX_COMPACT_TAIL_ESTIMATED_BYTES_PER_BOUNDARY * compactBoundaries
-    ) {
-      return null;
-    }
-
-    const startByte = await this.findCompactTailStart(
+    return this.rolloutWindowReader.readCompactTailSnapshot(
       filePath,
-      fileSize,
+      stats,
       compactBoundaries,
     );
-    if (startByte === null || startByte <= 0) {
-      return null;
-    }
-
-    const parsed = await this.readPlainEntryRange(
-      filePath,
-      startByte,
-      fileSize - startByte,
-    );
-    if (parsed.entries[0]?.type !== "compacted") {
-      return null;
-    }
-
-    return {
-      entries: parsed.entries,
-      transcriptSnapshotUpdatedAt: new Date(
-        getCodexRolloutActivityTimeMs(filePath, stats),
-      ).toISOString(),
-      kind: "compact-tail",
-      omittedPrefix: true,
-      startByte,
-      compactBoundaries,
-    };
   }
 
   private async readCompactPageSnapshot(
@@ -1880,114 +1947,12 @@ export class CodexSessionReader implements ISessionReader {
     compactBoundaries: number,
     beforeMessageId: string,
   ): Promise<CodexCompactPageSnapshot | null> {
-    const fileSize = Number(stats.size);
-    const endByte = parseCodexSourceByteCursor(beforeMessageId);
-    if (
-      isCompressedCodexSessionFile(filePath) ||
-      endByte === null ||
-      endByte <= 0 ||
-      endByte > fileSize
-    ) {
-      return null;
-    }
-
-    const locatedStartByte = await this.findCompactTailStart(
+    return this.rolloutWindowReader.readCompactPageSnapshot(
       filePath,
-      endByte,
+      stats,
       compactBoundaries,
+      beforeMessageId,
     );
-    const startByte = locatedStartByte ?? 0;
-    const parsed = await this.readPlainEntryRange(
-      filePath,
-      startByte,
-      endByte - startByte,
-    );
-    if (locatedStartByte !== null && parsed.entries[0]?.type !== "compacted") {
-      return null;
-    }
-
-    return {
-      entries: parsed.entries,
-      transcriptSnapshotUpdatedAt: new Date(
-        getCodexRolloutActivityTimeMs(filePath, stats),
-      ).toISOString(),
-      kind: "compact-page",
-      omittedPrefix: startByte > 0,
-      startByte,
-      endByte,
-      compactBoundaries,
-    };
-  }
-
-  private async readPlainEntryRange(
-    filePath: string,
-    start: number,
-    length: number,
-    readStartedAt = Date.now(),
-    initialPartialLine = "",
-  ): Promise<CodexParsedEntrySnapshot> {
-    const entries: CodexSessionEntry[] = [];
-    let partialLine = initialPartialLine;
-    let partialLineStart = start - Buffer.byteLength(initialPartialLine);
-    let lineCount = 0;
-    let maxLineLength = 0;
-    let parseMs = 0;
-
-    const parseText = (text: string, final: boolean): void => {
-      const parseStartedAt = Date.now();
-      const lines = `${partialLine}${text}`.split("\n");
-      partialLine = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const lineStart = partialLineStart;
-        partialLineStart += Buffer.byteLength(line) + 1;
-        lineCount += 1;
-        maxLineLength = Math.max(maxLineLength, line.length);
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const entry = parseCodexSessionEntry(trimmed);
-        if (entry) {
-          entries.push(tagCodexEntrySourceByteOffset(entry, lineStart));
-        }
-      }
-
-      if (final && partialLine) {
-        lineCount += 1;
-        maxLineLength = Math.max(maxLineLength, partialLine.length);
-        const entry = parseCodexSessionEntry(partialLine.trim());
-        if (entry) {
-          entries.push(tagCodexEntrySourceByteOffset(entry, partialLineStart));
-          partialLine = "";
-        }
-      }
-      parseMs += Date.now() - parseStartedAt;
-    };
-
-    const decoder = new TextDecoder("utf-8");
-    let totalBytesRead = 0;
-    while (totalBytesRead < length) {
-      const bytesToRead = Math.min(
-        CODEX_ENTRY_READ_CHUNK_BYTES,
-        length - totalBytesRead,
-      );
-      const buffer = await this.readFileRange(
-        filePath,
-        start + totalBytesRead,
-        bytesToRead,
-      );
-      totalBytesRead += buffer.length;
-      parseText(decoder.decode(buffer, { stream: true }), false);
-    }
-    parseText(decoder.decode(), true);
-
-    return {
-      entries,
-      partialLine,
-      readLinesMs: Math.max(0, Date.now() - readStartedAt - parseMs),
-      parseMs,
-      lineCount,
-      maxLineLength,
-    };
   }
 
   async getSessionSummaryFromFile(
@@ -2121,41 +2086,69 @@ export class CodexSessionReader implements ISessionReader {
       stopReason = reason;
     };
 
-    for await (const line of iterateJsonlLines(filePath)) {
-      lineCount += 1;
-      maxLineLength = Math.max(maxLineLength, line.length);
-      bytesRead += Buffer.byteLength(line) + 1;
-      const trimmed = line.trim();
-      if (!trimmed) {
-        const budgetReason = headBudgetStopReason();
-        if (budgetReason) {
-          stopEarly(budgetReason);
-          break;
-        }
-        continue;
-      }
-
-      const entry = parseCodexSessionEntry(trimmed);
-      if (!entry) {
-        const budgetReason = headBudgetStopReason();
-        if (budgetReason) {
-          stopEarly(budgetReason);
-          break;
-        }
-        continue;
-      }
-
+    const applyParsedEntry = (entry: CodexSessionEntry): boolean => {
       parsedEntries += 1;
       dedupedEntries += 1;
       this.applySummaryEntry(state, entry);
       if (readMode === "head" && this.hasHeadSummary(state)) {
         stopEarly("head_complete");
-        break;
+        return true;
       }
       const budgetReason = headBudgetStopReason();
       if (budgetReason) {
         stopEarly(budgetReason);
-        break;
+        return true;
+      }
+      return false;
+    };
+
+    const lineage = await this.resolveRolloutLineage(sessionId, filePath);
+    if (lineage.referenceBacked) {
+      const lineageMetrics: CodexLineageReadMetrics = {
+        lineCount: 0,
+        parsedEntries: 0,
+        maxLineLength: 0,
+        parseMs: 0,
+        bytesRead: 0,
+      };
+      for await (const entry of iterateCodexRolloutLineageEntries(
+        lineage,
+        lineageMetrics,
+      )) {
+        lineCount = lineageMetrics.lineCount;
+        maxLineLength = lineageMetrics.maxLineLength;
+        bytesRead = lineageMetrics.bytesRead;
+        if (applyParsedEntry(entry)) break;
+      }
+      lineCount = lineageMetrics.lineCount;
+      maxLineLength = lineageMetrics.maxLineLength;
+      bytesRead = lineageMetrics.bytesRead;
+    } else {
+      for await (const line of iterateJsonlLines(filePath)) {
+        lineCount += 1;
+        maxLineLength = Math.max(maxLineLength, line.length);
+        bytesRead += Buffer.byteLength(line) + 1;
+        const trimmed = line.trim();
+        if (!trimmed) {
+          const budgetReason = headBudgetStopReason();
+          if (budgetReason) {
+            stopEarly(budgetReason);
+            break;
+          }
+          continue;
+        }
+
+        const entry = parseCodexSessionEntry(trimmed);
+        if (!entry) {
+          const budgetReason = headBudgetStopReason();
+          if (budgetReason) {
+            stopEarly(budgetReason);
+            break;
+          }
+          continue;
+        }
+
+        if (applyParsedEntry(entry)) break;
       }
     }
     const parseMs = Date.now() - parseStartedAt;
@@ -2224,6 +2217,11 @@ export class CodexSessionReader implements ISessionReader {
             };
           }
         }
+        return;
+      }
+
+      if (getCodexAsyncAgentMessageItem(entry)) {
+        state.assistantMessageCount += 1;
         return;
       }
 
@@ -2516,7 +2514,7 @@ export class CodexSessionReader implements ISessionReader {
       filePath: options.filePath,
       fileSize: Number(options.stats.size),
       fileMtimeMs: Number(options.stats.mtimeMs),
-      compressed: isCompressedCodexSessionFile(options.filePath),
+      compressed: isCompressedCodexRolloutPath(options.filePath),
       durationMs,
       parseMs: options.read.parseMs,
       lineCount: options.read.lineCount,
@@ -2686,16 +2684,17 @@ export class CodexSessionReader implements ISessionReader {
    * Count user/assistant messages in entries.
    *
    * Matches the logic in convertEntriesToMessages - we count user_message
-   * events and response_item messages, but not agent_message events since
-   * those are streaming duplicates.
+   * events and response_item messages. Async completed agent items are
+   * standalone rows; ordinary agent events are streaming duplicates.
    */
   private countMessages(entries: CodexSessionEntry[]): number {
     const provenance = buildCodexUserTurnProvenance(entries);
     const assistantCount = entries.reduce(
       (count, entry) =>
-        entry.type === "response_item" &&
-        entry.payload.type === "message" &&
-        entry.payload.role === "assistant"
+        (entry.type === "response_item" &&
+          entry.payload.type === "message" &&
+          entry.payload.role === "assistant") ||
+        getCodexAsyncAgentMessageItem(entry) !== null
           ? count + 1
           : count,
       0,

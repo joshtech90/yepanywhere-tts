@@ -12,6 +12,7 @@
  * - response_item: Message content (user, assistant, reasoning, function calls)
  * - event_msg: Event notifications (user_message, agent_message, token_count, etc.)
  * - turn_context: Per-turn context (cwd, approval policy, model, etc.)
+ * - token_usage_record: Per-response, turn, and thread token usage
  */
 
 import { z } from "zod";
@@ -19,6 +20,20 @@ import { z } from "zod";
 // =============================================================================
 // Session Metadata
 // =============================================================================
+
+const CodexPersistedEntryIdentityShape = {
+  ordinal: z.number().int().nonnegative().optional(),
+};
+
+export const CodexThreadHistoryModeSchema = z.enum(["legacy", "paginated"]);
+
+export const CodexHistoryPositionSchema = z.object({
+  thread_id: z.string(),
+  end_ordinal_exclusive: z.number().int().nonnegative(),
+  end_byte_offset: z.number().int().nonnegative(),
+});
+
+export type CodexHistoryPosition = z.infer<typeof CodexHistoryPositionSchema>;
 
 /**
  * Session metadata payload - first entry in session file.
@@ -51,6 +66,9 @@ export const CodexSessionMetaPayloadSchema = z.object({
   timestamp: z.string(),
   cwd: z.string(),
   forked_from_id: z.string().optional(),
+  forked_from_ordinal_exclusive: z.number().int().nonnegative().optional(),
+  history_mode: CodexThreadHistoryModeSchema.optional(),
+  history_base: CodexHistoryPositionSchema.optional(),
   session_id: z.string().optional(),
   parent_thread_id: z.string().optional(),
   originator: z.string().optional(), // e.g. "codex_exec"
@@ -70,6 +88,7 @@ export type CodexSessionMetaPayload = z.infer<
 >;
 
 export const CodexSessionMetaEntrySchema = z.object({
+  ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("session_meta"),
   payload: CodexSessionMetaPayloadSchema,
@@ -355,6 +374,7 @@ export type CodexResponseItemPayload = z.infer<
 >;
 
 export const CodexResponseItemEntrySchema = z.object({
+  ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("response_item"),
   payload: CodexResponseItemPayloadSchema,
@@ -407,6 +427,7 @@ export const CodexTokenUsageInfoSchema = z.object({
     .object({
       input_tokens: z.number(),
       cached_input_tokens: z.number().optional(),
+      cache_write_input_tokens: z.number().optional(),
       output_tokens: z.number(),
       reasoning_output_tokens: z.number().optional(),
       total_tokens: z.number(),
@@ -416,6 +437,7 @@ export const CodexTokenUsageInfoSchema = z.object({
     .object({
       input_tokens: z.number(),
       cached_input_tokens: z.number().optional(),
+      cache_write_input_tokens: z.number().optional(),
       output_tokens: z.number(),
       reasoning_output_tokens: z.number().optional(),
       total_tokens: z.number(),
@@ -437,10 +459,54 @@ export const CodexUserMessageEventSchema = z.object({
 /**
  * Agent message event.
  */
-export const CodexAgentMessageEventSchema = z.object({
-  type: z.literal("agent_message"),
-  message: z.string(),
-});
+export const CodexAsyncUserInputQuestionSchema = z
+  .object({
+    title: z.string(),
+    options: z.array(z.string()).nullable(),
+  })
+  .passthrough();
+
+export type CodexAsyncUserInputQuestion = z.infer<
+  typeof CodexAsyncUserInputQuestionSchema
+>;
+
+/** Validate and clone the shared live/durable async-question shape. */
+export function normalizeCodexAsyncUserInputQuestions(
+  value: unknown,
+): CodexAsyncUserInputQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const questions: CodexAsyncUserInputQuestion[] = [];
+  for (const question of value) {
+    if (!question || typeof question !== "object") return undefined;
+    const record = question as Record<string, unknown>;
+    if (typeof record.title !== "string") return undefined;
+    if (
+      record.options !== null &&
+      (!Array.isArray(record.options) ||
+        record.options.some((option) => typeof option !== "string"))
+    ) {
+      return undefined;
+    }
+    questions.push({
+      ...record,
+      title: record.title,
+      options:
+        record.options === null ? null : (record.options as string[]).slice(),
+    });
+  }
+  return questions;
+}
+
+export const CodexAgentMessageEventSchema = z
+  .object({
+    type: z.literal("agent_message"),
+    message: z.string(),
+    phase: z.string().nullable().optional(),
+    memory_citation: z.unknown().nullable().optional(),
+    delivery: z.string().optional(),
+    questions: z.array(CodexAsyncUserInputQuestionSchema).optional(),
+  })
+  .passthrough();
 
 /**
  * Agent reasoning event (summary of thinking).
@@ -598,12 +664,57 @@ export const CodexEventMsgPayloadSchema = z.discriminatedUnion("type", [
 export type CodexEventMsgPayload = z.infer<typeof CodexEventMsgPayloadSchema>;
 
 export const CodexEventMsgEntrySchema = z.object({
+  ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("event_msg"),
   payload: CodexEventMsgPayloadSchema,
 });
 
 export type CodexEventMsgEntry = z.infer<typeof CodexEventMsgEntrySchema>;
+
+// =============================================================================
+// Response Token Usage
+// =============================================================================
+
+/** Token counts persisted for one response and their cumulative rollups. */
+export const CodexResponseTokenUsageSchema = z
+  .object({
+    input_tokens: z.number(),
+    cached_input_tokens: z.number(),
+    cache_write_input_tokens: z.number(),
+    output_tokens: z.number(),
+    reasoning_output_tokens: z.number(),
+    total_tokens: z.number(),
+  })
+  .passthrough();
+
+export type CodexResponseTokenUsage = z.infer<
+  typeof CodexResponseTokenUsageSchema
+>;
+
+export const CodexTokenUsageRecordEntrySchema = z
+  .object({
+    ...CodexPersistedEntryIdentityShape,
+    timestamp: z.string(),
+    type: z.literal("token_usage_record"),
+    payload: z
+      .object({
+        thread_id: z.string(),
+        turn_id: z.string(),
+        session_id: z.string(),
+        root_turn_id: z.string(),
+        response_id: z.string(),
+        usage: CodexResponseTokenUsageSchema,
+        turn_token_usage: CodexResponseTokenUsageSchema,
+        thread_token_usage: CodexResponseTokenUsageSchema,
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export type CodexTokenUsageRecordEntry = z.infer<
+  typeof CodexTokenUsageRecordEntrySchema
+>;
 
 // =============================================================================
 // Compaction Entries
@@ -622,6 +733,7 @@ export const CodexCompactedPayloadSchema = z
 export type CodexCompactedPayload = z.infer<typeof CodexCompactedPayloadSchema>;
 
 export const CodexCompactedEntrySchema = z.object({
+  ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("compacted"),
   payload: CodexCompactedPayloadSchema,
@@ -646,20 +758,25 @@ export const CodexSandboxPolicySchema = z.object({
 /**
  * Turn context payload - sent at the start/end of turns.
  */
-export const CodexTurnContextPayloadSchema = z.object({
-  cwd: z.string(),
-  approval_policy: z.string(),
-  sandbox_policy: CodexSandboxPolicySchema.optional(),
-  model: z.string().optional(),
-  effort: z.string().optional(),
-  summary: z.string().optional(),
-});
+export const CodexTurnContextPayloadSchema = z
+  .object({
+    cwd: z.string(),
+    approval_policy: z.string(),
+    sandbox_policy: CodexSandboxPolicySchema.optional(),
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    summary: z.string().optional(),
+    turn_id: z.string().optional(),
+    root_turn_id: z.string().optional(),
+  })
+  .passthrough();
 
 export type CodexTurnContextPayload = z.infer<
   typeof CodexTurnContextPayloadSchema
 >;
 
 export const CodexTurnContextEntrySchema = z.object({
+  ...CodexPersistedEntryIdentityShape,
   timestamp: z.string(),
   type: z.literal("turn_context"),
   payload: CodexTurnContextPayloadSchema,
@@ -670,6 +787,7 @@ export type CodexTurnContextEntry = z.infer<typeof CodexTurnContextEntrySchema>;
 /** Codex Desktop workspace snapshot; retained but not rendered as conversation. */
 export const CodexWorldStateEntrySchema = z
   .object({
+    ...CodexPersistedEntryIdentityShape,
     timestamp: z.string(),
     type: z.literal("world_state"),
     payload: z
@@ -684,6 +802,7 @@ export const CodexWorldStateEntrySchema = z
 /** Local delivery metadata for provider-internal agent communication. */
 export const CodexInterAgentCommunicationMetadataEntrySchema = z
   .object({
+    ...CodexPersistedEntryIdentityShape,
     timestamp: z.string(),
     type: z.literal("inter_agent_communication_metadata"),
     payload: z.object({ trigger_turn: z.boolean() }).passthrough(),
@@ -706,6 +825,7 @@ export const CodexSessionEntrySchema = z.discriminatedUnion("type", [
   CodexTurnContextEntrySchema,
   CodexWorldStateEntrySchema,
   CodexInterAgentCommunicationMetadataEntrySchema,
+  CodexTokenUsageRecordEntrySchema,
 ]);
 
 export type CodexSessionEntry = z.infer<typeof CodexSessionEntrySchema>;

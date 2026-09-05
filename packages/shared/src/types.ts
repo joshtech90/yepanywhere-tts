@@ -386,6 +386,7 @@ export interface GrokSlashCommandDetails {
 
 export interface SlashCommandProviderDetails {
   grok?: GrokSlashCommandDetails;
+  codex?: { goalObjective?: string | null };
   [provider: string]: unknown;
 }
 
@@ -409,6 +410,13 @@ export interface SlashCommandInvocation {
   inventoryState?: SlashCommandInventoryState;
 }
 
+export interface SlashCommandArgumentCompletion {
+  /** Provider-authored argument text inserted after the command token. */
+  value: string;
+  /** Optional provider-authored explanation shown beside the completion. */
+  description?: string;
+}
+
 export interface SlashCommand {
   /** Command name without leading slash (e.g., "commit", "review-pr") */
   name: string;
@@ -416,6 +424,8 @@ export interface SlashCommand {
   description: string;
   /** Hint for command arguments (e.g., "<file>") */
   argumentHint?: string;
+  /** Non-exhaustive provider-owned completions for the first argument. */
+  argumentCompletions?: SlashCommandArgumentCompletion[];
   /** YA-owned fallback behavior for a command the provider does not expose. */
   emulation?: SlashCommandEmulation;
   /** Optional provider-specific provenance or capability detail. */

@@ -9,6 +9,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import {
   CODEX_TOOL_CORRELATION_FIELD,
+  type CodexAsyncUserInputQuestion,
   type CodexPlanToolMode,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_SUBAGENT_MAX_DEPTH,
@@ -19,6 +20,7 @@ import {
   type EffortLevel,
   hasInvocationCandidate,
   type ModelInfo,
+  normalizeCodexAsyncUserInputQuestions,
   type PermissionMode,
   type ProviderSubscriptionUsage,
   type SlashCommand,
@@ -43,12 +45,17 @@ import {
 import { formatCodexSubagentActivity } from "../../codex/subagentActivity.js";
 import { getLogger } from "../../logging/logger.js";
 import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
+import { quoteShellWord } from "../../utils/posixShell.js";
 import {
   CODEX_INSTALLATION_FAMILY,
   type ProviderInstallationCoordinator,
   providerInstallationCoordinator,
 } from "../../services/ProviderInstallationCoordinator.js";
-import { findCodexCliPath, getCodexCliVersion } from "../cli-detection.js";
+import {
+  findCodexCliPath,
+  getCodexCliVersion,
+  isCodexCliAuthenticated,
+} from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
@@ -72,6 +79,12 @@ import type {
   SkillsListResponse,
   ThreadForkParams,
   ThreadForkResponse,
+  ThreadGoalClearParams,
+  ThreadGoalClearResponse,
+  ThreadGoalGetParams,
+  ThreadGoalGetResponse,
+  ThreadGoalSetParams,
+  ThreadGoalSetResponse,
   ThreadReadParams,
   ThreadReadResponse,
   ThreadItem as CodexThreadItem,
@@ -180,6 +193,19 @@ const log = {
   },
 };
 const CODEX_DESKTOP_BROWSER_SKILL_NAME = "browser:control-in-app-browser";
+
+function formatCodexGoalStatus(
+  status: ThreadGoalSetResponse["goal"]["status"],
+): string {
+  switch (status) {
+    case "usageLimited":
+      return "Goal usage limited";
+    case "budgetLimited":
+      return "Goal budget limited";
+    default:
+      return `Goal ${status}`;
+  }
+}
 
 function logSdkCorrelationDebug(
   sessionId: string,
@@ -334,6 +360,26 @@ interface CodexForkAnchor {
  */
 const DECLARE_CODEX_ORIGINATOR = false;
 const DECLARED_CODEX_ORIGINATOR = "Codex Desktop";
+
+function quotePowerShellDoubleQuoted(value: string): string {
+  return `"${value
+    .replace(/`/g, "``")
+    .replace(/\$/g, "`$")
+    .replace(/"/g, '`"')}"`;
+}
+
+export function formatCodexLoginCommand(
+  executablePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const trimmedPath = executablePath.trim();
+  if (!trimmedPath || trimmedPath === "codex") return "codex login";
+  const executable =
+    platform === "win32"
+      ? quotePowerShellDoubleQuoted(trimmedPath)
+      : quoteShellWord(trimmedPath);
+  return `${platform === "win32" ? "& " : ""}${executable} login`;
+}
 const YEP_ANYWHERE_ORIGINATOR = "yep-anywhere";
 
 type JsonRpcId = string | number;
@@ -376,6 +422,7 @@ interface TokenUsageSnapshot {
 
 interface CodexTurnRuntimeState {
   threadId: string;
+  goalObjective?: string | null;
   resolvedModel: string;
   turnModelOverride: string | null;
   latestTokenUsage?: TokenUsageSnapshot;
@@ -591,7 +638,13 @@ interface CodexFailureTrace {
 
 type NormalizedThreadItem =
   | { id: string; type: "reasoning"; text: string }
-  | { id: string; type: "agent_message"; text: string }
+  | {
+      id: string;
+      type: "agent_message";
+      text: string;
+      delivery?: "async";
+      questions?: CodexAsyncUserInputQuestion[];
+    }
   | {
       id: string;
       type: "command_execution";
@@ -1267,16 +1320,36 @@ export class CodexProvider implements AgentProvider {
     return authStatus.authenticated;
   }
 
-  /**
-   * Get detailed authentication status.
-   * If Codex CLI is installed, assume it's authenticated.
-   */
+  /** Get detailed launchability and authentication status. */
   async getAuthStatus(): Promise<AuthStatus> {
-    const installed = await this.isCodexCliInstalled();
+    const codexPath = await findCodexCliPath(
+      this.config.codexPath,
+      this.installationCoordinator,
+    );
+    const installed = codexPath !== null;
+    const codexEnv = this.getCodexEnv();
+    const hasEnvironmentAuth = Boolean(
+      this.config.externalChatgptAuth ||
+        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].some((name) =>
+          codexEnv[name]?.trim(),
+        ),
+    );
+    const authenticated = Boolean(
+      codexPath &&
+        (hasEnvironmentAuth ||
+          (await isCodexCliAuthenticated(
+            codexPath,
+            codexEnv,
+            this.installationCoordinator,
+          ))),
+    );
     return {
       installed,
-      authenticated: installed,
-      enabled: installed,
+      authenticated,
+      enabled: authenticated,
+      ...(codexPath && !authenticated
+        ? { loginCommand: formatCodexLoginCommand(codexPath) }
+        : {}),
     };
   }
 
@@ -1671,6 +1744,7 @@ export class CodexProvider implements AgentProvider {
     }
 
     let activeClient: CodexAppServerClient | null = null;
+    let goalCommandTail: Promise<void> = Promise.resolve();
     let resolveInitialActiveClient:
       | ((client: CodexAppServerClient | null) => void)
       | null = null;
@@ -1787,13 +1861,32 @@ export class CodexProvider implements AgentProvider {
       },
       setEffort: async (effort) => {
         if (effort !== undefined) {
-          await updateActiveTurnSettings({
-            effort: this.mapEffortToReasoningEffort(
-              effort,
-              options.thinking,
-              runtimeState.turnModelOverride ?? runtimeState.resolvedModel,
-            ),
-          });
+          try {
+            await updateActiveTurnSettings({
+              effort: this.mapEffortToReasoningEffort(
+                effort,
+                options.thinking,
+                runtimeState.turnModelOverride ?? runtimeState.resolvedModel,
+              ),
+            });
+          } catch (error) {
+            if (
+              !(error instanceof Error) ||
+              !("jsonRpcCode" in error) ||
+              error.jsonRpcCode !== -32600
+            ) {
+              throw error;
+            }
+            // Live-turn restrictions do not reject the next turn's selection.
+            log.info(
+              {
+                threadId: runtimeState.threadId,
+                effort,
+                reason: error.message,
+              },
+              "Codex refused live effort update; retaining selection for the next turn",
+            );
+          }
         }
         runtimeState.turnEffortOverride = effort ?? null;
       },
@@ -1817,10 +1910,25 @@ export class CodexProvider implements AgentProvider {
             skillInventory,
             skillInventory.stale,
           );
+          if (runtimeState.threadId) {
+            try {
+              const { goal } =
+                await activeClient.request<ThreadGoalGetResponse>(
+                  "thread/goal/get",
+                  {
+                    threadId: runtimeState.threadId,
+                  } satisfies ThreadGoalGetParams,
+                );
+              runtimeState.goalObjective = goal?.objective ?? null;
+            } catch (error) {
+              log.debug({ error }, "Codex goal completion is unavailable");
+            }
+          }
         }
         return this.createCodexSlashCommands(
           skillInventory.skills,
           skillInventory.stale ? "stale" : "current",
+          runtimeState.goalObjective,
         );
       },
       steer: async (message) => {
@@ -1940,6 +2048,136 @@ export class CodexProvider implements AgentProvider {
         argument,
       ): Promise<ProviderCommandResult> => {
         const name = command.trim().replace(/^\/+/, "").toLowerCase();
+        if (name === "goal") {
+          const operation = goalCommandTail.then(
+            async (): Promise<ProviderCommandResult> => {
+              const client = activeClient ?? (await initialActiveClient);
+              const threadId = runtimeState.threadId;
+              if (!client || !threadId) {
+                return {
+                  handled: true,
+                  error: "Codex session is not ready for goal commands yet",
+                };
+              }
+
+              const goalArgument = argument?.trim() ?? "";
+              const goalControl = goalArgument.toLowerCase();
+              try {
+                if (!goalArgument) {
+                  const response = await client.request<ThreadGoalGetResponse>(
+                    "thread/goal/get",
+                    { threadId } satisfies ThreadGoalGetParams,
+                  );
+                  return {
+                    handled: true,
+                    output: response.goal
+                      ? {
+                          summary: "/goal",
+                          details: [
+                            response.goal.objective,
+                            formatCodexGoalStatus(response.goal.status),
+                            `${response.goal.tokensUsed.toLocaleString()} tokens used`,
+                          ],
+                        }
+                      : { summary: "/goal", details: ["No goal set"] },
+                  };
+                }
+
+                if (goalControl === "clear") {
+                  const response =
+                    await client.request<ThreadGoalClearResponse>(
+                      "thread/goal/clear",
+                      { threadId } satisfies ThreadGoalClearParams,
+                    );
+                  return {
+                    handled: true,
+                    output: {
+                      summary: "/goal",
+                      details: [
+                        response.cleared ? "Goal cleared" : "No goal to clear",
+                      ],
+                    },
+                  };
+                }
+
+                if (goalControl === "pause" || goalControl === "resume") {
+                  const requestedStatus =
+                    goalControl === "pause" ? "paused" : "active";
+                  const response = await client.request<ThreadGoalSetResponse>(
+                    "thread/goal/set",
+                    {
+                      threadId,
+                      status: requestedStatus,
+                    } satisfies ThreadGoalSetParams,
+                  );
+                  return {
+                    handled: true,
+                    output: {
+                      summary: "/goal",
+                      details: [
+                        response.goal.objective,
+                        response.goal.status === requestedStatus
+                          ? goalControl === "pause"
+                            ? "Goal paused"
+                            : "Goal resumed"
+                          : formatCodexGoalStatus(response.goal.status),
+                      ],
+                    },
+                  };
+                }
+
+                if (goalControl === "edit") {
+                  return {
+                    handled: true,
+                    error:
+                      "Interactive /goal edit is unavailable in YA. Set the revised objective with /goal <objective>.",
+                  };
+                }
+
+                const current = await client.request<ThreadGoalGetResponse>(
+                  "thread/goal/get",
+                  { threadId } satisfies ThreadGoalGetParams,
+                );
+                if (current.goal) {
+                  await client.request<ThreadGoalClearResponse>(
+                    "thread/goal/clear",
+                    { threadId } satisfies ThreadGoalClearParams,
+                  );
+                }
+                const response = await client.request<ThreadGoalSetResponse>(
+                  "thread/goal/set",
+                  {
+                    threadId,
+                    objective: goalArgument,
+                    status: "active",
+                  } satisfies ThreadGoalSetParams,
+                );
+                return {
+                  handled: true,
+                  output: {
+                    summary: "/goal",
+                    details: [response.goal.objective, "Goal set"],
+                  },
+                };
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                log.warn(
+                  { threadId, argument: goalArgument, error: message },
+                  "Codex goal command failed",
+                );
+                return { handled: true, error: message };
+              }
+            },
+          );
+          // Serialize clear-and-set transactions; callers still receive failures.
+          goalCommandTail = operation.then(
+            () => {},
+            () => {},
+          );
+          return operation;
+        }
+
         if (name === "status" || name === "usage") {
           const client = activeClient ?? (await initialActiveClient);
           if (!client) {
@@ -2434,6 +2672,72 @@ export class CodexProvider implements AgentProvider {
       }
 
       const liveEventState = this.createLiveEventState();
+      const observeCommands = async (
+        notification: JsonRpcNotification,
+      ): Promise<SDKMessage | null> => {
+        if (notification.method === "skills/changed") {
+          skillInventory.stale = true;
+          await this.refreshCodexSkills(
+            appServer,
+            options.cwd,
+            skillInventory,
+            true,
+          );
+          return withCodexTimestamp({
+            type: "system",
+            subtype: "commands_changed",
+            session_id: sessionId,
+            slash_command_inventory: this.createCodexSlashCommands(
+              skillInventory.skills,
+              skillInventory.stale ? "stale" : "current",
+              runtimeState.goalObjective,
+            ),
+          } as SDKMessage);
+        }
+        const params = notification.params as
+          | {
+              threadId?: string;
+              goal?: { objective?: string };
+            }
+          | undefined;
+        if (
+          params?.threadId !== sessionId ||
+          (notification.method !== "thread/goal/updated" &&
+            notification.method !== "thread/goal/cleared")
+        )
+          return null;
+        const objective =
+          notification.method === "thread/goal/cleared"
+            ? null
+            : params.goal?.objective;
+        if (objective !== null && typeof objective !== "string") return null;
+        if (objective === runtimeState.goalObjective) return null;
+        runtimeState.goalObjective = objective;
+        return withCodexTimestamp({
+          type: "system",
+          subtype: "commands_changed",
+          session_id: sessionId,
+          slash_command_inventory: this.createCodexSlashCommands(
+            skillInventory.skills,
+            skillInventory.stale ? "stale" : "current",
+            objective,
+          ),
+        } as SDKMessage);
+      };
+      let pendingNotification: Promise<JsonRpcNotification> | null = null;
+      const peekNotification = () => {
+        if (!pendingNotification) {
+          pendingNotification = appServer.nextNotification(signal);
+          // A turn-start RPC can fail before the prefetched notification is read.
+          void pendingNotification.catch(() => {});
+        }
+        return pendingNotification;
+      };
+      const readNotification = async () => {
+        const notification = await peekNotification();
+        pendingNotification = null;
+        return notification;
+      };
       const consumeTurn = async function* (
         provider: CodexProvider,
         turn: CodexThreadTurn,
@@ -2482,7 +2786,7 @@ export class CodexProvider implements AgentProvider {
         };
 
         while (!turnComplete && !signal.aborted) {
-          const notification = await appServer.nextNotification(signal);
+          const notification = await readNotification();
           if (
             provider.shouldSuppressLiveDeltaNotification(notification, options)
           ) {
@@ -2548,23 +2852,9 @@ export class CodexProvider implements AgentProvider {
           }
 
           logRawNotification(notification);
+          const goalCommands = await observeCommands(notification);
+          if (goalCommands) yield goalCommands;
           if (notification.method === "skills/changed") {
-            skillInventory.stale = true;
-            await provider.refreshCodexSkills(
-              appServer,
-              options.cwd,
-              skillInventory,
-              true,
-            );
-            yield withCodexTimestamp({
-              type: "system",
-              subtype: "commands_changed",
-              session_id: sessionId,
-              slash_command_inventory: provider.createCodexSlashCommands(
-                skillInventory.skills,
-                skillInventory.stale ? "stale" : "current",
-              ),
-            } as SDKMessage);
             continue;
           }
           failureTrace.activeTurnId = currentActiveTurnId;
@@ -2716,7 +3006,45 @@ export class CodexProvider implements AgentProvider {
       let isFirstMessage = !options.resumeSessionId;
 
       try {
-        for await (const message of messageGen) {
+        while (!signal.aborted) {
+          let releaseQueueListener = () => {};
+          const inputReady = new Promise<"input">((resolve) => {
+            releaseQueueListener = queue.subscribeDepth((depth) => {
+              if (depth > 0) resolve("input");
+            });
+          });
+          let next: "input" | JsonRpcNotification;
+          try {
+            next = await Promise.race([peekNotification(), inputReady]);
+          } finally {
+            releaseQueueListener();
+          }
+          if (next !== "input") {
+            pendingNotification = null;
+            logRawNotification(next);
+            const goalCommands = await observeCommands(next);
+            if (goalCommands) yield goalCommands;
+            if (next.method === "turn/started") {
+              const params = asCodexTurnCompletedNotification(next.params);
+              if (params?.threadId === sessionId) {
+                const { overloadError } = yield* consumeTurn(
+                  this,
+                  params.turn,
+                  0,
+                );
+                if (overloadError) {
+                  yield overloadError;
+                  yield { type: "result", session_id: sessionId } as SDKMessage;
+                }
+              }
+            } else if (appServer.isClosed) {
+              throw new Error("Codex app-server closed while awaiting work");
+            }
+            continue;
+          }
+          const queued = await messageGen.next();
+          if (queued.done) break;
+          const message = queued.value;
           if (signal.aborted) {
             break;
           }
@@ -3424,8 +3752,22 @@ export class CodexProvider implements AgentProvider {
   private createCodexSlashCommands(
     skills: readonly SkillMetadata[],
     inventoryState: "current" | "stale" = "current",
+    goalObjective?: string | null,
   ): SlashCommand[] {
-    const commands: SlashCommand[] = [...CODEX_BUILTIN_COMMANDS];
+    const commands: SlashCommand[] = CODEX_BUILTIN_COMMANDS.map((command) =>
+      command.name === "goal" && goalObjective !== undefined
+        ? {
+            ...command,
+            providerDetails: { codex: { goalObjective } },
+            argumentCompletions: [
+              ...(goalObjective
+                ? [{ value: goalObjective, description: "Current goal" }]
+                : []),
+              ...(command.argumentCompletions ?? []),
+            ],
+          }
+        : command,
+    );
     // Dedup on the exact spelling: Codex recognizes case-distinct skill names
     // as distinct, so `Foo` and `foo` must both surface rather than collapse.
     const seenSkills = new Set<string>();
@@ -5300,7 +5642,17 @@ export class CodexProvider implements AgentProvider {
       case "agent_message":
       case "plan": {
         const text = this.getOptionalString(itemRecord.text) ?? "";
-        return { id, type: "agent_message", text };
+        const delivery = itemRecord.delivery === "async" ? "async" : undefined;
+        const questions = delivery
+          ? normalizeCodexAsyncUserInputQuestions(itemRecord.questions)
+          : undefined;
+        return {
+          id,
+          type: "agent_message",
+          text,
+          ...(delivery ? { delivery } : {}),
+          ...(questions ? { questions } : {}),
+        };
       }
 
       case "function_call_output": {
@@ -6142,6 +6494,10 @@ export class CodexProvider implements AgentProvider {
               role: "assistant",
               content: item.text,
             },
+            ...(item.delivery
+              ? { codexAgentMessageDelivery: item.delivery }
+              : {}),
+            ...(item.questions ? { codexAsyncQuestions: item.questions } : {}),
           } as SDKMessage,
           observedAt,
         );

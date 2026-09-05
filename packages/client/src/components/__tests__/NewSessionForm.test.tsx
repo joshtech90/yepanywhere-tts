@@ -409,9 +409,17 @@ vi.mock("../../hooks/useProviders", () => ({
     providers.filter(
       (provider) => provider.installed && provider.authenticated,
     ),
+  getLaunchableProviders: (providers: typeof providersState.providers) =>
+    providers.filter((provider) => provider.installed),
   getDefaultProvider: (providers: typeof providersState.providers) =>
     providers.find((provider) => provider.name === "claude") ??
     providers[0] ??
+    null,
+  getDefaultLaunchableProvider: (providers: typeof providersState.providers) =>
+    providers.find(
+      (provider) => provider.installed && provider.name === "claude",
+    ) ??
+    providers.find((provider) => provider.installed) ??
     null,
 }));
 
@@ -1355,6 +1363,57 @@ describe("NewSessionForm", () => {
         }),
       }),
     );
+  });
+
+  it("allows a launchable provider to start before authentication is confirmed", async () => {
+    const codexProvider = providersState.providers.find(
+      (provider) => provider.name === "codex",
+    );
+    if (!codexProvider) throw new Error("expected Codex provider fixture");
+    codexProvider.authenticated = false;
+    codexProvider.enabled = false;
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "default",
+      },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const codexButton = (await screen.findByText("Codex")).closest("button");
+    if (!codexButton) throw new Error("expected Codex provider button");
+    expect(codexButton).toHaveProperty("disabled", false);
+    expect(
+      within(codexButton).getByText(
+        "newSessionProviderStatusAuthenticationNeeded",
+      ),
+    ).toBeDefined();
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "test provider auth at launch" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "test provider auth at launch",
+        expect.objectContaining({ provider: "codex" }),
+        undefined,
+        expect.any(Number),
+      );
+    });
   });
 
   it("shows and submits the saved sandbox only with server capability", async () => {
@@ -2569,7 +2628,7 @@ describe("NewSessionForm", () => {
     expect(screen.queryByRole("button", { name: "HD" })).toBeNull();
   });
 
-  it("places core launch controls before optional session helpers", async () => {
+  it("places core launch controls before secondary session options", async () => {
     serverSettingsState.isLoading = false;
 
     const { container } = render(
@@ -2587,25 +2646,66 @@ describe("NewSessionForm", () => {
       ).toBeDefined();
     });
 
-    const headings = Array.from(
+    const primaryHeadings = Array.from(
       container.querySelectorAll(".new-session-provider-slot h3"),
       (element) => element.textContent,
     );
-    expect(headings.indexOf("newSessionModelTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionProviderTitle"),
-    );
-    expect(headings.indexOf("modelSettingsThinkingTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionModelTitle"),
-    );
-    expect(headings.indexOf("newSessionModeTitle")).toBeGreaterThan(
-      headings.indexOf("modelSettingsThinkingTitle"),
-    );
-    expect(headings.indexOf("newSessionRecapTitle")).toBeGreaterThan(
-      headings.indexOf("newSessionModeTitle"),
+    expect(primaryHeadings.indexOf("newSessionModelTitle")).toBeGreaterThan(
+      primaryHeadings.indexOf("newSessionProviderTitle"),
     );
     expect(
-      headings.indexOf("newSessionPromptSuggestionsTitle"),
-    ).toBeGreaterThan(headings.indexOf("newSessionRecapTitle"));
+      primaryHeadings.indexOf("modelSettingsThinkingTitle"),
+    ).toBeGreaterThan(primaryHeadings.indexOf("newSessionModelTitle"));
+    expect(primaryHeadings.indexOf("newSessionModeTitle")).toBeGreaterThan(
+      primaryHeadings.indexOf("modelSettingsThinkingTitle"),
+    );
+
+    const secondaryHeadings = Array.from(
+      container.querySelectorAll(
+        '[data-new-session-secondary-options="true"] h3',
+      ),
+      (element) => element.textContent,
+    );
+    expect(secondaryHeadings[0]).toBe("showThinkingTitle");
+    expect(secondaryHeadings.indexOf("newSessionRecapTitle")).toBeGreaterThan(
+      secondaryHeadings.indexOf("showThinkingTitle"),
+    );
+    expect(
+      secondaryHeadings.indexOf("newSessionPromptSuggestionsTitle"),
+    ).toBeGreaterThan(secondaryHeadings.indexOf("newSessionRecapTitle"));
+  });
+
+  it("keeps option captions compact until help is expanded", () => {
+    serverSettingsState.isLoading = false;
+
+    const { container } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: "newSessionShowOptionCaptions",
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByText("showThinkingHint")).toBeNull();
+    expect(
+      container.querySelector('[title="showThinkingHint"]'),
+    ).not.toBeNull();
+
+    fireEvent.click(toggle);
+
+    expect(
+      screen.getByRole("button", {
+        name: "newSessionHideOptionCaptions",
+      }),
+    ).toBeDefined();
+    expect(screen.getByText("showThinkingHint")).toBeDefined();
+    expect(
+      screen.getByText("promptSuggestionModeOffDescription"),
+    ).toBeDefined();
   });
 
   it("uses the selected rapid-speech prefix for new-session Project Queue", async () => {
@@ -2649,7 +2749,7 @@ describe("NewSessionForm", () => {
     });
   });
 
-  it("shows the selected recap timing description as a caption and tooltip", async () => {
+  it("shows recap timing in tooltips until captions are expanded", async () => {
     serverSettingsState.settings = {
       newSessionDefaults: {
         provider: "claude",
@@ -2673,19 +2773,26 @@ describe("NewSessionForm", () => {
     const forkedDescription =
       "Summarize from a temporary fork after backgrounding (not closing) for 124 s.";
 
-    await waitFor(() => {
-      expect(screen.getByText(tailedDescription)).toBeDefined();
+    const tailedButton = await screen.findByRole("button", {
+      name: "recapModeSideSession",
     });
+    expect(screen.queryByText(tailedDescription)).toBeNull();
+    expect(tailedButton.getAttribute("title")).toBe(tailedDescription);
     expect(
-      screen
-        .getByRole("button", { name: "recapModeSideSession" })
-        .getAttribute("title"),
+      tailedButton
+        .closest(".new-session-helper-section")
+        ?.getAttribute("title"),
     ).toBe(tailedDescription);
     expect(
       screen
         .getByRole("button", { name: "recapModeFork" })
         .getAttribute("title"),
     ).toBe(forkedDescription);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionShowOptionCaptions" }),
+    );
+    expect(screen.getByText(tailedDescription)).toBeDefined();
   });
 
   it("keeps the drafted prompt when switching from detached to a project", async () => {

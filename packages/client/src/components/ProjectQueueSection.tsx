@@ -9,6 +9,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useI18n } from "../i18n";
 import type { Project } from "../types";
+import { ProjectQueueAttachmentEditor } from "./ProjectQueueAttachmentEditor";
 import styles from "./ProjectQueueSection.module.css";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -45,6 +46,7 @@ interface ProjectQueueSectionProps {
   projectStatusesByProject?: Record<string, ProjectQueueProjectStatus>;
   highlightedItemId?: string | null;
   basePath?: string;
+  attachmentEditingEnabled?: boolean;
   onPauseDispatch: () => void;
   onResumeDispatch: () => void;
   onPromoteNow: (
@@ -374,6 +376,7 @@ export function ProjectQueueSection({
   projectStatusesByProject = {},
   highlightedItemId,
   basePath = "",
+  attachmentEditingEnabled = false,
   onPauseDispatch,
   onResumeDispatch,
   onPromoteNow,
@@ -595,18 +598,23 @@ export function ProjectQueueSection({
                   const canSaveEdit =
                     !isMutating &&
                     (editText.trim().length > 0 ||
-                      (item.message.attachments?.length ?? 0) > 0);
+                      (item.message.attachments?.length ?? 0) > 0 ||
+                      (item.message.stagedAttachments?.refs.length ?? 0) > 0);
                   const handleEditSubmit = async (
                     event: FormEvent<HTMLFormElement>,
                   ) => {
                     event.preventDefault();
                     if (!canSaveEdit) return;
-                    await onUpdateItem(item.projectId, item.id, {
-                      ...item.message,
-                      text: editText,
-                    });
-                    setEditingItemId(null);
-                    setEditText("");
+                    try {
+                      await onUpdateItem(item.projectId, item.id, {
+                        ...item.message,
+                        text: editText,
+                      });
+                      setEditingItemId(null);
+                      setEditText("");
+                    } catch {
+                      // The queue hook exposes the mutation error in this section.
+                    }
                   };
                   return (
                     <li
@@ -636,7 +644,19 @@ export function ProjectQueueSection({
                             {formatRelativeTime(item.createdAt, t)}
                           </span>
                         </div>
-                        {isEditing ? (
+                        {isEditing && attachmentEditingEnabled ? (
+                          <ProjectQueueAttachmentEditor
+                            item={item}
+                            disabled={isMutating}
+                            onSave={(message) =>
+                              onUpdateItem(item.projectId, item.id, message)
+                            }
+                            onDiscard={() => {
+                              setEditingItemId(null);
+                              setEditText("");
+                            }}
+                          />
+                        ) : isEditing ? (
                           <form
                             className={styles.itemEdit}
                             onSubmit={handleEditSubmit}
@@ -745,7 +765,7 @@ export function ProjectQueueSection({
                               {t("projectQueueRetry")}
                             </button>
                           )}
-                          {canEdit && !isEditing && (
+                          {canEdit && editingItemId === null && (
                             <button
                               type="button"
                               onClick={() => {

@@ -1084,13 +1084,16 @@ describe("Supervisor", () => {
         getAvailableModels: async () => [],
         startSession,
       };
-      const supervisorWithProvider = new Supervisor({
-        provider,
-        idleTimeoutMs: 100,
-        onSessionSummary: async () =>
+      const onSessionSummary = vi.fn(
+        async () =>
           ({
             contextUsage: { inputTokens: 150_000, percentage: 75 },
           }) as SessionSummary,
+      );
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        onSessionSummary,
       });
       const compactSettings = {
         model: "gpt-5.6",
@@ -1120,6 +1123,11 @@ describe("Supervisor", () => {
         "compactAtContextTokenLimit",
       );
       expect(runProviderCommand).toHaveBeenCalledTimes(1);
+      expect(onSessionSummary).toHaveBeenCalledWith(
+        "compact-force-session",
+        expect.any(String),
+        { contextUsageMode: "manual-compaction" },
+      );
       await supervisorWithProvider.abortProcess(started.id);
     });
 
@@ -1407,103 +1415,112 @@ describe("Supervisor", () => {
       await supervisorWithProvider.abortProcess(started.id);
     });
 
-    it("queues an effort change until the active turn completes", async () => {
-      let aborted = false;
-      let completeTurn = () => {};
-      const turnCompleted = new Promise<void>((resolve) => {
-        completeTurn = resolve;
-      });
-      const setEffort = vi.fn(async () => {});
-      const startSession = vi.fn(
-        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
-          const queue = new MessageQueue();
-
-          async function* iterator() {
-            yield {
-              type: "system" as const,
-              subtype: "init" as const,
-              session_id: options.resumeSessionId ?? "effort-session",
-            };
-            await turnCompleted;
-            yield {
-              type: "result" as const,
-              session_id: options.resumeSessionId ?? "effort-session",
-            };
-            while (!aborted) {
-              await new Promise((resolve) => setTimeout(resolve, 10));
-            }
-          }
-
-          return {
-            iterator: iterator(),
-            queue,
-            abort: () => {
-              aborted = true;
-              completeTurn();
-            },
-            setEffort,
-          };
-        },
-      );
-      const provider: AgentProvider = {
-        name: "claude",
-        displayName: "Claude",
-        supportsPermissionMode: true,
-        supportsThinkingToggle: true,
-        supportsSlashCommands: true,
-        isInstalled: async () => true,
-        isAuthenticated: async () => true,
-        getAuthStatus: async () => ({
-          installed: true,
-          authenticated: true,
-          enabled: true,
-        }),
-        getAvailableModels: async () => [],
-        startSession,
-      };
-      const supervisorWithProvider = new Supervisor({
-        provider,
-        idleTimeoutMs: 100,
-      });
-
-      const process = await supervisorWithProvider.resumeSession(
-        "effort-session",
-        "/tmp/test",
-        { text: "first" },
-        undefined,
-        {
-          thinking: { type: "adaptive", display: "summarized" },
-          effort: "low",
-        },
-      );
-      await vi.waitFor(() => {
-        expect(process.state.type).toBe("in-turn");
-      });
-
-      try {
-        await expect(
-          supervisorWithProvider.reconfigureProcess(process.id, {
-            thinking: { type: "adaptive", display: "summarized" },
-            effort: "medium",
-          }),
-        ).resolves.toBe(process);
-        expect(startSession).toHaveBeenCalledTimes(1);
-        expect(aborted).toBe(false);
-        expect(process.effort).toBe("medium");
-        expect(process.appliedEffort).toBe("low");
-        expect(process.getInfo().effort).toBe("medium");
-        expect(setEffort).not.toHaveBeenCalled();
-
-        completeTurn();
-        await vi.waitFor(() => {
-          expect(process.state.type).toBe("idle");
+    it.each([false, true])(
+      "accepts next-turn effort with active control %s",
+      async (effortUpdatesActiveTurn) => {
+        let aborted = false;
+        let completeTurn = () => {};
+        const turnCompleted = new Promise<void>((resolve) => {
+          completeTurn = resolve;
         });
-        expect(setEffort).toHaveBeenCalledWith("medium");
-        expect(process.appliedEffort).toBe("medium");
-      } finally {
-        await supervisorWithProvider.abortProcess(process.id);
-      }
-    });
+        const setEffort = vi.fn(async () => {});
+        if (effortUpdatesActiveTurn) {
+          setEffort.mockRejectedValueOnce(new Error("live update rejected"));
+        }
+        const startSession = vi.fn(
+          async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+            const queue = new MessageQueue();
+
+            async function* iterator() {
+              yield {
+                type: "system" as const,
+                subtype: "init" as const,
+                session_id: options.resumeSessionId ?? "effort-session",
+              };
+              await turnCompleted;
+              yield {
+                type: "result" as const,
+                session_id: options.resumeSessionId ?? "effort-session",
+              };
+              while (!aborted) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+            }
+
+            return {
+              iterator: iterator(),
+              queue,
+              abort: () => {
+                aborted = true;
+                completeTurn();
+              },
+              setEffort,
+              effortUpdatesActiveTurn,
+            };
+          },
+        );
+        const provider: AgentProvider = {
+          name: "claude",
+          displayName: "Claude",
+          supportsPermissionMode: true,
+          supportsThinkingToggle: true,
+          supportsSlashCommands: true,
+          isInstalled: async () => true,
+          isAuthenticated: async () => true,
+          getAuthStatus: async () => ({
+            installed: true,
+            authenticated: true,
+            enabled: true,
+          }),
+          getAvailableModels: async () => [],
+          startSession,
+        };
+        const supervisorWithProvider = new Supervisor({
+          provider,
+          idleTimeoutMs: 100,
+        });
+
+        const process = await supervisorWithProvider.resumeSession(
+          "effort-session",
+          "/tmp/test",
+          { text: "first" },
+          undefined,
+          {
+            thinking: { type: "adaptive", display: "summarized" },
+            effort: "low",
+          },
+        );
+        await vi.waitFor(() => {
+          expect(process.state.type).toBe("in-turn");
+        });
+
+        try {
+          await expect(
+            supervisorWithProvider.reconfigureProcess(process.id, {
+              thinking: { type: "adaptive", display: "summarized" },
+              effort: "medium",
+            }),
+          ).resolves.toBe(process);
+          expect(startSession).toHaveBeenCalledTimes(1);
+          expect(aborted).toBe(false);
+          expect(process.effort).toBe("medium");
+          expect(process.appliedEffort).toBe("low");
+          expect(process.getInfo().effort).toBe("medium");
+          expect(setEffort).toHaveBeenCalledTimes(
+            effortUpdatesActiveTurn ? 1 : 0,
+          );
+
+          completeTurn();
+          await vi.waitFor(() => {
+            expect(process.state.type).toBe("idle");
+          });
+          expect(setEffort).toHaveBeenCalledWith("medium");
+          expect(process.appliedEffort).toBe("medium");
+        } finally {
+          await supervisorWithProvider.abortProcess(process.id);
+        }
+      },
+    );
 
     it("serializes idle effort changes so the latest selection wins", async () => {
       let aborted = false;
@@ -5057,6 +5074,66 @@ describe("Supervisor", () => {
   });
 
   describe("queue propagation", () => {
+    it.each([false, true])(
+      "dispatches an initial native goal without a model turn (resume: %s)",
+      async (resume) => {
+        let finish!: () => void;
+        const closed = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const queue = new MessageQueue();
+        const command = vi.fn(async () => ({
+          handled: true,
+          output: { summary: "/goal", details: ["Keep working", "Goal set"] },
+        }));
+        const provider = testProvider(async () => ({
+          iterator: (async function* () {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "goal-session",
+            };
+            await closed;
+          })(),
+          queue,
+          abort: finish,
+          runProviderCommand: command,
+        }));
+        const metadata = createLaunchSettingsMetadata();
+        const addLocalCommandMessage = vi.fn(async () => {});
+        metadata.service.addLocalCommandMessage = addLocalCommandMessage;
+        const owner = new Supervisor({
+          provider,
+          sessionMetadataService: metadata.service,
+          idleTimeoutMs: 100,
+        });
+        try {
+          const input = { text: "/goal Keep working", tempId: "goal-temp" };
+          const result = resume
+            ? await owner.resumeSession("goal-session", "/tmp/test", input)
+            : await owner.startSession("/tmp/test", input);
+          if (!("id" in result)) throw new Error("expected process");
+          expect(command).toHaveBeenCalledWith("goal", "Keep working");
+          expect(addLocalCommandMessage).toHaveBeenCalledWith(
+            "goal-session",
+            expect.objectContaining({
+              subtype: "local_command",
+              details: ["Keep working", "Goal set"],
+              tempId: "goal-temp",
+            }),
+          );
+          expect(
+            result
+              .getMessageHistory()
+              .some((message) => message.type === "user"),
+          ).toBe(false);
+          await result.abort();
+        } finally {
+          finish();
+        }
+      },
+    );
+
     it("expands emulated slash commands for the first provider message", async () => {
       let aborted = false;
       const queues: MessageQueue[] = [];

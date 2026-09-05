@@ -37,6 +37,7 @@ import { logSDKMessage } from "../../../src/sdk/messageLogger.js";
 import {
   CodexProvider,
   type CodexProviderConfig,
+  formatCodexLoginCommand,
 } from "../../../src/sdk/providers/codex.js";
 import {
   codexAgentMessageDeltaFixtures,
@@ -221,11 +222,45 @@ describe("CodexProvider", () => {
       expect(typeof status.enabled).toBe("boolean");
     });
 
-    it("uses CLI installation as the conservative authentication signal", async () => {
-      const status = await provider.getAuthStatus();
+    it("reports a runnable logged-out CLI separately from authentication", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-auth-status-"));
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-logged-out",
+        "#!/usr/bin/env node\nif (process.argv[2] === 'login' && process.argv[3] === 'status') process.exit(1);",
+      );
+      const loggedOutProvider = new CodexProvider({ codexPath });
 
-      expect(status.authenticated).toBe(status.installed);
-      expect(status.enabled).toBe(status.installed);
+      try {
+        await expect(loggedOutProvider.getAuthStatus()).resolves.toEqual({
+          installed: true,
+          authenticated: false,
+          enabled: false,
+          loginCommand: formatCodexLoginCommand(codexPath),
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("recognizes the selected CLI's ordinary login store", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-auth-status-"));
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-logged-in",
+        "#!/usr/bin/env node\nif (process.argv[2] === 'login' && process.argv[3] === 'status') process.exit(0);",
+      );
+      const loggedInProvider = new CodexProvider({ codexPath });
+
+      try {
+        await expect(loggedInProvider.getAuthStatus()).resolves.toEqual({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -278,11 +313,251 @@ describe("CodexProvider", () => {
       await expect(session.supportedCommands?.()).resolves.toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "compact" }),
-          expect.objectContaining({ name: "goal" }),
+          expect.objectContaining({
+            name: "goal",
+            description:
+              "Keep working toward a verifiable end state until it is met",
+            argumentHint: "<verifiable end state>",
+            argumentCompletions: [
+              expect.objectContaining({ value: "clear" }),
+              expect.objectContaining({ value: "pause" }),
+              expect.objectContaining({ value: "resume" }),
+            ],
+          }),
           expect.objectContaining({ name: "status" }),
           expect.objectContaining({ name: "usage" }),
         ]),
       );
+    });
+
+    it("runs goal control through thread goal RPCs without a model turn", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-commands-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-goal-commands",
+        buildFakeCodexAppServer(logPath),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      const session = await testProvider.startSession({ cwd: tempDir });
+
+      try {
+        await session.iterator.next();
+        await expect(session.runProviderCommand?.("goal")).resolves.toEqual({
+          handled: true,
+          output: { summary: "/goal", details: ["No goal set"] },
+        });
+        await expect(
+          session.runProviderCommand?.("goal", "Ship the native goal path"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Ship the native goal path", "Goal set"],
+          },
+        });
+        await expect(
+          session.runProviderCommand?.("goal", "pause"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Ship the native goal path", "Goal paused"],
+          },
+        });
+        await expect(session.supportedCommands?.()).resolves.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: "goal",
+              argumentCompletions: expect.arrayContaining([
+                {
+                  value: "Ship the native goal path",
+                  description: "Current goal",
+                },
+              ]),
+            }),
+          ]),
+        );
+        await expect(
+          session.runProviderCommand?.("goal", "resume"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Ship the native goal path", "Goal resumed"],
+          },
+        });
+        await expect(
+          session.runProviderCommand?.("goal", "Replace the current objective"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Replace the current objective", "Goal set"],
+          },
+        });
+        await expect(
+          session.runProviderCommand?.("goal", "clear"),
+        ).resolves.toEqual({
+          handled: true,
+          output: { summary: "/goal", details: ["Goal cleared"] },
+        });
+        await expect(session.supportedCommands?.()).resolves.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: "goal",
+              providerDetails: { codex: { goalObjective: null } },
+            }),
+          ]),
+        );
+        await expect(
+          session.runProviderCommand?.("goal", "Start the replacement goal"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Start the replacement goal", "Goal set"],
+          },
+        });
+        await expect(
+          session.runProviderCommand?.("goal", "edit"),
+        ).resolves.toEqual({
+          handled: true,
+          error:
+            "Interactive /goal edit is unavailable in YA. Set the revised objective with /goal <objective>.",
+        });
+
+        const beforeConcurrentCommands = readFakeCodexRequests(logPath).length;
+        await Promise.all([
+          session.runProviderCommand?.("goal", "First replacement"),
+          session.runProviderCommand?.("goal", "Second replacement"),
+        ]);
+        expect(
+          readFakeCodexRequests(logPath)
+            .slice(beforeConcurrentCommands)
+            .map((request) => request.method),
+        ).toEqual([
+          "thread/goal/get",
+          "thread/goal/clear",
+          "thread/goal/set",
+          "thread/goal/get",
+          "thread/goal/clear",
+          "thread/goal/set",
+        ]);
+
+        const methods = readFakeCodexRequests(logPath).map(
+          (request) => request.method,
+        );
+        expect(methods).toEqual(
+          expect.arrayContaining([
+            "thread/goal/get",
+            "thread/goal/set",
+            "thread/goal/clear",
+          ]),
+        );
+        expect(methods).not.toContain("turn/start");
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([false, true])(
+      "streams goal-started work without another user turn (already working: %s)",
+      async (alreadyWorking) => {
+        const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-stream-"));
+        const logPath = join(tempDir, "requests.jsonl");
+        const codexPath = createFakeCodexCommand(
+          tempDir,
+          "fake-codex",
+          buildFakeCodexAppServer(logPath, "chatgpt", undefined, true),
+        );
+        const session = await new CodexProvider({ codexPath }).startSession({
+          cwd: tempDir,
+          ...(alreadyWorking
+            ? { initialMessage: { text: "Initial work" } }
+            : {}),
+        });
+        const messages: unknown[] = [];
+        const consuming = (async () => {
+          for await (const message of session.iterator) messages.push(message);
+        })();
+        try {
+          await vi.waitFor(() => expect(messages.length).toBeGreaterThan(0));
+          if (alreadyWorking) {
+            await vi.waitFor(() =>
+              expect(
+                readFakeCodexRequests(logPath).some(
+                  (r) => r.method === "turn/start",
+                ),
+              ).toBe(true),
+            );
+          }
+          await session.runProviderCommand?.("goal", "clear");
+          await session.runProviderCommand?.("goal", "Keep working");
+          await vi.waitFor(() =>
+            expect(messages).toContainEqual(
+              expect.objectContaining({
+                type: "assistant",
+                message: expect.objectContaining({
+                  content: "Goal continuation output",
+                }),
+              }),
+            ),
+          );
+          expect(
+            readFakeCodexRequests(logPath).filter(
+              (r) => r.method === "turn/start",
+            ),
+          ).toHaveLength(alreadyWorking ? 1 : 0);
+          expect(messages).toContainEqual(
+            expect.objectContaining({
+              subtype: "commands_changed",
+              slash_command_inventory: expect.arrayContaining([
+                expect.objectContaining({
+                  name: "goal",
+                  providerDetails: { codex: { goalObjective: "Keep working" } },
+                }),
+              ]),
+            }),
+          );
+        } finally {
+          await session.abort();
+          await consuming;
+          rmSync(tempDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("reports a goal status preserved by Codex", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-status-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-goal-status",
+        buildFakeCodexAppServer(logPath, "chatgpt", "budgetLimited"),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      const session = await testProvider.startSession({ cwd: tempDir });
+
+      try {
+        await session.iterator.next();
+        await session.runProviderCommand?.("goal", "Exhausted objective");
+        await expect(
+          session.runProviderCommand?.("goal", "resume"),
+        ).resolves.toEqual({
+          handled: true,
+          output: {
+            summary: "/goal",
+            details: ["Exhausted objective", "Goal budget limited"],
+          },
+        });
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
 
     it("runs status and usage through account RPCs without a model turn", async () => {
@@ -1022,6 +1297,104 @@ describe("CodexProvider app-server lifecycle", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("retains effort selected during compaction when live updates are refused", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-compact-effort-"));
+    const logPath = join(tempDir, "requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-compact-effort",
+      buildFakeCodexPermissionAppServer(
+        logPath,
+        2,
+        {
+          code: -32600,
+          message:
+            "turn settings updates require the step_model_switching feature",
+        },
+        0,
+        true,
+      ),
+    );
+    const session = await new CodexProvider({ codexPath }).startSession({
+      cwd: tempDir,
+      initialMessage: { text: "compacting turn" },
+      effort: "low",
+    });
+
+    try {
+      let compacting = false;
+      while (!compacting) {
+        const result = await session.iterator.next();
+        if (result.done) break;
+        const message = result.value;
+        if (message.type === "system" && message.status === "compacting") {
+          compacting = true;
+          break;
+        }
+      }
+      expect(compacting).toBe(true);
+      await expect(session.setEffort?.("high")).resolves.toBeUndefined();
+      await expect(session.setEffort?.("xhigh")).resolves.toBeUndefined();
+      await consumeCodexTurn(session.iterator);
+      session.queue.push({ text: "next user turn" });
+      await consumeCodexTurn(session.iterator);
+
+      const requests = readFakeCodexRequests(logPath);
+      expect(requests.filter((r) => r.method === "turn/interrupt")).toEqual([]);
+      expect(requests.filter((r) => r.method === "thread/start")).toHaveLength(
+        1,
+      );
+      expect(
+        requests
+          .filter((r) => r.method === "turn/start")
+          .map((r) => r.params?.effort),
+      ).toEqual(["low", "xhigh"]);
+    } finally {
+      await session.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([-32602, -32603])(
+    "surfaces effort update RPC error %s without changing the next turn",
+    async (code) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-effort-error-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-effort-error",
+        buildFakeCodexPermissionAppServer(logPath, 1, {
+          code,
+          message: "effort update failed",
+        }),
+      );
+      const session = await new CodexProvider({ codexPath }).startSession({
+        cwd: tempDir,
+        initialMessage: { text: "active turn" },
+        effort: "low",
+      });
+
+      try {
+        const firstTurn = consumeCodexTurn(session.iterator);
+        await waitForFakeCodexRequest(logPath, "turn/start");
+        await expect(session.setEffort?.("high")).rejects.toThrow(
+          "effort update failed",
+        );
+        await firstTurn;
+        session.queue.push({ text: "unchanged effort turn" });
+        await consumeCodexTurn(session.iterator);
+        expect(
+          readFakeCodexRequests(logPath)
+            .filter((r) => r.method === "turn/start")
+            .map((r) => r.params?.effort),
+        ).toEqual(["low", "low"]);
+      } finally {
+        await session.abort();
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("discovers and dispatches Codex skills with canonical text and metadata", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-skills-"));
@@ -2193,13 +2566,19 @@ function runNodeProbe(
 function buildFakeCodexAppServer(
   logPath: string,
   accountType: "chatgpt" | "apiKey" = "chatgpt",
+  goalStatusOverride?: "budgetLimited",
+  goalStartsTurn = false,
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 
 const logPath = ${JSON.stringify(logPath)};
 const accountType = ${JSON.stringify(accountType)};
+const goalStatusOverride = ${JSON.stringify(goalStatusOverride)};
+const goalStartsTurn = ${JSON.stringify(goalStartsTurn)};
 let buffer = "";
+let goal = null;
+let activeTurn = false;
 
 function write(payload) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
@@ -2299,7 +2678,48 @@ function handleMessage(message) {
         ],
       });
       break;
+    case "thread/goal/get":
+      respond(message.id, { goal });
+      break;
+    case "thread/goal/set":
+      goal = {
+        threadId: "thread-1",
+        objective: message.params?.objective ?? goal?.objective ?? "",
+        status:
+          goalStatusOverride ?? message.params?.status ?? goal?.status ?? "active",
+        tokenBudget: null,
+        tokensUsed: goal?.tokensUsed ?? 0,
+        timeUsedSeconds: goal?.timeUsedSeconds ?? 0,
+        createdAt: goal?.createdAt ?? 1,
+        updatedAt: 1,
+      };
+      respond(message.id, { goal });
+      notify("thread/goal/updated", { threadId: "thread-1", goal });
+      if (goalStartsTurn && message.params?.objective) {
+        if (activeTurn) {
+          notify("turn/completed", { threadId: "thread-1", turn: { id: "turn-start", status: "completed", items: [], error: null } });
+          activeTurn = false;
+        }
+        const turn = { id: "goal-turn", status: "inProgress", items: [], error: null };
+        notify("turn/started", { threadId: "thread-1", turn });
+        notify("item/completed", {
+          threadId: "thread-1", turnId: turn.id,
+          item: { type: "agentMessage", id: "goal-output", text: "Goal continuation output" },
+        });
+        notify("turn/completed", {
+          threadId: "thread-1", turn: { ...turn, status: "completed" },
+        });
+      }
+      break;
+    case "thread/goal/clear": {
+      const cleared = goal !== null;
+      goal = null;
+      respond(message.id, { cleared });
+      notify("thread/goal/cleared", { threadId: "thread-1" });
+      break;
+    }
     case "turn/start":
+      activeTurn = true;
       respond(message.id, {
         turn: { id: "turn-start", status: "inProgress", error: null },
       });
@@ -2695,8 +3115,12 @@ process.stdin.on("data", (chunk) => {
 function buildFakeCodexPermissionAppServer(
   logPath: string,
   liveSettingsUpdates = 0,
-  liveSettingsStatus: "applied" | "targetUnavailable" = "applied",
+  liveSettingsStatus:
+    | "applied"
+    | "targetUnavailable"
+    | { code: number; message: string } = "applied",
   turnStartResponseDelayMs = 0,
+  compacting = false,
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -2707,6 +3131,7 @@ let turnSequence = 0;
 const liveSettingsUpdates = ${JSON.stringify(liveSettingsUpdates)};
 const liveSettingsStatus = ${JSON.stringify(liveSettingsStatus)};
 const turnStartResponseDelayMs = ${JSON.stringify(turnStartResponseDelayMs)};
+const compacting = ${JSON.stringify(compacting)};
 let observedSettingsUpdates = 0;
 let effectiveApprovalPolicy = "on-request";
 const configuredWorkspaceWritePolicy = {
@@ -2808,11 +3233,25 @@ function handleMessage(message) {
       } else {
         respond(message.id, { turn });
       }
+      if (compacting && turnSequence === 1) {
+        write({
+          method: "item/started",
+          params: {
+            threadId: "thread-policy",
+            turnId: turn.id,
+            item: { id: "compact-1", type: "contextCompaction" },
+          },
+        });
+      }
       break;
     }
     case "turn/settings/update": {
       observedSettingsUpdates += 1;
-      respond(message.id, { status: liveSettingsStatus });
+      if (typeof liveSettingsStatus === "object") {
+        write({ id: message.id, error: liveSettingsStatus });
+      } else {
+        respond(message.id, { status: liveSettingsStatus });
+      }
       if (observedSettingsUpdates === liveSettingsUpdates) {
         write({
           method: "turn/completed",
@@ -4278,14 +4717,23 @@ describe("CodexProvider Event Normalization", () => {
     const normalized = provider.normalizeThreadItem({
       id: "async-message-1",
       type: "agentMessage",
-      text: "Asynchronous update",
+      text: "Choose a mode\n- Safe\n- Fast",
       delivery: "async",
+      questions: [
+        { title: "Choose a mode", options: ["Safe", "Fast"] },
+        { title: "Anything else?", options: null },
+      ],
     });
 
     expect(normalized).toMatchObject({
       id: "async-message-1",
       type: "agent_message",
-      text: "Asynchronous update",
+      text: "Choose a mode\n- Safe\n- Fast",
+      delivery: "async",
+      questions: [
+        { title: "Choose a mode", options: ["Safe", "Fast"] },
+        { title: "Anything else?", options: null },
+      ],
     });
     expect(
       provider.convertItemToSDKMessages(
@@ -4298,7 +4746,15 @@ describe("CodexProvider Event Normalization", () => {
       {
         type: "assistant",
         uuid: "async-message-1",
-        message: { role: "assistant", content: "Asynchronous update" },
+        message: {
+          role: "assistant",
+          content: "Choose a mode\n- Safe\n- Fast",
+        },
+        codexAgentMessageDelivery: "async",
+        codexAsyncQuestions: [
+          { title: "Choose a mode", options: ["Safe", "Fast"] },
+          { title: "Anything else?", options: null },
+        ],
       },
     ]);
   });

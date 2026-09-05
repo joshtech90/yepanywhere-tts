@@ -10,6 +10,7 @@ import {
   mergeClaudeModels,
   normalizeClaudeLaunchModel,
   probeClaudeControlLiveness,
+  resolvePathExecutable,
   resolveClaudeSdkNativeExecutable,
   withClaudeGoalAlias,
 } from "../../../src/sdk/providers/claude.js";
@@ -25,6 +26,52 @@ class ExposedClaudeProvider extends ClaudeProvider {
     return this.getDisallowedToolOptions();
   }
 }
+
+describe("Claude executable lookup", () => {
+  it("applies directly spawnable Windows PATHEXT candidates in PATH order", () => {
+    const inspected: string[] = [];
+    const resolved = resolvePathExecutable("claude", {
+      platform: "win32",
+      env: {
+        PATH: "C:\\npm;D:\\tools",
+        PATHEXT: ".JS;.EXE;.CMD",
+      },
+      isExecutable: (candidate) => {
+        inspected.push(candidate);
+        return candidate === "D:\\tools\\claude.EXE";
+      },
+    });
+
+    expect(resolved).toBe("D:\\tools\\claude.EXE");
+    expect(inspected).toEqual(["C:\\npm\\claude.EXE", "D:\\tools\\claude.EXE"]);
+  });
+
+  it("applies PATHEXT to an explicit Windows path in a dotted directory", () => {
+    expect(
+      resolvePathExecutable("C:\\tools.v1\\claude", {
+        platform: "win32",
+        env: { PATHEXT: ".EXE" },
+        isExecutable: (candidate) => candidate === "C:\\tools.v1\\claude.EXE",
+      }),
+    ).toBe("C:\\tools.v1\\claude.EXE");
+  });
+
+  it("rejects Windows batch shims that child_process cannot spawn directly", () => {
+    expect(
+      resolvePathExecutable("claude", {
+        platform: "win32",
+        env: { PATH: "C:\\npm", PATHEXT: ".CMD;.BAT" },
+        isExecutable: () => true,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolvePathExecutable("C:\\npm\\claude.CMD", {
+        platform: "win32",
+        isExecutable: () => true,
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("normalizeClaudeLaunchModel", () => {
   it("keeps Opus on the stable alias and retains Sonnet's extended spelling", () => {
@@ -525,6 +572,17 @@ describe("Claude login command", () => {
       ),
     ).toBe(
       '& "C:\\Users\\me\\AppData\\Local\\Claude App\\claude.exe" auth login --claudeai',
+    );
+  });
+
+  it("formats the bundled macOS runtime as a directly runnable login command", () => {
+    expect(
+      formatClaudeLoginCommand(
+        "/Applications/Yep Anywhere.app/Contents/Resources/claude",
+        "darwin",
+      ),
+    ).toBe(
+      "'/Applications/Yep Anywhere.app/Contents/Resources/claude' auth login --claudeai",
     );
   });
 });

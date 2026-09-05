@@ -65,6 +65,25 @@ treats `null` as "leave this running turn unchanged." Manual stop remains
 independently available; treating a configuration choice as a stop can discard
 nearly completed, already-paid-for reasoning on a high-cost turn.
 
+If Codex refuses a live effort update with JSON-RPC `-32600` (invalid
+request), YA accepts and retains the effort for the next turn. This includes
+selection during compaction and runtimes where `step_model_switching` is
+disabled. The selector stays on the user's choice, subsequent selections
+replace it, and the next submitted turn carries that effort through normal
+Codex turn validation. YA does not interrupt compaction or poll/retry the live
+control. A refusal of the optional live control is not a refusal of the
+next-turn configuration.
+
+At the supervisor boundary, an unsuccessful live effort control is accepted
+as a retained next-turn selection while the process remains alive. The config
+response returns that choice immediately after the live attempt, so the
+selector updates without a reload or a false failure toast. This also covers
+older hosted provider workers that survive a server reload. YA logs the live
+failure and retries once at the provider turn boundary before queued work;
+it does not interrupt work or add a polling retry. Subsequent choices replace
+the pending selection, including clearing it to Default. Idle or turn-boundary
+application failures still surface as configuration errors and block delivery.
+
 Effort control writes are serialized and latest-selection-wins: a slower older
 provider call cannot overwrite a newer choice. At a turn boundary, failure to
 apply the selected effort retains that selection and keeps the process
@@ -74,6 +93,16 @@ completes the idle transition and releases queued work. The failed control
 write is surfaced to the active client as a configuration error and logged
 without terminating the process's provider-message consumer, so the resumed
 turn can still report progress and completion.
+
+The last successfully applied model, thinking, and effort selections remain
+session state after the live provider process is reaped. Session metadata and
+detail responses expose that public subset as `effectiveModelSettings`; they
+do not expose retained permission or service-tier launch state. The client
+resolves model controls and badges from the live process first, then these
+durable settings, then the initial Codex configuration acknowledgement used by
+older servers. Therefore an initial `medium` acknowledgement cannot overwrite
+a later durable `high` selection after reload. An explicit durable null means
+provider default and also blocks the stale acknowledgement value.
 
 YA's initial Codex `CodexErrorInfo` normalization maps as follows:
 

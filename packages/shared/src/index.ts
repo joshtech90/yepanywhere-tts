@@ -261,6 +261,7 @@ export type {
   PromptSuggestionMode,
   HelperTargetConfig,
   SlashCommand,
+  SlashCommandArgumentCompletion,
   SlashCommandInvocation,
   SlashCommandInvocationKind,
   SlashCommandInvocationPrefix,
@@ -558,6 +559,7 @@ export {
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
+  CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY,
   CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
@@ -584,6 +586,7 @@ export {
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
+  PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
@@ -765,6 +768,7 @@ export type {
   SessionOwnership,
   SessionSandboxPolicy,
   DurableRecapMessage,
+  DurableLocalCommandMessage,
   DurableSyntheticDoneMessage,
   SyntheticSessionBoundaryCommand,
   BangCommandTranscriptDisplayObject,
@@ -772,6 +776,7 @@ export type {
   TranscriptDisplayObject,
   AppSessionSummary,
   AppSession,
+  SessionEffectiveModelSettings,
   SessionMetadataPayload,
   SessionMetadataResponse,
   SessionQueuedMessageKind,
@@ -835,6 +840,7 @@ export {
   DEFAULT_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
   CODEX_GPT56_CONTEXT_WINDOW,
+  CODEX_GPT6_ASTRA_CONTEXT_WINDOW,
   getModelContextWindow,
 } from "./app-types.js";
 
@@ -926,6 +932,7 @@ export type {
   CodexContentBlock,
   CodexMessageContent,
   // Session file entry types
+  CodexHistoryPosition,
   CodexSessionMetaPayload,
   CodexSessionMetaEntry,
   CodexMessagePayload,
@@ -938,6 +945,7 @@ export type {
   CodexGhostSnapshotPayload,
   CodexResponseItemPayload,
   CodexResponseItemEntry,
+  CodexAsyncUserInputQuestion,
   CodexEventMsgPayload,
   CodexTurnAbortedEvent,
   CodexEventMsgEntry,
@@ -945,9 +953,14 @@ export type {
   CodexCompactedEntry,
   CodexTurnContextPayload,
   CodexTurnContextEntry,
+  CodexResponseTokenUsage,
+  CodexTokenUsageRecordEntry,
   CodexSessionEntry,
 } from "./codex-schema/types.js";
-export { parseCodexSessionEntry } from "./codex-schema/session.js";
+export {
+  normalizeCodexAsyncUserInputQuestions,
+  parseCodexSessionEntry,
+} from "./codex-schema/session.js";
 
 // Gemini SDK schema types
 export type {

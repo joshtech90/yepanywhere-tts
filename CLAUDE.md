@@ -4,6 +4,10 @@ For cross-project context (how this project relates to other Kyle projects), see
 
 For dev/contributor guidance (setup, commands, style, contribution ethos), see [DEVELOPMENT.md](DEVELOPMENT.md).
 
+For current product priorities and initiative blockers, start at the
+[Roadmap](docs/roadmap/README.md). It is the canonical priority overview;
+implementation plans and behavior contracts remain in their linked documents.
+
 A mobile-first supervisor for Claude Code agents. Like the VS Code Claude extension, but designed for phones and multi-session workflows.
 
 **Key ideas:**
@@ -202,7 +206,7 @@ upstream fix.
 
 When a transitive dep has no direct upgrade path, prefer a pnpm override. Pin it
 exactly if a newer major would escape the parent's declared range — `fast-uri`
-is pinned to `3.1.5` rather than `^3.1.5` because 4.x is published and `ajv`
+is pinned to `3.1.6` rather than `^3.1.6` because 4.x is published and `ajv`
 declares `^3.0.1`. When the parent's declared range already contains the patched
 version, no override is needed: refresh the lockfile with
 `pnpm -r update <pkg> --depth=Infinity` (plain `pnpm update` skips transitive

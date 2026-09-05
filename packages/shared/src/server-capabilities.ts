@@ -467,6 +467,38 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients can outpace installed servers whose Codex stream and durable transcript ids do not align.",
     },
   },
+  codexPaginatedRolloutLineage: {
+    id: CAPABILITY_ID_ALLOCATIONS.codexPaginatedRolloutLineage.id,
+    name: "codex-paginated-rollout-lineage",
+    kind: "transitional",
+    area: "sessions",
+    introducedIn: "0.8.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server reconstructs reference-backed paginated Codex rollout history for session reads and native fork products.",
+    clientFallback:
+      "Disable Codex Clone and Fork with update guidance and make no fork request; other providers remain available.",
+    serverContract: {
+      routes: [
+        "GET /api/sessions",
+        "GET /api/projects/:projectId/sessions/:sessionId",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork",
+      ],
+      responseFields: [
+        "sessionDetail.messages",
+        "sessionSummary.messageCount",
+        "sessionSummary.forkedFromSessionId",
+      ],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2026-10-01",
+      removeClientGateWhen:
+        "The optional hosted-client support corpus contains no server without reference-backed Codex rollout reads and the Maintainer approves removal.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on codex-paginated-rollout-lineage.",
+    },
+  },
   toolResultMediaPreservationPolicy: {
     id: CAPABILITY_ID_ALLOCATIONS.toolResultMediaPreservationPolicy.id,
     name: "tool-result-media-preservation-policy",
@@ -1737,6 +1769,30 @@ export const SERVER_CAPABILITIES = {
         "Project Queue availability remains a server feature boundary for older servers and hosted remote clients.",
     },
   },
+  projectQueueAttachmentEditing: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectQueueAttachmentEditing.id,
+    name: "project-queue-attachment-editing",
+    kind: "permanent",
+    area: "projectQueue",
+    introducedIn: "0.8.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server atomically updates queued-message attachment sets containing retained queue-owned refs and newly uploaded draft refs.",
+    clientFallback:
+      "Keep Project Queue inline editing text-only and make no attachment upload or attachment mutation request.",
+    serverContract: {
+      routes: ["PATCH /api/projects/:projectId/queue/:itemId"],
+      requestFields: [
+        "projectQueue.message.attachments",
+        "projectQueue.message.stagedAttachments",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients may outpace installed servers that cannot combine queue-owned and draft-owned attachment refs in one update.",
+    },
+  },
   projectSessionDefaults: {
     id: CAPABILITY_ID_ALLOCATIONS.projectSessionDefaults.id,
     name: "project-session-defaults",
@@ -2103,6 +2159,8 @@ export const CODEX_PLAN_TOOL_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.codexPlanToolSetting.name;
 export const CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY =
   SERVER_CAPABILITIES.codexStreamDurableIdAlignment.name;
+export const CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY =
+  SERVER_CAPABILITIES.codexPaginatedRolloutLineage.name;
 export const GLOSSARY_TOOLTIPS_CAPABILITY =
   SERVER_CAPABILITIES.glossaryTooltips.name;
 export const TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY =
@@ -2110,6 +2168,8 @@ export const TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY =
 export const PROGRESSIVE_SESSION_CATALOG_CAPABILITY =
   SERVER_CAPABILITIES.progressiveSessionCatalog.name;
 export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;
+export const PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY =
+  SERVER_CAPABILITIES.projectQueueAttachmentEditing.name;
 
 export const PROJECT_SESSION_DEFAULTS_CAPABILITY =
   SERVER_CAPABILITIES.projectSessionDefaults.name;

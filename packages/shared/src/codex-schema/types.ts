@@ -15,6 +15,7 @@ export type {
 
 // Session file types (persisted format in ~/.codex/sessions/)
 export type {
+  CodexHistoryPosition,
   CodexSessionMetaPayload,
   CodexSessionMetaEntry,
   CodexMessagePayload,
@@ -27,6 +28,7 @@ export type {
   CodexGhostSnapshotPayload,
   CodexResponseItemPayload,
   CodexResponseItemEntry,
+  CodexAsyncUserInputQuestion,
   CodexEventMsgPayload,
   CodexTurnAbortedEvent,
   CodexEventMsgEntry,
@@ -34,5 +36,7 @@ export type {
   CodexCompactedEntry,
   CodexTurnContextPayload,
   CodexTurnContextEntry,
+  CodexResponseTokenUsage,
+  CodexTokenUsageRecordEntry,
   CodexSessionEntry,
 } from "./session.js";

@@ -40,8 +40,12 @@ import {
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
-import { SessionViewerProvider } from "../components/SessionManagedViewer";
+import {
+  SessionViewerProvider,
+  SessionViewerTranscriptGate,
+} from "../components/SessionManagedViewer";
 import styles from "./SessionPage.module.css";
+import { GoalFlag } from "../components/GoalNotice";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
@@ -164,6 +168,11 @@ import { getPersistentEditApprovalResponse } from "../lib/permissionModes";
 import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
+import {
+  liveModelConfigForProcess,
+  resolveSessionModelConfig,
+  type LiveSessionModelConfigSnapshot,
+} from "../lib/sessionModelConfig";
 import { parseThinkingConfig } from "../lib/sourceControlNavigationState";
 import type { MessageSubmissionMetadata } from "../types/messageSubmission";
 import {
@@ -208,7 +217,7 @@ import {
   parseSessionNavigationState,
 } from "../lib/sessionNavigationState";
 import { getPublicShareInitialPrompt } from "../lib/sessionPublicSharePrompt";
-import { supportsUnifiedSessionFork } from "../lib/sessionForkAvailability";
+import { getUnifiedSessionForkAvailability } from "../lib/sessionForkAvailability";
 import { isBtwAsideSession } from "../lib/btwAsideSessions";
 import {
   composeGeneratedRetitle,
@@ -276,9 +285,13 @@ function SessionRouteModuleFallback({
 
 function MessageList(props: ComponentProps<typeof LazyMessageList>) {
   return (
-    <Suspense fallback={<SessionRouteModuleFallback label="sessionLoading" />}>
-      <LazyMessageList {...props} />
-    </Suspense>
+    <SessionViewerTranscriptGate>
+      <Suspense
+        fallback={<SessionRouteModuleFallback label="sessionLoading" />}
+      >
+        <LazyMessageList {...props} />
+      </Suspense>
+    </SessionViewerTranscriptGate>
   );
 }
 
@@ -294,16 +307,6 @@ const CLAUDE_HANDOFF_REQUIRED_MESSAGE =
   "Claude session cannot be safely resumed because the Claude SDK recorded an API-error response as the latest assistant message. Start a handoff session instead.";
 const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 const EMPTY_PROJECT_QUEUE_ITEMS: readonly ProjectQueueItemSummary[] = [];
-
-interface LiveModelConfig {
-  model?: string;
-  /** YA model id (launch alias) for keying per-model settings, distinct from
-   * the reported `model` above. See topics/provider-abstraction.md. */
-  requestedModel?: string;
-  thinking?: { type: string };
-  effort?: string;
-  promptSuggestionMode?: PromptSuggestionMode;
-}
 
 function messageKey(message: Message | undefined): string | undefined {
   return message?.uuid ?? message?.id;
@@ -341,20 +344,6 @@ function parsePositiveIntegerParam(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function isSameLiveModelConfig(
-  current: LiveModelConfig | null,
-  next: LiveModelConfig,
-): boolean {
-  return (
-    current !== null &&
-    current.model === next.model &&
-    current.requestedModel === next.requestedModel &&
-    current.thinking?.type === next.thinking?.type &&
-    current.effort === next.effort &&
-    current.promptSuggestionMode === next.promptSuggestionMode
-  );
 }
 
 type TitleEditMode = "manual" | "retitle";
@@ -690,6 +679,8 @@ function SessionPageContent({
   );
   const providerRuntimeStatus =
     useProviderRuntimeStatusForSession(actualSessionId);
+  const currentGoal = slashCommands.find((command) => command.name === "goal")
+    ?.providerDetails?.codex?.goalObjective;
   const sessionLoadingProgressText =
     sessionLoadingProgressEnabled && sessionLoadingProgressDetailsVisible
       ? getSessionLoadingProgressText(sessionLoadProgress, t)
@@ -815,8 +806,39 @@ function SessionPageContent({
     status.owner === "self" &&
     status.appliedPermissionMode !== undefined &&
     permissionMode !== status.appliedPermissionMode;
-  const [liveModelConfig, setLiveModelConfig] =
-    useState<LiveModelConfig | null>(null);
+  const currentOwnedProcessId =
+    status.owner === "self" ? status.processId : undefined;
+  const [liveModelConfigSnapshot, setLiveModelConfigSnapshot] =
+    useState<LiveSessionModelConfigSnapshot | null>(null);
+  const liveModelConfig = liveModelConfigForProcess(
+    liveModelConfigSnapshot,
+    currentOwnedProcessId,
+  );
+  const latestCodexConfigAck = useMemo(() => {
+    if (effectiveProvider !== "codex" && effectiveProvider !== "codex-oss") {
+      return null;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const acknowledged = parseCodexConfigAck(
+        messages[index] as { [key: string]: unknown } | undefined,
+      );
+      if (acknowledged) {
+        return acknowledged;
+      }
+    }
+
+    return null;
+  }, [effectiveProvider, messages]);
+  const effectiveModelConfig = useMemo(
+    () =>
+      resolveSessionModelConfig(
+        liveModelConfig,
+        session?.effectiveModelSettings,
+        latestCodexConfigAck,
+      ),
+    [latestCodexConfigAck, liveModelConfig, session?.effectiveModelSettings],
+  );
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const composerFullPaneControlsRef = useRef<FullPaneComposerControls | null>(
@@ -875,7 +897,7 @@ function SessionPageContent({
     effectiveProvider,
     isWideScreen,
     permissionMode,
-    liveModel: liveModelConfig?.model,
+    liveModel: effectiveModelConfig?.model,
     sessionModel: session?.model,
     sessionExecutor: session?.executor,
     parentSessionId: isBtwAsideSession({
@@ -1072,6 +1094,9 @@ function SessionPageContent({
     slashCommands.some(
       (command) => normalizeSlashCommandForMatch(command.name) === "compact",
     );
+  const manualCompactBlocked =
+    effectiveProvider === "codex" &&
+    (processState === "in-turn" || processState === "waiting-input");
 
   // Inject custom client-side commands alongside SDK-discovered ones.
   // Keep /model last so it stays nearest the slash button in the upward menu.
@@ -1097,7 +1122,13 @@ function SessionPageContent({
       const compact = slashCommands.find(
         (command) => normalizeSlashCommandForMatch(command.name) === "compact",
       );
-      if (compact) orderedCommands.push(compact);
+      if (compact) {
+        orderedCommands.push(
+          manualCompactBlocked
+            ? { ...compact, description: t("sessionCompactTurnActive") }
+            : compact,
+        );
+      }
     }
 
     for (const command of slashCommands) {
@@ -1123,12 +1154,14 @@ function SessionPageContent({
     return orderedCommands;
   }, [
     mainComposerForAside,
+    manualCompactBlocked,
     slashCommands,
     status.owner,
     supportsBtwAsides,
     supportsManualCompact,
     supportsSyntheticTerminate,
     syntheticDoneEnabled,
+    t,
   ]);
 
   // Get provider capabilities based on session's provider
@@ -1148,38 +1181,53 @@ function SessionPageContent({
   const supportsThinkingToggle =
     currentProviderInfo?.supportsThinkingToggle ?? true;
   const { generallySupportsSteering, supportsSteerNow } = providerCapabilities;
-  const currentOwnedProcessId =
-    status.owner === "self" ? status.processId : undefined;
   const liveThinkingSelection = useMemo(() => {
-    if (status.owner !== "self" || !liveModelConfig) {
+    if (status.owner !== "self" || !effectiveModelConfig) {
       return null;
     }
     return liveThinkingSelectionFromProcess(
-      liveModelConfig.thinking,
-      liveModelConfig.effort,
+      effectiveModelConfig.thinking,
+      effectiveModelConfig.effort,
       currentProviderInfo,
     );
-  }, [currentProviderInfo, liveModelConfig, status.owner]);
+  }, [currentProviderInfo, effectiveModelConfig, status.owner]);
   const getImplicitComposerThinking = useCallback(() => {
-    if (status.owner === "self") {
-      if (!liveModelConfig) {
+    const hasRetainedSessionModelConfig =
+      status.owner === "self" ||
+      liveModelConfig !== null ||
+      session?.effectiveModelSettings !== undefined;
+    if (hasRetainedSessionModelConfig) {
+      if (!effectiveModelConfig) {
         return undefined;
       }
       return thinkingOptionFromProcess(
-        liveModelConfig.thinking,
-        liveModelConfig.effort,
+        effectiveModelConfig.thinking,
+        effectiveModelConfig.effort,
         currentProviderInfo,
       );
     }
     return getThinkingSetting();
-  }, [currentProviderInfo, liveModelConfig, status.owner]);
+  }, [
+    currentProviderInfo,
+    effectiveModelConfig,
+    liveModelConfig,
+    session?.effectiveModelSettings,
+    status.owner,
+  ]);
 
   // Unified Clone/Fork requires both the provider primitive and the server's
   // real-user-turn intent resolver. Older servers get no unsupported request.
-  const supportsForkFromTurn = supportsUnifiedSessionFork(
+  const forkAvailability = getUnifiedSessionForkAvailability(
     versionInfo,
     currentProviderInfo?.supportsForkSession,
+    effectiveProvider,
   );
+  const supportsForkFromTurn = forkAvailability.available;
+  const forkUnavailableMessage =
+    !forkAvailability.available &&
+    forkAvailability.reason === "server-missing-codex-lineage"
+      ? t("codexForkServerUpdateRequired")
+      : undefined;
   const forkAfterDisabled =
     status.owner === "external" ||
     processState === "in-turn" ||
@@ -1622,7 +1670,7 @@ function SessionPageContent({
     let cancelled = false;
 
     if (!currentOwnedProcessId) {
-      setLiveModelConfig(null);
+      setLiveModelConfigSnapshot(null);
       return;
     }
 
@@ -1631,17 +1679,22 @@ function SessionPageContent({
       .then((res) => {
         if (cancelled) return;
         const process = res.process;
-        setLiveModelConfig(
-          process
-            ? {
-                model: process.model,
-                requestedModel: process.requestedModel,
-                thinking: process.thinking,
-                effort: process.effort,
-                promptSuggestionMode: process.promptSuggestionMode,
-              }
-            : null,
-        );
+        if (process?.id === currentOwnedProcessId) {
+          setLiveModelConfigSnapshot({
+            processId: currentOwnedProcessId,
+            config: {
+              model: process.model,
+              requestedModel: process.requestedModel,
+              thinking: process.thinking,
+              effort: process.effort,
+              promptSuggestionMode: process.promptSuggestionMode,
+            },
+          });
+        } else {
+          setLiveModelConfigSnapshot((current) =>
+            current?.processId === currentOwnedProcessId ? null : current,
+          );
+        }
         if (process?.recapAfterSeconds !== undefined) {
           setStatus((prev) =>
             prev.owner === "self" && prev.processId === process.id
@@ -1651,9 +1704,10 @@ function SessionPageContent({
         }
       })
       .catch(() => {
-        if (!cancelled) {
-          setLiveModelConfig(null);
-        }
+        if (cancelled) return;
+        setLiveModelConfigSnapshot((current) =>
+          current?.processId === currentOwnedProcessId ? null : current,
+        );
       });
 
     return () => {
@@ -1661,54 +1715,15 @@ function SessionPageContent({
     };
   }, [actualSessionId, currentOwnedProcessId, setStatus]);
 
-  const latestCodexConfigAck = useMemo(() => {
-    if (effectiveProvider !== "codex" && effectiveProvider !== "codex-oss") {
-      return null;
-    }
-
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const acknowledged = parseCodexConfigAck(
-        messages[index] as { [key: string]: unknown } | undefined,
-      );
-      if (acknowledged) {
-        return acknowledged;
-      }
-    }
-
-    return null;
-  }, [effectiveProvider, messages]);
+  useEffect(() => {
+    if (!actualSessionId) return;
+    setLiveModelConfigSnapshot(null);
+  }, [actualSessionId]);
 
   const publicShareInitialPrompt = useMemo(
     () => getPublicShareInitialPrompt(messages),
     [messages],
   );
-
-  useEffect(() => {
-    if (!latestCodexConfigAck) return;
-
-    setLiveModelConfig((prev) => {
-      const next: LiveModelConfig =
-        currentOwnedProcessId && prev
-          ? {
-              ...prev,
-              model: prev.model ?? latestCodexConfigAck.model,
-              thinking: prev.thinking ?? latestCodexConfigAck.thinking,
-              effort: prev.effort ?? latestCodexConfigAck.effort,
-            }
-          : {
-              ...prev,
-              model: latestCodexConfigAck.model ?? prev?.model,
-              thinking: latestCodexConfigAck.thinking ?? prev?.thinking,
-              effort: latestCodexConfigAck.effort ?? prev?.effort,
-            };
-
-      if (isSameLiveModelConfig(prev, next)) {
-        return prev;
-      }
-
-      return next;
-    });
-  }, [currentOwnedProcessId, latestCodexConfigAck]);
 
   // Inline title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -3509,19 +3524,29 @@ function SessionPageContent({
         showToast(t("sessionSwitchedModel", { model: next.model }), "success");
       }
       if (next.thinking !== undefined || next.effort !== undefined) {
-        setLiveModelConfig((prev) => ({
-          model: next.model ?? prev?.model,
-          requestedModel: next.model ?? prev?.requestedModel,
-          thinking: next.thinking,
-          effort: next.effort,
-          promptSuggestionMode: prev?.promptSuggestionMode,
-        }));
+        setLiveModelConfigSnapshot((current) => {
+          const previous =
+            current?.processId === next.processId ? current.config : undefined;
+          return {
+            processId: next.processId,
+            config: {
+              model: next.model ?? previous?.model,
+              requestedModel: next.model ?? previous?.requestedModel,
+              thinking: next.thinking,
+              effort: next.effort,
+              promptSuggestionMode: previous?.promptSuggestionMode,
+            },
+          };
+        });
       } else if (next.model) {
-        setLiveModelConfig((prev) =>
-          prev
-            ? { ...prev, model: next.model, requestedModel: next.model }
-            : { model: next.model, requestedModel: next.model },
-        );
+        setLiveModelConfigSnapshot((current) => ({
+          processId: next.processId,
+          config: {
+            ...(current?.processId === next.processId ? current.config : {}),
+            model: next.model,
+            requestedModel: next.model,
+          },
+        }));
       }
       if (status.owner === "self") {
         if (currentOwnedProcessId !== next.processId) {
@@ -3555,13 +3580,22 @@ function SessionPageContent({
           thinking: thinkingOptionFromSelection(mode, effortLevel),
           showThinking: getShowThinkingSetting(),
         });
-        setLiveModelConfig((prev) => ({
-          model: result.model ?? prev?.model,
-          requestedModel: result.model ?? prev?.requestedModel,
-          thinking: result.thinking,
-          effort: result.effort,
-          promptSuggestionMode: prev?.promptSuggestionMode,
-        }));
+        setLiveModelConfigSnapshot((current) => {
+          const previous =
+            current?.processId === result.processId
+              ? current.config
+              : undefined;
+          return {
+            processId: result.processId,
+            config: {
+              model: result.model ?? previous?.model,
+              requestedModel: result.model ?? previous?.requestedModel,
+              thinking: result.thinking,
+              effort: result.effort,
+              promptSuggestionMode: previous?.promptSuggestionMode,
+            },
+          };
+        });
         if (result.processId !== currentOwnedProcessId) {
           setStatus((prev) =>
             prev.owner === "self"
@@ -3609,6 +3643,10 @@ function SessionPageContent({
   const handleCompactSession = useCallback(
     async (argument = "") => {
       if (status.owner !== "self" || !supportsManualCompact) return;
+      if (manualCompactBlocked) {
+        showToast(t("sessionCompactTurnActive"), "info");
+        return;
+      }
       // Trailing focus instructions ("/compact preserve X") ride along
       // verbatim; Claude honors them natively. Providers without an instruction
       // surface (e.g. Codex) ignore the argument server-side.
@@ -3625,6 +3663,7 @@ function SessionPageContent({
     },
     [
       actualSessionId,
+      manualCompactBlocked,
       permissionMode,
       showToast,
       status.owner,
@@ -3910,7 +3949,7 @@ function SessionPageContent({
     [handleCustomCommand],
   );
 
-  const liveBadgeModel = liveModelConfig?.model ?? effectiveModel;
+  const liveBadgeModel = effectiveModelConfig?.model ?? effectiveModel;
 
   const handleAbort = async () => {
     if (status.owner === "self" && status.processId) {
@@ -4288,7 +4327,7 @@ function SessionPageContent({
   // the live process config, then the persisted session metadata, else off.
   const promptSuggestionMode =
     localPromptSuggestionMode ??
-    liveModelConfig?.promptSuggestionMode ??
+    effectiveModelConfig?.promptSuggestionMode ??
     session?.promptSuggestionMode ??
     "off";
 
@@ -4799,13 +4838,13 @@ function SessionPageContent({
   );
 
   const liveSourceReviewThinking = parseThinkingConfig(
-    liveModelConfig?.thinking,
+    effectiveModelConfig?.thinking,
   );
   const sourceReviewModelSettings = liveSourceReviewThinking
     ? {
         thinking: liveSourceReviewThinking,
-        effort: isEffortLevel(liveModelConfig?.effort)
-          ? liveModelConfig.effort
+        effort: isEffortLevel(effectiveModelConfig?.effort)
+          ? effectiveModelConfig.effort
           : undefined,
       }
     : thinkingOptionToConfig(getThinkingSetting());
@@ -5076,6 +5115,7 @@ function SessionPageContent({
                   >
                     <span className="session-title-text">{displayTitle}</span>
                   </button>
+                  {currentGoal && <GoalFlag objective={currentGoal} />}
                   <button
                     type="button"
                     className={`session-title-chevron-trigger${
@@ -5171,6 +5211,7 @@ function SessionPageContent({
                       : undefined
                   }
                   onClone={supportsForkFromTurn ? cloneSession : undefined}
+                  cloneUnavailableMessage={forkUnavailableMessage}
                   cloneDisabled={forkAfterDisabled}
                   onConfigureProjectSettings={
                     supportsProjectSessionDefaults
@@ -5211,6 +5252,7 @@ function SessionPageContent({
                   onCompact={
                     supportsManualCompact ? handleCompactSession : undefined
                   }
+                  compactDisabled={manualCompactBlocked}
                   onTerminate={handleTerminate}
                   onReload={() => window.location.reload()}
                   onShare={publicShareActionAvailable ? handleShare : undefined}
@@ -5324,8 +5366,8 @@ function SessionPageContent({
                 <ProviderBadge
                   provider={effectiveProvider}
                   model={liveBadgeModel}
-                  thinking={liveModelConfig?.thinking}
-                  effort={liveModelConfig?.effort}
+                  thinking={effectiveModelConfig?.thinking}
+                  effort={effectiveModelConfig?.effort}
                   isThinking={canStopOwnedProcess}
                 />
               </button>
@@ -5516,7 +5558,7 @@ function SessionPageContent({
               sessionId={sessionId}
               sessionTitle={displayTitle}
               provider={effectiveProvider}
-              model={liveModelConfig?.requestedModel ?? liveBadgeModel}
+              model={effectiveModelConfig?.requestedModel ?? liveBadgeModel}
               thinking={sourceReviewModelSettings.thinking}
               effort={sourceReviewModelSettings.effort}
             >
@@ -5591,6 +5633,7 @@ function SessionPageContent({
                       supportsForkFromTurn ? beginForkAfterSummary : undefined
                     }
                     forkAfterUserMessageDisabled={forkAfterDisabled}
+                    forkUnavailableMessage={forkUnavailableMessage}
                     onCopyUserMessage={copyUserMessage}
                     markdownAugments={markdownAugments}
                     activeToolApproval={activeToolApproval}
@@ -5728,7 +5771,7 @@ function SessionPageContent({
                           }
                         : undefined
                     }
-                    contextRequestedModel={liveModelConfig?.requestedModel}
+                    contextRequestedModel={effectiveModelConfig?.requestedModel}
                     heartbeatEnabled={heartbeatTurnsEnabled}
                     onToggleHeartbeat={handleToggleHeartbeat}
                     onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
@@ -5896,7 +5939,7 @@ function SessionPageContent({
                       }
                     : undefined
                 }
-                contextRequestedModel={liveModelConfig?.requestedModel}
+                contextRequestedModel={effectiveModelConfig?.requestedModel}
                 heartbeatEnabled={heartbeatTurnsEnabled}
                 onToggleHeartbeat={handleToggleHeartbeat}
                 onConfigureHeartbeat={() => setShowHeartbeatModal(true)}

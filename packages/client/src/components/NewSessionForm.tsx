@@ -46,8 +46,8 @@ import {
 } from "../hooks/useModelSettings";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import {
-  getAvailableProviders,
-  getDefaultProvider,
+  getDefaultLaunchableProvider,
+  getLaunchableProviders,
   useProviderRow,
   useProviders,
 } from "../hooks/useProviders";
@@ -61,6 +61,7 @@ import { useSpeechSourceRuntime } from "../hooks/useSpeechSourceRuntime";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useI18n } from "../i18n";
+import { formatFileSize } from "../lib/formatFileSize";
 import {
   getEffortLevelOptions,
   getThinkingModeOptions,
@@ -115,6 +116,7 @@ import {
   sortProjectsForChooser,
 } from "../lib/newSessionProjects";
 import { getRecapModeDescription } from "../lib/recapModes";
+import { getSessionDefaultControlCopy } from "../lib/sessionDefaultControlCopy";
 import { prepareImageUpload } from "../lib/imageAttachmentResize";
 import { storeUploadedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import type { DraftAttachmentState } from "../lib/draftEnvelope";
@@ -240,14 +242,6 @@ interface PendingNewSessionSpeechDelivery {
   visibleTextSnapshot: string;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}\u202fb`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}\u202fkb`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10}\u202fmb`;
-  return `${Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10}\u202fgb`;
-}
-
 function createClientSpeechTurnId(): string {
   return generateUUID();
 }
@@ -334,6 +328,32 @@ export interface NewSessionFormProps {
   };
 }
 
+interface NewSessionOptionSectionProps {
+  caption?: string;
+  children: ReactNode;
+  className: string;
+  showCaption: boolean;
+  title: string;
+}
+
+function NewSessionOptionSection({
+  caption,
+  children,
+  className,
+  showCaption,
+  title,
+}: NewSessionOptionSectionProps) {
+  return (
+    <div className={className} title={showCaption ? undefined : caption}>
+      <h3>{title}</h3>
+      {showCaption && caption && (
+        <p className={styles.optionCaption}>{caption}</p>
+      )}
+      {children}
+    </div>
+  );
+}
+
 export function NewSessionForm({
   projectId,
   selectedProject,
@@ -354,6 +374,7 @@ export function NewSessionForm({
   launch,
 }: NewSessionFormProps) {
   const { t } = useI18n();
+  const sessionDefaultCopy = getSessionDefaultControlCopy(t);
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
   const { relayTransport, relayedServerSpeechAvailable } =
@@ -401,6 +422,7 @@ export function NewSessionForm({
   const [isStarting, setIsStarting] = useState(false);
   const [fullPane, setFullPane] = useState(false);
   const [fullPaneWide, setFullPaneWide] = useState(false);
+  const [showOptionCaptions, setShowOptionCaptions] = useState(false);
   const [fullPaneBaseWidth, setFullPaneBaseWidth] = useState<number | null>(
     null,
   );
@@ -908,7 +930,7 @@ export function NewSessionForm({
   // Fetch remote executors
   const { executors: remoteExecutors, loading: executorsLoading } =
     useRemoteExecutors();
-  const availableProviders = getAvailableProviders(providers);
+  const launchableProviders = getLaunchableProviders(providers);
   const resolvedPlaceholder = placeholder ?? t("newSessionPlaceholder");
   const modeLabels: Record<PermissionMode, string> = {
     default: t("modeDefaultLabel"),
@@ -939,6 +961,12 @@ export function NewSessionForm({
       off: t("promptSuggestionModeOffDescription"),
       native: t("promptSuggestionModeNativeDescription"),
     };
+  const recapAfterSecondsInlineLabels: Record<RecapMode, string> = {
+    off: t("recapAfterSecondsLabel"),
+    native: t("recapAfterSecondsInlineNative"),
+    "side-session": t("recapAfterSecondsInlineSideSession"),
+    fork: t("recapAfterSecondsInlineFork"),
+  };
 
   // Get models and capabilities for the currently selected provider. Its named
   // row wins once available because it is independent of the aggregate's
@@ -1327,11 +1355,11 @@ export function NewSessionForm({
   const applyInitialDefaults = useCallback(
     (providerRows: ProviderInfo[]) => {
       const catalogKnown = providerRows.length > 0;
-      const availableProviderNames = new Set(
-        getAvailableProviders(providerRows).map((p) => p.name),
+      const launchableProviderNames = new Set(
+        getLaunchableProviders(providerRows).map((p) => p.name),
       );
       const isSelectable = (name: ProviderName) =>
-        !catalogKnown || availableProviderNames.has(name);
+        !catalogKnown || launchableProviderNames.has(name);
       const savedDefaults = settings?.newSessionDefaults;
       // An explicit caller preference (e.g. "clear" from an existing session)
       // outranks saved new-session defaults.
@@ -1346,7 +1374,7 @@ export function NewSessionForm({
           : null);
       const initialProvider =
         providerRows.find((p) => p.name === savedProviderName) ??
-        getDefaultProvider(providerRows) ??
+        getDefaultLaunchableProvider(providerRows) ??
         (catalogKnown
           ? null
           : unprobedProviderRow(savedProviderName ?? DEFAULT_PROVIDER));
@@ -3354,7 +3382,7 @@ export function NewSessionForm({
                 sizeLabel={
                   progress
                     ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
-                    : formatSize(fileSize)
+                    : formatFileSize(fileSize)
                 }
                 imageWidth={imageSize?.width}
                 imageHeight={imageSize?.height}
@@ -3499,55 +3527,67 @@ export function NewSessionForm({
     ) : null;
 
   const providerSection =
-    availableProviders.length > 1 ? (
-      <div className="new-session-provider-section">
-        <h3>{t("newSessionProviderTitle")}</h3>
+    launchableProviders.length > 1 ? (
+      <NewSessionOptionSection
+        className="new-session-provider-section"
+        title={sessionDefaultCopy.provider.title}
+        caption={sessionDefaultCopy.provider.description}
+        showCaption={showOptionCaptions}
+      >
         <div className="provider-options" aria-busy={providersStale}>
           {providers.map((p) => {
-            const isAvailable = p.installed && (p.authenticated || p.enabled);
+            const isLaunchable = p.installed;
             const isSelected = selectedProvider === p.name;
             return (
               <button
                 key={p.name}
                 type="button"
-                className={`provider-option ${isSelected ? "selected" : ""} ${!isAvailable ? "disabled" : ""}`}
-                onClick={() => isAvailable && handleProviderSelect(p.name)}
-                disabled={isStarting || !isAvailable}
+                className={`provider-option ${isSelected ? "selected" : ""} ${!isLaunchable ? "disabled" : ""}`}
+                onClick={() => isLaunchable && handleProviderSelect(p.name)}
+                disabled={isStarting || !isLaunchable}
                 title={
-                  isAvailable
-                    ? undefined
-                    : t("newSessionProviderUnavailable", {
+                  !isLaunchable
+                    ? t("newSessionProviderUnavailable", {
                         provider: p.displayName,
-                        reason: !p.installed
-                          ? t("newSessionProviderNotInstalled")
-                          : t("newSessionProviderNotAuthenticated"),
+                        reason: t("newSessionProviderNotInstalled"),
                       })
+                    : !p.authenticated && !p.enabled
+                      ? t("newSessionProviderAuthenticationPending", {
+                          provider: p.displayName,
+                        })
+                      : undefined
                 }
               >
                 <span className={`provider-option-dot provider-${p.name}`} />
                 <div className="provider-option-content">
                   <span className="provider-option-label">{p.displayName}</span>
-                  {!isAvailable && (
+                  {!isLaunchable ? (
                     <span className="provider-option-status">
-                      {!p.installed
-                        ? t("newSessionProviderStatusNotInstalled")
-                        : t("newSessionProviderStatusNotAuthenticated")}
+                      {t("newSessionProviderStatusNotInstalled")}
                     </span>
-                  )}
+                  ) : !p.authenticated && !p.enabled ? (
+                    <span className="provider-option-status">
+                      {t("newSessionProviderStatusAuthenticationNeeded")}
+                    </span>
+                  ) : null}
                 </div>
               </button>
             );
           })}
         </div>
-      </div>
+      </NewSessionOptionSection>
     ) : null;
   const modelField =
     selectedProvider && modelOptions.length > 0 ? (
-      <div className="new-session-model-field">
-        <h3>{t("newSessionModelTitle")}</h3>
+      <NewSessionOptionSection
+        className="new-session-model-field"
+        title={sessionDefaultCopy.model.title}
+        caption={sessionDefaultCopy.model.description}
+        showCaption={showOptionCaptions}
+      >
         <FilterDropdown
           panelVariant="model"
-          label={t("newSessionModelTitle")}
+          label={sessionDefaultCopy.model.title}
           options={modelOptions}
           selected={selectedModel ? [selectedModel] : []}
           onChange={handleModelSelect}
@@ -3555,13 +3595,13 @@ export function NewSessionForm({
           placeholder={t("newSessionModelPlaceholder")}
           fullWidth
         />
-      </div>
+      </NewSessionOptionSection>
     ) : null;
   const gatewayCatalogStatus =
     selectedProvider === "claude-gateway" &&
     (!selectedProviderQuery.fresh || availableModels.length === 0) ? (
       <div className="new-session-model-field">
-        <h3>{t("newSessionModelTitle")}</h3>
+        <h3>{sessionDefaultCopy.model.title}</h3>
         <div
           className="new-session-provider-catalog-status"
           role="status"
@@ -3591,19 +3631,27 @@ export function NewSessionForm({
       </div>
     ) : null;
   const showThinkingSection = (
-    <div className="new-session-helper-section new-session-show-thinking-section">
-      <h3>{t("showThinkingTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section new-session-show-thinking-section"
+      title={sessionDefaultCopy.showThinking.title}
+      caption={sessionDefaultCopy.showThinking.description}
+      showCaption={showOptionCaptions}
+    >
       <ShowThinkingControls
         value={showThinking}
         onChange={(value) => setShowThinking(value)}
         t={t}
         showLabel={false}
       />
-    </div>
+    </NewSessionOptionSection>
   );
   const thinkingSection = showThinkingControls ? (
-    <div className="new-session-helper-section new-session-thinking-section">
-      <h3>{t("modelSettingsThinkingTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section new-session-thinking-section"
+      title={sessionDefaultCopy.thinking.title}
+      caption={sessionDefaultCopy.thinking.description}
+      showCaption={showOptionCaptions}
+    >
       <ThinkingControlsPanel
         mode={effectiveThinkingMode}
         modeOptions={thinkingModeOptions}
@@ -3627,11 +3675,15 @@ export function NewSessionForm({
         t={t}
         className="thinking-controls-panel--inline new-session-thinking-controls"
       />
-    </div>
+    </NewSessionOptionSection>
   ) : null;
   const recapSection = selectedProvider ? (
-    <div className="new-session-helper-section">
-      <h3>{t("newSessionRecapTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section"
+      title={sessionDefaultCopy.recap.title}
+      caption={getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
+      showCaption={showOptionCaptions}
+    >
       <div className="new-session-helper-options">
         {availableRecapModes.map((modeValue) => (
           <button
@@ -3660,6 +3712,14 @@ export function NewSessionForm({
         <RecapAfterSecondsControl
           value={recapAfterSeconds}
           disabled={isStarting}
+          className={
+            showOptionCaptions ? styles.captionedRecapDuration : undefined
+          }
+          label={
+            showOptionCaptions
+              ? recapAfterSecondsInlineLabels[selectedRecapMode]
+              : undefined
+          }
           mode={selectedRecapMode}
           onCommit={(seconds) => {
             hasUserCustomizedDefaultsRef.current = true;
@@ -3667,16 +3727,17 @@ export function NewSessionForm({
           }}
         />
       )}
-      <p className="recap-mode-caption">
-        {getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
-      </p>
-    </div>
+    </NewSessionOptionSection>
   ) : null;
   const helperSideModelSection = showHelperSideModel ? (
-    <div className="new-session-helper-section new-session-helper-model-section">
-      <h3>{t("helperSideModelTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section new-session-helper-model-section"
+      title={sessionDefaultCopy.helperModel.title}
+      caption={sessionDefaultCopy.helperModel.description}
+      showCaption={showOptionCaptions}
+    >
       <FilterDropdown
-        label={t("helperSideModelTitle")}
+        label={sessionDefaultCopy.helperModel.title}
         options={helperSideModelOptions}
         selected={[helperSideModel]}
         onChange={(selected) => {
@@ -3687,11 +3748,15 @@ export function NewSessionForm({
         placeholder={t("helperSideModelCheapest")}
         fullWidth
       />
-    </div>
+    </NewSessionOptionSection>
   ) : null;
   const promptSuggestionSection = selectedProvider ? (
-    <div className="new-session-helper-section">
-      <h3>{t("newSessionPromptSuggestionsTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section"
+      title={sessionDefaultCopy.suggestions.title}
+      caption={promptSuggestionModeDescriptions[selectedPromptSuggestionMode]}
+      showCaption={showOptionCaptions}
+    >
       <div className="new-session-helper-options">
         {availablePromptSuggestionModes.map((modeValue) => (
           <button
@@ -3712,11 +3777,14 @@ export function NewSessionForm({
           </button>
         ))}
       </div>
-    </div>
+    </NewSessionOptionSection>
   ) : null;
   const permissionSection = supportsPermissionMode ? (
-    <div className="new-session-mode-section">
-      <h3>{t("newSessionModeTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-mode-section"
+      title={sessionDefaultCopy.permission.title}
+      showCaption={showOptionCaptions}
+    >
       <div className="mode-options">
         {permissionModeOptions.map((m) => (
           <button
@@ -3734,11 +3802,18 @@ export function NewSessionForm({
           </button>
         ))}
       </div>
-    </div>
+    </NewSessionOptionSection>
   ) : null;
   const sandboxSection = canConfigureSessionSandbox ? (
-    <div className="new-session-helper-section new-session-sandbox-section">
-      <h3>{t("newSessionSandboxTitle")}</h3>
+    <NewSessionOptionSection
+      className="new-session-helper-section new-session-sandbox-section"
+      title={sessionDefaultCopy.sandbox.title}
+      caption={[
+        sessionDefaultCopy.sandbox.description,
+        sessionDefaultCopy.sandboxFirewall.description,
+      ].join(" ")}
+      showCaption={showOptionCaptions}
+    >
       <label className="settings-item">
         <div className="settings-item-info">
           <strong>{t("newSessionSandboxLabel")}</strong>
@@ -3763,7 +3838,7 @@ export function NewSessionForm({
       </label>
       <label className="settings-item">
         <div className="settings-item-info">
-          <strong>{t("newSessionSandboxNetworkFirewallLabel")}</strong>
+          <strong>{sessionDefaultCopy.sandboxFirewall.title}</strong>
         </div>
         <input
           type="checkbox"
@@ -3773,19 +3848,10 @@ export function NewSessionForm({
             hasUserCustomizedDefaultsRef.current = true;
             setSandboxNetworkFirewall(event.currentTarget.checked);
           }}
-          aria-label={t("newSessionSandboxNetworkFirewallLabel")}
+          aria-label={sessionDefaultCopy.sandboxFirewall.title}
         />
       </label>
-      <p className="session-default-section-description">
-        {t("newSessionSandboxNetworkFirewallDescription")}
-      </p>
-      <p className="session-default-section-description">
-        {t("newSessionSandboxDescription")}
-      </p>
-      <p className="session-default-section-description">
-        {t("newSessionSandboxAvailability")}
-      </p>
-    </div>
+    </NewSessionOptionSection>
   ) : null;
 
   // Compact mode: just the input area, no header or mode selector
@@ -3824,7 +3890,11 @@ export function NewSessionForm({
         </div>
       )}
 
-      <div className="new-session-top-layout">
+      <div
+        className={`new-session-top-layout ${styles.optionLayout}${
+          fixedProject ? ` ${styles.optionLayoutWithoutProject}` : ""
+        }`}
+      >
         <div ref={mainStackRef} className="new-session-main-stack">
           <div
             className={`new-session-input-area${
@@ -3836,7 +3906,9 @@ export function NewSessionForm({
           </div>
         </div>
         {!fixedProject && (
-          <aside className="new-session-project-slot">
+          <aside
+            className={`new-session-project-slot ${styles.projectControlsSlot}`}
+          >
             {projectChooser}
             {!launch && supportsProjectQueue && projectQueueTargetProjectId && (
               <NewSessionProjectQueue
@@ -3856,23 +3928,44 @@ export function NewSessionForm({
         {(providerSection ||
           modelSection ||
           thinkingSection ||
-          helperSideModelSection ||
-          recapSection ||
-          promptSuggestionSection ||
-          sandboxSection ||
           permissionSection) && (
           <div className="new-session-provider-slot">
             {showProviderAndModel && providerSection}
             {showProviderAndModel && modelSection}
             {thinkingSection}
             {permissionSection}
-            {sandboxSection}
-            {showThinkingSection}
-            {recapSection}
-            {helperSideModelSection}
-            {promptSuggestionSection}
           </div>
         )}
+        <div
+          className={`${styles.secondaryOptions} ${styles.optionsWithCaptionToggle}${
+            isProjectChooserExpanded ? ` ${styles.secondaryOptionsHidden}` : ""
+          }`}
+          data-new-session-secondary-options="true"
+        >
+          <button
+            type="button"
+            className={styles.captionToggle}
+            aria-label={
+              showOptionCaptions
+                ? t("newSessionHideOptionCaptions")
+                : t("newSessionShowOptionCaptions")
+            }
+            aria-pressed={showOptionCaptions}
+            title={
+              showOptionCaptions
+                ? t("newSessionHideOptionCaptions")
+                : t("newSessionShowOptionCaptions")
+            }
+            onClick={() => setShowOptionCaptions((shown) => !shown)}
+          >
+            <span aria-hidden="true">?</span>
+          </button>
+          {showThinkingSection}
+          {recapSection}
+          {helperSideModelSection}
+          {promptSuggestionSection}
+          {sandboxSection}
+        </div>
       </div>
 
       {/* Executor Selection - only show for providers whose adapter uses it. */}

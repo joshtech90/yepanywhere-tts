@@ -15,7 +15,7 @@ import {
 import { open as openFile, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, extname, join, win32 } from "node:path";
 import { promisify } from "node:util";
 import {
   type SDKMessage as AgentSDKMessage,
@@ -357,18 +357,50 @@ function isExecutableFile(filePath: string | undefined): filePath is string {
   }
 }
 
-function resolvePathExecutable(command: string): string | undefined {
+interface ResolvePathExecutableOptions {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  isExecutable?: (filePath: string) => boolean;
+}
+
+export function resolvePathExecutable(
+  command: string,
+  options: ResolvePathExecutableOptions = {},
+): string | undefined {
   if (!command.trim()) return undefined;
 
-  if (command.includes("/") || command.includes("\\")) {
-    return isExecutableFile(command) ? command : undefined;
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const executable = options.isExecutable ?? isExecutableFile;
+  const windows = platform === "win32";
+  const pathApi = windows ? win32 : { extname, join };
+  const hasPath = command.includes("/") || command.includes("\\");
+  const commandExtension = pathApi.extname(command);
+  if (
+    windows &&
+    commandExtension &&
+    !/^\.(?:com|exe)$/i.test(commandExtension)
+  ) {
+    return undefined;
   }
+  const commandNames =
+    windows && !commandExtension
+      ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+          .split(";")
+          .map((extension) => extension.trim())
+          .filter((extension) => /^\.(?:com|exe)$/i.test(extension))
+          .map((extension) => `${command}${extension}`)
+      : [command];
+  const directories = hasPath
+    ? [""]
+    : (env.PATH ?? "").split(windows ? ";" : delimiter);
 
-  const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(delimiter)) {
-    const candidate = join(dir, command);
-    if (isExecutableFile(candidate)) {
-      return candidate;
+  for (const dir of directories) {
+    for (const commandName of commandNames) {
+      const candidate = dir ? pathApi.join(dir, commandName) : commandName;
+      if (executable(candidate)) {
+        return candidate;
+      }
     }
   }
   return undefined;
@@ -421,20 +453,12 @@ function resolveLocalClaudeCodeExecutable(): string | undefined {
 
   const envExecutable =
     process.env.CLAUDE_CODE_EXECUTABLE ?? process.env.CLAUDE_CODE_PATH;
-  const executable =
-    resolvePathExecutable(envExecutable ?? "") ??
-    resolveClaudeSdkNativeExecutable() ??
-    resolvePathExecutable("claude");
+  const executable = envExecutable
+    ? resolvePathExecutable(envExecutable)
+    : (resolveClaudeSdkNativeExecutable() ?? resolvePathExecutable("claude"));
 
   cachedLocalClaudeCodeExecutable = executable ?? null;
   return executable;
-}
-
-function parseCommandLines(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function numericField(source: unknown, field: string): number | undefined {
@@ -577,18 +601,8 @@ function findClaudeDesktopExecutables(): string[] {
     .map((candidate) => candidate.path);
 }
 
-async function hasShellClaudeCommand(): Promise<boolean> {
-  if (process.platform !== "win32") return true;
-
-  try {
-    const { stdout } = await execFileAsync("where.exe", ["claude"], {
-      encoding: "utf-8",
-      timeout: 5000,
-    });
-    return parseCommandLines(stdout).length > 0;
-  } catch {
-    return false;
-  }
+function hasShellClaudeCommand(): boolean {
+  return resolvePathExecutable("claude") !== undefined;
 }
 
 async function isUsableClaudeExecutable(path: string): Promise<boolean> {
@@ -606,8 +620,13 @@ async function isUsableClaudeExecutable(path: string): Promise<boolean> {
 async function findPreferredClaudeLoginExecutable(): Promise<
   string | undefined
 > {
-  if (process.platform !== "win32" || (await hasShellClaudeCommand())) {
+  if (hasShellClaudeCommand()) {
     return undefined;
+  }
+
+  const sdkExecutable = resolveLocalClaudeCodeExecutable();
+  if (sdkExecutable && (await isUsableClaudeExecutable(sdkExecutable))) {
+    return sdkExecutable;
   }
 
   for (const executable of findClaudeDesktopExecutables()) {
@@ -1054,12 +1073,9 @@ export class ClaudeProvider implements AgentProvider {
     );
   }
 
-  /**
-   * Check if Claude SDK is available.
-   * Since we bundle the SDK, this is always true.
-   */
+  /** Check whether the bundled or explicitly configured Claude runtime exists. */
   async isInstalled(): Promise<boolean> {
-    return true;
+    return this.isClaudeCliInstalled();
   }
 
   /**
@@ -1163,8 +1179,8 @@ export class ClaudeProvider implements AgentProvider {
 
   private async getCliAuthStatus(): Promise<AuthStatus | null> {
     try {
-      const cliInfo = detectClaudeCli();
-      const claudePath = cliInfo.path ?? "claude";
+      const claudePath = resolveLocalClaudeCodeExecutable();
+      if (!claudePath) return null;
       const { stdout } = await execFileAsync(claudePath, ["auth", "status"], {
         encoding: "utf-8",
         timeout: 5000,
@@ -1190,13 +1206,9 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
-  /**
-   * Check if Claude CLI is installed.
-   * Uses detectClaudeCli() which checks PATH and common installation locations.
-   */
+  /** Check whether YA has an executable Claude Code runtime to launch. */
   private async isClaudeCliInstalled(): Promise<boolean> {
-    const cliInfo = detectClaudeCli();
-    return cliInfo.found;
+    return resolveLocalClaudeCodeExecutable() !== undefined;
   }
 
   /**

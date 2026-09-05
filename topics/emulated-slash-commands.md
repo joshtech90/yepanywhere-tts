@@ -34,6 +34,11 @@ as the runtime skills directory.
   A command may be native, provider-text emulated, YA-routed, or unavailable;
   unsupported commands should not silently fall through as ordinary prompt text
   when YA advertised them as commands.
+- `argumentHint` and `argumentCompletions` are provider-owned command metadata.
+  Completions are non-exhaustive first-argument suggestions, not a validation
+  grammar: free-form arguments remain available when the provider accepts them.
+  A stopped-session fallback must retain the richest known metadata for each
+  provider command rather than replacing live metadata with a name-only row.
 - A provider-native local command may return structured YA-local output instead
   of starting a provider turn. YA publishes that output as a synthetic
   `local_command` row for live delivery and short replay, without writing it to
@@ -64,6 +69,76 @@ as the runtime skills directory.
   text at delivery): explicit routing preserves provider and user skill name
   collisions while allowing YA-local commands to reuse the existing
   server-authoritative queue projection and UI.
+- **Attach argument completions to provider commands** (vs. a goal-specific UI
+  vocabulary): the provider owns argument semantics, while the composer only
+  filters and inserts optional suggestions. Older inventories without the field
+  retain the existing command-name completion.
+
+## Codex goal commands
+
+Codex `/goal`, `/goal clear`, `/goal pause`, `/goal resume`, and
+`/goal <objective>` are provider-native control operations. YA dispatches them
+through `thread/goal/get`, `thread/goal/clear`, and `thread/goal/set`; none may
+become model-visible turn text, including when starting or reopening a session.
+Goal controls execute out-of-band even with the composer's deferred-send option;
+providers that do not handle the command retain ordinary delivery semantics.
+Setting a new objective clears any preceding goal before setting the new one.
+This resets the provider goal without falsely marking the preceding goal
+complete. Pause and resume results report the status Codex
+actually returns, including a preserved usage- or budget-limited state, rather
+than echoing the requested transition.
+
+The Codex inventory preserves the original “Keep working toward a verifiable
+end state until it is met” description and `<verifiable end state>` free-form
+argument hint, and offers `clear`, `pause`, and `resume` as completions. When
+the attached provider reports a current objective, typing exact `/goal` offers
+that objective first; Tab inserts it into the composer for editing. Enter on
+bare `/goal` submits the read-only goal query and shows the objective (or “No
+goal set”) in the session. The session header also shows a flag with the
+provider-reported objective as its tooltip. Clearing the goal removes the flag
+and objective suggestion. YA saves provider-observed goal inventory separately
+from historical receipts, before returning queried inventory or streaming an
+inventory change. A stopped session, including after a YA restart, restores
+the last observed objective, header flag, and Tab completion. An explicit clear
+is saved too. Unknown inventory never erases a saved observation; a fresh
+provider observation replaces it. Changes made outside YA while no worker is
+observing become visible when the provider is attached and queried again.
+Historical receipts are never used to infer current provider state.
+Interactive `/goal edit` is not advertised because YA has no provider goal
+editor; an explicit attempt directs the user to `/goal <objective>`.
+
+Successful goal commands produce a compact, always-readable local receipt with
+the objective itself, rather than a collapsed “Goal set” heading. Read, clear,
+pause, and resume receipts share that style. The receipt acknowledges the
+submitted composer temp ID, so the local command does not leave a “Sending…”
+bubble while waiting for a provider user-turn echo that will never exist.
+
+Goal receipts are YA-owned display history. YA saves the existing
+`system/local_command` row in session metadata before publishing it, preserving
+its UUID, timestamp, details, and preceding provider-message anchor. Live,
+replayed, and reloaded copies render once with the same style and placement;
+bounded history reads include only receipts within that history window. They
+never enter provider transcripts or model context. Earlier transient receipts
+cannot be reconstructed after their replay buffer has expired.
+
+The receipt's anchor includes an assistant draft already visible in the live
+stream. Provider output arriving while that receipt is being saved waits for
+its publication, so disk latency cannot move the marker relative to subsequent
+output. A failed save reports failure, publishes no success receipt, and
+releases provider delivery.
+
+Codex can start another turn autonomously after a goal command or a preceding
+turn ends. YA continues observing the app-server notification stream while
+waiting for input, and streams that work without requiring another user send
+or a browser reload. Waiting is event-driven and releases its queue listener
+on every wake or abort.
+
+Compatibility: goal receipts use the existing local-command message shape and
+session-read routes; older clients can show the generic command receipt.
+Current-objective metadata and argument completions are optional inventory
+fields. Servers that omit them retain command-name completion and no current
+goal flag; the client makes no additional provider or REST requests for these
+enhancements. No existing capability is expanded.
 
 ## Default Skill Vocabulary
 
@@ -125,6 +200,11 @@ recap/goal implementation.
   being sent to the provider as plain prompt text.
 - Provider-native local output reaches both a live subscriber and the replay
   buffer, while the provider receives no user/model turn.
+- Provider argument completions filter after an exact command token, insert the
+  provider-authored value, and disappear for a complete or free-form argument.
+- Stopped Codex sessions preserve the `/goal` objective hint and control
+  completions, and every advertised goal control dispatches without a model
+  turn.
 - Supported `/archive` projects `/archive`; an archive-incapable but done-capable
   server projects `/done` without receiving an archive request. `/title` is
   handled locally and never reaches a provider or focused aside.

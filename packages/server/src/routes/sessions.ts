@@ -2,12 +2,14 @@ import {
   ALL_PERMISSION_MODES,
   type ContextUsage,
   type DurableRecapMessage,
+  type DurableLocalCommandMessage,
   type DurableSyntheticDoneMessage,
   type PermissionRules,
   type PromptSuggestionMode,
   type ProviderName,
   type RecapMode,
   type SessionMetadataResponse,
+  type SessionEffectiveModelSettings,
   type SessionOwnership,
   type SessionSandboxLevel,
   type ShowThinking,
@@ -33,7 +35,10 @@ import { Hono } from "hono";
 import type { ISessionIndexService } from "../indexes/types.js";
 import { getLogger } from "../logging/logger.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
-import type { SessionMetadataService } from "../metadata/index.js";
+import type {
+  SessionMetadata,
+  SessionMetadataService,
+} from "../metadata/index.js";
 import type { ProjectMetadataService } from "../metadata/index.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
@@ -44,6 +49,7 @@ import type { ProjectScanner } from "../projects/scanner.js";
 import { resolveCanonicalProjectRedirect } from "./session-project-routing.js";
 import { ensureRemoteDirectory } from "../sdk/remote-spawn.js";
 import { parseSlashCommandSubmission } from "../sdk/slashCommandEmulation.js";
+import { dispatchProviderCommand } from "../supervisor/provider-command.js";
 import { getProjectDirFromCwd, syncSessions } from "../sdk/session-sync.js";
 import type { PermissionMode, SDKMessage, UserMessage } from "../sdk/types.js";
 import { appendApprovalAuditLog } from "../security/approvalAuditLog.js";
@@ -77,6 +83,7 @@ import {
   hasUnreadProviderContent,
   latestRecapMessage,
   mergeSessionOverlayMessages,
+  mergeLocalCommandMessages,
 } from "../sessions/recap-overlays.js";
 import { isAutomaticSessionResumeAllowed } from "../sessions/resume-exemption.js";
 import {
@@ -168,6 +175,19 @@ const SESSION_DETAIL_SLOW_LOG_MS = 250;
 const DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS = 2;
 const LARGE_FULL_HISTORY_MESSAGE_THRESHOLD = 1000;
 
+function effectiveModelSettingsFromMetadata(
+  metadata: SessionMetadata | undefined,
+): SessionEffectiveModelSettings | undefined {
+  const settings = metadata?.effectiveLaunchSettings;
+  if (!settings) return undefined;
+
+  return {
+    requestedModel: settings.requestedModel,
+    thinking: settings.thinking,
+    effort: settings.effort,
+  };
+}
+
 function permissionModeError(mode: unknown): string | undefined {
   if (
     mode !== undefined &&
@@ -181,11 +201,12 @@ function permissionModeError(mode: unknown): string | undefined {
 async function getSessionSlashCommands(
   process: Process | undefined,
   provider: ProviderName | undefined,
+  metadata: SessionMetadata | undefined,
 ) {
+  let commands = getStaticSlashCommandsForProvider(provider);
   if (process?.supportsDynamicCommands) {
     try {
-      const commands = await process.supportedCommands();
-      if (commands) return commands;
+      commands = (await process.supportedCommands()) ?? commands;
     } catch (error) {
       getLogger().warn(
         {
@@ -199,7 +220,16 @@ async function getSessionSlashCommands(
       );
     }
   }
-  return getStaticSlashCommandsForProvider(provider);
+  return (
+    commands?.map((command) =>
+      provider === "codex" &&
+      command.name === "goal" &&
+      command.providerDetails?.codex?.goalObjective === undefined &&
+      metadata?.codexGoalCommand
+        ? metadata.codexGoalCommand
+        : command,
+    ) ?? null
+  );
 }
 
 function roundedMs(value: number): number {
@@ -817,6 +847,7 @@ function messageId(message: Message | undefined): string | undefined {
 
 type DurableSessionOverlayMessage =
   | DurableRecapMessage
+  | DurableLocalCommandMessage
   | DurableSyntheticDoneMessage;
 
 function findDurableOverlayCursor(
@@ -844,6 +875,7 @@ function sliceAfterDurableOverlayCursor(params: {
       id === params.overlay.uuid ||
       id === params.overlay.id ||
       (params.overlay.type === "system" &&
+        params.overlay.subtype === "away_summary" &&
         hasEquivalentRecapMessage([message], params.overlay))
     );
   });
@@ -1863,53 +1895,6 @@ function sdkMessagesToClientMessages(sdkMessages: SDKMessage[]): Message[] {
 }
 
 /**
- * Compute compaction overhead from SDK messages.
- * Same logic as computeCompactionOverhead in reader.ts but for SDKMessage type.
- */
-function computeSDKCompactionOverhead(sdkMessages: SDKMessage[]): number {
-  // Find the last compact_boundary with compactMetadata
-  let lastCompactIdx = -1;
-  let preTokens = 0;
-
-  for (let i = sdkMessages.length - 1; i >= 0; i--) {
-    const msg = sdkMessages[i];
-    if (msg?.type === "system" && msg.subtype === "compact_boundary") {
-      const metadata = (msg as { compactMetadata?: { preTokens?: number } })
-        .compactMetadata;
-      if (metadata?.preTokens) {
-        lastCompactIdx = i;
-        preTokens = metadata.preTokens;
-        break;
-      }
-    }
-  }
-
-  if (lastCompactIdx === -1) return 0;
-
-  // Find last assistant message before compaction with non-zero usage
-  for (let i = lastCompactIdx - 1; i >= 0; i--) {
-    const msg = sdkMessages[i];
-    if (msg?.type === "assistant" && msg.usage) {
-      const usage = msg.usage as {
-        input_tokens?: number;
-        cache_read_input_tokens?: number;
-        cache_creation_input_tokens?: number;
-      };
-      const total =
-        (usage.input_tokens ?? 0) +
-        (usage.cache_read_input_tokens ?? 0) +
-        (usage.cache_creation_input_tokens ?? 0);
-      if (total > 0) {
-        const overhead = preTokens - total;
-        return overhead > 0 ? overhead : 0;
-      }
-    }
-  }
-
-  return 0;
-}
-
-/**
  * Extract context usage from SDK messages.
  * Finds the last assistant message with usage data.
  *
@@ -1931,11 +1916,6 @@ function extractContextUsageFromSDKMessages(
     : getModelContextWindow(model, provider);
 
   const isCodexProvider = provider === "codex" || provider === "codex-oss";
-
-  // Compute compaction overhead for Claude sessions
-  const overhead = isCodexProvider
-    ? 0
-    : computeSDKCompactionOverhead(sdkMessages);
 
   // Find the last assistant message with usage data (iterate backwards)
   for (let i = sdkMessages.length - 1; i >= 0; i--) {
@@ -1962,13 +1942,10 @@ function extractContextUsageFromSDKMessages(
         continue;
       }
 
-      // Apply compaction overhead correction
-      const inputTokens = rawInputTokens + overhead;
-
-      const percentage = Math.round((inputTokens / contextWindowSize) * 100);
+      const percentage = Math.round((rawInputTokens / contextWindowSize) * 100);
 
       const result: ContextUsage = {
-        inputTokens,
+        inputTokens: rawInputTokens,
         percentage,
         contextWindow: contextWindowSize,
       };
@@ -2651,6 +2628,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const slashCommands = await getSessionSlashCommands(
       process,
       process?.provider ?? metadataProvider ?? project.provider,
+      metadata,
     );
     const deferredMessages = sessionQueueSummaries(deps, sessionId, process);
     const sessionSummaryResult = await findSessionSummaryAcrossProviders(
@@ -2725,6 +2703,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         approvalPolicy: sessionSummary?.approvalPolicy,
         sandboxPolicy: sessionSummary?.sandboxPolicy,
         contextUsage: sessionSummary?.contextUsage,
+        effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
         customTitle: metadata?.customTitle,
         isArchived: metadata?.isArchived,
         isStarred: metadata?.isStarred,
@@ -3026,9 +3005,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
     const syntheticDoneMessages =
       deps.sessionMetadataService?.getSyntheticDoneMessages?.(sessionId) ?? [];
+    const localCommandMessages =
+      deps.sessionMetadataService?.getLocalCommandMessages?.(sessionId) ?? [];
     const overlayCursor = findDurableOverlayCursor(afterMessageId, [
       ...recapMessages,
       ...syntheticDoneMessages,
+      ...localCommandMessages,
     ]);
     const providerAfterMessageId = overlayCursor ? undefined : afterMessageId;
     const primaryReaderAfterMessageId =
@@ -3121,6 +3103,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         session?.provider ??
         metadataProvider ??
         project.provider,
+      deps.sessionMetadataService?.getMetadata(sessionId),
     );
     const deferredMessages = sessionQueueSummaries(deps, sessionId, process);
     const providerChildren = await resolveProviderChildSessions(
@@ -3192,6 +3175,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           processMessages,
           recapMessages,
           syntheticDoneMessages,
+          localCommandMessages,
         );
         // Get notification data for new sessions too
         const lastSeenEntry = deps.notificationService?.getLastSeen(sessionId);
@@ -3242,6 +3226,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             hasUnread,
             provider: process.provider,
             model: process.resolvedModel,
+            effectiveModelSettings:
+              effectiveModelSettingsFromMetadata(metadata),
             contextUsage,
             ...(providerChildren ? { providerChildren } : {}),
           },
@@ -3432,6 +3418,21 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // The overlay reassigns `session` below; hasUnreadProviderContent needs
     // the pre-overlay timestamp.
     const preRecapUpdatedAt = session.updatedAt;
+    session = {
+      ...session,
+      messages: mergeLocalCommandMessages(
+        session.messages,
+        localCommandMessages,
+        {
+          hasOlderMessages: Boolean(
+            (afterMessageId && !overlayCursor) ||
+              paginationInfo?.hasOlderMessages ||
+              loadedSession.readWindow?.omittedPrefix,
+          ),
+          hasNewerMessages: Boolean(beforeMessageId),
+        },
+      ),
+    };
     if (!beforeMessageId) {
       session = applySessionOverlaysToSession(
         session,
@@ -3627,6 +3628,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         transcriptDisplayObjects: metadata?.transcriptDisplayObjects,
         // Model comes from the session reader (extracted from JSONL)
         model: session.model,
+        effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
         lastSeenAt,
         hasUnread,
         ...(providerChildren ? { providerChildren } : {}),
@@ -6659,19 +6661,21 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // through the provider's own protocol rather than delivered as turn text the
     // model would never interpret. Claude's `/compact` reports handled:false and
     // falls through to normal delivery so the SDK handles it as a regular turn
-    // (and any trailing focus instructions reach the SDK verbatim). A deferred
-    // submission keeps normal queue semantics.
-    if (!body.deferred) {
-      const parsed = parseSlashCommandSubmission(body.message);
+    // (and any trailing focus instructions reach the SDK verbatim). Goal
+    // controls are out-of-band even when the composer requests deferred send.
+    const parsed = parseSlashCommandSubmission(body.message);
+    if (!body.deferred || parsed?.name === "goal") {
       if (parsed) {
-        const providerResult = await process.runProviderCommand(
-          parsed.name,
-          parsed.argument,
+        const providerResult = await dispatchProviderCommand(
+          process,
+          parsed,
+          body.tempId,
+          deps.sessionMetadataService,
         );
         if (providerResult.handled) {
           if (providerResult.error) {
             return c.json(
-              { error: "Failed to run command", reason: providerResult.error },
+              { error: providerResult.error, reason: providerResult.error },
               409,
             );
           }

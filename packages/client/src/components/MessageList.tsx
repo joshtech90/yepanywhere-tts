@@ -50,6 +50,7 @@ import {
 import { markReloadPerfPhase } from "../lib/diagnostics/reloadPerfProbe";
 import { selectionIntersectsElement } from "../lib/domSelection";
 import { getMessageId } from "../lib/mergeMessages";
+import { formatFileSize } from "../lib/formatFileSize";
 import type { GetSessionResult } from "../lib/sourceRuntime";
 import {
   createTranscriptPositionStore,
@@ -73,6 +74,10 @@ import {
   getLatestSeenTurnRenderKey,
 } from "../lib/sessionScrollCursor";
 import type { SessionRouteScrollSnapshot } from "../lib/sessionRouteSnapshots";
+import {
+  isSessionViewerOpen,
+  useSessionViewerResumeRevision,
+} from "../lib/sessionViewerController";
 import {
   findFallbackRenderAnchorRow,
   findRenderRow,
@@ -116,6 +121,7 @@ import type {
   RenderItem,
 } from "../types/renderItems";
 import { AttachmentChip } from "./AttachmentChip";
+import { useSessionViewerSessionId } from "./SessionManagedViewer";
 import {
   BtwAsideTranscript,
   type BtwAsideTranscriptTurn,
@@ -666,14 +672,6 @@ function providerExpandsHistoricalThinking(provider: string | undefined) {
   return provider === "pi";
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}\u202fb`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}\u202fkb`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10}\u202fmb`;
-  return `${Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10}\u202fgb`;
-}
-
 /** Pending message waiting for server confirmation */
 interface PendingMessage {
   tempId: string;
@@ -834,6 +832,8 @@ interface Props {
   onForkAfterSummaryUserMessage?: (messageId: string) => void;
   /** The latest response is active, so after-turn boundaries are disabled. */
   forkAfterUserMessageDisabled?: boolean;
+  /** Why otherwise-supported Fork actions need a server update. */
+  forkUnavailableMessage?: string;
   /** Copy the given user turn's text (turn-notch context menu). */
   onCopyUserMessage?: (messageId: string) => void;
   /** Pre-rendered markdown HTML from server (keyed by message ID) */
@@ -1186,6 +1186,7 @@ interface UserTimelineEntryProps {
   onForkAfterSummaryUserMessage?: (messageId: string) => void;
   canForkBeforePrompt: (messageId: string) => boolean;
   forkAfterUserMessageDisabled: boolean;
+  forkUnavailableMessage?: string;
   noopToggleThinkingExpanded: () => void;
   promptActionsDisabled: boolean;
 }
@@ -1204,6 +1205,7 @@ const UserTimelineEntry = memo(function UserTimelineEntry({
   onForkAfterSummaryUserMessage,
   canForkBeforePrompt,
   forkAfterUserMessageDisabled,
+  forkUnavailableMessage,
   noopToggleThinkingExpanded,
   promptActionsDisabled,
 }: UserTimelineEntryProps) {
@@ -1257,6 +1259,11 @@ const UserTimelineEntry = memo(function UserTimelineEntry({
           : undefined
       }
       forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
+      forkUnavailableMessage={
+        row.allowsPromptActions && !promptActionsDisabled
+          ? forkUnavailableMessage
+          : undefined
+      }
       staleNowMs={row.staleNowMs}
     />
   );
@@ -1275,6 +1282,7 @@ interface AssistantTimelineEntryProps {
   onForkAfterSummaryUserMessage?: (messageId: string) => void;
   canForkBeforePrompt: (messageId: string) => boolean;
   forkAfterUserMessageDisabled: boolean;
+  forkUnavailableMessage?: string;
   handleQuoteTextBlock: (anchor: CommentAnchor) => void;
   alwaysShowQuoteCircles: boolean;
   paragraphQuoteCirclesEnabled: boolean;
@@ -1303,6 +1311,7 @@ const AssistantTimelineEntry = memo(function AssistantTimelineEntry({
   onForkAfterSummaryUserMessage,
   canForkBeforePrompt,
   forkAfterUserMessageDisabled,
+  forkUnavailableMessage,
   handleQuoteTextBlock,
   alwaysShowQuoteCircles,
   paragraphQuoteCirclesEnabled,
@@ -1371,6 +1380,12 @@ const AssistantTimelineEntry = memo(function AssistantTimelineEntry({
                 : undefined
             }
             forkAfterUserPromptDisabled={forkAfterUserMessageDisabled}
+            forkUnavailableMessage={
+              assistantRow.allowsPromptActions &&
+              !promptActionDisabledIds.has(item.id)
+                ? forkUnavailableMessage
+                : undefined
+            }
             onQuoteTextBlock={
               assistantRow.allowsTextQuote ? handleQuoteTextBlock : undefined
             }
@@ -1440,6 +1455,7 @@ export const MessageList = memo(function MessageList({
   onForkAfterUserMessage,
   onForkAfterSummaryUserMessage,
   forkAfterUserMessageDisabled = false,
+  forkUnavailableMessage,
   onCopyUserMessage,
   markdownAugments,
   activeToolApproval,
@@ -1473,6 +1489,8 @@ export const MessageList = memo(function MessageList({
   onFollowForkSummary,
   bangCommandHandlers,
 }: Props) {
+  const sessionViewerSessionId = useSessionViewerSessionId();
+  useSessionViewerResumeRevision();
   const { recentProjectPathLinksEnabled } = useRecentProjectPathLinks();
   const transcriptRenderStartedAtMs = isBrowserDebugPerformanceRecording()
     ? highResolutionNowMs()
@@ -2543,7 +2561,9 @@ export const MessageList = memo(function MessageList({
     useState<string | null>(null);
   const retainedProgressiveHydrationStartedKeyRef = useRef<string | null>(null);
   const progressiveRenderPaused =
-    inert || progressiveRenderPauseSignal?.current === true;
+    inert ||
+    progressiveRenderPauseSignal?.current === true ||
+    isSessionViewerOpen(sessionViewerSessionId);
   const progressiveRenderCompactionActive =
     progressiveRenderPaused &&
     progressiveRenderPauseSignal?.supportsCompaction === true;
@@ -2765,7 +2785,10 @@ export const MessageList = memo(function MessageList({
         ? PROGRESSIVE_RETAINED_RESUME_DELAY_MS
         : PROGRESSIVE_RENDER_BATCH_DELAY_MS;
     const timer = setTimeout(() => {
-      if (progressiveRenderPauseSignal?.current) {
+      if (
+        progressiveRenderPauseSignal?.current ||
+        isSessionViewerOpen(sessionViewerSessionId)
+      ) {
         return;
       }
       if (retainedProgressiveWindowActive) {
@@ -2774,7 +2797,10 @@ export const MessageList = memo(function MessageList({
       }
       startTransition(() => {
         setProgressiveEntryCount((current) => {
-          if (progressiveRenderPauseSignal?.current) {
+          if (
+            progressiveRenderPauseSignal?.current ||
+            isSessionViewerOpen(sessionViewerSessionId)
+          ) {
             return current;
           }
           return getNextProgressiveEntryCount(
@@ -2797,6 +2823,7 @@ export const MessageList = memo(function MessageList({
     progressiveRenderPauseSignal,
     progressiveRenderCycleKey,
     retainedProgressiveWindowActive,
+    sessionViewerSessionId,
     visibleTimelineEntries,
   ]);
   useEffect(() => {
@@ -2809,7 +2836,10 @@ export const MessageList = memo(function MessageList({
     }
 
     const timer = setTimeout(() => {
-      if (progressiveRenderPauseSignal?.current) {
+      if (
+        progressiveRenderPauseSignal?.current ||
+        isSessionViewerOpen(sessionViewerSessionId)
+      ) {
         return;
       }
       if (retainedProgressiveWindowActive) {
@@ -2831,6 +2861,7 @@ export const MessageList = memo(function MessageList({
     progressiveRenderPaused,
     progressiveRenderPauseSignal,
     retainedProgressiveWindowActive,
+    sessionViewerSessionId,
     visibleTimelineEntries.length,
   ]);
   useLayoutEffect(() => {
@@ -4490,6 +4521,7 @@ export const MessageList = memo(function MessageList({
                   onForkAfterSummaryUserMessage={onForkAfterSummaryUserMessage}
                   canForkBeforePrompt={canForkBeforePrompt}
                   forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
+                  forkUnavailableMessage={forkUnavailableMessage}
                   noopToggleThinkingExpanded={noopToggleThinkingExpanded}
                   promptActionsDisabled={historySearchRenderIds.has(
                     timelineRow.item.id,
@@ -4513,6 +4545,7 @@ export const MessageList = memo(function MessageList({
                 onForkAfterSummaryUserMessage={onForkAfterSummaryUserMessage}
                 canForkBeforePrompt={canForkBeforePrompt}
                 forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
+                forkUnavailableMessage={forkUnavailableMessage}
                 handleQuoteTextBlock={handleQuoteTextBlock}
                 alwaysShowQuoteCircles={alwaysShowQuoteCircles}
                 paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
@@ -4606,7 +4639,7 @@ export const MessageList = memo(function MessageList({
                           originalName={file.originalName}
                           path={file.path}
                           mimeType={file.mimeType}
-                          sizeLabel={formatSize(file.size)}
+                          sizeLabel={formatFileSize(file.size)}
                           imageWidth={file.width}
                           imageHeight={file.height}
                         />
@@ -4667,7 +4700,7 @@ export const MessageList = memo(function MessageList({
                           originalName={file.originalName}
                           path={file.path}
                           mimeType={file.mimeType}
-                          sizeLabel={formatSize(file.size)}
+                          sizeLabel={formatFileSize(file.size)}
                           imageWidth={file.width}
                           imageHeight={file.height}
                         />
@@ -4790,7 +4823,7 @@ export const MessageList = memo(function MessageList({
                         originalName={file.originalName}
                         path={file.path}
                         mimeType={file.mimeType}
-                        sizeLabel={formatSize(file.size)}
+                        sizeLabel={formatFileSize(file.size)}
                         imageWidth={file.width}
                         imageHeight={file.height}
                       />

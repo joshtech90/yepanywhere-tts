@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   DurableRecapMessage,
+  DurableLocalCommandMessage,
   EffortLevel,
   ModelInfo,
   PermissionRules,
@@ -892,6 +893,10 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   supportedModelsFn?: () => Promise<ModelInfo[]>;
   /** Function to get supported slash commands (SDK 0.2.7+) */
   supportedCommandsFn?: () => Promise<SlashCommand[]>;
+  onCommandsObserved?: (
+    sessionId: string,
+    commands: SlashCommand[],
+  ) => Promise<void>;
   /** Function to change model mid-session (SDK 0.2.7+) */
   setModelFn?: (model?: string) => Promise<void>;
   /**
@@ -994,6 +999,8 @@ export class Process {
    * streaming-text catch-up buffer correct for multi-client sessions.
    */
   private _activeStreamingMessageId: string | null = null;
+  /** Preserve provider/receipt ordering while a local command is saved. */
+  private commandOutputPublication: Promise<void> | null = null;
 
   /**
    * Rolling buffer of recent assistant text turns used as context for
@@ -1068,6 +1075,7 @@ export class Process {
   /** Function to get supported slash commands (SDK 0.2.7+) */
   private supportedCommandsFn: (() => Promise<SlashCommand[]>) | null;
   private supportedCommandsCache: SlashCommand[] | null = null;
+  private onCommandsObserved: ProcessConstructorOptions["onCommandsObserved"];
   private supportedCommandsRefreshInFlight: Promise<
     SlashCommand[] | null
   > | null = null;
@@ -1221,6 +1229,7 @@ export class Process {
     this.steerFn = options.steerFn ?? null;
     this.supportedModelsFn = options.supportedModelsFn ?? null;
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
+    this.onCommandsObserved = options.onCommandsObserved;
     this._pidResolver = options.pid;
     this.setModelFn = options.setModelFn ?? null;
     this.runProviderCommandFn = options.runProviderCommandFn ?? null;
@@ -1952,7 +1961,9 @@ export class Process {
    * request is applied at the turn boundary.
    */
   get effort(): EffortLevel | undefined {
-    return this.pendingEffortUpdate?.effort ?? this._effort;
+    return this.pendingEffortUpdate
+      ? this.pendingEffortUpdate.effort
+      : this._effort;
   }
 
   /** Effort already accepted by the provider, excluding a queued next turn. */
@@ -2102,12 +2113,11 @@ export class Process {
     }
 
     this.pendingEffortUpdate = { effort };
-    if (
+    const canDeferUntilBoundary =
       (this._state.type === "in-turn" ||
         this._state.type === "waiting-input") &&
-      !this.effortUpdatesActiveTurn &&
-      !this.effortBoundaryBlocked
-    ) {
+      !this.effortBoundaryBlocked;
+    if (canDeferUntilBoundary && !this.effortUpdatesActiveTurn) {
       getLogger().info(
         {
           event: "effort_change_queued",
@@ -2124,7 +2134,21 @@ export class Process {
     if (this.effortBoundaryBlocked) {
       await this.completeEffortBoundaryTransition();
     } else {
-      await this.enqueuePendingEffortApplication();
+      try {
+        await this.enqueuePendingEffortApplication();
+      } catch (error) {
+        if (!canDeferUntilBoundary || this.isTerminated) throw error;
+        getLogger().info(
+          {
+            event: "effort_change_deferred_after_live_failure",
+            sessionId: this._sessionId,
+            processId: this.id,
+            effort,
+            err: error,
+          },
+          "Retained effort selection for the turn boundary after live update failed",
+        );
+      }
     }
     return true;
   }
@@ -2250,24 +2274,59 @@ export class Process {
   async runProviderCommand(
     command: string,
     argument?: string,
+    options?: {
+      tempId?: string;
+      persistOutput?: (message: DurableLocalCommandMessage) => Promise<void>;
+    },
   ): Promise<ProviderCommandResult> {
     if (!this.runProviderCommandFn) {
       return { handled: false };
     }
     const result = await this.runProviderCommandFn(command, argument);
     if (result.handled && result.output) {
-      const synthetic = this.withTimestamp({
-        type: "system",
-        subtype: "local_command",
-        content: result.output.summary,
-        ...(result.output.details ? { details: result.output.details } : {}),
-        session_id: this._sessionId,
-        uuid: randomUUID(),
-        isMeta: false,
-        isSynthetic: true,
-      } as unknown as SDKMessage);
-      this.currentBucket.push(synthetic);
-      this.emit({ type: "message", message: synthetic });
+      const previousPublication = this.commandOutputPublication;
+      let releasePublication!: () => void;
+      const publication = new Promise<void>((resolve) => {
+        releasePublication = resolve;
+      });
+      this.commandOutputPublication = publication;
+      if (previousPublication) await previousPublication;
+      try {
+        const placementAfterMessageId =
+          this._streamingMessageId ??
+          this.getMessageHistory()
+            .reverse()
+            .find(
+              (message) =>
+                typeof message.uuid === "string" &&
+                !message.isSynthetic &&
+                (message.type === "assistant" || message.type === "user"),
+            )?.uuid;
+        const id = randomUUID();
+        const synthetic: DurableLocalCommandMessage = {
+          type: "system",
+          subtype: "local_command",
+          content: result.output.summary,
+          ...(result.output.details ? { details: result.output.details } : {}),
+          session_id: this._sessionId,
+          uuid: id,
+          id,
+          timestamp: new Date().toISOString(),
+          tempId: options?.tempId,
+          ...(typeof placementAfterMessageId === "string"
+            ? { placementAfterMessageId }
+            : {}),
+          isMeta: false,
+          isSynthetic: true,
+        };
+        await options?.persistOutput?.(synthetic);
+        this.currentBucket.push(synthetic as SDKMessage);
+        this.emit({ type: "message", message: synthetic as SDKMessage });
+      } finally {
+        releasePublication();
+        if (this.commandOutputPublication === publication)
+          this.commandOutputPublication = null;
+      }
     }
     return result;
   }
@@ -2315,7 +2374,8 @@ export class Process {
     }
 
     const refresh = this.supportedCommandsFn()
-      .then((commands) => {
+      .then(async (commands) => {
+        await this.onCommandsObserved?.(this.sessionId, commands);
         this.supportedCommandsCache = commands;
         return commands;
       })
@@ -4634,12 +4694,21 @@ export class Process {
           message =
             await this.toolResultMediaMaterializer.materializeMessage(message);
         }
+        // A receipt reserves its visible position before awaiting disk. Let it
+        // publish before provider output that arrived during that save.
+        while (this.commandOutputPublication) {
+          await this.commandOutputPublication;
+        }
         const receivedAt = new Date();
         this._lastMessageTime = receivedAt;
         this._lastProviderMessageTime = receivedAt;
         this.recordNativeRecap(message, receivedAt);
         this.observeProviderRuntimeStatus(message, receivedAt);
         if (Array.isArray(message.slash_command_inventory)) {
+          await this.onCommandsObserved?.(
+            this.sessionId,
+            message.slash_command_inventory as SlashCommand[],
+          );
           this.supportedCommandsCache =
             message.slash_command_inventory as SlashCommand[];
         }

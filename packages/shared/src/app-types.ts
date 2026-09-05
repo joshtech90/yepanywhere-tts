@@ -15,13 +15,16 @@ import type {
   SystemEntry,
   UserEntry,
 } from "./claude-sdk-schema/types.js";
+import type { CodexAsyncUserInputQuestion } from "./codex-schema/session.js";
 import { isUrlProjectId, type UrlProjectId } from "./projectId.js";
 import type {
+  EffortLevel,
   PermissionMode,
   PromptSuggestionMode,
   ProviderName,
   RecapMode,
   SlashCommand,
+  ThinkingConfig,
 } from "./types.js";
 import type { ToolDisplayAction } from "./tool-display-actions.js";
 import type { ProjectPathLinkTarget } from "./project-path-links.js";
@@ -121,6 +124,12 @@ export interface AppMessageExtensions {
    * compatibility path. Clients must prefer this over setup-text heuristics.
    */
   codexUserTurnProvenance?: CodexUserTurnMessageProvenance;
+
+  /** Codex agent message delivered while its originating turn kept running. */
+  codexAgentMessageDelivery?: "async";
+
+  /** Structured questions attached to an asynchronous Codex agent message. */
+  codexAsyncQuestions?: CodexAsyncUserInputQuestion[];
 
   /**
    * True if this message is still being streamed (incomplete).
@@ -257,6 +266,8 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000;
 export const CODEX_DEFAULT_CONTEXT_WINDOW = 258_000;
 /** GPT-5.6 Sol, Terra, and Luna context window in Codex 0.144.6+. */
 export const CODEX_GPT56_CONTEXT_WINDOW = 272_000;
+/** GPT-6 Astra context window in Codex 0.153.3+. */
+export const CODEX_GPT6_ASTRA_CONTEXT_WINDOW = 272_000;
 export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
 
 /**
@@ -275,6 +286,7 @@ export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
  * - GPT-4: 128K (varies by variant)
  * - GPT-4o: 128K
  * - GPT-5.6 Sol/Terra/Luna: 272K
+ * - GPT-6 Astra: 272K
  * - Earlier GPT-5 / Codex 5.x: ~258K
  */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -336,6 +348,10 @@ export function getModelContextWindow(
 
   if (lowerModel.includes("gpt-5.6")) {
     return CODEX_GPT56_CONTEXT_WINDOW;
+  }
+
+  if (lowerModel.includes("gpt-6-astra")) {
+    return CODEX_GPT6_ASTRA_CONTEXT_WINDOW;
   }
 
   // Handle model IDs that may include provider namespace or other prefixes.
@@ -464,6 +480,19 @@ export type TranscriptDisplayObject =
   | ForkSummaryTranscriptDisplayObject
   | BangCommandTranscriptDisplayObject;
 
+export interface DurableLocalCommandMessage extends AppMessageExtensions {
+  type: "system";
+  subtype: "local_command";
+  content: string;
+  details?: string[];
+  timestamp: string;
+  uuid: string;
+  id: string;
+  session_id: string;
+  isSynthetic: true;
+  placementAfterMessageId?: string;
+}
+
 export interface DurableRecapMessage extends AppMessageExtensions {
   type: "system";
   subtype: "away_summary";
@@ -566,8 +595,20 @@ export interface AppSession extends AppSessionSummary {
   messages: AppMessage[];
 }
 
+/** Last successfully applied model settings retained for later session turns. */
+export interface SessionEffectiveModelSettings {
+  /** Exact YA model token, including "default"; null means provider default. */
+  requestedModel: string | null;
+  /** Effective thinking configuration; null means disabled/default behavior. */
+  thinking: ThinkingConfig | null;
+  /** Effective effort selection; null means provider/default behavior. */
+  effort: EffortLevel | null;
+}
+
 export interface SessionMetadataPayload
   extends Omit<AppSessionSummary, "ownership"> {
+  /** Durable model settings used when no live process snapshot is available. */
+  effectiveModelSettings?: SessionEffectiveModelSettings;
   /** Whether this session is opted in to heartbeat turns */
   heartbeatTurnsEnabled?: boolean;
   /** Per-session wake-turn override; absent inherits the server default. */

@@ -41,6 +41,7 @@ import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
+import { formatFileSize } from "../lib/formatFileSize";
 import type { TranscriptPositionStore } from "../lib/transcriptPositionStore";
 import {
   getDraftTextChangeMetadata,
@@ -97,7 +98,11 @@ import {
   longestCommonPrefix,
   resolveComposerBangDraft,
 } from "../lib/bangCommands";
-import { getSlashCommandMenuParts } from "../lib/slashCommands";
+import {
+  getSlashCommandArgumentCompletionMatches,
+  getSlashCommandMenuParts,
+  type SlashCommandArgumentCompletionMatch,
+} from "../lib/slashCommands";
 import {
   createClientSpeechTurnId,
   createSpeechTargetId,
@@ -215,15 +220,6 @@ function getComposerViewportHeight(): number {
   return typeof visualViewportHeight === "number"
     ? Math.min(window.innerHeight, visualViewportHeight)
     : window.innerHeight;
-}
-
-/** Format file size in human-readable form */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}\u202fb`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}\u202fkb`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10}\u202fmb`;
-  return `${Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10}\u202fgb`;
 }
 
 interface Props {
@@ -562,11 +558,24 @@ export function MessageInput({
     attachments.length + uploadProgress.length,
   );
   const invocationQuery = getInvocationCompletionQuery(text, composerCursor);
+  const matchingSlashArgumentCompletions = useMemo(
+    () =>
+      getSlashCommandArgumentCompletionMatches(
+        text,
+        slashCommands,
+        composerCursor,
+      ),
+    [composerCursor, slashCommands, text],
+  );
+  const argumentCompletionQuery = matchingSlashArgumentCompletions[0];
   const slashQueryKey = invocationQuery
     ? `${invocationQuery.start}:${invocationQuery.end}:${invocationQuery.sigil}:${invocationQuery.query}`
-    : null;
+    : argumentCompletionQuery
+      ? `${argumentCompletionQuery.start}:${argumentCompletionQuery.end}:argument:${argumentCompletionQuery.query}`
+      : null;
   const matchingSlashCommands = useMemo(() => {
-    if (!invocationQuery) return [];
+    if (!invocationQuery || matchingSlashArgumentCompletions.length > 0)
+      return [];
     const matched = slashCommands.filter((command) =>
       commandMatchesInvocationQuery(command, invocationQuery),
     );
@@ -588,20 +597,22 @@ export function MessageInput({
       (command) =>
         preferredByName.get(command.name.trim().toLowerCase()) === command,
     );
-  }, [invocationQuery, slashCommands]);
+  }, [invocationQuery, slashCommands, matchingSlashArgumentCompletions.length]);
   const hasExactSlashCommand =
     invocationQuery !== null &&
-    matchingSlashCommands.some((command) =>
+    slashCommands.some((command) =>
       getInvocationNames(command).includes(invocationQuery.query),
     );
+  const slashSuggestionCount =
+    matchingSlashCommands.length + matchingSlashArgumentCompletions.length;
   const showSlashSuggestions =
     !collapsed &&
     !disabled &&
-    invocationQuery !== null &&
-    !(invocationQuery.leading && hasNonTextComposerContent) &&
-    !hasExactSlashCommand &&
+    (invocationQuery !== null || matchingSlashArgumentCompletions.length > 0) &&
+    !hasNonTextComposerContent &&
+    (!hasExactSlashCommand || matchingSlashArgumentCompletions.length > 0) &&
     dismissedSlashQuery !== slashQueryKey &&
-    matchingSlashCommands.length > 0;
+    slashSuggestionCount > 0;
   const recognizedSkillTokens = useMemo(
     () =>
       Array.from(
@@ -751,7 +762,7 @@ export function MessageInput({
     }
   }, [text]);
 
-  const slashSelectionResetKey = `${slashQueryKey}\0${matchingSlashCommands.length}`;
+  const slashSelectionResetKey = `${slashQueryKey}\0${slashSuggestionCount}`;
 
   useEffect(() => {
     void slashSelectionResetKey;
@@ -2161,6 +2172,31 @@ export function MessageInput({
     ],
   );
 
+  const handleSlashArgumentCompletion = useCallback(
+    (match: SlashCommandArgumentCompletionMatch) => {
+      const separator =
+        match.start > 0 && !/\s/.test(text[match.start - 1] ?? "") ? " " : "";
+      const replacement = `${separator}${match.completion.value.trim()} `;
+      const nextText =
+        text.slice(0, match.start) + replacement + text.slice(match.end);
+      const nextCursor = match.start + replacement.length;
+      noteDraftTextChange(text, nextText, {
+        start: match.start,
+        end: match.end,
+        inputType: "insertText",
+      });
+      noteComposerEdit(nextText);
+      setText(nextText);
+      setComposerCursor(nextCursor);
+      setDismissedSlashQuery(null);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
+    },
+    [noteComposerEdit, noteDraftTextChange, setText, text],
+  );
+
   // Apply a highlighted/clicked bang menu row. A history row replaces the
   // whole `!!` body (and dismisses the menu, since the body is now a complete
   // prior command); a token candidate keeps the token-replacement behavior.
@@ -2460,8 +2496,7 @@ export function MessageInput({
         setSelectedSlashIndex((current) => {
           const delta = e.key === "ArrowDown" ? 1 : -1;
           return (
-            (current + delta + matchingSlashCommands.length) %
-            matchingSlashCommands.length
+            (current + delta + slashSuggestionCount) % slashSuggestionCount
           );
         });
         return;
@@ -2469,6 +2504,7 @@ export function MessageInput({
       if (
         e.key === "Tab" ||
         (e.key === "Enter" &&
+          !hasExactSlashCommand &&
           !e.ctrlKey &&
           !e.metaKey &&
           !e.shiftKey &&
@@ -2476,7 +2512,15 @@ export function MessageInput({
       ) {
         e.preventDefault();
         const command = matchingSlashCommands[selectedSlashIndex];
-        if (command) handleSlashCommand(command);
+        if (command) {
+          handleSlashCommand(command);
+        } else {
+          const completion =
+            matchingSlashArgumentCompletions[
+              selectedSlashIndex - matchingSlashCommands.length
+            ];
+          if (completion) handleSlashArgumentCompletion(completion);
+        }
         return;
       }
     }
@@ -3586,6 +3630,32 @@ export function MessageInput({
                 </button>
               );
             })}
+            {matchingSlashArgumentCompletions.map((match, offset) => {
+              const index = matchingSlashCommands.length + offset;
+              const value = match.completion.value.trim();
+              const label = `${getCanonicalInvocationToken(match.command)} ${value}`;
+              return (
+                <button
+                  key={`${getCanonicalInvocationToken(match.command)}:${value}`}
+                  type="button"
+                  className={`slash-command-item${index === selectedSlashIndex ? " active" : ""}`}
+                  onMouseEnter={() => setSelectedSlashIndex(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSlashArgumentCompletion(match)}
+                  role="menuitem"
+                  aria-label={label}
+                >
+                  <span className="slash-command-copy">
+                    <span>{label}</span>
+                    {match.completion.description && (
+                      <span className="slash-command-detail">
+                        {match.completion.description}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -3774,7 +3844,7 @@ export function MessageInput({
                   originalName={file.originalName}
                   path={file.path}
                   mimeType={file.mimeType}
-                  sizeLabel={formatSize(file.size)}
+                  sizeLabel={formatFileSize(file.size)}
                   imageWidth={file.width}
                   imageHeight={file.height}
                   previewUrl={file.previewUrl}

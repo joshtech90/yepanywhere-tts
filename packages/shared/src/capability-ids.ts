@@ -342,6 +342,18 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "codex-plan-tool-setting",
     introducedIn: "0.8.1",
   },
+  codexPaginatedRolloutLineage: {
+    id: 54,
+    direction: "server",
+    name: "codex-paginated-rollout-lineage",
+    introducedIn: "0.8.1",
+  },
+  projectQueueAttachmentEditing: {
+    id: 55,
+    direction: "server",
+    name: "project-queue-attachment-editing",
+    introducedIn: "0.8.1",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [
