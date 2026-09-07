@@ -1,3 +1,5 @@
+import type { TurnEffort } from "./turn-effort.js";
+
 export type UserMessageDeliveryIntent =
   | "direct"
   | "steer"
@@ -97,6 +99,8 @@ export interface UserMessageSpeechMetadata {
 }
 
 export interface UserMessageMetadata {
+  /** One-turn effort selection, resolved at provider admission. */
+  turnEffort?: TurnEffort;
   /** Stable idempotency key for a source-review submission turn. */
   sourceReviewSubmissionId?: string;
   deliveryIntent?: UserMessageDeliveryIntent;

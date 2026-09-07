@@ -161,6 +161,16 @@ export async function fetchPlainBlob(
   requestInit?: RequestInit,
   options: PlainFetchOptions = {},
 ): Promise<Blob> {
+  const response = await fetchPlainResponse(path, requestInit, options);
+  return response.blob();
+}
+
+/** Preserve response validators and bodyless conditional-GET replies. */
+export async function fetchPlainResponse(
+  path: string,
+  requestInit?: RequestInit,
+  options: PlainFetchOptions = {},
+): Promise<Response> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(`${options.apiBase ?? API_BASE}${path}`, {
     ...requestInit,
@@ -168,12 +178,12 @@ export async function fetchPlainBlob(
     headers: createPlainFetchHeaders(requestInit?.headers, options),
   });
 
-  if (!response.ok) {
+  if (!response.ok && response.status !== 304) {
     if (response.status === 401) {
       signalLoginRequired(path, options.onLoginRequired);
     }
     throw createPlainFetchError(response, await getBlobErrorMessage(response));
   }
 
-  return response.blob();
+  return response;
 }

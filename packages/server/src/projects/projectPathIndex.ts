@@ -1,9 +1,10 @@
 import type { Dirent, FSWatcher } from "node:fs";
-import { watch } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
 import { getLogger } from "../logging/logger.js";
+import { notifyProjectFileChange } from "./projectFileChanges.js";
+import { watchSharedDirectory } from "../watcher/SharedDirectoryWatcher.js";
 
 /**
  * Demand-driven project path cache.
@@ -133,7 +134,7 @@ const DEFAULT_IO: PathIndexIo = {
   lstat: (path) => lstat(path),
   readdir: (path) => readdir(path, { withFileTypes: true }),
   watch: (path, listener) =>
-    watch(path, { persistent: false }, (event, filename) =>
+    watchSharedDirectory(path, { persistent: false }, (event, filename) =>
       listener(event, filename),
     ),
 };
@@ -1215,6 +1216,7 @@ class SparseProjectPathIndex implements ProjectPathIndex {
 
   private markMembershipChanged(): void {
     this.membershipRevision = nextMembershipRevision();
+    notifyProjectFileChange(this.projectPath);
   }
 
   /** Drop least-recently-used subtrees until this project fits its ceiling. */

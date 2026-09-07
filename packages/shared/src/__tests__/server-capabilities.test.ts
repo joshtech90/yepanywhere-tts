@@ -34,6 +34,22 @@ import {
 } from "../index.js";
 
 describe("server capability advertisements", () => {
+  it("gates turn effort with permanent ID 58 and release 0.8.2", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.name;
+    expect(CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.id).toBe(58);
+    expect(serverHasCapability({ current: "0.8.1" }, name)).toBe(false);
+    expect(serverHasCapability({ current: "0.8.2" }, name)).toBe(true);
+    const advertisement = encodeVersionedServerCapabilities(
+      [name],
+      "0.8.1-1-gabcdef",
+    );
+    expect(advertisement).toEqual({
+      capabilityEncoding: CAPABILITY_ID_ENCODING_VERSION,
+      capabilityBits: [[1, 2 ** 26]],
+    });
+    expect(serverHasCapability(advertisement, name)).toBe(true);
+  });
+
   it("distinguishes absent legacy advertisements from empty ID sets", () => {
     expect(hasServerCapabilityAdvertisement({ current: "0.7.0" })).toBe(false);
     expect(

@@ -1,13 +1,18 @@
 # Task-List Rendering
 
-> How YA should render the agent's task/todo list now that recent Claude builds
-> emit incremental task events (`TaskCreate`/`TaskUpdate`) instead of a single
-> self-contained todo snapshot. This topic frames the problem and its
-> constraints; it does not commit to an implementation.
+> YA renders Claude's incremental task events by reconstructing task state
+> server-side and supplying resolved snapshots to task tool renderers.
 
-Status: Direction chosen. Reconstruct task state server-side as a transient
-fold over provider events, inject `_taskSnapshot` into selected task tool inputs,
-and keep the client as a pure renderer.
+Status: Implemented; verified against source on 2026-09-07.
+`createTaskListAugmenter` in
+`packages/server/src/augments/task-list-augments.ts` folds provider events into
+`_taskSnapshot`. The live stream uses that fold; the session route calls
+`projectTaskListSnapshots` before slicing history. Registered `TaskCreate` and
+`TaskUpdate` renderers consume the snapshots in `TaskListRenderer.tsx`.
+
+The design discussion below records the alternatives and remaining questions.
+The broader [workflow view proposal](workflow-view.md) builds on this precedent
+for structured parts, outcomes, and activity associations across one turn.
 
 For some time the agent's task list arrived as a self-contained snapshot: the
 `TodoWrite` tool's result carried the entire list (`newTodos: [{content,
@@ -15,8 +20,8 @@ status, ...}]`) on every change, so a single renderer could draw the whole list
 from one message in isolation. Recent Claude builds replaced that with a family
 of **incremental** tools — `TaskCreate`, `TaskUpdate`, and the rest of the
 `Task*` namespace — where each event is a delta. No single message contains the
-full list anymore. With no renderer registered for these tools, they currently
-fall through to the raw-JSON fallback, which is what surfaced this topic (a
+full list anymore. Before dedicated renderers were registered, these tools
+fell through to the raw-JSON fallback, which surfaced this topic (a
 "TaskUpdate done" row with a `{success, taskId, statusChange}` blob instead of a
 checklist).
 
@@ -57,12 +62,11 @@ not preferences.
   in-order `Message[]` once at load. There is no per-render graph walk up
   parent uuids, and a solution should not introduce one. Accumulation is a
   linear scan over an array that already exists, not a tree traversal.
-- **The server holds nothing between requests.** `reader.getSession` re-reads
-  and re-parses the jsonl from disk on every GET, builds the `Message[]`,
-  slices it, augments it in place, serializes the response, and discards the
-  array. YA is deliberately memory-conservative; a solution that requires a
-  long-lived per-session cache is in tension with that posture and needs to
-  justify itself.
+- **The task fold needs no additional persistent cache.** History reconstruction
+  consumes the full ordered `Message[]` before slicing. That suffices to
+  resolve earlier task creations; the task renderer need not introduce its own
+  long-lived per-session state. This is independent of the reader's caching
+  policy.
 - **The default load is a tail, not the whole session.** The web client
   requests `tailCompactions: 2` on initial load for *all* providers (not just
   Codex). So the common case is that the client receives only the last two

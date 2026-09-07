@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
 import { useKeepMobileKeyboardOpenAfterDelivery } from "../../hooks/useKeepMobileKeyboardOpenAfterDelivery";
+import { useQuestionAsideSetting } from "../../hooks/useQuestionAsideSetting";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
@@ -60,6 +61,7 @@ interface MessageDeliveryBaseline {
   patientQueueDefault: boolean;
   projectQueueCtrlEnterEnabled: boolean;
   keepMobileKeyboardOpenAfterDelivery: boolean;
+  questionAsidesEnabled: boolean;
 }
 
 /**
@@ -78,6 +80,8 @@ export function MessageDeliverySettings() {
     keepMobileKeyboardOpenAfterDelivery,
     setKeepMobileKeyboardOpenAfterDelivery,
   } = useKeepMobileKeyboardOpenAfterDelivery();
+  const { questionAsidesEnabled, setQuestionAsidesEnabled } =
+    useQuestionAsideSetting();
 
   // null drafts mirror the server value; non-null while the user is editing
   // or a save is in flight, cleared once the server catches up.
@@ -141,9 +145,10 @@ export function MessageDeliverySettings() {
           settings.clientDefaults?.projectQueueCtrlEnterEnabled ??
           DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
         keepMobileKeyboardOpenAfterDelivery,
+        questionAsidesEnabled,
       };
     }
-  }, [keepMobileKeyboardOpenAfterDelivery, settings]);
+  }, [keepMobileKeyboardOpenAfterDelivery, questionAsidesEnabled, settings]);
 
   const shownJoinWindowText =
     draftJoinWindow ?? String(serverJoinWindowSeconds);
@@ -280,11 +285,13 @@ export function MessageDeliverySettings() {
       (supportsProjectQueue &&
         shownProjectQueueCtrlEnter !== baseline.projectQueueCtrlEnterEnabled) ||
       keepMobileKeyboardOpenAfterDelivery !==
-        baseline.keepMobileKeyboardOpenAfterDelivery);
+        baseline.keepMobileKeyboardOpenAfterDelivery ||
+      questionAsidesEnabled !== baseline.questionAsidesEnabled);
 
   const undo = useCallback(async () => {
     const snapshot = baselineRef.current;
     if (!snapshot) return;
+    setQuestionAsidesEnabled(snapshot.questionAsidesEnabled);
     setDraftJoinWindow(null);
     setDraftProjectQueueQuiet(null);
     setDraftAnchors(null);
@@ -323,6 +330,7 @@ export function MessageDeliverySettings() {
     });
   }, [
     setKeepMobileKeyboardOpenAfterDelivery,
+    setQuestionAsidesEnabled,
     supportsBangCommands,
     supportsProjectQueue,
     updateSettings,
@@ -462,6 +470,19 @@ export function MessageDeliverySettings() {
               {t("messageDeliveryTurnTimestampsAfter")}
             </option>
           </select>
+        </SettingsItem>
+
+        <SettingsItem
+          as="label"
+          label={t("questionAsideSettingTitle")}
+          description={t("questionAsideSettingDescription")}
+        >
+          <input
+            type="checkbox"
+            checked={questionAsidesEnabled}
+            onChange={(event) => setQuestionAsidesEnabled(event.target.checked)}
+            aria-label={t("questionAsideSettingTitle")}
+          />
         </SettingsItem>
 
         {supportsBangCommands && (

@@ -1,8 +1,9 @@
-import * as fs from "node:fs";
+import type * as fs from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isClaudeProviderName, type UrlProjectId } from "@yep-anywhere/shared";
 import type { Project } from "../supervisor/types.js";
+import { watchSharedDirectory } from "./SharedDirectoryWatcher.js";
 
 type WatchProvider = "claude" | "codex" | "gemini";
 type ChangeSource = "fs-watch" | "poll";
@@ -271,9 +272,13 @@ export class FocusedSessionWatchManager {
     let directoryWatch = this.directoryWatches.get(watchDir);
     if (!directoryWatch) {
       try {
-        const watcher = fs.watch(watchDir, (_eventType, filename) => {
-          this.notifyDirectoryTargets(watchDir, filename?.toString());
-        });
+        const watcher = watchSharedDirectory(
+          watchDir,
+          {},
+          (_eventType, filename) => {
+            this.notifyDirectoryTargets(watchDir, filename?.toString());
+          },
+        );
         directoryWatch = { targets: new Set(), watcher };
         watcher.on("error", () => {
           this.notifyDirectoryTargets(watchDir);

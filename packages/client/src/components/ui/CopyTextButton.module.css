@@ -1,0 +1,5 @@
+.label {
+  /* Center the visible letters beside the icon, including the descender. */
+  position: relative;
+  top: 1px;
+}

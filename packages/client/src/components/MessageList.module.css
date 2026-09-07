@@ -1,0 +1,13 @@
+.queuedBubble:global(.message-user-prompt) {
+  opacity: 0.7;
+  border-left: 3px solid var(--queue-bubble-accent, var(--attention-color));
+  padding-left: var(--space-2);
+  /* Balance the visible ink while retaining the bubble's overall height. */
+  padding-top: calc(0.25rem + 1px);
+  padding-bottom: calc(0.25rem - 1px);
+  white-space: pre-wrap;
+}
+
+.projectQueueBubble {
+  --queue-bubble-accent: var(--project-queue-action-bg);
+}

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getLogger } from "../logging/logger.js";
 import { isCodexRolloutFileName } from "../utils/codexRolloutFiles.js";
+import { watchSharedDirectory } from "./SharedDirectoryWatcher.js";
 import type {
   EventBus,
   FileChangeEvent,
@@ -161,7 +162,7 @@ export class FileWatcher {
 
     try {
       const lifecycleGeneration = ++this.lifecycleGeneration;
-      this.watcher = fs.watch(
+      this.watcher = watchSharedDirectory(
         this.watchDir,
         { recursive: true },
         (eventType, filename) => {

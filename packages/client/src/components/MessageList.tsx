@@ -22,6 +22,10 @@ import {
 import { createPortal } from "react-dom";
 import { getShowThinkingSetting } from "../hooks/useModelSettings";
 import {
+  QueuedEffortBadge,
+  type QueuedEffortContext,
+} from "./QueuedEffortBadge";
+import {
   getConversationViewPreference,
   getConversationViewTurnLimit,
   subscribeConversationViewPreference,
@@ -131,6 +135,8 @@ import { MessageAge } from "./MessageAge";
 import { ProcessingIndicator } from "./ProcessingIndicator";
 import type { BangCommandHandlers } from "./BangCommandDisplayObject";
 import { RenderItemComponent } from "./RenderItemComponent";
+import { useWorkflowTags } from "../hooks/useWorkflowTags";
+import { useWorkflowSchemaFiles } from "../hooks/useWorkflowSchemaFiles";
 import { AssistantTurnImageGallery } from "./TurnImageGallery";
 import {
   UserTurnNavigator,
@@ -139,6 +145,7 @@ import {
 } from "./UserTurnNavigator";
 import { CopyTextButton } from "./ui/CopyTextButton";
 import { LinkifiedText } from "./ui/LinkifiedText";
+import styles from "./MessageList.module.css";
 
 const EMPTY_TRANSCRIPT_DISPLAY_OBJECTS: readonly TranscriptDisplayObject[] = [];
 const PROGRESSIVE_INITIAL_RENDER_ITEM_TARGET = 120;
@@ -770,6 +777,7 @@ interface Props {
   pendingMessages?: PendingMessage[];
   /** Deferred messages queued server-side (shown as "Queued") */
   deferredMessages?: DeferredMessage[];
+  queuedEffortContext?: QueuedEffortContext;
   /** Project Queue items targeting this session (shown below local queue). */
   projectQueueMessages?: InlineProjectQueueMessage[];
   /** Whether global Project Queue dispatch is paused. */
@@ -1424,6 +1432,7 @@ export const MessageList = memo(function MessageList({
   scrollToTurnRequest = null,
   pendingMessages = [],
   deferredMessages = [],
+  queuedEffortContext,
   projectQueueMessages = [],
   projectQueueDispatchPaused = false,
   projectQueueDispatchMutating = false,
@@ -1492,6 +1501,9 @@ export const MessageList = memo(function MessageList({
   const sessionViewerSessionId = useSessionViewerSessionId();
   useSessionViewerResumeRevision();
   const { recentProjectPathLinksEnabled } = useRecentProjectPathLinks();
+  const { workflowTagsEnabled } = useWorkflowTags();
+  const { files: workflowSchemaFiles, resolve: resolveWorkflowSchemaFiles } =
+    useWorkflowSchemaFiles(workflowTagsEnabled && !inert);
   const transcriptRenderStartedAtMs = isBrowserDebugPerformanceRecording()
     ? highResolutionNowMs()
     : null;
@@ -1952,6 +1964,8 @@ export const MessageList = memo(function MessageList({
       transcriptDisplayObjects,
       previousRenderItems: previousRenderItemsRef.current,
       recentProjectPathLinksEnabled,
+      workflowTagsEnabled,
+      workflowSchemaFiles,
     });
     let nextRenderItems = loadedRenderItems;
     if (historySearchWindow) {
@@ -1967,6 +1981,8 @@ export const MessageList = memo(function MessageList({
         transcriptDisplayObjects: historySearchWindow.transcriptDisplayObjects,
         previousRenderItems: previousRenderItemsRef.current,
         recentProjectPathLinksEnabled,
+        workflowTagsEnabled,
+        workflowSchemaFiles,
       });
       if (historicalRenderItems.length > 0) {
         const gapItems: RenderItem[] =
@@ -2010,8 +2026,13 @@ export const MessageList = memo(function MessageList({
     activeToolApproval,
     transcriptDisplayObjects,
     recentProjectPathLinksEnabled,
+    workflowTagsEnabled,
+    workflowSchemaFiles,
     t,
   ]);
+  useEffect(() => {
+    resolveWorkflowSchemaFiles(renderItems);
+  }, [renderItems, resolveWorkflowSchemaFiles]);
   useEffect(() => {
     previousRenderItemsRef.current = renderItems;
   }, [renderItems]);
@@ -4029,20 +4050,25 @@ export const MessageList = memo(function MessageList({
     };
   }, [inert, stopFollowingForUserScroll]);
 
-  // Use ResizeObserver to detect content height changes (handles async markdown rendering)
+  // Follow both content changes and space reserved by composer-adjacent panels.
   useEffect(() => {
     const container = containerRef.current?.parentElement;
     if (!container) return;
 
     const scrollContainer = container;
     lastHeightRef.current = scrollContainer.scrollHeight;
+    let lastViewportHeight = scrollContainer.clientHeight;
 
     const resizeObserver = new ResizeObserver(() => {
       const newHeight = scrollContainer.scrollHeight;
       const heightChanged = newHeight !== lastHeightRef.current;
+      const viewportHeight = scrollContainer.clientHeight;
+      const viewportChanged = viewportHeight !== lastViewportHeight;
+      lastViewportHeight = viewportHeight;
+      const sizeChanged = heightChanged || viewportChanged;
 
       const pendingInitialRestore = pendingInitialScrollRestoreRef.current;
-      if (heightChanged && pendingInitialRestore) {
+      if (sizeChanged && pendingInitialRestore) {
         isProgrammaticScrollRef.current = true;
         restoreRetainedScrollPosition(pendingInitialRestore);
         requestAnimationFrame(() => {
@@ -4055,7 +4081,7 @@ export const MessageList = memo(function MessageList({
       // the streaming case; a *shrink* is turn completion collapsing the
       // bounded thinking preview and recent-activity rows out of the flow,
       // which used to strand a following reader slightly above the new bottom.
-      if (heightChanged && shouldAutoScrollRef.current) {
+      if (sizeChanged && shouldAutoScrollRef.current) {
         scrollToBottom(scrollContainer);
       } else {
         // A size change must never *start* following — only continue it (the
@@ -4065,7 +4091,8 @@ export const MessageList = memo(function MessageList({
       }
     });
 
-    // Observe the inner container (message-list) since that's what changes size
+    resizeObserver.observe(scrollContainer);
+    // Content can grow without changing the scroll viewport's dimensions.
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
     }
@@ -4688,7 +4715,9 @@ export const MessageList = memo(function MessageList({
                 } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
               >
                 <div className="message-render-content">
-                  <div className="message-user-prompt deferred-message-bubble project-queue-inline-message-bubble">
+                  <div
+                    className={`message-user-prompt ${styles.queuedBubble} ${styles.projectQueueBubble}`}
+                  >
                     <LinkifiedText text={projectQueue.content} />
                   </div>
                   {projectQueue.attachments?.length ? (
@@ -4811,7 +4840,7 @@ export const MessageList = memo(function MessageList({
               } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
             >
               <div className="message-render-content">
-                <div className="message-user-prompt deferred-message-bubble">
+                <div className={`message-user-prompt ${styles.queuedBubble}`}>
                   <LinkifiedText text={deferred.content} />
                 </div>
                 {deferred.attachments?.length ? (
@@ -4843,6 +4872,10 @@ export const MessageList = memo(function MessageList({
                   >
                     {deferredStatus}
                   </span>
+                  <QueuedEffortBadge
+                    modifier={deferred.metadata?.turnEffort}
+                    context={queuedEffortContext}
+                  />
                   {tailRow.showAttachmentCountBadge ? (
                     <span
                       className="deferred-message-attachments"
@@ -4879,7 +4912,9 @@ export const MessageList = memo(function MessageList({
                         showTextLabel
                         onClick={(event) => event.stopPropagation()}
                       />
-                      {recoveredQueueId && onSteerRecoveredDeferred ? (
+                      {recoveredQueueId &&
+                      onSteerRecoveredDeferred &&
+                      !deferred.metadata?.turnEffort ? (
                         <button
                           type="button"
                           className="deferred-message-action deferred-message-action-steer"
@@ -4941,7 +4976,10 @@ export const MessageList = memo(function MessageList({
                           : undefined
                       }
                       onSteer={
-                        tailRow.isPatient && deferred.tempId && onSteerDeferred
+                        tailRow.isPatient &&
+                        deferred.tempId &&
+                        onSteerDeferred &&
+                        !deferred.metadata?.turnEffort
                           ? () => onSteerDeferred(deferred.tempId as string)
                           : undefined
                       }

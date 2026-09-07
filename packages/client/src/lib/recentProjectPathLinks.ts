@@ -9,6 +9,37 @@ import { getPathBasename } from "./text";
 
 type RecentProjectPathLinks = Map<string, string>;
 
+/** Most recent first; preserve full-path collisions and never scan unloaded history. */
+export function recentProjectFileMentions(
+  items: readonly RenderItem[],
+): string[] {
+  const recent = new Set<string>();
+  const remember = (links: readonly ProjectPathLinkTarget[] | undefined) => {
+    for (const link of links ?? []) {
+      recent.delete(link.filePath);
+      recent.add(link.filePath);
+    }
+  };
+  for (const item of applyRecentProjectPathLinks([...items])) {
+    if (item.type === "text") {
+      remember(item.projectPathLinks);
+      remember(linksFromRenderedHtml(item.augmentHtml));
+    }
+    if (item.type === "user_prompt") remember(item.projectPathLinks);
+    if (item.type === "tool_call") {
+      if (item.toolInput && typeof item.toolInput === "object") {
+        remember(
+          readProjectPathLinkTargets(
+            (item.toolInput as Record<string, unknown>)._projectPathLinks,
+          ),
+        );
+      }
+      remember(item.toolResult?.projectPathLinks);
+    }
+  }
+  return [...recent].reverse().slice(0, 100);
+}
+
 function contentText(content: string | ContentBlock[]): string {
   if (typeof content === "string") return content;
   return content

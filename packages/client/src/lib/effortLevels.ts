@@ -1,9 +1,12 @@
-import type {
-  EffortLevel,
-  ModelInfo,
-  ProviderInfo,
-  ProviderName,
-  ThinkingMode,
+import {
+  EFFORT_LEVEL_ORDER,
+  getModelEffortLevels,
+  nativeModelEffort,
+  type EffortLevel,
+  type ModelInfo,
+  type ProviderInfo,
+  type ProviderName,
+  type ThinkingMode,
 } from "@yep-anywhere/shared";
 
 export interface EffortLevelOption {
@@ -28,13 +31,7 @@ export type EffortLevelMessageKey =
 
 export type EffortLevelTranslate = (key: EffortLevelMessageKey) => string;
 
-export const EFFORT_LEVEL_ORDER: EffortLevel[] = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
+export { EFFORT_LEVEL_ORDER };
 
 const GENERIC_EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "max"];
 
@@ -81,30 +78,9 @@ function getModelInfo(
   return provider.models?.find((candidate) => candidate.id === model);
 }
 
-function sortEffortLevels(levels: EffortLevel[]): EffortLevel[] {
-  const seen = new Set<EffortLevel>();
-  for (const level of levels) {
-    seen.add(level);
-  }
-  return EFFORT_LEVEL_ORDER.filter((level) => seen.has(level));
-}
-
 function getModelSupportedEfforts(model?: ModelInfo): EffortLevel[] | null {
-  const directLevels =
-    model?.supportedEffortLevels?.filter(isEffortLevel) ?? [];
-  if (directLevels.length > 0) {
-    return sortEffortLevels(directLevels);
-  }
-
-  const reasoningLevels =
-    model?.supportedReasoningEfforts
-      ?.map((effort) => effort.reasoningEffort)
-      .filter(isEffortLevel) ?? [];
-  if (reasoningLevels.length > 0) {
-    return sortEffortLevels(reasoningLevels);
-  }
-
-  return null;
+  const levels = getModelEffortLevels(model);
+  return levels.length > 0 ? levels : null;
 }
 
 function getFallbackEffortLevels(providerName?: ProviderName): EffortLevel[] {
@@ -174,7 +150,7 @@ function getModelDescription(
   level: EffortLevel,
 ): string | undefined {
   return model?.supportedReasoningEfforts?.find(
-    (effort) => effort.reasoningEffort === level,
+    (effort) => effort.reasoningEffort === nativeModelEffort(level, model),
   )?.description;
 }
 
@@ -250,9 +226,6 @@ export function normalizeEffortLevelForProvider(
   effort: string | undefined,
   provider?: ProviderInfo | ProviderName | null,
 ): EffortLevel {
-  const providerName = getProviderName(provider);
-  if (effort === "max" && providerName === "codex") {
-    return "xhigh";
-  }
+  if (effort === "ultra" && getProviderName(provider) === "codex") return "max";
   return isEffortLevel(effort) ? effort : "high";
 }

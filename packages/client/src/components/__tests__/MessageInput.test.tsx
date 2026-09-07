@@ -39,6 +39,7 @@ import {
 } from "../../lib/speechProviders/methods";
 import { setBrowserXaiSttApiKey } from "../../lib/speechProviders/xaiCredentials";
 import { MessageInput } from "../MessageInput";
+import { getSourceRuntimeRegistry } from "../../lib/sourceRuntime";
 import {
   MessageInputToolbarView,
   type MessageInputToolbarViewProps,
@@ -785,6 +786,149 @@ describe("MessageInput", () => {
     restoreDefaultMatchMedia();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("routes a terminal question aside before trimming and preserves the space escape", () => {
+    const onAsk = vi.fn(() => true);
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(undefined, {
+      onSend,
+      questionAside: { canAsk: true, onAsk },
+    });
+    fireEvent.change(textarea, { target: { value: "Why?" } });
+    expect(screen.getByText("questionAsideHintDesktop")).toBeTruthy();
+    expect(onAsk).not.toHaveBeenCalled();
+    fireEvent.change(textarea, { target: { value: "Why? " } });
+    expect(screen.queryByText("questionAsideHintDesktop")).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onAsk).not.toHaveBeenCalled();
+    expectSubmission(onSend, "Why?", "direct");
+    fireEvent.change(textarea, { target: { value: "  Why?" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onAsk).toHaveBeenCalledWith("  Why?");
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps idle questions ordinary and dismisses a card only on main submission", () => {
+    const onAsk = vi.fn(() => true);
+    const onDismiss = vi.fn();
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(undefined, {
+      onSend,
+      questionAside: { canAsk: false, onAsk, onDismiss },
+    });
+    fireEvent.change(textarea, { target: { value: "Another question?" } });
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(screen.queryByText("questionAsideHintDesktop")).toBeNull();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expectSubmission(onSend, "Another question?", "direct");
+  });
+
+  it("saves an answer with a fresh empty Enter or Send, but not IME or held Enter", () => {
+    const onSave = vi.fn();
+    const onDismiss = vi.fn();
+    const onStop = vi.fn();
+    const textarea = renderMessageInput(undefined, {
+      isRunning: true,
+      isThinking: true,
+      onStop,
+      questionAside: { canAsk: false, onAsk: vi.fn(), onSave, onDismiss },
+    });
+    fireEvent.keyDown(textarea, { key: "Enter", repeat: true });
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "questionAsideSave" }));
+    expect(onSave).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("starts @ discovery only after two characters; arrows and space never accept", async () => {
+    versionState.version.capabilities.push("project-file-completion");
+    const fetch = vi
+      .spyOn(
+        getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
+        "fetch",
+      )
+      .mockResolvedValue({
+        entries: [
+          { path: "src/writing.ts", kind: "file" },
+          { path: "docs/writing/", kind: "directory" },
+        ],
+        pending: false,
+        truncated: false,
+      });
+    const textarea = renderMessageInput(undefined, {
+      projectId: "completion-trigger",
+    }) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "@" } });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    fireEvent.change(textarea, { target: { value: "@w" } });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.change(textarea, { target: { value: "@wr" } });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.keyDown(textarea, { key: " " });
+    fireEvent.change(textarea, { target: { value: "@wr " } });
+    expect(textarea.value).toBe("@wr ");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("Tab finishes a directory and Enter removes its provisional separator before newline", async () => {
+    versionState.version.capabilities.push("project-file-completion");
+    vi.spyOn(
+      getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
+      "fetch",
+    ).mockResolvedValue({
+      entries: [{ path: "docs/writing/", kind: "directory" }],
+      pending: false,
+      truncated: false,
+    });
+    const textarea = renderMessageInput(undefined, {
+      projectId: "completion-tab",
+    }) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Read @wr" } });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(textarea.value).toBe("Read docs/writing/ ");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+    expect(textarea.value).toBe("Read docs/writing/");
+    fireEvent.change(textarea, { target: { value: "Read docs/writing/\n" } });
+    expect(textarea.value).toBe("Read docs/writing/\n");
+    fireEvent.change(textarea, { target: { value: "@" } });
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+  });
+
+  it("makes no completion request to a server without the capability", async () => {
+    const fetch = vi.spyOn(
+      getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
+      "fetch",
+    );
+    const textarea = renderMessageInput(undefined, {
+      projectId: "completion-old-server",
+    });
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "@writing" } });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("grows the expanded composer until the draft reaches half the viewport", () => {
@@ -4063,32 +4207,41 @@ describe("MessageInput", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("clears the composer with Ctrl+G through the textarea undo stack", () => {
-    const previousExecCommand = document.execCommand;
-    const execCommand = vi.fn(() => true);
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: execCommand,
-    });
-    const textarea = renderMessageInput();
+  it.each(["keyboard", "button"])(
+    "clears the composer through the textarea undo stack via %s",
+    (input) => {
+      const previousExecCommand = document.execCommand;
+      const execCommand = vi.fn(() => true);
+      Object.defineProperty(document, "execCommand", {
+        configurable: true,
+        value: execCommand,
+      });
+      const textarea = renderMessageInput();
 
-    try {
-      fireEvent.change(textarea, { target: { value: "undoable draft" } });
-      fireEvent.keyDown(textarea, { key: "g", ctrlKey: true });
+      try {
+        fireEvent.change(textarea, { target: { value: "undoable draft" } });
+        if (input === "keyboard") {
+          fireEvent.keyDown(textarea, { key: "g", ctrlKey: true });
+        } else {
+          fireEvent.click(
+            screen.getByRole("button", { name: "Clear composer" }),
+          );
+        }
 
-      expect(execCommand).toHaveBeenCalledWith("delete");
-      expect((textarea as HTMLTextAreaElement).value).toBe("");
-    } finally {
-      if (previousExecCommand) {
-        Object.defineProperty(document, "execCommand", {
-          configurable: true,
-          value: previousExecCommand,
-        });
-      } else {
-        Reflect.deleteProperty(document, "execCommand");
+        expect(execCommand).toHaveBeenCalledWith("delete");
+        expect((textarea as HTMLTextAreaElement).value).toBe("");
+      } finally {
+        if (previousExecCommand) {
+          Object.defineProperty(document, "execCommand", {
+            configurable: true,
+            value: previousExecCommand,
+          });
+        } else {
+          Reflect.deleteProperty(document, "execCommand");
+        }
       }
-    }
-  });
+    },
+  );
 
   it("shows stale last activity in the composer chrome", () => {
     vi.useFakeTimers();

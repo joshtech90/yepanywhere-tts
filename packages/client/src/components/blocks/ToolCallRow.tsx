@@ -49,12 +49,15 @@ import { getOutputTailTooltip } from "../renderers/tools/outputPreview";
 import type { RenderContext } from "../renderers/types";
 import { getToolSummary } from "../tools/summaries";
 import { HiddenContentBadge } from "../ui/HiddenContentBadge";
+import type { WorkflowAnnotation } from "../../lib/transcriptProjection/workflowTags";
+import { WorkflowOutput } from "../WorkflowOutput";
 
 interface Props {
   id: string;
   toolName: string;
   toolInput: unknown;
   toolResult?: ToolResultData;
+  workflow?: WorkflowAnnotation;
   status: ToolCallItem["status"];
   sessionProvider?: string;
   /** Tool-call start (first source-message time) — a command's start. */
@@ -535,6 +538,7 @@ export const ToolCallRow = memo(function ToolCallRow({
   toolName,
   toolInput,
   toolResult,
+  workflow,
   status,
   sessionProvider,
   startTimestampMs,
@@ -728,6 +732,14 @@ export const ToolCallRow = memo(function ToolCallRow({
     if (suppressCollapsedPreview || !shouldHydrateRichContent) {
       return null;
     }
+    if (workflow?.view && toolResult) {
+      return (
+        <WorkflowOutput
+          text={workflow.outputText ?? toolResult.content}
+          workflow={workflow}
+        />
+      );
+    }
     return toolRegistry.renderCollapsedPreview(
       toolName,
       toolInput,
@@ -737,6 +749,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     );
   }, [
     suppressCollapsedPreview,
+    workflow,
     toolName,
     toolInput,
     structuredResult,

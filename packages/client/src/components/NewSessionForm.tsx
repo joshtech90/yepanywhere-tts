@@ -1,5 +1,8 @@
 import {
   DEFAULT_PROVIDER,
+  SERVER_CAPABILITIES,
+  serverHasCapability,
+  isTurnEffort,
   DEFAULT_RECAP_AFTER_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   HELPER_SIDE_MODEL_CHEAPEST,
@@ -38,6 +41,8 @@ import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useToastContext } from "../contexts/ToastContext";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
 import { useDraftPersistence } from "../hooks/useDraftPersistence";
+import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
+import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
 import { createNewSessionDraftKey } from "../hooks/useDrafts";
 import {
   getModelSetting,
@@ -62,6 +67,7 @@ import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useI18n } from "../i18n";
 import { formatFileSize } from "../lib/formatFileSize";
+import { parseComposerSlashCommand } from "../lib/slashCommands";
 import {
   getEffortLevelOptions,
   getThinkingModeOptions,
@@ -1133,6 +1139,13 @@ export function NewSessionForm({
     !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
       ? currentProjectSelection.id
       : null;
+  const fileCompletion = useProjectFileCompletion({
+    projectId: projectQueueTargetProjectId,
+    text: message,
+    textarea: textareaRef,
+    setText: setMessage,
+    disabled: isStarting || composerMuted || !!interimTranscript,
+  });
   const projectQueueProjectIds = useMemo(
     () => (projectQueueTargetProjectId ? [projectQueueTargetProjectId] : []),
     [projectQueueTargetProjectId],
@@ -2095,10 +2108,37 @@ export function NewSessionForm({
         speechTriggered,
         recentSpeech: isRecentSpeechAttribution(),
       });
-      const trimmedMessage =
+      let trimmedMessage =
         deliverySpeechPrefix && hasContent
           ? prependSpeechMessagePrefix(finalMessage, deliverySpeechPrefix)
           : finalMessage.trim();
+      const command = parseComposerSlashCommand(trimmedMessage);
+      const turnEffort =
+        command && isTurnEffort(command.kind) ? command.kind : undefined;
+      if (
+        turnEffort &&
+        (!serverHasCapability(
+          versionInfo,
+          SERVER_CAPABILITIES.turnEffortModifiers.name,
+        ) ||
+          launch ||
+          !["codex", "claude", "claude-gateway", "claude-ollama"].includes(
+            selectedProvider ?? "",
+          ))
+      ) {
+        showToast(t("turnEffortUnavailable"), "error");
+        return;
+      }
+      if (turnEffort && command) {
+        if (!command.argument.trim()) {
+          showToast(t("turnEffortNeedsMessage"), "error");
+          return;
+        }
+        trimmedMessage = command.argument;
+      }
+      const messageMetadata = turnEffort
+        ? { deliveryIntent: "direct" as const, turnEffort }
+        : undefined;
       if (
         requiresAttachmentOnlyServerUpdate({
           version: versionInfo,
@@ -2258,7 +2298,7 @@ export function NewSessionForm({
             thinking, // Pass the captured thinking setting to avoid process restart
             undefined, // deferred
             clientTimestamp,
-            undefined, // messageMetadata
+            messageMetadata,
             undefined, // serviceTier
             showThinking,
           );
@@ -2292,12 +2332,14 @@ export function NewSessionForm({
                 sessionOptions,
                 undefined,
                 clientTimestamp,
+                messageMetadata,
               )
             : await api.startDetachedSession(
                 trimmedMessage,
                 sessionOptions,
                 undefined,
                 clientTimestamp,
+                messageMetadata,
               );
           const startResponseReceivedAtMs = Date.now();
           const startTiming = recordServerClockSample({
@@ -2607,6 +2649,7 @@ export function NewSessionForm({
   }, []);
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (fileCompletion.onKeyDown(e)) return;
     if (isFullPaneComposerShortcut(e)) {
       e.preventDefault();
       e.stopPropagation();
@@ -3144,7 +3187,7 @@ export function NewSessionForm({
             data-composer-input
             value={message}
             onChange={(e) => {
-              const nextMessage = e.target.value;
+              const nextMessage = fileCompletion.normalizeInput(e.target.value);
               clearPendingSpeechFinal();
               if (speechInsertionRangesRef.current.size > 0) {
                 const nextRanges = new Map<string, SpeechInsertionRange>();
@@ -3179,7 +3222,12 @@ export function NewSessionForm({
               setMessage(nextMessage);
             }}
             onKeyDown={handleKeyDown}
-            onSelect={handleSpeechSelectionTarget}
+            onFocus={fileCompletion.onFocus}
+            onBlur={fileCompletion.onBlur}
+            onSelect={() => {
+              handleSpeechSelectionTarget();
+              fileCompletion.onSelect();
+            }}
             onPointerUp={handleSpeechSelectionTarget}
             onClick={handleSpeechSelectionClick}
             onKeyUp={handleSpeechSelectionTarget}
@@ -3211,6 +3259,7 @@ export function NewSessionForm({
           </div>
         )}
       </div>
+      <ProjectFileCompletionMenu completion={fileCompletion} />
       <div className="new-session-form-toolbar">
         <div className="new-session-form-toolbar-left">
           {allowAttachments && (

@@ -1,3 +1,4 @@
+import { NewSessionQueueMark } from "./NewSessionQueueMark";
 import {
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
@@ -132,6 +133,10 @@ import {
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
 import styles from "./MessageInput.module.css";
+import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
+import type { RenderItem } from "../types/renderItems";
+import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
+import { QuestionAsideHint } from "./QuestionAsideCard";
 
 /** Progress info for an in-flight upload */
 export interface UploadProgress {
@@ -224,6 +229,12 @@ function getComposerViewportHeight(): number {
 
 interface Props {
   onSend: (text: string, metadata?: MessageSubmissionMetadata) => void;
+  questionAside?: {
+    canAsk: boolean;
+    onAsk: (rawText: string) => boolean;
+    onSave?: () => void;
+    onDismiss?: () => void;
+  };
   /** Queue a deferred message (sent when agent's turn ends). Only provided when agent is running. */
   onQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
   /** Queue through the project-level idle gate. Hidden unless opted in. */
@@ -273,6 +284,7 @@ interface Props {
   providerRuntimeStatus?: ProviderRuntimeStatus;
   /** Project ID for uploads (required to enable attach button) */
   projectId?: string;
+  completionRenderItems?: RenderItem[];
   /** Session ID for uploads (required to enable attach button) */
   sessionId?: string;
   /** Completed file attachments */
@@ -402,6 +414,7 @@ function bangCompletionQueryKey(draft: string): string | null {
 
 export function MessageInput({
   onSend,
+  questionAside,
   onQueue,
   onProjectQueue,
   onProjectQueueNewSession,
@@ -429,6 +442,7 @@ export function MessageInput({
   sessionLiveness,
   providerRuntimeStatus,
   projectId,
+  completionRenderItems,
   sessionId,
   attachments = [],
   onAttach,
@@ -472,6 +486,7 @@ export function MessageInput({
     sessionDraft: draftIndex,
   });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
   const typingStartedAtRef = useRef<string | null>(null);
@@ -557,6 +572,25 @@ export function MessageInput({
     text,
     attachments.length + uploadProgress.length,
   );
+  const questionAsideEligible =
+    !!questionAside?.canAsk &&
+    !btwActive &&
+    !forkSummaryMode &&
+    !correctionActive &&
+    !hasNonTextComposerContent &&
+    !disabled;
+  const showQuestionAsideHint =
+    questionAsideEligible &&
+    text.endsWith("?") &&
+    !text.trimStart().startsWith("/") &&
+    !text.trimStart().startsWith("!!");
+  const canSaveQuestionAside =
+    !!questionAside?.onSave &&
+    text.length === 0 &&
+    !hasNonTextComposerContent &&
+    !isComposing &&
+    speechPending === null &&
+    !interimTranscript;
   const invocationQuery = getInvocationCompletionQuery(text, composerCursor);
   const matchingSlashArgumentCompletions = useMemo(
     () =>
@@ -687,7 +721,8 @@ export function MessageInput({
     ? !forkSummaryMode.submitting &&
       attachments.length === 0 &&
       uploadProgress.length === 0
-    : !!(
+    : canSaveQuestionAside ||
+      !!(
         hasComposerDraftContent(text, attachments.length) ||
         speechPending !== null ||
         interimTranscript
@@ -819,22 +854,31 @@ export function MessageInput({
   const effectivePatientQueuePatienceSeconds =
     clampPatientPatienceSeconds(patientQueuePatienceSeconds) ??
     DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS;
-  const primaryActionLabel = forkSummaryMode
-    ? forkSummaryMode.submitLabel
-    : effectivePrimaryActionKind === "steer"
-      ? t("toolbarSteerTooltip")
-      : effectivePrimaryActionKind === "queue"
-        ? t("toolbarQueueLabel")
-        : t("toolbarSend");
-  const mobileKeyboardActionLabel = forkSummaryMode
-    ? forkSummaryMode.submitLabel
-    : effectivePrimaryActionKind === "steer"
-      ? t("toolbarShortcutSteerCurrentTurn")
-      : effectivePrimaryActionKind === "queue"
-        ? t("toolbarQueueLabel")
-        : t("toolbarSend");
+  const questionActionLabel = canSaveQuestionAside
+    ? t("questionAsideSave")
+    : showQuestionAsideHint
+      ? t("questionAsideTitle")
+      : undefined;
+  const primaryActionLabel =
+    questionActionLabel ??
+    (forkSummaryMode
+      ? forkSummaryMode.submitLabel
+      : effectivePrimaryActionKind === "steer"
+        ? t("toolbarSteerTooltip")
+        : effectivePrimaryActionKind === "queue"
+          ? t("toolbarQueueLabel")
+          : t("toolbarSend"));
+  const mobileKeyboardActionLabel =
+    questionActionLabel ??
+    (forkSummaryMode
+      ? forkSummaryMode.submitLabel
+      : effectivePrimaryActionKind === "steer"
+        ? t("toolbarShortcutSteerCurrentTurn")
+        : effectivePrimaryActionKind === "queue"
+          ? t("toolbarQueueLabel")
+          : t("toolbarSend"));
   const mobileKeyboardActionDisplayLabel =
-    hasActiveDualActions && !forkSummaryMode
+    hasActiveDualActions && !forkSummaryMode && !questionActionLabel
       ? effectivePrimaryActionKind === "queue"
         ? t("toolbarQueueShortLabel")
         : t("toolbarSteerShortLabel")
@@ -1082,6 +1126,16 @@ export function MessageInput({
     }),
     [controls, replaceDraftRangeUndoably],
   );
+
+  const fileCompletion = useProjectFileCompletion({
+    projectId,
+    text,
+    textarea: textareaRef,
+    setText,
+    replace: replaceDraftRangeUndoably,
+    items: completionRenderItems,
+    disabled: disabled || collapsed || !!interimTranscript,
+  });
 
   // Provide controls to parent via callback
   useEffect(() => {
@@ -1452,6 +1506,38 @@ export function MessageInput({
     ],
   );
 
+  const handleQuestionAsideSubmission = useCallback(
+    (rawText: string) => {
+      if (disabled || isComposing) return false;
+      if (rawText === "" && canSaveQuestionAside) {
+        questionAside?.onSave?.();
+        return true;
+      }
+      if (
+        questionAsideEligible &&
+        rawText.endsWith("?") &&
+        !rawText.trimStart().startsWith("/") &&
+        !rawText.trimStart().startsWith("!!") &&
+        questionAside?.onAsk(rawText)
+      ) {
+        controls.clearInput();
+        resetCompositionMetadata();
+        setInterimTranscript("");
+        return true;
+      }
+      return false;
+    },
+    [
+      disabled,
+      isComposing,
+      canSaveQuestionAside,
+      questionAsideEligible,
+      questionAside,
+      controls,
+      resetCompositionMetadata,
+    ],
+  );
+
   const handleSubmit = useCallback(
     async (
       messageOverride?: unknown,
@@ -1474,7 +1560,14 @@ export function MessageInput({
         return;
       }
 
-      let finalText = (override ?? controls.getDraft()).trimEnd();
+      const rawText = override ?? controls.getDraft();
+      if (
+        !actionOverride &&
+        !preserveComposer &&
+        handleQuestionAsideSubmission(rawText)
+      )
+        return;
+      let finalText = rawText.trimEnd();
       const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
         configuredPrefix: speechMessagePrefix,
         speechTriggered,
@@ -1548,6 +1641,7 @@ export function MessageInput({
           resetCompositionMetadata();
           setInterimTranscript("");
         }
+        questionAside?.onDismiss?.();
         onSend(message, metadata);
         consumeSpeechAttribution();
         if (focusAfterSubmit) {
@@ -1562,6 +1656,8 @@ export function MessageInput({
       disabled,
       controls,
       onSend,
+      questionAside,
+      handleQuestionAsideSubmission,
       attachments.length,
       effectivePrimaryActionKind,
       buildSubmissionMetadata,
@@ -1595,7 +1691,9 @@ export function MessageInput({
         return;
       }
 
-      const finalText = (override ?? controls.getDraft()).trimEnd();
+      const rawText = override ?? controls.getDraft();
+      if (!preserveComposer && handleQuestionAsideSubmission(rawText)) return;
+      const finalText = rawText.trimEnd();
 
       if (
         handleSyntheticDoneSubmission(
@@ -1623,6 +1721,7 @@ export function MessageInput({
           speechTriggered: false,
           recentSpeech: isRecentSpeechAttribution(),
         });
+        questionAside?.onDismiss?.();
         queueHandler(
           prependSpeechMessagePrefix(finalText, deliverySpeechPrefix),
           metadata,
@@ -1639,6 +1738,8 @@ export function MessageInput({
       disabled,
       controls,
       onQueue,
+      questionAside,
+      handleQuestionAsideSubmission,
       onSend,
       effectivePrimaryActionKind,
       handleSyntheticDoneSubmission,
@@ -1692,6 +1793,7 @@ export function MessageInput({
           resetCompositionMetadata();
           setInterimTranscript("");
         }
+        questionAside?.onDismiss?.();
         submit(
           prependSpeechMessagePrefix(finalText, deliverySpeechPrefix),
           metadata,
@@ -1714,6 +1816,7 @@ export function MessageInput({
       isRecentSpeechAttribution,
       resetCompositionMetadata,
       speechMessagePrefix,
+      questionAside,
     ],
   );
 
@@ -2310,7 +2413,48 @@ export function MessageInput({
     setRecallDrawer(null);
   };
 
+  const clearComposer = () => {
+    if (disabled) return;
+    voiceButtonRef.current?.stopAndFinalize();
+    if (textareaRef.current) {
+      clearTextareaContentsUndoably(textareaRef.current);
+    }
+    setInterimTranscript("");
+    noteDraftTextChange(text, "", {
+      start: 0,
+      end: text.length,
+      insertedText: "",
+      inputType: "deleteContent",
+    });
+    setText("");
+    resetCompositionMetadata();
+    controls.flushDraft();
+    for (const attachment of attachments) {
+      onRemoveAttachment?.(attachment.id);
+    }
+    onCancelCorrection?.();
+    textareaRef.current?.focus();
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter" && e.repeat && questionAside?.onSave) {
+      e.preventDefault();
+      return;
+    }
+    if (fileCompletion.onKeyDown(e)) return;
+    if (
+      e.key === "Enter" &&
+      !e.nativeEvent.isComposing &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      canSaveQuestionAside
+    ) {
+      e.preventDefault();
+      handleQuestionAsideSubmission(controls.getDraft());
+      return;
+    }
     if (isFullPaneComposerShortcut(e)) {
       e.preventDefault();
       e.stopPropagation();
@@ -2577,6 +2721,20 @@ export function MessageInput({
       !e.metaKey &&
       !e.shiftKey &&
       !e.altKey &&
+      questionAside?.onDismiss
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      questionAside.onDismiss();
+      return;
+    }
+
+    if (
+      e.key === "Escape" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      !e.altKey &&
       isRunning &&
       isThinking &&
       onStop
@@ -2662,27 +2820,7 @@ export function MessageInput({
 
     if (e.key.toLowerCase() === "g" && e.ctrlKey && !e.shiftKey && !e.altKey) {
       e.preventDefault();
-      if (!disabled) {
-        voiceButtonRef.current?.stopAndFinalize();
-        if (textareaRef.current) {
-          clearTextareaContentsUndoably(textareaRef.current);
-        }
-        setInterimTranscript("");
-        noteDraftTextChange(text, "", {
-          start: 0,
-          end: text.length,
-          insertedText: "",
-          inputType: "deleteContent",
-        });
-        setText("");
-        resetCompositionMetadata();
-        controls.flushDraft();
-        for (const attachment of attachments) {
-          onRemoveAttachment?.(attachment.id);
-        }
-        onCancelCorrection?.();
-        textareaRef.current?.focus();
-      }
+      clearComposer();
       return;
     }
 
@@ -3304,13 +3442,15 @@ export function MessageInput({
         : undefined,
     onSteer: hasActiveDualActions ? handleSteerPointerDelivery : undefined,
     primaryActionKind: effectivePrimaryActionKind,
-    sendOverride: forkSummaryMode
-      ? {
-          label: forkSummaryMode.submitLabel,
-          tooltip: forkSummaryMode.tooltip,
-          icon: forkSummaryMode.icon,
-        }
-      : undefined,
+    sendOverride: questionActionLabel
+      ? { label: questionActionLabel, tooltip: questionActionLabel, icon: "↑" }
+      : forkSummaryMode
+        ? {
+            label: forkSummaryMode.submitLabel,
+            tooltip: forkSummaryMode.tooltip,
+            icon: forkSummaryMode.icon,
+          }
+        : undefined,
     sendAlternate: forkSummaryMode?.onSubmitWithoutSummary
       ? {
           label:
@@ -3331,12 +3471,35 @@ export function MessageInput({
   };
   const showMobileKeyboardCompact = mobileKeyboardOpen && canSubmit;
 
-  return (
+  const composer = (
     <div
       className={`message-input-wrapper${fullPane ? ` ${styles.fullPane}` : ""}`}
       data-composer-full-pane={fullPane ? "true" : undefined}
       onKeyDownCapture={handleComposerKeyDown}
     >
+      {!composerIsEmpty && (
+        <button
+          type="button"
+          className={styles.clearComposer}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={clearComposer}
+          disabled={disabled}
+          aria-label={t("toolbarShortcutClearComposer")}
+          title={t("toolbarShortcutClearComposer")}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            aria-hidden="true"
+          >
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
+        </button>
+      )}
       {/* Floating toggle button - only show when user can control collapse (not externally collapsed) */}
       {!externalCollapsed && (
         <button
@@ -3411,6 +3574,8 @@ export function MessageInput({
               key={textareaImeGeneration}
               ref={textareaRef}
               data-composer-input
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => setIsComposing(false)}
               value={text}
               onBeforeInput={(event) => {
                 const nativeEvent = event.nativeEvent as InputEvent;
@@ -3421,7 +3586,7 @@ export function MessageInput({
                 };
               }}
               onChange={(e) => {
-                const nextText = e.target.value;
+                const nextText = fileCompletion.normalizeInput(e.target.value);
                 const pendingInput = pendingDraftInputRef.current;
                 pendingDraftInputRef.current = null;
                 noteDraftTextChange(
@@ -3487,18 +3652,23 @@ export function MessageInput({
                 }
               }}
               onBlur={() => {
+                fileCompletion.onBlur();
                 cancelRecallDrawer();
                 controls.flushDraft();
                 setTextareaFocused(false);
               }}
               onFocus={() => {
+                fileCompletion.onFocus();
                 keyboardViewportBaselineRef.current =
                   getComposerViewportHeight();
                 setTextareaFocused(true);
                 revealCollapsedTextareaCursor();
               }}
               onKeyDown={handleKeyDown}
-              onSelect={handleTextareaSelectionTarget}
+              onSelect={() => {
+                handleTextareaSelectionTarget();
+                fileCompletion.onSelect();
+              }}
               onPointerUp={handleTextareaSelectionTarget}
               onClick={handleTextareaClickTarget}
               onKeyUp={handleTextareaSelectionTarget}
@@ -3532,6 +3702,7 @@ export function MessageInput({
           )}
         </div>
 
+        <ProjectFileCompletionMenu completion={fileCompletion} />
         {(showBangChip || showBangEscapedChip) && (
           <div
             className={`bang-composer-chip${
@@ -4016,12 +4187,7 @@ export function MessageInput({
                     )}
                   >
                     <DeliveryGlyph>⇥</DeliveryGlyph>
-                    <span
-                      className="project-queue-new-session-mark"
-                      aria-hidden="true"
-                    >
-                      +
-                    </span>
+                    <NewSessionQueueMark />
                     {manualDeliverySpeechPrefix && (
                       <SpeechPrefixActionCue
                         prefix={manualDeliverySpeechPrefix}
@@ -4173,5 +4339,13 @@ export function MessageInput({
         )}
       </div>
     </div>
+  );
+  return (
+    <>
+      {showQuestionAsideHint && (
+        <QuestionAsideHint mobile={hasCoarsePointer()} />
+      )}
+      {composer}
+    </>
   );
 }

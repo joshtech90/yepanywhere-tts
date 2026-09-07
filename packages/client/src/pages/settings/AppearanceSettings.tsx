@@ -5,6 +5,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ThinkingText } from "../../components/ThinkingText";
+import tooltipStyles from "../../components/ui/TooltipLayer.module.css";
 import { renderFixedFontMath } from "../../components/ui/FixedFontMathToggle";
 import {
   DEFAULT_CONTENT_MAX_WIDTH_PX,
@@ -76,6 +77,9 @@ import {
   USER_TURN_FONT_SIZE_OFFSET_MAX_PX,
   USER_TURN_FONT_SIZE_OFFSET_MIN_PX,
   USER_TURN_FONT_SIZE_OFFSET_STEP_PX,
+  TOOLTIP_FONT_SIZE_OFFSET_MAX_PX,
+  TOOLTIP_FONT_SIZE_OFFSET_MIN_PX,
+  TOOLTIP_FONT_SIZE_OFFSET_STEP_PX,
   useOutputAppearance,
 } from "../../hooks/useOutputAppearance";
 import {
@@ -125,6 +129,7 @@ import {
   useTooltipAppearance,
 } from "../../hooks/useTooltipAppearance";
 import { useWiderConversationActivityPreviews } from "../../hooks/useWiderConversationActivityPreviews";
+import { useWorkflowTags } from "../../hooks/useWorkflowTags";
 import { useSelectionActionPreferences } from "../../hooks/useSelectionActionPreferences";
 import { useGlossaryHints } from "../../hooks/useGlossaryHints";
 import { useProjectCodeNamePreferences } from "../../hooks/useProjectCodeNamePreferences";
@@ -198,6 +203,7 @@ export function AppearanceSettings() {
     outputFont,
     outputUiFont,
     userTurnFontSizeOffsetPx,
+    tooltipFontSizeOffsetPx,
     outputFontSizePx,
     outputFixedFont,
     outputFixedFontSizeOffsetPx,
@@ -209,6 +215,7 @@ export function AppearanceSettings() {
     setOutputFont,
     setOutputUiFont,
     setUserTurnFontSizeOffsetPx,
+    setTooltipFontSizeOffsetPx,
     setOutputFontSizePx,
     setOutputFixedFont,
     setOutputFixedFontSizeOffsetPx,
@@ -226,6 +233,7 @@ export function AppearanceSettings() {
     setWiderConversationActivityPreviews,
   } = useWiderConversationActivityPreviews();
   const { glossaryHintsEnabled, setGlossaryHintsEnabled } = useGlossaryHints();
+  const { workflowTagsEnabled, setWorkflowTagsEnabled } = useWorkflowTags();
   const { version: versionInfo } = useVersion();
   const glossaryHintsSupported = serverHasCapability(
     versionInfo,
@@ -326,6 +334,7 @@ export function AppearanceSettings() {
     undoEntry(outputFont, setOutputFont),
     undoEntry(outputUiFont, setOutputUiFont),
     undoEntry(userTurnFontSizeOffsetPx, setUserTurnFontSizeOffsetPx),
+    undoEntry(tooltipFontSizeOffsetPx, setTooltipFontSizeOffsetPx),
     undoEntry(outputFontSizePx, setOutputFontSizePx, (value) =>
       setOutputFontSizeDraft(formatNumberSetting(value)),
     ),
@@ -368,6 +377,7 @@ export function AppearanceSettings() {
       setWiderConversationActivityPreviews,
     ),
     undoEntry(glossaryHintsEnabled, setGlossaryHintsEnabled),
+    undoEntry(workflowTagsEnabled, setWorkflowTagsEnabled),
     undoEntry(tooltipDelayMs, setTooltipDelayMs),
     undoEntry(tooltipMode, setTooltipMode),
     undoEntry(hoverCardMaxHeightPx, setHoverCardMaxHeightPx, (value) =>
@@ -768,6 +778,20 @@ export function AppearanceSettings() {
                 setWiderConversationActivityPreviews(event.target.checked)
               }
               aria-label={t("appearanceWiderActivityPreviewsTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceWorkflowTagsTitle")}
+          description={t("appearanceWorkflowTagsDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={workflowTagsEnabled}
+              onChange={(event) => setWorkflowTagsEnabled(event.target.checked)}
+              aria-label={t("appearanceWorkflowTagsTitle")}
             />
             <span className="toggle-slider" />
           </label>
@@ -1308,6 +1332,7 @@ export function AppearanceSettings() {
             t("appearanceOutputUiFontLabel"),
             t("appearanceFontSizeTitle"),
             t("appearanceUserTurnSizeOffsetLabel"),
+            t("appearanceTooltipSizeOffsetLabel"),
             t("appearanceOutputFontLabel"),
             t("appearanceOutputFontSizeLabel"),
             t("appearanceOutputThinkingSizeOffsetLabel"),
@@ -1386,6 +1411,24 @@ export function AppearanceSettings() {
                   unit="px"
                   ariaLabel={t("appearanceUserTurnSizeOffsetLabel")}
                   onCommit={setUserTurnFontSizeOffsetPx}
+                />
+              </label>
+              <label
+                className="output-appearance-control"
+                htmlFor="tooltip-font-size-offset"
+              >
+                <span className="output-appearance-label">
+                  {t("appearanceTooltipSizeOffsetLabel")}
+                </span>
+                <CommittedRangeNumberInput
+                  id="tooltip-font-size-offset"
+                  min={TOOLTIP_FONT_SIZE_OFFSET_MIN_PX}
+                  max={TOOLTIP_FONT_SIZE_OFFSET_MAX_PX}
+                  step={TOOLTIP_FONT_SIZE_OFFSET_STEP_PX}
+                  value={tooltipFontSizeOffsetPx}
+                  unit="px"
+                  ariaLabel={t("appearanceTooltipSizeOffsetLabel")}
+                  onCommit={setTooltipFontSizeOffsetPx}
                 />
               </label>
               <div className="output-appearance-control">
@@ -1721,6 +1764,9 @@ export function AppearanceSettings() {
                 role="region"
                 aria-label={t("appearanceOutputPreviewLabel")}
               >
+                <div className={tooltipStyles.specimen} data-tooltip-specimen>
+                  {t("appearanceTooltipPreview")}
+                </div>
                 <div className="output-preview-system">
                   <span className="output-preview-system-icon">ok</span>
                   <span>System note: applied after reconnect.</span>

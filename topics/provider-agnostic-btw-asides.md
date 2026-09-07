@@ -1,13 +1,93 @@
 # Provider-Agnostic /btw Asides
 
-This topic covers YA-owned `/btw` side sessions: short side requests that
+This topic covers YA-owned `/btw` side sessions and one-shot question cards:
+short side requests that
 should run beside a parent session without being treated as active-turn
 steering, deferred queueing, or provider-native slash-command pass-through.
 
 Related topic: [side session configuration](side-session-config.md) for
 silent helper queries and lightweight fallback side-query envelopes.
 
-## Contracts
+## One-shot question cards
+
+Question cards are a lighter entry than `/btw`: one question, one answer,
+then an explicit Save Q+A or Discard decision. Enable **Quick question cards**
+under Settings → Message delivery. The browser-local setting defaults off;
+existing delivery remains unchanged until enabled.
+
+- While the main session is `in-turn` or `waiting-input`, an attachment-free
+  draft whose literal final character is ASCII `?` previews a quick answer
+  above the composer. Desktop says `Enter: quick answer · Space: keep typing`;
+  touch says `Send: quick answer · Space: keep typing`. The preview starts no
+  provider work. Eligibility is checked again on submission.
+- The raw draft is checked before ordinary trimming. `Why? ` opts out;
+  Space only inserts a space. Idle questions, explicit slash/`!!` commands,
+  attachments/uploads, correction/fork-summary modes, and composers focused
+  on `/btw` keep their existing delivery. Deferred speech submissions retain
+  their original delivery intent. Providers without the existing `/btw`
+  clone path do not show the hint.
+- Submitting the preview starts an isolated clone using the existing
+  clone/resume/read routes. Main keeps working. The child receives the exact
+  question plus instructions to answer from inherited context, avoid commands
+  and file changes, and avoid follow-up questions. This is a prompt constraint,
+  not a new provider sandbox or a guarantee that a fork costs less than steering.
+- The compact card occupies normal footer space immediately above the main
+  composer, below queued items and other aside panels. It reduces the transcript
+  viewport instead of covering recent activity. An already-following transcript
+  stays at its live bottom as the available viewport changes. Readers who
+  scrolled back keep their position. Long answer content scrolls inside the card
+  while Save Q+A and Discard remain accessible. The card has no
+  visible heading; its `?` help control explains the flow and save fallback.
+  Action labels are centered within compact desktop buttons and larger touch
+  targets on phones. Save uses a semibold label centered independently of its
+  desktop shortcut, which sits outside the button. It displays only
+  the child assistant's visible text after the marked question, in order;
+  inherited answers, reasoning blocks, and tool execution are not imported.
+  Typing always drafts the next main message. There is no child composer or
+  continuing question-card conversation in v1.
+- Once complete, a **fresh Enter on an exactly empty composer**, the empty
+  composer Send button, or the card's **Save Q+A** button saves the exchange.
+  Empty means no text, attachments, uploads, pending speech, or IME composition.
+  Held/repeated Enter cannot save the answer automatically. Explicit card Save
+  also works while the user has a separate main draft.
+- **Discard**, Esc when the card owns dismissal, or submission of a new main
+  message closes without saving. Typing alone does not dismiss. Dismissal
+  stops unfinished child work; it never stops main. Saving already in progress
+  cannot be dismissed or submitted twice. Failure is visible and does not
+  automatically retry an operation whose acceptance may be uncertain.
+
+Save preserves question and assistant text verbatim, with a separate provenance
+message naming the child YA session and snapshot-request time. Main may have
+continued since that snapshot. Saving is context, not authorization to carry
+out the answer, and does not ask main to answer the question again.
+The general [conversation-context contract](synthetic-turn-injection.md)
+owns delivery: native insertion where supported, otherwise an attributed
+normal user message that may receive a reply. The card's `?` help discloses that
+fallback before Save and reports which delivery occurred afterward.
+
+Only native-history delivery requires the new `session-conversation-context`
+server capability. Older capable servers still answer cards through their
+existing clone/resume/read routes, and Save uses their ordinary resume route.
+No new endpoint is called when the capability is absent.
+
+The browser owns this transient flow. Helper clones are archived before their
+question starts, so normal session lists stay clear; they remain archived
+sessions, not deleted transcripts. They have ordinary fork provenance and no
+interactive `/btw` parent link. They are not restored as cards after navigation,
+reload, or browser crash. Polling is bounded to 160 visible checks spaced by
+1.5 seconds, pauses while the page is hidden, and stops on completion or
+unmount. Input requests, missing answers, and exhausted polling show failure
+and request child cancellation. Browser crashes do not guarantee cancellation.
+Sidebar child-work trees and continuing card conversations are v2 candidates
+in the [sketch companion](provider-agnostic-btw-asides.sketches.md).
+
+Verification covers real composer submission, the SessionPage browser flow at
+1000×600 and 375×812, native and older-server Save, the route through `Process`,
+and Codex app-server message insertion. A live Codex 0.153.4 probe persisted
+user/assistant text without starting a turn; active-turn consumption timing and
+live Claude fork generation were not exercised by that probe.
+
+## `/btw` contracts
 
 - `/btw` is a YA routing command. It starts or focuses an aside session when
   YA has an explicit capability path for the provider; unsupported providers
@@ -24,7 +104,7 @@ silent helper queries and lightweight fallback side-query envelopes.
   provider-neutral: provider-fork, storage clone, native subagent, or
   resume-with-summary paths must all satisfy the same parent/child contract.
 
-## Invariants
+## `/btw` invariants
 
 - `/btw` must not be a synonym for `turn/steer` or deferred queue. Those are
   separate delivery intents.

@@ -32,10 +32,13 @@ describe("liveThinkingConfig", () => {
     );
   });
 
-  it("normalizes provider-specific effort while preserving live thinking", () => {
+  it("preserves Max in live Codex thinking selections", () => {
     expect(
       thinkingOptionFromProcess({ type: "adaptive" }, "max", "codex"),
-    ).toBe("on:xhigh");
+    ).toBe("on:max");
+    expect(
+      thinkingOptionFromProcess({ type: "adaptive" }, "ultra", "codex"),
+    ).toBe("on:max");
   });
 
   it("builds explicit options from toolbar selections", () => {

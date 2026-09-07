@@ -130,8 +130,10 @@ formatter-version migration.
 Keep a broad mechanical rewrite in its own commit, time it against open PRs and
 known in-progress work, and add its full hash to `.git-blame-ignore-revs` in a
 follow-up commit. Never add a mixed behavior-and-format commit to that file.
-The current checkout may enable the tracked blame metadata with `git config
-blame.ignoreRevsFile .git-blame-ignore-revs`.
+The revision list is committed; local Git does not enable it automatically.
+Opt this checkout in with `git config --local blame.ignoreRevsFile
+.git-blame-ignore-revs`, or pass `--ignore-revs-file .git-blame-ignore-revs`
+to an individual `git blame` invocation.
 
 ## Client CSS Architecture
 

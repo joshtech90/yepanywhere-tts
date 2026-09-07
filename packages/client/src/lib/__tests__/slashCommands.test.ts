@@ -322,12 +322,12 @@ describe("slashCommands", () => {
     ).toEqual([]);
   });
 
-  it("turns /fast into a thinking-off message", () => {
+  it("turns /fast into a relative one-turn effort request", () => {
     expect(resolveComposerSlashTurn("/f summarize this")).toEqual({
       kind: "message",
       text: "summarize this",
       command: "fast",
-      thinking: "off",
+      turnEffort: "fast",
     });
   });
 

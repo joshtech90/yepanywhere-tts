@@ -14,6 +14,7 @@ import {
   hideContextFreeEmptyShellPolls,
 } from "./shellFolding";
 import type { TranscriptProjectionAugments } from "./types";
+import { annotateWorkflowTags } from "./workflowTags";
 
 /**
  * Compile normalized transcript messages into the current semantic render
@@ -24,7 +25,10 @@ export function compileTranscriptProjection(
   augments?: TranscriptProjectionAugments,
   diagnostics?: MessageProjectionDiagnostics,
 ): RenderItem[] {
-  const items = projectTranscriptMessages(messages, augments, diagnostics);
+  const projected = projectTranscriptMessages(messages, augments, diagnostics);
+  const items = augments?.workflowTags
+    ? annotateWorkflowTags(messages, projected, augments.workflowSchemaFiles)
+    : projected;
   const compactCoalescedItems = coalesceCompactBoundaryItems(items);
   const slashCommandCoalescedItems = coalesceSlashCommandSkillBodies(
     compactCoalescedItems,

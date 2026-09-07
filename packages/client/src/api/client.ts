@@ -1539,6 +1539,16 @@ export const api = {
       body: JSON.stringify({ title, provider, parentSessionId }),
     }),
 
+  sendConversationContext: (
+    projectId: string,
+    sessionId: string,
+    request: import("@yep-anywhere/shared").ConversationContextRequest,
+  ) =>
+    fetchJSON<import("@yep-anywhere/shared").ConversationContextReceipt>(
+      `/projects/${projectId}/sessions/${sessionId}/conversation-context`,
+      { method: "POST", body: JSON.stringify(request) },
+    ),
+
   // Push notification API
   ...pushApi,
 

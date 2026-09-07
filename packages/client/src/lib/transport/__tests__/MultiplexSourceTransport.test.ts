@@ -25,6 +25,7 @@ class FakeMultiplexConnection implements Connection {
   manager: ConnectionManager | null = null;
   readonly fetchMock = vi.fn();
   readonly fetchBlobMock = vi.fn();
+  readonly fetchResponse = vi.fn(async () => new Response("ok"));
   readonly upload = vi.fn(
     async (
       _projectId: string,
@@ -272,6 +273,16 @@ describe("multiplex source transports", () => {
       path: "/projects",
     });
     expect(connection.fetchMock).toHaveBeenCalledWith("/projects", undefined);
+    const init = { headers: { "If-None-Match": 'W/"schema"' } };
+    const response = await transport.fetchResponse(
+      "/projects/p/files/raw",
+      init,
+    );
+    expect(await response.text()).toBe("ok");
+    expect(connection.fetchResponse).toHaveBeenCalledWith(
+      "/projects/p/files/raw",
+      init,
+    );
     expect(connection.reconnect).not.toHaveBeenCalled();
 
     transport.dispose();

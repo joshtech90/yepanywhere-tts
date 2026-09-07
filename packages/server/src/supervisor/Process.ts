@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   DurableRecapMessage,
+  ConversationContextTurn,
   DurableLocalCommandMessage,
   EffortLevel,
   ModelInfo,
@@ -854,6 +855,12 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   abortFn?: () => void | Promise<void>;
   /** Release a reload-safe proxy without terminating its provider session. */
   detachForServerReloadFn?: () => void | Promise<void>;
+  /**
+   * Canonical session id the provider reported in an earlier server
+   * generation. A reattached reload-safe runtime never replays that init
+   * message, so provider identity settles at construction instead.
+   */
+  initializedSessionId?: string;
   /** Check if underlying CLI process is still alive (for stale detection) */
   isProcessAlive?: () => boolean;
   /** Return true when an idle process should stay owned for an explicit feature. */
@@ -889,6 +896,9 @@ export interface ProcessConstructorOptions extends ProcessOptions {
    * Returns false when steering is unavailable and caller should enqueue.
    */
   steerFn?: (message: UserMessage) => Promise<boolean>;
+  appendConversationContextFn?: (
+    turns: ConversationContextTurn[],
+  ) => Promise<boolean>;
   /** Function to get supported models (SDK 0.2.7+) */
   supportedModelsFn?: () => Promise<ModelInfo[]>;
   /** Function to get supported slash commands (SDK 0.2.7+) */
@@ -1068,6 +1078,7 @@ export class Process {
   private interruptFn: (() => Promise<undefined | boolean>) | null;
   /** Function to steer an active turn (provider-specific, currently Codex app-server) */
   private steerFn: ((message: UserMessage) => Promise<boolean>) | null;
+  private appendConversationContextFn: ProcessConstructorOptions["appendConversationContextFn"];
 
   /** Function to get supported models (SDK 0.2.7+) */
   private supportedModelsFn: (() => Promise<ModelInfo[]>) | null;
@@ -1227,6 +1238,7 @@ export class Process {
     this.effortUpdatesActiveTurn = options.effortUpdatesActiveTurn === true;
     this.interruptFn = options.interruptFn ?? null;
     this.steerFn = options.steerFn ?? null;
+    this.appendConversationContextFn = options.appendConversationContextFn;
     this.supportedModelsFn = options.supportedModelsFn ?? null;
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
     this.onCommandsObserved = options.onCommandsObserved;
@@ -1263,6 +1275,11 @@ export class Process {
       this.rejectProviderSessionIdSettlement = reject;
     });
     void this.providerSessionIdSettlement.catch(() => undefined);
+    if (options.initializedSessionId) {
+      this._sessionId = options.initializedSessionId;
+      this.sessionIdResolved = true;
+      this.resolveProviderSessionId(options.initializedSessionId);
+    }
 
     const viewerLifecycleOptions: ProcessViewerLifecycleOptions = {
       processId: this.id,
@@ -2061,6 +2078,24 @@ export class Process {
         ...(options?.extraMessages ?? []),
       ];
       if (all.length > 0) {
+        // Effort overrides own a whole turn, including after an interrupt.
+        // Retain order without merging their text into another turn's effort.
+        if (all.some((message) => message.metadata?.turnEffort)) {
+          for (const [index, message] of all.entries()) {
+            this.deferMessage(
+              index === 0
+                ? this.concatMessages([message], {
+                    interrupted: true,
+                    preamble: options?.preamble,
+                  })
+                : message,
+              { promoteIfReady: false },
+            );
+          }
+          if (this._state.type === "idle")
+            this.promoteEligibleDeferredAfterTurn();
+          return true;
+        }
         const combined = this.concatMessages(all, {
           interrupted: true,
           preamble: options?.preamble,
@@ -2329,6 +2364,18 @@ export class Process {
       }
     }
     return result;
+  }
+
+  get supportsNativeCommands(): boolean {
+    return this.runProviderCommandFn !== null;
+  }
+
+  async appendConversationContext(
+    turns: ConversationContextTurn[],
+  ): Promise<boolean> {
+    if (!this.appendConversationContextFn) return false;
+    await this.waitForSessionId();
+    return this.appendConversationContextFn(turns);
   }
 
   /**
@@ -3547,6 +3594,16 @@ export class Process {
     position?: number;
     error?: string;
   } {
+    if (message.metadata?.turnEffort && this._state.type !== "idle") {
+      return this.deferMessage({
+        ...message,
+        metadata: {
+          ...message.metadata,
+          deliveryIntent: "deferred",
+          steerNow: undefined,
+        },
+      });
+    }
     const acceptedMessage = this.acceptRecapResumeSignal(message);
     return this.queuePreparedMessage(
       this.prepareProviderMessage(acceptedMessage, options?.composeAnchor),
@@ -5135,8 +5192,9 @@ export class Process {
     const group = [entries[0]!];
     const windowMs = joinWindowSeconds * 1000;
     // 0 means never join, even for sends composed in the same millisecond.
-    if (windowMs <= 0) return group;
+    if (windowMs <= 0 || entries[0]!.message.metadata?.turnEffort) return group;
     for (let i = 1; i < entries.length; i++) {
+      if (entries[i]!.message.metadata?.turnEffort) break;
       if (entries[i]!.message.mode !== entries[0]!.message.mode) break;
       const gapMs =
         this.composedAtMsForEntry(entries[i]!) -
@@ -5368,6 +5426,12 @@ export class Process {
     const group = this.deferredQueue
       .slice(0, targetIndex + 1)
       .filter((entry) => entry.message.metadata?.deliveryIntent === "patient");
+    if (group.some((entry) => entry.message.metadata?.turnEffort)) {
+      return {
+        success: false,
+        error: "Effort modifiers require a new turn and remain queued",
+      };
+    }
     const anchors = this.deferredComposeAnchors(group);
     const steerMessages = group.map((entry, index) =>
       this.prepareProviderMessage(

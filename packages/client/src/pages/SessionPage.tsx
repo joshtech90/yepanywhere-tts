@@ -14,9 +14,11 @@ import type {
 } from "@yep-anywhere/shared";
 import {
   CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
+  SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
+  SIDEBAR_SESSION_RESUME_CAPABILITY,
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
   SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
@@ -25,6 +27,8 @@ import {
   serverHasCapability,
   startsWithSlashCommand,
   thinkingOptionToConfig,
+  SERVER_CAPABILITIES,
+  isTurnEffort,
 } from "@yep-anywhere/shared";
 import {
   type ComponentProps,
@@ -57,6 +61,9 @@ import { HostIdentityMarker } from "../components/HostIdentityMarker";
 import { getForkSummaryAutoOpen } from "../hooks/useForkSummaryAutoOpen";
 import { PendingToolWarning } from "../components/PendingToolWarning";
 import { ProviderChildSessionControl } from "../components/ProviderChildSessionControl";
+import { useQuestionAside } from "../hooks/useQuestionAside";
+import { useQuestionAsideSetting } from "../hooks/useQuestionAsideSetting";
+import { QuestionAsideCard } from "../components/QuestionAsideCard";
 import type {
   FullPaneComposerControls,
   UploadProgress,
@@ -679,8 +686,9 @@ function SessionPageContent({
   );
   const providerRuntimeStatus =
     useProviderRuntimeStatusForSession(actualSessionId);
-  const currentGoal = slashCommands.find((command) => command.name === "goal")
-    ?.providerDetails?.codex?.goalObjective;
+  const goalDetails = slashCommands.find((command) => command.name === "goal")
+    ?.providerDetails?.codex;
+  const currentGoal = goalDetails?.goalObjective;
   const sessionLoadingProgressText =
     sessionLoadingProgressEnabled && sessionLoadingProgressDetailsVisible
       ? getSessionLoadingProgressText(sessionLoadProgress, t)
@@ -915,6 +923,23 @@ function SessionPageContent({
     messageId: string;
     originalText: string;
   } | null>(null);
+  const { questionAsidesEnabled } = useQuestionAsideSetting();
+  const questionAside = useQuestionAside({
+    projectId,
+    sessionId: actualSessionId,
+    sourceApi,
+    provider: effectiveProvider,
+    model: effectiveModelConfig?.model ?? session?.model,
+    executor: session?.executor,
+    nativeContextRoute: serverHasCapability(
+      versionInfo,
+      SESSION_CONVERSATION_CONTEXT_CAPABILITY,
+    ),
+    showToast,
+    onSaved: () => {
+      void fetchNewMessages();
+    },
+  });
   const [forkSummaryDraft, setForkSummaryDraft] = useState<{
     sourceMessageId: string;
   } | null>(null);
@@ -1100,6 +1125,12 @@ function SessionPageContent({
 
   // Inject custom client-side commands alongside SDK-discovered ones.
   // Keep /model last so it stays nearest the slash button in the upward menu.
+  const supportsTurnEffort =
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.turnEffortModifiers.name,
+    ) &&
+    (effectiveProvider === "codex" || isClaudeProviderName(effectiveProvider));
   const allSlashCommands = useMemo(() => {
     if (status.owner === "external") {
       return [];
@@ -1110,6 +1141,7 @@ function SessionPageContent({
         ? CLIENT_SLASH_COMMANDS.filter(
             (command) =>
               command !== "model" &&
+              (!isTurnEffort(command) || supportsTurnEffort) &&
               (command !== "btw" || supportsBtwAsides) &&
               (command !== "done" ||
                 mainComposerForAside ||
@@ -1160,6 +1192,7 @@ function SessionPageContent({
     supportsBtwAsides,
     supportsManualCompact,
     supportsSyntheticTerminate,
+    supportsTurnEffort,
     syntheticDoneEnabled,
     t,
   ]);
@@ -2090,6 +2123,12 @@ function SessionPageContent({
       return null;
     }
 
+    if (slashTurn.turnEffort && !supportsTurnEffort) {
+      draftControlsRef.current?.setDraft(text);
+      showToast(t("turnEffortUnavailable"), "error");
+      return null;
+    }
+
     const outgoingText = outgoingTextFor(slashTurn.text);
     if (
       outgoingText === null ||
@@ -2102,6 +2141,7 @@ function SessionPageContent({
       outgoingText,
       thinking: slashTurn.thinking,
       slashCommand: slashTurn.command,
+      turnEffort: slashTurn.turnEffort,
     };
   };
 
@@ -2271,14 +2311,33 @@ function SessionPageContent({
   const handleSend = async (
     text: string,
     metadata?: MessageSubmissionMetadata,
-    options: { preserveComposer?: boolean } = {},
+    options: { preserveComposer?: boolean; localControl?: boolean } = {},
   ): Promise<boolean> => {
-    const prepared = prepareComposerSubmission(text);
+    const prepared: PreparedComposerSubmission | null = options.localControl
+      ? { outgoingText: text }
+      : prepareComposerSubmission(text);
     if (!prepared) {
       return false;
     }
+    if (
+      prepared.turnEffort &&
+      (processState === "in-turn" || processState === "waiting-input")
+    ) {
+      return handleQueue(text, metadata);
+    }
+    if (prepared.turnEffort)
+      metadata = {
+        composition: {},
+        deliveryIntent: "direct",
+        ...metadata,
+        turnEffort: prepared.turnEffort,
+      };
     const preserveComposer = options.preserveComposer === true;
     const { outgoingText, slashCommand } = prepared;
+    const localControl =
+      options.localControl ||
+      (goalDetails?.goalStatus !== undefined &&
+        /^\/goal(?:\s|$)/i.test(outgoingText));
     if (
       !preserveComposer &&
       requiresAttachmentOnlyServerUpdate({
@@ -2304,8 +2363,10 @@ function SessionPageContent({
       undefined,
       clientTimestampIso,
     );
-    setProcessState("in-turn"); // Optimistic: show processing indicator immediately
-    setScrollTrigger((prev) => prev + 1); // Force scroll to bottom
+    if (!localControl) {
+      setProcessState("in-turn"); // Optimistic: show processing indicator immediately
+      setScrollTrigger((prev) => prev + 1); // Force scroll to bottom
+    }
     logSessionUiTrace("composer-send-start", {
       sessionId,
       projectId,
@@ -2541,7 +2602,7 @@ function SessionPageContent({
         draftControlsRef.current?.restoreFromStorage();
         setComposerAttachments(currentAttachments, { persistDraft: false });
       }
-      setProcessState("idle");
+      if (!localControl) setProcessState("idle");
       const errorMsg =
         finalError instanceof Error ? finalError.message : String(finalError);
       if (
@@ -2784,11 +2845,19 @@ function SessionPageContent({
   const handleQueue = async (
     text: string,
     metadata?: MessageSubmissionMetadata,
-  ) => {
+  ): Promise<boolean> => {
     const prepared = prepareComposerSubmission(text);
     if (!prepared) {
-      return;
+      return false;
     }
+    if (prepared.turnEffort)
+      metadata = {
+        composition: {},
+        ...metadata,
+        deliveryIntent: "deferred",
+        turnEffort: prepared.turnEffort,
+        steerNow: undefined,
+      };
     const { outgoingText, slashCommand } = prepared;
     if (
       requiresAttachmentOnlyServerUpdate({
@@ -2798,7 +2867,7 @@ function SessionPageContent({
       })
     ) {
       showToast(t("attachmentOnlyRequiresServerUpdate"), "error");
-      return;
+      return false;
     }
     const thinking = prepared.thinking ?? getImplicitComposerThinking();
     // Display preference for thinking rows; sent for compatibility while the
@@ -2890,6 +2959,7 @@ function SessionPageContent({
       revokeAttachmentPreviewUrls(currentAttachments);
       setCorrectionDraft(null);
       clearQuoteAnchors();
+      return true;
     } catch (err) {
       console.error("Failed to queue deferred message:", err);
       let finalError: unknown = err;
@@ -2942,7 +3012,7 @@ function SessionPageContent({
           revokeAttachmentPreviewUrls(currentAttachments);
           setCorrectionDraft(null);
           clearQuoteAnchors();
-          return;
+          return true;
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
           finalError = retryErr;
@@ -2972,6 +3042,7 @@ function SessionPageContent({
       } else {
         showToast(t("sessionQueueFailed", { message: errorMsg }), "error");
       }
+      return false;
     }
   };
 
@@ -2983,8 +3054,9 @@ function SessionPageContent({
     [],
   );
   const executeComposerDefer = useCallback(
-    (text: string, metadata?: MessageSubmissionMetadata) =>
-      handleQueueRef.current(text, metadata),
+    async (text: string, metadata?: MessageSubmissionMetadata) => {
+      await handleQueueRef.current(text, metadata);
+    },
     [],
   );
   useEffect(() => {
@@ -3037,6 +3109,14 @@ function SessionPageContent({
     if (!prepared) {
       return;
     }
+    if (prepared.turnEffort)
+      metadata = {
+        composition: {},
+        deliveryIntent: "deferred",
+        ...metadata,
+        turnEffort: prepared.turnEffort,
+        steerNow: undefined,
+      };
     const { outgoingText, slashCommand } = prepared;
     const thinking = prepared.thinking ?? getImplicitComposerThinking();
     const showThinking = getShowThinkingSetting();
@@ -3327,7 +3407,12 @@ function SessionPageContent({
             deferredMessages,
             tempId,
           );
-        restoreQueuedMessageToComposer(message.content, message.attachments);
+        restoreQueuedMessageToComposer(
+          message.metadata?.turnEffort
+            ? `/${message.metadata.turnEffort} ${message.content}`
+            : message.content,
+          message.attachments,
+        );
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         showToast(
@@ -4694,6 +4779,24 @@ function SessionPageContent({
     }
   };
 
+  const handleRestartProvider = async () => {
+    if (status.owner !== "self" || !status.processId) return;
+    draftControlsRef.current?.flushDraft();
+    try {
+      await api.abortProcess(status.processId);
+      setStatus({ owner: "none" });
+      await api.reactivateSession(projectId, actualSessionId);
+      window.location.reload();
+    } catch (error) {
+      showToast(
+        t("sessionRestartProviderFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        "error",
+      );
+    }
+  };
+
   const handleShare = useCallback(() => {
     if (showShareModal) {
       setShowShareModal(false);
@@ -5115,7 +5218,27 @@ function SessionPageContent({
                   >
                     <span className="session-title-text">{displayTitle}</span>
                   </button>
-                  {currentGoal && <GoalFlag objective={currentGoal} />}
+                  {currentGoal && (
+                    <GoalFlag
+                      objective={currentGoal}
+                      status={goalDetails?.goalStatus}
+                      onToggle={
+                        goalDetails?.goalStatus
+                          ? (action) =>
+                              handleSend(`/goal ${action}`, undefined, {
+                                preserveComposer: true,
+                                localControl: true,
+                              })
+                          : undefined
+                      }
+                      onEdit={() => {
+                        const controls = draftControlsRef.current;
+                        if (!controls || controls.getDraft().trim()) return;
+                        controls.setDraft(`/goal ${currentGoal}`);
+                        controls.focus?.();
+                      }}
+                    />
+                  )}
                   <button
                     type="button"
                     className={`session-title-chevron-trigger${
@@ -5254,6 +5377,14 @@ function SessionPageContent({
                   }
                   compactDisabled={manualCompactBlocked}
                   onTerminate={handleTerminate}
+                  onRestartProvider={
+                    serverHasCapability(
+                      versionInfo,
+                      SIDEBAR_SESSION_RESUME_CAPABILITY,
+                    )
+                      ? handleRestartProvider
+                      : undefined
+                  }
                   onReload={() => window.location.reload()}
                   onShare={publicShareActionAvailable ? handleShare : undefined}
                   useFixedPositioning
@@ -5584,6 +5715,18 @@ function SessionPageContent({
                     scrollToTurnRequest={scrollToTurnRequest}
                     pendingMessages={pendingMessages}
                     deferredMessages={deferredMessages}
+                    queuedEffortContext={(() => {
+                      const model = currentProviderInfo?.models?.find(
+                        (candidate) =>
+                          candidate.id ===
+                          (effectiveModelConfig?.requestedModel ??
+                            liveBadgeModel),
+                      );
+                      const normal = getImplicitComposerThinking();
+                      return model && normal
+                        ? { model, normal, provider: effectiveProvider }
+                        : undefined;
+                    })()}
                     projectQueueMessages={inlineProjectQueueMessages}
                     projectQueueDispatchPaused={
                       projectQueues.dispatchState.status === "paused"
@@ -5803,6 +5946,16 @@ function SessionPageContent({
                 </>
               )}
 
+            {questionAside.aside && (
+              <QuestionAsideCard
+                {...questionAside.aside}
+                onSave={() => {
+                  void questionAside.save();
+                }}
+                onDiscard={questionAside.discard}
+              />
+            )}
+
             {/* No pending approval: show full message input */}
             {!(
               pendingInputRequest &&
@@ -5810,6 +5963,32 @@ function SessionPageContent({
               !isAskUserQuestion
             ) && (
               <MessageInput
+                questionAside={
+                  !mainComposerForAside && !forkSummaryDraft
+                    ? {
+                        canAsk:
+                          questionAsidesEnabled &&
+                          supportsBtwAsides &&
+                          !questionAside.aside &&
+                          (processState === "in-turn" ||
+                            processState === "waiting-input"),
+                        onAsk: (rawText) =>
+                          (processState === "in-turn" ||
+                            processState === "waiting-input") &&
+                          questionAside.ask(rawText),
+                        onSave:
+                          questionAside.aside?.status === "complete"
+                            ? () => {
+                                void questionAside.save();
+                              }
+                            : undefined,
+                        onDismiss: questionAside.aside
+                          ? questionAside.discard
+                          : undefined,
+                      }
+                    : undefined
+                }
+                completionRenderItems={activityRenderItems}
                 onSend={
                   mainComposerForAside
                     ? (text) => handleFocusedBtwSend(text, "main")

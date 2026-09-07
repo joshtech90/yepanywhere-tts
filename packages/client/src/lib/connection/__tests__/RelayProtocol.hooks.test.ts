@@ -57,6 +57,78 @@ describe("RelayProtocol hooks", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    {
+      status: 200,
+      body: "# schema\n",
+      contentType: "text/markdown",
+      expected: "# schema\n",
+    },
+    {
+      status: 200,
+      body: { type: "tagged-stages/1" },
+      contentType: "application/json",
+      expected: '{"type":"tagged-stages/1"}',
+    },
+    {
+      status: 200,
+      body: { _binary: true, data: btoa("schema bytes") },
+      contentType: "application/octet-stream",
+      expected: "schema bytes",
+    },
+    { status: 304, body: null, contentType: "application/json", expected: "" },
+    {
+      status: 200,
+      body: null,
+      contentType: "application/json",
+      expected: "null",
+    },
+    {
+      status: 200,
+      body: "schema",
+      contentType: "application/example+json; charset=utf-8",
+      expected: '"schema"',
+    },
+    {
+      status: 200,
+      body: { _binary: true, data: "not base64" },
+      contentType: "application/json",
+      expected: '{"_binary":true,"data":"not base64"}',
+    },
+  ])(
+    "preserves raw response status $status for $contentType",
+    async ({ status, body, contentType, expected }) => {
+      const sent: RemoteClientMessage[] = [];
+      const protocol = new RelayProtocol({
+        sendMessage: (message) => sent.push(message),
+        sendUploadChunk: vi.fn(),
+        ensureConnected: vi.fn(async () => undefined),
+        isConnected: () => true,
+      });
+      const etag = 'W/"file-generation"';
+      const pending = protocol.fetchResponse(
+        "/projects/p/files/raw?path=schema",
+        {
+          headers: { "If-None-Match": etag },
+        },
+      );
+      await flushUntil(() => sent.length === 1);
+      const request = sent[0] as RelayRequest;
+      expect(request.headers?.["If-None-Match"]).toBe(etag);
+      protocol.routeMessage({
+        type: "response",
+        id: request.id,
+        status,
+        headers: { "content-type": contentType, etag },
+        body,
+      });
+      const response = await pending;
+      expect(response.status).toBe(status);
+      expect(response.headers.get("etag")).toBe(etag);
+      expect(await response.text()).toBe(expected);
+    },
+  );
+
   it("reports inbound relay events before consumer routing", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const onInboundEvent = vi.fn();

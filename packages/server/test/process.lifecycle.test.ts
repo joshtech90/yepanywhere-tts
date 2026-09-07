@@ -8,6 +8,46 @@ import {
 import type { SDKMessage, UrlProjectId } from "./process.test-support.js";
 
 describe("Process", () => {
+  describe("provider session identity", () => {
+    it("settles provider identity from a reattached runtime's reported id", async () => {
+      const controller = createControllableIterator();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "codex",
+        initialState: "idle",
+        idleTimeoutMs: 20,
+        abortFn: () => controller.finish(),
+        initializedSessionId: "sess-1",
+      });
+
+      await expect(process.waitForProviderSessionId(50)).resolves.toBe(
+        "sess-1",
+      );
+      await expect(process.waitForSessionId(50)).resolves.toBe("sess-1");
+      await process.abort();
+    });
+
+    it("keeps waiting for init when no owner reported provider identity", async () => {
+      const controller = createControllableIterator();
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "codex",
+        initialState: "idle",
+        idleTimeoutMs: 20,
+        abortFn: () => controller.finish(),
+      });
+
+      await expect(process.waitForProviderSessionId(20)).rejects.toThrow(
+        "Timed out waiting 20ms for provider session id",
+      );
+      await process.abort();
+    });
+  });
+
   describe("idle lifecycle", () => {
     it("reaps a verified-idle process after the configured grace", async () => {
       vi.useFakeTimers();

@@ -1502,6 +1502,10 @@ export class SecureConnection implements Connection {
     return this.protocol.fetchBlob(path);
   }
 
+  async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+    return this.protocol.fetchResponse(path, init);
+  }
+
   subscribeSession(
     sessionId: string,
     handlers: StreamHandlers,

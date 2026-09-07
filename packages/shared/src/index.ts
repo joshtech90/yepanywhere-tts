@@ -1,4 +1,25 @@
 export {
+  formatConversationContextTurn,
+  type ConversationContextTurn,
+  type ConversationContextRequest,
+  type ConversationContextReceipt,
+} from "./conversation-context.js";
+
+export {
+  EFFORT_LEVEL_ORDER,
+  getModelEffortLevels,
+  nativeModelEffort,
+  resolveTurnEffort,
+  isTurnEffort,
+  type TurnEffort,
+} from "./turn-effort.js";
+
+export type {
+  ProjectFileCompletionEntry,
+  ProjectFileCompletionResult,
+} from "./project-file-completion.js";
+
+export {
   isIdeMetadata,
   stripIdeMetadata,
   extractOpenedFilePath,
@@ -226,6 +247,13 @@ export {
   type ToolResultMedia,
   type ToolResultMediaRejectionReason,
 } from "./tool-result-media.js";
+
+export {
+  decodeCodeModeOutput,
+  type CodeModeOutputPart,
+  type DecodedCodeModeOutput,
+  type DecodeCodeModeOutputOptions,
+} from "./code-mode-output.js";
 
 // ANSI escape rendering (shared between server and client)
 export { hasAnsiEscapes, renderAnsiToHtml } from "./ansi-renderer.js";
@@ -573,6 +601,8 @@ export {
   GIT_INCOMING_COMMITS_CAPABILITY,
   GIT_LIVE_WORKTREE_SETTING_CAPABILITY,
   GIT_WORKING_TREE_FILES_CAPABILITY,
+  PROJECT_FILE_COMPLETION_CAPABILITY,
+  SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,

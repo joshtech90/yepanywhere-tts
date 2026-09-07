@@ -9,8 +9,10 @@ import {
   type UserMessageMetadata,
   clampPatientPatienceSeconds,
   clampRecapAfterSeconds,
+  isTurnEffort,
 } from "@yep-anywhere/shared";
 import type { ResumeMode } from "../supervisor/Supervisor.js";
+import { HTTPException } from "hono/http-exception";
 import {
   isValidSshHostAlias,
   normalizeSshHostAlias,
@@ -254,6 +256,12 @@ export function buildUserMessageMetadata(
   const rawMetadata = isRecord(body.messageMetadata)
     ? body.messageMetadata
     : {};
+  if (
+    rawMetadata.turnEffort !== undefined &&
+    !isTurnEffort(rawMetadata.turnEffort)
+  ) {
+    throw new HTTPException(400, { message: "Invalid turn effort modifier" });
+  }
   const rawComposition = isRecord(rawMetadata.composition)
     ? rawMetadata.composition
     : {};
@@ -301,6 +309,9 @@ export function buildUserMessageMetadata(
 
   return {
     deliveryIntent,
+    ...(isTurnEffort(rawMetadata.turnEffort)
+      ? { turnEffort: rawMetadata.turnEffort }
+      : {}),
     ...(patienceSeconds !== undefined ? { patienceSeconds } : {}),
     ...(steerNow ? { steerNow } : {}),
     ...(Object.keys(cleanComposition).length > 0

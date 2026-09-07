@@ -5,6 +5,7 @@ import type {
   TranscriptDisplayObject,
 } from "@yep-anywhere/shared";
 import type { ContentBlock, Message } from "../types";
+import type { WorkflowAnnotation } from "../lib/transcriptProjection/workflowTags";
 
 /**
  * RenderItem types for the preprocessed message rendering system.
@@ -26,6 +27,7 @@ export type RenderItem =
 
 /** Base fields shared by all render items */
 interface RenderItemBase {
+  workflow?: WorkflowAnnotation;
   /** Source JSONL messages that contributed to this item (for debugging) */
   sourceMessages: Message[];
   /** True if this item is from a Task subagent */

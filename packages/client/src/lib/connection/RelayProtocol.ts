@@ -542,14 +542,40 @@ export class RelayProtocol {
    * Make a JSON API request over the relay transport.
    */
   async fetch<T>(path: string, init?: RequestInit): Promise<T> {
-    return await this.fetchWithRedirects<T>(path, init, 0);
+    const response = await this.fetchWithRedirects(path, init, 0);
+    if (response.status === 304)
+      throw new Error("Unsupported relay response status: 304");
+    return response.body as T;
   }
 
-  private async fetchWithRedirects<T>(
+  /** Reconstruct a Response from the relay's existing body representation. */
+  async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+    const response = await this.fetchWithRedirects(path, init, 0);
+    const headers = new Headers(response.headers);
+    let body: BodyInit | null = null;
+    if (![204, 205, 304].includes(response.status)) {
+      const mediaType =
+        headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ??
+        "";
+      const value = response.body as { _binary?: boolean; data?: string };
+      if (mediaType === "application/json" || mediaType.endsWith("+json")) {
+        // Match the server's JSON classification before considering a binary
+        // envelope: those field names may also occur in an ordinary JSON file.
+        body = JSON.stringify(response.body);
+      } else if (value?._binary === true && typeof value.data === "string") {
+        body = Uint8Array.from(atob(value.data), (char) => char.charCodeAt(0));
+      } else if (typeof response.body === "string") body = response.body;
+      else if (response.body != null)
+        throw new Error("Unexpected relay response body");
+    }
+    return new Response(body, { status: response.status, headers });
+  }
+
+  private async fetchWithRedirects(
     path: string,
     init: RequestInit | undefined,
     redirectCount: number,
-  ): Promise<T> {
+  ): Promise<RelayResponse> {
     await this.transport.ensureConnected();
 
     const id = generateId();
@@ -601,7 +627,7 @@ export class RelayProtocol {
       console.log(`[Relay] \u2192 ${method} ${request.path}`);
     }
 
-    return new Promise<T>((resolve, reject) => {
+    return new Promise<RelayResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (this.debugEnabled) {
           const duration = Date.now() - startTime;
@@ -633,7 +659,7 @@ export class RelayProtocol {
                 response.status,
                 init,
               );
-              void this.fetchWithRedirects<T>(
+              void this.fetchWithRedirects(
                 redirectPath,
                 redirectInit,
                 redirectCount + 1,
@@ -645,14 +671,14 @@ export class RelayProtocol {
           }
           if (response.status >= 400) {
             reject(createRelayApiError(response));
-          } else if (response.status >= 300) {
+          } else if (response.status >= 300 && response.status !== 304) {
             reject(
               new Error(
                 `Unsupported relay response status: ${response.status}`,
               ),
             );
           } else {
-            resolve(response.body as T);
+            resolve(response);
           }
         },
         reject,

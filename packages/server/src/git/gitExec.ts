@@ -40,14 +40,34 @@ export async function runGit(
     timeout?: number;
     disableTerminalPrompt?: boolean;
     maxBuffer?: number;
+    input?: string;
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync("git", buildGitArgs(cwd, args), {
-    maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
-    timeout: options?.timeout ?? 10_000,
-    ...(options?.disableTerminalPrompt
-      ? { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
-      : {}),
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "git",
+      buildGitArgs(cwd, args),
+      {
+        maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
+        timeout: options?.timeout ?? 10_000,
+        env: {
+          ...process.env,
+          ...options?.env,
+          ...(options?.disableTerminalPrompt
+            ? { GIT_TERMINAL_PROMPT: "0" }
+            : {}),
+        },
+      },
+      (error, stdout, stderr) => {
+        if (error) reject(Object.assign(error, { stdout, stderr }));
+        else resolve({ stdout, stderr });
+      },
+    );
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
+    child.stdin?.end(options?.input);
   });
 }
 

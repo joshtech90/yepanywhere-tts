@@ -1,4 +1,5 @@
 import type { MarkdownAugment } from "@yep-anywhere/shared";
+import type { WorkflowSchemaFiles } from "./workflowTags";
 
 /**
  * When true, the session has active tool work or approval. Orphaned tools in
@@ -8,6 +9,8 @@ export type ActiveToolApproval = boolean;
 
 /** Inputs that accompany normalized messages during semantic projection. */
 export interface TranscriptProjectionAugments {
+  workflowTags?: boolean;
+  workflowSchemaFiles?: WorkflowSchemaFiles;
   /** Pre-rendered markdown HTML keyed by message ID. */
   markdown?: Record<string, MarkdownAugment>;
   /** Matching tool_use rows remain pending while approval is active. */

@@ -81,6 +81,27 @@ function setElementBox(
 }
 
 describe("ToolCallRow", () => {
+  it("keeps unmatched workflow output out of a matching-lines preview", () => {
+    const { container } = render(
+      <I18nProvider>
+        <ToolCallRow
+          id="workflow-empty"
+          toolName="Bash"
+          toolInput={{ command: "node simulate" }}
+          toolResult={{ content: "[INFO] diagnostic only", isError: false }}
+          status="complete"
+          workflow={{ markers: [], view: "matching-lines", visibleRanges: [] }}
+        />
+      </I18nProvider>,
+    );
+    const preview = container.querySelector("[data-workflow-output]");
+    expect(preview).not.toBeNull();
+    expect(preview?.querySelector("pre")?.textContent).toBe("");
+    expect(preview?.querySelector("details")?.textContent).toContain(
+      "[INFO] diagnostic only",
+    );
+  });
+
   beforeEach(() => {
     schemaValidationMocks.enabled = false;
     schemaValidationMocks.reportValidationError.mockReset();

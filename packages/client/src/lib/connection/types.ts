@@ -223,6 +223,8 @@ export interface Connection {
    * @throws Error with status property on HTTP errors
    */
   fetch<T>(path: string, init?: RequestInit): Promise<T>;
+  /** Preserve available relay headers and conditional-GET status. */
+  fetchResponse(path: string, init?: RequestInit): Promise<Response>;
 
   /**
    * Fetch binary data (images, files) and return as Blob.

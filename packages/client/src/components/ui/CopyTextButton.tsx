@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { writeClipboardText } from "../../lib/clipboard";
+import styles from "./CopyTextButton.module.css";
 
 interface Props {
   text: string;
@@ -70,7 +71,9 @@ export const CopyTextButton = memo(function CopyTextButton({
       title={copied ? copiedLabel : label}
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
-      {showTextLabel && <span>{copied ? "Copied" : "Copy"}</span>}
+      {showTextLabel && (
+        <span className={styles.label}>{copied ? "Copied" : "Copy"}</span>
+      )}
     </button>
   );
 });

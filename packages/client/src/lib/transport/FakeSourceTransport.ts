@@ -24,6 +24,10 @@ import {
 
 type FakeFetchHandler = <T>(path: string, init?: RequestInit) => Promise<T>;
 type FakeFetchBlobHandler = (path: string) => Promise<Blob>;
+type FakeFetchResponseHandler = (
+  path: string,
+  init?: RequestInit,
+) => Promise<Response>;
 type FakeUploadHandler = (
   projectId: string,
   sessionId: string,
@@ -73,6 +77,7 @@ export interface FakeSourceTransportOptions {
   readonly initialSnapshot?: SourceTransportStatusSnapshot;
   readonly fetch?: FakeFetchHandler;
   readonly fetchBlob?: FakeFetchBlobHandler;
+  readonly fetchResponse?: FakeFetchResponseHandler;
   readonly upload?: FakeUploadHandler;
   readonly uploadStagedAttachment?: FakeStagedUploadHandler;
   readonly reconnect?: () => Promise<void>;
@@ -159,13 +164,15 @@ class FakeSourceTransportStatus implements SourceTransportStatus {
   }
 
   private emit(): void {
-    for (const listener of [...this.listeners]) {
+    const listeners = [...this.listeners];
+    for (const listener of listeners) {
       listener();
     }
   }
 
   emitVisibilityRestored(): void {
-    for (const listener of [...this.visibilityRestoredListeners]) {
+    const listeners = [...this.visibilityRestoredListeners];
+    for (const listener of listeners) {
       listener();
     }
   }
@@ -185,6 +192,7 @@ export class FakeSourceTransport implements SourceTransport {
   private disposed = false;
   private fetchHandler?: FakeFetchHandler;
   private fetchBlobHandler?: FakeFetchBlobHandler;
+  private fetchResponseHandler?: FakeFetchResponseHandler;
   private uploadHandler?: FakeUploadHandler;
   private stagedUploadHandler?: FakeStagedUploadHandler;
   private reconnectHandler?: () => Promise<void>;
@@ -206,6 +214,7 @@ export class FakeSourceTransport implements SourceTransport {
     this.status = this.mutableStatus;
     this.fetchHandler = options.fetch;
     this.fetchBlobHandler = options.fetchBlob;
+    this.fetchResponseHandler = options.fetchResponse;
     this.uploadHandler = options.upload;
     this.stagedUploadHandler = options.uploadStagedAttachment;
     this.reconnectHandler = options.reconnect;
@@ -281,6 +290,17 @@ export class FakeSourceTransport implements SourceTransport {
       });
     }
     return this.fetchBlobHandler(path);
+  }
+
+  async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+    this.assertReady("fetchResponse");
+    if (!this.fetchResponseHandler) {
+      throw new SourceTransportUnsupportedError({
+        kind: this.kind,
+        operation: "fetchResponse",
+      });
+    }
+    return this.fetchResponseHandler(path, init);
   }
 
   async upload(

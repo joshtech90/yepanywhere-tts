@@ -1,0 +1,23 @@
+.mark {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: white;
+  color: var(--project-queue-new-session-action-bg);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 0 0 1px
+    color-mix(
+      in srgb,
+      var(--project-queue-new-session-action-bg) 42%,
+      transparent
+    );
+  pointer-events: none;
+}

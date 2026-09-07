@@ -2,11 +2,10 @@
 
 Topic: synthetic-turn-injection
 
-Status: research note (not built). Records whether and how a fork/handoff
-target can be seeded with a **sequence of synthetic user+assistant turns** —
-turns the target model did not generate, carrying fabricated
-(non-harness-registered) ids — instead of collapsing everything into one
-synthetic user turn. Motivated by fork-after-summary interpretability.
+Status: implemented for ordered user/assistant text through the conversation
+context route. Codex supports native history insertion; other providers use an
+attributed normal user turn. Fork-after-summary has not adopted this route.
+The historical research below explains the role-preservation motivation.
 
 See also:
 [fork-from-turn](fork-from-turn.md) (the consumer: fork-after-summary submits a
@@ -18,6 +17,59 @@ would extend),
 capability would live),
 [compact-and-handoff](compact-and-handoff.md) (the adjacent compaction path that
 also reshapes transcript history).
+
+## Conversation-context delivery contract
+
+`POST /api/projects/:projectId/sessions/:sessionId/conversation-context` accepts
+`{ requestId, turns: [{ role: "user" | "assistant", text }] }`. It is a general
+sequence-of-turns surface, with no required aside handle or question/answer
+shape. Callers supply any provenance as ordinary context text. System roles,
+tool blocks, and opaque reasoning are outside this text-only contract.
+
+The existing session must have a matching live YA process owner; callers can
+use the existing reactivate route first. A missing owner or wrong project
+returns 409. The request ID is 1–128 word/hyphen characters, the sequence has
+1–64 turns, and combined text is at most 262144 UTF-16 code units. Invalid JSON
+or shape returns 400. The route uses the ordinary authenticated API boundary.
+
+The owner invokes optional `AgentSession.appendConversationContext(turns)`:
+
+- `true` returns `{ delivery: "native-history" }`. Role and text are preserved.
+  Codex maps messages to input/output text items in `thread/inject_items`,
+  through the incumbent local, provider-host, or managed-SSH session. It does
+  not start a new turn or steer existing work. Idle injection records and
+  flushes history; active injection queues context for the running harness.
+  The receipt means accepted, not proof the model has already consumed it.
+- An absent method or explicit `false` selects the existing normal message
+  queue with a role-attributed envelope, returning `{ delivery: "user-turn" }`.
+  The envelope identifies supplied assistant text and already-answered
+  questions. This delivery follows normal session semantics and may cause a
+  reply. Unsupported native insertion is never a successful no-op.
+- Provider errors return 502. Only explicit unsupported-method failure
+  (Codex JSON-RPC -32601) selects fallback; other failures must not silently
+  send a second copy through another mechanism.
+
+Request receipts are scoped to the lifetime of the YA process owner. Concurrent
+or repeated identical IDs and payloads join the same operation; changed content
+under the same ID returns 409. Failed receipts are retained because acceptance
+may be uncertain. Each owner retains at most 256 receipt fingerprints, then
+rejects new IDs with 429. This is not durable idempotency across server restart
+or process replacement. The question-card client prevents duplicate Save and
+does not automatically retry uncertain failures.
+
+The permanent, version-implied `session-conversation-context` capability
+(ID 57, introducing release 0.8.2) gates only this route. Without it, clients
+can format the same attributed envelope and submit it as an ordinary user
+turn using existing routes. Existing fork support remains independently usable.
+The optional-feature review on 2026-09-06 inspected stable v0.8.0 and v0.8.1,
+the latest two and all stable releases in the preceding 14 days; neither
+provides this route. Their capability meanings and delivery paths are unchanged.
+
+Initial consumer: [one-shot question cards](provider-agnostic-btw-asides.md).
+That caller saves the actual question and subsequent assistant text, including
+fork provenance and the fact that main continued independently. This operation
+does not merge branches, replay tools, rewrite earlier turns, or itself grant
+authority to act on imported text.
 
 ## Why this exists
 
@@ -87,18 +139,48 @@ rollout model makes synthetic alternation a supported operation, not surgery:
 (e.g. a Claude jsonl) as Codex rollout items — i.e. synthetic-turn injection is
 already a shipped Codex feature, just aimed at whole-session migration.
 
-**Unverified (Codex), the YA-integration crux:** whether YA's stdio app-server
-JSON-RPC surface exposes `Forked`-start or `inject_response_items` directly, or
-whether those are core-lib-only (reachable by embedding `codex-core`, not via
-the app-server YA drives). An `import` RPC exists
-(`app-server/src/request_processors.rs` → `ExternalAgentConfigRequestProcessor::
-import`), but it is geared to whole foreign-session migration with detection,
-not arbitrary mid-fork injection of a constructed item list. Next probe: read
-`thread/start` + `thread/resume` params for an `InitialHistory`/`items` field;
-determine whether `import` can target a chosen cwd with a caller-built item
-vector.
+**Resolved 2026-09-06:** official `rust-v0.153.3`, commit
+`b1a547b1f73ce86205d9222ac19cff334b3b7a2e`, exposes `thread/inject_items`
+in the app-server protocol and turn processor. YA now uses that public route.
+The adapter test verifies role/text mapping and no `turn/start`/`turn/steer`;
+a live installed Codex 0.153.4 probe verified persisted user and assistant text
+without a new turn. Active-turn ordering is source-verified, not live-probed.
 
-## Claude arm — out-of-band only
+## Claude arm — attributed ordinary-turn fallback
+
+YA does not advertise native assistant-role insertion for Claude. The shipped
+fallback is the ordinary user-message envelope above. The older feasibility
+notes below are not an approved transcript-editing path.
+
+YA's `ClaudeProvider` uses Agent SDK `query({ prompt: queue })`, rather than
+owning the Messages API history directly. Installed SDK 0.3.258 declares
+`Query.streamInput(AsyncIterable<SDKUserMessage>)` and user-message-only query
+input; no live assistant-history append method was found in its `Query`
+interface. Its `SessionStore` option mirrors transcript writes and loads on
+resume, rather than inserting into the active query. `shouldQuery: false`
+documents a user-role append without an assistant reply, merged into the next
+querying user message. That could support a future intermediate delivery mode,
+but does not establish role-preserving assistant-history insertion. A separate
+Messages API request would not update the incumbent Claude Code session.
+
+The distinction is between model input and a live harness operation. The
+[Messages API](https://platform.claude.com/docs/en/build-with-claude/working-with-messages)
+explicitly accepts synthetic assistant turns, even text Claude never produced.
+Claude Code's [fork documentation](https://code.claude.com/docs/en/sub-agents#fork-the-current-conversation)
+describes inherited conversation context and a final result returning to main;
+it does not establish a general operation for splicing an independent branch's
+assistant history into a live parent.
+
+[Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
+has a separate validity constraint. Where prefix binding is enforced, changing
+preceding system, tools, or messages invalidates affected thinking and later
+thinking blocks. The default is a request error; the documented `drop_block`
+option discards invalid thinking and permits the remaining input. This does
+not make transplanted reasoning valid. YA's context route accepts visible
+text only, and question-card extraction excludes thinking and tool blocks
+before import. Original parent history is left intact. These documentation
+claims were checked on 2026-09-06; they do not advertise a Claude SDK history
+append capability that YA has not verified.
 
 What I know from YA's provider (`packages/server/src/sdk/providers/claude.ts`,
 `types.ts`):
@@ -137,13 +219,13 @@ first `query()`.
 - **True synthetic alternation buys one thing:** making the target *model*
   experience prior agent reasoning as its own turns, so it continues
   in-character rather than reading a third-party status dump. Codex supports it
-  cleanly; Claude requires out-of-band jsonl surgery.
+  cleanly; native Claude insertion remains unverified and is not implemented.
 - **Shared risk:** synthetic assistant turns put words in the model's mouth that
   it then treats as its own commitments — entrenching the summarizer's framing —
   and tool turns must be flattened, losing fidelity. Gate (2) behind a measured
   need (evidence that the flattened single-turn form degrades continuation),
   not as a default.
-- **If built:** keep synthetic turns text-only on both arms, and adopt an
+- **Current contract:** keep synthetic turns text-only, and adopt an
   in-band synthetic-content boundary marker (Codex's `<EXTERNAL SESSION
   IMPORTED>` is the precedent) so the transcript stays self-describing about
   what the model did vs. did not generate.

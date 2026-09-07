@@ -1,5 +1,5 @@
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { UploadedFile } from "@yep-anywhere/shared";
+import type { TurnEffort, UploadedFile } from "@yep-anywhere/shared";
 import type { UserMessage } from "./types.js";
 
 export const CONCAT_SEPARATOR = "--------";
@@ -19,9 +19,11 @@ function mostUrgentPriority(messages: UserMessage[]): UserMessage["priority"] {
   return result;
 }
 
-type CancellableMessageIterator = AsyncIterator<SDKUserMessage> &
-  AsyncIterable<SDKUserMessage> & {
-    return(): Promise<IteratorResult<SDKUserMessage>>;
+export type QueuedSDKUserMessage = SDKUserMessage & { turnEffort?: TurnEffort };
+
+type CancellableMessageIterator = AsyncIterator<QueuedSDKUserMessage> &
+  AsyncIterable<QueuedSDKUserMessage> & {
+    return(): Promise<IteratorResult<QueuedSDKUserMessage>>;
   };
 
 /** Queue surface consumed by Process; remote runtime proxies implement it too. */
@@ -44,6 +46,12 @@ export function concatUserMessages(
   messages: UserMessage[],
   preamble?: string,
 ): UserMessage {
+  if (
+    messages.length > 1 &&
+    messages.some((message) => message.metadata?.turnEffort)
+  ) {
+    throw new Error("Effort-modified messages must remain separate turns");
+  }
   const first = messages[0]!;
   const parts: string[] = [];
   const allImages: string[] = [];
@@ -68,6 +76,7 @@ export function concatUserMessages(
     text: parts.join("\n\n"),
     uuid: first.uuid,
     tempId: first.tempId,
+    ...(first.metadata ? { metadata: first.metadata } : {}),
     ...(first.mode ? { mode: first.mode } : {}),
   };
   // Record every chunk's temp id so the delivered-turn echo can clear all of
@@ -181,7 +190,7 @@ function detectImageMediaType(base64Data: string): string {
  *    by Process to deliver queued messages with an interruption preamble.
  */
 export class MessageQueue
-  implements AsyncIterable<SDKUserMessage>, AgentMessageQueue
+  implements AsyncIterable<QueuedSDKUserMessage>, AgentMessageQueue
 {
   private queue: UserMessage[] = [];
   private waiting: (() => void) | null = null;
@@ -278,7 +287,7 @@ export class MessageQueue
     const iterator: CancellableMessageIterator = {
       [Symbol.asyncIterator]: () => iterator,
 
-      next: async (): Promise<IteratorResult<SDKUserMessage>> => {
+      next: async (): Promise<IteratorResult<QueuedSDKUserMessage>> => {
         while (!closed) {
           // Wait until at least one message is available.
           await this.waitForMessage();
@@ -300,7 +309,7 @@ export class MessageQueue
         return { done: true, value: undefined };
       },
 
-      return: (): Promise<IteratorResult<SDKUserMessage>> => {
+      return: (): Promise<IteratorResult<QueuedSDKUserMessage>> => {
         closed = true;
         this.wakeWaitingIterator();
         return Promise.resolve({ done: true, value: undefined });
@@ -331,7 +340,12 @@ export class MessageQueue
     if (!first) return null;
     const firstMode = first.mode;
     let end = 1;
-    while (end < this.queue.length && this.queue[end]?.mode === firstMode) {
+    while (
+      end < this.queue.length &&
+      this.queue[end]?.mode === firstMode &&
+      !first.metadata?.turnEffort &&
+      !this.queue[end]?.metadata?.turnEffort
+    ) {
       end += 1;
     }
     const drained = this.queue.splice(0, end);
@@ -355,7 +369,7 @@ export class MessageQueue
     return `${Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10}\u202fgb`;
   }
 
-  private toSDKMessage(msg: UserMessage): SDKUserMessage {
+  private toSDKMessage(msg: UserMessage): QueuedSDKUserMessage {
     let text = msg.text;
 
     if (msg.attachments?.length) {
@@ -397,6 +411,9 @@ export class MessageQueue
       return {
         type: "user",
         uuid: msg.uuid,
+        ...(msg.metadata?.turnEffort
+          ? { turnEffort: msg.metadata.turnEffort }
+          : {}),
         ...(msg.mode ? { mode: msg.mode } : {}),
         ...(msg.priority ? { priority: msg.priority } : {}),
         message: {
@@ -409,6 +426,9 @@ export class MessageQueue
     return {
       type: "user",
       uuid: msg.uuid,
+      ...(msg.metadata?.turnEffort
+        ? { turnEffort: msg.metadata.turnEffort }
+        : {}),
       ...(msg.mode ? { mode: msg.mode } : {}),
       ...(msg.priority ? { priority: msg.priority } : {}),
       message: {

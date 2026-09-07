@@ -330,6 +330,60 @@ describe("CodexProvider", () => {
       );
     });
 
+    it("appends user and assistant history through app-server without starting a turn", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-context-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-context",
+        buildFakeCodexAppServer(logPath),
+      );
+      const session = await new CodexProvider({ codexPath }).startSession({
+        cwd: tempDir,
+      });
+      try {
+        await session.iterator.next();
+        await expect(
+          session.appendConversationContext?.([
+            { role: "user", text: " Why?\n" },
+            { role: "assistant", text: "Because.\n" },
+          ]),
+        ).resolves.toBe(true);
+        const requests = readFileSync(logPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(
+          requests.find((request) => request.method === "thread/inject_items")
+            ?.params,
+        ).toEqual({
+          threadId: "thread-1",
+          items: [
+            {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: " Why?\n" }],
+            },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Because.\n" }],
+            },
+          ],
+        });
+        expect(
+          requests.some(
+            (request) =>
+              request.method === "turn/start" ||
+              request.method === "turn/steer",
+          ),
+        ).toBe(false);
+      } finally {
+        await session.abort();
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("runs goal control through thread goal RPCs without a model turn", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-commands-"));
       const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -375,6 +429,12 @@ describe("CodexProvider", () => {
                   description: "Current goal",
                 },
               ]),
+              providerDetails: {
+                codex: {
+                  goalObjective: "Ship the native goal path",
+                  goalStatus: "paused",
+                },
+              },
             }),
           ]),
         );
@@ -406,7 +466,9 @@ describe("CodexProvider", () => {
           expect.arrayContaining([
             expect.objectContaining({
               name: "goal",
-              providerDetails: { codex: { goalObjective: null } },
+              providerDetails: {
+                codex: { goalObjective: null, goalStatus: null },
+              },
             }),
           ]),
         );
@@ -460,6 +522,42 @@ describe("CodexProvider", () => {
         await session.abort();
         await session.iterator.return?.(undefined);
         rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("preserves an unchanged objective without resetting its goal", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-goal-unchanged-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "codex",
+        buildFakeCodexAppServer(logPath),
+      );
+      const session = await new CodexProvider({ codexPath }).startSession({
+        cwd: tempDir,
+      });
+      try {
+        await session.iterator.next();
+        await session.runProviderCommand?.("goal", "Keep the accounting");
+        await session.runProviderCommand?.("goal", "pause");
+        const before = readFakeCodexRequests(logPath).length;
+        await expect(
+          session.runProviderCommand?.("goal", "  Keep the accounting  "),
+        ).resolves.toMatchObject({
+          handled: true,
+          output: {
+            details: ["Keep the accounting", "Goal paused"],
+          },
+        });
+        expect(
+          readFakeCodexRequests(logPath)
+            .slice(before)
+            .map((r) => r.method),
+        ).toEqual(["thread/goal/get"]);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true });
       }
     });
 
@@ -517,10 +615,34 @@ describe("CodexProvider", () => {
               slash_command_inventory: expect.arrayContaining([
                 expect.objectContaining({
                   name: "goal",
-                  providerDetails: { codex: { goalObjective: "Keep working" } },
+                  providerDetails: {
+                    codex: {
+                      goalObjective: "Keep working",
+                      goalStatus: "active",
+                    },
+                  },
                 }),
               ]),
             }),
+          );
+          await session.runProviderCommand?.("goal", "pause");
+          await vi.waitFor(() =>
+            expect(messages).toContainEqual(
+              expect.objectContaining({
+                subtype: "commands_changed",
+                slash_command_inventory: expect.arrayContaining([
+                  expect.objectContaining({
+                    name: "goal",
+                    providerDetails: {
+                      codex: {
+                        goalObjective: "Keep working",
+                        goalStatus: "paused",
+                      },
+                    },
+                  }),
+                ]),
+              }),
+            ),
           );
         } finally {
           await session.abort();
@@ -1193,6 +1315,55 @@ describe("CodexProvider app-server lifecycle", () => {
         "low",
         "high",
       ]);
+    } finally {
+      await session.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates one-turn effort and maps regular Max to the model's ultra", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-turn-effort-"));
+    const logPath = join(tempDir, "requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-effort",
+      buildFakeCodexPermissionAppServer(logPath),
+    );
+    const testProvider = new CodexProvider({ codexPath });
+    const session = await testProvider.startSession({
+      cwd: tempDir,
+      model: "gpt-5.4-mini",
+      effort: "high",
+      initialMessage: { text: "careful", metadata: { turnEffort: "slow" } },
+    });
+    try {
+      await consumeCodexTurn(session.iterator);
+      session.queue.push({ text: "ordinary" });
+      await consumeCodexTurn(session.iterator);
+      session.queue.push({
+        text: "maximum",
+        metadata: { turnEffort: "slowest" },
+      });
+      await consumeCodexTurn(session.iterator);
+      session.queue.push({
+        text: "brief",
+        metadata: { turnEffort: "fastest" },
+      });
+      await consumeCodexTurn(session.iterator);
+      await session.setEffort?.("max");
+      session.queue.push({ text: "normal max" });
+      await consumeCodexTurn(session.iterator);
+      const requests = readFakeCodexRequests(logPath);
+      expect(
+        requests
+          .filter((request) => request.method === "turn/start")
+          .map((request) => request.params?.effort),
+      ).toEqual(["xhigh", "high", "ultra", "none", "ultra"]);
+      expect(
+        requests
+          .filter((request) => request.method === "thread/settings/update")
+          .map((request) => request.params?.effort),
+      ).toEqual(["high", "high", "high", "ultra"]);
     } finally {
       await session.abort();
       rmSync(tempDir, { recursive: true, force: true });
@@ -3197,6 +3368,9 @@ function handleMessage(message) {
   switch (message.method) {
     case "initialize":
       respond(message.id, { userAgent: "fake-codex-policy" });
+      break;
+    case "model/list":
+      respond(message.id, { data: [{ id: "gpt-5.4-mini", model: "gpt-5.4-mini", displayName: "Test model", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max", "ultra"].map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })) }], nextCursor: null });
       break;
     case "skills/list":
       respond(message.id, {

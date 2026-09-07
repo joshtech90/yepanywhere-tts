@@ -89,9 +89,14 @@ available backend. If setup or discovery reports no browser, or the
 browser inventory is empty, immediately fall back to the repository's
 installed Playwright command:
 
-Launch the fresh dev server in its own shell with the overlay suppressions:
+Choose an unused base port and its next two ports; the example uses
+4000–4002. Launch the fresh server in its own shell with separate data and
+the overlay suppressions. If you choose another port, use it in both capture
+commands too.
 
 ```bash
+PORT=4000 \
+YEP_DATA_DIR="$PWD/.artifacts/ui-testing/$(date -u +%Y%m%dT%H%M%SZ)-server" \
 VITE_DISABLE_ONBOARDING=true \
 VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS=true \
 pnpm dev
@@ -108,14 +113,14 @@ pnpm --filter @yep-anywhere/client exec playwright screenshot \
   --block-service-workers \
   --wait-for-timeout 500 \
   --viewport-size "1000,600" \
-  https://localhost:3400/ \
+  https://localhost:4000/ \
   "$ARTIFACT_DIR/desktop.png"
 pnpm --filter @yep-anywhere/client exec playwright screenshot \
   --ignore-https-errors \
   --block-service-workers \
   --wait-for-timeout 500 \
   --viewport-size "375,812" \
-  https://localhost:3400/ \
+  https://localhost:4000/ \
   "$ARTIFACT_DIR/mobile.png"
 ```
 

@@ -186,6 +186,8 @@ Settings specimen. The current-session action uses the standard Project Queue
 purple. The new-session action uses a darker violet and a prominent
 high-contrast `+` badge; the small mark must not be the only perceptible
 difference between two otherwise identical buttons.
+The circled plus straddles the upper-right button border, leaving the main
+delivery arrow centered and unobstructed in both toolbar and keyboard rows.
 
 Project Queue UI must also be capability-gated on `/api/version` advertising
 `projectQueue`. The active-composer new-session shortcut and its Toolbar

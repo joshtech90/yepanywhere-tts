@@ -47,6 +47,7 @@ interface WorkerCapabilities {
   refreshPromptCache: boolean;
   publishAgentctlSessionId: boolean;
   steer: boolean;
+  appendConversationContext?: boolean;
   setMaxThinkingTokens: boolean;
   setEffort: boolean;
   effortUpdatesActiveTurn?: boolean;
@@ -618,6 +619,7 @@ class HostedAgentSession {
   private approvalControllers = new Map<string, AbortController>();
   private callbacksActive = false;
   private pendingAppliedPermissionMode: PermissionMode | undefined;
+  private initializedSessionId: string | undefined;
   readonly queue: HostedMessageQueue;
 
   private constructor(
@@ -762,6 +764,17 @@ class HostedAgentSession {
       this.pendingAppliedPermissionMode =
         message.appliedPermissionMode as PermissionMode;
     }
+    // Every provider reports init as its first event, so an owner that has
+    // already acknowledged an event will never replay init to this
+    // controller. Workers predating the explicit field fall back to the
+    // runtime's bound session id.
+    const providerSessionId = message.providerSessionId;
+    this.initializedSessionId =
+      typeof providerSessionId === "string" && providerSessionId
+        ? providerSessionId
+        : Number(message.acknowledgedSequence ?? 0) > 0
+          ? (this.runtime.sessionId ?? this.options.resumeSessionId)
+          : undefined;
   }
 
   private handleMessage(message: Record<string, unknown>): void {
@@ -1052,6 +1065,7 @@ class HostedAgentSession {
       isProcessAlive: () => this.providerAlive,
       pid: this.runtime.pid,
       sessionId: this.runtime.worker.sessionId,
+      initializedSessionId: this.initializedSessionId,
       ...(capabilities.probeLiveness
         ? {
             probeLiveness: async () => {
@@ -1107,6 +1121,12 @@ class HostedAgentSession {
       },
       ...(capabilities.steer
         ? { steer: (message) => this.rpc("steer", [message]) }
+        : {}),
+      ...(capabilities.appendConversationContext
+        ? {
+            appendConversationContext: (turns) =>
+              this.rpc<boolean>("appendConversationContext", [turns]),
+          }
         : {}),
       ...(capabilities.setMaxThinkingTokens
         ? {

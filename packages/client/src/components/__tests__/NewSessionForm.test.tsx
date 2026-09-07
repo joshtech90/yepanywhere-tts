@@ -1301,6 +1301,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -1347,6 +1348,7 @@ describe("NewSessionForm", () => {
       }),
       undefined,
       expect.any(Number),
+      undefined,
     );
     expect(mockNavigate).toHaveBeenCalledWith(
       "/projects/project-1/sessions/session-1",
@@ -1362,6 +1364,36 @@ describe("NewSessionForm", () => {
           initialProvider: "claude",
         }),
       }),
+    );
+  });
+
+  it("submits a one-turn modifier as metadata without changing normal thinking", async () => {
+    versionState.version = { capabilities: ["turn-effort-modifiers"] };
+    serverSettingsState.isLoading = false;
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "/slow careful review" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() =>
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-1",
+        "careful review",
+        expect.objectContaining({ thinking: "off" }),
+        undefined,
+        expect.any(Number),
+        { deliveryIntent: "direct", turnEffort: "slow" },
+      ),
     );
   });
 
@@ -1412,6 +1444,7 @@ describe("NewSessionForm", () => {
         expect.objectContaining({ provider: "codex" }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -1841,6 +1874,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -2865,6 +2899,7 @@ describe("NewSessionForm", () => {
         expect.any(Object),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -2885,6 +2920,7 @@ describe("NewSessionForm", () => {
         expect.any(Object),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
 
@@ -2985,6 +3021,7 @@ describe("NewSessionForm", () => {
         expect.any(Object),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
     expect(mockVoiceContinueAfterSpeechSend).toHaveBeenCalledOnce();
@@ -3035,6 +3072,7 @@ describe("NewSessionForm", () => {
         expect.any(Object),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
     expect(mockStartSession.mock.calls[0]?.[1]).not.toContain(
@@ -3275,6 +3313,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -3336,6 +3375,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
 
@@ -3394,6 +3434,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });
@@ -3441,6 +3482,7 @@ describe("NewSessionForm", () => {
         }),
         undefined,
         expect.any(Number),
+        undefined,
       );
     });
   });

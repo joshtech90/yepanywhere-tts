@@ -44,20 +44,7 @@
   display: none;
 }
 
-/* Text and thinking blocks - align dot with first line of text */
-.text-block.timeline-item::before {
-  top: 8px;
-}
-
-.text-block.timeline-item::after {
-  top: 14px; /* Adjust line start for new dot position */
-}
-
-/* Add small top padding so text aligns with tool row text */
-.text-block.timeline-item {
-  padding-top: 2px;
-}
-
+/* Thinking blocks - align dot with first line of text */
 .thinking-block.timeline-item::before {
   top: 8px;
 }

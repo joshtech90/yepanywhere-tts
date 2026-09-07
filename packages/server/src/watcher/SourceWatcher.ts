@@ -1,7 +1,8 @@
-import * as fs from "node:fs";
+import type * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EventBus, SourceChangeEvent } from "./EventBus.js";
+import { watchSharedDirectory } from "./SharedDirectoryWatcher.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,7 +41,7 @@ export class SourceWatcher {
     }
 
     try {
-      this.watcher = fs.watch(
+      this.watcher = watchSharedDirectory(
         this.watchDir,
         { recursive: true },
         (_eventType, filename) => {

@@ -87,11 +87,14 @@ describe("Project Queue action CSS contract", () => {
   });
 
   it("keeps the plus as a prominent high-contrast badge", async () => {
-    const css = await readFile(stylesheetUrl, "utf8");
-    const declarations = getRuleDeclarations(
-      css,
-      ".project-queue-new-session-mark",
+    const css = await readFile(
+      new URL(
+        "../../components/NewSessionQueueMark.module.css",
+        import.meta.url,
+      ),
+      "utf8",
     );
+    const declarations = getRuleDeclarations(css, ".mark");
 
     expect(declarations).toMatch(/width:\s*14px\s*;/);
     expect(declarations).toMatch(/height:\s*14px\s*;/);

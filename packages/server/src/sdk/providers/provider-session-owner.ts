@@ -79,6 +79,7 @@ export interface ProviderSessionReadyMetadata {
     refreshPromptCache: boolean;
     publishAgentctlSessionId: boolean;
     steer: boolean;
+    appendConversationContext?: boolean;
     setMaxThinkingTokens: boolean;
     setEffort: boolean;
     effortUpdatesActiveTurn?: boolean;
@@ -127,6 +128,11 @@ export interface ProviderSessionAttachedState {
   providerActivity: ProviderActivitySnapshot;
   providerRetention: ProviderRetentionSnapshot;
   appliedPermissionMode?: PermissionMode;
+  /**
+   * Canonical id the provider reported in its init message. A controller
+   * attaching after that event was acknowledged never sees it replayed.
+   */
+  providerSessionId?: string;
 }
 
 export function providerSessionErrorMessage(error: unknown): string {
@@ -153,6 +159,7 @@ export class ProviderSessionOwner {
     reasons: [],
   };
   private appliedPermissionMode: PermissionMode | undefined;
+  private providerSessionId: string | undefined;
   private shuttingDown: Promise<void> | null = null;
   private unsubscribeQueueDepth: (() => void) | null = null;
   private unsubscribeQueueRemoved: (() => void) | null = null;
@@ -229,6 +236,7 @@ export class ProviderSessionOwner {
         refreshPromptCache: Boolean(session.refreshPromptCache),
         publishAgentctlSessionId: Boolean(session.publishAgentctlSessionId),
         steer: Boolean(session.steer),
+        appendConversationContext: Boolean(session.appendConversationContext),
         setMaxThinkingTokens: Boolean(session.setMaxThinkingTokens),
         setEffort: Boolean(session.setEffort),
         effortUpdatesActiveTurn: session.effortUpdatesActiveTurn === true,
@@ -371,6 +379,7 @@ export class ProviderSessionOwner {
       providerActivity: this.providerActivity,
       providerRetention: this.providerRetention,
       appliedPermissionMode: this.appliedPermissionMode,
+      providerSessionId: this.providerSessionId,
     };
   }
 
@@ -408,6 +417,13 @@ export class ProviderSessionOwner {
   }
 
   private bufferEvent(message: SDKMessage): void {
+    if (
+      message.type === "system" &&
+      message.subtype === "init" &&
+      typeof message.session_id === "string"
+    ) {
+      this.providerSessionId = message.session_id;
+    }
     const sequence = ++this.sequence;
     const bytes = Buffer.byteLength(JSON.stringify(message));
     this.events.push({
@@ -724,6 +740,14 @@ export class ProviderSessionOwner {
           throw new Error("A provider-host session turn is already active");
         }
         return await session.steer?.(args[0] as UserMessage);
+      case "appendConversationContext":
+        return session.appendConversationContext
+          ? await session.appendConversationContext(
+              args[0] as Parameters<
+                NonNullable<AgentSession["appendConversationContext"]>
+              >[0],
+            )
+          : false;
       case "setMaxThinkingTokens":
         return await session.setMaxThinkingTokens?.(args[0] as number | null);
       case "setEffort":

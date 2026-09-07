@@ -44,6 +44,7 @@ import { renderFixedFontMath } from "../ui/FixedFontMathToggle";
 import { RenderModeGlyph } from "../ui/RenderModeGlyph";
 import { useTurnImageGalleryNavigation } from "../TurnImageGallery";
 import { ParagraphQuoteRail } from "../ParagraphQuoteRail";
+import styles from "./TextBlock.module.css";
 import { useGlossaryArtifact } from "../../contexts/GlossaryContext";
 import { annotateGlossaryHtml } from "../../lib/glossary/annotateGlossaryHtml";
 import {
@@ -372,7 +373,7 @@ export const TextBlock = memo(function TextBlock({
   return (
     <div
       ref={textBlockRef}
-      className={`text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
+      className={`${styles.root} text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
       data-turn-image-source-id={renderItemId}
     >
       {onQuoteBlock ? (
@@ -474,7 +475,7 @@ export const TextBlock = memo(function TextBlock({
               projectPathLinks={projectPathLinks}
             />
           ) : (
-            <pre className="text-block-source">
+            <pre className={`${styles.source} text-block-source`}>
               <code>{text}</code>
             </pre>
           ))}

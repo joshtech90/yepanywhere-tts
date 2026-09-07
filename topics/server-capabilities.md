@@ -481,9 +481,22 @@ the same ledger:
 | 53 | server | 0.8.1 | `codex-plan-tool-setting` |
 | 54 | server | 0.8.1 | `codex-paginated-rollout-lineage` |
 | 55 | server | 0.8.1 | `project-queue-attachment-editing` |
+| 56 | server | 0.8.2 | `project-file-completion` |
+| 57 | server | 0.8.2 | `session-conversation-context` |
+| 58 | server | 0.8.2 | `turn-effort-modifiers` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 56; retired rows stay in the ledger as reserved IDs.
+ID 59; retired rows stay in the ledger as reserved IDs.
+
+`session-conversation-context` gates the general sequence-of-user/assistant-text
+delivery route; it does not gate question-card fork orchestration. The
+2026-09-06 optional-feature horizon contains v0.8.0 and v0.8.1 (latest two and
+all stable releases from the preceding 14 days). Neither has the new route.
+Clients without the capability use existing clone/resume/read routes for
+answers and an attributed ordinary user turn for Save, making no unsupported
+context request. Existing capabilities retain their meanings. See
+[synthetic-turn injection](synthetic-turn-injection.md) for the receipt and
+provider-fallback contract.
 
 ## When To Add One
 

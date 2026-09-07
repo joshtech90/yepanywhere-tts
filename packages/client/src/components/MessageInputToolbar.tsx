@@ -101,6 +101,7 @@ import {
   type SessionIsearchScope,
 } from "../lib/sessionIsearchGuide";
 import toolbarModuleStyles from "./MessageInputToolbar.module.css";
+import { NewSessionQueueMark } from "./NewSessionQueueMark";
 import {
   DEFAULT_SPEECH_METHOD,
   canSpeechMethodStream,
@@ -1678,12 +1679,7 @@ export function MessageInputToolbarView({
               role={menu ? "menuitem" : undefined}
             >
               <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
-              <span
-                className="project-queue-new-session-mark"
-                aria-hidden="true"
-              >
-                +
-              </span>
+              <NewSessionQueueMark />
               {speechPrefix && <SpeechPrefixActionCue prefix={speechPrefix} />}
             </button>
           )}

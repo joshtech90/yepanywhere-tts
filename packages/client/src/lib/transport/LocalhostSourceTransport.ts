@@ -3,7 +3,11 @@ import type {
   StagedAttachmentRef,
   UploadedFile,
 } from "@yep-anywhere/shared";
-import { fetchPlainBlob, fetchPlainJSON } from "../../api/plainFetch";
+import {
+  fetchPlainBlob,
+  fetchPlainJSON,
+  fetchPlainResponse,
+} from "../../api/plainFetch";
 import {
   uploadFile,
   uploadStagedFile,
@@ -76,13 +80,15 @@ class LocalhostTransportStatus implements SourceTransportStatus {
   }
 
   emit(): void {
-    for (const listener of [...this.listeners]) {
+    const listeners = [...this.listeners];
+    for (const listener of listeners) {
       listener();
     }
   }
 
   emitVisibilityRestored(): void {
-    for (const listener of [...this.visibilityRestoredListeners]) {
+    const listeners = [...this.visibilityRestoredListeners];
+    for (const listener of listeners) {
       listener();
     }
   }
@@ -146,6 +152,11 @@ export class LocalhostSourceTransport implements SourceTransport {
       path,
       isMutableFileBlobPath(path) ? { cache: "no-cache" } : undefined,
     );
+  }
+
+  fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+    this.assertNotDisposed();
+    return fetchPlainResponse(path, init);
   }
 
   upload(

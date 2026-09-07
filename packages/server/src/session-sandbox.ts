@@ -619,12 +619,19 @@ async function copyBootstrapEntry(
     throw error;
   }
   await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-  await cp(source, destination, {
+  // cp anchors relative links to the source path's parent. Canonicalize that
+  // parent first: a symlinked harness home can have a different real parent.
+  const canonicalSource = join(
+    await realpath(dirname(source)),
+    basename(source),
+  );
+  await cp(canonicalSource, destination, {
     recursive: true,
     force: false,
     errorOnExist: false,
     preserveTimestamps: true,
     dereference: false,
+    verbatimSymlinks: false,
     mode: fsConstants.COPYFILE_FICLONE,
   });
 }

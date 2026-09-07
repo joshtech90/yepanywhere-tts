@@ -25,6 +25,10 @@ import {
   type ProviderSubscriptionUsage,
   type SlashCommand,
   type SubagentMaxDepth,
+  nativeModelEffort,
+  resolveTurnEffort,
+  thinkingOptionToConfig,
+  type ThinkingOption,
 } from "@yep-anywhere/shared";
 import {
   isCodexCorrelationDebugEnabled,
@@ -423,6 +427,7 @@ interface TokenUsageSnapshot {
 interface CodexTurnRuntimeState {
   threadId: string;
   goalObjective?: string | null;
+  goalStatus?: ThreadGoalSetResponse["goal"]["status"] | null;
   resolvedModel: string;
   turnModelOverride: string | null;
   latestTokenUsage?: TokenUsageSnapshot;
@@ -430,6 +435,7 @@ interface CodexTurnRuntimeState {
   pendingTurnStart: Promise<string | null> | null;
   activePermissionMode: PermissionMode;
   turnEffortOverride: EffortLevel | null | undefined;
+  activeTurnHasEffortOverride?: boolean;
   workspaceWriteSandboxPolicy: CodexSandboxPolicy | null;
   activeToolCallIds: Set<string>;
   backgroundToolCallIds: Set<string>;
@@ -1625,8 +1631,28 @@ export class CodexProvider implements AgentProvider {
     effort?: import("@yep-anywhere/shared").EffortLevel,
     thinking?: import("@yep-anywhere/shared").ThinkingConfig,
     model?: StartSessionOptions["model"],
-  ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+  ): NonNullable<TurnStartParams["effort"]> | undefined {
     if (thinking?.type === "disabled") {
+      const supported = this.modelCache?.models.find(
+        (candidate) => candidate.id === model,
+      )?.supportedReasoningEfforts;
+      if (
+        supported?.length &&
+        !supported.some((item) => item.reasoningEffort === "none")
+      ) {
+        const minimum = [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra",
+        ].find((level) =>
+          supported.some((item) => item.reasoningEffort === level),
+        );
+        if (minimum) return minimum;
+      }
       const normalizedModel = model?.trim().toLowerCase();
       const hasSparkModelPrefix =
         CODEX_THINKING_OFF_MIN_REASONING_EFFORT_PREFIXES.some((prefix) =>
@@ -1648,8 +1674,16 @@ export class CodexProvider implements AgentProvider {
       case "high":
         return "high";
       case "xhigh":
-      case "max":
         return "xhigh";
+      case "max": {
+        const selectedModel = this.modelCache?.models.find(
+          (candidate) =>
+            candidate.id === model || (!model && candidate.isDefault),
+        );
+        return selectedModel
+          ? nativeModelEffort("max", selectedModel)
+          : "xhigh";
+      }
     }
   }
 
@@ -1717,6 +1751,11 @@ export class CodexProvider implements AgentProvider {
    * Start a new Codex session.
    */
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    if (
+      options.effort === "max" ||
+      options.initialMessage?.metadata?.turnEffort
+    )
+      await this.getAvailableModels();
     const installationLease =
       await this.installationCoordinator.acquireRuntimeLease(
         CODEX_INSTALLATION_FAMILY,
@@ -1860,6 +1899,23 @@ export class CodexProvider implements AgentProvider {
         );
       },
       setEffort: async (effort) => {
+        if (effort === "max") await this.getAvailableModels();
+        if (runtimeState.activeTurnHasEffortOverride) {
+          runtimeState.turnEffortOverride = effort ?? null;
+          const model = (await this.getAvailableModels()).find(
+            (candidate) => candidate.id === runtimeState.resolvedModel,
+          );
+          await activeClient?.request("thread/settings/update", {
+            threadId: runtimeState.threadId,
+            effort:
+              this.mapEffortToReasoningEffort(
+                effort,
+                options.thinking,
+                runtimeState.resolvedModel,
+              ) ?? model?.defaultReasoningEffort,
+          });
+          return;
+        }
         if (effort !== undefined) {
           try {
             await updateActiveTurnSettings({
@@ -1920,6 +1976,7 @@ export class CodexProvider implements AgentProvider {
                   } satisfies ThreadGoalGetParams,
                 );
               runtimeState.goalObjective = goal?.objective ?? null;
+              runtimeState.goalStatus = goal?.status ?? null;
             } catch (error) {
               log.debug({ error }, "Codex goal completion is unavailable");
             }
@@ -1929,7 +1986,38 @@ export class CodexProvider implements AgentProvider {
           skillInventory.skills,
           skillInventory.stale ? "stale" : "current",
           runtimeState.goalObjective,
+          runtimeState.goalStatus,
         );
+      },
+      appendConversationContext: async (turns) => {
+        if (!activeClient || !runtimeState.threadId) {
+          throw new Error("Codex session is not ready for history insertion");
+        }
+        try {
+          await activeClient.request("thread/inject_items", {
+            threadId: runtimeState.threadId,
+            items: turns.map(({ role, text }) => ({
+              type: "message",
+              role,
+              content: [
+                {
+                  type: role === "assistant" ? "output_text" : "input_text",
+                  text,
+                },
+              ],
+            })),
+          });
+          return true;
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            "jsonRpcCode" in error &&
+            error.jsonRpcCode === -32601
+          ) {
+            return false;
+          }
+          throw error;
+        }
       },
       steer: async (message) => {
         if (!activeClient) return false;
@@ -2138,6 +2226,18 @@ export class CodexProvider implements AgentProvider {
                   "thread/goal/get",
                   { threadId } satisfies ThreadGoalGetParams,
                 );
+                if (current.goal?.objective === goalArgument) {
+                  return {
+                    handled: true,
+                    output: {
+                      summary: "/goal",
+                      details: [
+                        current.goal.objective,
+                        formatCodexGoalStatus(current.goal.status),
+                      ],
+                    },
+                  };
+                }
                 if (current.goal) {
                   await client.request<ThreadGoalClearResponse>(
                     "thread/goal/clear",
@@ -2297,7 +2397,10 @@ export class CodexProvider implements AgentProvider {
               threadId: runtimeState.threadId,
             } satisfies ThreadCompactStartParams,
           );
-          return { handled: true };
+          return {
+            handled: true,
+            output: { summary: "Compaction requested" },
+          };
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -2691,13 +2794,14 @@ export class CodexProvider implements AgentProvider {
               skillInventory.skills,
               skillInventory.stale ? "stale" : "current",
               runtimeState.goalObjective,
+              runtimeState.goalStatus,
             ),
           } as SDKMessage);
         }
         const params = notification.params as
           | {
               threadId?: string;
-              goal?: { objective?: string };
+              goal?: ThreadGoalSetResponse["goal"];
             }
           | undefined;
         if (
@@ -2711,8 +2815,17 @@ export class CodexProvider implements AgentProvider {
             ? null
             : params.goal?.objective;
         if (objective !== null && typeof objective !== "string") return null;
-        if (objective === runtimeState.goalObjective) return null;
+        const goalStatus =
+          notification.method === "thread/goal/cleared"
+            ? null
+            : params.goal?.status;
+        if (
+          objective === runtimeState.goalObjective &&
+          goalStatus === runtimeState.goalStatus
+        )
+          return null;
         runtimeState.goalObjective = objective;
+        runtimeState.goalStatus = goalStatus;
         return withCodexTimestamp({
           type: "system",
           subtype: "commands_changed",
@@ -2721,6 +2834,7 @@ export class CodexProvider implements AgentProvider {
             skillInventory.skills,
             skillInventory.stale ? "stale" : "current",
             objective,
+            goalStatus,
           ),
         } as SDKMessage);
       };
@@ -2753,6 +2867,14 @@ export class CodexProvider implements AgentProvider {
         runtimeState.backgroundToolCallIds.clear();
         failureTrace.activeTurnId = activeTurnId;
         let turnComplete = turn.status !== "inProgress";
+        if (!turnComplete) {
+          yield {
+            type: "system",
+            subtype: "session_state_changed",
+            state: "running",
+            session_id: sessionId,
+          };
+        }
         let emittedTurnError = false;
         let overloadError: SDKMessage | null = null;
         let suppressedPreTurnNotifications: {
@@ -3115,6 +3237,52 @@ export class CodexProvider implements AgentProvider {
             runtimeState.turnEffortOverride,
             message.uuid,
           );
+          let restoreThreadEffort: (() => Promise<unknown>) | undefined;
+          if (message.turnEffort) {
+            const modelId =
+              runtimeState.turnModelOverride ?? runtimeState.resolvedModel;
+            const model = (await this.getAvailableModels()).find(
+              (candidate) => candidate.id === modelId,
+            );
+            if (!model)
+              throw new Error(`No effort catalog for model ${modelId}`);
+            const normal: ThinkingOption =
+              options.thinking?.type === "disabled"
+                ? "off"
+                : runtimeState.turnEffortOverride
+                  ? `on:${runtimeState.turnEffortOverride}`
+                  : "auto";
+            const selected = thinkingOptionToConfig(
+              resolveTurnEffort(message.turnEffort, normal, model),
+            );
+            const baseline =
+              turnStartParams.effort ??
+              model.defaultReasoningEffort ??
+              threadResult.reasoningEffort;
+            if (!baseline)
+              throw new Error(
+                "Cannot restore the model's unknown normal effort",
+              );
+            turnStartParams.effort = this.mapEffortToReasoningEffort(
+              selected.effort,
+              selected.thinking,
+              modelId,
+            );
+            runtimeState.activeTurnHasEffortOverride = true;
+            restoreThreadEffort = () =>
+              appServer.request("thread/settings/update", {
+                threadId: sessionId,
+                effort:
+                  this.mapEffortToReasoningEffort(
+                    runtimeState.turnEffortOverride ?? undefined,
+                    options.thinking,
+                    modelId,
+                  ) ??
+                  model.defaultReasoningEffort ??
+                  threadResult.reasoningEffort ??
+                  baseline,
+              });
+          }
           let notificationBarrierSequence =
             appServer.lastNotificationReceiptSequence;
           let settlePendingTurnStart: (turnId: string | null) => void =
@@ -3130,6 +3298,7 @@ export class CodexProvider implements AgentProvider {
               turnStartParams,
             );
             runtimeState.activeTurnId = turnResult.turn.id;
+            await restoreThreadEffort?.();
             settlePendingTurnStart(turnResult.turn.id);
           } catch (error) {
             settlePendingTurnStart(null);
@@ -3212,12 +3381,15 @@ export class CodexProvider implements AgentProvider {
               runtimeState.turnModelOverride,
               runtimeState.turnEffortOverride,
             );
+            if (message.turnEffort)
+              retryTurnStartParams.effort = turnStartParams.effort;
             notificationBarrierSequence =
               appServer.lastNotificationReceiptSequence;
             turnResult = await appServer.request<TurnStartResponse>(
               "turn/start",
               retryTurnStartParams,
             );
+            await restoreThreadEffort?.();
             log.info(
               {
                 sessionId,
@@ -3231,6 +3403,7 @@ export class CodexProvider implements AgentProvider {
               "Retried Codex overloaded turn without resending user input",
             );
           }
+          runtimeState.activeTurnHasEffortOverride = false;
         }
       } finally {
         signal.removeEventListener("abort", stopMessageWait);
@@ -3753,12 +3926,13 @@ export class CodexProvider implements AgentProvider {
     skills: readonly SkillMetadata[],
     inventoryState: "current" | "stale" = "current",
     goalObjective?: string | null,
+    goalStatus?: ThreadGoalSetResponse["goal"]["status"] | null,
   ): SlashCommand[] {
     const commands: SlashCommand[] = CODEX_BUILTIN_COMMANDS.map((command) =>
       command.name === "goal" && goalObjective !== undefined
         ? {
             ...command,
-            providerDetails: { codex: { goalObjective } },
+            providerDetails: { codex: { goalObjective, goalStatus } },
             argumentCompletions: [
               ...(goalObjective
                 ? [{ value: goalObjective, description: "Current goal" }]
@@ -4320,14 +4494,7 @@ export class CodexProvider implements AgentProvider {
     model?: string | null,
     requestedModel?: string | null,
     reasoningEffort?: string | null,
-    requestedReasoningEffort?:
-      | "none"
-      | "minimal"
-      | "low"
-      | "medium"
-      | "high"
-      | "xhigh"
-      | undefined,
+    requestedReasoningEffort?: string,
   ): SDKMessage | null {
     const parts: string[] = [];
     const normalizedModel = typeof model === "string" ? model.trim() : "";

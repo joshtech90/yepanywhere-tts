@@ -17,6 +17,50 @@ describe("Process", () => {
   });
 
   describe("effort boundary", () => {
+    it("queues modifiers through an active turn and preserves them through interrupt", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+      const steer = vi.fn(async () => true);
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "turn-effort",
+        provider: "claude",
+        queue,
+        steerFn: steer,
+        interruptFn: async () => true,
+        effort: "high",
+        idleTimeoutMs: 10_000,
+      });
+      controller.push({
+        type: "system",
+        subtype: "init",
+        session_id: "turn-effort",
+      });
+      await waitFor(() => expect(process.state.type).toBe("in-turn"));
+      expect(
+        process.queueMessage({
+          text: "careful",
+          metadata: { turnEffort: "slow" },
+        }).success,
+      ).toBe(true);
+      process.deferMessage({ text: "ordinary" });
+      expect(steer).not.toHaveBeenCalled();
+      expect(queue.depth).toBe(0);
+      expect(process.effort).toBe("high");
+      await process.interrupt();
+      controller.push({ type: "result", session_id: "turn-effort" });
+      await waitFor(() => expect(queue.depth).toBe(1));
+      const delivered = queue.drain();
+      expect(delivered[0]?.metadata?.turnEffort).toBe("slow");
+      expect(delivered[0]?.text).toContain("careful");
+      expect(delivered[0]?.text).not.toContain("ordinary");
+      controller.push({ type: "result", session_id: "turn-effort" });
+      await waitFor(() => expect(queue.depth).toBe(1));
+      expect(queue.drain()[0]).toMatchObject({ text: "ordinary" });
+      controller.finish();
+    });
+
     it("publishes effort immediately when the provider supports active turns", async () => {
       const controller = createControllableIterator();
       const setEffort = vi.fn(async () => {});

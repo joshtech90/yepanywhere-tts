@@ -22,6 +22,58 @@ import { MessageList } from "../MessageList";
 installMessageListTestEnvironment();
 
 describe("MessageList scroll and follow", () => {
+  it("follows viewport shrink only while the reader is following", () => {
+    const observers: {
+      callback: ResizeObserverCallback;
+      targets: Element[];
+    }[] = [];
+    class CapturingResizeObserver {
+      targets: Element[] = [];
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({ callback, targets: this.targets });
+      }
+      observe(target: Element) {
+        this.targets.push(target);
+      }
+      disconnect() {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: CapturingResizeObserver,
+    });
+    const { container } = render(<MessageList messages={[]} />);
+    let viewportHeight = 500;
+    Object.defineProperties(container, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, get: () => viewportHeight },
+      scrollTop: { configurable: true, value: 500, writable: true },
+    });
+    container.scrollTo = vi.fn((options: ScrollToOptions) => {
+      container.scrollTop = Number(options.top ?? 0);
+    }) as typeof container.scrollTo;
+    const viewportObservers = observers.filter((observer) =>
+      observer.targets.includes(container),
+    );
+    expect(viewportObservers.length).toBeGreaterThan(0);
+    const resize = () =>
+      act(() => {
+        for (const observer of viewportObservers) {
+          observer.callback([], {} as ResizeObserver);
+        }
+      });
+    resize();
+    viewportHeight = 300;
+    resize();
+    expect(container.scrollTop).toBe(700);
+
+    fireEvent.wheel(container, { deltaY: -120 });
+    container.scrollTop = 100;
+    fireEvent.scroll(container);
+    viewportHeight = 200;
+    resize();
+    expect(container.scrollTop).toBe(100);
+  });
+
   it("focuses the transcript after a native scrollbar gesture", () => {
     const { container } = render(
       <MessageList

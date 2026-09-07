@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchPlainBlob, fetchPlainJSON } from "./plainFetch";
+import {
+  fetchPlainBlob,
+  fetchPlainJSON,
+  fetchPlainResponse,
+} from "./plainFetch";
 
 describe("fetchPlainJSON", () => {
   afterEach(() => {
@@ -99,5 +103,28 @@ describe("fetchPlainJSON", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("x-file-probe")).toBe("current");
     expect(headers.get("x-yep-anywhere")).toBe("true");
+  });
+
+  it("preserves conditional response status and validators without parsing a body", async () => {
+    const etag = 'W/"file-generation"';
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(null, { status: 304, headers: { ETag: etag } }),
+      );
+    const response = await fetchPlainResponse(
+      "/projects/p/files/raw?path=schema.json",
+      {
+        headers: { "If-None-Match": etag },
+        cache: "no-store",
+      },
+      { fetchImpl },
+    );
+    expect(response.status).toBe(304);
+    expect(response.headers.get("etag")).toBe(etag);
+    expect(await response.text()).toBe("");
+    expect(
+      new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("if-none-match"),
+    ).toBe(etag);
   });
 });

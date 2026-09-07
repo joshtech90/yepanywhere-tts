@@ -1,4 +1,8 @@
-import type { ThinkingOption, UploadedFile } from "@yep-anywhere/shared";
+import type {
+  ThinkingOption,
+  TurnEffort,
+  UploadedFile,
+} from "@yep-anywhere/shared";
 import { materializeDraftAttachmentsForSession } from "./draftAttachmentStaging";
 import type { DraftAttachmentState } from "./draftEnvelope";
 import { prepareImageUpload } from "./imageAttachmentResize";
@@ -14,7 +18,8 @@ import type { SourceTransport, UploadOptions } from "./transport";
 export interface PreparedComposerSubmission {
   outgoingText: string;
   thinking?: ThinkingOption;
-  slashCommand?: "fast" | "run";
+  slashCommand?: TurnEffort | "run";
+  turnEffort?: TurnEffort;
 }
 
 export interface ComposerTransferReplacement {

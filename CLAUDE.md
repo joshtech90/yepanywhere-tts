@@ -143,28 +143,11 @@ browser setup or discovery reports that no browser is available, or the browser
 inventory is empty, do not stop or keep retrying a desktop-only backend.
 Immediately fall back to YA's installed Playwright dependency.
 
-For a one-shot screenshot of the live local server:
-
-```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-ARTIFACT_DIR="$REPO_ROOT/.artifacts/ui-testing"
-mkdir -p "$ARTIFACT_DIR"
-pnpm --filter @yep-anywhere/client exec playwright screenshot \
-  --ignore-https-errors \
-  --block-service-workers \
-  --wait-for-timeout 500 \
-  --viewport-size "1000,600" \
-  https://localhost:3400/ \
-  "$ARTIFACT_DIR/ya-desktop.png"
-```
-
-Use `--viewport-size "375,812"` for a mobile-width capture. For multi-step
-interaction testing, add or run a focused `@playwright/test` case under
-`packages/client/e2e/`. A missing in-app browser backend is not a blocker while
-the repository Playwright command is available. Default capture-confirmation
-requirements for UI tweak requests (final result at 1000×600 + phone width,
-inspected sequentially one image at a time before claiming completion), including
-visual-review exception, are in `topics/ui-testing.md`.
+Before browser verification, read `topics/ui-testing.md` for the fresh isolated
+server launch, Playwright commands, desktop/phone captures, and user-owned
+visual-review exception. Do not use the shared live server for final captures.
+For multi-step interaction testing, add or run a focused `@playwright/test`
+case under `packages/client/e2e/`.
 
 ## ChromeOS Debugging
 
@@ -233,7 +216,7 @@ there is no silent WASM fallback), `@firebase/util` (bakes
 Advisories triaged as unreachable are suppressed via
 `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml`; that list and this
 table must stay in sync — every ignored GHSA needs a row here, and removing a
-row means removing the ignore. As of 2026-09-02 four advisories are triaged as
+row means removing the ignore. As of 2026-09-05 five advisories are triaged as
 unreachable with no fix compatible with YA's current dependency and runtime
 constraints. Re-check when the listed trigger fires rather than re-deriving the
 analysis:
@@ -244,12 +227,15 @@ analysis:
 | `@hono/node-server` serve-static traversal (GHSA-frvp-7c67-39w9) | `serveStatic` is never imported; only `serve`, `getRequestListener`, `HttpBindings`, `RESPONSE_ALREADY_SENT` | `@hono/node-ws` supports node-server 2.x — its peer is currently `^1.19.11`, so 2.x breaks the WebSocket path |
 | `uuid` buffer bounds (GHSA-w5hq-g745-h8pq) | Only path is `firebase-admin -> @google-cloud/storage -> gaxios@6`, which calls `uuid.v4()` with no arguments; the defect needs v3/v5/v6 with a caller-supplied `buf`. Patched only in `>=11.1.1`, outside gaxios 6's `^9` range | `firebase-admin`/`gaxios` declare uuid `>=11`, or a 9.x patch release appears |
 | `sanitize-html` SVG SMIL URL-list XSS (GHSA-g8qq-57p8-ggw5) | The exploit needs allowed SVG `animate`/`set` markup targeting a link; YA allows neither those tags nor their attributes, and escapes disallowed embedded HTML | YA supports Node `>=22.12` and can take `sanitize-html` 2.17.7, a Node 20-compatible patch appears, or YA begins allowing SVG animation markup |
+| `sanitize-html` raw-text mutation XSS (GHSA-jxwj-j7wr-gfrw) | The exploit needs `textarea` or `xmp` in the allowed-tag set; YA allows neither and tests the literal-solidus payload | YA supports Node `>=22.12` and can take `sanitize-html` 2.17.6 or later, a Node 20-compatible patch appears, or YA begins allowing either raw-text tag |
 
 Anything not on this list is untriaged — treat a new advisory as actionable.
 
 ## Git Commits
 
-Never mention Claude, AI, or any AI assistant in commit messages. Write commit messages as if a human developer wrote them.
+Do not add assistant co-author trailers or generated-with banners. Preserve
+explicitly required provenance such as `Contributing-model:` when applicable;
+that trailer is not a generated-with banner.
 
 ## Releasing to npm
 

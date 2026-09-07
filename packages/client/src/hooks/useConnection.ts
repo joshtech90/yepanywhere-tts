@@ -19,6 +19,7 @@ function createConnectionShim(transport: SourceTransport): Connection {
   return {
     mode: transport.kind === "secure" ? "secure" : "direct",
     fetch: (path, init) => transport.fetch(path, init),
+    fetchResponse: (path, init) => transport.fetchResponse(path, init),
     fetchBlob: (path) => transport.fetchBlob(path),
     subscribeSession: (sessionId, handlers, lastEventId, options) =>
       transport.subscribeSession(sessionId, handlers, lastEventId, options),

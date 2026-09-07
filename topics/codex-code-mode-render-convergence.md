@@ -296,6 +296,56 @@ The parent call remains the expansion and result owner. Search anchors,
 timestamps, stable IDs, and scroll-height estimates must derive from that
 parent so action summaries do not masquerade as separate executions.
 
+## Grouped execution output and skill reads
+
+The web client presents an `Exec` result's text-block array as ordered readable
+sections, including when an older server sends that array as a JSON string.
+Newlines remain newlines; execution timing is secondary text. Recognized
+command-result records expose their output, exit code, and duration, including
+records printed through `Promise.allSettled`. Nonzero exit codes remain visible.
+Malformed, truncated, or mixed-media arrays retain their original detail.
+
+A literal leading `cat` of a `SKILL.md` file adds the skill path to the parent
+summary. A group consisting entirely of those simple reads is labeled
+`Loading skill` / `Skill load`; compound or mixed calls remain `Exec` and keep
+their call count. Mentioning a skill path in a search, echo, or dynamic shell
+expression does not qualify. This is presentation of a read, not evidence that
+the skill's instructions were executed successfully.
+
+For a skill-reading group, returned skill frontmatter supplies an expandable
+`Skill: <name>` section. Other Markdown documents collapse under their leading
+heading. The complete text stays available inside each section, with wrapping
+and bounded vertical scrolling. The original script and result remain under
+`Raw execution`. Output blocks are not assigned to nested calls by position:
+script print order need not match call
+order. This client-only presentation uses the existing wire contract and does
+not alter transcript identities, grouping, or stored provider records.
+
+`decodeCodeModeOutput` in `packages/shared/src/code-mode-output.ts` owns this
+decoding for non-React consumers as well as the Exec renderer. Its result holds
+ordered `parts` with `text` and a `kind` of `text`, `command-output`, or
+`script-status`. Command parts also expose `exitCode`, `durationSeconds`, and
+`sessionId` when present. Consumers should skip script-status parts when
+parsing substantive output, preserve the other block boundaries, and retain
+the original input for raw detail. An `undefined` result means the outer
+value is unrecognized or contains mixed media; it never means empty output.
+
+Only one complete command-result layer is unwrapped, optionally beneath the
+observed `{status: "fulfilled", value}` wrapper with an optional integer `i`.
+Recognition requires a chunk id, output string, finite nonnegative wall time,
+and either an integer exit code or a session id. Unknown fields and malformed
+metadata leave the block unchanged. Stdout is a leaf: JSON inside it, including
+another complete execution record, is never decoded recursively. Arrays of
+settled results, multiple JSON records in one block, and rejected-result
+wrappers also remain unchanged.
+
+Format recognition cannot authenticate origin: a script can print exactly the
+same bytes as an execution envelope. Callers that know a script printed stdout
+directly can pass `{commandResults: "preserve"}` to keep those block texts
+literal. The decoder does not infer print provenance from JavaScript source.
+Workflow activation is a separate consumer integration; extracting this API
+alone does not change how workflow annotations are parsed.
+
 ## Implementation plan
 
 ### Phase 0 — pin evidence and upstream source

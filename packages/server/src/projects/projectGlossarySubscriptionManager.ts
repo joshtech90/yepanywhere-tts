@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
+import type * as fs from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type {
@@ -11,6 +11,7 @@ import type {
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
+import { watchSharedDirectory } from "../watcher/SharedDirectoryWatcher.js";
 import type { ProjectScanner } from "./scanner.js";
 import type { GlossaryIndexService } from "./glossaryIndexService.js";
 import {
@@ -541,7 +542,7 @@ export class ProjectGlossarySubscriptionManager {
       ? join(state.projectPath, directory)
       : state.projectPath;
     try {
-      const watcher = fs.watch(
+      const watcher = watchSharedDirectory(
         absolute,
         { persistent: false },
         (_eventType, filename) => {

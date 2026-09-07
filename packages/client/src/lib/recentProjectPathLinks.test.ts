@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import type { Message } from "../types";
 import type { RenderItem, TextItem, ToolCallItem } from "../types/renderItems";
 import { annotateProjectPathLinksHtml } from "./projectPathLinks";
-import { applyRecentProjectPathLinks } from "./recentProjectPathLinks";
+import {
+  applyRecentProjectPathLinks,
+  recentProjectFileMentions,
+} from "./recentProjectPathLinks";
 import { canReuseRenderItem } from "./stableRenderItems";
 import { compileWebTranscriptProjection } from "./webTranscriptProjection";
 
@@ -40,6 +43,25 @@ function projectedTextLink(
 }
 
 describe("applyRecentProjectPathLinks", () => {
+  it("orders completion paths by mentions, including causal basename aliases, without losing collisions", () => {
+    const items = [
+      commandItem("a", "cat a/settings.json", [
+        { text: "a/settings.json", filePath: "a/settings.json" },
+      ]),
+      commandItem("b", "cat b/settings.json", [
+        { text: "b/settings.json", filePath: "b/settings.json" },
+      ]),
+      commandItem("c", "cat src/recent.ts", [
+        { text: "src/recent.ts", filePath: "src/recent.ts" },
+      ]),
+      commandItem("d", "cat settings.json"),
+    ];
+    expect(recentProjectFileMentions(items)).toEqual([
+      "b/settings.json",
+      "src/recent.ts",
+      "a/settings.json",
+    ]);
+  });
   it("keeps basename relinking off unless explicitly enabled", () => {
     const messages: Message[] = [
       {

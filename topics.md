@@ -367,3 +367,7 @@
 - codex-rollout-lineage - Reference-backed paginated Codex history across
   native Clone/Fork, reader caches, summaries, paging, and server capability
   negotiation.
+- provider-agnostic-btw-asides - Continuing /btw sessions and one-shot question
+  cards with explicit save/discard and independent main-session typing.
+- synthetic-turn-injection - General user/assistant context delivery through
+  native history insertion or attributed normal user turns.

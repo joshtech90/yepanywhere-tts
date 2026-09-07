@@ -1,0 +1,49 @@
+.output {
+  display: grid;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+
+.text {
+  margin: 0;
+  padding: 0.75rem;
+  max-block-size: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.error {
+  color: var(--error-color);
+}
+
+.metadata {
+  margin: 0;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  font-size: 0.8125rem;
+}
+
+.document {
+  min-inline-size: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.summary {
+  padding: 0.625rem 0.75rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.description {
+  margin: 0;
+  padding: 0 0.75rem 0.625rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}

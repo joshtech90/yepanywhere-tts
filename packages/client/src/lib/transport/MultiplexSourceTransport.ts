@@ -102,13 +102,15 @@ class MultiplexTransportStatus implements SourceTransportStatus {
   }
 
   emit(): void {
-    for (const listener of [...this.listeners]) {
+    const listeners = [...this.listeners];
+    for (const listener of listeners) {
       listener();
     }
   }
 
   emitVisibilityRestored(): void {
-    for (const listener of [...this.visibilityRestoredListeners]) {
+    const listeners = [...this.visibilityRestoredListeners];
+    for (const listener of listeners) {
       listener();
     }
   }
@@ -231,6 +233,13 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
   fetchBlob(path: string): Promise<Blob> {
     this.assertNotDisposed();
     return this.withConnection((connection) => connection.fetchBlob(path));
+  }
+
+  fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+    this.assertNotDisposed();
+    return this.withConnection((connection) =>
+      connection.fetchResponse(path, init),
+    );
   }
 
   upload(
@@ -462,13 +471,15 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
   }
 
   private resolveAttachWaiters(connection: TConnection): void {
-    for (const waiter of [...this.attachWaiters]) {
+    const waiters = [...this.attachWaiters];
+    for (const waiter of waiters) {
       waiter.resolve(connection);
     }
   }
 
   private rejectAttachWaiters(error: Error): void {
-    for (const waiter of [...this.attachWaiters]) {
+    const waiters = [...this.attachWaiters];
+    for (const waiter of waiters) {
       waiter.reject(error);
     }
   }

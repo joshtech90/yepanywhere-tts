@@ -394,6 +394,12 @@ class RemoteAgentSession {
       ...(capabilities.steer
         ? { steer: (message) => this.rpc("steer", [message]) }
         : {}),
+      ...(capabilities.appendConversationContext
+        ? {
+            appendConversationContext: (turns) =>
+              this.rpc<boolean>("appendConversationContext", [turns]),
+          }
+        : {}),
       ...(capabilities.setMaxThinkingTokens
         ? {
             setMaxThinkingTokens: (tokens) =>

@@ -96,10 +96,11 @@ describe("effort level options", () => {
     expect(getEffortLevelLabel("xhigh", codexProvider)).toBe("Extra High");
   });
 
-  it("normalizes legacy Codex max to xhigh for display and selection", () => {
+  it("preserves Max and normalizes native ultra to the same UI level", () => {
     const options = getEffortLevelOptions({ provider: codexProvider });
 
-    expect(normalizeEffortLevelForProvider("max", codexProvider)).toBe("xhigh");
+    expect(normalizeEffortLevelForProvider("max", codexProvider)).toBe("max");
+    expect(normalizeEffortLevelForProvider("ultra", codexProvider)).toBe("max");
     expect(resolveSupportedEffortLevel("max", options)).toBe("xhigh");
   });
 

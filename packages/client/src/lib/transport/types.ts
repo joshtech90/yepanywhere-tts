@@ -159,6 +159,8 @@ export interface SourceTransport {
   readonly capabilities: SourceTransportCapabilities;
 
   fetch<T>(path: string, init?: RequestInit): Promise<T>;
+  /** Response body and available headers; a 304 is returned without a body. */
+  fetchResponse(path: string, init?: RequestInit): Promise<Response>;
   fetchBlob(path: string): Promise<Blob>;
   upload(
     projectId: string,

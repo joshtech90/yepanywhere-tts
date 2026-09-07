@@ -96,6 +96,7 @@ export function canReuseRenderItem(
     previous.type !== next.type ||
     previous.id !== next.id ||
     previous.isSubagent !== next.isSubagent ||
+    JSON.stringify(previous.workflow) !== JSON.stringify(next.workflow) ||
     !sameSourceMessages(previous, next)
   ) {
     return false;

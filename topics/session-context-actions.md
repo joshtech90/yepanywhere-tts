@@ -233,6 +233,28 @@ the provider's reason in the response's primary `error` field (and retains
 `reason`), so clients show why the action failed instead of a generic command
 failure.
 
+Native slash commands use the same provider dispatch for live sends, deferred
+sends, and session startup or resume. YA waits for provider initialization
+before dispatching a startup command. A reload-safe runtime reattached after
+a server restart already initialized in an earlier server generation and never
+replays its init message; the worker's attach handshake reports the provider
+id it saw, so native commands dispatch immediately instead of waiting for an
+init that cannot arrive. Codex `/compact` calls
+`thread/compact/start`; it never becomes model-visible text or a deferred
+model turn. Providers that handle slash commands through their ordinary input
+queue retain that delivery path. Acceptance emits a local command receipt
+with the submitted message ID, clearing the composer's pending send without
+claiming that compaction has finished. Compaction status, boundary, and completion
+are consumed while idle without requiring another user message. A command
+rejection on a live worker preserves that worker and returns the reason; it
+must not be interpreted as a dead worker and retried on a replacement.
+
+A paused goal does not block native compaction on resume. Codex's “Resume
+paused goal?” interview belongs to its TUI; YA uses the app-server protocol,
+which has no such interview. YA preserves the provider's goal status while
+requesting compaction and never sends an implicit goal-resume operation to
+complete it. Goal pause/resume remains an explicit user control.
+
 While Codex is in a turn or waiting for input, the compact autocomplete entry
 explains that it is unavailable until the turn finishes, including tool waits.
 The session menu disables Compact with a visible turn-active label. Submitting

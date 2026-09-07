@@ -63,7 +63,60 @@ as the runtime skills directory.
   for the declared template substitution. Parsing inside the command belongs to
   the skill/provider behavior, not to the generic rewrite layer.
 
-## Design decisions
+## One-turn effort commands
+
+`/fast <message>` (also `/f`) uses one lower selectable effort for that
+message's turn. `/slow <message>` uses one higher; both saturate at the
+model's supported endpoints. `/fastest <message>` disables thinking, or uses
+the provider's minimum when it cannot disable reasoning. `/slowest <message>`
+uses the selected model's highest selectable effort. There are no `/quick`,
+`/quicker`, or `/slower` aliases. These commands change effort, not a paid
+service tier. Their argument is required and becomes the submitted text.
+
+The normal session configuration remains unchanged. A modifier submitted
+during an active turn becomes a deferred queue item automatically. Ordinary
+steers continue the active turn at its effective effort; a modifier cannot
+be steered into that turn. Each modified item owns a separate turn, even
+with a queue join window or after an interrupt. Ordinary queued messages use
+the normal session setting when delivered. Changes to that normal setting
+during a modified turn apply to subsequent work and do not replace the
+active override. Queued-item edits retain the command.
+
+The model catalog defines the ordered choices. UI **Extra High** is native
+`xhigh`; UI **Max** represents the highest supported native choice, preferring
+`ultra`, then `max`, then the model's lower ceiling. Thus models advertising
+both native `max` and `ultra` have one Max UI choice mapped to `ultra`.
+The regular effort selector uses the same mapping as the commands. Auto uses
+the model's advertised default for relative steps; if the default is unknown,
+relative commands fail visibly rather than guessing. Absolute endpoint commands
+do not require a known default, though the provider must be able to restore
+its normal setting.
+
+A queued item may show its resolved effort badge when it differs from the
+present normal setting. Ordinary items and equal-effort modifiers have no
+badge. The badge follows model and normal-setting changes; unknown defaults
+have no guessed badge. Modified items do not offer the Steer action.
+
+These semantics are supported by the Codex and Claude SDK adapters. Specialized
+new-session launch flows without per-message metadata reject modifiers. The
+new client requires permanent capability ID **58**, `turn-effort-modifiers`,
+version-implied from **0.8.2** (explicit numeric advertisement for source-ahead
+builds). The optional-feature compatibility review covered **v0.8.0** and
+**v0.8.1**, the latest two stable releases and all stable releases in the
+preceding 14 days. Both lack `messageMetadata.turnEffort`; without the capability
+the client hides the commands and rejects typed modifiers while retaining the
+draft. It does not use the old `/fast` path that changed normal thinking.
+Existing submission routes and queue metadata carry the optional enum
+`fast | slow | fastest | slowest`; no old capability meaning is expanded.
+The maintainer approved this gate and fallback on 2026-09-07.
+
+Codex restores future thread effort after starting the modified turn; its
+active turn retains the requested override. Claude restores controls before
+publishing the completed-turn boundary, so queued promotion sees normal
+settings. Provider control failures fail visibly and do not silently run at a
+different effort.
+
+## Routing decisions
 
 - **Tag pending YA commands at ingress** (vs. interpreting slash-shaped queued
   text at delivery): explicit routing preserves provider and user skill name
@@ -84,9 +137,17 @@ Goal controls execute out-of-band even with the composer's deferred-send option;
 providers that do not handle the command retain ordinary delivery semantics.
 Setting a new objective clears any preceding goal before setting the new one.
 This resets the provider goal without falsely marking the preceding goal
-complete. Pause and resume results report the status Codex
+complete. Submitting the existing objective again (after command-argument
+whitespace trimming) only reads the goal: it preserves status, token budget,
+usage counters, and creation time. Pause and resume results report the status Codex
 actually returns, including a preserved usage- or budget-limited state, rather
 than echoing the requested transition.
+
+Goal pause/resume can be applied during an active Codex turn. Pause prevents
+autonomous continuation without interrupting that turn; resume continues when
+idle. Ordinary steering preserves goal status. The Codex TUI separately
+pauses an active goal when Escape interrupts its work; that pause is not an
+intrinsic effect of `turn/steer` and YA does not automatically undo it.
 
 The Codex inventory preserves the original “Keep working toward a verifiable
 end state until it is met” description and `<verifiable end state>` free-form
@@ -104,6 +165,23 @@ is saved too. Unknown inventory never erases a saved observation; a fresh
 provider observation replaces it. Changes made outside YA while no worker is
 observing become visible when the provider is attached and queried again.
 Historical receipts are never used to infer current provider state.
+When inventory includes `providerDetails.codex.goalStatus`, the outlined flag
+uses subtle green for active and yellow for every resumable state (paused,
+blocked, usage-limited), and its tooltip names the actual status. Click, tap,
+or keyboard activation pauses an active goal or
+resumes a paused, blocked, or usage-limited goal. Complete, budget-limited, and
+unknown states remain inspectable without a toggle. While a request is pending,
+the tooltip says so and duplicate activation is ignored. The flag changes only
+on a provider observation, including status-only notifications; rejected or
+limited transitions never acquire an optimistic success color. These controls
+use the existing native command delivery during active turns and preserve the
+composer draft, attachments, and current turn status.
+
+Right-click retains the themed tooltip's enlarge/copy behavior. It also fills
+an empty or whitespace-only composer with `/goal <current objective>` and
+focuses it for editing. A nonempty draft remains untouched. This is an explicit
+user action and does not submit or replace the goal by itself.
+
 Interactive `/goal edit` is not advertised because YA has no provider goal
 editor; an explicit attempt directs the user to `/goal <objective>`.
 
@@ -112,6 +190,9 @@ the objective itself, rather than a collapsed “Goal set” heading. Read, clea
 pause, and resume receipts share that style. The receipt acknowledges the
 submitted composer temp ID, so the local command does not leave a “Sending…”
 bubble while waiting for a provider user-turn echo that will never exist.
+With status-aware inventory, submitting a native goal command also preserves
+the observed idle/busy state until actual provider lifecycle events change it;
+reading or reissuing the same goal must not create a synthetic busy turn.
 
 Goal receipts are YA-owned display history. YA saves the existing
 `system/local_command` row in session metadata before publishing it, preserving
@@ -139,6 +220,12 @@ Current-objective metadata and argument completions are optional inventory
 fields. Servers that omit them retain command-name completion and no current
 goal flag; the client makes no additional provider or REST requests for these
 enhancements. No existing capability is expanded.
+The optional status field also gates flag toggling: inventories without it keep
+the neutral objective-only flag and make no toggle request. The optional-feature
+review covered `v0.8.1` (2026-09-05) and `v0.8.0` (2026-08-31), the latest two
+stable releases and all stable releases within 14 days. Both lack the status
+field; no route, command meaning, or existing capability changes. The maintainer
+approved completing this plan on 2026-09-06.
 
 ## Default Skill Vocabulary
 

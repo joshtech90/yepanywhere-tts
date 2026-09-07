@@ -1731,6 +1731,7 @@ describe.skipIf(process.platform !== "linux")("ProviderRuntimeHost", () => {
     );
     const firstEvent = await first.iterator.next();
     expect(firstEvent.value?.session_id).toBe("fake-session-1");
+    expect(first.initializedSessionId).toBeUndefined();
     expect(first.getRuntimeUnviewedSince?.()).toBeInstanceOf(Date);
     await first.setRuntimeViewerPresence?.(true);
     expect(first.getRuntimeUnviewedSince?.()).toBeUndefined();
@@ -1761,6 +1762,9 @@ describe.skipIf(process.platform !== "linux")("ProviderRuntimeHost", () => {
       },
       {},
     );
+    // The retained worker acknowledged the first generation's init, so the
+    // reattached proxy reports provider identity without a replayed init.
+    expect(second.initializedSessionId).toBe("canonical-session");
     const secondEvent = await second.iterator.next();
     expect(secondEvent.value?.session_id).toBe("fake-session-2");
     const environmentEvent = await second.iterator.next();

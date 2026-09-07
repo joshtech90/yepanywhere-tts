@@ -4,10 +4,14 @@ import {
   type SlashCommand,
   type SlashCommandArgumentCompletion,
   type ThinkingOption,
+  type TurnEffort,
 } from "@yep-anywhere/shared";
 
 export const CLIENT_SLASH_COMMANDS = [
   "fast",
+  "slow",
+  "fastest",
+  "slowest",
   "run",
   "btw",
   "done",
@@ -18,7 +22,7 @@ export const CLIENT_SLASH_COMMANDS = [
 ] as const;
 
 export type ComposerSlashCommand =
-  | { kind: "fast"; argument: string }
+  | { kind: TurnEffort; argument: string }
   | { kind: "run"; argument: string }
   | { kind: "custom"; command: string; argument: string };
 
@@ -26,11 +30,12 @@ export type ComposerSlashTurn =
   | {
       kind: "message";
       text: string;
-      command?: "fast" | "run";
+      command?: TurnEffort | "run";
       thinking?: ThinkingOption;
+      turnEffort?: TurnEffort;
     }
   | { kind: "custom"; command: string; argument: string }
-  | { kind: "error"; command: "fast" | "run"; message: string };
+  | { kind: "error"; command: TurnEffort | "run"; message: string };
 
 export type ComposerDoneTarget =
   | "focused-aside"
@@ -237,6 +242,9 @@ export function resolveComposerDoneTarget({
 
 const COMMAND_DISPLAY: Record<string, { label: string; shortcut: string }> = {
   fast: { label: "fast turn", shortcut: "/f" },
+  slow: { label: "slow turn", shortcut: "/slow" },
+  fastest: { label: "fastest turn", shortcut: "/fastest" },
+  slowest: { label: "slowest turn", shortcut: "/slowest" },
   run: { label: "run exactly", shortcut: "/r" },
   btw: { label: "btw aside", shortcut: "/b" },
   done: { label: "done with aside", shortcut: "/d" },
@@ -310,6 +318,9 @@ export function parseComposerSlashCommand(
   if (command === "f" || command === "fast") {
     return { kind: "fast", argument };
   }
+  if (command === "slow" || command === "fastest" || command === "slowest") {
+    return { kind: command, argument };
+  }
   if (command === "r" || command === "run") {
     return { kind: "run", argument };
   }
@@ -366,18 +377,20 @@ export function resolveComposerSlashTurn(text: string): ComposerSlashTurn {
       kind: "error",
       command,
       message:
-        command === "fast"
-          ? "Add a request after /fast or /f."
-          : "Add a shell command after /run or /r.",
+        command === "run"
+          ? "Add a shell command after /run or /r."
+          : command === "fast"
+            ? "Add a request after /fast or /f."
+            : `Add a request after /${command}.`,
     };
   }
 
-  if (parsed.kind === "fast") {
+  if (parsed.kind !== "run") {
     return {
       kind: "message",
       text: argument,
-      command: "fast",
-      thinking: "off",
+      command: parsed.kind,
+      turnEffort: parsed.kind,
     };
   }
 

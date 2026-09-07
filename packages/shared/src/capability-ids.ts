@@ -354,6 +354,24 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "project-queue-attachment-editing",
     introducedIn: "0.8.1",
   },
+  projectFileCompletion: {
+    id: 56,
+    direction: "server",
+    name: "project-file-completion",
+    introducedIn: "0.8.2",
+  },
+  sessionConversationContext: {
+    id: 57,
+    direction: "server",
+    name: "session-conversation-context",
+    introducedIn: "0.8.2",
+  },
+  turnEffortModifiers: {
+    id: 58,
+    direction: "server",
+    name: "turn-effort-modifiers",
+    introducedIn: "0.8.2",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

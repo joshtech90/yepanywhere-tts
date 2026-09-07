@@ -59,6 +59,7 @@ import { ToolCallRow } from "./blocks/ToolCallRow";
 import { UserPromptBlock } from "./blocks/UserPromptBlock";
 import { LinkifiedText } from "./ui/LinkifiedText";
 import styles from "./RenderItemComponent.module.css";
+import { WorkflowContext, WorkflowOutput } from "./WorkflowOutput";
 
 interface Props {
   item: RenderItem;
@@ -1084,6 +1085,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
             toolName={item.toolName}
             toolInput={item.toolInput}
             toolResult={item.toolResult}
+            workflow={item.workflow}
             status={item.status}
             sessionProvider={sessionProvider}
             startTimestampMs={getEarliestMessageTimestampMs(
@@ -1273,7 +1275,20 @@ export const RenderItemComponent = memo(function RenderItemComponent({
       data-render-id={item.id}
       onClick={handleClick}
     >
-      <div className="message-render-content">{renderContent()}</div>
+      <div className="message-render-content">
+        {item.type === "tool_call" && item.workflow ? (
+          <WorkflowContext workflow={item.workflow} />
+        ) : null}
+        {item.type === "text" && item.workflow?.markers.length ? (
+          <WorkflowOutput
+            text={item.text}
+            workflow={item.workflow}
+            original={renderContent()}
+          />
+        ) : (
+          renderContent()
+        )}
+      </div>
       <MessageAge timestampMs={timestampMs} nowMs={ageNowMs ?? Date.now()} />
     </div>
   );

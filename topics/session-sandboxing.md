@@ -356,6 +356,14 @@ read-only, and the regression suite verifies both the target and bootstrap
 source remain unchanged. Session transcripts, logs, cache, and temporary files
 start private rather than being linked from global state.
 
+When bootstrapping a new private home, relative symlinks are anchored to the
+real source parent, even if `CLAUDE_CONFIG_DIR` or `CODEX_HOME` is itself a
+directory symlink. Top-level config/skill links and links inside copied plugin
+directories retain their original targets. They remain symlinks: bootstrap
+does not turn an outside read-only asset into a private writable copy. Existing
+initialized homes retain their configuration; bootstrap does not overwrite
+them on resume.
+
 A generic writable exception for the real `$HOME`, provider state directory,
 `/tmp`, cache root, or shared language environment is not equivalent to
 Project writes only. If a provider cannot function with the private-state
@@ -651,6 +659,8 @@ the already-open project directory descriptor, refusing a launch when the
 configured pathname has been renamed and replaced after preflight. It verifies
 copied configuration has a different inode, missing, untrusted, and unusable
 Bubblewrap diagnostics stay distinct,
+relative config/skill/plugin links from symlinked Claude and Codex homes remain
+readable while outside target writes fail,
 unsupported providers and remote executors fail, project state keys are
 stable, Claude forks create separate JSONL in the inherited private root,
 agent-controlled transcript-directory symlinks are rejected, and persisted

@@ -5001,30 +5001,6 @@ a.sidebar-nav-item {
   box-shadow: none;
 }
 
-.project-queue-new-session-mark {
-  position: absolute;
-  top: 0;
-  right: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: white;
-  color: var(--project-queue-new-session-action-bg);
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1;
-  box-shadow: 0 0 0 1px
-    color-mix(
-      in srgb,
-      var(--project-queue-new-session-action-bg) 42%,
-      transparent
-    );
-  pointer-events: none;
-}
-
 .send-button.patient-queue-action {
   background: var(--patient-queue-action-bg);
   color: white;
@@ -5277,17 +5253,6 @@ a.sidebar-nav-item {
 /* Deferred messages - queued server-side */
 .deferred-message {
   margin-bottom: var(--space-3);
-}
-
-.deferred-message-bubble {
-  opacity: 0.7;
-  border-left: 3px solid var(--attention-color);
-  padding-left: var(--space-2);
-  white-space: pre-wrap;
-}
-
-.project-queue-inline-message-bubble {
-  border-left-color: var(--project-queue-action-bg);
 }
 
 .project-queue-inline-message-status {

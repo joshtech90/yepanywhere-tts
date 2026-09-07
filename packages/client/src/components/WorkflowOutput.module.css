@@ -1,0 +1,58 @@
+.root {
+  min-inline-size: 0;
+  margin-block: 0.35rem;
+}
+
+.content {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.boundary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.65rem;
+  padding-block: 0.4rem 0.2rem;
+  margin-block-start: 0.55rem;
+  border-block-start: 1px solid var(--border-color);
+  white-space: normal;
+}
+
+.tag {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-inline-start: 3px solid var(--accent-color);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.title {
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+
+.context {
+  color: var(--text-secondary);
+  font-size: 0.8em;
+  margin-block: 0.4rem 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.original {
+  margin-block-start: 0.5rem;
+}
+
+.original > summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.8em;
+  min-block-size: 28px;
+  padding-block: 0.3rem;
+}

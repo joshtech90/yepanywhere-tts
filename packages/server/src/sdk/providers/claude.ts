@@ -49,9 +49,9 @@ import {
   boundAutoTitleExcerpt,
   createAutoTitlePrompt,
 } from "./auto-title-prompt.js";
-import { detectClaudeCli } from "../cli-detection.js";
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
+import { ClaudeTurnEffort } from "./claude-turn-effort.js";
 import {
   getClaudeAdditionalModelOptions,
   getClaudeModelCatalogCacheKey,
@@ -2209,9 +2209,26 @@ export class ClaudeProvider implements AgentProvider {
 
     // Create the SDK query with our message generator
     let sdkQuery: Query;
+    let selectedModel = options.model;
+    const turnEffort = new ClaudeTurnEffort(
+      () => sdkQuery,
+      async () => {
+        const models = await this.getAvailableModels();
+        const model = models.find(
+          (candidate) => candidate.id === (selectedModel ?? "default"),
+        );
+        if (!model)
+          throw new Error(
+            `No effort catalog for model ${selectedModel ?? "default"}`,
+          );
+        return model;
+      },
+      options.thinking,
+      options.effort,
+    );
     try {
       sdkQuery = query({
-        prompt: queue,
+        prompt: turnEffort.input(queue),
         options: {
           cwd: effectiveCwd,
           resume: options.resumeSessionId,
@@ -2295,7 +2312,10 @@ export class ClaudeProvider implements AgentProvider {
       cwd: effectiveCwd,
       remoteEnv,
       providerRetention,
-      onMessage: (message) => steerBackgroundController.observe(message),
+      onMessage: async (message) => {
+        if (message.type === "result") await turnEffort.complete();
+        steerBackgroundController.observe(message);
+      },
     });
     const iterator = agentctlSessionEnvBridge
       ? withCleanup(wrappedIterator, () => agentctlSessionEnvBridge.cleanup())
@@ -2374,9 +2394,8 @@ export class ClaudeProvider implements AgentProvider {
         );
       },
       setMaxThinkingTokens: (tokens: number | null) =>
-        sdkQuery.setMaxThinkingTokens(tokens),
-      setEffort: (effort?: EffortLevel) =>
-        sdkQuery.applyFlagSettings({ effortLevel: effort ?? null }),
+        turnEffort.setThinking(tokens),
+      setEffort: (effort?: EffortLevel) => turnEffort.setEffort(effort),
       setSessionOptions: (requested) =>
         Promise.resolve(
           evaluateClaudeSessionOptionsUpdate(
@@ -2396,8 +2415,10 @@ export class ClaudeProvider implements AgentProvider {
         const commands = await sdkQuery.supportedCommands();
         return withClaudeGoalAlias(commands.map(mapClaudeSlashCommand));
       },
-      setModel: (model?: string) =>
-        sdkQuery.setModel(normalizeClaudeLaunchModel(model)),
+      setModel: async (model?: string) => {
+        await sdkQuery.setModel(normalizeClaudeLaunchModel(model));
+        selectedModel = model;
+      },
     };
   }
 
@@ -2414,7 +2435,7 @@ export class ClaudeProvider implements AgentProvider {
       cwd: string;
       remoteEnv?: Record<string, string>;
       providerRetention?: ClaudeProviderRetentionTracker;
-      onMessage?: (message: SDKMessage) => void;
+      onMessage?: (message: SDKMessage) => void | Promise<void>;
     },
   ): AsyncIterableIterator<SDKMessage> {
     const log = getLogger();
@@ -2429,7 +2450,7 @@ export class ClaudeProvider implements AgentProvider {
 
         const converted = this.convertMessage(message);
         remoteOptions?.providerRetention?.observeMessage(converted);
-        remoteOptions?.onMessage?.(converted);
+        await remoteOptions?.onMessage?.(converted);
         yield converted;
 
         // For remote sessions, sync session files after result messages

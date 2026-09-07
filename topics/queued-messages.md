@@ -111,6 +111,11 @@ cannot erase a recovered chip that still exists on the server.
 
 ## Surface
 
+Labeled Copy controls align the visible label optically with the copy icon
+inside their button bounds, including the confirmation state.
+Session and project queue bubbles balance their text optically within the
+background, preserving total height and the distinct queue accent colors.
+
 - **List:** the client receives the queue from the server only — the `connected`
   event payload on (re)connect and `deferred-queue` subscription events on
   change. Session detail/metadata responses use the same canonical projection

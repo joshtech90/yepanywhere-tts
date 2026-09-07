@@ -8,6 +8,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
@@ -16,7 +17,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
 import { AuthService } from "../src/auth/AuthService.js";
@@ -95,8 +96,8 @@ describe("session sandbox", () => {
     );
   });
 
-  async function fixtureRoot(): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), "ya-session-sandbox-"));
+  async function fixtureRoot(base = tmpdir()): Promise<string> {
+    const root = await mkdtemp(join(base, "ya-session-sandbox-"));
     roots.push(root);
     return root;
   }
@@ -344,6 +345,81 @@ describe("session sandbox", () => {
       ).rejects.toMatchObject({
         code: "ENOENT",
       });
+    },
+  );
+
+  t.each(["claude", "codex"] as const)(
+    "preserves relative bootstrap links through a symlinked %s home",
+    async (provider) => {
+      // Host assets must remain visible beyond the sandbox's private /tmp.
+      // node_modules is already excluded and exists wherever this suite runs.
+      const root = await fixtureRoot(join(process.cwd(), "node_modules"));
+      const projectPath = join(root, "project");
+      const sourceHome = join(root, "source", "home");
+      const sourceAlias = join(root, "alias", "home");
+      const assets = join(root, "source", "assets");
+      await Promise.all([
+        mkdir(projectPath),
+        mkdir(join(sourceHome, "plugins"), { recursive: true }),
+        mkdir(dirname(sourceAlias)),
+        mkdir(join(assets, "skills"), { recursive: true }),
+      ]);
+      const configName = provider === "codex" ? "config.toml" : "settings.json";
+      const config = provider === "codex" ? 'model = "test"\n' : "{}\n";
+      await writeFile(join(assets, configName), config);
+      await writeFile(join(assets, "skills", "SKILL.md"), "linked skill\n");
+      await writeFile(join(assets, "schema.json"), '{"id":"linked-schema"}\n');
+      await symlink(relative(dirname(sourceAlias), sourceHome), sourceAlias);
+      await symlink(`../assets/${configName}`, join(sourceHome, configName));
+      await symlink("../assets/skills", join(sourceHome, "skills"));
+      await symlink(
+        "../../assets/schema.json",
+        join(sourceHome, "plugins", "schema.json"),
+      );
+      vi.stubEnv(
+        provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR",
+        sourceAlias,
+      );
+
+      const runtime = await prepareSessionSandbox({
+        level: "project-write",
+        networkFirewall: false,
+        provider,
+        projectPath,
+        stateKey: "linked-home",
+        stateRoot: join(root, "state"),
+      });
+      if (!runtime) throw new Error("sandbox runtime was not prepared");
+      const privateHome = join(root, "state", "linked-home", provider);
+      for (const [entry, expected] of [
+        [configName, join(assets, configName)],
+        ["skills", join(assets, "skills")],
+        ["plugins/schema.json", join(assets, "schema.json")],
+      ] as const) {
+        expect((await lstat(join(privateHome, entry))).isSymbolicLink()).toBe(
+          true,
+        );
+        expect(await realpath(join(privateHome, entry))).toBe(
+          await realpath(expected),
+        );
+      }
+
+      const script = `
+        const assert = require("node:assert/strict");
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const home = process.env.${provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"};
+        assert.equal(fs.readFileSync(path.join(home, "skills/SKILL.md"), "utf8"), "linked skill\\n");
+        assert.equal(JSON.parse(fs.readFileSync(path.join(home, "plugins/schema.json"), "utf8")).id, "linked-schema");
+        assert.throws(() => fs.writeFileSync(path.join(home, "skills/SKILL.md"), "tampered"), error => error.code === "EROFS" || error.code === "EACCES");
+      `;
+      await runSandboxed(
+        runtime.wrapSpawn(process.execPath, ["-e", script], process.env),
+      );
+      expect(await readFile(join(assets, configName), "utf8")).toBe(config);
+      expect(await readFile(join(assets, "skills", "SKILL.md"), "utf8")).toBe(
+        "linked skill\n",
+      );
     },
   );
 

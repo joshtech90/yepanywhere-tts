@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
+import type * as fs from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type {
@@ -12,6 +12,8 @@ import type {
 } from "@yep-anywhere/shared";
 import { runGit } from "../git/gitExec.js";
 import { getLogger } from "../logging/logger.js";
+import { notifyProjectFileChange } from "./projectFileChanges.js";
+import { watchSharedDirectory } from "../watcher/SharedDirectoryWatcher.js";
 import {
   compareWorktreePaths,
   sameWorktreeCoverage,
@@ -319,7 +321,7 @@ export class ProjectWorktreeSubscriptionManager {
     this.watchDirectory =
       options.watchDirectory ??
       ((path, listener, watchOptions) =>
-        fs.watch(
+        watchSharedDirectory(
           path,
           { persistent: false, recursive: watchOptions.recursive },
           listener,
@@ -1234,6 +1236,7 @@ export class ProjectWorktreeSubscriptionManager {
 
   private scheduleRefresh(state: ProjectState): void {
     if (state.subscribers.size === 0) return;
+    notifyProjectFileChange(state.projectPath);
     if (state.debounceTimer) clearTimeout(state.debounceTimer);
     state.debounceTimer = setTimeout(
       () => this.flushRefresh(state),
@@ -1354,6 +1357,7 @@ export class ProjectWorktreeSubscriptionManager {
       state.inventory = inventoryUpdate.inventory;
       state.initialized = true;
       if (inventoryUpdate.changed) {
+        notifyProjectFileChange(state.projectPath);
         state.sequence += 1;
         if (emit) this.emit(state, pendingPaths);
       }
@@ -1555,10 +1559,11 @@ async function resolveGitMetadata(
 ): Promise<GitMetadataPaths | null> {
   let gitDirOutput: string;
   try {
-    ({ stdout: gitDirOutput } = await runGit(projectPath, [
-      "rev-parse",
-      "--absolute-git-dir",
-    ]));
+    ({ stdout: gitDirOutput } = await runGit(
+      projectPath,
+      ["rev-parse", "--absolute-git-dir"],
+      { env: { LC_ALL: "C" } },
+    ));
   } catch (error) {
     if (isNotGitRepositoryError(error)) return null;
     throw error;
@@ -1687,7 +1692,7 @@ function gitMetadataWatchSetMayHaveChanged(name: string): boolean {
   );
 }
 
-async function readGitMetadataFingerprint(
+export async function readGitMetadataFingerprint(
   metadata: GitMetadataPaths,
 ): Promise<string> {
   const paths = new Set<string>([
@@ -1717,7 +1722,7 @@ async function readGitMetadataFingerprint(
   ).join("\n");
 }
 
-async function pathFingerprint(path: string): Promise<string> {
+export async function pathFingerprint(path: string): Promise<string> {
   try {
     const value = await lstat(path);
     return `${path}\0${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}:${value.ctimeMs}`;

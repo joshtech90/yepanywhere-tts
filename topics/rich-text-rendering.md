@@ -265,6 +265,12 @@ overrides. Assistant turn prose has its own local source/render toggle and does
 not participate in this global mode; the bottom-bar render-mode control is scoped
 to `FixedFontMathToggle` panels.
 
+Assistant source-text boxes use compact vertical padding and a line height
+derived from the selected fixed-width font size. Their timeline dot aligns with
+the first line, including the box's border and padding; rendered prose uses its
+own first-line height. Wrapped text keeps the marker at the first line rather
+than centering it against the entire block.
+
 ## Code file exclusion — and math opt-in
 
 Source files identified by Shiki (`_highlightedContentHtml` present) skip the

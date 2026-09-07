@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PassThrough } from "node:stream";
 
 type ExecFileCallback = (
   error: Error | null,
@@ -20,6 +21,47 @@ vi.mock("node:child_process", async () => {
 });
 
 describe("Git execution", () => {
+  it("preserves captured output on command failures", async () => {
+    execFileMock.mockImplementation(
+      (
+        _command: string,
+        _args: string[],
+        _options: unknown,
+        callback: ExecFileCallback,
+      ) => {
+        callback(new Error("git failed"), "partial output", "fatal detail");
+        return { stdin: new PassThrough() };
+      },
+    );
+    const { runGit } = await import("../../src/git/gitExec.js");
+    await expect(runGit("/project", ["status"])).rejects.toMatchObject({
+      stdout: "partial output",
+      stderr: "fatal detail",
+    });
+  });
+  it("passes NUL-delimited path input directly to Git stdin", async () => {
+    const stdin = new PassThrough();
+    const chunks: Buffer[] = [];
+    stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+    execFileMock.mockImplementation(
+      (
+        _command: string,
+        _args: string[],
+        _options: unknown,
+        callback: ExecFileCallback,
+      ) => {
+        stdin.on("finish", () => callback(null, "ignored\0", ""));
+        return { stdin };
+      },
+    );
+    const { runGit } = await import("../../src/git/gitExec.js");
+    const input = "space name\0雪.txt\0";
+    const result = await runGit("/project", ["check-ignore", "-z", "--stdin"], {
+      input,
+    });
+    expect(Buffer.concat(chunks).toString()).toBe(input);
+    expect(result.stdout).toBe("ignored\0");
+  });
   afterEach(() => {
     execFileMock.mockReset();
     vi.resetModules();
